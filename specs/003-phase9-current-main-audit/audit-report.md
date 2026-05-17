@@ -313,8 +313,8 @@ Reran after refreshing the branch onto `origin/main` `fde50d3452859a51f7f27b8079
 | Command | Result |
 | --- | --- |
 | `cargo test oversized -- --nocapture` | Passed; covers oversized Bolt-v3 root, oversized Bolt-v3 strategy, oversized legacy runtime config, and oversized live-local materialization input. |
-| `cargo test --test render_live_config materialize_live_config_updates_oversized_drifted_output -- --nocapture` | Passed. |
-| `cargo test --test render_live_config -- --nocapture` | Passed; 18 tests. |
+| ~~`cargo test --test render_live_config materialize_live_config_updates_oversized_drifted_output -- --nocapture`~~ | **SUPERSEDED at current head `9fb1a239`** — `tests/render_live_config.rs` and `src/bin/render_live_config.rs` retired under T068; named test is unreachable. Oversized fail-closed property preserved by `cargo test oversized` above. |
+| ~~`cargo test --test render_live_config -- --nocapture`~~ | **SUPERSEDED at current head `9fb1a239`** — test binary retired under T068. |
 | `cargo test fair_probability_helper_fails_closed_when_expired -- --nocapture` | Passed. |
 | `git diff --check` | Passed. |
 | `cargo fmt --check` | Passed. |
@@ -336,8 +336,8 @@ Reran after refreshing the branch onto `origin/main` `fde50d3452859a51f7f27b8079
 | `cargo test --lib validation_can_use_injected -- --nocapture` | Passed locally for T061; fake provider, market-family, and archetype validation bindings work without editing production registry tables. |
 | `cargo test --lib builder_accepts_nested_order_shape_without_flat_order_projection -- --nocapture` | Passed locally for T040; nested `entry_order`/`exit_order` config is accepted without flat order projection fields. |
 | `cargo test --test bolt_v3_strategy_registration -- --nocapture` | Passed locally after T040 nested order projection update. |
-| `cargo test --test config_schema -- --nocapture` | Passed locally after T040 nested order template update. |
-| `cargo test --test render_live_config -- --nocapture` | Passed locally after T040 nested order render update. |
+| ~~`cargo test --test config_schema -- --nocapture`~~ | **SUPERSEDED at current head `9fb1a239`** — `tests/config_schema.rs` retired under T069. Order-template acceptance covered by `tests/config_parsing.rs`. |
+| ~~`cargo test --test render_live_config -- --nocapture`~~ | **SUPERSEDED at current head `9fb1a239`** — test binary retired under T068. Order-render acceptance covered by `tests/bolt_v3_strategy_registration.rs`. |
 | `cargo test --test binary_oracle_edge_taker_runtime -- --test-threads=1 --nocapture` | Passed locally after T040 nested order runtime update; entry and exit order construction still works through NT runtime tests. |
 | `cargo test --test bolt_v3_adapter_mapping -- --nocapture` | Passed locally after T062; configured `transport_backend` reaches Polymarket data, Polymarket execution, and Binance data NT config structs. |
 | `cargo test --test config_parsing -- --nocapture` | Passed locally after T062 required `transport_backend` schema update. |
@@ -432,6 +432,19 @@ Reviewed implementation baseline before final status/follow-up work: `0e4e4a7e8b
 | GLM SSM raw-value concern | Accepted. Production `SsmResolverSession::resolve` trimmed SSM values before `bolt_v3_secrets::resolve_field` could reject leading/trailing whitespace. Follow-up commit `b31bfee` removes the trim and adds a source guard test. |
 | DeepSeek retry after provider reset | Source-free doctor still failed with HTTP 401 `auth_rejected`; no source was sent. |
 | SSM raw-value local verification | Red/green targeted test, `cargo test --lib`, `cargo fmt --check`, `git diff --check`, and all Phase 9 verifiers passed locally. |
+
+## Current-head Re-anchor (2026-05-17)
+
+The branch was force-pushed after the External Review Status section above was last updated. **Current PR head: `9fb1a239cfc046f8446b10a5724aa343b7f86c2a`.** Prior head `fc7e081e254a56d4578cf471c00842a63c1eb778` is superseded — they share merge-base `cece0f22c6b0e2a0c9141fd7325f720bff452911` (pre-Phase-9 main) and are divergent branches.
+
+| Item | Status |
+| --- | --- |
+| Exact-head CI run `25972314453` at `9fb1a239` | Green: `fmt-check`, `deny`, `clippy`, `test`, `build`, `gate`, CodeQL, detector, Analyze actions, Analyze rust, source-fence, nextest 1/4–4/4 all passed. `dependabot` skipped. |
+| External-review approvals logged in this report | **Cover superseded SHA `fc7e081` only.** All Grok/Gemini/GLM/Claude/Kimi/DeepSeek and shard-review SHAs cited above (`fc7e081`, `d606a57`, `b31bfee`, `b897dd6`, `bf2ad6f`, `535f973`, intermediate fcXXX/cXXX SHAs) precede the current head. Current head delta contains the additional commits `7dbb45c4`, `580cd417`, `ee2b2ae9`, `32006923`, `5373f4a7`, `79a4f543`, `7b24b990`, `317644c4`, `ddd96829`, `6a1c063f`, `9fb1a239`. |
+| SSM raw-value preservation | Code property preserved at current head: `src/secrets.rs::SsmResolverSession::resolve` retains the no-trim guard test `ssm_resolver_session_does_not_trim_resolved_secret_values`; `src/bolt_v3_secrets.rs::resolve_field` retains `rejects_whitespace_padded_resolved_secret_values_without_trimming`. The originating commit `b31bfeea` is no longer in the branch history (force-pushed); the code property was reapplied in the head commits. |
+| Pending external review (T074) | Re-run Claude/Gemini/Kimi/GLM/DeepSeek wave at `9fb1a239`. No external approval currently covers the actual PR head. |
+| Retrospective scope reconciliation (T067–T073) | See `tasks.md` Retrospective Scope Reconciliation section: documents `src/platform/**` retirement, capture/render-binary retirement, legacy validation retirement, `src/bolt_v3_market_identity.rs` retirement, new operator example configs, Polymarket fee-provider extraction, and shared-runtime alignment fallout. Closes P0-C/D/G/H/I traceability gaps from MECE review packet P0. |
+| Merge gate (FR-007) | This PR must not be merged while Phase 9 audit/remediation is open per FR-007 ("Audit/remediation MUST NOT ... merge"). State: OPEN, intentionally awaiting at-head external review + explicit merge approval; not "ready to merge" despite mergeable posture. |
 
 ## Decision
 

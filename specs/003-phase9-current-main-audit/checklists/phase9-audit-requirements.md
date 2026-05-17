@@ -68,6 +68,24 @@
 - [x] CHK039 Final branch refresh to current `origin/main` is recorded and the upstream delta is classified as workflow-maintenance-only.
 - [x] CHK040 `no-mistakes` is run on the Phase 9 head and every substantive finding is fixed or dispositioned.
 - [x] CHK041 Active Bolt-v3 schema docs/examples include required Polymarket `auto_load_debounce_milliseconds`.
-- [x] CHK042 Generated live-config materialization rewrites oversized or invalid drifted output instead of failing before repair.
+- [x] CHK042 Generated live-config materialization rewrites oversized or invalid drifted output instead of failing before repair. **SUPERSEDED at current head `9fb1a239`**: materializer binary `src/bin/render_live_config.rs` and its test were retired under T068. Oversized fail-closed property preserved by `src/bounded_config_read.rs` and exercised by `cargo test oversized`.
 - [x] CHK043 Pure-Rust runtime verifier includes runtime-capture and strategy modules.
 - [x] CHK044 The 1 MiB pre-parse operator-config size guard is explicitly documented as a resource-exhaustion guard, not trading policy.
+
+## Retrospective Scope Reconciliation (added 2026-05-17 after MECE review)
+
+- [x] CHK048 T067 documents retrospective retirement of `src/platform/**` runtime subsystem (originally outside T035's enumerated scope; closes MECE P0-C).
+- [x] CHK049 T068 documents retrospective retirement of capture/render binaries and transport layer (closes MECE P0-C/E).
+- [x] CHK050 T069 documents retrospective retirement of legacy validation subsystem (closes MECE P0-F).
+- [x] CHK051 T070 documents retrospective retirement of `src/bolt_v3_market_identity.rs` (closes MECE P0-G).
+- [x] CHK052 T071 documents introduction of Bolt-v3 operator example configs (closes MECE P0-I).
+- [x] CHK053 T072 documents F11 fee-provider extraction with a task number (closes MECE P0-D).
+- [x] CHK054 T073 documents shared-runtime alignment fallout including SSM raw-value preservation reapplied at head (closes MECE P0-H).
+
+## Current-head External Review Status (added 2026-05-17)
+
+- [x] CHK055 Audit-report Current-head Re-anchor section declares `9fb1a239cfc046f8446b10a5724aa343b7f86c2a` as the current head and `fc7e081e254a56d4578cf471c00842a63c1eb778` as superseded (closes MECE P0-A).
+- [x] CHK056 Audit-report explicitly states that all prior external-review approvals cover the superseded SHA and identifies the additional unreviewed commits at current head (closes MECE P0-B documentation portion).
+- [x] CHK057 PR-body External Review Status section is annotated to reflect that DeepSeek/GLM `source_content_transmission: not_sent` reviews approved without seeing source (closes MECE P0-L).
+- [ ] CHK058 External re-review wave (Claude, Gemini, Kimi, GLM, DeepSeek) is rerun at current head `9fb1a239` — tracked as T074 (closes MECE P0-B operational portion). OPEN.
+- [x] CHK059 Audit-report states that this PR must not be merged while Phase 9 audit/remediation is open per FR-007 (closes MECE P0-M).

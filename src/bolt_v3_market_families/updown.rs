@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
-    bolt_v3_instrument_filters::{InstrumentFilterError, InstrumentFilterTarget},
+    bolt_v3_instrument_filters::{
+        InstrumentFilterError, InstrumentFilterTarget, format_target_prefix,
+    },
     bolt_v3_market_families::{
         MarketFamilyValidationBinding, MarketSelectionTarget, SelectedBinaryOptionMarket,
         TargetRuntimeFields,
@@ -341,18 +343,6 @@ impl std::fmt::Display for BoltV3InstrumentFilterError {
     }
 }
 
-fn format_target_prefix(
-    strategy_instance_id: &Option<String>,
-    configured_target_id: &Option<String>,
-) -> String {
-    match (strategy_instance_id, configured_target_id) {
-        (Some(strategy), Some(target)) => format!("strategy `{strategy}` target `{target}`: "),
-        (Some(strategy), None) => format!("strategy `{strategy}`: "),
-        (None, Some(target)) => format!("target `{target}`: "),
-        (None, None) => String::new(),
-    }
-}
-
 impl std::error::Error for BoltV3InstrumentFilterError {}
 
 /// Project every configured strategy in `loaded` into an
@@ -392,8 +382,12 @@ pub fn instrument_filter_targets(
         .collect())
 }
 
-pub fn target_runtime_fields(target: &toml::Value) -> Result<TargetRuntimeFields, String> {
-    let target = deserialize_target_block(target)?;
+pub fn target_runtime_fields(
+    target: &toml::Value,
+) -> Result<TargetRuntimeFields, crate::bolt_v3_instrument_filters::InstrumentFilterError> {
+    let target = deserialize_target_block(target).map_err(|message| {
+        crate::bolt_v3_instrument_filters::InstrumentFilterError::Other { message }
+    })?;
     Ok(TargetRuntimeFields {
         configured_target_id: target.configured_target_id,
         target_kind: target_runtime_string(target.kind),

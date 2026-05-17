@@ -389,9 +389,9 @@ pub fn raw_taker_config(
     let parameters = parameters_block(strategy)?;
     let target =
         bolt_v3_market_families::target_runtime_fields_from_target(&strategy.config.target)
-            .map_err(|message| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            .map_err(|error| BinaryOracleEdgeTakerRuntimeConfigError::Target {
                 strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-                message,
+                message: error.to_string(),
             })?;
     loaded
         .root

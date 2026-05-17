@@ -33,7 +33,8 @@ pub struct MarketFamilyValidationBinding {
     pub validate_target: fn(&str, &toml::Value) -> Vec<String>,
     pub instrument_filter_targets:
         fn(&LoadedBoltV3Config) -> Result<Vec<InstrumentFilterTarget>, InstrumentFilterError>,
-    pub target_runtime_fields: fn(&toml::Value) -> Result<TargetRuntimeFields, String>,
+    pub target_runtime_fields:
+        fn(&toml::Value) -> Result<TargetRuntimeFields, InstrumentFilterError>,
     pub select_binary_option_market:
         fn(MarketSelectionTarget<'_>, &[InstrumentAny], u64) -> Option<SelectedBinaryOptionMarket>,
 }
@@ -101,26 +102,28 @@ pub fn instrument_filters_from_config_with_bindings(
 
 pub fn target_runtime_fields_from_target(
     target: &toml::Value,
-) -> Result<TargetRuntimeFields, String> {
+) -> Result<TargetRuntimeFields, InstrumentFilterError> {
     target_runtime_fields_from_target_with_bindings(target, validation_bindings())
 }
 
 pub fn target_runtime_fields_from_target_with_bindings(
     target: &toml::Value,
     bindings: &[MarketFamilyValidationBinding],
-) -> Result<TargetRuntimeFields, String> {
-    let dispatch: TargetFamilyDispatch = target
-        .clone()
-        .try_into()
-        .map_err(|error| format!("target: {error}"))?;
+) -> Result<TargetRuntimeFields, InstrumentFilterError> {
+    let dispatch: TargetFamilyDispatch =
+        target
+            .clone()
+            .try_into()
+            .map_err(|error| InstrumentFilterError::Other {
+                message: format!("target: {error}"),
+            })?;
     bindings
         .iter()
         .find(|binding| binding.key == dispatch.rotating_market_family)
-        .ok_or_else(|| {
-            format!(
-                "target.rotating_market_family `{}` is not supported by this build",
-                dispatch.rotating_market_family
-            )
+        .ok_or_else(|| InstrumentFilterError::UnsupportedFamily {
+            context: None,
+            family_key: dispatch.rotating_market_family.clone(),
+            supported: bindings.iter().map(|b| b.key).collect(),
         })
         .and_then(|binding| (binding.target_runtime_fields)(target))
 }
@@ -154,7 +157,34 @@ pub fn select_binary_option_market_from_target_with_bindings(
 
 impl From<updown::BoltV3InstrumentFilterError> for InstrumentFilterError {
     fn from(error: updown::BoltV3InstrumentFilterError) -> Self {
-        Self::new(error.to_string())
+        match error {
+            updown::BoltV3InstrumentFilterError::NonPositiveCadenceSeconds {
+                strategy_instance_id,
+                configured_target_id,
+                cadence_seconds,
+            } => Self::NonPositiveCadenceSeconds {
+                strategy_instance_id,
+                configured_target_id,
+                cadence_seconds,
+            },
+            updown::BoltV3InstrumentFilterError::NegativeNowUnixSeconds { now_unix_seconds } => {
+                Self::NegativeNowUnixSeconds { now_unix_seconds }
+            }
+            updown::BoltV3InstrumentFilterError::PeriodPairOverflow {
+                now_unix_seconds,
+                cadence_seconds,
+            } => Self::PeriodPairOverflow {
+                now_unix_seconds,
+                cadence_seconds,
+            },
+            updown::BoltV3InstrumentFilterError::TargetParseFailed {
+                strategy_instance_id,
+                message,
+            } => Self::TargetParseFailed {
+                strategy_instance_id,
+                message,
+            },
+        }
     }
 }
 
@@ -166,7 +196,7 @@ impl From<updown::BoltV3InstrumentFilterError> for InstrumentFilterError {
 pub fn validate_strategy_target(
     context: &str,
     target: &toml::Value,
-) -> (Option<TargetMetadata>, Vec<String>) {
+) -> (Option<TargetMetadata>, Vec<InstrumentFilterError>) {
     validate_strategy_target_with_bindings(context, target, validation_bindings())
 }
 
@@ -174,23 +204,32 @@ pub fn validate_strategy_target_with_bindings(
     context: &str,
     target: &toml::Value,
     bindings: &[MarketFamilyValidationBinding],
-) -> (Option<TargetMetadata>, Vec<String>) {
+) -> (Option<TargetMetadata>, Vec<InstrumentFilterError>) {
     let metadata = target.clone().try_into::<TargetMetadata>().ok();
     let dispatch: TargetFamilyDispatch = match target.clone().try_into() {
         Ok(value) => value,
         Err(error) => {
-            return (metadata, vec![format!("{context}: target: {error}")]);
+            return (
+                metadata,
+                vec![InstrumentFilterError::Other {
+                    message: format!("{context}: target: {error}"),
+                }],
+            );
         }
     };
     let errors = match bindings
         .iter()
         .find(|binding| binding.key == dispatch.rotating_market_family)
     {
-        Some(binding) => (binding.validate_target)(context, target),
-        None => vec![format!(
-            "{context}: target.rotating_market_family `{}` is not supported by this build",
-            dispatch.rotating_market_family
-        )],
+        Some(binding) => (binding.validate_target)(context, target)
+            .into_iter()
+            .map(|message| InstrumentFilterError::TargetValidationFailure { message })
+            .collect(),
+        None => vec![InstrumentFilterError::UnsupportedFamily {
+            context: Some(context.to_string()),
+            family_key: dispatch.rotating_market_family.clone(),
+            supported: bindings.iter().map(|b| b.key).collect(),
+        }],
     };
     (metadata, errors)
 }
@@ -215,14 +254,20 @@ mod tests {
     fn fake_instrument_filter_targets(
         loaded: &LoadedBoltV3Config,
     ) -> Result<Vec<InstrumentFilterTarget>, InstrumentFilterError> {
-        Err(InstrumentFilterError::new(format!(
-            "fixture_family binding invoked for {}",
-            loaded.root.trader_id
-        )))
+        Err(InstrumentFilterError::Other {
+            message: format!(
+                "fixture_family binding invoked for {}",
+                loaded.root.trader_id
+            ),
+        })
     }
 
-    fn fake_target_runtime_fields(_target: &toml::Value) -> Result<TargetRuntimeFields, String> {
-        Err("fixture_family target runtime binding invoked".to_string())
+    fn fake_target_runtime_fields(
+        _target: &toml::Value,
+    ) -> Result<TargetRuntimeFields, InstrumentFilterError> {
+        Err(InstrumentFilterError::Other {
+            message: "fixture_family target runtime binding invoked".to_string(),
+        })
     }
 
     fn fake_select_binary_option_market(
@@ -262,7 +307,7 @@ mod tests {
         assert!(
             production_errors
                 .iter()
-                .any(|message| message.contains("not supported by this build")),
+                .any(|error| error.to_string().contains("not supported by this build")),
             "production registry should not know the test family: {production_errors:?}"
         );
 
@@ -310,7 +355,9 @@ mod tests {
         let production_error = target_runtime_fields_from_target(&target)
             .expect_err("production registry should not know the test family");
         assert!(
-            production_error.contains("not supported by this build"),
+            production_error
+                .to_string()
+                .contains("not supported by this build"),
             "production registry should not know the test family: {production_error}"
         );
 
@@ -318,7 +365,7 @@ mod tests {
             target_runtime_fields_from_target_with_bindings(&target, FAKE_FAMILY_BINDINGS)
                 .expect_err("fake binding should own this dispatch and return its error");
         assert_eq!(
-            injected_error,
+            injected_error.to_string(),
             "fixture_family target runtime binding invoked"
         );
     }
@@ -346,5 +393,190 @@ mod tests {
         .expect("injected family binding should own market selection dispatch");
 
         assert_eq!(selected.market_id, "fixture-market");
+    }
+
+    #[test]
+    fn from_internal_preserves_typed_non_positive_cadence_seconds() {
+        let internal = updown::BoltV3InstrumentFilterError::NonPositiveCadenceSeconds {
+            strategy_instance_id: Some("alpha".to_string()),
+            configured_target_id: Some("target_a".to_string()),
+            cadence_seconds: -1,
+        };
+
+        let public: InstrumentFilterError = internal.into();
+
+        match public {
+            InstrumentFilterError::NonPositiveCadenceSeconds {
+                strategy_instance_id,
+                configured_target_id,
+                cadence_seconds,
+            } => {
+                assert_eq!(strategy_instance_id.as_deref(), Some("alpha"));
+                assert_eq!(configured_target_id.as_deref(), Some("target_a"));
+                assert_eq!(cadence_seconds, -1);
+            }
+            other => panic!("expected NonPositiveCadenceSeconds, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn display_for_non_positive_cadence_seconds_preserves_internal_operator_message() {
+        let strategy_instance_id = Some("alpha".to_string());
+        let configured_target_id = Some("target_a".to_string());
+        let cadence_seconds = -1;
+
+        let public = InstrumentFilterError::NonPositiveCadenceSeconds {
+            strategy_instance_id: strategy_instance_id.clone(),
+            configured_target_id: configured_target_id.clone(),
+            cadence_seconds,
+        };
+        let internal = updown::BoltV3InstrumentFilterError::NonPositiveCadenceSeconds {
+            strategy_instance_id,
+            configured_target_id,
+            cadence_seconds,
+        };
+        assert_eq!(public.to_string(), internal.to_string());
+    }
+
+    #[test]
+    fn from_internal_preserves_typed_negative_now_unix_seconds() {
+        let internal = updown::BoltV3InstrumentFilterError::NegativeNowUnixSeconds {
+            now_unix_seconds: -42,
+        };
+        let internal_message = internal.to_string();
+
+        let public: InstrumentFilterError = internal.into();
+
+        match &public {
+            InstrumentFilterError::NegativeNowUnixSeconds { now_unix_seconds } => {
+                assert_eq!(*now_unix_seconds, -42);
+            }
+            other => panic!("expected NegativeNowUnixSeconds, got {other:?}"),
+        }
+        assert_eq!(public.to_string(), internal_message);
+    }
+
+    #[test]
+    fn from_internal_preserves_typed_period_pair_overflow() {
+        let internal = updown::BoltV3InstrumentFilterError::PeriodPairOverflow {
+            now_unix_seconds: i64::MAX,
+            cadence_seconds: 60,
+        };
+        let internal_message = internal.to_string();
+
+        let public: InstrumentFilterError = internal.into();
+
+        match &public {
+            InstrumentFilterError::PeriodPairOverflow {
+                now_unix_seconds,
+                cadence_seconds,
+            } => {
+                assert_eq!(*now_unix_seconds, i64::MAX);
+                assert_eq!(*cadence_seconds, 60);
+            }
+            other => panic!("expected PeriodPairOverflow, got {other:?}"),
+        }
+        assert_eq!(public.to_string(), internal_message);
+    }
+
+    #[test]
+    fn from_internal_preserves_typed_target_parse_failed() {
+        let internal = updown::BoltV3InstrumentFilterError::TargetParseFailed {
+            strategy_instance_id: "alpha".to_string(),
+            message: "missing field `cadence_seconds`".to_string(),
+        };
+        let internal_message = internal.to_string();
+
+        let public: InstrumentFilterError = internal.into();
+
+        match &public {
+            InstrumentFilterError::TargetParseFailed {
+                strategy_instance_id,
+                message,
+            } => {
+                assert_eq!(strategy_instance_id, "alpha");
+                assert_eq!(message, "missing field `cadence_seconds`");
+            }
+            other => panic!("expected TargetParseFailed, got {other:?}"),
+        }
+        assert_eq!(public.to_string(), internal_message);
+    }
+
+    #[test]
+    fn validate_strategy_target_wraps_target_block_errors_as_typed_target_validation_failure() {
+        let target = toml::toml! {
+            configured_target_id = "fixture-target"
+            kind = "rotating_market"
+            rotating_market_family = "updown"
+            underlying_asset = "BTC"
+            cadence_seconds = -1
+            cadence_slug_token = "1m"
+            market_selection_rule = "active_or_next"
+            retry_interval_seconds = 1
+            blocked_after_seconds = 1
+        }
+        .into();
+
+        let (_, errors) = validate_strategy_target("strategy `alpha`", &target);
+        let cadence_failure = errors.iter().find(|e| {
+            matches!(
+                e,
+                InstrumentFilterError::TargetValidationFailure { message, .. }
+                    if message.contains("target.cadence_seconds")
+            )
+        });
+        assert!(
+            cadence_failure.is_some(),
+            "expected TargetValidationFailure for cadence_seconds: {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn validate_strategy_target_emits_typed_unsupported_family_for_unknown_key() {
+        let target = toml::toml! {
+            configured_target_id = "fixture-target"
+            rotating_market_family = "unicorn"
+        }
+        .into();
+
+        let (_, errors) = validate_strategy_target("strategy `alpha`", &target);
+        let unsupported = errors.iter().find_map(|e| match e {
+            InstrumentFilterError::UnsupportedFamily {
+                context,
+                family_key,
+                ..
+            } => Some((context.clone(), family_key.clone())),
+            _ => None,
+        });
+        assert_eq!(
+            unsupported,
+            Some((Some("strategy `alpha`".to_string()), "unicorn".to_string()))
+        );
+    }
+
+    #[test]
+    fn target_runtime_fields_returns_typed_unsupported_family_for_unknown_key() {
+        let target = toml::toml! {
+            configured_target_id = "fixture-target"
+            rotating_market_family = "unicorn"
+        }
+        .into();
+
+        let error = target_runtime_fields_from_target(&target).expect_err("unknown family");
+        match error {
+            InstrumentFilterError::UnsupportedFamily {
+                context,
+                family_key,
+                supported,
+            } => {
+                assert_eq!(context, None);
+                assert_eq!(family_key, "unicorn");
+                assert!(
+                    supported.contains(&updown::KEY),
+                    "supported list should include the registered family keys: {supported:?}"
+                );
+            }
+            other => panic!("expected UnsupportedFamily, got {other:?}"),
+        }
     }
 }

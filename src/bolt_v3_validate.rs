@@ -476,7 +476,7 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
                 ));
             }
         }
-        errors.extend(target_errors);
+        errors.extend(target_errors.into_iter().map(|error| error.to_string()));
 
         errors.extend(validate_reference_data(&context, root, strategy));
         errors.extend(crate::bolt_v3_archetypes::validate_strategy_archetype(

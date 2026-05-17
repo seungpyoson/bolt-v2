@@ -1386,6 +1386,32 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         "zero-length approval window must not create consumption evidence"
     );
 
+    let expired_with_drift_consumption_path =
+        temp.path().join("phase8-expired-with-drift-consumed.json");
+    let mut expired_with_drift_envelope = envelope.clone();
+    expired_with_drift_envelope.financial_envelope_sha256 =
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
+    expired_with_drift_envelope.approval_consumption_path = expired_with_drift_consumption_path
+        .to_string_lossy()
+        .to_string();
+    let expired_with_drift_error = expired_with_drift_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            2_001,
+        )
+        .expect_err("expired approval with drifted evidence should fail closed");
+    assert!(
+        expired_with_drift_error.to_string().contains("is expired"),
+        "expired approval should fail before evidence drift checks: {expired_with_drift_error}"
+    );
+    assert!(
+        !expired_with_drift_consumption_path.exists(),
+        "expired approval with drifted evidence must not create consumption evidence"
+    );
+
     envelope
         .validate_and_consume_against(
             "expected-head",

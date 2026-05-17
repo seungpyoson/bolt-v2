@@ -1124,10 +1124,10 @@ impl Phase8OperatorApprovalEnvelope {
             live_canary_approval_id,
         )?;
         self.validate_approval_not_consumed()?;
+        self.validate_approval_window(current_unix_seconds)?;
         self.validate_financial_envelope_against(loaded)?;
         self.validate_pre_run_state_against(loaded)?;
         self.validate_abort_plan_against(loaded)?;
-        self.validate_approval_window(current_unix_seconds)?;
         let current_nonce_sha256 = Self::sha256_file(&self.approval_nonce_path)?;
         if self.approval_nonce_sha256 != current_nonce_sha256 {
             return Err(anyhow!(

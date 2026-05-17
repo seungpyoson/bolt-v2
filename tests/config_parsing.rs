@@ -1,694 +1,10 @@
 mod support;
 
-use bolt_v2::{config::Config, materialize_live_config};
-use std::fs;
-use support::{TempCaseDir, runtime_toml_with_reference_venue};
-use toml::Value;
-
-#[test]
-fn parses_runtime_config_with_optional_streaming_section() {
-    let toml = r#"
-        [node]
-        name = "bolt-v2"
-        trader_id = "TRADER-001"
-        environment = "Live"
-        load_state = true
-        save_state = true
-        timeout_connection_secs = 60
-        timeout_reconciliation_secs = 30
-        timeout_portfolio_secs = 10
-        timeout_disconnection_secs = 10
-        delay_post_stop_secs = 10
-        delay_shutdown_secs = 5
-
-        [logging]
-        stdout_level = "Info"
-        file_level = "Off"
-
-        [[data_clients]]
-        name = "POLYMARKET"
-        type = "polymarket"
-        [data_clients.config]
-        subscribe_new_markets = false
-        update_instruments_interval_mins = 60
-        ws_max_subscriptions = 200
-        event_slugs = ["btc-updown-5m"]
-
-        [[exec_clients]]
-        name = "POLYMARKET"
-        type = "polymarket"
-        [exec_clients.config]
-        account_id = "POLYMARKET-001"
-        signature_type = 2
-        funder = "0xdeadbeef"
-        [exec_clients.secrets]
-        region = "us-east-1"
-        pk = "/pk"
-        api_key = "/key"
-        api_secret = "/secret"
-        passphrase = "/pass"
-
-        [raw_capture]
-        output_dir = "/srv/bolt-v2/var/raw"
-
-        [streaming]
-        catalog_path = "var/catalog"
-        flush_interval_ms = 1000
-        contract_path = "/opt/bolt-v2/contracts/polymarket.toml"
-    "#;
-
-    let cfg: Config = toml::from_str(toml).unwrap();
-
-    assert_eq!(cfg.node.timeout_connection_secs, 60);
-    assert_eq!(cfg.exec_engine.position_check_interval_secs, None);
-    assert_eq!(cfg.raw_capture.output_dir, "/srv/bolt-v2/var/raw");
-    assert_eq!(cfg.streaming.catalog_path, "var/catalog");
-    assert_eq!(cfg.streaming.flush_interval_ms, 1000);
-    assert_eq!(
-        cfg.streaming.contract_path.as_deref(),
-        Some("/opt/bolt-v2/contracts/polymarket.toml")
-    );
-}
-
-#[test]
-fn runtime_config_defaults_raw_capture_output_dir_to_srv_path() {
-    let toml = r#"
-        [node]
-        name = "bolt-v2"
-        trader_id = "TRADER-001"
-        environment = "Live"
-        load_state = true
-        save_state = true
-        timeout_connection_secs = 60
-        timeout_reconciliation_secs = 30
-        timeout_portfolio_secs = 10
-        timeout_disconnection_secs = 10
-        delay_post_stop_secs = 10
-        delay_shutdown_secs = 5
-
-        [logging]
-        stdout_level = "Info"
-        file_level = "Off"
-
-        [[data_clients]]
-        name = "POLYMARKET"
-        type = "polymarket"
-        [data_clients.config]
-        subscribe_new_markets = false
-        update_instruments_interval_mins = 60
-        ws_max_subscriptions = 200
-        event_slugs = ["btc-updown-5m"]
-
-        [[exec_clients]]
-        name = "POLYMARKET"
-        type = "polymarket"
-        [exec_clients.config]
-        account_id = "POLYMARKET-001"
-        signature_type = 2
-        funder = "0xdeadbeef"
-        [exec_clients.secrets]
-        region = "us-east-1"
-        pk = "/pk"
-        api_key = "/key"
-        api_secret = "/secret"
-        passphrase = "/pass"
-    "#;
-
-    let cfg: Config = toml::from_str(toml).unwrap();
-
-    assert_eq!(cfg.raw_capture.output_dir, "/srv/bolt-v2/var/raw");
-}
-
-#[test]
-fn runtime_config_parses_ruleset_selector_table() {
-    let toml = r#"
-        [node]
-        name = "bolt-v2"
-        trader_id = "TRADER-001"
-        environment = "Live"
-        load_state = true
-        save_state = true
-        timeout_connection_secs = 60
-        timeout_reconciliation_secs = 30
-        timeout_portfolio_secs = 10
-        timeout_disconnection_secs = 10
-        delay_post_stop_secs = 10
-        delay_shutdown_secs = 5
-
-        [logging]
-        stdout_level = "Info"
-        file_level = "Off"
-
-        [[data_clients]]
-        name = "POLYMARKET"
-        type = "polymarket"
-        [data_clients.config]
-        subscribe_new_markets = false
-        update_instruments_interval_mins = 60
-        ws_max_subscriptions = 200
-        event_slugs = ["btc-updown-5m"]
-
-        [[exec_clients]]
-        name = "POLYMARKET"
-        type = "polymarket"
-        [exec_clients.config]
-        account_id = "POLYMARKET-001"
-        signature_type = 2
-        funder = "0xdeadbeef"
-        [exec_clients.secrets]
-        region = "us-east-1"
-        pk = "/pk"
-        api_key = "/key"
-        api_secret = "/secret"
-        passphrase = "/pass"
-
-        [raw_capture]
-        output_dir = "/srv/bolt-v2/var/raw"
-
-        [reference]
-        publish_topic = "platform.reference.default"
-        min_publish_interval_ms = 100
-
-        [reference.binance]
-        region = "eu-west-1"
-        api_key = "/bolt/binance/api-key"
-        api_secret = "/bolt/binance/api-secret"
-        environment = "Mainnet"
-        product_types = ["SPOT"]
-        instrument_status_poll_secs = 3600
-
-        [[reference.venues]]
-        name = "BINANCE-BTC"
-        type = "binance"
-        instrument_id = "BTCUSDT.BINANCE"
-        base_weight = 0.35
-        stale_after_ms = 1500
-        disable_after_ms = 5000
-
-        [[rulesets]]
-        id = "PRIMARY"
-        venue = "polymarket"
-        resolution_basis = "binance_btcusdt_1m"
-        min_time_to_expiry_secs = 60
-        max_time_to_expiry_secs = 900
-        min_liquidity_num = 1000
-        require_accepting_orders = true
-        freeze_before_end_secs = 90
-        selector_poll_interval_ms = 1000
-        candidate_load_timeout_secs = 30
-
-        [rulesets.selector]
-        tag_slug = "bitcoin"
-        event_slug_prefix = "btc-updown"
-
-        [audit]
-        local_dir = "/srv/bolt-v2/var/audit"
-        s3_uri = "s3://bolt-runtime-history/phase1"
-        ship_interval_secs = 30
-        upload_attempt_timeout_secs = 30
-        roll_max_bytes = 1048576
-        roll_max_secs = 300
-        max_local_backlog_bytes = 10485760
-    "#;
-
-    let cfg: Config = toml::from_str(toml).unwrap();
-
-    assert!(cfg.strategies.is_empty());
-    assert_eq!(cfg.rulesets[0].id, "PRIMARY");
-    assert_eq!(
-        cfg.rulesets[0].selector["tag_slug"].as_str(),
-        Some("bitcoin")
-    );
-    assert_eq!(
-        cfg.rulesets[0].selector["event_slug_prefix"].as_str(),
-        Some("btc-updown")
-    );
-}
-
-#[test]
-fn runtime_config_parses_optional_exec_engine_position_check_interval() {
-    let toml = r#"
-        [node]
-        name = "bolt-v2"
-        trader_id = "TRADER-001"
-        environment = "Live"
-        load_state = true
-        save_state = true
-        timeout_connection_secs = 60
-        timeout_reconciliation_secs = 30
-        timeout_portfolio_secs = 10
-        timeout_disconnection_secs = 10
-        delay_post_stop_secs = 10
-        delay_shutdown_secs = 5
-
-        [logging]
-        stdout_level = "Info"
-        file_level = "Off"
-
-        [[data_clients]]
-        name = "POLYMARKET"
-        type = "polymarket"
-        [data_clients.config]
-        subscribe_new_markets = false
-        update_instruments_interval_mins = 60
-        ws_max_subscriptions = 200
-        event_slugs = ["btc-updown-5m"]
-
-        [exec_engine]
-        position_check_interval_secs = 17
-
-        [[exec_clients]]
-        name = "POLYMARKET"
-        type = "polymarket"
-        [exec_clients.config]
-        account_id = "POLYMARKET-001"
-        signature_type = 2
-        funder = "0xdeadbeef"
-        [exec_clients.secrets]
-        region = "us-east-1"
-        pk = "/pk"
-        api_key = "/key"
-        api_secret = "/secret"
-        passphrase = "/pass"
-    "#;
-
-    let cfg: Config = toml::from_str(toml).unwrap();
-
-    assert_eq!(cfg.exec_engine.position_check_interval_secs, Some(17.0));
-}
-
-#[test]
-fn runtime_config_load_rejects_non_positive_exec_engine_position_check_interval() {
-    let tempdir = TempCaseDir::new("exec-engine-position-check-invalid");
-    let path = tempdir.path().join("live.toml");
-    let toml = r#"
-        [node]
-        name = "bolt-v2"
-        trader_id = "TRADER-001"
-        environment = "Live"
-        load_state = true
-        save_state = true
-        timeout_connection_secs = 60
-        timeout_reconciliation_secs = 30
-        timeout_portfolio_secs = 10
-        timeout_disconnection_secs = 10
-        delay_post_stop_secs = 10
-        delay_shutdown_secs = 5
-
-        [logging]
-        stdout_level = "Info"
-        file_level = "Off"
-
-        [exec_engine]
-        position_check_interval_secs = 0
-
-        [[data_clients]]
-        name = "POLYMARKET"
-        type = "polymarket"
-        [data_clients.config]
-        subscribe_new_markets = false
-        update_instruments_interval_mins = 60
-        ws_max_subscriptions = 200
-        event_slugs = ["btc-updown-5m"]
-
-        [[exec_clients]]
-        name = "POLYMARKET"
-        type = "polymarket"
-        [exec_clients.config]
-        account_id = "POLYMARKET-001"
-        signature_type = 2
-        funder = "0xdeadbeef"
-        [exec_clients.secrets]
-        region = "us-east-1"
-        pk = "/pk"
-        api_key = "/key"
-        api_secret = "/secret"
-        passphrase = "/pass"
-    "#;
-
-    fs::write(&path, toml).expect("runtime config should be written");
-
-    let error = Config::load(&path).expect_err("non-positive position check interval must fail");
-
-    assert!(
-        error
-            .to_string()
-            .contains("exec_engine.position_check_interval_secs")
-    );
-}
-
-#[test]
-fn rendered_operator_config_can_enable_streaming_without_changing_runtime_schema() {
-    let tempdir = TempCaseDir::new("config-parsing");
-    std::fs::write(
-        tempdir.path().join("Cargo.toml"),
-        "[package]\nname = \"temp\"\n",
-    )
-    .unwrap();
-    let config_dir = tempdir.path().join("config");
-    std::fs::create_dir_all(&config_dir).unwrap();
-    let input_path = config_dir.join("live.local.toml");
-    let output_path = tempdir.path().join("live.toml");
-    let toml = r#"
-        [node]
-        name = "bolt-v2"
-        trader_id = "TRADER-001"
-
-        [polymarket]
-        event_slug = "btc-updown-5m"
-        instrument_id = "0xabc-12345678901234567890.POLYMARKET"
-        account_id = "POLYMARKET-001"
-        funder = "0xdeadbeef"
-
-        [secrets]
-        pk = "/pk"
-        api_key = "/key"
-        api_secret = "/secret"
-        passphrase = "/pass"
-
-        [raw_capture]
-        output_dir = "/srv/bolt-v2/var/raw"
-
-        [streaming]
-        catalog_path = "var/catalog"
-        flush_interval_ms = 250
-        contract_path = "contracts/polymarket.toml"
-    "#;
-
-    fs::write(&input_path, toml).unwrap();
-    let error = materialize_live_config(&input_path, &output_path)
-        .expect_err("non-phase1 operator config should fail closed")
-        .to_string();
-
-    assert!(
-        error.contains("at least one ruleset or strategy"),
-        "expected fail-closed runtime-shape error, got: {error}"
-    );
-    assert!(!output_path.exists());
-}
-
-#[test]
-fn rendered_runtime_toml_preserves_phase1_platform_values() {
-    let tempdir = TempCaseDir::new("phase1-config-parsing");
-    let input_path = tempdir.path().join("live.local.toml");
-    let output_path = tempdir.path().join("live.toml");
-    let toml = r#"
-        [node]
-        name = "BOLT-V2-001"
-        trader_id = "BOLT-001"
-
-        [polymarket]
-        instrument_id = "0xabc-123.POLYMARKET"
-        account_id = "POLYMARKET-001"
-        funder = "0xabc"
-        signature_type = 2
-
-        [secrets]
-        region = "eu-west-1"
-        pk = "/bolt/poly/pk"
-        api_key = "/bolt/poly/key"
-        api_secret = "/bolt/poly/secret"
-        passphrase = "/bolt/poly/passphrase"
-
-        [raw_capture]
-        output_dir = "/srv/bolt-v2/var/raw"
-
-        [reference]
-        publish_topic = "platform.reference.default"
-        min_publish_interval_ms = 100
-
-        [reference.binance]
-        region = "eu-west-1"
-        api_key = "/bolt/binance/api-key"
-        api_secret = "/bolt/binance/api-secret"
-        environment = "Mainnet"
-        product_types = ["SPOT"]
-        instrument_status_poll_secs = 3600
-
-        [[reference.venues]]
-        name = "BINANCE-BTC"
-        type = "binance"
-        instrument_id = "BTCUSDT.BINANCE"
-        base_weight = 0.35
-        stale_after_ms = 1500
-        disable_after_ms = 5000
-
-        [[rulesets]]
-        id = "PRIMARY"
-        venue = "polymarket"
-        resolution_basis = "binance_btcusdt_1m"
-        min_time_to_expiry_secs = 60
-        max_time_to_expiry_secs = 900
-        min_liquidity_num = 1000
-        require_accepting_orders = true
-freeze_before_end_secs = 90
-selector_poll_interval_ms = 250
-candidate_load_timeout_secs = 12
-
-        [rulesets.selector]
-        tag_slug = "bitcoin"
-
-[audit]
-local_dir = "/srv/bolt-v2/var/audit"
-s3_uri = "s3://bolt-runtime-history/phase1"
-ship_interval_secs = 30
-upload_attempt_timeout_secs = 45
-roll_max_bytes = 1048576
-roll_max_secs = 300
-max_local_backlog_bytes = 10485760
-    "#;
-
-    fs::write(&input_path, toml).unwrap();
-    materialize_live_config(&input_path, &output_path).unwrap();
-    let rendered = fs::read_to_string(&output_path).unwrap();
-    let value: Value = toml::from_str(&rendered).unwrap();
-
-    assert!(
-        !rendered.contains("event_slugs"),
-        "ruleset-backed runtime config should not emit event slugs: {rendered}"
-    );
-    assert!(
-        value.get("strategies").is_none(),
-        "ruleset-backed runtime config should omit runtime strategy templates: {rendered}"
-    );
-    assert_eq!(
-        value["reference"]["venues"][0]["type"].as_str(),
-        Some("binance")
-    );
-    assert_eq!(value["rulesets"][0]["id"].as_str(), Some("PRIMARY"));
-    assert_eq!(
-        value["rulesets"][0]["require_accepting_orders"].as_bool(),
-        Some(true)
-    );
-    assert_eq!(
-        value["rulesets"][0]["selector_poll_interval_ms"].as_integer(),
-        Some(250)
-    );
-    assert_eq!(
-        value["rulesets"][0]["candidate_load_timeout_secs"].as_integer(),
-        Some(12)
-    );
-    assert_eq!(
-        value["audit"]["s3_uri"].as_str(),
-        Some("s3://bolt-runtime-history/phase1")
-    );
-    assert_eq!(
-        value["audit"]["upload_attempt_timeout_secs"].as_integer(),
-        Some(45)
-    );
-}
-
-#[test]
-fn parses_runtime_config_with_nested_chainlink_reference_settings() {
-    let toml = runtime_toml_with_reference_venue(
-        r#"[reference.chainlink]
-region = "us-east-1"
-api_key = "/bolt/chainlink/api_key"
-api_secret = "/bolt/chainlink/api_secret"
-ws_url = "wss://streams.chain.link"
-ws_reconnect_alert_threshold = 5"#,
-        r#"[[reference.venues]]
-name = "CHAINLINK-BTC"
-type = "chainlink"
-instrument_id = "BTCUSD.CHAINLINK"
-base_weight = 1.0
-stale_after_ms = 1500
-disable_after_ms = 5000
-[reference.venues.chainlink]
-feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
-price_scale = 8"#,
-        "chainlink_btcusd",
-    );
-
-    let cfg: Config = toml::from_str(&toml).unwrap();
-    let shared = cfg
-        .reference
-        .chainlink
-        .as_ref()
-        .expect("shared chainlink settings should parse");
-    let chainlink = cfg.reference.venues[0]
-        .chainlink
-        .as_ref()
-        .expect("chainlink settings should parse");
-
-    assert_eq!(shared.region, "us-east-1");
-    assert_eq!(shared.api_key, "/bolt/chainlink/api_key");
-    assert_eq!(shared.api_secret, "/bolt/chainlink/api_secret");
-    assert_eq!(shared.ws_url, "wss://streams.chain.link");
-    assert_eq!(shared.ws_reconnect_alert_threshold, 5);
-    assert_eq!(
-        chainlink.feed_id,
-        "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
-    );
-    assert_eq!(chainlink.price_scale, 8);
-}
-
-#[test]
-fn runtime_config_rejects_incomplete_chainlink_shared_settings_at_parse_time() {
-    let toml = runtime_toml_with_reference_venue(
-        r#"[reference.chainlink]
-region = "us-east-1"
-api_key = "/bolt/chainlink/api_key"
-api_secret = "/bolt/chainlink/api_secret"
-ws_url = "wss://streams.chain.link""#,
-        r#"[[reference.venues]]
-name = "CHAINLINK-BTC"
-type = "chainlink"
-instrument_id = "BTCUSD.CHAINLINK"
-base_weight = 1.0
-stale_after_ms = 1500
-disable_after_ms = 5000
-[reference.venues.chainlink]
-feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
-price_scale = 8"#,
-        "chainlink_btcusd",
-    );
-
-    let error = toml::from_str::<Config>(&toml)
-        .expect_err("incomplete chainlink shared settings should fail to parse")
-        .to_string();
-
-    assert!(error.contains("ws_reconnect_alert_threshold"));
-}
-
-#[test]
-fn runtime_config_rejects_chainlink_venue_without_nested_chainlink_settings() {
-    let tempdir = TempCaseDir::new("runtime-chainlink-missing");
-    let path = tempdir.path().join("live.toml");
-    let toml = runtime_toml_with_reference_venue(
-        r#"[reference.chainlink]
-region = "us-east-1"
-api_key = "/bolt/chainlink/api_key"
-api_secret = "/bolt/chainlink/api_secret"
-ws_url = "wss://streams.chain.link"
-ws_reconnect_alert_threshold = 5"#,
-        r#"[[reference.venues]]
-name = "CHAINLINK-BTC"
-type = "chainlink"
-instrument_id = "BTCUSD.CHAINLINK"
-base_weight = 1.0
-stale_after_ms = 1500
-disable_after_ms = 5000"#,
-        "chainlink_btcusd",
-    );
-
-    fs::write(&path, toml).unwrap();
-    let error = Config::load(&path)
-        .expect_err("chainlink runtime config without nested settings should fail")
-        .to_string();
-
-    assert!(error.contains("reference.venues[0].chainlink"));
-}
-
-#[test]
-fn runtime_config_rejects_chainlink_venue_without_shared_chainlink_settings() {
-    let tempdir = TempCaseDir::new("runtime-chainlink-missing-shared");
-    let path = tempdir.path().join("live.toml");
-    let toml = runtime_toml_with_reference_venue(
-        "",
-        r#"[[reference.venues]]
-name = "CHAINLINK-BTC"
-type = "chainlink"
-instrument_id = "BTCUSD.CHAINLINK"
-base_weight = 1.0
-stale_after_ms = 1500
-disable_after_ms = 5000
-[reference.venues.chainlink]
-feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
-price_scale = 8"#,
-        "chainlink_btcusd",
-    );
-
-    fs::write(&path, toml).unwrap();
-    let error = Config::load(&path)
-        .expect_err("chainlink runtime config without shared settings should fail")
-        .to_string();
-
-    assert!(error.contains("reference.chainlink"));
-}
-
-#[test]
-fn runtime_config_rejects_orphaned_chainlink_settings_on_non_chainlink_venue() {
-    let tempdir = TempCaseDir::new("runtime-chainlink-orphan");
-    let path = tempdir.path().join("live.toml");
-    let toml = runtime_toml_with_reference_venue(
-        r#"[reference.chainlink]
-region = "us-east-1"
-api_key = "/bolt/chainlink/api_key"
-api_secret = "/bolt/chainlink/api_secret"
-ws_url = "wss://streams.chain.link"
-ws_reconnect_alert_threshold = 5"#,
-        r#"[[reference.venues]]
-name = "BINANCE-BTC"
-type = "binance"
-instrument_id = "BTCUSDT.BINANCE"
-base_weight = 1.0
-stale_after_ms = 1500
-disable_after_ms = 5000
-[reference.venues.chainlink]
-feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
-price_scale = 8"#,
-        "binance_btcusdt_1m",
-    );
-
-    fs::write(&path, toml).unwrap();
-    let error = Config::load(&path)
-        .expect_err("orphaned chainlink settings should fail")
-        .to_string();
-
-    assert!(error.contains("reference.chainlink"));
-    assert!(error.contains("reference.venues[0].chainlink"));
-}
-
-#[test]
-fn runtime_config_rejects_unknown_ruleset_field_at_parse_time() {
-    let toml = runtime_toml_with_reference_venue(
-        "",
-        r#"[[reference.venues]]
-name = "BINANCE-BTC"
-type = "binance"
-instrument_id = "BTCUSDT.BINANCE"
-base_weight = 1.0
-stale_after_ms = 1500
-disable_after_ms = 5000"#,
-        "binance_btcusdt_1m",
-    )
-    .replace(
-        "candidate_load_timeout_secs = 12",
-        "candidate_load_timeout_secs = 12\nselector_poll_intrvl_ms = 250",
-    );
-
-    let error = toml::from_str::<Config>(&toml)
-        .expect_err("unknown ruleset field should fail to parse")
-        .to_string();
-
-    assert!(error.contains("selector_poll_intrvl_ms"));
-}
-
 #[test]
 fn parses_minimal_bolt_v3_root_and_strategy_config() {
     use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::{
-        ArchetypeOrderType, ArchetypeTimeInForce, ParametersBlock,
+        ArchetypeOrderSide, ArchetypeOrderType, ArchetypePositionSide, ArchetypeTimeInForce,
+        ParametersBlock,
     };
     use bolt_v2::bolt_v3_config::{RuntimeMode, load_bolt_v3_config};
     use bolt_v2::bolt_v3_market_families::updown::{TargetBlock, TargetKind};
@@ -723,26 +39,258 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
         .expect("fixture target block should deserialize as updown TargetBlock");
     assert_eq!(target.kind, TargetKind::RotatingMarket);
     assert_eq!(target.cadence_seconds, 300);
+    assert_eq!(target.cadence_slug_token, "5m");
     let parameters: ParametersBlock = strategy
         .parameters
         .clone()
         .try_into()
         .expect("fixture parameters block should deserialize as binary_oracle_edge_taker");
+    assert_eq!(parameters.entry_order.side, ArchetypeOrderSide::Buy);
+    assert_eq!(
+        parameters.entry_order.position_side,
+        ArchetypePositionSide::Long
+    );
     assert_eq!(parameters.entry_order.order_type, ArchetypeOrderType::Limit);
     assert_eq!(
         parameters.entry_order.time_in_force,
         ArchetypeTimeInForce::Fok
+    );
+    assert_eq!(parameters.exit_order.side, ArchetypeOrderSide::Sell);
+    assert_eq!(
+        parameters.exit_order.position_side,
+        ArchetypePositionSide::Long
     );
     assert_eq!(parameters.exit_order.order_type, ArchetypeOrderType::Market);
     assert_eq!(
         parameters.exit_order.time_in_force,
         ArchetypeTimeInForce::Ioc
     );
-    assert!(strategy.reference_data.contains_key("primary"));
+    assert!(strategy.reference_data.contains_key("spot"));
+    assert_eq!(strategy.reference_data["spot"].venue, "binance_reference");
     assert_eq!(
-        strategy.reference_data["primary"].venue,
-        "binance_reference"
+        loaded
+            .root
+            .persistence
+            .runtime_capture_start_poll_interval_milliseconds,
+        50
     );
+}
+
+#[test]
+fn root_example_declares_live_canary_gate_contract() {
+    use bolt_v2::bolt_v3_config::{BoltV3RootConfig, RuntimeMode};
+
+    let root_text = std::fs::read_to_string(support::repo_path("config/root.example.toml"))
+        .expect("root example should be readable");
+    let root: BoltV3RootConfig =
+        toml::from_str(&root_text).expect("root example should parse as root config");
+
+    assert_eq!(root.runtime.mode, RuntimeMode::Live);
+    let live_canary = root
+        .live_canary
+        .as_ref()
+        .expect("operator root example must declare [live_canary]");
+    assert!(
+        !live_canary.approval_id.trim().is_empty(),
+        "root example must declare live_canary.approval_id"
+    );
+    assert!(
+        !live_canary
+            .no_submit_readiness_report_path
+            .trim()
+            .is_empty(),
+        "root example must declare live_canary.no_submit_readiness_report_path"
+    );
+    assert!(
+        live_canary.max_no_submit_readiness_report_bytes > 0,
+        "root example must cap no-submit readiness report bytes"
+    );
+    assert!(
+        live_canary.max_live_order_count > 0,
+        "root example must cap live order count"
+    );
+    assert!(
+        !live_canary.max_notional_per_order.trim().is_empty(),
+        "root example must cap live canary notional"
+    );
+    assert!(
+        root.persistence
+            .runtime_capture_start_poll_interval_milliseconds
+            > 0,
+        "root example must declare persistence.runtime_capture_start_poll_interval_milliseconds"
+    );
+}
+
+#[test]
+fn root_example_passes_root_validation_contract() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root_text = std::fs::read_to_string(support::repo_path("config/root.example.toml"))
+        .expect("root example should be readable");
+    let root: BoltV3RootConfig =
+        toml::from_str(&root_text).expect("root example should parse as root config");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.is_empty(),
+        "root example must satisfy root validation without hidden defaults or doc drift: {messages:#?}"
+    );
+}
+
+#[test]
+fn parses_nt_environment_runtime_modes_in_bolt_v3_root() {
+    use bolt_v2::bolt_v3_config::{BoltV3RootConfig, RuntimeMode};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    for (raw_mode, expected) in [
+        ("backtest", RuntimeMode::Backtest),
+        ("sandbox", RuntimeMode::Sandbox),
+        ("live", RuntimeMode::Live),
+    ] {
+        let mutated = fixture.replace("mode = \"live\"", &format!("mode = \"{raw_mode}\""));
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("NT environment runtime mode should parse");
+        assert_eq!(root.runtime.mode, expected);
+    }
+}
+
+#[test]
+fn accepts_binary_oracle_entry_order_shape_from_toml_contract() {
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let mutated_strategy = strategy_toml.replace(
+        "[parameters.entry_order]\nside = \"buy\"\nposition_side = \"long\"\norder_type = \"limit\"\ntime_in_force = \"fok\"",
+        "[parameters.entry_order]\nside = \"buy\"\nposition_side = \"long\"\norder_type = \"market\"\ntime_in_force = \"ioc\"",
+    );
+
+    let messages = binary_oracle_strategy_validation_messages(&mutated_strategy);
+
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("parameters.entry_order combination")),
+        "entry order shape is TOML-owned and must not be rejected by hardcoded combo policy: {messages:#?}"
+    );
+}
+
+#[test]
+fn accepts_binary_oracle_exit_order_shape_from_toml_contract() {
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let mutated_strategy = strategy_toml.replace(
+        "[parameters.exit_order]\nside = \"sell\"\nposition_side = \"long\"\norder_type = \"market\"\ntime_in_force = \"ioc\"",
+        "[parameters.exit_order]\nside = \"sell\"\nposition_side = \"long\"\norder_type = \"limit\"\ntime_in_force = \"gtc\"",
+    );
+
+    let messages = binary_oracle_strategy_validation_messages(&mutated_strategy);
+
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("parameters.exit_order combination")),
+        "exit order shape is TOML-owned and must not be rejected by hardcoded combo policy: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binary_oracle_market_exit_time_in_force_before_strategy_build() {
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let mutated_strategy = strategy_toml.replace(
+        "market_exit_time_in_force = \"gtc\"",
+        "market_exit_time_in_force = \"day\"",
+    );
+
+    let messages = binary_oracle_strategy_validation_messages(&mutated_strategy);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("market_exit_time_in_force") && message.contains("day")
+        }),
+        "unsupported market_exit_time_in_force must fail during strategy validation, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binary_oracle_zero_market_exit_runtime_fields_before_strategy_build() {
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+
+    for (field, replacement) in [
+        ("market_exit_interval_ms", "market_exit_interval_ms = 0"),
+        ("market_exit_max_attempts", "market_exit_max_attempts = 0"),
+    ] {
+        let mutated_strategy = strategy_toml.replace(&format!("{field} = 100"), replacement);
+        let messages = binary_oracle_strategy_validation_messages(&mutated_strategy);
+
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains(field) && message.contains("positive integer")),
+            "{field}=0 must fail during strategy validation, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_binary_oracle_non_positive_notional_fields_before_strategy_build() {
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+
+    for (field, notional) in [
+        ("order_notional_target", "0"),
+        ("order_notional_target", "-1.00"),
+        ("maximum_position_notional", "0"),
+        ("maximum_position_notional", "-1.00"),
+    ] {
+        let current_value = match field {
+            "order_notional_target" => "5.00",
+            "maximum_position_notional" => "10.00",
+            _ => unreachable!("test only mutates binary-oracle notional fields"),
+        };
+        let mutated_strategy = strategy_toml.replace(
+            &format!("{field} = \"{current_value}\""),
+            &format!("{field} = \"{notional}\""),
+        );
+        let messages = binary_oracle_strategy_validation_messages(&mutated_strategy);
+
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains(field) && message.contains("positive decimal")),
+            "{field}={notional} must fail during strategy validation, got: {messages:#?}"
+        );
+    }
+}
+
+fn binary_oracle_strategy_validation_messages(strategy_toml: &str) -> Vec<String> {
+    use bolt_v2::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy};
+    use bolt_v2::bolt_v3_validate::validate_strategies;
+
+    let root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("root fixture should parse");
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(strategy_toml).expect("mutated strategy fixture should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    validate_strategies(&root, &loaded)
 }
 
 #[test]
@@ -843,6 +391,13 @@ mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+instance_id = "disabled"
+cache = "disabled"
+msgbus = "disabled"
+portfolio = "disabled"
+emulator = "disabled"
+streaming = "disabled"
+loop_debug = false
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
 timeout_portfolio_seconds = 10
@@ -921,9 +476,22 @@ nt_qsize = 100000
 [logging]
 standard_output_level = "INFO"
 file_level = "INFO"
+component_levels = {}
+module_levels = {}
+credential_module_level = "WARN"
+log_components_only = false
+is_colored = true
+print_config = false
+use_tracing = false
+bypass_logging = false
+file_config = "disabled"
+clear_log_file = false
+stale_log_source_directory = "/var/lib/bolt"
+stale_log_archive_directory = "/var/log/bolt/nautilus-archive"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+runtime_capture_start_poll_interval_milliseconds = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
@@ -952,6 +520,8 @@ max_retries = 3
 retry_delay_initial_milliseconds = 250
 retry_delay_max_milliseconds = 2000
 ack_timeout_seconds = 5
+fee_cache_ttl_seconds = 300
+transport_backend = "tungstenite"
 "#;
 
     let root: BoltV3RootConfig =
@@ -980,6 +550,13 @@ mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+instance_id = "disabled"
+cache = "disabled"
+msgbus = "disabled"
+portfolio = "disabled"
+emulator = "disabled"
+streaming = "disabled"
+loop_debug = false
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
 timeout_portfolio_seconds = 10
@@ -1058,9 +635,22 @@ nt_qsize = 100000
 [logging]
 standard_output_level = "INFO"
 file_level = "INFO"
+component_levels = {}
+module_levels = {}
+credential_module_level = "WARN"
+log_components_only = false
+is_colored = true
+print_config = false
+use_tracing = false
+bypass_logging = false
+file_config = "disabled"
+clear_log_file = false
+stale_log_source_directory = "/var/lib/bolt"
+stale_log_archive_directory = "/var/log/bolt/nautilus-archive"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+runtime_capture_start_poll_interval_milliseconds = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
@@ -1083,6 +673,7 @@ environment = "mainnet"
 base_url_http = "https://binance.test.invalid/http"
 base_url_ws = "wss://binance.test.invalid/ws"
 instrument_status_poll_seconds = 3600
+transport_backend = "tungstenite"
 "#;
 
     let root: BoltV3RootConfig =
@@ -1111,6 +702,13 @@ mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+instance_id = "disabled"
+cache = "disabled"
+msgbus = "disabled"
+portfolio = "disabled"
+emulator = "disabled"
+streaming = "disabled"
+loop_debug = false
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
 timeout_portfolio_seconds = 10
@@ -1189,9 +787,22 @@ nt_qsize = 100000
 [logging]
 standard_output_level = "INFO"
 file_level = "INFO"
+component_levels = {}
+module_levels = {}
+credential_module_level = "WARN"
+log_components_only = false
+is_colored = true
+print_config = false
+use_tracing = false
+bypass_logging = false
+file_config = "disabled"
+clear_log_file = false
+stale_log_source_directory = "/var/lib/bolt"
+stale_log_archive_directory = "/var/log/bolt/nautilus-archive"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+runtime_capture_start_poll_interval_milliseconds = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
@@ -1216,8 +827,11 @@ base_url_data_api = "https://data-api.polymarket.com"
 http_timeout_seconds = 0
 ws_timeout_seconds = 0
 subscribe_new_markets = false
+auto_load_missing_instruments = false
 update_instruments_interval_minutes = 0
 websocket_max_subscriptions_per_connection = 0
+auto_load_debounce_milliseconds = 0
+transport_backend = "tungstenite"
 
 [venues.polymarket_main.execution]
 account_id = "POLYMARKET-001"
@@ -1231,6 +845,8 @@ max_retries = 0
 retry_delay_initial_milliseconds = 0
 retry_delay_max_milliseconds = 0
 ack_timeout_seconds = 0
+fee_cache_ttl_seconds = 0
+transport_backend = "tungstenite"
 
 [venues.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
@@ -1247,11 +863,13 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
         "venues.polymarket_main.data.ws_timeout_seconds must be a positive integer",
         "venues.polymarket_main.data.update_instruments_interval_minutes must be a positive integer",
         "venues.polymarket_main.data.websocket_max_subscriptions_per_connection must be a positive integer",
+        "venues.polymarket_main.data.auto_load_debounce_milliseconds must be a positive integer",
         "venues.polymarket_main.execution.http_timeout_seconds must be a positive integer",
         "venues.polymarket_main.execution.max_retries must be a positive integer",
         "venues.polymarket_main.execution.retry_delay_initial_milliseconds must be a positive integer",
         "venues.polymarket_main.execution.retry_delay_max_milliseconds must be a positive integer",
         "venues.polymarket_main.execution.ack_timeout_seconds must be a positive integer",
+        "venues.polymarket_main.execution.fee_cache_ttl_seconds must be a positive integer",
     ];
     for needle in expected {
         assert!(
@@ -1259,6 +877,88 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
             "expected `{needle}` in validation messages, got: {messages:#?}"
         );
     }
+}
+
+#[test]
+fn rejects_polymarket_execution_max_retries_above_nt_u32_at_startup_validation() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "max_retries = 3",
+        &format!("max_retries = {}", u64::from(u32::MAX) + 1),
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("max_retries range fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains(
+            "venues.polymarket_main.execution.max_retries must fit in u32 expected by NT"
+        )),
+        "expected max_retries NT u32 range validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_empty_polymarket_data_and_execution_urls() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let data_urls = r#"base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+base_url_gamma = "https://gamma-api.polymarket.com"
+base_url_data_api = "https://data-api.polymarket.com""#;
+    let empty_data_urls = r#"base_url_http = " "
+base_url_ws = " "
+base_url_gamma = " "
+base_url_data_api = " ""#;
+    let execution_urls = r#"base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+base_url_data_api = "https://data-api.polymarket.com""#;
+    let empty_execution_urls = r#"base_url_http = " "
+base_url_ws = " "
+base_url_data_api = " ""#;
+    let mutated = replace_in_fixture_root(data_urls, empty_data_urls)
+        .replace(execution_urls, empty_execution_urls);
+    let root: BoltV3RootConfig = toml::from_str(&mutated).expect("mutated root should still parse");
+    let messages = validate_root_only(&root);
+    let expected = [
+        "venues.polymarket_main.data.base_url_http must be a non-empty URL",
+        "venues.polymarket_main.data.base_url_ws must be a non-empty URL",
+        "venues.polymarket_main.data.base_url_gamma must be a non-empty URL",
+        "venues.polymarket_main.data.base_url_data_api must be a non-empty URL",
+        "venues.polymarket_main.execution.base_url_http must be a non-empty URL",
+        "venues.polymarket_main.execution.base_url_ws must be a non-empty URL",
+        "venues.polymarket_main.execution.base_url_data_api must be a non-empty URL",
+    ];
+    for needle in expected {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_polymarket_execution_retry_delay_initial_above_max() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "retry_delay_initial_milliseconds = 250",
+        "retry_delay_initial_milliseconds = 3000",
+    )
+    .replace(
+        "retry_delay_max_milliseconds = 2000",
+        "retry_delay_max_milliseconds = 1000",
+    );
+    let root: BoltV3RootConfig = toml::from_str(&mutated).expect("mutated root should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| {
+            m.contains(
+                "venues.polymarket_main.execution.retry_delay_initial_milliseconds (3000) must be <= retry_delay_max_milliseconds (1000)",
+            )
+        }),
+        "expected retry-delay ordering validation error, got: {messages:#?}"
+    );
 }
 
 #[test]
@@ -1320,6 +1020,56 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
 }
 
 #[test]
+fn rejects_zero_runtime_capture_start_poll_interval() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "runtime_capture_start_poll_interval_milliseconds = 50",
+        "runtime_capture_start_poll_interval_milliseconds = 0",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero capture poll interval fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| message.contains(
+            "persistence.runtime_capture_start_poll_interval_milliseconds must be a positive integer"
+        )),
+        "expected runtime-capture start poll interval validation error, got: {messages:#?}"
+    );
+}
+
+fn binance_execution_block(account_id: &str) -> String {
+    format!(
+        r#"
+
+[venues.binance_reference.execution]
+account_id = "{account_id}"
+product_types = ["spot"]
+environment = "mainnet"
+base_url_http = "https://api.binance.com"
+base_url_ws = "wss://stream.binance.com:9443/ws"
+base_url_ws_trading = "wss://ws-api.binance.com/ws-api/v3"
+use_ws_trading = true
+use_position_ids = true
+default_taker_fee = "0.0004"
+futures_leverages = {{}}
+futures_margin_types = {{}}
+treat_expired_as_canceled = false
+use_trade_lite = false
+transport_backend = "sockudo"
+"#
+    )
+}
+
+fn fixture_without_binance_data_block() -> String {
+    replace_in_fixture_root(
+        "[venues.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n",
+        "",
+    )
+}
+
+#[test]
 fn rejects_zero_explicit_nt_exec_runtime_values() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
@@ -1356,6 +1106,43 @@ fn rejects_zero_explicit_nt_exec_runtime_values() {
 }
 
 #[test]
+fn accepts_explicit_zero_nt_exec_disable_fields() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    const ZERO_DISABLE_FIELDS: &[(&str, &str)] = &[
+        ("snapshot_positions_interval_seconds", "0"),
+        ("reconciliation_lookback_mins", "0"),
+        ("open_check_interval_seconds", "0"),
+        ("open_check_lookback_mins", "60"),
+        ("position_check_interval_seconds", "0"),
+        ("purge_closed_orders_interval_mins", "0"),
+        ("purge_closed_orders_buffer_mins", "0"),
+        ("purge_closed_positions_interval_mins", "0"),
+        ("purge_closed_positions_buffer_mins", "0"),
+        ("purge_account_events_interval_mins", "0"),
+        ("purge_account_events_lookback_mins", "0"),
+        ("own_books_audit_interval_seconds", "0"),
+    ];
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture root should load");
+    for (field, current_value) in ZERO_DISABLE_FIELDS {
+        let mutated = fixture.replace(
+            &format!("{field} = {current_value}"),
+            &format!("{field} = 0"),
+        );
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("explicit-zero NT exec fixture should parse");
+        let messages = validate_root_only(&root);
+        let needle = format!("nautilus.exec_engine.{field}");
+        assert!(
+            !messages.iter().any(|message| message.contains(&needle)),
+            "explicit zero must be a TOML-owned disable value for `{field}`, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_invalid_nt_data_engine_values() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
@@ -1363,21 +1150,18 @@ fn rejects_invalid_nt_data_engine_values() {
         "time_bars_interval_type = \"LEFT_OPEN\"",
         "time_bars_interval_type = \"SIDEWAYS\"",
     )
-    .replace("time_bars_origins = {}", "time_bars_origins = { INVALID = 1 }")
+    .replace(
+        "time_bars_origins = {}",
+        "time_bars_origins = { INVALID = 1 }",
+    )
     .replace(
         "emit_quotes_from_book_depths = false\nexternal_client_ids = []\ndebug = false",
         "emit_quotes_from_book_depths = false\nexternal_client_ids = [\"\"]\ndebug = false",
-    )
-    .replace(
-        "debug = false\ngraceful_shutdown_on_error = false\nqsize = 100000\n\n[nautilus.exec_engine]",
-        "debug = false\ngraceful_shutdown_on_error = true\nqsize = 1000\n\n[nautilus.exec_engine]",
     );
     assert!(
         mutated.contains("time_bars_interval_type = \"SIDEWAYS\"")
             && mutated.contains("time_bars_origins = { INVALID = 1 }")
-            && mutated.contains("external_client_ids = [\"\"]")
-            && mutated.contains("graceful_shutdown_on_error = true")
-            && mutated.contains("qsize = 1000"),
+            && mutated.contains("external_client_ids = [\"\"]"),
         "test fixture mutation must exercise every invalid data-engine branch"
     );
     let root: BoltV3RootConfig =
@@ -1387,8 +1171,6 @@ fn rejects_invalid_nt_data_engine_values() {
         "nautilus.data_engine.time_bars_interval_type is not valid",
         "nautilus.data_engine.time_bars_origins key `INVALID` is not a valid Nautilus bar aggregation",
         "nautilus.data_engine.external_client_ids contains invalid client ID",
-        "nautilus.data_engine.graceful_shutdown_on_error must be false",
-        "nautilus.data_engine.qsize must match NT default",
     ] {
         assert!(
             messages.iter().any(|m| m.contains(needle)),
@@ -1398,7 +1180,7 @@ fn rejects_invalid_nt_data_engine_values() {
 }
 
 #[test]
-fn rejects_nt_exec_values_unsupported_by_rust_live_runtime() {
+fn accepts_configured_nt_exec_runtime_values() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root("snapshot_orders = false", "snapshot_orders = true")
@@ -1410,18 +1192,18 @@ fn rejects_nt_exec_values_unsupported_by_rust_live_runtime() {
         )
         .replace("qsize = 100000", "qsize = 1000");
     let root: BoltV3RootConfig =
-        toml::from_str(&mutated).expect("unsupported NT exec values fixture should parse");
+        toml::from_str(&mutated).expect("configured NT exec values fixture should parse");
     let messages = validate_root_only(&root);
     for needle in [
-        "nautilus.exec_engine.snapshot_orders must be false",
-        "nautilus.exec_engine.snapshot_positions must be false",
-        "nautilus.exec_engine.purge_from_database must be false",
-        "nautilus.exec_engine.graceful_shutdown_on_error must be false",
-        "nautilus.exec_engine.qsize must match NT default",
+        "nautilus.exec_engine.snapshot_orders",
+        "nautilus.exec_engine.snapshot_positions",
+        "nautilus.exec_engine.purge_from_database",
+        "nautilus.exec_engine.graceful_shutdown_on_error",
+        "nautilus.exec_engine.qsize",
     ] {
         assert!(
-            messages.iter().any(|m| m.contains(needle)),
-            "expected `{needle}` in validation messages, got: {messages:#?}"
+            !messages.iter().any(|m| m.contains(needle)),
+            "`{needle}` is TOML-owned NT config and must not be rejected by bolt-v3 policy: {messages:#?}"
         );
     }
 }
@@ -1456,7 +1238,7 @@ fn rejects_invalid_nt_exec_filter_identifiers() {
 }
 
 #[test]
-fn rejects_nt_risk_bypass_true() {
+fn accepts_nt_risk_bypass_true_as_configured_nt_field() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root("nt_bypass = false", "nt_bypass = true");
@@ -1464,15 +1246,13 @@ fn rejects_nt_risk_bypass_true() {
         toml::from_str(&mutated).expect("nt_bypass=true fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("risk.nt_bypass must be false")),
-        "expected nt_bypass=false validation error, got: {messages:#?}"
+        !messages.iter().any(|m| m.contains("risk.nt_bypass")),
+        "risk.nt_bypass is an NT config field and must not be rejected by bolt-v3 policy: {messages:#?}"
     );
 }
 
 #[test]
-fn rejects_nt_risk_values_unsupported_by_rust_live_runtime() {
+fn accepts_configured_nt_risk_runtime_values() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
@@ -1481,15 +1261,12 @@ fn rejects_nt_risk_values_unsupported_by_rust_live_runtime() {
     )
     .replace("nt_qsize = 100000", "nt_qsize = 1000");
     let root: BoltV3RootConfig =
-        toml::from_str(&mutated).expect("unsupported NT risk values fixture should parse");
+        toml::from_str(&mutated).expect("configured NT risk values fixture should parse");
     let messages = validate_root_only(&root);
-    for needle in [
-        "risk.nt_graceful_shutdown_on_error must be false",
-        "risk.nt_qsize must match NT default",
-    ] {
+    for needle in ["risk.nt_graceful_shutdown_on_error", "risk.nt_qsize"] {
         assert!(
-            messages.iter().any(|m| m.contains(needle)),
-            "expected `{needle}` in validation messages, got: {messages:#?}"
+            !messages.iter().any(|m| m.contains(needle)),
+            "`{needle}` is TOML-owned NT config and must not be rejected by bolt-v3 policy: {messages:#?}"
         );
     }
 }
@@ -1589,11 +1366,31 @@ fn rejects_non_positive_nt_risk_max_notional_map_values() {
 }
 
 #[test]
+fn rejects_non_positive_default_max_notional_per_order() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for notional in ["0", "-1.00"] {
+        let mutated = replace_in_fixture_root(
+            "default_max_notional_per_order = \"10.00\"",
+            &format!("default_max_notional_per_order = \"{notional}\""),
+        );
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("non-positive default notional fixture should parse");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages.iter().any(|m| m
+                .contains("risk.default_max_notional_per_order must be a positive decimal string")),
+            "expected positive default notional validation error for `{notional}`, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_orphan_secrets_block_without_data_or_execution() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "[venues.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\n\n",
+        "[venues.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n",
         "",
     );
     let root: BoltV3RootConfig =
@@ -1602,7 +1399,7 @@ fn rejects_orphan_secrets_block_without_data_or_execution() {
     assert!(
         messages.iter().any(|m| m.contains("binance_reference")
             && m.contains("[secrets]")
-            && m.contains("no [data] block is configured")),
+            && m.contains("no [data] or [execution] block is configured")),
         "expected orphan-secrets validation error, got: {messages:#?}"
     );
 }
@@ -1723,10 +1520,163 @@ fn rejects_binance_data_zero_instrument_status_poll_seconds() {
 }
 
 #[test]
+fn rejects_binance_data_empty_product_types() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("product_types = [\"spot\"]", "product_types = []");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("empty Binance data product_types fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("binance_reference") && m.contains("data.product_types")),
+        "expected Binance data product_types validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binance_execution_block_in_current_reference_data_scope() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mut fixture =
+        std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture root.toml should be readable");
+    fixture.push_str(&binance_execution_block("BINANCE-001"));
+    let root: BoltV3RootConfig =
+        toml::from_str(&fixture).expect("binance execution fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("execution")
+            && m.contains("reference-data scope")),
+        "Binance execution must fail closed in the current reference-data scope, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binance_execution_only_block_in_current_reference_data_scope() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mut fixture = fixture_without_binance_data_block();
+    fixture.push_str(&binance_execution_block("BINANCE-001"));
+    let root: BoltV3RootConfig =
+        toml::from_str(&fixture).expect("binance execution-only fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("execution")
+            && m.contains("reference-data scope")),
+        "Binance execution-only venue must fail closed in the current reference-data scope, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binance_execution_venue_missing_secrets_block() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let secrets_block = "[venues.binance_reference.secrets]\napi_key_ssm_path = \"/bolt/binance_reference/api_key\"\napi_secret_ssm_path = \"/bolt/binance_reference/api_secret\"\n";
+    let mut fixture = fixture_without_binance_data_block();
+    assert!(
+        fixture.contains(secrets_block),
+        "fixture must contain Binance secrets block for this validation test to mutate"
+    );
+    fixture = fixture.replace(secrets_block, "");
+    fixture.push_str(&binance_execution_block("BINANCE-001"));
+    let root: BoltV3RootConfig =
+        toml::from_str(&fixture).expect("binance execution-only fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("[execution]")
+            && m.contains("required [secrets] block")
+            && m.contains("Binance execution venue")),
+        "expected missing-secrets failure for Binance execution venue, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binance_execution_empty_product_types() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mut fixture =
+        std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture root.toml should be readable");
+    fixture.push_str(
+        &binance_execution_block("BINANCE-001")
+            .replace("product_types = [\"spot\"]", "product_types = []"),
+    );
+    let root: BoltV3RootConfig = toml::from_str(&fixture)
+        .expect("empty Binance execution product_types fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("execution")
+            && m.contains("reference-data scope")),
+        "expected unsupported Binance execution block rejection, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binance_execution_blank_account_id() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mut fixture =
+        std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture root.toml should be readable");
+    fixture.push_str(&binance_execution_block("   "));
+    let root: BoltV3RootConfig =
+        toml::from_str(&fixture).expect("blank account-id fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("execution")
+            && m.contains("reference-data scope")),
+        "expected unsupported Binance execution block rejection, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_empty_binance_execution_urls() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for (field, original) in [
+        (
+            "base_url_http",
+            "base_url_http = \"https://api.binance.com\"",
+        ),
+        (
+            "base_url_ws",
+            "base_url_ws = \"wss://stream.binance.com:9443/ws\"",
+        ),
+        (
+            "base_url_ws_trading",
+            "base_url_ws_trading = \"wss://ws-api.binance.com/ws-api/v3\"",
+        ),
+    ] {
+        let mut fixture =
+            std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+                .expect("fixture root.toml should be readable");
+        let execution_block =
+            binance_execution_block("BINANCE-001").replace(original, &format!("{field} = \"   \""));
+        fixture.push_str(&execution_block);
+        let root: BoltV3RootConfig =
+            toml::from_str(&fixture).expect("empty Binance execution URL fixture should parse");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages.iter().any(|m| m.contains("binance_reference")
+                && m.contains("execution")
+                && m.contains("reference-data scope")),
+            "expected unsupported Binance execution block rejection for {field}, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_polymarket_data_only_venue_with_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let execution_block = "[venues.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_seconds = 60\nmax_retries = 3\nretry_delay_initial_milliseconds = 250\nretry_delay_max_milliseconds = 2000\nack_timeout_seconds = 5\n\n";
+    let execution_block = "[venues.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_seconds = 60\nmax_retries = 3\nretry_delay_initial_milliseconds = 250\nretry_delay_max_milliseconds = 2000\nack_timeout_seconds = 5\nfee_cache_ttl_seconds = 300\ntransport_backend = \"sockudo\"\n\n";
     let mutated = replace_in_fixture_root(execution_block, "");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("polymarket data-only secrets fixture should parse");
@@ -1740,7 +1690,7 @@ fn rejects_polymarket_data_only_venue_with_secrets_block() {
 }
 
 #[test]
-fn rejects_polymarket_data_subscribe_new_markets_true_in_current_slice() {
+fn rejects_polymarket_data_subscribe_new_markets_true() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
@@ -1753,16 +1703,158 @@ fn rejects_polymarket_data_subscribe_new_markets_true_in_current_slice() {
     assert!(
         messages.iter().any(|m| m.contains("polymarket_main")
             && m.contains("subscribe_new_markets")
-            && m.contains("must be false")),
-        "expected subscribe_new_markets=true validation error, got: {messages:#?}"
+            && m.contains("controlled-loading")),
+        "subscribe_new_markets=true must fail closed in current controlled-loading scope, got: {messages:#?}"
     );
 }
 
 #[test]
-fn rejects_more_than_one_polymarket_venue_in_current_slice() {
+fn rejects_polymarket_data_auto_load_missing_instruments_true() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let extra_venue = "\n\n[venues.polymarket_secondary]\nkind = \"polymarket\"\n\n[venues.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_seconds = 60\nws_timeout_seconds = 30\nsubscribe_new_markets = false\nupdate_instruments_interval_minutes = 60\nwebsocket_max_subscriptions_per_connection = 200\n\n[venues.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
+    let mutated = replace_in_fixture_root(
+        "auto_load_missing_instruments = false",
+        "auto_load_missing_instruments = true",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("auto_load_missing_instruments=true fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("auto_load_missing_instruments")
+            && m.contains("controlled-loading")),
+        "auto_load_missing_instruments=true must fail closed in current controlled-loading scope, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn accepts_polymarket_data_new_market_filter_keyword() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "transport_backend = \"sockudo\"\n\n[venues.polymarket_main.execution]",
+        "transport_backend = \"sockudo\"\nnew_market_filter = { kind = \"keyword\", keyword = \"bitcoin\" }\n\n[venues.polymarket_main.execution]",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("new-market-filter fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        !messages
+            .iter()
+            .any(|m| m.contains("polymarket_main") && m.contains("new_market_filter")),
+        "configured new_market_filter must validate, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_polymarket_data_empty_new_market_filter_keyword() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "transport_backend = \"sockudo\"\n\n[venues.polymarket_main.execution]",
+        "transport_backend = \"sockudo\"\nnew_market_filter = { kind = \"keyword\", keyword = \" \" }\n\n[venues.polymarket_main.execution]",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("empty new-market-filter fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("new_market_filter")
+            && m.contains("must be non-empty")),
+        "expected empty new_market_filter keyword validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_polymarket_data_new_market_filter_unknown_fields() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "transport_backend = \"sockudo\"\n\n[venues.polymarket_main.execution]",
+        "transport_backend = \"sockudo\"\nnew_market_filter = { kind = \"keyword\", keyword = \"bitcoin\", typo = true }\n\n[venues.polymarket_main.execution]",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("unknown new-market-filter fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("new_market_filter") && m.contains("typo")),
+        "validation error should name the unknown new_market_filter field, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_nautilus_loop_debug_true_for_rust_live_runtime() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("loop_debug = false", "loop_debug = true");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("nautilus loop-debug fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("nautilus.loop_debug") && m.contains("must be false")),
+        "expected loop_debug validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_logging_credential_module_level_below_warn() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "credential_module_level = \"WARN\"",
+        "credential_module_level = \"INFO\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("logging credential module level fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(
+            |m| m.contains("logging.credential_module_level") && m.contains("WARN or stricter")
+        ),
+        "expected credential module log-level validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_logging_clear_log_file_true_for_rust_live_runtime() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("clear_log_file = false", "clear_log_file = true");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("logging clear-log-file fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("logging.clear_log_file") && m.contains("must be false")),
+        "expected clear_log_file validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn accepts_configured_venue_keys_without_global_provider_kind_cap() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig =
+        toml::from_str(&fixture).expect("configured venue-key fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.is_empty(),
+        "configured venue ids must validate without a global provider-kind count cap; got: {messages:#?}"
+    );
+}
+
+#[test]
+fn accepts_more_than_one_polymarket_venue_when_keys_are_distinct() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let extra_venue = "\n\n[venues.polymarket_secondary]\nkind = \"polymarket\"\n\n[venues.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_seconds = 60\nws_timeout_seconds = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nupdate_instruments_interval_minutes = 60\nwebsocket_max_subscriptions_per_connection = 200\nauto_load_debounce_milliseconds = 250\ntransport_backend = \"tungstenite\"\n";
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = format!("{fixture}{extra_venue}");
@@ -1770,10 +1862,7 @@ fn rejects_more_than_one_polymarket_venue_in_current_slice() {
         toml::from_str(&mutated).expect("two-polymarket-venues fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("at most one [venues.<id>] block per kind")
-                && m.contains("polymarket")),
-        "expected one-venue-per-kind validation error, got: {messages:#?}"
+        messages.is_empty(),
+        "configured venue ids must own routing; duplicate provider kind alone must not be rejected: {messages:#?}"
     );
 }

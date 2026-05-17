@@ -6,22 +6,24 @@ use anyhow::Result;
 use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_decision_evidence::{
-        BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, decision_evidence_path,
+        BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+        BoltV3OrderIntentKind, decision_evidence_path,
     },
-    clients::polymarket::FeeProvider,
+    strategies::registry::FeeProvider,
     strategies::registry::StrategyBuildContext,
 };
 use futures_util::future::{BoxFuture, FutureExt};
+use nautilus_model::identifiers::InstrumentId;
 use rust_decimal::Decimal;
 
 struct NoopFeeProvider;
 
 impl FeeProvider for NoopFeeProvider {
-    fn fee_bps(&self, _token_id: &str) -> Option<Decimal> {
+    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
         None
     }
 
-    fn warm(&self, _token_id: &str) -> BoxFuture<'_, Result<()>> {
+    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
         async { Ok(()) }.boxed()
     }
 }
@@ -31,6 +33,10 @@ struct NoopDecisionEvidenceWriter;
 
 impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
         Ok(())
     }
 }
@@ -74,8 +80,8 @@ fn decision_evidence_path_rejects_absolute_or_parent_traversal() {
 }
 
 #[test]
-fn eth_chainlink_taker_records_evidence_then_admission_before_only_direct_submit_call() {
-    let source = include_str!("../src/strategies/eth_chainlink_taker.rs");
+fn binary_oracle_edge_taker_records_evidence_then_admission_before_only_direct_submit_call() {
+    let source = include_str!("../src/strategies/binary_oracle_edge_taker.rs");
     let evidence_index = source
         .find(".record_order_intent(&intent)")
         .expect("strategy must record decision evidence");
@@ -103,10 +109,26 @@ fn eth_chainlink_taker_records_evidence_then_admission_before_only_direct_submit
 fn strategy_build_context_requires_decision_evidence_value() {
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
-        "platform.reference.test".to_string(),
         Arc::new(NoopDecisionEvidenceWriter),
-        Arc::new(bolt_v2::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed()),
+        Arc::new(
+            bolt_v2::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                NoopDecisionEvidenceWriter,
+            )),
+        ),
     );
 
-    assert_eq!(context.reference_publish_topic(), "platform.reference.test");
+    assert!(
+        context
+            .decision_evidence()
+            .record_order_intent(&BoltV3OrderIntentEvidence {
+                strategy_id: "strategy-a".to_string(),
+                intent_kind: BoltV3OrderIntentKind::Entry,
+                instrument_id: "instrument-a".to_string(),
+                client_order_id: "order-a".to_string(),
+                order_side: "buy".to_string(),
+                price: "0.50".to_string(),
+                quantity: "1".to_string(),
+            })
+            .is_ok()
+    );
 }

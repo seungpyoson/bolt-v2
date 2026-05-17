@@ -7,22 +7,6 @@
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
-kind = "number"
-literal = "100"
-context = "auto_load_debounce_ms: 100,"
-classification = "accepted_current_residual"
-reason = "The Polymarket provider binding owns the pinned NT data config debounce residual. This is a current provider-adapter residual, not a new core runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_adapters.rs"
-kind = "number"
-literal = "0_i64"
-context = "let zero_clock: BoltV3UpdownNowFn = Arc::new(|| 0_i64);"
-classification = "no_identity_clock_sentinel"
-reason = "The no-identity adapter entry point supplies an empty market-identity plan, so this deterministic clock closure is never invoked and is documented as a sentinel for that no-filter path."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"nautilus_polymarket::common::credential\""
 context = "pub const CREDENTIAL_LOG_MODULES: &[&str] = &[\"nautilus_polymarket::common::credential\"];"
@@ -40,8 +24,16 @@ reason = "The Binance provider binding owns the NT credential-log module path th
 [[allowed]]
 path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
-literal = "\"Binance reference-data venue\""
-context = "consumer: \"Binance reference-data venue\","
+literal = "\"Binance data venue\""
+context = "consumer: \"Binance data venue\","
+classification = "provider_secret_requirement_label"
+reason = "This label explains the provider-owned credential-consuming block covered by the central required-[secrets] validation."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"Binance execution venue\""
+context = "consumer: \"Binance execution venue\","
 classification = "provider_secret_requirement_label"
 reason = "This label explains the provider-owned credential-consuming block covered by the central required-[secrets] validation."
 
@@ -52,6 +44,14 @@ literal = "\"Polymarket execution venue\""
 context = "consumer: \"Polymarket execution venue\","
 classification = "provider_secret_requirement_label"
 reason = "This label explains the provider-owned credential-consuming block covered by the central required-[secrets] validation."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "number"
+literal = "4"
+context = "const URL_SAFE_BASE64_BLOCK_WIDTH: usize = 4;"
+classification = "credential_encoding_width"
+reason = "This is the URL-safe base64 quantum width used only to normalize Polymarket API-secret padding before NT credential construction; it is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_providers/mod.rs"
@@ -68,38 +68,6 @@ literal = "\"execution\""
 context = "Self::Execution => \"execution\","
 classification = "provider_secret_requirement_block_label"
 reason = "This label renders the provider credentialed-block enum variant in validation diagnostics."
-
-[[allowed]]
-path = "src/bolt_v3_live_node.rs"
-kind = "number"
-literal = "0"
-context = "(value != 0).then_some(value)"
-classification = "toml_zero_as_none_encoding"
-reason = "Schema documents zero as the TOML encoding for NT None on selected optional u32 fields."
-
-[[allowed]]
-path = "src/bolt_v3_live_node.rs"
-kind = "number"
-literal = "0"
-context = "(value != 0).then_some(value as f64)"
-classification = "toml_zero_as_none_encoding"
-reason = "Schema documents zero as the TOML encoding for NT None on selected optional second-based fields."
-
-[[allowed]]
-path = "src/bolt_v3_live_node.rs"
-kind = "string"
-literal = '''"NT runtime capture failure detected, awaiting LiveNode shutdown"'''
-context = '''log::error!("NT runtime capture failure detected, awaiting LiveNode shutdown");'''
-classification = "runtime_capture_diagnostic_template"
-reason = "This diagnostic reports that the capture sidecar failed before the NT runner returned; it is not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_live_node.rs"
-kind = "string"
-literal = '''"bolt-v3 registered strategy: strategy_instance_id={} strategy_archetype={} nt_strategy_id={}"'''
-context = '''"bolt-v3 registered strategy: strategy_instance_id={} strategy_archetype={} nt_strategy_id={}",'''
-classification = "strategy_registration_diagnostic_template"
-reason = "This diagnostic reports the config strategy instance, archetype binding, and resulting NT StrategyId after registration; all values come from validated TOML or NT registration."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -215,14 +183,6 @@ reason = "The strategy schema version is a structural compatibility gate, not an
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
-kind = "string"
-literal = "\", \""
-context = "keys.join(\", \")"
-classification = "diagnostic_separator"
-reason = "This separator is used only to format duplicate venue-kind validation diagnostics, not as an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
 kind = "number"
 literal = "60"
 context = "if minutes >= 60 {"
@@ -240,18 +200,42 @@ reason = "The Bolt-v3 rate-limit parser enforces conventional HH:MM:SS second bo
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = "\"binary_oracle_edge_taker\""
-context = "pub const KEY: &str = \"binary_oracle_edge_taker\";"
-classification = "archetype_dispatch_key"
-reason = "This is the accepted strategy_archetype registry key for the currently implemented Bolt-v3 archetype binding, not an operator-tunable runtime value."
+literal = "\"limit\""
+context = "Self::Limit => \"limit\","
+classification = "strategy_order_shape_schema_value"
+reason = "This serializes the TOML-owned order_type enum value into the existing NT strategy config schema; it is not a default or code-owned policy."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = "\"primary\""
-context = "if strategy.reference_data.contains_key(\"primary\") {"
-classification = "archetype_reference_data_role"
-reason = "The binary_oracle_edge_taker archetype contract requires the [reference_data.primary] role; this literal names that archetype-owned role."
+literal = "\"market\""
+context = "Self::Market => \"market\","
+classification = "strategy_order_shape_schema_value"
+reason = "This serializes the TOML-owned order_type enum value into the existing NT strategy config schema; it is not a default or code-owned policy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = "\"gtc\""
+context = "Self::Gtc => \"gtc\","
+classification = "strategy_time_in_force_schema_value"
+reason = "This serializes the TOML-owned time_in_force enum value into the existing NT strategy config schema; it is not a default or code-owned policy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = "\"fok\""
+context = "Self::Fok => \"fok\","
+classification = "strategy_time_in_force_schema_value"
+reason = "This serializes the TOML-owned time_in_force enum value into the existing NT strategy config schema; it is not a default or code-owned policy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = "\"ioc\""
+context = "Self::Ioc => \"ioc\","
+classification = "strategy_time_in_force_schema_value"
+reason = "This serializes the TOML-owned time_in_force enum value into the existing NT strategy config schema; it is not a default or code-owned policy."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -263,107 +247,11 @@ reason = "This is the accepted market_family registry key for the currently impl
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
-kind = "number"
-literal = "60"
-context = "} else if cadence_seconds % 60 != 0 {"
-classification = "runtime_contract_cadence_alignment"
-reason = "The updown cadence validator requires minute-aligned periods before consulting the supported runtime-contract slug table."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "number"
-literal = "60"
-context = "(60, \"1m\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
-literal = "\"1m\""
-context = "(60, \"1m\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "number"
-literal = "300"
-context = "(300, \"5m\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = "\"5m\""
-context = "(300, \"5m\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "number"
-literal = "900"
-context = "(900, \"15m\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = "\"15m\""
-context = "(900, \"15m\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "number"
-literal = "3600"
-context = "(3600, \"1h\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = "\"1h\""
-context = "(3600, \"1h\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "number"
-literal = "14400"
-context = "(14400, \"4h\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = "\"4h\""
-context = "(14400, \"4h\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "number"
-literal = "32"
-context = "} else if underlying.chars().count() > 32 {"
-classification = "market_identity_shape_bound"
-reason = "This is the accepted updown underlying_asset identifier length bound documented by the market-family validation contract."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = "\"{prefix}target.cadence_seconds={cadence_seconds} has no runtime-contract-defined updown slug-token mapping\""
-context = "\"{prefix}target.cadence_seconds={cadence_seconds} has no runtime-contract-defined updown slug-token mapping\","
-classification = "diagnostic_template"
-reason = "This is an error-display template for an unsupported updown cadence after validation, not an operator runtime value."
+literal = "\"target.cadence_slug_token\""
+context = "\"target.cadence_slug_token\","
+classification = "target_schema_field"
+reason = "This is the TOML-owned updown target field name for the configured cadence slug token, not a code-owned runtime token."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -376,10 +264,42 @@ reason = "This is an error-display template for period arithmetic overflow, not 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
-literal = "\"{asset_lower}-updown-{cadence_slug_token}-{period_start_unix_seconds}\""
-context = "\"{asset_lower}-updown-{cadence_slug_token}-{period_start_unix_seconds}\","
+literal = "\"{asset_lower}-{family_key}-{cadence_slug_token}-{period_start_unix_seconds}\""
+context = "\"{asset_lower}-{family_key}-{cadence_slug_token}-{period_start_unix_seconds}\","
 classification = "runtime_contract_slug_template"
-reason = "This is the accepted runtime-contract slug template for the updown market family, derived from validated TOML target identity plus the audited cadence slug-token table."
+reason = "This is the accepted runtime-contract slug template for the configured market family key, derived from validated TOML target identity and TOML-owned cadence_slug_token."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"market_slug\""
+context = "if info.get_str(\"market_slug\")? != expected_market_slug {"
+classification = "nt_binary_option_metadata_key"
+reason = "The updown market-family module owns the NautilusTrader BinaryOption metadata key used to match the TOML-derived market slug; strategy code must not read this key directly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"Up\""
+context = "\"Up\" => UpdownOutcomeSide::Up,"
+classification = "nt_binary_option_outcome_value"
+reason = "The updown market-family module owns the NautilusTrader BinaryOption outcome label for the up instrument; strategy code consumes typed selected-market facts."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"Down\""
+context = "\"Down\" => UpdownOutcomeSide::Down,"
+classification = "nt_binary_option_outcome_value"
+reason = "The updown market-family module owns the NautilusTrader BinaryOption outcome label for the down instrument; strategy code consumes typed selected-market facts."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"market_id\""
+context = "market_id: info.get_str(\"market_id\")?.to_string(),"
+classification = "nt_binary_option_metadata_key"
+reason = "The updown market-family module owns the NautilusTrader BinaryOption metadata key used to join both outcome instruments into one selected market."
 
 [[allowed]]
 path = "src/bolt_v3_providers/binance.rs"
@@ -430,6 +350,62 @@ classification = "validation_field_label"
 reason = "This label names the Binance data config URL field being validated for non-empty input."
 
 [[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"data.product_types\""
+context = "reject_empty_product_types(venue_key, \"data.product_types\", &cfg.product_types)?;"
+classification = "validation_field_label"
+reason = "This label names the Binance data config product type field being validated for non-empty input before mapping to NT."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"venues.{venue_key}.execution {}\""
+context = "\"venues.{venue_key}.execution {}\","
+classification = "validation_error_prefix"
+reason = "This diagnostic prefix anchors the unsupported Binance execution-block error to the configured venue key; the execution runtime remains rejected until a separate contract is approved."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"data\""
+context = "\"data\","
+classification = "validation_block_label"
+reason = "This label names the Polymarket data config block in URL validation diagnostics."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"base_url_http\""
+context = "(\"base_url_http\", data.base_url_http.as_str()),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket data config URL field being validated for non-empty input."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"base_url_ws\""
+context = "(\"base_url_ws\", data.base_url_ws.as_str()),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket data config URL field being validated for non-empty input."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"base_url_gamma\""
+context = "(\"base_url_gamma\", data.base_url_gamma.as_str()),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket data config URL field being validated for non-empty input."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"base_url_data_api\""
+context = "(\"base_url_data_api\", data.base_url_data_api.as_str()),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket data config URL field being validated for non-empty input."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"http_timeout_seconds\""
@@ -460,6 +436,46 @@ literal = "\"websocket_max_subscriptions_per_connection\""
 context = "\"websocket_max_subscriptions_per_connection\","
 classification = "validation_field_label"
 reason = "This label names the Polymarket data config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"auto_load_debounce_milliseconds\""
+context = "\"auto_load_debounce_milliseconds\","
+classification = "validation_field_label"
+reason = "This label names the TOML-owned Polymarket data config debounce field being validated in a positive-integer check before mapping to NT."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"execution\""
+context = "\"execution\","
+classification = "validation_block_label"
+reason = "This label names the Polymarket execution config block in URL validation diagnostics."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"base_url_http\""
+context = "(\"base_url_http\", execution.base_url_http.as_str()),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket execution config URL field being validated for non-empty input."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"base_url_ws\""
+context = "(\"base_url_ws\", execution.base_url_ws.as_str()),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket execution config URL field being validated for non-empty input."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"base_url_data_api\""
+context = "(\"base_url_data_api\", execution.base_url_data_api.as_str()),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket execution config URL field being validated for non-empty input."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
@@ -500,6 +516,14 @@ literal = "\"ack_timeout_seconds\""
 context = "(\"ack_timeout_seconds\", execution.ack_timeout_seconds),"
 classification = "validation_field_label"
 reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"fee_cache_ttl_seconds\""
+context = "(\"fee_cache_ttl_seconds\", execution.fee_cache_ttl_seconds),"
+classification = "validation_field_label"
+reason = "This label names the TOML-owned Polymarket execution config field that controls fee-cache TTL validation before the fee provider is built."
 
 [[allowed]]
 path = "src/bolt_v3_secrets.rs"
@@ -607,14 +631,6 @@ classification = "validation_field_label"
 reason = "This label identifies the live-canary config field being parsed as a positive decimal."
 
 [[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
-kind = "string"
-literal = '''"."'''
-context = '''.unwrap_or_else(|| Path::new("."))'''
-classification = "config_path_resolution_default"
-reason = "This is the relative-path base fallback that matches the config loader when a TOML path has no parent directory."
-
-[[allowed]]
 path = "src/bolt_v3_no_submit_readiness_schema.rs"
 kind = "string"
 literal = '''"bolt-v3.no-submit-readiness.v1"'''
@@ -637,14 +653,6 @@ literal = '''"stage"'''
 context = '''pub const STAGE_KEY: &str = "stage";'''
 classification = "no_submit_readiness_report_schema_field"
 reason = "This names the preferred no-submit readiness report stage identifier field shared by the producer and fail-closed live-canary gate."
-
-[[allowed]]
-path = "src/bolt_v3_no_submit_readiness_schema.rs"
-kind = "string"
-literal = '''"name"'''
-context = '''pub const NAME_KEY: &str = "name";'''
-classification = "no_submit_readiness_report_schema_field"
-reason = "This names the backward-compatible no-submit readiness report stage identifier field consumed by the fail-closed live-canary gate."
 
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness_schema.rs"
@@ -727,6 +735,30 @@ classification = "no_submit_readiness_report_redaction_marker"
 reason = "This is the fixed redaction marker for readiness report diagnostics after resolved secret values are removed."
 
 [[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"bolt-v2"'''
+context = '''#[command(name = "bolt-v2")]'''
+classification = "cli_binary_name"
+reason = "This is the stable command name exposed by the Rust binary, not an operator runtime value."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''", "'''
+context = '''binding.secret_field_names.join(", ")'''
+classification = "diagnostic_separator"
+reason = "This separator joins provider secret field names for a diagnostic-only secrets command response."
+
+[[allowed]]
+path = "src/secrets.rs"
+kind = "string"
+literal = '''"AWS SSM GetParameter returned no value for {ssm_path_owned}"'''
+context = '''"AWS SSM GetParameter returned no value for {ssm_path_owned}"'''
+classification = "ssm_resolver_diagnostic_template"
+reason = "This fail-closed diagnostic reports an empty AWS SSM response, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_no_submit_readiness.rs"
 kind = "string"
 literal = '''"bolt-v3 no-submit readiness operator approval id is empty"'''
@@ -760,27 +792,11 @@ reason = "This separator joins multiple missing reference-instrument diagnostics
 
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness.rs"
-kind = "string"
-literal = '''"."'''
-context = '''.unwrap_or_else(|| Path::new("."))'''
-classification = "config_path_resolution_default"
-reason = "This is the relative-path base fallback that matches the config loader when a TOML path has no parent directory."
-
-[[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
-kind = "string"
-literal = '''"<unnamed>"'''
-context = '''.unwrap_or("<unnamed>");'''
-classification = "live_canary_gate_diagnostic_template"
-reason = "This placeholder labels malformed readiness stages in fail-closed diagnostics when no stage identifier exists."
-
-[[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
-kind = "string"
-literal = '''"stage `{name}` status is `{}`"'''
-context = '''"stage `{name}` status is `{}`",'''
-classification = "live_canary_gate_diagnostic_template"
-reason = "This template renders which readiness stage failed the satisfied-status requirement."
+kind = "number"
+literal = '''0'''
+context = '''let mut cursor = 0;'''
+classification = "redaction_cursor_start"
+reason = "This initializes a byte cursor for deterministic readiness-detail redaction, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
@@ -807,67 +823,43 @@ classification = "live_canary_gate_diagnostic_template"
 reason = "This diagnostic distinguishes an empty no-submit readiness report from a malformed or unsatisfied report."
 
 [[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
-kind = "string"
-literal = '''"operator-approved-canary-001"'''
-context = '''approval_id: "operator-approved-canary-001".to_string(),'''
-classification = "test_only_live_canary_gate_report_fixture"
-reason = "This literal exists only inside the cfg(test) BoltV3LiveCanaryGateReport fixture constructor used by unit tests; production approval IDs come from TOML."
-
-[[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
+path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "number"
-literal = "4096"
-context = "max_no_submit_readiness_report_bytes: 4096,"
-classification = "test_only_live_canary_gate_report_fixture"
-reason = "This byte cap exists only inside the cfg(test) BoltV3LiveCanaryGateReport fixture constructor used by unit tests; production byte caps come from TOML."
+literal = "1"
+context = "const TINY_CANARY_EVIDENCE_SCHEMA_VERSION: u32 = 1;"
+classification = "tiny_canary_evidence_schema_version"
+reason = "This is the structural JSON evidence schema version for tiny canary proof files, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "number"
 literal = "1"
-context = "const PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION: u32 = 1;"
-classification = "phase8_canary_evidence_schema_version"
-reason = "This is the structural JSON evidence schema version for Phase 8 canary proof files, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "number"
-literal = "1"
-context = "const PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION: u32 = 1;"
-classification = "phase8_approval_consumption_schema_version"
-reason = "This is the structural JSON evidence schema version for Phase 8 approval consumption proof files, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "number"
-literal = "1"
-context = "const PHASE8_REQUIRED_LIVE_ORDER_CAP: u32 = 1;"
-classification = "phase8_required_single_live_order_cap"
-reason = "This enforces the Phase 8 tiny-canary invariant that the local/operator proof may admit exactly one live order; the configured cap still comes from TOML and must match this invariant."
+context = "const TINY_CANARY_APPROVAL_CONSUMPTION_SCHEMA_VERSION: u32 = 1;"
+classification = "tiny_canary_approval_consumption_schema_version"
+reason = "This is the structural JSON evidence schema version for tiny canary approval consumption proof files, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "number"
 literal = "8"
-context = "const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;"
-classification = "phase8_sha256_stream_buffer_size"
+context = "const TINY_CANARY_SHA256_BUFFER_BYTES: usize = 8 * 1024;"
+classification = "tiny_canary_sha256_stream_buffer_size"
 reason = "This is an internal fixed memory buffer size for streaming checksum calculation, not a runtime operator value."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "number"
 literal = "1024"
-context = "const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;"
-classification = "phase8_sha256_stream_buffer_size"
+context = "const TINY_CANARY_SHA256_BUFFER_BYTES: usize = 8 * 1024;"
+classification = "tiny_canary_sha256_stream_buffer_size"
 reason = "This is an internal fixed memory buffer size for streaming checksum calculation, not a runtime operator value."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "number"
 literal = "0"
-context = "let mut buffer = [0; PHASE8_SHA256_BUFFER_BYTES];"
-classification = "phase8_sha256_stream_buffer_initialization"
+context = "let mut buffer = [0; TINY_CANARY_SHA256_BUFFER_BYTES];"
+classification = "tiny_canary_sha256_stream_buffer_initialization"
 reason = "This zero-initializes the fixed checksum scratch buffer before each bounded-memory read and is not a runtime operator value."
 
 [[allowed]]
@@ -875,191 +867,175 @@ path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"accepted"'''
 context = '''const SUBMIT_ADMISSION_STATUS_ACCEPTED: &str = "accepted";'''
-classification = "phase8_canary_submit_admission_status"
-reason = "This is the fixed submit-admission evidence status emitted after all pre-submit Phase 8 gates pass."
+classification = "tiny_canary_submit_admission_status"
+reason = "This is the fixed submit-admission evidence status emitted after all pre-submit tiny canary gates pass."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"rejected"'''
 context = '''const SUBMIT_ADMISSION_STATUS_REJECTED: &str = "rejected";'''
-classification = "phase8_canary_submit_admission_status"
-reason = "This is the fixed submit-admission evidence status emitted when Phase 8 blocks before or at submit admission."
+classification = "tiny_canary_submit_admission_status"
+reason = "This is the fixed submit-admission evidence status emitted when tiny canary blocks before or at submit admission."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"nt_adapter_submit_proven"'''
 context = '''const NT_ADAPTER_SUBMIT_PROVEN_REASON: &str = "nt_adapter_submit_proven";'''
-classification = "phase8_canary_evidence_reason"
-reason = "This labels the Phase 8 evidence outcome proving the NT adapter submit path was reached; it is not a runtime setting."
+classification = "tiny_canary_evidence_reason"
+reason = "This labels the tiny canary evidence outcome proving the NT adapter submit path was reached; it is not a runtime setting."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"blocked_before_live_order"'''
 context = '''const BLOCKED_BEFORE_LIVE_ORDER_REASON: &str = "blocked_before_live_order";'''
-classification = "phase8_canary_evidence_reason"
-reason = "This labels the fail-closed Phase 8 evidence outcome when submit admission passes but no live order proof exists."
+classification = "tiny_canary_evidence_reason"
+reason = "This labels the fail-closed tiny canary evidence outcome when submit admission passes but no live order proof exists."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"blocked_before_submit"'''
 context = '''const BLOCKED_BEFORE_SUBMIT_REASON: &str = "blocked_before_submit";'''
-classification = "phase8_canary_evidence_reason"
-reason = "This labels the fail-closed Phase 8 evidence outcome when pre-submit gates block before order admission."
+classification = "tiny_canary_evidence_reason"
+reason = "This labels the fail-closed tiny canary evidence outcome when pre-submit gates block before order admission."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "number"
 literal = "0"
 context = "admitted_order_count: 0,"
-classification = "phase8_canary_evidence_order_count"
-reason = "This evidence count records that no order was admitted in dry no-submit or blocked-before-submit Phase 8 outcomes."
+classification = "tiny_canary_evidence_order_count"
+reason = "This evidence count records that no order was admitted in dry no-submit or blocked-before-submit tiny canary outcomes."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"phase8-blocked-before-live-runner"'''
-context = '''pub const PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID: &str = "phase8-blocked-before-live-runner";'''
-classification = "phase8_blocked_run_id_label"
-reason = "This is a structural evidence label used only when Phase 8 blocks before a runtime capture instance exists; successful live-capital proof uses the NT runtime instance id."
+literal = '''"tiny-canary-blocked-before-live-runner"'''
+context = '''"tiny-canary-blocked-before-live-runner";'''
+classification = "tiny_canary_blocked_run_id_label"
+reason = "This is a structural evidence label used only when tiny canary blocks before a runtime capture instance exists; successful live-capital proof uses the NT runtime instance id."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"phase8_operator_approval_consumption"'''
-context = '''const PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND: &str = "phase8_operator_approval_consumption";'''
-classification = "phase8_approval_consumption_record_kind"
-reason = "This labels the Phase 8 approval-consumption evidence record used to prevent replay before a live runner attempt."
+literal = '''"[live_canary.operator_evidence].approval_envelope_path"'''
+context = '''"[live_canary.operator_evidence].approval_envelope_path",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_HEAD_SHA"'''
-context = '''head_sha: required_env("BOLT_V3_PHASE8_HEAD_SHA")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field that binds a Phase 8 live run to the reviewed git head."
+literal = '''"[operator_approval_envelope].head_sha"'''
+context = '''"[operator_approval_envelope].head_sha",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the independent operator approval envelope field used in a validation diagnostic; the runtime value itself is read from the approval envelope file."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_ROOT_TOML_PATH"'''
-context = '''root_toml_path: required_env("BOLT_V3_PHASE8_ROOT_TOML_PATH")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field that points to the reviewed root TOML for checksum validation."
+literal = '''"[operator_approval_envelope].root_toml_sha256"'''
+context = '''"[operator_approval_envelope].root_toml_sha256",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the independent operator approval envelope field used in a validation diagnostic; the runtime value itself is read from the approval envelope file."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_ROOT_TOML_SHA256"'''
-context = '''root_toml_sha256: required_env("BOLT_V3_PHASE8_ROOT_TOML_SHA256")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field containing the reviewed root TOML checksum."
+literal = '''"[live_canary.operator_evidence].ssm_manifest_path"'''
+context = '''"[live_canary.operator_evidence].ssm_manifest_path",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_SSM_MANIFEST_PATH"'''
-context = '''ssm_manifest_path: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_PATH")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field pointing to the redacted SSM manifest for checksum validation."
+literal = '''"[live_canary.operator_evidence].ssm_manifest_sha256"'''
+context = '''"[live_canary.operator_evidence].ssm_manifest_sha256",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_SSM_MANIFEST_SHA256"'''
-context = '''ssm_manifest_sha256: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_SHA256")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field containing the SSM manifest checksum, without exposing secrets."
+literal = '''"[live_canary.operator_evidence].strategy_input_evidence_path"'''
+context = '''"[live_canary.operator_evidence].strategy_input_evidence_path",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH"'''
-context = '''"BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH",'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field pointing to strategy input evidence for checksum validation."
+literal = '''"[live_canary.operator_evidence].strategy_input_evidence_sha256"'''
+context = '''"[live_canary.operator_evidence].strategy_input_evidence_sha256",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256"'''
-context = '''"BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256",'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field containing the strategy input evidence checksum."
+literal = '''"[live_canary].approval_id"'''
+context = '''"[live_canary].approval_id",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID"'''
-context = '''operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator approval id field used only for exact approval matching and hashed evidence joins."
+literal = '''"[live_canary.operator_evidence].canary_evidence_path"'''
+context = '''"[live_canary.operator_evidence].canary_evidence_path",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS"'''
-context = '''"BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS",'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field containing the approval not-before bound in Unix seconds."
+literal = '''"[live_canary.operator_evidence].approval_nonce_path"'''
+context = '''"[live_canary.operator_evidence].approval_nonce_path",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS"'''
-context = '''"BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS",'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field containing the approval not-after bound in Unix seconds."
+literal = '''"[live_canary.operator_evidence].approval_nonce_sha256"'''
+context = '''"[live_canary.operator_evidence].approval_nonce_sha256",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_APPROVAL_NONCE_PATH"'''
-context = '''approval_nonce_path: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_PATH")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field pointing to the nonce evidence for checksum validation."
+literal = '''"[live_canary.operator_evidence].approval_consumption_path"'''
+context = '''"[live_canary.operator_evidence].approval_consumption_path",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256"'''
-context = '''approval_nonce_sha256: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field containing the nonce evidence checksum."
+literal = '''"tiny_canary_operator_approval_consumption"'''
+context = '''"tiny_canary_operator_approval_consumption";'''
+classification = "tiny_canary_approval_consumption_record_kind"
+reason = "This labels the tiny canary approval-consumption evidence record used to prevent replay before a live runner attempt."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH"'''
-context = '''approval_consumption_path: required_env("BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field where the one-shot approval consumption proof is atomically created."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
-literal = '''"BOLT_V3_PHASE8_EVIDENCE_PATH"'''
-context = '''canary_evidence_path: required_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field where the Phase 8 canary evidence JSON is written."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
-literal = '''"phase8 operator approval not_after is before not_before"'''
-context = '''"phase8 operator approval not_after is before not_before"'''
-classification = "phase8_canary_operator_envelope_diagnostic"
+literal = '''"tiny canary operator approval not_after is before not_before"'''
+context = '''"tiny canary operator approval not_after is before not_before"'''
+classification = "tiny_canary_operator_envelope_diagnostic"
 reason = "This fail-closed diagnostic reports an invalid operator approval time window before any live runner attempt."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"phase8 operator approval is expired"'''
-context = '''return Err(anyhow!("phase8 operator approval is expired"));'''
-classification = "phase8_canary_operator_envelope_diagnostic"
+literal = '''"tiny canary operator approval is expired"'''
+context = '''return Err(anyhow!("tiny canary operator approval is expired"));'''
+classification = "tiny_canary_operator_envelope_diagnostic"
 reason = "This fail-closed diagnostic reports an expired operator approval before any live runner attempt."
 
 [[allowed]]
@@ -1073,18 +1049,42 @@ reason = "This diagnostic reports a config-to-existing-strategy numeric conversi
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"parameters.maximum_position_notional"'''
-context = '''"parameters.maximum_position_notional",'''
+literal = '''", "'''
+context = '''.join(", ")'''
+classification = "strategy_archetype_diagnostic_separator"
+reason = "This joins configured reference_data role names in a validation diagnostic; it is not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''1'''
+context = '''1 => Vec::new(),'''
+classification = "strategy_archetype_reference_data_cardinality"
+reason = "The binary_oracle_edge_taker runtime can map one configured reference-data role without a role selector; this is a schema cardinality invariant, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"parameters.order_notional_target"'''
+context = '''"parameters.order_notional_target",'''
 classification = "strategy_archetype_source_field_name"
 reason = "This names the bolt-v3 TOML source field converted into the existing taker config shape."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"target.cadence_seconds"'''
-context = '''"target.cadence_seconds",'''
+literal = '''"parameters.maximum_position_notional"'''
+context = '''"parameters.maximum_position_notional",'''
 classification = "strategy_archetype_source_field_name"
 reason = "This names the bolt-v3 TOML source field converted into the existing taker config shape."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"target.cadence_seconds"'''
+context = '''cadence_seconds_source_field: "target.cadence_seconds",'''
+classification = "market_family_source_field_name"
+reason = "This names the updown TOML source field projected into the taker cadence config shape by the market-family binding."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -1097,10 +1097,338 @@ reason = "This is an existing taker strategy config schema field name, populated
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"order_id_tag"'''
+context = '''"order_id_tag",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name, populated from bolt-v3 TOML order_id_tag."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"oms_type"'''
+context = '''insert_string(&mut table, "oms_type", oms_type_value(strategy).to_string());'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name, populated from bolt-v3 TOML oms_type."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"use_uuid_client_order_ids"'''
+context = '''"use_uuid_client_order_ids",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"use_hyphens_in_client_order_ids"'''
+context = '''"use_hyphens_in_client_order_ids",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"external_order_claims"'''
+context = '''"external_order_claims",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"manage_contingent_orders"'''
+context = '''"manage_contingent_orders",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"manage_gtd_expiry"'''
+context = '''"manage_gtd_expiry",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"manage_stop"'''
+context = '''insert_bool(&mut table, "manage_stop", strategy.config.manage_stop);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"market_exit_interval_ms"'''
+context = '''"market_exit_interval_ms",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"market_exit_interval_ms"'''
+context = '''("market_exit_interval_ms", strategy.market_exit_interval_ms),'''
+classification = "strategy_runtime_validation_field"
+reason = "This field-name literal labels the configured market-exit runtime value in validation diagnostics; the value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"market_exit_max_attempts"'''
+context = '''"market_exit_max_attempts",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"market_exit_max_attempts"'''
+context = '''"market_exit_max_attempts",'''
+classification = "strategy_runtime_validation_field"
+reason = "This field-name literal labels the configured market-exit runtime value in validation diagnostics; the value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"market_exit_time_in_force"'''
+context = '''"market_exit_time_in_force",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"market_exit_reduce_only"'''
+context = '''"market_exit_reduce_only",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"log_events"'''
+context = '''insert_bool(&mut table, "log_events", strategy.config.log_events);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"log_commands"'''
+context = '''insert_bool(&mut table, "log_commands", strategy.config.log_commands);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"log_rejected_due_post_only_as_warning"'''
+context = '''"log_rejected_due_post_only_as_warning",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"client_id"'''
 context = '''insert_string(&mut table, "client_id", strategy.config.venue.clone());'''
 classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name, populated from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"configured_target_id"'''
+context = '''"configured_target_id",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML target."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"target_kind"'''
+context = '''insert_string(&mut table, "target_kind", target.target_kind);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML target kind."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"rotating_market_family"'''
+context = '''"rotating_market_family",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML rotating market family."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"underlying_asset"'''
+context = '''insert_string(&mut table, "underlying_asset", target.underlying_asset);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML target underlying asset."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"cadence_slug_token"'''
+context = '''insert_string(&mut table, "cadence_slug_token", target.cadence_slug_token);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML target cadence slug token."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"market_selection_rule"'''
+context = '''"market_selection_rule",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML market selection rule."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"retry_interval_seconds"'''
+context = '''"retry_interval_seconds",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML target retry interval."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"blocked_after_seconds"'''
+context = '''"blocked_after_seconds",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML target blocked threshold."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_venue"'''
+context = '''insert_string(&mut table, "reference_venue", reference_data.venue.clone());'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name, populated from the configured bolt-v3 TOML reference_data role venue."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_instrument_id"'''
+context = '''"reference_instrument_id",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name, populated from the configured bolt-v3 TOML reference_data role instrument_id."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"entry_order"'''
+context = '''insert_order_config(&mut table, "entry_order", &parameters.entry_order);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the nested existing taker strategy config table name, populated from bolt-v3 TOML [parameters.entry_order]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_order"'''
+context = '''insert_order_config(&mut table, "exit_order", &parameters.exit_order);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the nested existing taker strategy config table name, populated from bolt-v3 TOML [parameters.exit_order]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"netting"'''
+context = '''crate::bolt_v3_config::OmsType::Netting => "netting",'''
+classification = "strategy_runtime_schema_enum_value"
+reason = "This serializes the TOML-owned NT OMS type enum value; the runtime OMS type value comes from strategy oms_type."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"buy"'''
+context = '''Self::Buy => "buy",'''
+classification = "strategy_runtime_schema_enum_value"
+reason = "This serializes the TOML-owned NT order side enum value; the runtime side value comes from [parameters.entry_order] or [parameters.exit_order]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"sell"'''
+context = '''Self::Sell => "sell",'''
+classification = "strategy_runtime_schema_enum_value"
+reason = "This serializes the TOML-owned NT order side enum value; the runtime side value comes from [parameters.entry_order] or [parameters.exit_order]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"side"'''
+context = '''insert_string(&mut order_table, "side", order.side.as_str());'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a nested taker strategy config schema field name; the value is populated from bolt-v3 TOML order parameters."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"long"'''
+context = '''Self::Long => "long",'''
+classification = "strategy_runtime_schema_enum_value"
+reason = "This serializes the TOML-owned NT position side enum value; the runtime position side value comes from [parameters.entry_order] or [parameters.exit_order]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"short"'''
+context = '''Self::Short => "short",'''
+classification = "strategy_runtime_schema_enum_value"
+reason = "This serializes the TOML-owned NT position side enum value; the runtime position side value comes from [parameters.entry_order] or [parameters.exit_order]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"position_side"'''
+context = '''"position_side",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a nested taker strategy config schema field name; the value is populated from bolt-v3 TOML order parameters."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"order_type"'''
+context = '''insert_string(&mut order_table, "order_type", order.order_type.as_str());'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a nested existing taker strategy config schema field name, populated from bolt-v3 TOML order parameters."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"time_in_force"'''
+context = '''"time_in_force",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a nested existing taker strategy config schema field name, populated from bolt-v3 TOML order parameters."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"is_post_only"'''
+context = '''insert_bool(&mut order_table, "is_post_only", order.is_post_only);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a nested existing taker strategy config schema field name, populated from bolt-v3 TOML order parameters."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"is_reduce_only"'''
+context = '''insert_bool(&mut order_table, "is_reduce_only", order.is_reduce_only);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a nested existing taker strategy config schema field name, populated from bolt-v3 TOML order parameters."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"is_quote_quantity"'''
+context = '''"is_quote_quantity",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a nested existing taker strategy config schema field name, populated from bolt-v3 TOML order parameters."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -1113,8 +1441,8 @@ reason = "This is an existing taker strategy config schema field name; the value
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"period_duration_secs"'''
-context = '''"period_duration_secs",'''
+literal = '''"cadence_seconds"'''
+context = '''"cadence_seconds",'''
 classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
@@ -1129,8 +1457,16 @@ reason = "This is an existing taker strategy config schema field name; the value
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"max_position_usdc"'''
-context = '''insert_float(&mut table, "max_position_usdc", max_position_usdc);'''
+literal = '''"order_notional_target"'''
+context = '''insert_float(&mut table, "order_notional_target", order_notional_target);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"maximum_position_notional"'''
+context = '''"maximum_position_notional",'''
 classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
@@ -1153,8 +1489,8 @@ reason = "This is an existing taker strategy config schema field name; the value
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"worst_case_ev_min_bps"'''
-context = '''"worst_case_ev_min_bps",'''
+literal = '''"edge_threshold_basis_points"'''
+context = '''"edge_threshold_basis_points",'''
 classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
@@ -1217,8 +1553,8 @@ reason = "This is an existing taker strategy config schema field name; the value
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"forced_flat_stale_chainlink_ms"'''
-context = '''"forced_flat_stale_chainlink_ms",'''
+literal = '''"forced_flat_stale_reference_ms"'''
+context = '''"forced_flat_stale_reference_ms",'''
 classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
@@ -1253,3 +1589,1299 @@ literal = '''b"\n"'''
 context = '''line.extend_from_slice(b"\n");'''
 classification = "decision_evidence_jsonl_record_separator"
 reason = "This is the JSONL line separator for one evidence record per line, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = '''2'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 2;'''
+classification = "decision_evidence_envelope_schema_version"
+reason = "This is the decision-evidence JSONL envelope schema version. v2 added the recorded_at_utc_ns, gate_id, gate_version, and kind fields per the P4 round-1 fix. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"CARGO_PKG_VERSION"'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");'''
+classification = "decision_evidence_gate_version_source"
+reason = "This is the env! macro argument naming the compile-time CARGO_PKG_VERSION captured at build time as the gate-version field on each evidence record. The macro requires a literal string argument; the runtime value comes from Cargo.toml, not from operator config."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.order_intent"'''
+context = '''pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";'''
+classification = "decision_evidence_gate_id"
+reason = "This is the stable gate identifier stamped on each order-intent evidence record so operators can correlate JSONL records back to the recording gate. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.submit_admission"'''
+context = '''pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";'''
+classification = "decision_evidence_gate_id"
+reason = "This is the stable gate identifier stamped on each submit-admission evidence record so operators can correlate JSONL records back to the recording gate. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_intent"'''
+context = '''kind: "order_intent",'''
+classification = "decision_evidence_envelope_kind"
+reason = "This is the JSONL envelope discriminator naming the order-intent payload shape. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"admission_decision"'''
+context = '''kind: "admission_decision",'''
+classification = "decision_evidence_envelope_kind"
+reason = "This is the JSONL envelope discriminator naming the admission-decision payload shape. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"logging.stale_log_source_directory"'''
+context = '''"logging.stale_log_source_directory",'''
+classification = "logging_runtime_schema_field"
+reason = "This is a TOML-owned logging path field label used for validation diagnostics."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"logging.stale_log_archive_directory"'''
+context = '''"logging.stale_log_archive_directory",'''
+classification = "logging_runtime_schema_field"
+reason = "This is a TOML-owned logging path field label used for validation diagnostics."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "string"
+literal = '''"%Y-%m-%d"'''
+context = '''const NT_LOG_DATE_FORMAT: &str = "%Y-%m-%d";'''
+classification = "nt_log_filename_format"
+reason = "This is the NautilusTrader log filename date token parsed for archive selection, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "number"
+literal = '''36'''
+context = '''const UUID_TEXT_LEN: usize = 36;'''
+classification = "uuid_text_shape"
+reason = "This is the UUID text length used to recognize NautilusTrader log filenames, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "number"
+literal = '''4'''
+context = '''const UUID_DASH_POSITIONS: [usize; 4] = [8, 13, 18, 23];'''
+classification = "uuid_text_shape"
+reason = "This is the UUID dash-position count used to recognize NautilusTrader log filenames, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "number"
+literal = '''8'''
+context = '''const UUID_DASH_POSITIONS: [usize; 4] = [8, 13, 18, 23];'''
+classification = "uuid_text_shape"
+reason = "This is a UUID dash offset used to recognize NautilusTrader log filenames, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "number"
+literal = '''13'''
+context = '''const UUID_DASH_POSITIONS: [usize; 4] = [8, 13, 18, 23];'''
+classification = "uuid_text_shape"
+reason = "This is a UUID dash offset used to recognize NautilusTrader log filenames, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "number"
+literal = '''18'''
+context = '''const UUID_DASH_POSITIONS: [usize; 4] = [8, 13, 18, 23];'''
+classification = "uuid_text_shape"
+reason = "This is a UUID dash offset used to recognize NautilusTrader log filenames, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "number"
+literal = '''23'''
+context = '''const UUID_DASH_POSITIONS: [usize; 4] = [8, 13, 18, 23];'''
+classification = "uuid_text_shape"
+reason = "This is a UUID dash offset used to recognize NautilusTrader log filenames, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "number"
+literal = '''0u32'''
+context = '''let mut moved = 0u32;'''
+classification = "log_sweep_counter_state"
+reason = "This initializes an in-memory moved-file counter for diagnostics, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "number"
+literal = '''1'''
+context = '''Ok(()) => moved += 1,'''
+classification = "log_sweep_counter_state"
+reason = "This increments an in-memory moved-file counter for diagnostics, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "number"
+literal = '''18'''
+context = '''Err(e) if e.raw_os_error() == Some(18) => {'''
+classification = "cross_filesystem_rename_errno"
+reason = "This is the POSIX EXDEV errno used to detect cross-filesystem rename fallback, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "number"
+literal = '''1'''
+context = '''moved += 1;'''
+classification = "log_sweep_counter_state"
+reason = "This increments an in-memory moved-file counter for diagnostics, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "string"
+literal = '''"log_sweep: moved {moved} file(s) to {}"'''
+context = '''"log_sweep: moved {moved} file(s) to {}",'''
+classification = "log_sweep_diagnostic_template"
+reason = "This is a startup diagnostic template for completed log archive movement, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "string"
+literal = '''".log"'''
+context = '''let stem = match name.strip_suffix(".log") {'''
+classification = "nt_log_filename_extension"
+reason = "This is a NautilusTrader log filename extension recognized for archive selection, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "string"
+literal = '''".json"'''
+context = '''None => match name.strip_suffix(".json") {'''
+classification = "nt_log_filename_extension"
+reason = "This is a NautilusTrader JSON log filename extension recognized for archive selection, not an operator runtime value."
+
+[[allowed]]
+path = "src/log_sweep.rs"
+kind = "number"
+literal = '''1'''
+context = '''let suffix = &stem[separator_index + 1..];'''
+classification = "log_filename_separator_offset"
+reason = "This steps past the matched underscore separator while parsing a NautilusTrader log filename, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"QuoteTick"'''
+context = '''const NT_TYPE_QUOTE_TICK: &str = "QuoteTick";'''
+classification = "nt_persistence_type_name"
+reason = "This is the NautilusTrader persistence metadata type name required to decode quote tick Arrow batches, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"TradeTick"'''
+context = '''const NT_TYPE_TRADE_TICK: &str = "TradeTick";'''
+classification = "nt_persistence_type_name"
+reason = "This is the NautilusTrader persistence metadata type name required to decode trade tick Arrow batches, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"OrderBookDelta"'''
+context = '''const NT_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";'''
+classification = "nt_persistence_type_name"
+reason = "This is the NautilusTrader persistence metadata type name required to decode order book delta Arrow batches, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"OrderBookDepth10"'''
+context = '''const NT_TYPE_ORDER_BOOK_DEPTH_10: &str = "OrderBookDepth10";'''
+classification = "nt_persistence_type_name"
+reason = "This is the NautilusTrader persistence metadata type name required to decode depth-10 Arrow batches, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"IndexPriceUpdate"'''
+context = '''const NT_TYPE_INDEX_PRICE_UPDATE: &str = "IndexPriceUpdate";'''
+classification = "nt_persistence_type_name"
+reason = "This is the NautilusTrader persistence metadata type name required to decode index price Arrow batches, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"MarkPriceUpdate"'''
+context = '''const NT_TYPE_MARK_PRICE_UPDATE: &str = "MarkPriceUpdate";'''
+classification = "nt_persistence_type_name"
+reason = "This is the NautilusTrader persistence metadata type name required to decode mark price Arrow batches, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"InstrumentClose"'''
+context = '''const NT_TYPE_INSTRUMENT_CLOSE: &str = "InstrumentClose";'''
+classification = "nt_persistence_type_name"
+reason = "This is the NautilusTrader persistence metadata type name required to decode instrument close Arrow batches, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"completeness_report.json"'''
+context = '''const COMPLETENESS_REPORT_FILE: &str = "completeness_report.json";'''
+classification = "lake_report_filename"
+reason = "This is the stable lake completeness report filename written beside converted parquet output, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"live"'''
+context = '''const LIVE_SPOOL_DIR: &str = "live";'''
+classification = "nt_lake_layout_key"
+reason = "This is the NautilusTrader live spool directory name in the catalog layout, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"feather"'''
+context = '''const FEATHER_EXTENSION: &str = "feather";'''
+classification = "nt_lake_layout_key"
+reason = "This is the file extension for captured Arrow IPC spool files consumed by the lake converter, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"type_name"'''
+context = '''const PARQUET_TYPE_NAME_METADATA_KEY: &str = "type_name";'''
+classification = "nt_persistence_metadata_key"
+reason = "This is the NautilusTrader Arrow metadata key used by the persistence decoder, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"catalog_path"'''
+context = '''const CATALOG_PATH_LABEL: &str = "catalog_path";'''
+classification = "lake_path_argument_label"
+reason = "This labels a converter path argument in diagnostics only, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"output_root"'''
+context = '''const OUTPUT_ROOT_LABEL: &str = "output_root";'''
+classification = "lake_path_argument_label"
+reason = "This labels a converter path argument in diagnostics only, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"://"'''
+context = '''const LOCAL_PATH_URI_MARKER: &str = "://";'''
+classification = "local_path_uri_rejection_marker"
+reason = "This rejects URI-like lake converter paths so conversion stays on local filesystem input/output, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"class is disabled but spool data is present"'''
+context = '''const CLASS_DISABLED_SPOOL_REASON: &str = "class is disabled but spool data is present";'''
+classification = "completeness_report_reason"
+reason = "This is a stable completeness report reason for disabled stream data appearing in spool output, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"no_spool_data"'''
+context = '''const NO_SPOOL_DATA_REASON: &str = "no_spool_data";'''
+classification = "completeness_report_reason"
+reason = "This is a stable completeness report reason for absent required stream data, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"instruments"'''
+context = '''"instruments",'''
+classification = "nt_spool_infrastructure_dir"
+reason = "This is a NautilusTrader catalog infrastructure directory allowed beside stream-class spool dirs, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"status"'''
+context = '''"status",'''
+classification = "nt_spool_infrastructure_dir"
+reason = "This is a NautilusTrader catalog infrastructure directory allowed beside stream-class spool dirs, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"output_root `{output_root_name}` is locked by another run or a stale lock file may remain: {}. If no conversion is active for this output_root, remove the lock file and retry."'''
+context = '''"output_root `{output_root_name}` is locked by another run or a stale lock file may remain: {}. If no conversion is active for this output_root, remove the lock file and retry.",'''
+classification = "lake_batch_diagnostic_template"
+reason = "This diagnostic reports converter lock contention and cleanup guidance, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"stale staging directory present for output_root `{output_root_name}`: {}"'''
+context = '''"stale staging directory present for output_root `{output_root_name}`: {}",'''
+classification = "lake_batch_diagnostic_template"
+reason = "This diagnostic reports a stale staging directory before conversion mutates output, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''".{output_root_name}.staging-{}-{suffix}"'''
+context = '''".{output_root_name}.staging-{}-{suffix}",'''
+classification = "lake_batch_filesystem_template"
+reason = "This formats private staging directory names for atomic lake conversion output, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''".{file_name}.tmp-{}-{}"'''
+context = '''".{file_name}.tmp-{}-{}",'''
+classification = "lake_batch_filesystem_template"
+reason = "This formats private temp filenames for atomic report writes, not an operator runtime value."
+
+[[allowed]]
+path = "src/lake_batch.rs"
+kind = "string"
+literal = '''"unable to find existing ancestor for {}"'''
+context = '''"unable to find existing ancestor for {}",'''
+classification = "lake_batch_diagnostic_template"
+reason = "This diagnostic reports a path-normalization failure for lake output, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "number"
+literal = '''1'''
+context = '''pub const CURRENT_SCHEMA_VERSION: u32 = 1;'''
+classification = "venue_contract_schema_version"
+reason = "This is the venue contract schema version accepted by the parser, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"quotes"'''
+context = '''pub const STREAM_CLASS_QUOTES: &str = "quotes";'''
+classification = "venue_contract_stream_class"
+reason = "This is a stable stream-class key in the venue contract schema and NautilusTrader lake layout, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"trades"'''
+context = '''pub const STREAM_CLASS_TRADES: &str = "trades";'''
+classification = "venue_contract_stream_class"
+reason = "This is a stable stream-class key in the venue contract schema and NautilusTrader lake layout, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"order_book_deltas"'''
+context = '''pub const STREAM_CLASS_ORDER_BOOK_DELTAS: &str = "order_book_deltas";'''
+classification = "venue_contract_stream_class"
+reason = "This is a stable stream-class key in the venue contract schema and NautilusTrader lake layout, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"order_book_depths"'''
+context = '''pub const STREAM_CLASS_ORDER_BOOK_DEPTHS: &str = "order_book_depths";'''
+classification = "venue_contract_stream_class"
+reason = "This is a stable stream-class key in the venue contract schema and NautilusTrader lake layout, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"index_prices"'''
+context = '''pub const STREAM_CLASS_INDEX_PRICES: &str = "index_prices";'''
+classification = "venue_contract_stream_class"
+reason = "This is a stable stream-class key in the venue contract schema and NautilusTrader lake layout, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"mark_prices"'''
+context = '''pub const STREAM_CLASS_MARK_PRICES: &str = "mark_prices";'''
+classification = "venue_contract_stream_class"
+reason = "This is a stable stream-class key in the venue contract schema and NautilusTrader lake layout, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"instrument_closes"'''
+context = '''pub const STREAM_CLASS_INSTRUMENT_CLOSES: &str = "instrument_closes";'''
+classification = "venue_contract_stream_class"
+reason = "This is a stable stream-class key in the venue contract schema and NautilusTrader lake layout, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"://"'''
+context = '''!path_str.contains("://"),'''
+classification = "local_path_uri_rejection_marker"
+reason = "This rejects URI-like contract paths so contract loading remains local filesystem only, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"pass"'''
+context = '''Self::Pass => "pass",'''
+classification = "completeness_report_schema_value"
+reason = "This is the stable serialized completeness report outcome/status value for a passing class or report, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"pass_unsupported"'''
+context = '''Self::PassUnsupported => "pass_unsupported",'''
+classification = "completeness_report_schema_value"
+reason = "This is the stable serialized completeness report status for an unsupported stream absent from spool data, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"pass_disabled"'''
+context = '''Self::PassDisabled => "pass_disabled",'''
+classification = "completeness_report_schema_value"
+reason = "This is the stable serialized completeness report status for a disabled stream absent from spool data, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"warn_optional_absent"'''
+context = '''Self::WarnOptionalAbsent => "warn_optional_absent",'''
+classification = "completeness_report_schema_value"
+reason = "This is the stable serialized completeness report status for an optional stream absent from spool data, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"spool_present_conversion_empty"'''
+context = '''Self::SpoolPresentConversionEmpty => "spool_present_conversion_empty",'''
+classification = "completeness_report_schema_value"
+reason = "This is the stable serialized completeness report status for spool data that produced no converted rows, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"fail_unknown"'''
+context = '''Self::FailUnknown => "fail_unknown",'''
+classification = "completeness_report_schema_value"
+reason = "This is the stable serialized completeness report status for unknown spool classes, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"fail_contract_violation"'''
+context = '''Self::FailContractViolation => "fail_contract_violation",'''
+classification = "completeness_report_schema_value"
+reason = "This is the stable serialized completeness report status for contract violations, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"fail_required_absent"'''
+context = '''Self::FailRequiredAbsent => "fail_required_absent",'''
+classification = "completeness_report_schema_value"
+reason = "This is the stable serialized completeness report status for required stream data absent from spool data, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"fail"'''
+context = '''Self::Fail => "fail",'''
+classification = "completeness_report_schema_value"
+reason = "This is the stable serialized completeness report outcome for a failed report, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"conditional"'''
+context = '''Self::Conditional => "conditional",'''
+classification = "completeness_report_schema_value"
+reason = "This is the stable serialized completeness report capability value for conditional stream support, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''const ZERO_F64: f64 = 0.0;'''
+classification = "strategy_math_invariant"
+reason = "This is a named math invariant used by strategy calculations, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''1.0'''
+context = '''const UNIT_F64: f64 = 1.0;'''
+classification = "strategy_math_invariant"
+reason = "This is a named math invariant used by strategy calculations, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0'''
+context = '''const INITIAL_COUNTER_U64: u64 = 0;'''
+classification = "strategy_state_invariant"
+reason = "This is a named initial counter invariant for strategy state, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0'''
+context = '''const INITIAL_COUNTER_USIZE: usize = 0;'''
+classification = "strategy_state_invariant"
+reason = "This is a named initial counter invariant for strategy state, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''1'''
+context = '''const MIN_OBSERVATION_COUNT: u64 = 1;'''
+classification = "strategy_state_invariant"
+reason = "This is the named minimum observation count needed for realized-volatility math, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''1'''
+context = '''const COUNTER_INCREMENT: usize = 1;'''
+classification = "strategy_state_invariant"
+reason = "This is a named counter increment invariant for strategy state, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''2'''
+context = '''const POWER_OF_TWO: i32 = 2;'''
+classification = "strategy_math_invariant"
+reason = "This is the named exponent for squared terms in strategy pricing math, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''10_000.0'''
+context = '''const BPS_DENOMINATOR: f64 = 10_000.0;'''
+classification = "financial_unit_conversion"
+reason = "This is the basis-points denominator for financial unit conversion, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''2.0'''
+context = '''const QUADRATIC_RISK_DIVISOR: f64 = 2.0;'''
+classification = "pricing_formula_constant"
+reason = "This is a named coefficient in the strategy sizing formula, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''1_000'''
+context = '''const MILLIS_PER_SECOND_U64: u64 = 1_000;'''
+classification = "time_unit_conversion"
+reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''1_000.0'''
+context = '''const MILLIS_PER_SECOND_F64: f64 = 1_000.0;'''
+classification = "time_unit_conversion"
+reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''1_000_000'''
+context = '''const NANOS_PER_MILLI_U64: u64 = 1_000_000;'''
+classification = "time_unit_conversion"
+reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''1_000_000_000'''
+context = '''const NANOS_PER_SECOND_U64: u64 = 1_000_000_000;'''
+classification = "time_unit_conversion"
+reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''365.25'''
+context = '''const DAYS_PER_YEAR_F64: f64 = 365.25;'''
+classification = "annualization_constant"
+reason = "This is a named annualization conversion constant used by volatility math, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''24.0'''
+context = '''const HOURS_PER_DAY_F64: f64 = 24.0;'''
+classification = "annualization_constant"
+reason = "This is a named calendar conversion constant used by volatility math, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''60.0'''
+context = '''const MINUTES_PER_HOUR_F64: f64 = 60.0;'''
+classification = "annualization_constant"
+reason = "This is a named time conversion constant used by volatility math, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''60.0'''
+context = '''const SECONDS_PER_MINUTE_F64: f64 = 60.0;'''
+classification = "annualization_constant"
+reason = "This is a named time conversion constant used by volatility math, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''6.0'''
+context = '''const KURTOSIS_NORMALIZATION: f64 = 6.0;'''
+classification = "pricing_formula_constant"
+reason = "This is a named coefficient in the fair-probability formula, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''2.0'''
+context = '''const NORMAL_DENSITY_EXPONENT_DIVISOR: f64 = 2.0;'''
+classification = "pricing_formula_constant"
+reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
+
+[[allowed]]
+path = "src/execution_state.rs"
+kind = "string"
+literal = '''"events.jsonl"'''
+context = '''const EVENTS_JSONL_FILE: &str = "events.jsonl";'''
+classification = "execution_state_sidecar_schema"
+reason = "This is the stable execution-state sidecar file name consumed by the lake conversion path, not an operator runtime value."
+
+[[allowed]]
+path = "src/execution_state.rs"
+kind = "string"
+literal = '''"part-0.parquet"'''
+context = '''const PART_ZERO_PARQUET_FILE: &str = "part-0.parquet";'''
+classification = "execution_state_sidecar_schema"
+reason = "This is the stable single-part execution-state parquet filename emitted by the lake conversion path, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"data.quotes.*.*"'''
+context = '''const QUOTES_PATTERN: &str = "data.quotes.*.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for quote capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"data.trades.*.*"'''
+context = '''const TRADES_PATTERN: &str = "data.trades.*.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for trade capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"data.book.deltas.*.*"'''
+context = '''const BOOK_DELTAS_PATTERN: &str = "data.book.deltas.*.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for order-book delta capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"data.book.depth10.*.*"'''
+context = '''const BOOK_DEPTH10_PATTERN: &str = "data.book.depth10.*.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for order-book depth capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"data.mark_prices.*.*"'''
+context = '''const MARK_PRICES_PATTERN: &str = "data.mark_prices.*.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for mark-price capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"data.index_prices.*.*"'''
+context = '''const INDEX_PRICES_PATTERN: &str = "data.index_prices.*.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for index-price capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"data.funding_rates.*.*"'''
+context = '''const FUNDING_RATES_PATTERN: &str = "data.funding_rates.*.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for funding-rate capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"data.instrument.*.*"'''
+context = '''const INSTRUMENTS_PATTERN: &str = "data.instrument.*.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for instrument capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"data.close.*.*"'''
+context = '''const INSTRUMENT_CLOSES_PATTERN: &str = "data.close.*.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for instrument-close capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"data.status.*.*"'''
+context = '''const INSTRUMENT_STATUSES_PATTERN: &str = "data.status.*.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for instrument-status capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"events.order.*"'''
+context = '''const ORDER_EVENTS_PATTERN: &str = "events.order.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for order-event capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"events.position.*"'''
+context = '''const POSITION_EVENTS_PATTERN: &str = "events.position.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for position-event capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"events.account.*"'''
+context = '''const ACCOUNT_STATES_PATTERN: &str = "events.account.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for account-state capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"events.risk"'''
+context = '''const TRADING_STATE_CHANGED_PATTERN: &str = "events.risk";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus topic for trading-state capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"://"'''
+context = '''const LOCAL_URI_MARKER: &str = "://";'''
+classification = "local_path_validation_marker"
+reason = "This detects URI-style catalog paths so the local-only capture path can reject them, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"instrument_status.jsonl"'''
+context = '''const INSTRUMENT_STATUS_FILE: &str = "instrument_status.jsonl";'''
+classification = "runtime_capture_sidecar_schema"
+reason = "This is a stable runtime-capture sidecar filename consumed by lake conversion, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"account_state.jsonl"'''
+context = '''const ACCOUNT_STATE_FILE: &str = "account_state.jsonl";'''
+classification = "runtime_capture_sidecar_schema"
+reason = "This is a stable runtime-capture sidecar filename consumed by lake conversion, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"updates.jsonl"'''
+context = '''const UPDATES_FILE: &str = "updates.jsonl";'''
+classification = "runtime_capture_sidecar_schema"
+reason = "This is a stable runtime-capture sidecar filename consumed by lake conversion, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"trading_state_changed.jsonl"'''
+context = '''const TRADING_STATE_CHANGED_FILE: &str = "trading_state_changed.jsonl";'''
+classification = "runtime_capture_sidecar_schema"
+reason = "This is a stable runtime-capture sidecar filename consumed by lake conversion, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0.231_641_9'''
+context = '''const NORMAL_CDF_T_SCALE: f64 = 0.231_641_9;'''
+classification = "pricing_formula_constant"
+reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0.398_942_3'''
+context = '''const NORMAL_CDF_DENSITY_SCALE: f64 = 0.398_942_3;'''
+classification = "pricing_formula_constant"
+reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0.319_381_5'''
+context = '''const NORMAL_CDF_POLY_A1: f64 = 0.319_381_5;'''
+classification = "pricing_formula_constant"
+reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''-0.356_563_8'''
+context = '''const NORMAL_CDF_POLY_A2: f64 = -0.356_563_8;'''
+classification = "pricing_formula_constant"
+reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''1.781_478'''
+context = '''const NORMAL_CDF_POLY_A3: f64 = 1.781_478;'''
+classification = "pricing_formula_constant"
+reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''-1.821_256'''
+context = '''const NORMAL_CDF_POLY_A4: f64 = -1.821_256;'''
+classification = "pricing_formula_constant"
+reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''1.330_274'''
+context = '''const NORMAL_CDF_POLY_A5: f64 = 1.330_274;'''
+classification = "pricing_formula_constant"
+reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bin/stream_to_lake.rs"
+kind = "string"
+literal = '''"stream_to_lake"'''
+context = '''#[command(name = "stream_to_lake")]'''
+classification = "cli_command_name"
+reason = "This is the stable Rust maintenance binary name, not an operator runtime value."
+
+[[allowed]]
+path = "src/bin/stream_to_lake.rs"
+kind = "string"
+literal = '''"Contract validation: {} ({} venue, {} classes)"'''
+context = '''"Contract validation: {} ({} venue, {} classes)",'''
+classification = "stream_to_lake_diagnostic_template"
+reason = "This prints the already computed contract validation report; all reported values come from the loaded contract and conversion report."
+
+[[allowed]]
+path = "src/bin/stream_to_lake.rs"
+kind = "string"
+literal = '''"Converted {} live stream classes for instance {} into {}"'''
+context = '''"Converted {} live stream classes for instance {} into {}",'''
+classification = "stream_to_lake_diagnostic_template"
+reason = "This prints the already computed lake conversion report; all reported values come from CLI inputs and conversion output."
+
+[[allowed]]
+path = "src/bounded_config_read.rs"
+kind = "number"
+literal = '''1_048_576'''
+context = '''pub(crate) const CONFIG_FILE_SIZE_LIMIT_BYTES: u64 = 1_048_576;'''
+classification = "config_file_read_safety_limit"
+reason = "This is a bounded-read safety limit applied before TOML can be parsed, not a trading runtime value or operator policy."
+
+[[allowed]]
+path = "src/bounded_config_read.rs"
+kind = "number"
+literal = '''1'''
+context = '''const OVERSIZE_DETECTION_EXTRA_BYTE: u64 = 1;'''
+classification = "config_file_read_safety_sentinel"
+reason = "The reader takes one byte beyond the safety limit to detect oversized config files without unbounded reads."
+
+[[allowed]]
+path = "src/bounded_config_read.rs"
+kind = "string"
+literal = '''"{} exceeds config file size limit {limit} bytes (read at least {length} bytes)"'''
+context = '''"{} exceeds config file size limit {limit} bytes (read at least {length} bytes)",'''
+classification = "config_file_read_diagnostic_template"
+reason = "This reports the bounded-read safety failure without carrying an operator runtime value."
+
+[[allowed]]
+path = "src/raw_types.rs"
+kind = "string"
+literal = '''b"\n"'''
+context = '''const JSONL_RECORD_SEPARATOR: &[u8] = b"\n";'''
+classification = "raw_jsonl_record_separator"
+reason = "This is the JSONL record separator required by the file format, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''1'''
+context = '''const COUNTER_INCREMENT_U64: u64 = 1;'''
+classification = "strategy_state_invariant"
+reason = "This is a named counter increment invariant for strategy state, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''2.0'''
+context = '''const MIDPOINT_DIVISOR_F64: f64 = 2.0;'''
+classification = "strategy_math_invariant"
+reason = "This is the named divisor for midpoint calculation, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"oms_type"'''
+context = '''const CONFIG_FIELD_OMS_TYPE: &str = "oms_type";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"market_exit_time_in_force"'''
+context = '''const CONFIG_FIELD_MARKET_EXIT_TIME_IN_FORCE: &str = "market_exit_time_in_force";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"entry_order_side"'''
+context = '''const CONFIG_FIELD_ENTRY_ORDER_SIDE: &str = "entry_order_side";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"entry_order_position_side"'''
+context = '''const CONFIG_FIELD_ENTRY_ORDER_POSITION_SIDE: &str = "entry_order_position_side";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_order_side"'''
+context = '''const CONFIG_FIELD_EXIT_ORDER_SIDE: &str = "exit_order_side";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_order_position_side"'''
+context = '''const CONFIG_FIELD_EXIT_ORDER_POSITION_SIDE: &str = "exit_order_position_side";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"entry"'''
+context = '''const ORDER_CONFIGURATION_PREFIX_ENTRY: &str = "entry";'''
+classification = "strategy_order_configuration_prefix"
+reason = "This labels the TOML-owned entry order section for NT order construction, not a code-owned runtime policy."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit"'''
+context = '''const ORDER_CONFIGURATION_PREFIX_EXIT: &str = "exit";'''
+classification = "strategy_order_configuration_prefix"
+reason = "This labels the TOML-owned exit order section for NT order construction, not a code-owned runtime policy."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"target_selection_blocked"'''
+context = '''const SELECTION_BLOCK_REASON_TARGET_SELECTION_BLOCKED: &str = "target_selection_blocked";'''
+classification = "strategy_evidence_reason_code"
+reason = "This is a stable evidence reason code for blocked target selection; the policy threshold comes from TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"derived_from_lead_gap_jitter_time_and_fee"'''
+context = '''"derived_from_lead_gap_jitter_time_and_fee";'''
+classification = "strategy_evidence_reason_code"
+reason = "This is a stable evidence reason code describing computed uncertainty-band provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"uncertainty_band_unavailable"'''
+context = '''const EVIDENCE_REASON_UNCERTAINTY_BAND_UNAVAILABLE: &str = "uncertainty_band_unavailable";'''
+classification = "strategy_evidence_reason_code"
+reason = "This is a stable evidence reason code for missing uncertainty-band inputs, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"no_fast_venue_cleared_lead_quality_thresholds"'''
+context = '''"no_fast_venue_cleared_lead_quality_thresholds";'''
+classification = "strategy_evidence_reason_code"
+reason = "This is a stable evidence reason code; the lead-quality thresholds come from TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"lead_quality_thresholds_applied_to_live_fast_spot_selection"'''
+context = '''"lead_quality_thresholds_applied_to_live_fast_spot_selection";'''
+classification = "strategy_evidence_reason_code"
+reason = "This is a stable evidence reason code stating that TOML-owned lead-quality thresholds were applied."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"final_fee_requires_side_price_and_size_selection"'''
+context = '''"final_fee_requires_side_price_and_size_selection";'''
+classification = "strategy_evidence_reason_code"
+reason = "This is a stable evidence reason code for final-fee unavailability before entry selection is complete."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"final_fee_requires_side_price_size_and_actual_fill"'''
+context = '''"final_fee_requires_side_price_size_and_actual_fill";'''
+classification = "strategy_evidence_reason_code"
+reason = "This is a stable evidence reason code for final-fee unavailability before fill evidence exists."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"no_managed_position"'''
+context = '''const EVIDENCE_REASON_NO_MANAGED_POSITION: &str = "no_managed_position";'''
+classification = "strategy_evidence_reason_code"
+reason = "This is a stable evidence reason code for absent managed position state, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"captured_from_strategy_entry_state"'''
+context = '''"captured_from_strategy_entry_state";'''
+classification = "strategy_evidence_reason_code"
+reason = "This is a stable evidence reason code for fee provenance captured at entry."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"recovery_bootstrap_position_missing_original_fee_rate"'''
+context = '''"recovery_bootstrap_position_missing_original_fee_rate";'''
+classification = "strategy_evidence_reason_code"
+reason = "This is a stable evidence reason code for missing recovered fee-rate state."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"position_state_missing_original_fee_rate"'''
+context = '''"position_state_missing_original_fee_rate";'''
+classification = "strategy_evidence_reason_code"
+reason = "This is a stable evidence reason code for missing in-memory position fee-rate state."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"strategy_core_not_registered"'''
+context = '''const ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED: &str = "strategy_core_not_registered";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"entry_gate_blocked"'''
+context = '''const ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED: &str = "entry_gate_blocked";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"entry_pricing_blocked"'''
+context = '''const ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED: &str = "entry_pricing_blocked";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"no_side_selected"'''
+context = '''const ENTRY_BLOCK_REASON_NO_SIDE_SELECTED: &str = "no_side_selected";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"sized_notional_not_positive"'''
+context = '''const ENTRY_BLOCK_REASON_SIZED_NOTIONAL_NOT_POSITIVE: &str = "sized_notional_not_positive";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code; sizing inputs come from TOML and live book data."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"instrument_id_missing"'''
+context = '''const ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING: &str = "instrument_id_missing";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"instrument_missing_from_cache"'''
+context = '''const ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE: &str = "instrument_missing_from_cache";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code for missing NT cache state."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"entry_price_missing"'''
+context = '''const ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING: &str = "entry_price_missing";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"entry_cost_missing"'''
+context = '''const ENTRY_BLOCK_REASON_ENTRY_COST_MISSING: &str = "entry_cost_missing";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"quantity_rounding_failed"'''
+context = '''const ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED: &str = "quantity_rounding_failed";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code for NT instrument quantity construction failure."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"quantity_not_positive"'''
+context = '''const ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE: &str = "quantity_not_positive";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"position_contract_invalid"'''
+context = '''const ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID: &str = "position_contract_invalid";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code for invalid TOML-owned position contract parsing."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"entry_position_contract_unsupported"'''
+context = '''"entry_position_contract_unsupported";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code for unsupported configured position contract."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"no_open_position"'''
+context = '''const EXIT_BLOCK_REASON_NO_OPEN_POSITION: &str = "no_open_position";'''
+classification = "strategy_exit_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_already_pending"'''
+context = '''const EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING: &str = "exit_already_pending";'''
+classification = "strategy_exit_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_decision_unavailable"'''
+context = '''const EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE: &str = "exit_decision_unavailable";'''
+classification = "strategy_exit_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_hold"'''
+context = '''const EXIT_BLOCK_REASON_EXIT_HOLD: &str = "exit_hold";'''
+classification = "strategy_exit_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"open_position_missing"'''
+context = '''const EXIT_BLOCK_REASON_OPEN_POSITION_MISSING: &str = "open_position_missing";'''
+classification = "strategy_exit_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_price_missing"'''
+context = '''const EXIT_BLOCK_REASON_EXIT_PRICE_MISSING: &str = "exit_price_missing";'''
+classification = "strategy_exit_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_quantity_not_positive"'''
+context = '''const EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE: &str = "exit_quantity_not_positive";'''
+classification = "strategy_exit_block_reason_code"
+reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"logging.file_config"'''
+context = '''optional_file_writer_config("logging.file_config", &loaded.root.logging.file_config)?;'''
+classification = "nt_config_mapping_field_path"
+reason = "This names the TOML field being mapped into the NT logger file writer config; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"disabled"'''
+context = '''if config.as_str() == Some("disabled") {'''
+classification = "nt_config_optional_component_sentinel"
+reason = "This is the stable TOML sentinel for absent optional NT component blocks, not an operator runtime value."

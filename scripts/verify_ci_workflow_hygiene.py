@@ -51,7 +51,6 @@ LIVE_NODE_UNIT_TEST_FILTERS = (
     "binary(=bolt_v2)",
     "test(~bolt_v3_client_registration::tests::)",
     "test(~bolt_v3_live_node::tests::)",
-    "test(~platform::runtime::tests::)",
 )
 LIVE_NODE_NEXTEST_BINARIES = (
     "bolt_v3_adapter_mapping",
@@ -64,12 +63,8 @@ LIVE_NODE_NEXTEST_BINARIES = (
     "bolt_v3_submit_admission",
     "bolt_v3_tiny_canary_operator",
     "config_parsing",
-    "eth_chainlink_taker_runtime",
     "lake_batch",
-    "live_node_run",
     "nt_runtime_capture",
-    "platform_runtime",
-    "polymarket_bootstrap",
     "venue_contract",
 )
 LIVE_NODE_NEXTEST_FILTER = " | ".join(f"binary(={binary})" for binary in LIVE_NODE_NEXTEST_BINARIES)

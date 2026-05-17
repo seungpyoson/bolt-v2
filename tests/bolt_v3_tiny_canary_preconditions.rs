@@ -1,37 +1,54 @@
 mod support;
 
 use bolt_v2::{
-    bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_config::{
+        LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, load_bolt_v3_config,
+    },
     bolt_v3_tiny_canary_evidence::{
-        Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryOutcome,
-        Phase8CanaryPreflightStatus, Phase8EvidenceRef, Phase8LiveCanaryResultRefs,
-        Phase8LiveOrderRef, Phase8OperatorApprovalEnvelope, Phase8StrategyInputSafetyAudit,
-        evaluate_phase8_canary_preflight,
+        TinyCanaryBlockReason, TinyCanaryEvidence, TinyCanaryEvidenceRef,
+        TinyCanaryLiveCanaryResultRefs, TinyCanaryLiveOrderRef, TinyCanaryOperatorApprovalEnvelope,
+        TinyCanaryOutcome, TinyCanaryPreflightStatus, TinyCanaryStrategyInputSafetyAudit,
+        evaluate_tiny_canary_preflight,
     },
 };
 use rust_decimal::Decimal;
 use serde_json::Value;
 
+#[test]
+fn tiny_canary_evidence_source_uses_current_vocabulary() {
+    let source = include_str!("../src/bolt_v3_tiny_canary_evidence.rs");
+    for stale_token in [
+        concat!("Phase", "8"),
+        concat!("phase", "8"),
+        concat!("PHASE", "8"),
+        concat!("BOLT_V3_", "PHASE", "8"),
+        concat!("Phase", " ", "8"),
+        concat!("phase", " ", "8"),
+    ] {
+        assert!(
+            !source.contains(stale_token),
+            "tiny canary evidence source must not contain stale token `{stale_token}`"
+        );
+    }
+}
+
 #[tokio::test]
 async fn preflight_blocks_missing_phase7_report_before_build() {
     let loaded = loaded_with_live_canary("reports/missing-no-submit-readiness.json");
-    let audit = Phase8StrategyInputSafetyAudit::approved();
+    let audit = TinyCanaryStrategyInputSafetyAudit::approved();
 
-    let report = evaluate_phase8_canary_preflight(
-        &loaded,
-        "7f2d981f584a0378842d9a76fffd9cd03fce2ce5",
-        audit,
-    )
-    .await;
+    let report =
+        evaluate_tiny_canary_preflight(&loaded, "7f2d981f584a0378842d9a76fffd9cd03fce2ce5", audit)
+            .await;
 
     assert_eq!(
         report.no_submit_report_status,
-        Phase8CanaryPreflightStatus::Missing
+        TinyCanaryPreflightStatus::Missing
     );
     assert!(
         report
             .block_reasons
-            .contains(&Phase8CanaryBlockReason::MissingNoSubmitReadinessReport)
+            .contains(&TinyCanaryBlockReason::MissingNoSubmitReadinessReport)
     );
     assert!(!report.can_enter_live_runner());
 }
@@ -43,29 +60,29 @@ async fn preflight_blocks_strategy_input_safety_audit_before_build() {
     write_satisfied_no_submit_readiness_report(&report_path);
     let loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
 
-    let report = evaluate_phase8_canary_preflight(
+    let report = evaluate_tiny_canary_preflight(
         &loaded,
         "7f2d981f584a0378842d9a76fffd9cd03fce2ce5",
-        Phase8StrategyInputSafetyAudit::blocked(vec![
-            Phase8CanaryBlockReason::StrategyInputSafetyAuditBlocked,
+        TinyCanaryStrategyInputSafetyAudit::blocked(vec![
+            TinyCanaryBlockReason::StrategyInputSafetyAuditBlocked,
         ]),
     )
     .await;
 
     assert_eq!(
         report.no_submit_report_status,
-        Phase8CanaryPreflightStatus::AcceptedByGate
+        TinyCanaryPreflightStatus::AcceptedByGate
     );
     assert!(
         report
             .block_reasons
-            .contains(&Phase8CanaryBlockReason::StrategyInputSafetyAuditBlocked)
+            .contains(&TinyCanaryBlockReason::StrategyInputSafetyAuditBlocked)
     );
     assert!(!report.can_enter_live_runner());
 }
 
 #[tokio::test]
-async fn preflight_blocks_live_order_count_above_one_before_build() {
+async fn preflight_accepts_toml_owned_live_order_count_before_build() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let report_path = temp.path().join("no-submit-readiness.json");
     write_satisfied_no_submit_readiness_report(&report_path);
@@ -77,42 +94,61 @@ async fn preflight_blocks_live_order_count_above_one_before_build() {
         .expect("live canary should exist")
         .max_live_order_count = 2;
 
-    let report = evaluate_phase8_canary_preflight(
+    let report = evaluate_tiny_canary_preflight(
         &loaded,
         "7f2d981f584a0378842d9a76fffd9cd03fce2ce5",
-        Phase8StrategyInputSafetyAudit::approved(),
+        TinyCanaryStrategyInputSafetyAudit::approved(),
     )
     .await;
 
-    assert!(
-        report
-            .block_reasons
-            .contains(&Phase8CanaryBlockReason::LiveOrderCountCapNotOne)
-    );
     assert_eq!(report.max_live_order_count, Some(2));
-    assert!(!report.can_enter_live_runner());
+    assert!(report.block_reasons.is_empty());
+    assert!(report.can_enter_live_runner());
+}
+
+#[tokio::test]
+async fn preflight_accepts_exactly_one_live_order_count_contract() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let report_path = temp.path().join("no-submit-readiness.json");
+    write_satisfied_no_submit_readiness_report(&report_path);
+    let loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
+
+    let report = evaluate_tiny_canary_preflight(
+        &loaded,
+        "7f2d981f584a0378842d9a76fffd9cd03fce2ce5",
+        TinyCanaryStrategyInputSafetyAudit::approved(),
+    )
+    .await;
+
+    assert_eq!(report.max_live_order_count, Some(1));
+    assert_eq!(
+        report.no_submit_report_status,
+        TinyCanaryPreflightStatus::AcceptedByGate
+    );
+    assert!(report.block_reasons.is_empty());
+    assert!(report.can_enter_live_runner());
 }
 
 #[test]
 fn strategy_audit_blocks_non_positive_realized_volatility() {
-    let audit = Phase8StrategyInputSafetyAudit::from_strategy_inputs(Decimal::ZERO, 300);
+    let audit = TinyCanaryStrategyInputSafetyAudit::from_strategy_inputs(Decimal::ZERO, 300);
 
     assert!(
         audit
             .block_reasons()
-            .contains(&Phase8CanaryBlockReason::NonPositiveRealizedVolatility)
+            .contains(&TinyCanaryBlockReason::NonPositiveRealizedVolatility)
     );
     assert!(!audit.is_approved());
 }
 
 #[test]
 fn strategy_audit_blocks_zero_time_to_expiry() {
-    let audit = Phase8StrategyInputSafetyAudit::from_strategy_inputs(Decimal::new(25, 1), 0);
+    let audit = TinyCanaryStrategyInputSafetyAudit::from_strategy_inputs(Decimal::new(25, 1), 0);
 
     assert!(
         audit
             .block_reasons()
-            .contains(&Phase8CanaryBlockReason::NonPositiveTimeToExpiry)
+            .contains(&TinyCanaryBlockReason::NonPositiveTimeToExpiry)
     );
     assert!(!audit.is_approved());
 }
@@ -126,11 +162,12 @@ fn strategy_audit_verifies_input_evidence_hash_before_approving() {
         r#"{"realized_volatility":"2.5","seconds_to_expiry":300}"#,
     )
     .expect("strategy input evidence should write");
-    let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
+    let evidence_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&evidence_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(&evidence_path, &evidence_hash)
-        .expect("matching strategy input evidence should parse");
+    let audit =
+        TinyCanaryStrategyInputSafetyAudit::from_evidence_file(&evidence_path, &evidence_hash)
+            .expect("matching strategy input evidence should parse");
 
     assert!(audit.is_approved());
 }
@@ -145,8 +182,9 @@ fn strategy_audit_rejects_input_evidence_hash_mismatch() {
     )
     .expect("strategy input evidence should write");
 
-    let error = Phase8StrategyInputSafetyAudit::from_evidence_file(&evidence_path, "wrong-hash")
-        .expect_err("mismatched strategy input evidence should fail");
+    let error =
+        TinyCanaryStrategyInputSafetyAudit::from_evidence_file(&evidence_path, "wrong-hash")
+            .expect_err("mismatched strategy input evidence should fail");
 
     assert!(
         error.to_string().contains("strategy input evidence sha256"),
@@ -156,9 +194,9 @@ fn strategy_audit_rejects_input_evidence_hash_mismatch() {
 
 #[test]
 fn dry_canary_evidence_serializes_join_keys_without_raw_approval_id() {
-    let evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+    let evidence = TinyCanaryEvidence::dry_no_submit_proof(
         evidence_input(),
-        Phase8EvidenceRef {
+        TinyCanaryEvidenceRef {
             path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 .to_string(),
             record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
@@ -193,10 +231,10 @@ fn dry_canary_evidence_serializes_join_keys_without_raw_approval_id() {
 #[test]
 fn dry_canary_evidence_writer_creates_redacted_json_file() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let evidence_path = temp.path().join("phase8-canary-evidence.json");
-    let evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+    let evidence_path = temp.path().join("tiny-canary-evidence.json");
+    let evidence = TinyCanaryEvidence::dry_no_submit_proof(
         evidence_input(),
-        Phase8EvidenceRef {
+        TinyCanaryEvidenceRef {
             path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 .to_string(),
             record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
@@ -220,10 +258,10 @@ fn dry_canary_evidence_writer_creates_redacted_json_file() {
 #[test]
 fn dry_canary_evidence_writer_rejects_existing_json_file() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let evidence_path = temp.path().join("phase8-canary-evidence.json");
-    let evidence = Phase8CanaryEvidence::dry_no_submit_proof(
+    let evidence_path = temp.path().join("tiny-canary-evidence.json");
+    let evidence = TinyCanaryEvidence::dry_no_submit_proof(
         evidence_input(),
-        Phase8EvidenceRef {
+        TinyCanaryEvidenceRef {
             path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 .to_string(),
             record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
@@ -236,9 +274,9 @@ fn dry_canary_evidence_writer_rejects_existing_json_file() {
         .expect("evidence should write");
     let original = std::fs::read_to_string(&evidence_path).expect("evidence should read");
 
-    let replacement = Phase8CanaryEvidence::blocked_before_submit(
+    let replacement = TinyCanaryEvidence::blocked_before_submit(
         evidence_input(),
-        Phase8CanaryBlockReason::RootConfigHashUnavailable,
+        vec![TinyCanaryBlockReason::RootConfigHashUnavailable],
     );
     let error = replacement
         .write_json_file(&evidence_path)
@@ -255,17 +293,25 @@ fn dry_canary_evidence_writer_rejects_existing_json_file() {
 
 #[test]
 fn decision_evidence_unavailable_blocks_before_submit_admission() {
-    let evidence = Phase8CanaryEvidence::blocked_before_submit(
+    let evidence = TinyCanaryEvidence::blocked_before_submit(
         evidence_input(),
-        Phase8CanaryBlockReason::DecisionEvidenceUnavailable,
+        vec![
+            TinyCanaryBlockReason::DecisionEvidenceUnavailable,
+            TinyCanaryBlockReason::LiveCanaryGateRejected,
+        ],
     );
 
-    assert_eq!(evidence.outcome, Phase8CanaryOutcome::BlockedBeforeSubmit);
+    assert_eq!(evidence.outcome, TinyCanaryOutcome::BlockedBeforeSubmit);
     assert_eq!(evidence.submit_admission_ref.admitted_order_count, 0);
     assert!(
         evidence
             .block_reasons
-            .contains(&Phase8CanaryBlockReason::DecisionEvidenceUnavailable)
+            .contains(&TinyCanaryBlockReason::DecisionEvidenceUnavailable)
+    );
+    assert!(
+        evidence
+            .block_reasons
+            .contains(&TinyCanaryBlockReason::LiveCanaryGateRejected)
     );
     assert!(evidence.decision_evidence_ref.is_none());
     assert!(evidence.nt_lifecycle_refs.is_empty());
@@ -273,40 +319,40 @@ fn decision_evidence_unavailable_blocks_before_submit_admission() {
 
 #[test]
 fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids() {
-    let evidence = Phase8CanaryEvidence::live_canary_proof(
+    let evidence = TinyCanaryEvidence::live_canary_proof(
         evidence_input(),
-        Phase8EvidenceRef {
+        TinyCanaryEvidenceRef {
             path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 .to_string(),
             record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
                 .to_string(),
         },
-        Phase8LiveOrderRef {
+        TinyCanaryLiveOrderRef {
             client_order_id_hash:
                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
             venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
                 .to_string(),
         },
-        Phase8LiveCanaryResultRefs {
-            nt_submit_event_ref: Phase8EvidenceRef {
+        TinyCanaryLiveCanaryResultRefs {
+            nt_submit_event_ref: TinyCanaryEvidenceRef {
                 path_hash: "1111111111111111111111111111111111111111111111111111111111111111"
                     .to_string(),
                 record_hash: "2222222222222222222222222222222222222222222222222222222222222222"
                     .to_string(),
             },
-            venue_order_state_ref: Phase8EvidenceRef {
+            venue_order_state_ref: TinyCanaryEvidenceRef {
                 path_hash: "3333333333333333333333333333333333333333333333333333333333333333"
                     .to_string(),
                 record_hash: "4444444444444444444444444444444444444444444444444444444444444444"
                     .to_string(),
             },
-            strategy_cancel_ref: Some(Phase8EvidenceRef {
+            strategy_cancel_ref: Some(TinyCanaryEvidenceRef {
                 path_hash: "5555555555555555555555555555555555555555555555555555555555555555"
                     .to_string(),
                 record_hash: "6666666666666666666666666666666666666666666666666666666666666666"
                     .to_string(),
             }),
-            restart_reconciliation_ref: Phase8EvidenceRef {
+            restart_reconciliation_ref: TinyCanaryEvidenceRef {
                 path_hash: "7777777777777777777777777777777777777777777777777777777777777777"
                     .to_string(),
                 record_hash: "8888888888888888888888888888888888888888888888888888888888888888"
@@ -317,7 +363,7 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
     )
     .expect("one admitted order should produce live canary proof");
 
-    assert_eq!(evidence.outcome, Phase8CanaryOutcome::LiveCanaryProof);
+    assert_eq!(evidence.outcome, TinyCanaryOutcome::LiveCanaryProof);
     assert_eq!(evidence.submit_admission_ref.admitted_order_count, 1);
     assert!(evidence.block_reasons.is_empty());
     assert!(evidence.live_order_ref.is_some());
@@ -333,41 +379,95 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
 }
 
 #[test]
-fn live_canary_evidence_rejects_unconsumed_submit_admission_count() {
-    let error = Phase8CanaryEvidence::live_canary_proof(
-        evidence_input(),
-        Phase8EvidenceRef {
+fn live_canary_evidence_accepts_admitted_count_below_configured_cap() {
+    let mut input = evidence_input();
+    input.max_live_order_count = 2;
+    let evidence = TinyCanaryEvidence::live_canary_proof(
+        input,
+        TinyCanaryEvidenceRef {
             path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 .to_string(),
             record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
                 .to_string(),
         },
-        Phase8LiveOrderRef {
+        TinyCanaryLiveOrderRef {
             client_order_id_hash:
                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
             venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
                 .to_string(),
         },
-        Phase8LiveCanaryResultRefs {
-            nt_submit_event_ref: Phase8EvidenceRef {
+        TinyCanaryLiveCanaryResultRefs {
+            nt_submit_event_ref: TinyCanaryEvidenceRef {
                 path_hash: "1111111111111111111111111111111111111111111111111111111111111111"
                     .to_string(),
                 record_hash: "2222222222222222222222222222222222222222222222222222222222222222"
                     .to_string(),
             },
-            venue_order_state_ref: Phase8EvidenceRef {
+            venue_order_state_ref: TinyCanaryEvidenceRef {
                 path_hash: "3333333333333333333333333333333333333333333333333333333333333333"
                     .to_string(),
                 record_hash: "4444444444444444444444444444444444444444444444444444444444444444"
                     .to_string(),
             },
-            strategy_cancel_ref: Some(Phase8EvidenceRef {
+            strategy_cancel_ref: Some(TinyCanaryEvidenceRef {
                 path_hash: "5555555555555555555555555555555555555555555555555555555555555555"
                     .to_string(),
                 record_hash: "6666666666666666666666666666666666666666666666666666666666666666"
                     .to_string(),
             }),
-            restart_reconciliation_ref: Phase8EvidenceRef {
+            restart_reconciliation_ref: TinyCanaryEvidenceRef {
+                path_hash: "7777777777777777777777777777777777777777777777777777777777777777"
+                    .to_string(),
+                record_hash: "8888888888888888888888888888888888888888888888888888888888888888"
+                    .to_string(),
+            },
+        },
+        1,
+    )
+    .expect("positive admitted count below cap should produce live canary proof");
+
+    assert_eq!(evidence.max_live_order_count, 2);
+    assert_eq!(evidence.submit_admission_ref.admitted_order_count, 1);
+}
+
+#[test]
+fn live_canary_evidence_rejects_zero_submit_admission_count() {
+    let mut input = evidence_input();
+    input.max_live_order_count = 2;
+    let error = TinyCanaryEvidence::live_canary_proof(
+        input,
+        TinyCanaryEvidenceRef {
+            path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_string(),
+            record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                .to_string(),
+        },
+        TinyCanaryLiveOrderRef {
+            client_order_id_hash:
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
+            venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                .to_string(),
+        },
+        TinyCanaryLiveCanaryResultRefs {
+            nt_submit_event_ref: TinyCanaryEvidenceRef {
+                path_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                record_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+            },
+            venue_order_state_ref: TinyCanaryEvidenceRef {
+                path_hash: "3333333333333333333333333333333333333333333333333333333333333333"
+                    .to_string(),
+                record_hash: "4444444444444444444444444444444444444444444444444444444444444444"
+                    .to_string(),
+            },
+            strategy_cancel_ref: Some(TinyCanaryEvidenceRef {
+                path_hash: "5555555555555555555555555555555555555555555555555555555555555555"
+                    .to_string(),
+                record_hash: "6666666666666666666666666666666666666666666666666666666666666666"
+                    .to_string(),
+            }),
+            restart_reconciliation_ref: TinyCanaryEvidenceRef {
                 path_hash: "7777777777777777777777777777777777777777777777777777777777777777"
                     .to_string(),
                 record_hash: "8888888888888888888888888888888888888888888888888888888888888888"
@@ -385,22 +485,74 @@ fn live_canary_evidence_rejects_unconsumed_submit_admission_count() {
 }
 
 #[test]
+fn live_canary_evidence_rejects_admitted_count_above_configured_cap() {
+    let error = TinyCanaryEvidence::live_canary_proof(
+        evidence_input(),
+        TinyCanaryEvidenceRef {
+            path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_string(),
+            record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                .to_string(),
+        },
+        TinyCanaryLiveOrderRef {
+            client_order_id_hash:
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
+            venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                .to_string(),
+        },
+        TinyCanaryLiveCanaryResultRefs {
+            nt_submit_event_ref: TinyCanaryEvidenceRef {
+                path_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                record_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+            },
+            venue_order_state_ref: TinyCanaryEvidenceRef {
+                path_hash: "3333333333333333333333333333333333333333333333333333333333333333"
+                    .to_string(),
+                record_hash: "4444444444444444444444444444444444444444444444444444444444444444"
+                    .to_string(),
+            },
+            strategy_cancel_ref: Some(TinyCanaryEvidenceRef {
+                path_hash: "5555555555555555555555555555555555555555555555555555555555555555"
+                    .to_string(),
+                record_hash: "6666666666666666666666666666666666666666666666666666666666666666"
+                    .to_string(),
+            }),
+            restart_reconciliation_ref: TinyCanaryEvidenceRef {
+                path_hash: "7777777777777777777777777777777777777777777777777777777777777777"
+                    .to_string(),
+                record_hash: "8888888888888888888888888888888888888888888888888888888888888888"
+                    .to_string(),
+            },
+        },
+        2,
+    )
+    .expect_err("admitted count above cap must not produce live canary proof");
+
+    assert!(
+        error.to_string().contains("max_live_order_count"),
+        "error should mention configured order cap: {error}"
+    );
+}
+
+#[test]
 fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
-    let envelope = Phase8OperatorApprovalEnvelope {
+    let envelope = TinyCanaryOperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
-        root_toml_path: "config/live.local.toml".to_string(),
+        root_toml_path: "config/root.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
-        ssm_manifest_path: "phase8-ssm-manifest.json".to_string(),
+        ssm_manifest_path: "tiny-canary-ssm-manifest.json".to_string(),
         ssm_manifest_sha256: "expected-ssm-hash".to_string(),
-        strategy_input_evidence_path: "phase8-strategy-input-evidence.json".to_string(),
+        strategy_input_evidence_path: "tiny-canary-strategy-input-evidence.json".to_string(),
         strategy_input_evidence_sha256: "expected-strategy-input-hash".to_string(),
         operator_approval_id: "operator-approved-canary-001".to_string(),
         approval_not_before_unix_seconds: 1_000,
         approval_not_after_unix_seconds: 2_000,
-        approval_nonce_path: "phase8-approval-nonce.json".to_string(),
+        approval_nonce_path: "tiny-canary-approval-nonce.json".to_string(),
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
-        approval_consumption_path: "phase8-approval-consumed.json".to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        approval_consumption_path: "tiny-canary-approval-consumed.json".to_string(),
+        canary_evidence_path: "tiny-canary-evidence.json".to_string(),
     };
 
     let error = envelope
@@ -414,41 +566,181 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
     assert!(
         error
             .to_string()
-            .contains("phase8 operator approval head_sha does not match current head")
+            .contains("tiny canary operator approval head_sha does not match current head")
+    );
+}
+
+#[test]
+fn operator_approval_envelope_projects_operator_evidence_from_config() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    loaded.root_path = temp.path().join("root.toml");
+    std::fs::write(&loaded.root_path, "fixture root").expect("root fixture should write");
+    write_operator_approval_envelope(temp.path(), "approved-head", "approved-root-hash");
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary block should exist")
+        .operator_evidence = Some(operator_evidence_block());
+
+    let envelope = TinyCanaryOperatorApprovalEnvelope::from_config(&loaded)
+        .expect("operator evidence config should project into envelope");
+
+    assert_eq!(envelope.head_sha, "approved-head");
+    assert_eq!(envelope.root_toml_sha256, "approved-root-hash");
+    assert_eq!(
+        envelope.root_toml_path,
+        loaded.root_path.to_string_lossy().to_string()
+    );
+    assert_eq!(
+        envelope.operator_approval_id,
+        "operator-approved-canary-001"
+    );
+    let resolved = |relative: &str| {
+        loaded
+            .root_path
+            .parent()
+            .expect("root path should have parent")
+            .join(relative)
+            .to_string_lossy()
+            .to_string()
+    };
+    assert_eq!(
+        envelope.ssm_manifest_path,
+        resolved("operator/ssm-manifest.json")
+    );
+    assert_eq!(
+        envelope.strategy_input_evidence_path,
+        resolved("operator/strategy-input.json")
+    );
+    assert_eq!(envelope.approval_not_before_unix_seconds, 1_000);
+    assert_eq!(envelope.approval_not_after_unix_seconds, 2_000);
+    assert_eq!(
+        envelope.approval_nonce_path,
+        resolved("operator/approval-nonce.json")
+    );
+    assert_eq!(
+        envelope.approval_consumption_path,
+        resolved("operator/approval-consumed.json")
+    );
+    assert_eq!(
+        envelope.canary_evidence_path,
+        resolved("operator/tiny-canary.json")
+    );
+}
+
+#[test]
+fn operator_approval_envelope_from_config_rejects_current_checkout_mismatch() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    loaded.root_path = temp.path().join("root.toml");
+    std::fs::write(&loaded.root_path, "fixture root").expect("root fixture should write");
+    write_operator_approval_envelope(temp.path(), "approved-head", "approved-root-hash");
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary block should exist")
+        .operator_evidence = Some(operator_evidence_block());
+
+    let envelope = TinyCanaryOperatorApprovalEnvelope::from_config(&loaded)
+        .expect("operator evidence config should project into envelope");
+
+    let head_error = envelope
+        .validate_against(
+            "current-head",
+            "approved-root-hash",
+            "operator-approved-canary-001",
+        )
+        .expect_err("approval file head must be compared against current checkout head");
+    assert!(
+        head_error.to_string().contains("head_sha"),
+        "error should mention head mismatch: {head_error}"
+    );
+
+    let root_error = envelope
+        .validate_against(
+            "approved-head",
+            "current-root-hash",
+            "operator-approved-canary-001",
+        )
+        .expect_err("approval file root hash must be compared against current root TOML");
+    assert!(
+        root_error.to_string().contains("root_toml_sha256"),
+        "error should mention root mismatch: {root_error}"
+    );
+}
+
+#[test]
+fn operator_approval_envelope_requires_independent_approval_file() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    loaded.root_path = temp.path().join("root.toml");
+    std::fs::write(&loaded.root_path, "fixture root").expect("root fixture should write");
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary block should exist")
+        .operator_evidence = Some(operator_evidence_block());
+
+    let error = TinyCanaryOperatorApprovalEnvelope::from_config(&loaded)
+        .expect_err("operator approval file should be required");
+
+    assert!(
+        error
+            .to_string()
+            .contains("failed to read tiny canary operator approval envelope"),
+        "error should mention approval envelope read failure: {error}"
+    );
+}
+
+#[test]
+fn operator_approval_envelope_rejects_missing_operator_evidence_config() {
+    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+
+    let error = TinyCanaryOperatorApprovalEnvelope::from_config(&loaded)
+        .expect_err("operator evidence config should be required");
+
+    assert!(
+        error
+            .to_string()
+            .contains("[live_canary.operator_evidence]")
     );
 }
 
 #[test]
 fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
+    let manifest_path = temp.path().join("tiny-canary-ssm-manifest.json");
     std::fs::write(
         &manifest_path,
         r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
     )
     .expect("manifest should write");
-    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
+    let manifest_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&manifest_path)
         .expect("manifest hash should compute");
-    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
         r#"{"realized_volatility":"2.5","seconds_to_expiry":300}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
-    let approval_nonce_path = temp.path().join("phase8-approval-nonce.json");
+    let approval_nonce_path = temp.path().join("tiny-canary-approval-nonce.json");
     std::fs::write(
         &approval_nonce_path,
-        r#"{"record_kind":"phase8_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+        r#"{"record_kind":"tiny_canary_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
     )
     .expect("approval nonce should write");
-    let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
+    let approval_nonce_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
-    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
-    let envelope = Phase8OperatorApprovalEnvelope {
+    let approval_consumption_path = temp.path().join("tiny-canary-approval-consumed.json");
+    let envelope = TinyCanaryOperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
-        root_toml_path: "config/live.local.toml".to_string(),
+        root_toml_path: "config/root.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
@@ -460,7 +752,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        canary_evidence_path: "tiny-canary-evidence.json".to_string(),
     };
 
     let too_early_error = envelope
@@ -478,6 +770,26 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     assert!(
         !approval_consumption_path.exists(),
         "rejected approval must not create consumption evidence"
+    );
+
+    let mut inverted_window_envelope = envelope.clone();
+    inverted_window_envelope.approval_not_before_unix_seconds = 2_000;
+    inverted_window_envelope.approval_not_after_unix_seconds = 1_000;
+    let inverted_window_error = inverted_window_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            1_500,
+        )
+        .expect_err("inverted approval window should fail closed");
+    assert!(
+        inverted_window_error.to_string().contains("not_after"),
+        "error should mention inverted approval window: {inverted_window_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "inverted approval window must not create consumption evidence"
     );
 
     let mut wrong_nonce_envelope = envelope.clone();
@@ -522,7 +834,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         serde_json::from_str(&consumption_json).expect("consumption should parse as json");
     assert_eq!(
         consumption["record_kind"],
-        "phase8_operator_approval_consumption"
+        "tiny_canary_operator_approval_consumption"
     );
     assert_eq!(consumption["approval_not_before_unix_seconds"], 1_000);
     assert_eq!(consumption["approval_not_after_unix_seconds"], 2_000);
@@ -559,25 +871,25 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
 #[test]
 fn operator_approval_envelope_verifies_ssm_manifest_hash() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
+    let manifest_path = temp.path().join("tiny-canary-ssm-manifest.json");
     std::fs::write(
         &manifest_path,
         r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
     )
     .expect("manifest should write");
-    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
+    let manifest_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&manifest_path)
         .expect("manifest hash should compute");
-    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
         r#"{"realized_volatility":"2.5","seconds_to_expiry":300}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
-    let mut envelope = Phase8OperatorApprovalEnvelope {
+    let mut envelope = TinyCanaryOperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
-        root_toml_path: "config/live.local.toml".to_string(),
+        root_toml_path: "config/root.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
@@ -586,10 +898,10 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
         operator_approval_id: "operator-approved-canary-001".to_string(),
         approval_not_before_unix_seconds: 1_000,
         approval_not_after_unix_seconds: 2_000,
-        approval_nonce_path: "phase8-approval-nonce.json".to_string(),
+        approval_nonce_path: "tiny-canary-approval-nonce.json".to_string(),
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
-        approval_consumption_path: "phase8-approval-consumed.json".to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        approval_consumption_path: "tiny-canary-approval-consumed.json".to_string(),
+        canary_evidence_path: "tiny-canary-evidence.json".to_string(),
     };
 
     envelope
@@ -618,25 +930,25 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
 #[test]
 fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
+    let manifest_path = temp.path().join("tiny-canary-ssm-manifest.json");
     std::fs::write(
         &manifest_path,
         r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
     )
     .expect("manifest should write");
-    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
+    let manifest_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&manifest_path)
         .expect("manifest hash should compute");
-    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
         r#"{"realized_volatility":"2.5","seconds_to_expiry":300}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
-    let mut envelope = Phase8OperatorApprovalEnvelope {
+    let mut envelope = TinyCanaryOperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
-        root_toml_path: "config/live.local.toml".to_string(),
+        root_toml_path: "config/root.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
@@ -645,10 +957,10 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
         operator_approval_id: "operator-approved-canary-001".to_string(),
         approval_not_before_unix_seconds: 1_000,
         approval_not_after_unix_seconds: 2_000,
-        approval_nonce_path: "phase8-approval-nonce.json".to_string(),
+        approval_nonce_path: "tiny-canary-approval-nonce.json".to_string(),
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
-        approval_consumption_path: "phase8-approval-consumed.json".to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        approval_consumption_path: "tiny-canary-approval-consumed.json".to_string(),
+        canary_evidence_path: "tiny-canary-evidence.json".to_string(),
     };
 
     envelope
@@ -683,6 +995,7 @@ fn loaded_with_live_canary(report_path: &str) -> LoadedBoltV3Config {
         max_no_submit_readiness_report_bytes: 4096,
         max_live_order_count: 1,
         max_notional_per_order: "0.25".to_string(),
+        operator_evidence: None,
     });
     loaded
 }
@@ -714,28 +1027,28 @@ fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
     .expect("report should write");
 }
 
-fn runtime_capture_ref() -> bolt_v2::bolt_v3_tiny_canary_evidence::Phase8RuntimeCaptureRef {
-    bolt_v2::bolt_v3_tiny_canary_evidence::Phase8RuntimeCaptureRef {
+fn runtime_capture_ref() -> bolt_v2::bolt_v3_tiny_canary_evidence::TinyCanaryRuntimeCaptureRef {
+    bolt_v2::bolt_v3_tiny_canary_evidence::TinyCanaryRuntimeCaptureRef {
         spool_root_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             .to_string(),
-        run_id: "phase8-dry-run".to_string(),
+        run_id: "tiny-canary-dry-run".to_string(),
     }
 }
 
-fn evidence_input() -> bolt_v2::bolt_v3_tiny_canary_evidence::Phase8CanaryEvidenceInput {
-    bolt_v2::bolt_v3_tiny_canary_evidence::Phase8CanaryEvidenceInput {
+fn evidence_input() -> bolt_v2::bolt_v3_tiny_canary_evidence::TinyCanaryEvidenceInput {
+    bolt_v2::bolt_v3_tiny_canary_evidence::TinyCanaryEvidenceInput {
         head_sha: "7f2d981f584a0378842d9a76fffd9cd03fce2ce5".to_string(),
         root_config_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .to_string(),
         ssm_manifest_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             .to_string(),
-        ssm_manifest_ref: Phase8EvidenceRef {
+        ssm_manifest_ref: TinyCanaryEvidenceRef {
             path_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
                 .to_string(),
             record_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 .to_string(),
         },
-        strategy_input_evidence_ref: Phase8EvidenceRef {
+        strategy_input_evidence_ref: TinyCanaryEvidenceRef {
             path_hash: "9999999999999999999999999999999999999999999999999999999999999999"
                 .to_string(),
             record_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -746,4 +1059,47 @@ fn evidence_input() -> bolt_v2::bolt_v3_tiny_canary_evidence::Phase8CanaryEviden
         max_notional_per_order: Decimal::new(25, 2),
         runtime_capture_ref: runtime_capture_ref(),
     }
+}
+
+fn operator_evidence_block() -> LiveCanaryOperatorEvidenceBlock {
+    LiveCanaryOperatorEvidenceBlock {
+        approval_envelope_path: "operator/approval-envelope.json".to_string(),
+        ssm_manifest_path: "operator/ssm-manifest.json".to_string(),
+        ssm_manifest_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
+        strategy_input_evidence_path: "operator/strategy-input.json".to_string(),
+        strategy_input_evidence_sha256:
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        canary_evidence_path: "operator/tiny-canary.json".to_string(),
+        approval_not_before_unix_seconds: 1_000,
+        approval_not_after_unix_seconds: 2_000,
+        approval_nonce_path: "operator/approval-nonce.json".to_string(),
+        approval_nonce_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            .to_string(),
+        approval_consumption_path: "operator/approval-consumed.json".to_string(),
+        decision_evidence_path: "operator/decision-evidence.json".to_string(),
+        client_order_id_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            .to_string(),
+        venue_order_id_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            .to_string(),
+        nt_submit_event_path: "operator/nt-submit-event.json".to_string(),
+        venue_order_state_path: "operator/venue-order-state.json".to_string(),
+        strategy_cancel_path: Some("operator/strategy-cancel.json".to_string()),
+        restart_reconciliation_path: "operator/restart-reconciliation.json".to_string(),
+    }
+}
+
+fn write_operator_approval_envelope(root: &std::path::Path, head_sha: &str, root_hash: &str) {
+    let path = root.join("operator/approval-envelope.json");
+    std::fs::create_dir_all(path.parent().expect("approval envelope should have parent"))
+        .expect("approval envelope parent should create");
+    let json = serde_json::json!({
+        "head_sha": head_sha,
+        "root_toml_sha256": root_hash
+    });
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json).expect("approval envelope should serialize"),
+    )
+    .expect("approval envelope should write");
 }

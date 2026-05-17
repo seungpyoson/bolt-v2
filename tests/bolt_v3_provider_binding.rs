@@ -1,30 +1,26 @@
 //! Provider-binding tests for bolt-v3.
 //!
-//! These tests guard the product boundary that was articulated after
-//! Slice 9: core market-identity in `bolt_v3_market_identity` is
-//! provider-neutral, and translation of that neutral plan into
-//! provider-shaped NT adapter values (today: a `MarketSlugFilter`
-//! installed on `PolymarketDataClientConfig.filters`) is the sole
-//! responsibility of the adapter / provider-binding layer.
+//! These tests guard the NT adapter mapping from configured strategy
+//! targets into provider-owned instrument filters. For Polymarket, the
+//! mapped value is a `MarketSlugFilter` installed on
+//! `PolymarketDataClientConfig.filters`.
 //!
 //! What these tests prove:
-//!   1. The new market-identity-aware mapper installs exactly one
+//!   1. The new instrument-filter-aware mapper installs exactly one
 //!      provider filter per configured updown target on the matching
 //!      venue, and the filter yields `[current_slug, next_slug]` for
 //!      the injected fixed clock.
 //!   2. Multi-target filter ordering follows declared strategy
 //!      sequence and never reorders by an accidental sort key.
-//!   3. The `subscribe_new_markets = true` validation invariant still
-//!      fires through the market-identity entry point so the binding
-//!      layer cannot be used to smuggle an "all markets" subscription.
-//!   4. An empty market-identity plan installs no provider filter,
+//!   3. Broad Polymarket discovery flags fail closed through the
+//!      instrument-filter entry point.
+//!   4. An empty `InstrumentFilterConfig` installs no provider filter,
 //!      preserving the previous default behaviour for non-rotating
 //!      configurations.
 //!
 //! Out of scope: live `LiveNode` runtime, NT cache reads,
-//! `request_instruments`, real wall-clock injection, dynamic market
-//! selection, fused / reference price derivation, and any trade-action
-//! construction. Those boundaries belong to later slices.
+//! `request_instruments`, real wall-clock injection, reference data,
+//! and order construction.
 
 mod support;
 
@@ -38,10 +34,12 @@ use std::{
 
 use bolt_v2::{
     bolt_v3_adapters::{
-        BoltV3AdapterMappingError, BoltV3UpdownNowFn, map_bolt_v3_adapters_with_market_identity,
+        BoltV3AdapterMappingError, BoltV3InstrumentFilterClockFn,
+        map_bolt_v3_adapters_with_instrument_filters,
     },
     bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},
-    bolt_v3_market_families::updown::{MarketIdentityPlan, plan_market_identity},
+    bolt_v3_instrument_filters::InstrumentFilterConfig,
+    bolt_v3_market_families::instrument_filters_from_config,
     bolt_v3_providers::{
         binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
     },
@@ -50,7 +48,7 @@ use bolt_v2::{
 use nautilus_polymarket::config::PolymarketDataClientConfig;
 
 /// Mutate a single field in the strategy's raw `[target]` TOML
-/// envelope. Mirrors the helper in `tests/bolt_v3_market_identity.rs`;
+/// envelope. Mirrors the helper in `tests/bolt_v3_instrument_filters.rs`;
 /// the strategy envelope keeps `target` as a generic raw-TOML
 /// container so market-family-shaped fields live in the per-family
 /// binding module.
@@ -84,7 +82,7 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     ResolvedBoltV3Secrets { venues }
 }
 
-fn fixed_clock(now_unix_seconds: i64) -> BoltV3UpdownNowFn {
+fn fixed_clock(now_unix_seconds: i64) -> BoltV3InstrumentFilterClockFn {
     Arc::new(move || now_unix_seconds)
 }
 
@@ -93,16 +91,22 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let resolved = fixture_resolved_secrets();
-    let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
+    let instrument_filters =
+        instrument_filters_from_config(&loaded).expect("instrument filters should derive cleanly");
 
-    // Fixed `now_unix_seconds = 601` puts the planner inside the
+    // Fixed `now_unix_seconds = 601` puts the clock inside the
     // BTC/5m window [600, 900): current=600 and next=900. The provider
     // binding's filter must surface those slugs in `[current, next]`
     // order on every `market_slugs()` call.
     let clock = fixed_clock(601);
 
-    let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
-        .expect("mapping with market identity should succeed");
+    let configs = map_bolt_v3_adapters_with_instrument_filters(
+        &loaded,
+        &resolved,
+        &instrument_filters,
+        clock,
+    )
+    .expect("mapping with instrument filter should succeed");
 
     let polymarket = configs
         .venues
@@ -120,6 +124,14 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
         1,
         "exactly one provider filter should be installed for the single updown target"
     );
+    assert_eq!(
+        data.auto_load_debounce_ms, 250,
+        "provider binding must take the NT auto-load debounce from TOML, not from a code literal"
+    );
+    assert!(
+        !data.auto_load_missing_instruments,
+        "fixture keeps NT missing-instrument auto-load disabled through TOML"
+    );
     let slugs = data.filters[0]
         .market_slugs()
         .expect("provider filter must yield Some(slugs) when bound to an updown target");
@@ -130,6 +142,39 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
             "btc-updown-5m-900".to_string(),
         ],
         "provider filter slug ordering must be [current, next]"
+    );
+}
+
+#[test]
+fn provider_binding_rejects_auto_load_missing_instruments_true() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let data = loaded
+        .root
+        .venues
+        .get_mut("polymarket_main")
+        .and_then(|venue| venue.data.as_mut())
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture should expose polymarket data table");
+    data.insert(
+        "auto_load_missing_instruments".to_string(),
+        toml::Value::Boolean(true),
+    );
+
+    let instrument_filters =
+        instrument_filters_from_config(&loaded).expect("instrument filters should build");
+    let resolved = fixture_resolved_secrets();
+    let configs = map_bolt_v3_adapters_with_instrument_filters(
+        &loaded,
+        &resolved,
+        &instrument_filters,
+        fixed_clock(601),
+    )
+    .expect_err("auto_load_missing_instruments=true must fail closed before NT mapping");
+    let message = configs.to_string();
+    assert!(
+        message.contains("auto_load_missing_instruments") && message.contains("controlled-loading"),
+        "unexpected provider binding error: {message}"
     );
 }
 
@@ -160,6 +205,11 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
             toml::Value::String("LTC".to_string()),
         );
         set_target_field(first, "cadence_seconds", toml::Value::Integer(900));
+        set_target_field(
+            first,
+            "cadence_slug_token",
+            toml::Value::String("15m".to_string()),
+        );
     }
     second.config.strategy_instance_id = "alpha_strategy_main".to_string();
     set_target_field(
@@ -173,6 +223,11 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
         toml::Value::String("XRP".to_string()),
     );
     set_target_field(&mut second, "cadence_seconds", toml::Value::Integer(300));
+    set_target_field(
+        &mut second,
+        "cadence_slug_token",
+        toml::Value::String("5m".to_string()),
+    );
 
     third.config.strategy_instance_id = "mike_strategy_main".to_string();
     set_target_field(
@@ -186,12 +241,18 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
         toml::Value::String("BTC".to_string()),
     );
     set_target_field(&mut third, "cadence_seconds", toml::Value::Integer(3600));
+    set_target_field(
+        &mut third,
+        "cadence_slug_token",
+        toml::Value::String("1h".to_string()),
+    );
 
     loaded.strategies.push(second);
     loaded.strategies.push(third);
 
     let resolved = fixture_resolved_secrets();
-    let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
+    let instrument_filters =
+        instrument_filters_from_config(&loaded).expect("instrument filters should derive cleanly");
 
     // Pick now=7300:
     //   15m cadence 900  -> floor(7300/900)*900 = 7200, next = 8100
@@ -199,8 +260,13 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
     //   1h  cadence 3600 -> floor(7300/3600)*3600 = 7200, next = 10800
     let clock = fixed_clock(7300);
 
-    let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
-        .expect("mapping should succeed");
+    let configs = map_bolt_v3_adapters_with_instrument_filters(
+        &loaded,
+        &resolved,
+        &instrument_filters,
+        clock,
+    )
+    .expect("mapping should succeed");
 
     let polymarket = configs
         .venues
@@ -246,13 +312,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
 }
 
 #[test]
-fn market_identity_path_still_rejects_subscribe_new_markets_true() {
-    // The previous mapper boundary refused to forward
-    // `subscribe_new_markets = true` to NT (which would otherwise cause
-    // pinned NT to subscribe to every Polymarket market). The new
-    // market-identity-aware entry point must preserve that invariant
-    // so the provider-binding layer cannot be used to smuggle a broad
-    // subscription path under the cover of "we have a filter now".
+fn instrument_filters_path_rejects_subscribe_new_markets_true() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
@@ -269,40 +329,45 @@ fn market_identity_path_still_rejects_subscribe_new_markets_true() {
     );
 
     let resolved = fixture_resolved_secrets();
-    let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
+    let instrument_filters =
+        instrument_filters_from_config(&loaded).expect("instrument filters should derive cleanly");
     let clock = fixed_clock(0);
 
-    let error = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
-        .expect_err("mapper must not forward subscribe_new_markets=true to NT");
-    match error {
-        BoltV3AdapterMappingError::ValidationInvariant {
-            venue_key, field, ..
-        } => {
-            assert_eq!(venue_key, "polymarket_main");
-            assert_eq!(field, "data.subscribe_new_markets");
-        }
-        other => panic!("expected ValidationInvariant, got {other}"),
-    }
+    let error = map_bolt_v3_adapters_with_instrument_filters(
+        &loaded,
+        &resolved,
+        &instrument_filters,
+        clock,
+    )
+    .expect_err("subscribe_new_markets=true must fail closed before NT mapping");
+    let message = error.to_string();
+    assert!(
+        message.contains("subscribe_new_markets") && message.contains("controlled-loading"),
+        "unexpected provider binding error: {message}"
+    );
 }
 
 #[test]
-fn empty_market_identity_plan_installs_no_provider_filter() {
+fn empty_instrument_filter_config_installs_no_provider_filter() {
     // A configuration with no rotating-market targets must produce no
     // provider filter installation. This pins down the "filter only
-    // when configured identity exists" half of the binding contract;
+    // when a configured instrument-filter target exists" half of the binding contract;
     // accidentally always-installing a filter would otherwise be
     // invisible to the single-target test above.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let resolved = fixture_resolved_secrets();
 
-    let empty_plan = MarketIdentityPlan {
-        updown_targets: Vec::new(),
-    };
+    let empty_instrument_filter_config = InstrumentFilterConfig::empty();
     let clock = fixed_clock(0);
 
-    let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &empty_plan, clock)
-        .expect("mapping should succeed");
+    let configs = map_bolt_v3_adapters_with_instrument_filters(
+        &loaded,
+        &resolved,
+        &empty_instrument_filter_config,
+        clock,
+    )
+    .expect("mapping should succeed");
 
     let polymarket = configs
         .venues
@@ -316,11 +381,24 @@ fn empty_market_identity_plan_installs_no_provider_filter() {
         .expect("polymarket data config should downcast to NT PolymarketDataClientConfig");
     assert!(
         data.filters.is_empty(),
-        "an empty market-identity plan must not install any provider filter"
+        "an empty InstrumentFilterConfig must not install any provider filter"
     );
     assert!(
         data.new_market_filter.is_none(),
         "no `new_market_filter` should be smuggled in via the binding layer"
+    );
+}
+
+#[test]
+fn polymarket_filter_binding_uses_supported_market_family_registry() {
+    let source = include_str!("../src/bolt_v3_providers/polymarket.rs");
+    assert!(
+        source.contains("SUPPORTED_MARKET_FAMILIES.contains(&target.family_key)"),
+        "Polymarket filter binding must derive accepted target families from SUPPORTED_MARKET_FAMILIES"
+    );
+    assert!(
+        !source.contains(".filter(|target| target.family_key == updown::KEY)"),
+        "Polymarket filter binding must not repeat a concrete family key outside the supported-family registry"
     );
 }
 
@@ -338,14 +416,21 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let resolved = fixture_resolved_secrets();
-    let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
+    let instrument_filters =
+        instrument_filters_from_config(&loaded).expect("instrument filters should derive cleanly");
 
     let counter = Arc::new(AtomicI64::new(601));
     let clock_handle = counter.clone();
-    let clock: BoltV3UpdownNowFn = Arc::new(move || clock_handle.load(Ordering::Relaxed));
+    let clock: BoltV3InstrumentFilterClockFn =
+        Arc::new(move || clock_handle.load(Ordering::Relaxed));
 
-    let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
-        .expect("mapping should succeed");
+    let configs = map_bolt_v3_adapters_with_instrument_filters(
+        &loaded,
+        &resolved,
+        &instrument_filters,
+        clock,
+    )
+    .expect("mapping should succeed");
 
     let polymarket = configs
         .venues
@@ -384,6 +469,41 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
 }
 
 #[test]
+fn provider_binding_filter_returns_empty_market_slugs_when_period_pair_overflows() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let resolved = fixture_resolved_secrets();
+    let instrument_filters =
+        instrument_filters_from_config(&loaded).expect("instrument filters should derive cleanly");
+    let clock = fixed_clock(i64::MAX);
+
+    let configs = map_bolt_v3_adapters_with_instrument_filters(
+        &loaded,
+        &resolved,
+        &instrument_filters,
+        clock,
+    )
+    .expect("mapping should still succeed; the filter must return market slugs per cycle");
+
+    let polymarket = configs
+        .venues
+        .get("polymarket_main")
+        .expect("polymarket_main must be present");
+    let data = polymarket
+        .data
+        .as_ref()
+        .expect("polymarket [data] block must produce an NT data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast to NT PolymarketDataClientConfig");
+
+    assert_eq!(
+        data.filters[0].market_slugs(),
+        Some(Vec::new()),
+        "period-pair overflow must produce an empty market_slugs result"
+    );
+}
+
+#[test]
 fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
     // The binding layer must fail loud if a configured rotating-market
     // target points at a non-Polymarket venue. Without this guard the
@@ -396,11 +516,17 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
     loaded.strategies[0].config.venue = "binance_reference".to_string();
 
     let resolved = fixture_resolved_secrets();
-    let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
+    let instrument_filters =
+        instrument_filters_from_config(&loaded).expect("instrument filters should derive cleanly");
     let clock = fixed_clock(0);
 
-    let error = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
-        .expect_err("non-polymarket venue binding must fail loud at the adapter boundary");
+    let error = map_bolt_v3_adapters_with_instrument_filters(
+        &loaded,
+        &resolved,
+        &instrument_filters,
+        clock,
+    )
+    .expect_err("non-polymarket venue binding must fail loud at the adapter boundary");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
             venue_key,
@@ -408,7 +534,7 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
             message,
         } => {
             assert_eq!(venue_key, "binance_reference");
-            assert_eq!(field, "strategy.target.venue_config_key");
+            assert_eq!(field, "strategy.venue");
             assert!(
                 message.contains("does not support that market family"),
                 "error message should explain the family/provider compatibility boundary: {message}"
@@ -420,20 +546,26 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
 
 #[test]
 fn provider_binding_rejects_updown_target_bound_to_unknown_venue() {
-    // A target whose `venue_config_key` does not appear under
-    // `[venues]` is also a misconfiguration the binding layer must
-    // reject explicitly rather than silently produce no filter.
+    // A target whose strategy venue does not appear under `[venues]`
+    // is also a misconfiguration the binding layer must reject
+    // explicitly rather than silently produce no filter.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
     loaded.strategies[0].config.venue = "venue_does_not_exist".to_string();
 
     let resolved = fixture_resolved_secrets();
-    let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
+    let instrument_filters =
+        instrument_filters_from_config(&loaded).expect("instrument filters should derive cleanly");
     let clock = fixed_clock(0);
 
-    let error = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
-        .expect_err("unknown venue binding must fail loud at the adapter boundary");
+    let error = map_bolt_v3_adapters_with_instrument_filters(
+        &loaded,
+        &resolved,
+        &instrument_filters,
+        clock,
+    )
+    .expect_err("unknown venue binding must fail loud at the adapter boundary");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
             venue_key,
@@ -441,12 +573,81 @@ fn provider_binding_rejects_updown_target_bound_to_unknown_venue() {
             message,
         } => {
             assert_eq!(venue_key, "venue_does_not_exist");
-            assert_eq!(field, "strategy.target.venue_config_key");
+            assert_eq!(field, "strategy.venue");
             assert!(
                 message.contains("unknown venue"),
                 "error message should describe the unknown-venue case: {message}"
             );
         }
         other => panic!("expected ValidationInvariant, got {other}"),
+    }
+}
+
+#[test]
+fn strategy_registry_does_not_import_polymarket_fee_provider() {
+    let source = include_str!("../src/strategies/registry.rs");
+    for forbidden in ["clients::polymarket", "PolymarketClobFeeProvider"] {
+        assert!(
+            !source.contains(forbidden),
+            "src/strategies/registry.rs must expose a generic fee-provider trait without importing a concrete provider; found `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn provider_binding_root_does_not_import_polymarket_fee_provider_client() {
+    let source = include_str!("../src/bolt_v3_providers/mod.rs");
+    for forbidden in ["clients::polymarket", "PolymarketClobFeeProvider"] {
+        assert!(
+            !source.contains(forbidden),
+            "src/bolt_v3_providers/mod.rs may expose provider bindings but must not import concrete Polymarket fee clients; found `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn polymarket_provider_binding_does_not_import_legacy_modules() {
+    let source = include_str!("../src/bolt_v3_providers/polymarket.rs");
+    for forbidden in [
+        "clients::polymarket",
+        "crate::secrets",
+        "secrets::pad_base64",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "src/bolt_v3_providers/polymarket.rs must keep fee and secret helpers inside the bolt-v3 provider binding; found `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn polymarket_fee_provider_module_does_not_import_root_secret_helpers() {
+    let source = include_str!("../src/bolt_v3_providers/polymarket/fees.rs");
+    for forbidden in [
+        "clients::polymarket",
+        "crate::secrets",
+        "secrets::pad_base64",
+        "PolymarketSecrets",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "src/bolt_v3_providers/polymarket/fees.rs must not import root secret helpers; found `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn binary_oracle_archetype_does_not_name_concrete_fee_provider() {
+    let source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
+    for forbidden in [
+        "bolt_v3_providers::polymarket",
+        "polymarket::KEY",
+        "polymarket::build_fee_provider",
+        "PolymarketClobFeeProvider",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "binary_oracle_edge_taker archetype must request fee providers through the provider binding surface; found `{forbidden}`"
+        );
     }
 }

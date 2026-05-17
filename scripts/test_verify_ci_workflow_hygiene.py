@@ -421,11 +421,11 @@ BASE_NEXTEST_CONFIG = """
 live-node = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'binary(=bolt_v2) & (test(~bolt_v3_client_registration::tests::) | test(~bolt_v3_live_node::tests::) | test(~platform::runtime::tests::))'
+filter = 'binary(=bolt_v2) & (test(~bolt_v3_client_registration::tests::) | test(~bolt_v3_live_node::tests::))'
 test-group = 'live-node'
 
 [[profile.default.overrides]]
-filter = 'binary(=bolt_v3_adapter_mapping) | binary(=bolt_v3_client_registration) | binary(=bolt_v3_controlled_connect) | binary(=bolt_v3_credential_log_suppression) | binary(=bolt_v3_live_canary_gate) | binary(=bolt_v3_readiness) | binary(=bolt_v3_strategy_registration) | binary(=bolt_v3_submit_admission) | binary(=bolt_v3_tiny_canary_operator) | binary(=config_parsing) | binary(=eth_chainlink_taker_runtime) | binary(=lake_batch) | binary(=live_node_run) | binary(=nt_runtime_capture) | binary(=platform_runtime) | binary(=polymarket_bootstrap) | binary(=venue_contract)'
+filter = 'binary(=bolt_v3_adapter_mapping) | binary(=bolt_v3_client_registration) | binary(=bolt_v3_controlled_connect) | binary(=bolt_v3_credential_log_suppression) | binary(=bolt_v3_live_canary_gate) | binary(=bolt_v3_readiness) | binary(=bolt_v3_strategy_registration) | binary(=bolt_v3_submit_admission) | binary(=bolt_v3_tiny_canary_operator) | binary(=config_parsing) | binary(=lake_batch) | binary(=nt_runtime_capture) | binary(=venue_contract)'
 test-group = 'live-node'
 """
 
@@ -563,9 +563,9 @@ def assert_nextest_live_node_group_required() -> None:
         nextest_config=BASE_NEXTEST_CONFIG.replace("test-group = 'live-node'", "test-group = 'other'"),
     )
     assert_error(
-        "missing test(~platform::runtime::tests::)",
+        "missing test(~bolt_v3_live_node::tests::)",
         nextest_config=BASE_NEXTEST_CONFIG.replace(
-            " | test(~platform::runtime::tests::)",
+            " | test(~bolt_v3_live_node::tests::)",
             "",
         ),
     )
@@ -580,7 +580,11 @@ def assert_nextest_live_node_group_covers_bolt_v3_builders() -> None:
         "bolt_v3_readiness",
         "bolt_v3_strategy_registration",
         "bolt_v3_submit_admission",
+        "bolt_v3_tiny_canary_operator",
         "config_parsing",
+        "lake_batch",
+        "nt_runtime_capture",
+        "venue_contract",
     ):
         assert_error(
             f"missing binary(={binary})",

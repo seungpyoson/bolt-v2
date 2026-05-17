@@ -56,7 +56,7 @@ It validates:
 - required reference-data venues and instruments are resolvable
 - current market-selection machinery can load NautilusTrader venue/instrument state and attempt selection through that state only
 - root risk config is enforced for Bolt-owned strategy sizing fields, and supported NautilusTrader risk-engine knobs are explicit and mapped rather than accepted as no-ops
-- current `updown` market-identity readiness gates for each configured `updown` target
+- current `updown` instrument-filter readiness gates for each configured `updown` target
 - local catalog evidence can round-trip a registered fixed decision-event type
 - release identity manifest exists and matches the selected artifact set
 - a NautilusTrader node can be assembled without starting the live event loop
@@ -145,8 +145,8 @@ Rules:
 - NautilusTrader live data-engine defaults must be explicit in TOML and mapped into `LiveDataEngineConfig`; the builder path must not inherit `LiveDataEngineConfig::default()` silently
 - NautilusTrader live risk-engine defaults must be explicit in TOML and mapped into `LiveRiskEngineConfig`; the builder path must not inherit `LiveRiskEngineConfig::default()` silently
 - NautilusTrader live exec-engine defaults are explicit in TOML and mapped into `LiveExecEngineConfig`; the builder path must not inherit `LiveExecEngineConfig::default()` silently
-- NautilusTrader logger fields not represented in TOML must be explicit accepted defaults or disabled settings in the bolt-v3 builder path; the builder path must not inherit `LoggerConfig::default()` silently
-- remaining top-level `LiveNodeConfig` fields not represented in TOML must be explicit disabled/empty settings in the bolt-v3 builder path; the builder path must not inherit top-level `LiveNodeConfig::default()` silently
+- NautilusTrader logger fields accepted by the pinned Rust live runtime must be represented in TOML and mapped explicitly in the bolt-v3 builder path; the builder path must not inherit `LoggerConfig::default()` silently
+- top-level `LiveNodeConfig` fields accepted as disabled/false in the current Bolt-v3 runtime must be explicit in TOML; `data_clients` and `exec_clients` remain derived from configured venues through provider Adapter registration
 
 Current contract:
 
@@ -154,8 +154,8 @@ Current contract:
 - every `LiveDataEngineConfig` field is explicit under `[nautilus.data_engine]` in TOML and mapped into NautilusTrader live data config
 - every `LiveRiskEngineConfig` field is explicit under `[risk]` in TOML and mapped into NautilusTrader live risk config
 - every `LiveExecEngineConfig` field is explicit under `[nautilus.exec_engine]` in TOML and mapped into NautilusTrader live exec config
-- `[logging]` owns `stdout_level` and `fileout_level`; bolt-v3 owns the credential-log module filters and explicitly fixes the remaining pinned `LoggerConfig` fields to current accepted defaults or disabled settings before `LiveNodeBuilder::from_config`
-- unsupported or intentionally unowned top-level `LiveNodeConfig` surfaces (`instance_id`, `cache`, `msgbus`, `portfolio`, `emulator`, `streaming`, `loop_debug`, `data_clients`, and `exec_clients`) are set explicitly to `None`, `false`, or empty maps before `LiveNodeBuilder::from_config`
+- `[logging]` owns the complete pinned `LoggerConfig` surface that the Rust live runtime accepts: root levels, component/module overrides, credential-module level, boolean logging flags, explicit disabled file config, and clear-file policy
+- unsupported top-level `LiveNodeConfig` surfaces (`instance_id`, `cache`, `msgbus`, `portfolio`, `emulator`, `streaming`, and `loop_debug`) are explicitly disabled in `[nautilus]`; `data_clients` and `exec_clients` are empty in `LiveNodeConfig` because provider Adapter registration owns client construction
 
 Authority rule:
 
@@ -169,9 +169,9 @@ Current implementation behavior:
 - Bolt-v3 maps the complete live data-engine block into NautilusTrader `LiveDataEngineConfig`
 - Bolt-v3 maps the complete live risk-engine block into NautilusTrader `LiveRiskEngineConfig`
 - Bolt-v3 maps the complete live exec-engine block into NautilusTrader `LiveExecEngineConfig`
-- Bolt-v3 maps the complete pinned `LoggerConfig` field set without relying on `LoggerConfig::default()` inheritance; `file_config` stays `None` and `clear_log_file` stays `false` because the pinned Rust live runtime rejects any other value at build-time validation
-- Bolt-v3 maps the remaining top-level `LiveNodeConfig` residuals explicitly and does not rely on top-level `LiveNodeConfig::default()` inheritance
-- `scripts/verify_bolt_v3_runtime_literals.py` scans production root `src/bolt_v3_*.rs` files plus files under `src/bolt_v3_*` module directories and requires candidate runtime-bearing literals to be classified in `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`
+- Bolt-v3 maps the complete pinned `LoggerConfig` field set from TOML without relying on `LoggerConfig::default()` inheritance; `file_config = "disabled"` maps to `None`, and validation rejects `clear_log_file = true` because the pinned Rust live runtime rejects it at build-time validation
+- Bolt-v3 maps the remaining top-level `LiveNodeConfig` disabled/false fields from TOML and does not rely on top-level `LiveNodeConfig::default()` inheritance
+- `scripts/verify_bolt_v3_runtime_literals.py` scans every current production Rust source file under `src/**/*.rs`; candidate runtime-bearing literals must be classified in `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`
 - the baseline fixture asserts all explicit data-engine values, `nt_bypass = false`, `100/00:00:01` submit/modify rate limits, an empty NT per-instrument notional map, `nt_debug = false`, current NT-default `nt_qsize`, and all explicit exec-engine values
 
 Future synchronization behavior:
@@ -216,7 +216,7 @@ The current Phase 1 contract has exactly one implicit execution leg.
 
 For the implicit Phase 1 leg:
 
-- `venue_config_key` identifies the configured venue instance from TOML
+- `venue` identifies the configured venue instance from TOML
 - `venue_kind` identifies the venue family for that configured instance
 - selected-market, mechanical, entry, pre-submit, and order-submission fields describe that same implicit leg
 
@@ -274,14 +274,8 @@ Current Polymarket loading contract:
 Current `updown` slug derivation rule:
 
 - slug format: `"{underlying_asset_lowercase}-updown-{cadence_slug_token}-{period_start_unix_seconds}"`
-- `cadence_slug_token` is a runtime-contract-defined token for `cadence_seconds`
-- currently defined mappings:
-  - `60` -> `1m`
-  - `300` -> `5m`
-  - `900` -> `15m`
-  - `3600` -> `1h`
-  - `14400` -> `4h`
-- any other `cadence_seconds` value is unsupported until this runtime contract defines its slug token
+- `cadence_seconds` is the TOML-owned period duration
+- `cadence_slug_token` is the TOML-owned slug segment for that period
 - `now_unix_seconds` comes from the NautilusTrader node clock
 - `current_period_start_unix_seconds = floor(now_unix_seconds / cadence_seconds) * cadence_seconds`
 - `next_period_start_unix_seconds = current_period_start_unix_seconds + cadence_seconds`
@@ -357,7 +351,7 @@ Exact fields:
 
 - `configured_target_id`
 - `target_kind`
-- `venue_config_key`
+- `venue`
 - `venue_kind`
 - `rotating_market_family`
 - `underlying_asset`
@@ -369,7 +363,7 @@ Exact fields:
 Field constraints:
 
 - `target_kind = "rotating_market"`
-- `venue_config_key` is the exact strategy-file `venue` reference
+- `venue` is the exact strategy-file `venue` reference
 - `venue_kind = "polymarket"` for the current `updown` scope
 - `rotating_market_family = "updown"`
 - `market_selection_rule = "active_or_next"`
@@ -394,7 +388,7 @@ It is not an observed-facts object and it does not include entry readiness or st
 Every selected market must contain:
 
 - `target_kind`
-- `venue_config_key`
+- `venue`
 - `venue_kind`
 
 #### Current updown rotating-market fields
@@ -581,7 +575,7 @@ Reference-data resolution rule for validation:
 For the current `binary_oracle_edge_taker`, the reference stream and pricing inputs are mechanical:
 
 - `spot_price`
-  - derived from the latest two-sided midpoint on `reference_data.primary`
+  - derived from the latest two-sided midpoint on the configured reference-data role
   - midpoint formula: `(best_bid_price + best_ask_price) / 2`
   - if the latest quote tick does not contain both sides, midpoint is unavailable
   - if the latest midpoint sample is older than `target.retry_interval_seconds` seconds, the reference quote is stale
@@ -595,7 +589,7 @@ There is no fallback from missing price-to-beat metadata to midpoint.
 The current realized-volatility estimator is defined as:
 
 - input samples:
-  - midpoint samples from `reference_data.primary`
+  - midpoint samples from the configured reference-data role
 - retention window:
   - keep midpoint samples whose timestamps fall within the trailing `target.cadence_seconds` seconds
 - reset rule:
@@ -711,7 +705,7 @@ The current `binary_oracle_edge_taker` behavior is the behavioral reference, not
 The strategy actor orchestrates NautilusTrader interaction and runtime state updates.
 It must not own every strategy concern internally.
 
-Pricing, reference-data fusion, market identity, risk and sizing, decision evaluation, and execution mapping must live behind separately testable module boundaries.
+Pricing, reference-data fusion, instrument filter, risk and sizing, decision evaluation, and execution mapping must live behind separately testable module boundaries.
 Examples of concerns that belong outside the strategy actor body:
 
 - active market selection, slug / cadence / asset mapping, and instrument identity
@@ -792,7 +786,7 @@ These fields are required on every structured decision event:
 - `strategy_instance_id`
 - `strategy_archetype`
 - `trader_id`
-- `venue_config_key`
+- `venue`
 - `venue_kind`
 - `runtime_mode`
 - `release_id`
@@ -819,11 +813,11 @@ Definitions:
   - the exact `strategy_archetype` value from the strategy file
 - `trader_id`
   - the exact root-file `trader_id` value
-- `venue_config_key`
+- `venue`
   - the keyed trading venue reference from the strategy file
   - not a reference-data venue key
 - `venue_kind`
-  - the exact `kind` value from the configured venue block referenced by `venue_config_key`
+  - the exact `kind` value from the configured venue block referenced by `venue`
   - for the current `updown` scope, `polymarket`
   - describes the implicit execution leg in the Phase 1 execution-leg model
 - `runtime_mode`
@@ -977,7 +971,7 @@ For the current `binary_oracle_edge_taker`, `archetype_metrics` must contain:
 Definitions for the current `binary_oracle_edge_taker` metrics:
 
 - `spot_price`
-  - latest valid midpoint from `reference_data.primary`
+  - latest valid midpoint from the configured reference-data role
 - `price_to_beat_value`
   - selected market reference price used for updown evaluation
 - `realized_volatility`
@@ -1196,6 +1190,7 @@ Registration and persistence mechanism:
 - registration happens before any strategy can emit decision evidence
 - the current live-trading persistence path uses one canonical bolt call site which hands registered custom-data values to NautilusTrader's catalog API
 - `[persistence.streaming]` supplies the catalog protocol, flush interval, replace behavior, and no-rotation policy for this call site
+- `[persistence].runtime_capture_start_poll_interval_milliseconds` supplies the raw-capture startup poll interval while startup messages are buffered before NT reports running
 - bolt does not implement a second writer, subscriber-writer loop, or parallel persistence path
 
 Every decision event must be constructed as the fixed registered NautilusTrader custom-data value before emission.
@@ -1283,6 +1278,7 @@ If a raw fact does not have `ts_event` or `ts_init`, capture uses the closest Na
 If no NautilusTrader timestamp is available, capture records the bolt node-clock capture timestamp as a bolt capture timestamp, not as a replacement NautilusTrader timestamp.
 
 The catalog writer configured by `[persistence]` and `[persistence.streaming]` is the single local persistence path for both structured decision events and raw NautilusTrader capture.
+Runtime-capture timing policy used by that path must come from `[persistence]`, not from capture-worker literals.
 bolt must not add a second raw-data writer, side database, subscriber-writer loop, or parallel persistence path.
 
 Raw capture failure is a persistence failure.
@@ -1379,7 +1375,7 @@ Controlled-connect boundary contract:
 - no copying NT private drain logic: the boundary does not copy or reimplement NT's private `flush_pending_data`, `drive_with_event_buffering`, or runner/channel internals; it strictly composes the public `kernel.connect_*` and `kernel.check_engines_connected` API surface
 - pinned-NT-only: the boundary reaches NT only through `LiveNode::kernel_mut().connect_data_clients`, `LiveNode::kernel_mut().connect_exec_clients`, and `LiveNode::kernel().check_engines_connected` (the pinned NT controlled-connect API surface)
 - no-trade: the boundary never enters NT's runner loop, never invokes NT's trader entrypoint, never registers strategies, never selects markets, never constructs orders, never submits orders, and never invokes any user-level subscription API; `NodeState` therefore remains in whatever state the node was in before the call (typically `Idle`)
-- credential-log filter preserved: in a bolt-v3-only process, NT's first-wins logger has already been initialized by the bolt-v3 `LoggerConfig` passed through `LiveNodeBuilder::build`, so the `NT_CREDENTIAL_LOG_MODULES` filter remains active during the connect dispatch; the future production v3 entrypoint must preserve this first-initializer ordering
+- credential-log filter preserved: in a bolt-v3-only process, NT's first-wins logger has already been initialized by the bolt-v3 `LoggerConfig` passed through `LiveNodeBuilder::build`, so the `NT_CREDENTIAL_LOG_MODULES` filter remains active during the connect dispatch; production callers preserve this first-initializer ordering
 
 Errors from individual NT client `connect()` calls are surfaced via NT's logger; NT's engine-level dispatchers in `nautilus_data::engine::DataEngine::connect` and `nautilus_execution::engine::ExecutionEngine::connect` log individual `Err` values rather than propagating them. The bolt-v3 boundary returns `Ok(())` only when both dispatchers have returned within the configured bound **and** `kernel.check_engines_connected()` returns true. Otherwise it returns `ConnectTimeout` or `ConnectIncomplete` and the caller is expected to drive `disconnect_bolt_v3_clients` to drain any partially-connected NT clients.
 

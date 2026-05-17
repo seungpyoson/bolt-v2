@@ -15,36 +15,28 @@ struct Cli {
     #[arg(long)]
     output_root: PathBuf,
     #[arg(long)]
-    contract: Option<PathBuf>,
+    contract: PathBuf,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let contract = cli
-        .contract
-        .as_ref()
-        .map(|p| {
-            let normalized = normalize_local_absolute_contract_path(p)?;
-            VenueContract::load_and_validate(&normalized)
-        })
-        .transpose()?;
+    let contract_path = normalize_local_absolute_contract_path(&cli.contract)?;
+    let contract = VenueContract::load_and_validate(&contract_path)?;
 
     let report = convert_live_spool_to_parquet(
         &cli.catalog_path,
         &cli.instance_id,
         &cli.output_root,
-        contract.as_ref(),
+        &contract,
     )?;
 
-    if let Some(ref completeness) = report.completeness {
-        println!(
-            "Contract validation: {} ({} venue, {} classes)",
-            completeness.outcome,
-            completeness.venue,
-            completeness.classes.len()
-        );
-    }
+    println!(
+        "Contract validation: {} ({} venue, {} classes)",
+        report.completeness.outcome,
+        report.completeness.venue,
+        report.completeness.classes.len()
+    );
 
     println!(
         "Converted {} live stream classes for instance {} into {}",

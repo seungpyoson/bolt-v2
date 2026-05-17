@@ -55,6 +55,7 @@ async fn live_canary_gate_rejects_empty_approval_id() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -80,6 +81,7 @@ async fn live_canary_gate_rejects_empty_readiness_report_path() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -105,6 +107,7 @@ async fn live_canary_gate_rejects_zero_order_count() {
             max_live_order_count: 0,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -133,6 +136,7 @@ async fn live_canary_gate_rejects_zero_report_byte_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 0,
+            operator_evidence: None,
         },
     );
 
@@ -163,6 +167,7 @@ async fn live_canary_gate_rejects_invalid_canary_notional_values() {
                 max_live_order_count: 1,
                 max_notional_per_order: candidate.to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
+                operator_evidence: None,
             },
         );
 
@@ -196,6 +201,7 @@ async fn live_canary_gate_rejects_invalid_root_notional_values() {
                 max_live_order_count: 1,
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
+                operator_evidence: None,
             },
         );
 
@@ -233,6 +239,7 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
             max_live_order_count: 1,
             max_notional_per_order: " 1.00 ".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -266,6 +273,7 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "10.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -286,6 +294,7 @@ async fn live_canary_gate_rejects_notional_above_root_risk_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "11.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -317,6 +326,7 @@ async fn live_canary_gate_rejects_empty_stage_report() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -350,6 +360,7 @@ async fn live_canary_gate_rejects_report_missing_stages_key() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -388,6 +399,7 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -421,6 +433,7 @@ async fn live_canary_gate_reports_each_unsatisfied_required_stage_once() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -457,6 +470,7 @@ async fn live_canary_gate_rejects_missing_no_submit_report() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -485,6 +499,7 @@ async fn live_canary_gate_rejects_malformed_no_submit_report_json() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -519,6 +534,7 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: report_len,
+            operator_evidence: None,
         },
     );
 
@@ -542,6 +558,7 @@ async fn live_canary_gate_rejects_no_submit_report_above_configured_byte_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 1,
+            operator_evidence: None,
         },
     );
 
@@ -573,6 +590,7 @@ async fn live_canary_gate_distinguishes_non_object_report_from_missing_stages() 
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -609,6 +627,7 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -630,7 +649,7 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn live_canary_gate_reports_unsatisfied_stage_name_fallback() {
+async fn live_canary_gate_rejects_stage_name_alias() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
@@ -644,18 +663,21 @@ async fn live_canary_gate_reports_unsatisfied_stage_name_fallback() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
     let error = check_bolt_v3_live_canary_gate(&loaded)
         .await
-        .expect_err("unsatisfied report with name fallback must fail closed");
+        .expect_err("name-only stage identifiers must fail closed");
 
     match error {
         BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
             assert!(
-                reasons.iter().any(|reason| reason.contains("disconnect")),
-                "error should name the blocked stage from name fallback, got {reasons:?}"
+                reasons
+                    .iter()
+                    .any(|reason| reason.contains("stage entry is missing `stage`")),
+                "error should reject the non-canonical stage field, got {reasons:?}"
             );
         }
         other => panic!("expected unsatisfied report rejection, got {other:?}"),
@@ -663,7 +685,89 @@ async fn live_canary_gate_reports_unsatisfied_stage_name_fallback() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
+async fn live_canary_gate_reports_missing_stage_name_without_placeholder() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    std::fs::write(&report_path, r#"{"stages":[{"status":"blocked"}]}"#)
+        .expect("report fixture should be written");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("stage entry without canonical stage must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+            assert!(
+                reasons
+                    .iter()
+                    .any(|reason| reason.contains("stage entry is missing `stage`")),
+                "error should name the missing stage field, got {reasons:?}"
+            );
+            assert!(
+                reasons.iter().all(|reason| !reason.contains("<unnamed>")),
+                "error must not use a placeholder stage name, got {reasons:?}"
+            );
+        }
+        other => panic!("expected unsatisfied report rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_reports_missing_stage_status_without_placeholder() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    std::fs::write(&report_path, r#"{"stages":[{"stage":"disconnect"}]}"#)
+        .expect("report fixture should be written");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("stage entry without a status must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+            assert!(
+                reasons
+                    .iter()
+                    .any(|reason| reason == "stage `disconnect` status is missing"),
+                "error should name the missing status for the stage, got {reasons:?}"
+            );
+            assert!(
+                reasons.iter().all(|reason| !reason.contains("<missing>")),
+                "error must not use a placeholder status, got {reasons:?}"
+            );
+        }
+        other => panic!("expected unsatisfied report rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_noncanonical_satisfied_status() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
@@ -677,14 +781,25 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
     let report = check_bolt_v3_live_canary_gate(&loaded)
         .await
-        .expect("uppercase satisfied status should pass");
+        .expect_err("uppercase satisfied status must fail closed");
 
-    assert_eq!(report.approval_id(), "operator-approved-canary-001");
+    match report {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+            assert!(
+                reasons
+                    .iter()
+                    .any(|reason| reason == "stage `connect` status is `SATISFIED`"),
+                "error should reject the non-canonical status value, got {reasons:?}"
+            );
+        }
+        other => panic!("expected unsatisfied report rejection, got {other:?}"),
+    }
 }
 
 fn loaded_with_live_canary(

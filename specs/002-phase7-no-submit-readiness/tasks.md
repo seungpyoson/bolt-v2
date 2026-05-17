@@ -81,8 +81,8 @@
 **Independent Test**: `cargo test --test bolt_v3_no_submit_readiness_operator -- --nocapture` shows ignored by default.
 
 - [x] T021 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving missing approval id fails before secret resolution.
-- [x] T022 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving approval mismatch fails before secret resolution.
-- [x] T023 [US2] Implement real-run approval validation in `src/bolt_v3_no_submit_readiness.rs`.
+- [x] T022 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving operator approval/head evidence is not supplied through env vars.
+- [x] T023 [US2] Implement real-run approval validation from `[live_canary].approval_id` in `src/bolt_v3_no_submit_readiness.rs`.
 - [x] T024 [US2] Add ignored operator harness in `tests/bolt_v3_no_submit_readiness_operator.rs`.
 - [x] T025 [US2] Run default operator-harness test and capture ignored-by-default output.
 - [x] T026 [US2] Do not run ignored real SSM/venue command without explicit user approval in current thread.

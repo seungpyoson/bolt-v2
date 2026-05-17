@@ -1,16 +1,36 @@
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::lake_batch::supported_stream_classes;
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
-const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const STREAM_CLASS_QUOTES: &str = "quotes";
+pub const STREAM_CLASS_TRADES: &str = "trades";
+pub const STREAM_CLASS_ORDER_BOOK_DELTAS: &str = "order_book_deltas";
+pub const STREAM_CLASS_ORDER_BOOK_DEPTHS: &str = "order_book_depths";
+pub const STREAM_CLASS_INDEX_PRICES: &str = "index_prices";
+pub const STREAM_CLASS_MARK_PRICES: &str = "mark_prices";
+pub const STREAM_CLASS_INSTRUMENT_CLOSES: &str = "instrument_closes";
+
+const SUPPORTED_STREAM_CLASSES: &[&str] = &[
+    STREAM_CLASS_QUOTES,
+    STREAM_CLASS_TRADES,
+    STREAM_CLASS_ORDER_BOOK_DELTAS,
+    STREAM_CLASS_ORDER_BOOK_DEPTHS,
+    STREAM_CLASS_INDEX_PRICES,
+    STREAM_CLASS_MARK_PRICES,
+    STREAM_CLASS_INSTRUMENT_CLOSES,
+];
+
+pub fn supported_stream_classes() -> &'static [&'static str] {
+    SUPPORTED_STREAM_CLASSES
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -28,10 +48,9 @@ pub enum Policy {
     Disabled,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Provenance {
-    #[default]
     Native,
     Derived,
 }
@@ -39,13 +58,9 @@ pub enum Provenance {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StreamContract {
     pub capability: Capability,
-    #[serde(default)]
-    pub policy: Option<Policy>,
-    #[serde(default)]
+    pub policy: Policy,
     pub provenance: Provenance,
-    #[serde(default)]
     pub reason: Option<String>,
-    #[serde(default)]
     pub derived_from: Option<Vec<String>>,
 }
 
@@ -57,17 +72,127 @@ pub struct VenueContract {
     pub streams: BTreeMap<String, StreamContract>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassReportStatus {
+    Pass,
+    PassUnsupported,
+    PassDisabled,
+    WarnOptionalAbsent,
+    SpoolPresentConversionEmpty,
+    FailUnknown,
+    FailContractViolation,
+    FailRequiredAbsent,
+}
+
+impl ClassReportStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::PassUnsupported => "pass_unsupported",
+            Self::PassDisabled => "pass_disabled",
+            Self::WarnOptionalAbsent => "warn_optional_absent",
+            Self::SpoolPresentConversionEmpty => "spool_present_conversion_empty",
+            Self::FailUnknown => "fail_unknown",
+            Self::FailContractViolation => "fail_contract_violation",
+            Self::FailRequiredAbsent => "fail_required_absent",
+        }
+    }
+}
+
+impl fmt::Display for ClassReportStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl PartialEq<&str> for ClassReportStatus {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletenessOutcome {
+    Pass,
+    Fail,
+}
+
+impl CompletenessOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+        }
+    }
+}
+
+impl fmt::Display for CompletenessOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl PartialEq<&str> for CompletenessOutcome {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassReportCapability {
+    Supported,
+    Unsupported,
+    Conditional,
+    Unknown,
+}
+
+impl ClassReportCapability {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Supported => "supported",
+            Self::Unsupported => "unsupported",
+            Self::Conditional => "conditional",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl From<&Capability> for ClassReportCapability {
+    fn from(capability: &Capability) -> Self {
+        match capability {
+            Capability::Supported => Self::Supported,
+            Capability::Unsupported => Self::Unsupported,
+            Capability::Conditional => Self::Conditional,
+        }
+    }
+}
+
+impl fmt::Display for ClassReportCapability {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl PartialEq<&str> for ClassReportCapability {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClassReport {
-    pub capability: String,
+    pub capability: ClassReportCapability,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy: Option<String>,
+    pub policy: Option<Policy>,
     pub spool_present: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows_converted: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub files_converted: Option<u64>,
-    pub status: String,
+    pub status: ClassReportStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -78,7 +203,7 @@ pub struct CompletenessReport {
     pub venue: String,
     pub contract_version: u32,
     pub instance_id: String,
-    pub outcome: String,
+    pub outcome: CompletenessOutcome,
     pub classes: BTreeMap<String, ClassReport>,
 }
 
@@ -113,24 +238,19 @@ impl VenueContract {
             );
             match stream.capability {
                 Capability::Unsupported => {
-                    if let Some(ref policy) = stream.policy {
-                        ensure!(
-                            *policy == Policy::Disabled,
-                            "stream {name}: unsupported capability cannot have \
-                             policy {policy:?} (must be disabled or omitted)"
-                        );
-                    }
+                    ensure!(
+                        stream.policy == Policy::Disabled,
+                        "stream {name}: unsupported capability must have disabled policy"
+                    );
                 }
                 Capability::Supported | Capability::Conditional => {
-                    if let Some(ref policy) = stream.policy {
-                        ensure!(
-                            *policy == Policy::Required
-                                || *policy == Policy::Optional
-                                || *policy == Policy::Disabled,
-                            "stream {name}: supported capability has invalid \
-                             policy {policy:?}"
-                        );
-                    }
+                    ensure!(
+                        stream.policy == Policy::Required
+                            || stream.policy == Policy::Optional
+                            || stream.policy == Policy::Disabled,
+                        "stream {name}: supported capability has invalid policy {:?}",
+                        stream.policy
+                    );
                 }
             }
 
@@ -156,12 +276,7 @@ impl VenueContract {
     }
 
     pub fn effective_policy(&self, class: &str) -> Option<Policy> {
-        self.streams.get(class).map(|s| {
-            s.policy.clone().unwrap_or(match s.capability {
-                Capability::Unsupported => Policy::Disabled,
-                Capability::Supported | Capability::Conditional => Policy::Required,
-            })
-        })
+        self.streams.get(class).map(|s| s.policy.clone())
     }
 }
 

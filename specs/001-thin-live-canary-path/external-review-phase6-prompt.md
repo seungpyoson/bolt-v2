@@ -39,7 +39,7 @@ Every entry, exit, and replace-submit candidate consumes one global submit-admis
   - `src/bolt_v3_strategy_registration.rs`
   - `src/strategies/registry.rs`
   - `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`
-  - `src/strategies/eth_chainlink_taker.rs`
+  - `src/strategies/binary_oracle_edge_taker.rs`
 
 ## Hard Constraints
 

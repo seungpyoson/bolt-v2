@@ -29,9 +29,9 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
             { STAGE_KEY: OPERATOR_APPROVAL_STAGE, STATUS_KEY: STATUS_SATISFIED },
             { STAGE_KEY: SECRET_RESOLUTION_STAGE, STATUS_KEY: STATUS_SATISFIED },
             { STAGE_KEY: LIVE_NODE_BUILD_STAGE, STATUS_KEY: STATUS_SATISFIED },
-            { STAGE_KEY: "controlled_connect", STATUS_KEY: STATUS_SATISFIED },
-            { STAGE_KEY: "reference_readiness", STATUS_KEY: STATUS_SATISFIED },
-            { STAGE_KEY: "controlled_disconnect", STATUS_KEY: STATUS_SATISFIED },
+            { STAGE_KEY: CONTROLLED_CONNECT_STAGE, STATUS_KEY: STATUS_SATISFIED },
+            { STAGE_KEY: REFERENCE_READINESS_STAGE, STATUS_KEY: STATUS_SATISFIED },
+            { STAGE_KEY: CONTROLLED_DISCONNECT_STAGE, STATUS_KEY: STATUS_SATISFIED },
             { STAGE_KEY: REPORT_WRITE_STAGE, STATUS_KEY: STATUS_SATISFIED }
         ]
     });
@@ -48,6 +48,7 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -305,26 +306,62 @@ fn no_submit_readiness_writer_enforces_configured_byte_cap() {
     );
 
     let error = report
-        .write_redacted_json_with_max_bytes(&report_path, 1)
+        .write_redacted_json_with_max_bytes(&report_path, 1_u64)
         .expect_err("oversized report must fail closed");
 
-    assert!(
-        matches!(error, BoltV3NoSubmitReadinessError::ReportTooLarge { .. }),
-        "expected report byte-cap error, got {error:?}"
-    );
+    let BoltV3NoSubmitReadinessError::ReportTooLarge {
+        path,
+        length,
+        max_length,
+    } = error
+    else {
+        panic!("expected report byte-cap error, got {error:?}");
+    };
+    assert_eq!(path, report_path);
+    assert!(length > 1_u64, "oversized report length must be recorded");
+    assert_eq!(max_length, 1_u64);
     assert!(
         !report_path.exists(),
         "oversized report must not be written to disk"
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn no_submit_readiness_rejects_empty_operator_approval_before_build() {
+#[test]
+fn no_submit_readiness_rejects_empty_configured_operator_approval_before_build() {
+    let loaded = loaded_with_live_canary(
+        loaded_with_test_live_canary(),
+        LiveCanaryBlock {
+            approval_id: "   ".to_string(),
+            no_submit_readiness_report_path: "not-written-before-approval-check.json".to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
+        },
+    );
+
+    let error = run_bolt_v3_no_submit_readiness(
+        &loaded,
+        "operator-approved-canary-001",
+        "a526e1886f1877fcce0e5c7f667c45375c1709a4",
+    )
+    .expect_err("missing configured approval must fail before runtime build");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3NoSubmitReadinessError::MissingOperatorApprovalId
+        ),
+        "expected missing approval error, got {error:?}"
+    );
+}
+
+#[test]
+fn no_submit_readiness_rejects_empty_operator_approval_before_build() {
     let loaded = loaded_with_test_live_canary();
 
     let error =
         run_bolt_v3_no_submit_readiness(&loaded, "   ", "a526e1886f1877fcce0e5c7f667c45375c1709a4")
-            .await
             .expect_err("missing approval must fail before runtime build");
 
     assert!(
@@ -336,8 +373,8 @@ async fn no_submit_readiness_rejects_empty_operator_approval_before_build() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn no_submit_readiness_rejects_operator_approval_mismatch_before_build() {
+#[test]
+fn no_submit_readiness_rejects_operator_approval_mismatch_before_build() {
     let loaded = loaded_with_test_live_canary();
 
     let error = run_bolt_v3_no_submit_readiness(
@@ -345,7 +382,6 @@ async fn no_submit_readiness_rejects_operator_approval_mismatch_before_build() {
         "different-approval",
         "a526e1886f1877fcce0e5c7f667c45375c1709a4",
     )
-    .await
     .expect_err("approval mismatch must fail before runtime build");
 
     assert!(
@@ -354,6 +390,23 @@ async fn no_submit_readiness_rejects_operator_approval_mismatch_before_build() {
             BoltV3NoSubmitReadinessError::OperatorApprovalIdMismatch
         ),
         "expected approval mismatch error, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn no_submit_readiness_rejects_sync_runner_inside_active_tokio_runtime() {
+    let loaded = loaded_with_test_live_canary();
+
+    let error = run_bolt_v3_no_submit_readiness(
+        &loaded,
+        "operator-approved-canary-001",
+        "a526e1886f1877fcce0e5c7f667c45375c1709a4",
+    )
+    .expect_err("sync no-submit runner must reject active Tokio runtime before SSM build");
+
+    assert!(
+        matches!(error, BoltV3NoSubmitReadinessError::ActiveTokioRuntime),
+        "expected active runtime boundary error, got {error:?}"
     );
 }
 
@@ -423,17 +476,55 @@ fn no_submit_readiness_metadata_checksum_uses_async_file_io() {
 }
 
 #[test]
-fn no_submit_readiness_operator_harness_uses_localset() {
-    let source = std::fs::read_to_string("tests/bolt_v3_no_submit_readiness_operator.rs")
-        .expect("operator harness source should exist");
+fn no_submit_readiness_sync_runner_uses_localset_after_build() {
+    let source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness.rs")
+        .expect("no-submit readiness source should exist");
 
     assert!(
         source.contains("tokio::task::LocalSet::new()"),
-        "operator no-submit harness must create a LocalSet for NT local tasks"
+        "sync no-submit runner must create a LocalSet for NT local tasks"
     );
     assert!(
         source.contains(".run_until("),
-        "operator no-submit harness must enter the readiness future through LocalSet::run_until"
+        "sync no-submit runner must enter the readiness future through LocalSet::run_until"
+    );
+    let build_pos = source
+        .find("build_bolt_v3_live_node(loaded)")
+        .expect("sync runner must build the live node");
+    let localset_pos = source
+        .find("tokio::task::LocalSet::new()")
+        .expect("sync runner must create a LocalSet");
+    assert!(
+        build_pos < localset_pos,
+        "SSM-backed live-node build must happen before entering the readiness Tokio runtime"
+    );
+}
+
+#[test]
+fn no_submit_readiness_operator_approval_is_config_owned_not_env_owned() {
+    let source = std::fs::read_to_string("tests/bolt_v3_no_submit_readiness_operator.rs")
+        .expect("operator harness source should exist");
+
+    for forbidden in [
+        concat!("BOLT_V3_", "OPERATOR_APPROVAL_ID"),
+        concat!("BOLT_V3_", "HEAD_SHA"),
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "operator no-submit approval/head evidence must not be supplied through env var `{forbidden}`"
+        );
+    }
+    assert!(
+        source.contains("live_canary.approval_id"),
+        "operator no-submit approval must be read from loaded TOML"
+    );
+    assert!(
+        source.contains("run_bolt_v3_no_submit_readiness(&loaded, approval_id, &head_sha)"),
+        "operator no-submit harness must pass an explicit approval id through the readiness boundary"
+    );
+    assert!(
+        source.contains("no_submit_readiness_current_checkout_head_sha"),
+        "operator no-submit head evidence must be derived from current checkout"
     );
 }
 
@@ -462,6 +553,7 @@ fn loaded_with_test_live_canary() -> LoadedBoltV3Config {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     )
 }

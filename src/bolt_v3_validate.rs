@@ -13,12 +13,11 @@
 //! `crate::bolt_v3_market_families`; `validate_strategies` dispatches
 //! the strategy envelope's raw `[target]` value through
 //! `crate::bolt_v3_market_families::validate_strategy_target`. Strategy-
-//! archetype-specific rules (required reference-data roles, allowed
-//! `[parameters.entry_order]` / `[parameters.exit_order]` combinations,
-//! archetype-specific error wording) are owned by the per-archetype
-//! binding modules under `crate::bolt_v3_archetypes`; those modules also
-//! own archetype parameter bounds such as parameter decimal syntax and
-//! root-cap comparison. `validate_strategies` dispatches into the
+//! archetype-specific rules (required reference-data roles, order-shape
+//! schema, archetype-specific error wording) are owned by the
+//! per-archetype binding modules under `crate::bolt_v3_archetypes`; those
+//! modules also own archetype parameter bounds such as parameter decimal
+//! syntax and root-cap comparison. `validate_strategies` dispatches into the
 //! matching archetype validator via
 //! `crate::bolt_v3_archetypes::validate_strategy_archetype`.
 //! Per-provider venue-block validation (provider-shaped
@@ -42,7 +41,7 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
-    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy, NautilusBlock,
+    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy, LoggingBlock, NautilusBlock,
     PersistenceBlock, RiskBlock, VenueBlock,
 };
 
@@ -98,6 +97,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     }
     errors.extend(validate_nautilus_block(&root.nautilus));
     errors.extend(validate_risk_block(&root.risk));
+    errors.extend(validate_logging_block(&root.logging));
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_venues_block(&root.venues));
@@ -107,6 +107,11 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
 
 fn validate_nautilus_block(block: &NautilusBlock) -> Vec<String> {
     let mut errors = Vec::new();
+    if block.loop_debug {
+        errors.push(
+            "nautilus.loop_debug must be false; NT Rust live runtime rejects true".to_string(),
+        );
+    }
     let positive_fields: &[(&str, u64)] = &[
         (
             "nautilus.timeout_connection_seconds",
@@ -163,19 +168,6 @@ fn validate_data_engine_block(
             ));
         }
     }
-    if block.graceful_shutdown_on_error {
-        errors.push(
-            "nautilus.data_engine.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
-                .to_string(),
-        );
-    }
-    let nt_data_default = nautilus_live::config::LiveDataEngineConfig::default();
-    if block.qsize != nt_data_default.qsize {
-        errors.push(format!(
-            "nautilus.data_engine.qsize must match NT default {}; NT rejects non-default qsize on the Rust live runtime",
-            nt_data_default.qsize
-        ));
-    }
     errors
 }
 
@@ -206,35 +198,6 @@ fn validate_exec_engine_block(
             errors.push(format!("{label} must be a positive integer"));
         }
     }
-
-    if block.snapshot_orders {
-        errors.push(
-            "nautilus.exec_engine.snapshot_orders must be false; NT rejects true on the Rust live runtime".to_string(),
-        );
-    }
-    if block.snapshot_positions {
-        errors.push(
-            "nautilus.exec_engine.snapshot_positions must be false; NT rejects true on the Rust live runtime".to_string(),
-        );
-    }
-    if block.purge_from_database {
-        errors.push(
-            "nautilus.exec_engine.purge_from_database must be false; NT rejects true on the Rust live runtime".to_string(),
-        );
-    }
-    if block.graceful_shutdown_on_error {
-        errors.push(
-            "nautilus.exec_engine.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime".to_string(),
-        );
-    }
-    let nt_exec_default = nautilus_live::config::LiveExecEngineConfig::default();
-    if block.qsize != nt_exec_default.qsize {
-        errors.push(format!(
-            "nautilus.exec_engine.qsize must match NT default {}; NT rejects non-default qsize on the Rust live runtime",
-            nt_exec_default.qsize
-        ));
-    }
-
     for client_id in &block.external_client_ids {
         if let Err(error) = ClientId::new_checked(client_id) {
             errors.push(format!(
@@ -261,27 +224,20 @@ fn validate_exec_engine_block(
 
 fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     let mut errors = Vec::new();
-    if let Err(reason) = parse_decimal_string(&block.default_max_notional_per_order) {
-        errors.push(format!(
-            "risk.default_max_notional_per_order is not a valid decimal string ({reason}): `{value}`",
-            value = block.default_max_notional_per_order
-        ));
-    }
-    if block.nt_bypass {
-        errors.push("risk.nt_bypass must be false".to_string());
-    }
-    if block.nt_graceful_shutdown_on_error {
-        errors.push(
-            "risk.nt_graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
-                .to_string(),
-        );
-    }
-    let nt_risk_default = nautilus_live::config::LiveRiskEngineConfig::default();
-    if block.nt_qsize != nt_risk_default.qsize {
-        errors.push(format!(
-            "risk.nt_qsize must match NT default {}; NT rejects non-default qsize on the Rust live runtime",
-            nt_risk_default.qsize
-        ));
+    match parse_decimal_string(&block.default_max_notional_per_order) {
+        Ok(value) if value <= Decimal::ZERO => {
+            errors.push(format!(
+                "risk.default_max_notional_per_order must be a positive decimal string: `{value}`",
+                value = block.default_max_notional_per_order
+            ));
+        }
+        Ok(_) => {}
+        Err(reason) => {
+            errors.push(format!(
+                "risk.default_max_notional_per_order is not a valid decimal string ({reason}): `{value}`",
+                value = block.default_max_notional_per_order
+            ));
+        }
     }
     for (label, value) in [
         (
@@ -360,6 +316,37 @@ fn validate_rate_limit_string(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_logging_block(block: &LoggingBlock) -> Vec<String> {
+    let mut errors = Vec::new();
+    if block.credential_module_level.to_level_filter() > log::LevelFilter::Warn {
+        errors.push(format!(
+            "logging.credential_module_level must be WARN or stricter; configured {:?}",
+            block.credential_module_level
+        ));
+    }
+    if block.clear_log_file {
+        errors.push(
+            "logging.clear_log_file must be false; NT Rust live runtime rejects true".to_string(),
+        );
+    }
+    for (label, value) in [
+        (
+            "logging.stale_log_source_directory",
+            block.stale_log_source_directory.as_str(),
+        ),
+        (
+            "logging.stale_log_archive_directory",
+            block.stale_log_archive_directory.as_str(),
+        ),
+    ] {
+        let path = Path::new(value);
+        if !path.is_absolute() {
+            errors.push(format!("{label} must be an absolute path: `{value}`"));
+        }
+    }
+    errors
+}
+
 fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
     let mut errors = Vec::new();
     if !Path::new(&block.catalog_directory).is_absolute() {
@@ -367,6 +354,12 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
             "persistence.catalog_directory must be an absolute path: `{}`",
             block.catalog_directory
         ));
+    }
+    if block.runtime_capture_start_poll_interval_milliseconds == 0 {
+        errors.push(
+            "persistence.runtime_capture_start_poll_interval_milliseconds must be a positive integer"
+                .to_string(),
+        );
     }
     if block.streaming.flush_interval_milliseconds == 0 {
         errors.push(
@@ -390,30 +383,6 @@ fn validate_venues_block(venues: &BTreeMap<String, VenueBlock>) -> Vec<String> {
     if venues.is_empty() {
         errors.push("venues must define at least one venue block".to_string());
         return errors;
-    }
-    // The current bolt-v3 scope is one venue per provider key. Multi-venue
-    // routing (multiple keyed venues for the same provider) is not yet
-    // covered by the NT typed-venue routing path or by bolt-v3 strategy
-    // validation. NT client registration names can differ, but engine
-    // instrument subscriptions still key on typed venues such as
-    // POLYMARKET/BINANCE, so we fail closed until that routing is
-    // explicitly designed.
-    let mut kind_counts: BTreeMap<String, Vec<&str>> = BTreeMap::new();
-    for (key, venue) in venues {
-        kind_counts
-            .entry(venue.kind.as_str().to_string())
-            .or_default()
-            .push(key.as_str());
-    }
-    for (kind, keys) in &kind_counts {
-        if keys.len() > 1 {
-            errors.push(format!(
-                "venues: at most one [venues.<id>] block per kind is supported in this slice; \
-                 kind `{kind}` is declared by {} venues: {}",
-                keys.len(),
-                keys.join(", ")
-            ));
-        }
     }
     for (key, venue) in venues {
         errors.extend(crate::bolt_v3_providers::validate_venue_block(key, venue));

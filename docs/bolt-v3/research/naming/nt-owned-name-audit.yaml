@@ -108,10 +108,10 @@ accepted_non_nt_names:
     reason: "Polymarket lifecycle field keeps the venue/product prefix because the emitted value is a unit-converted contract timestamp, not raw NT expiration_ns"
   - name: polymarket_condition_id
     owner: venue_product_owned
-    reason: "Polymarket market identity"
+    reason: "Polymarket condition identifier"
   - name: polymarket_market_slug
     owner: venue_product_owned
     reason: "Polymarket CLOB market slug"
   - name: polymarket_question_id
     owner: venue_product_owned
-    reason: "Polymarket market identity"
+    reason: "Polymarket question identifier"

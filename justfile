@@ -11,9 +11,8 @@ zig_version := "0.15.2"
 
 target := "aarch64-unknown-linux-gnu"
 worktree_root := env_var('HOME') + "/worktrees/bolt-v2"
-live_input := "config/live.local.toml"
-live_input_example := "config/live.local.example.toml"
-live_config := "config/live.toml"
+live_root := "config/root.toml"
+live_root_example := "config/root.example.toml"
 repo_root := justfile_directory()
 rust_verification_owner := env_var('HOME') + "/.claude/lib/rust_verification.py"
 rust_verification_source_repo := "seungpyoson/claude-config"
@@ -59,6 +58,10 @@ verify-bolt-v3-provider-leaks: check-workspace
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
     python3 scripts/verify_bolt_v3_provider_leaks.py
 
+verify-bolt-v3-status-map-current: check-workspace
+    python3 scripts/test_verify_bolt_v3_status_map_current.py
+    python3 scripts/verify_bolt_v3_status_map_current.py
+
 verify-bolt-v3-core-boundary: check-workspace
     python3 scripts/test_verify_bolt_v3_core_boundary.py
     python3 scripts/verify_bolt_v3_core_boundary.py
@@ -67,13 +70,23 @@ verify-bolt-v3-naming: check-workspace
     python3 scripts/test_verify_bolt_v3_naming.py
     python3 scripts/verify_bolt_v3_naming.py
 
-verify-bolt-v3-status-map-current: check-workspace
-    python3 scripts/test_verify_bolt_v3_status_map_current.py
-    python3 scripts/verify_bolt_v3_status_map_current.py
-
 verify-bolt-v3-pure-rust-runtime: check-workspace
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
+
+verify-bolt-v3-legacy-default-fence: check-workspace
+    python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
+    python3 scripts/verify_bolt_v3_legacy_default_fence.py
+
+verify-bolt-v3-strategy-policy-fence: check-workspace
+    python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
+    python3 scripts/verify_bolt_v3_strategy_policy_fence.py
+
+test-verify-runtime-capture-yaml: check-workspace
+    python3 scripts/test_verify_runtime_capture_yaml.py
+
+verify-runtime-capture-yaml: test-verify-runtime-capture-yaml
+    python3 scripts/verify_runtime_capture_yaml.py
 
 fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check
@@ -124,34 +137,38 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_status_map_current.py
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
+    python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
+    python3 scripts/verify_bolt_v3_legacy_default_fence.py
+    python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
+    python3 scripts/verify_bolt_v3_strategy_policy_fence.py
+    python3 scripts/test_verify_runtime_capture_yaml.py
+    # Fresh CI runners need the pinned NT checkout before source-capture checks.
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
+    python3 scripts/verify_runtime_capture_yaml.py
     # #342 owns these canonical source-fence checks. Until #332 changes full
     # nextest ownership, `test` intentionally still duplicates them under `gate`.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_controlled_connect --test bolt_v3_production_entrypoint -- --nocapture
 
-live-generate: check-workspace require-rust-verification-owner
+require-live-root: check-workspace
     #!/usr/bin/env bash
-    # Generate the runtime artifact from the human-edited local source of truth.
-    if [ ! -f "{{live_input}}" ]; then
-        echo "Missing {{live_input}}"
-        echo "Create it from {{live_input_example}}, then rerun."
+    if [ ! -f "{{live_root}}" ]; then
+        echo "Missing {{live_root}}"
+        echo "Create it from {{live_root_example}}, then rerun."
         exit 1
     fi
 
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin render_live_config -- --input {{live_input}} --output {{live_config}}
-
 # Canonical repo-local operator lane for bolt-v2 from this checkout.
-live: live-generate
-    # Run with the generated runtime config artifact.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- run --config {{live_config}}
+live: require-live-root require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- run --config {{live_root}}
 
 # Optional diagnostics for the live operator config.
-live-check: live-generate
+live-check: require-live-root require-rust-verification-owner
     # Validate secret-config completeness only; do not resolve secrets.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets check --config {{live_config}}
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets check --config {{live_root}}
 
-live-resolve: live-generate
-    # Perform actual secret resolution against the generated runtime config.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets resolve --config {{live_config}}
+live-resolve: require-live-root require-rust-verification-owner
+    # Perform actual secret resolution against the bolt-v3 root config.
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets resolve --config {{live_root}}
 
 ci-lint-workflow:
     #!/usr/bin/env bash

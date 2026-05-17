@@ -40,7 +40,12 @@ fn first_live_updown_slug_rule_matches_expected_shape() {
 fn pinned_polymarket_provider_accepts_market_slug_filters() {
     let slugs = first_live_updown_slugs("BTC", 300, 1_800);
     let filter = MarketSlugFilter::from_slugs(slugs);
-    let http_client = PolymarketGammaHttpClient::new(None, 60, RetryConfig::default()).unwrap();
+    let http_client = PolymarketGammaHttpClient::new(
+        Some("https://gamma.test.invalid".to_string()),
+        60,
+        RetryConfig::default(),
+    )
+    .unwrap();
     let provider = PolymarketInstrumentProvider::with_filter(http_client, Arc::new(filter));
 
     assert_eq!(provider.filters().len(), 1);

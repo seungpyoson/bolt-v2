@@ -37,8 +37,6 @@ Approved command shape:
 
 ```bash
 BOLT_V3_ROOT_TOML='<approved bolt-v3 root toml path>' \
-BOLT_V3_OPERATOR_APPROVAL_ID='<approval id matching [live_canary].approval_id>' \
-BOLT_V3_HEAD_SHA='<exact approved head sha>' \
 cargo test --test bolt_v3_no_submit_readiness_operator \
   operator_approved_real_no_submit_readiness_writes_redacted_report \
   -- --ignored --nocapture
@@ -62,5 +60,5 @@ Phase 8 live action remains blocked until:
 
 - Real no-submit report exists.
 - Report is accepted by live-canary gate.
-- `eth_chainlink_taker` strategy-input safety audit approves Chainlink feed path, reference venues, market selection, volatility, kurtosis, theta, fee/slippage model, caps, and edge economics.
+- `binary_oracle_edge_taker` strategy-input safety audit approves Chainlink feed path, reference venues, market selection, volatility, kurtosis, theta, fee/slippage model, caps, and edge economics.
 - User explicitly approves exact head and live command.

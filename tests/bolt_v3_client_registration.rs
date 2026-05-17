@@ -18,6 +18,7 @@ mod support;
 use std::collections::BTreeMap;
 
 use bolt_v2::{
+    bolt_v3_adapters::BoltV3AdapterMappingError,
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with_summary},
 };
@@ -109,6 +110,38 @@ fn missing_polymarket_private_key_secret_fails_before_registration() {
 }
 
 #[test]
+fn live_node_build_path_maps_configured_strategy_venue() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded
+        .strategies
+        .first_mut()
+        .expect("fixture should have one strategy")
+        .config
+        .venue = "missing_venue".to_string();
+
+    let error =
+        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
+            .expect_err("strategy venue must be checked before LiveNode build");
+
+    match error {
+        BoltV3LiveNodeError::AdapterMapping(BoltV3AdapterMappingError::ValidationInvariant {
+            venue_key,
+            field,
+            message,
+        }) => {
+            assert_eq!(venue_key, "missing_venue");
+            assert_eq!(field, "strategy.venue");
+            assert!(
+                message.contains("references unknown venue"),
+                "unexpected adapter-mapping error: {message}"
+            );
+        }
+        other => panic!("expected AdapterMapping ValidationInvariant, got {other:?}"),
+    }
+}
+
+#[test]
 fn forbidden_credential_env_var_fails_before_registration() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -171,8 +204,13 @@ fn empty_venues_root_config_registers_zero_clients() {
     // node must expose no registered NT clients.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-empty-venues-catalog");
     let empty_root = BoltV3RootConfig {
         venues: BTreeMap::new(),
+        persistence: bolt_v2::bolt_v3_config::PersistenceBlock {
+            catalog_directory: temp.path().to_string_lossy().to_string(),
+            ..loaded.root.persistence.clone()
+        },
         ..loaded.root.clone()
     };
     let empty_loaded = LoadedBoltV3Config {

@@ -96,6 +96,7 @@ fn rejects_empty() {
 fn sweep_moves_matching_logs_to_target() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
+    let archive_dir = root.join("operator/log-archive");
 
     let log1 = "BOLT-001_2026-04-10_aaaa0000-bbbb-4ccc-8ddd-eeeeeeeeeeee.log";
     let log2 = "BOLT-001_2026-04-11_11111111-2222-4333-9444-555555555555.log";
@@ -106,13 +107,18 @@ fn sweep_moves_matching_logs_to_target() {
     let keep = "analysis_2026-04-11_summary.log";
     fs::write(root.join(keep), "not a NT log").unwrap();
 
-    log_sweep::sweep_logs_in(root);
+    log_sweep::sweep_logs_in(root, &archive_dir);
 
-    let target = root.join("var/logs");
-    assert!(target.join(log1).exists(), "log1 should be in var/logs/");
-    assert!(target.join(log2).exists(), "log2 should be in var/logs/");
+    assert!(
+        archive_dir.join(log1).exists(),
+        "log1 should be in configured archive dir"
+    );
+    assert!(
+        archive_dir.join(log2).exists(),
+        "log2 should be in configured archive dir"
+    );
     assert_eq!(
-        fs::read_to_string(target.join(log1)).unwrap(),
+        fs::read_to_string(archive_dir.join(log1)).unwrap(),
         "log content 1"
     );
 
@@ -125,19 +131,19 @@ fn sweep_moves_matching_logs_to_target() {
 fn sweep_skips_existing_destination() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
+    let archive_dir = root.join("configured/archive");
 
     let log_name = "BOLT-001_2026-04-10_aaaa0000-bbbb-4ccc-8ddd-eeeeeeeeeeee.log";
     fs::write(root.join(log_name), "new content").unwrap();
 
-    let target = root.join("var/logs");
-    fs::create_dir_all(&target).unwrap();
-    fs::write(target.join(log_name), "old content").unwrap();
+    fs::create_dir_all(&archive_dir).unwrap();
+    fs::write(archive_dir.join(log_name), "old content").unwrap();
 
-    log_sweep::sweep_logs_in(root);
+    log_sweep::sweep_logs_in(root, &archive_dir);
 
     assert!(root.join(log_name).exists());
     assert_eq!(
-        fs::read_to_string(target.join(log_name)).unwrap(),
+        fs::read_to_string(archive_dir.join(log_name)).unwrap(),
         "old content"
     );
 }
@@ -146,37 +152,42 @@ fn sweep_skips_existing_destination() {
 fn sweep_noop_when_no_logs() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
+    let archive_dir = root.join("configured/archive");
 
     fs::write(root.join("not_a_log.txt"), "hello").unwrap();
 
-    log_sweep::sweep_logs_in(root);
+    log_sweep::sweep_logs_in(root, &archive_dir);
 
-    let target = root.join("var/logs");
-    assert!(target.exists(), "var/logs/ should be created");
-    assert_eq!(fs::read_dir(target).unwrap().count(), 0);
+    assert!(
+        archive_dir.exists(),
+        "configured archive dir should be created"
+    );
+    assert_eq!(fs::read_dir(archive_dir).unwrap().count(), 0);
 }
 
 #[test]
 fn sweep_does_not_panic_on_unreadable_root() {
-    // Trigger: pass a regular file as root. create_dir_all(file/var/logs) returns
-    // ENOTDIR. sweep_inner returns Err, sweep_logs_in swallows it.
+    // Trigger: pass a regular file as root. read_dir(file) returns ENOTDIR.
+    // sweep_inner returns Err, sweep_logs_in swallows it.
     let tmp = tempdir().unwrap();
     let file_not_dir = tmp.path().join("i-am-a-file");
     fs::write(&file_not_dir, b"not a directory").unwrap();
     assert!(file_not_dir.is_file());
 
-    // Must not panic — error is swallowed
-    log_sweep::sweep_logs_in(&file_not_dir);
+    // Must not panic: error is swallowed.
+    log_sweep::sweep_logs_in(&file_not_dir, &tmp.path().join("configured/archive"));
 }
 
 #[test]
-fn sweep_uses_hardcoded_target_dir() {
+fn sweep_uses_configured_archive_dir() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
+    let archive_dir = root.join("operator-selected/logs");
     let log_name = "TEST-001_2026-01-01_abcdef01-2345-6789-abcd-ef0123456789.log";
     fs::write(root.join(log_name), "data").unwrap();
 
-    log_sweep::sweep_logs_in(root);
+    log_sweep::sweep_logs_in(root, &archive_dir);
 
-    assert!(root.join("var/logs").join(log_name).exists());
+    assert!(archive_dir.join(log_name).exists());
+    assert!(!root.join("var").join("logs").join(log_name).exists());
 }

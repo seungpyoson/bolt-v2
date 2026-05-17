@@ -13,7 +13,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_config::{LoadedBoltV3Config, resolve_root_relative_path},
     bolt_v3_live_node::{
         BoltV3LiveNodeError, BoltV3LiveNodeRuntime, build_bolt_v3_live_node,
         controlled_no_submit_readiness,
@@ -31,13 +31,17 @@ pub enum BoltV3NoSubmitReadinessError {
     MissingOperatorApprovalId,
     MissingHeadSha,
     OperatorApprovalIdMismatch,
+    ActiveTokioRuntime,
+    RuntimeBuild {
+        source: std::io::Error,
+    },
     LiveNode {
         source: BoltV3LiveNodeError,
     },
     ReportTooLarge {
         path: PathBuf,
-        length: usize,
-        max_length: usize,
+        length: u64,
+        max_length: u64,
     },
     ReportParentCreate {
         path: PathBuf,
@@ -72,6 +76,14 @@ impl std::fmt::Display for BoltV3NoSubmitReadinessError {
             Self::OperatorApprovalIdMismatch => write!(
                 f,
                 "bolt-v3 no-submit readiness operator approval id does not match `[live_canary]`"
+            ),
+            Self::ActiveTokioRuntime => write!(
+                f,
+                "bolt-v3 no-submit readiness must start from the synchronous startup boundary before entering Tokio runtime"
+            ),
+            Self::RuntimeBuild { source } => write!(
+                f,
+                "failed to build Tokio runtime for bolt-v3 no-submit readiness: {source}"
             ),
             Self::LiveNode { source } => write!(
                 f,
@@ -114,6 +126,7 @@ impl std::fmt::Display for BoltV3NoSubmitReadinessError {
 impl std::error::Error for BoltV3NoSubmitReadinessError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::RuntimeBuild { source } => Some(source),
             Self::LiveNode { source } => Some(source),
             Self::ReportParentCreate { source, .. } | Self::ReportWrite { source, .. } => {
                 Some(source)
@@ -124,6 +137,7 @@ impl std::error::Error for BoltV3NoSubmitReadinessError {
             | Self::MissingOperatorApprovalId
             | Self::MissingHeadSha
             | Self::OperatorApprovalIdMismatch
+            | Self::ActiveTokioRuntime
             | Self::ReportTooLarge { .. } => None,
         }
     }
@@ -202,14 +216,15 @@ impl BoltV3NoSubmitReadinessReport {
     pub fn write_redacted_json_with_max_bytes(
         &self,
         path: &Path,
-        max_length: usize,
+        max_length: u64,
     ) -> Result<(), BoltV3NoSubmitReadinessError> {
         let bytes = serde_json::to_vec_pretty(self)
             .map_err(|source| BoltV3NoSubmitReadinessError::ReportSerialize { source })?;
-        if bytes.len() > max_length {
+        let length = bytes.len() as u64;
+        if length > max_length {
             return Err(BoltV3NoSubmitReadinessError::ReportTooLarge {
                 path: path.to_path_buf(),
-                length: bytes.len(),
+                length,
                 max_length,
             });
         }
@@ -238,7 +253,7 @@ impl BoltV3NoSubmitReadinessReport {
             .ok_or(BoltV3NoSubmitReadinessError::MissingLiveCanaryConfig)?;
         self.write_redacted_json_with_max_bytes(
             &configured_report_path(loaded, &block.no_submit_readiness_report_path),
-            block.max_no_submit_readiness_report_bytes as usize,
+            block.max_no_submit_readiness_report_bytes,
         )
     }
 }
@@ -354,26 +369,43 @@ pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
     )
 }
 
-pub async fn run_bolt_v3_no_submit_readiness(
+pub fn run_bolt_v3_no_submit_readiness(
     loaded: &LoadedBoltV3Config,
     operator_approval_id: &str,
     head_sha: &str,
 ) -> Result<BoltV3NoSubmitReadinessReport, BoltV3NoSubmitReadinessError> {
-    let metadata =
-        BoltV3NoSubmitReadinessReportMetadata::from_loaded(loaded, operator_approval_id, head_sha)
-            .await?;
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err(BoltV3NoSubmitReadinessError::ActiveTokioRuntime);
+    }
+
+    let metadata_runtime = no_submit_readiness_tokio_runtime()?;
+    let metadata = metadata_runtime.block_on(
+        BoltV3NoSubmitReadinessReportMetadata::from_loaded(loaded, operator_approval_id, head_sha),
+    )?;
+    drop(metadata_runtime);
+
     let mut runtime = build_bolt_v3_live_node(loaded)
         .map_err(|source| BoltV3NoSubmitReadinessError::LiveNode { source })?;
     let redacted_values = runtime.redaction_values().to_vec();
+
+    let readiness_runtime = no_submit_readiness_tokio_runtime()?;
+    let local = tokio::task::LocalSet::new();
     Ok(
-        run_bolt_v3_no_submit_readiness_on_runtime(
+        readiness_runtime.block_on(local.run_until(run_bolt_v3_no_submit_readiness_on_runtime(
             &mut runtime,
             loaded,
             metadata,
             &redacted_values,
-        )
-        .await,
+        ))),
     )
+}
+
+fn no_submit_readiness_tokio_runtime()
+-> Result<tokio::runtime::Runtime, BoltV3NoSubmitReadinessError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|source| BoltV3NoSubmitReadinessError::RuntimeBuild { source })
 }
 
 fn validate_operator_approval(
@@ -391,6 +423,9 @@ fn validate_operator_approval(
         .ok_or(BoltV3NoSubmitReadinessError::MissingLiveCanaryConfig)?
         .approval_id
         .trim();
+    if configured.is_empty() {
+        return Err(BoltV3NoSubmitReadinessError::MissingOperatorApprovalId);
+    }
     let supplied_hash = sha256_hex(supplied.as_bytes());
     let configured_hash = sha256_hex(configured.as_bytes());
     if supplied_hash != configured_hash {
@@ -400,15 +435,7 @@ fn validate_operator_approval(
 }
 
 fn configured_report_path(loaded: &LoadedBoltV3Config, configured: &str) -> PathBuf {
-    let path = PathBuf::from(configured);
-    if path.is_absolute() {
-        return path;
-    }
-    loaded
-        .root_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(path)
+    resolve_root_relative_path(&loaded.root_path, configured)
 }
 
 async fn root_config_checksum(
@@ -491,7 +518,7 @@ fn redact_detail(detail: &str, redacted_values: &[String]) -> String {
 
     ranges.sort_unstable_by_key(|(start, _)| *start);
     let mut redacted = String::with_capacity(detail.len());
-    let mut cursor = usize::default();
+    let mut cursor = 0;
     for (start, end) in ranges {
         redacted.push_str(&detail[cursor..start]);
         redacted.push_str(REDACTED_DETAIL_MARKER);

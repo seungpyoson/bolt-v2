@@ -40,7 +40,7 @@ As maintainer, I can distinguish what #344 implements now from evidence that rem
 - **FR-001**: Add `docs/ci/paths-ignore-behavior.md` with rows for docs-only `AGENTS.md`, workflow change, Rust source, managed rust-verification TOML, `Cargo.lock`, mixed docs+source, and ignored config directories.
 - **FR-002**: Add a pass-stub workflow that can emit the same required-check job name `gate` for ignored-safe PRs.
 - **FR-003**: Pass-stub eligibility MUST be determined from actual changed files, not only trigger path filters.
-- **FR-004**: Changed-file collection or classification failure MUST fail closed.
+- **FR-004**: Changed-file collection or classification failure MUST fail closed. A successful non-docs-only classification MUST leave full CI as the owner of the required `gate` signal instead of failing the pass-stub.
 - **FR-005**: The classifier MUST treat the current CI `pull_request.paths-ignore` list as the safe source of truth and reject drift.
 - **FR-006**: Mixed docs+source changes MUST remain full-CI cases, not docs-only cases.
 - **FR-007**: `push` and tag CI semantics MUST remain unchanged.

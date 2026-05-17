@@ -11,10 +11,10 @@ Push and tag events do not use `paths-ignore`; they always run CI.
 | Rust source change | `src/lib.rs` | full-ci | full CI runs; pass-stub does not trigger |
 | managed rust-verification config | `.claude/rust-verification.toml` | full-ci | full CI runs; pass-stub does not trigger |
 | lockfile change | `Cargo.lock` | full-ci | full CI runs; pass-stub does not trigger |
-| mixed docs and source | `AGENTS.md` + `src/lib.rs` | full-ci | full CI runs; pass-stub triggers and fails closed |
+| mixed docs and source | `AGENTS.md` + `src/lib.rs` | full-ci | full CI runs; pass-stub records `docs_only=false` without blocking |
 | ignored config dir | `.codex/config.toml` | ignored-safe | full CI skipped; pass-stub `gate` runs and succeeds |
 
-The pass-stub `gate` job has no job-level `if:` condition. GitHub reports skipped jobs as successful, so the classifier fails the `gate` job directly when the changed-file list is empty, unavailable, or includes any path outside the ignored-safe set.
+The pass-stub `gate` job has no job-level `if:` condition. GitHub reports skipped jobs as successful, so the classifier fails the `gate` job directly when the changed-file list is empty, unavailable, or cannot be classified. If classification succeeds and any path is outside the ignored-safe set, full CI owns the required `gate` signal.
 
 Safe ignored paths are intentionally narrow:
 

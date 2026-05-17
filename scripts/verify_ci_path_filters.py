@@ -109,7 +109,7 @@ def path_matches_pattern(path: str, pattern: str) -> bool:
         return False
     if pattern.endswith("/**"):
         prefix = pattern[:-3]
-        return normalized == prefix.rstrip("/") or normalized.startswith(prefix)
+        return normalized == prefix.rstrip("/") or normalized.startswith(f"{prefix}/")
     return fnmatch.fnmatchcase(normalized, pattern)
 
 
@@ -180,7 +180,6 @@ def verify_pass_stub_workflow(workflow_text: str) -> None:
         "name: gate",
         "python3 scripts/verify_ci_path_filters.py",
         "$GITHUB_OUTPUT",
-        "--require-docs-only",
     )
     for literal in required_literals:
         if literal not in text:
@@ -189,6 +188,8 @@ def verify_pass_stub_workflow(workflow_text: str) -> None:
             if literal == "python3 scripts/verify_ci_path_filters.py":
                 raise PathFilterError("pass-stub must run changed-file classifier")
             raise PathFilterError(f"pass-stub workflow missing {literal}")
+    if "--require-docs-only" in text:
+        raise PathFilterError("pass-stub must not require docs-only")
 
 
 def verify_docs_table(docs_text: str) -> None:

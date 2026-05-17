@@ -136,8 +136,10 @@ jobs:
           key: cargo-deny
 
       - name: Install cargo-deny
-        run: |
-          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c # v2.78.2
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none
 
       - name: deny
         run: just deny
@@ -175,7 +177,16 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Resolve aarch64 coverage owner
+        run: |
+          if [[ "${{ needs.detector.outputs.build_required }}" == "true" ]]; then
+            echo "build_required=true; aarch64 coverage is provided by build"
+          else
+            echo "build_required=false; running standalone aarch64 check"
+          fi
+
       - name: Setup environment
+        if: needs.detector.outputs.build_required != 'true'
         id: setup
         uses: ./.github/actions/setup-environment
         with:
@@ -186,11 +197,13 @@ jobs:
           include-managed-target-dir: "true"
 
       - name: Install aarch64 cross compiler
+        if: needs.detector.outputs.build_required != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        if: needs.detector.outputs.build_required != 'true'
         with:
           cache-on-failure: true
           cache-targets: false
@@ -198,6 +211,7 @@ jobs:
           key: check-aarch64-v1
 
       - name: check-aarch64
+        if: needs.detector.outputs.build_required != 'true'
         run: just check-aarch64
 
   source-fence:
@@ -238,9 +252,65 @@ jobs:
   # #342 owns these canonical source-fence filters. #332 intentionally keeps
   # full nextest duplicate coverage under the same aggregate gate rather than
   # adding brittle filter expressions that could hide neighboring tests.
+  test-archive:
+    name: nextest archive
+    needs: [detector, source-fence]
+    runs-on: ubuntu-latest
+    env:
+      NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+
+      - name: Restore nextest archive
+        id: nextest-archive-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
+
+      - name: Install cargo-nextest
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c # v2.78.2
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Build nextest archive
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        env:
+          # Keep CI test binaries small enough for ubuntu-latest link/disk limits.
+          # This disables test debuginfo only; assertions and test logic still run.
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
+          just test-archive "$NEXTEST_ARCHIVE_PATH"
+
+      - name: Save nextest archive
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
+
+      - name: Upload nextest archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-archive
+          path: ${{ env.NEXTEST_ARCHIVE_PATH }}
+          if-no-files-found: error
+          retention-days: 1
+
   test-shards:
     name: nextest shard ${{ matrix.shard }} of 4
-    needs: [detector, source-fence]
+    needs: test-archive
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -258,28 +328,30 @@ jobs:
           include-nextest-version: "true"
           include-managed-target-dir: "true"
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Download nextest archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          cache-on-failure: true
-          cache-targets: false
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          shared-key: nextest-v3
-          save-if: ${{ matrix.shard == 1 }}
+          name: nextest-archive
+          path: ${{ runner.temp }}/nextest-archive
+
+      - name: Resolve archive extraction root
+        id: archive-root
+        run: |
+          archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"
+          echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"
 
       - name: Install cargo-nextest
-        run: |
-          cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c # v2.78.2
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
 
       - name: Show shard reproduction command
         run: |
-          echo "reproduce locally: just test -- --partition count:${{ matrix.shard }}/4"
+          echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <managed-target-parent> --partition count:${{ matrix.shard }}/4"
 
       - name: test
-        env:
-          # Keep CI test binaries small enough for ubuntu-latest link/disk limits.
-          # This disables test debuginfo only; assertions and test logic still run.
-          CARGO_PROFILE_TEST_DEBUG: "0"
-        run: just test -- --partition count:${{ matrix.shard }}/4
+        run: just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" "${{ steps.archive-root.outputs.archive_extract_root }}" --partition count:${{ matrix.shard }}/4
 
   test:
     name: test
@@ -330,7 +402,27 @@ jobs:
 
       - name: Install cargo-zigbuild
         run: |
-          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked
+          version="${{ steps.setup.outputs.zigbuild_version }}"
+          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
+          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
+          curl \
+            --retry 10 \
+            --retry-delay 3 \
+            --retry-all-errors \
+            --fail \
+            --location \
+            --show-error \
+            --silent \
+            --output "$archive" \
+            "$base_url/$archive"
+          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
+          actual="$(sha256sum "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          tar --extract --xz --file "$archive"
+          mkdir -p "$HOME/.cargo/bin"
+          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
+          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
+          cargo-zigbuild --version
 
       - name: build
         run: just build

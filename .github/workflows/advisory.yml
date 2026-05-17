@@ -33,8 +33,10 @@ jobs:
           include-deny-version: "true"
 
       - name: Install cargo-deny
-        run: |
-          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c # v2.78.2
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none
 
       - name: Check advisories
         id: advisories

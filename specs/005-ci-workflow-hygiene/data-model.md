@@ -44,17 +44,35 @@ Validation rules:
 ## DeployDefenseNeeds
 
 - **deploy_job**: `deploy`.
-- **direct_needs**: `gate`, `build`, `detector`, `fmt-check`, `deny`, `clippy`, `source-fence`, `test`.
+- **direct_needs**: `gate`, `build`, `detector`, `fmt-check`, `deny`, `clippy`, `check-aarch64`, `source-fence`, `test`.
 
 Validation rules:
 
 - Deploy cannot be wired only through transitive gate/build edges.
 - Deploy keeps gate as an aggregate dependency and build as the artifact dependency.
 
+## PrebuiltToolInstallContract
+
+- **install_action_jobs**: `deny`, `advisories`, and `test-shards`.
+- **install_action_tool_specs**: `cargo-deny@${{ steps.setup.outputs.deny_version }}` and `cargo-nextest@${{ steps.setup.outputs.nextest_version }}`.
+- **install_action_pin**: `taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c`.
+- **install_action_fallback**: `none`.
+- **manual_archive_job**: `build`.
+- **manual_archive_tool**: `cargo-zigbuild`.
+- **manual_archive_version_output**: `steps.setup.outputs.zigbuild_version`.
+- **manual_archive_sha256_output**: `steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256`.
+
+Validation rules:
+
+- CI and advisory workflows must not source-build guarded tools with `cargo install`, including flag-reordered, toolchain-prefixed, or `crate@version` forms.
+- `deny`, `advisories`, and `test-shards` must use the pinned install action with `fallback: none`.
+- `build` must download the pinned `cargo-zigbuild` release archive and compare its hash to the in-repo setup output, not to a checksum downloaded from the same release origin.
+- The setup action must export the `cargo-zigbuild` archive SHA256 from the justfile under `include-build-values`.
+
 ## DetectorSerializationDecision
 
 - **removed_edge**: `fmt-check -> detector`.
-- **kept_edges**: `build -> detector`, `source-fence -> detector`, `test -> detector`, `test -> source-fence`.
+- **kept_edges**: `build -> detector`, `source-fence -> detector`, `test-shards -> detector`, `test-shards -> source-fence`, `test -> test-shards`.
 
 Validation rules:
 

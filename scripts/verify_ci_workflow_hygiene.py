@@ -74,6 +74,10 @@ LIVE_NODE_NEXTEST_BINARIES = (
 )
 LIVE_NODE_NEXTEST_FILTER = " | ".join(f"binary(={binary})" for binary in LIVE_NODE_NEXTEST_BINARIES)
 BUILD_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*(?:\}\})?\s*$")
+CHECK_AARCH64_JOB_IF_RE = re.compile(r"^    if:\s*.*$")
+CHECK_AARCH64_STANDALONE_IF_RE = re.compile(
+    r"^\s+(?:-\s*)?if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*!=\s*['\"]true['\"]\s*(?:\}\})?\s*$"
+)
 GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
 DEPLOY_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
 EXIT_RE = re.compile(r"^\s*exit(?:\s+([0-9]+))?\s*$", re.MULTILINE)
@@ -703,6 +707,53 @@ def check_aarch64_installs_cross_compiler_packages(job_lines: list[str]) -> bool
     return "gcc-aarch64-linux-gnu" in text and "libc6-dev-arm64-cross" in text
 
 
+def block_has_line_matching(block: list[str], pattern: re.Pattern[str]) -> bool:
+    return any(pattern.match(strip_comment(line)) for line in block)
+
+
+def check_aarch64_has_coverage_owner_step(job_lines: list[str]) -> bool:
+    for block in step_blocks(job_lines):
+        text = uncommented_text(block)
+        if "Resolve aarch64 coverage owner" not in text:
+            continue
+        return (
+            "needs.detector.outputs.build_required" in text
+            and "aarch64 coverage is provided by build" in text
+            and "running standalone aarch64 check" in text
+        )
+    return False
+
+
+def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
+    errors: list[str] = []
+    checks = (
+        (
+            "check-aarch64 setup must run only when build_required is not true",
+            lambda block: any("./.github/actions/setup-environment" in line for line in block),
+        ),
+        (
+            "check-aarch64 compiler install must run only when build_required is not true",
+            lambda block: "gcc-aarch64-linux-gnu" in uncommented_text(block)
+            or "libc6-dev-arm64-cross" in uncommented_text(block),
+        ),
+        (
+            "check-aarch64 cache must run only when build_required is not true",
+            lambda block: any("Swatinem/rust-cache" in line for line in block),
+        ),
+        (
+            "check-aarch64 command must run only when build_required is not true",
+            lambda block: block_runs_command(block, "just check-aarch64"),
+        ),
+    )
+    blocks = step_blocks(job_lines)
+    for message, matches in checks:
+        for block in blocks:
+            if matches(block) and not block_has_line_matching(block, CHECK_AARCH64_STANDALONE_IF_RE):
+                errors.append(message)
+                break
+    return errors
+
+
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
     condition = f'"${{{{ needs.{job}.result }}}}" != "success"'
     return branch_exits(gate_text, "if", condition)
@@ -896,10 +947,15 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "check-aarch64" in jobs:
         if "detector" not in extract_needs(jobs["check-aarch64"]):
             errors.append("check-aarch64 needs detector")
+        if has_line_matching(jobs["check-aarch64"], CHECK_AARCH64_JOB_IF_RE):
+            errors.append("check-aarch64 job must stay present when build_required=true")
+        if not check_aarch64_has_coverage_owner_step(jobs["check-aarch64"]):
+            errors.append("check-aarch64 must document build-lane aarch64 coverage delegation")
         if "just check-aarch64" not in uncommented_text(jobs["check-aarch64"]):
             errors.append("check-aarch64 must run just check-aarch64")
         if not check_aarch64_installs_cross_compiler_packages(jobs["check-aarch64"]):
             errors.append("check-aarch64 must install aarch64 cross compiler packages")
+        errors.extend(check_aarch64_standalone_guard_errors(jobs["check-aarch64"]))
 
     if "test-shards" in jobs:
         test_lines = jobs["test-shards"]

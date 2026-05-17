@@ -91,7 +91,15 @@ jobs:
     needs: detector
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve aarch64 coverage owner
+        run: |
+          if [[ "${{ needs.detector.outputs.build_required }}" == "true" ]]; then
+            echo "build_required=true; aarch64 coverage is provided by build"
+          else
+            echo "build_required=false; running standalone aarch64 check"
+          fi
       - uses: ./.github/actions/setup-environment
+        if: needs.detector.outputs.build_required != 'true'
         with:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
@@ -99,12 +107,15 @@ jobs:
           use-default-target: "true"
           include-managed-target-dir: "true"
       - name: Install aarch64 cross compiler
+        if: needs.detector.outputs.build_required != 'true'
         run: sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
       - uses: Swatinem/rust-cache@example
+        if: needs.detector.outputs.build_required != 'true'
         with:
           cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
           key: check-aarch64
-      - run: just check-aarch64
+      - if: needs.detector.outputs.build_required != 'true'
+        run: just check-aarch64
 
   source-fence:
     name: source-fence
@@ -621,7 +632,11 @@ def main() -> int:
     )
     assert_error(
         "check-aarch64 must run just check-aarch64",
-        replace_once(BASE_WORKFLOW, "      - run: just check-aarch64", "      - run: echo skip check-aarch64"),
+        replace_once(
+            BASE_WORKFLOW,
+            "      - if: needs.detector.outputs.build_required != 'true'\n        run: just check-aarch64",
+            "      - if: needs.detector.outputs.build_required != 'true'\n        run: echo skip check-aarch64",
+        ),
     )
     assert_error(
         "check-aarch64 must install aarch64 cross compiler packages",
@@ -629,6 +644,60 @@ def main() -> int:
             BASE_WORKFLOW,
             "        run: sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross",
             "        run: sudo apt-get install -y gcc-aarch64-linux-gnu",
+        ),
+    )
+    assert_error(
+        "check-aarch64 job must stay present when build_required=true",
+        replace_once(
+            BASE_WORKFLOW,
+            "  check-aarch64:\n    name: check-aarch64\n    needs: detector\n    runs-on: ubuntu-latest",
+            "  check-aarch64:\n    name: check-aarch64\n    needs: detector\n    if: needs.detector.outputs.build_required != 'true'\n    runs-on: ubuntu-latest",
+        ),
+    )
+    assert_error(
+        "check-aarch64 must document build-lane aarch64 coverage delegation",
+        BASE_WORKFLOW.replace(
+            """      - name: Resolve aarch64 coverage owner
+        run: |
+          if [[ "${{ needs.detector.outputs.build_required }}" == "true" ]]; then
+            echo "build_required=true; aarch64 coverage is provided by build"
+          else
+            echo "build_required=false; running standalone aarch64 check"
+          fi
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "check-aarch64 setup must run only when build_required is not true",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - uses: ./.github/actions/setup-environment\n        if: needs.detector.outputs.build_required != 'true'",
+            "      - uses: ./.github/actions/setup-environment",
+        ),
+    )
+    assert_error(
+        "check-aarch64 compiler install must run only when build_required is not true",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Install aarch64 cross compiler\n        if: needs.detector.outputs.build_required != 'true'",
+            "      - name: Install aarch64 cross compiler",
+        ),
+    )
+    assert_error(
+        "check-aarch64 cache must run only when build_required is not true",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - uses: Swatinem/rust-cache@example\n        if: needs.detector.outputs.build_required != 'true'",
+            "      - uses: Swatinem/rust-cache@example",
+        ),
+    )
+    assert_error(
+        "check-aarch64 command must run only when build_required is not true",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - if: needs.detector.outputs.build_required != 'true'\n        run: just check-aarch64",
+            "      - run: just check-aarch64",
         ),
     )
     assert_error(

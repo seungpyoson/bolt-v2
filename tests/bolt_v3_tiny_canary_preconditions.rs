@@ -1344,6 +1344,32 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         "nonce mismatch must not create consumption evidence"
     );
 
+    let zero_window_consumption_path = temp.path().join("phase8-zero-window-consumed.json");
+    let mut zero_window_envelope = envelope.clone();
+    zero_window_envelope.approval_not_before_unix_seconds = 1_500;
+    zero_window_envelope.approval_not_after_unix_seconds = 1_500;
+    zero_window_envelope.approval_consumption_path =
+        zero_window_consumption_path.to_string_lossy().to_string();
+    let zero_window_error = zero_window_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            1_500,
+        )
+        .expect_err("zero-length approval window should fail closed");
+    assert!(
+        zero_window_error
+            .to_string()
+            .contains("not_after must be greater than not_before"),
+        "error should mention ordered approval window: {zero_window_error}"
+    );
+    assert!(
+        !zero_window_consumption_path.exists(),
+        "zero-length approval window must not create consumption evidence"
+    );
+
     envelope
         .validate_and_consume_against(
             "expected-head",

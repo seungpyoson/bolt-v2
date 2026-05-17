@@ -1097,14 +1097,6 @@ reason = "This names the non-secret operator envelope field where the Phase 8 ca
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"phase8 operator approval not_after is before not_before"'''
-context = '''"phase8 operator approval not_after is before not_before"'''
-classification = "phase8_canary_operator_envelope_diagnostic"
-reason = "This fail-closed diagnostic reports an invalid operator approval time window before any live runner attempt."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
 literal = '''"phase8 operator approval is expired"'''
 context = '''return Err(anyhow!("phase8 operator approval is expired"));'''
 classification = "phase8_canary_operator_envelope_diagnostic"

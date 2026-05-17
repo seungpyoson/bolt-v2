@@ -1213,9 +1213,9 @@ impl Phase8OperatorApprovalEnvelope {
     }
 
     fn validate_approval_window(&self, current_unix_seconds: i64) -> Result<()> {
-        if self.approval_not_after_unix_seconds < self.approval_not_before_unix_seconds {
+        if self.approval_not_after_unix_seconds <= self.approval_not_before_unix_seconds {
             return Err(anyhow!(
-                "phase8 operator approval not_after is before not_before"
+                "phase8 operator approval not_after must be greater than not_before"
             ));
         }
         if current_unix_seconds < self.approval_not_before_unix_seconds {

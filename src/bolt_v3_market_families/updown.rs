@@ -380,7 +380,7 @@ fn plan_strategy_updown_target(
     strategy: &LoadedStrategy,
 ) -> Result<Option<UpdownTargetPlan>, BoltV3MarketIdentityError> {
     let strategy_instance_id = strategy.config.strategy_instance_id.clone();
-    let venue_config_key = strategy.config.venue.clone();
+    let venue_config_key = strategy.config.execution_client_id.clone();
     let target: TargetBlock =
         deserialize_target_block(&strategy.config.target).map_err(|message| {
             BoltV3MarketIdentityError::TargetParseFailed {

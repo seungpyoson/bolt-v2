@@ -697,7 +697,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         buffer_deltas: data.buffer_deltas,
         emit_quotes_from_book: data.emit_quotes_from_book,
         emit_quotes_from_book_depths: data.emit_quotes_from_book_depths,
-        external_clients: strings_as_client_ids(&data.external_client_ids),
+        external_clients: data.external_clients.clone(),
         debug: data.debug,
         graceful_shutdown_on_error: data.graceful_shutdown_on_error,
         qsize: data.qsize,
@@ -711,7 +711,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         snapshot_positions_interval_secs: u64_zero_as_none_f64(
             exec.snapshot_positions_interval_seconds,
         ),
-        external_clients: strings_as_client_ids(&exec.external_client_ids),
+        external_clients: exec.external_clients.clone(),
         debug: exec.debug,
         reconciliation: exec.reconciliation,
         reconciliation_lookback_mins,
@@ -819,11 +819,6 @@ fn non_empty_strings(values: &[String]) -> Option<Vec<String>> {
 /// Caller must run root validation first so the string is a valid NT `BarIntervalType`.
 fn bar_interval_type_from_str(value: &str) -> BarIntervalType {
     BarIntervalType::from_str(value).expect("root validation must accept data bar interval type")
-}
-
-/// Caller must run root validation first so every value is a valid NT `ClientId`.
-fn strings_as_client_ids(values: &[String]) -> Option<Vec<ClientId>> {
-    (!values.is_empty()).then(|| values.iter().map(ClientId::new).collect())
 }
 
 pub fn wire_bolt_v3_runtime_capture(

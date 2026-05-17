@@ -238,19 +238,22 @@ pub fn register_runtime_strategy(
         .loaded
         .root
         .venues
-        .get(&context.strategy.config.venue)
+        .get(&context.strategy.config.execution_client_id)
         .ok_or_else(|| {
             binding_message(
                 &context,
                 format!(
-                    "strategy venue `{}` is not present in loaded venues",
-                    context.strategy.config.venue
+                    "strategy execution_client_id `{}` is not present in loaded venues",
+                    context.strategy.config.execution_client_id
                 ),
             )
         })?;
-    let fee_provider =
-        polymarket::build_fee_provider(&context.strategy.config.venue, venue, context.resolved)
-            .map_err(|error| binding_message(&context, error.to_string()))?;
+    let fee_provider = polymarket::build_fee_provider(
+        &context.strategy.config.execution_client_id,
+        venue,
+        context.resolved,
+    )
+    .map_err(|error| binding_message(&context, error.to_string()))?;
     let build_context = StrategyBuildContext::new(
         fee_provider,
         parameters.runtime.reference_publish_topic,
@@ -301,7 +304,11 @@ pub fn raw_taker_config(
     let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
     let mut table = Map::new();
     insert_string(&mut table, "strategy_id", nt_strategy_id(strategy)?);
-    insert_string(&mut table, "client_id", strategy.config.venue.clone());
+    insert_string(
+        &mut table,
+        "client_id",
+        strategy.config.execution_client_id.clone(),
+    );
     insert_u64(
         &mut table,
         strategy_instance_id,

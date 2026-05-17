@@ -37,7 +37,7 @@ use std::{collections::BTreeMap, collections::HashSet, path::Path, str::FromStr}
 
 use nautilus_model::{
     enums::{BarAggregation, BarIntervalType},
-    identifiers::{ClientId, ClientOrderId, InstrumentId},
+    identifiers::{ClientOrderId, InstrumentId},
 };
 use rust_decimal::Decimal;
 
@@ -156,13 +156,6 @@ fn validate_data_engine_block(
             ));
         }
     }
-    for client_id in &block.external_client_ids {
-        if let Err(error) = ClientId::new_checked(client_id) {
-            errors.push(format!(
-                "nautilus.data_engine.external_client_ids contains invalid client ID `{client_id}` ({error})"
-            ));
-        }
-    }
     if block.graceful_shutdown_on_error {
         errors.push(
             "nautilus.data_engine.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
@@ -235,13 +228,6 @@ fn validate_exec_engine_block(
         ));
     }
 
-    for client_id in &block.external_client_ids {
-        if let Err(error) = ClientId::new_checked(client_id) {
-            errors.push(format!(
-                "nautilus.exec_engine.external_client_ids contains invalid client ID `{client_id}` ({error})"
-            ));
-        }
-    }
     for instrument_id in &block.reconciliation_instrument_ids {
         if let Err(error) = InstrumentId::from_str(instrument_id) {
             errors.push(format!(
@@ -481,17 +467,17 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             ));
         }
 
-        match root.venues.get(&strategy.venue) {
+        match root.venues.get(&strategy.execution_client_id) {
             None => errors.push(format!(
-                "{context}: venue reference `{}` does not match any [venues.<id>] block",
-                strategy.venue
+                "{context}: execution_client_id `{}` does not match any [venues.<id>] block",
+                strategy.execution_client_id
             )),
             Some(venue) => {
                 if venue.execution.is_none() {
                     errors.push(format!(
-                        "{context}: strategy venue `{}` must reference an execution-capable venue \
+                        "{context}: strategy execution_client_id `{}` must reference an execution-capable venue \
                          (the referenced venue has no [execution] block)",
-                        strategy.venue
+                        strategy.execution_client_id
                     ));
                 }
             }
@@ -528,17 +514,17 @@ fn validate_reference_data(
     let mut errors = Vec::new();
 
     for (role, block) in &strategy.reference_data {
-        match root.venues.get(&block.venue) {
+        match root.venues.get(&block.data_client_id) {
             None => errors.push(format!(
-                "{context}: reference_data.{role}.venue `{}` does not match any [venues.<id>] block",
-                block.venue
+                "{context}: reference_data.{role}.data_client_id `{}` does not match any [venues.<id>] block",
+                block.data_client_id
             )),
             Some(venue) => {
                 if venue.data.is_none() {
                     errors.push(format!(
-                        "{context}: reference_data.{role}.venue `{}` must reference a data-capable venue \
+                        "{context}: reference_data.{role}.data_client_id `{}` must reference a data-capable venue \
                          (the referenced venue has no [data] block)",
-                        block.venue
+                        block.data_client_id
                     ));
                 }
             }

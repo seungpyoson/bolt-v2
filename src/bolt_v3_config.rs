@@ -12,6 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use nautilus_model::identifiers::ClientId;
 use serde::Deserialize;
 
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
@@ -81,7 +82,8 @@ pub struct NautilusDataEngineBlock {
     pub buffer_deltas: bool,
     pub emit_quotes_from_book: bool,
     pub emit_quotes_from_book_depths: bool,
-    pub external_client_ids: Vec<String>,
+    #[serde(default)]
+    pub external_clients: Option<Vec<ClientId>>,
     pub debug: bool,
     pub graceful_shutdown_on_error: bool,
     pub qsize: u32,
@@ -94,7 +96,8 @@ pub struct NautilusExecEngineBlock {
     pub snapshot_orders: bool,
     pub snapshot_positions: bool,
     pub snapshot_positions_interval_seconds: u64,
-    pub external_client_ids: Vec<String>,
+    #[serde(default)]
+    pub external_clients: Option<Vec<ClientId>>,
     pub debug: bool,
     pub reconciliation: bool,
     pub reconciliation_startup_delay_seconds: u64,
@@ -261,7 +264,7 @@ pub struct BoltV3StrategyConfig {
     pub strategy_archetype: StrategyArchetypeKey,
     pub order_id_tag: String,
     pub oms_type: OmsType,
-    pub venue: String,
+    pub execution_client_id: String,
     /// Raw `[target]` envelope. The strategy envelope keeps the TOML
     /// field name `target` but its Rust type is a generic raw-TOML
     /// container so target-shape fields live in the per-family binding
@@ -294,7 +297,7 @@ pub enum OmsType {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReferenceDataBlock {
-    pub venue: String,
+    pub data_client_id: String,
     pub instrument_id: String,
 }
 

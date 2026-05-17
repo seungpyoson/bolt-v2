@@ -6,6 +6,29 @@ use support::{TempCaseDir, runtime_toml_with_reference_venue};
 use toml::Value;
 
 #[test]
+fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use nautilus_model::identifiers::ClientId;
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
+
+    let strategy = &loaded.strategies[0].config;
+    assert_eq!(strategy.execution_client_id, "polymarket_main");
+    assert_eq!(
+        strategy.reference_data["primary"].data_client_id,
+        "binance_reference"
+    );
+
+    let data_engine = &loaded.root.nautilus.data_engine;
+    let exec_engine = &loaded.root.nautilus.exec_engine;
+    assert!(data_engine.external_clients.is_none());
+    assert!(exec_engine.external_clients.is_none());
+
+    let _typed_check: Option<&Vec<ClientId>> = data_engine.external_clients.as_ref();
+}
+
+#[test]
 fn parses_runtime_config_with_optional_streaming_section() {
     let toml = r#"
         [node]
@@ -740,7 +763,7 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     );
     assert!(strategy.reference_data.contains_key("primary"));
     assert_eq!(
-        strategy.reference_data["primary"].venue,
+        strategy.reference_data["primary"].data_client_id,
         "binance_reference"
     );
 }
@@ -861,7 +884,6 @@ validate_data_sequence = false
 buffer_deltas = false
 emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
-external_client_ids = []
 debug = false
 graceful_shutdown_on_error = false
 qsize = 100000
@@ -871,7 +893,6 @@ load_cache = true
 snapshot_orders = false
 snapshot_positions = false
 snapshot_positions_interval_seconds = 0
-external_client_ids = []
 debug = false
 reconciliation = true
 reconciliation_startup_delay_seconds = 10
@@ -998,7 +1019,6 @@ validate_data_sequence = false
 buffer_deltas = false
 emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
-external_client_ids = []
 debug = false
 graceful_shutdown_on_error = false
 qsize = 100000
@@ -1008,7 +1028,6 @@ load_cache = true
 snapshot_orders = false
 snapshot_positions = false
 snapshot_positions_interval_seconds = 0
-external_client_ids = []
 debug = false
 reconciliation = true
 reconciliation_startup_delay_seconds = 10
@@ -1129,7 +1148,6 @@ validate_data_sequence = false
 buffer_deltas = false
 emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
-external_client_ids = []
 debug = false
 graceful_shutdown_on_error = false
 qsize = 100000
@@ -1139,7 +1157,6 @@ load_cache = true
 snapshot_orders = false
 snapshot_positions = false
 snapshot_positions_interval_seconds = 0
-external_client_ids = []
 debug = false
 reconciliation = true
 reconciliation_startup_delay_seconds = 10
@@ -1365,17 +1382,12 @@ fn rejects_invalid_nt_data_engine_values() {
     )
     .replace("time_bars_origins = {}", "time_bars_origins = { INVALID = 1 }")
     .replace(
-        "emit_quotes_from_book_depths = false\nexternal_client_ids = []\ndebug = false",
-        "emit_quotes_from_book_depths = false\nexternal_client_ids = [\"\"]\ndebug = false",
-    )
-    .replace(
         "debug = false\ngraceful_shutdown_on_error = false\nqsize = 100000\n\n[nautilus.exec_engine]",
         "debug = false\ngraceful_shutdown_on_error = true\nqsize = 1000\n\n[nautilus.exec_engine]",
     );
     assert!(
         mutated.contains("time_bars_interval_type = \"SIDEWAYS\"")
             && mutated.contains("time_bars_origins = { INVALID = 1 }")
-            && mutated.contains("external_client_ids = [\"\"]")
             && mutated.contains("graceful_shutdown_on_error = true")
             && mutated.contains("qsize = 1000"),
         "test fixture mutation must exercise every invalid data-engine branch"
@@ -1386,7 +1398,6 @@ fn rejects_invalid_nt_data_engine_values() {
     for needle in [
         "nautilus.data_engine.time_bars_interval_type is not valid",
         "nautilus.data_engine.time_bars_origins key `INVALID` is not a valid Nautilus bar aggregation",
-        "nautilus.data_engine.external_client_ids contains invalid client ID",
         "nautilus.data_engine.graceful_shutdown_on_error must be false",
         "nautilus.data_engine.qsize must match NT default",
     ] {
@@ -1430,21 +1441,18 @@ fn rejects_nt_exec_values_unsupported_by_rust_live_runtime() {
 fn rejects_invalid_nt_exec_filter_identifiers() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated =
-        replace_in_fixture_root("external_client_ids = []", "external_client_ids = [\"\"]")
-            .replace(
-                "reconciliation_instrument_ids = []",
-                "reconciliation_instrument_ids = [\"INVALID\"]",
-            )
-            .replace(
-                "filtered_client_order_ids = []",
-                "filtered_client_order_ids = [\"\"]",
-            );
+    let mutated = replace_in_fixture_root(
+        "reconciliation_instrument_ids = []",
+        "reconciliation_instrument_ids = [\"INVALID\"]",
+    )
+    .replace(
+        "filtered_client_order_ids = []",
+        "filtered_client_order_ids = [\"\"]",
+    );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("invalid NT exec filter identifiers fixture should parse");
     let messages = validate_root_only(&root);
     for needle in [
-        "nautilus.exec_engine.external_client_ids contains invalid client ID",
         "nautilus.exec_engine.reconciliation_instrument_ids contains invalid instrument ID",
         "nautilus.exec_engine.filtered_client_order_ids contains invalid client order ID",
     ] {
@@ -1453,6 +1461,31 @@ fn rejects_invalid_nt_exec_filter_identifiers() {
             "expected `{needle}` in validation messages, got: {messages:#?}"
         );
     }
+}
+
+#[test]
+fn rejects_invalid_external_client_id_at_parse_time() {
+    // FINDING-8: external_clients is `Option<Vec<ClientId>>`, so an empty
+    // string is rejected by ClientId's deserializer before the validator
+    // ever runs. This keeps invalid identifiers from reaching runtime code
+    // through any code path that bypasses validate_root_only.
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+
+    let mutated = replace_in_fixture_root(
+        "[nautilus.data_engine]\ntime_bars_build_with_no_updates = true",
+        "[nautilus.data_engine]\nexternal_clients = [\"\"]\ntime_bars_build_with_no_updates = true",
+    );
+    let parse_result = toml::from_str::<BoltV3RootConfig>(&mutated);
+    let error = parse_result.expect_err("empty ClientId must be rejected at TOML parse time");
+    let message = error.to_string();
+    assert!(
+        message.contains("invalid string for 'value'"),
+        "expected ClientId rejection from serde, got: {message}"
+    );
+    assert!(
+        message.contains("external_clients = [\"\"]"),
+        "expected error to point at the offending external_clients entry, got: {message}"
+    );
 }
 
 #[test]

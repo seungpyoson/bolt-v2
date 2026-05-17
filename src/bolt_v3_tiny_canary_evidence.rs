@@ -1699,7 +1699,7 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             max_live_order_count: live_canary.max_live_order_count,
             max_notional_per_order: live_canary.max_notional_per_order.clone(),
             strategy_instance_id: strategy.strategy_instance_id.clone(),
-            strategy_venue: strategy.venue.clone(),
+            strategy_venue: strategy.execution_client_id.clone(),
             configured_target_id: required_toml_string(target, stringify!(configured_target_id))?,
             target_kind: required_toml_string(target, stringify!(kind))?,
             rotating_market_family: required_toml_string(

@@ -57,6 +57,17 @@ fn phase8_operator_harness_derives_strategy_audit_from_evidence_file() {
         .expect("operator harness source should be readable");
 
     assert!(source.contains("Phase8StrategyInputSafetyAudit::from_evidence_file"));
+    let harness_start = source
+        .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
+        .expect("operator harness start should exist");
+    let harness = &source[harness_start..];
+    let audit_index = harness
+        .find("let strategy_audit = Phase8StrategyInputSafetyAudit::from_evidence_file")
+        .expect("operator harness should parse strategy input evidence");
+    let consumption_index = harness
+        .find("envelope.validate_and_consume_against")
+        .expect("operator harness should consume approval");
+    assert!(audit_index < consumption_index);
     assert!(!source.contains(&format!(
         "{}{}",
         "Phase8StrategyInputSafetyAudit::", "approved()"
@@ -539,6 +550,10 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
     let root_hash = Phase8OperatorApprovalEnvelope::sha256_file(&envelope.root_toml_path)?;
     let current_head = phase8_current_checkout_head_sha()?;
     let current_unix_seconds = phase8_current_unix_seconds()?;
+    let strategy_audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
+        &envelope.strategy_input_evidence_path,
+        &envelope.strategy_input_evidence_sha256,
+    )?;
     envelope.validate_and_consume_against(
         &current_head,
         &root_hash,
@@ -550,10 +565,6 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
             .unwrap_or_default(),
         &loaded,
         current_unix_seconds,
-    )?;
-    let strategy_audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &envelope.strategy_input_evidence_path,
-        &envelope.strategy_input_evidence_sha256,
     )?;
     let preflight = evaluate_phase8_canary_preflight(&loaded, &current_head, strategy_audit).await;
     if !preflight.can_enter_live_runner() {

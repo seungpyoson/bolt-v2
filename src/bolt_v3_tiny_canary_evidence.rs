@@ -67,6 +67,7 @@ pub enum Phase8CanaryBlockReason {
     NegativeThetaDecayFactor,
     MissingSelectedMarketIdentity,
     InvalidMarketSelectionOutcome,
+    InvalidMarketSelectionBinding,
     InvalidSelectedMarketWindow,
     DecisionEvidenceUnavailable,
     BlockedBeforeLiveOrder,
@@ -249,6 +250,16 @@ impl Phase8StrategyInputSafetyAudit {
             Phase8CanaryBlockReason::InvalidMarketSelectionOutcome,
         );
         audit.block_if(
+            !market_selection_outcome.is_empty()
+                && !phase8_market_selection_outcome_matches_window(
+                    market_selection_outcome,
+                    raw.market_selection_timestamp_milliseconds,
+                    raw.polymarket_market_start_timestamp_milliseconds,
+                    raw.polymarket_market_end_timestamp_milliseconds,
+                ),
+            Phase8CanaryBlockReason::InvalidMarketSelectionBinding,
+        );
+        audit.block_if(
             raw.selected_market_observed_timestamp == u64::MIN
                 || raw.polymarket_market_start_timestamp_milliseconds == u64::MIN
                 || raw.polymarket_market_end_timestamp_milliseconds
@@ -279,6 +290,24 @@ fn phase8_market_selection_outcome_is_live_entry_candidate(outcome: &str) -> boo
         || outcome == PHASE8_MARKET_SELECTION_OUTCOME_NEXT
 }
 
+fn phase8_market_selection_outcome_matches_window(
+    outcome: &str,
+    market_selection_timestamp_milliseconds: u64,
+    market_start_timestamp_milliseconds: u64,
+    market_end_timestamp_milliseconds: u64,
+) -> bool {
+    match outcome {
+        PHASE8_MARKET_SELECTION_OUTCOME_CURRENT => {
+            market_start_timestamp_milliseconds <= market_selection_timestamp_milliseconds
+                && market_selection_timestamp_milliseconds < market_end_timestamp_milliseconds
+        }
+        PHASE8_MARKET_SELECTION_OUTCOME_NEXT => {
+            market_selection_timestamp_milliseconds < market_start_timestamp_milliseconds
+        }
+        _ => true,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Phase8StrategyInputEvidenceFile {
@@ -294,6 +323,7 @@ struct Phase8StrategyInputEvidenceFile {
     pricing_kurtosis: String,
     theta_decay_factor: String,
     theta_scaled_min_edge_bps: String,
+    market_selection_timestamp_milliseconds: u64,
     market_selection_outcome: String,
     polymarket_condition_id: String,
     polymarket_market_slug: String,

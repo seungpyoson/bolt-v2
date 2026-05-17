@@ -20,4 +20,4 @@
 
 - GitHub docs: workflows skipped by branch/path filtering can leave required checks pending.
 - GitHub docs: jobs skipped by condition report success.
-- Live branch protection: `main` currently has `required_status_checks: null`.
+- Live branch ruleset: `main` currently requires `gate`, `clippy`, `test`, and `build`.

@@ -36,6 +36,7 @@ REQUIRED_DOC_SCENARIOS = (
     "mixed docs and source",
     "ignored config dir",
 )
+REQUIRED_PASS_STUB_JOBS = ("build", "clippy", "test", "gate")
 MAX_TEXT_BYTES = 1_000_000
 
 
@@ -164,30 +165,46 @@ def verify_safe_path_contract(paths: list[str]) -> None:
         raise PathFilterError(f"ci paths-ignore drift: expected {EXPECTED_SAFE_PATHS}, got {tuple(paths)}")
 
 
+def extract_job_block(workflow_text: str, job_name: str) -> str:
+    lines = workflow_text.splitlines()
+    job_header = f"  {job_name}:"
+    for index, line in enumerate(lines):
+        if strip_comment(line).rstrip() != job_header:
+            continue
+        block = [line]
+        for nested in lines[index + 1 :]:
+            clean = strip_comment(nested)
+            if re.match(r"^  [A-Za-z0-9_-]+:\s*$", clean):
+                break
+            block.append(nested)
+        return "\n".join(strip_comment(line) for line in block)
+    raise PathFilterError(f"pass-stub workflow missing required stub job {job_name}")
+
+
 def verify_pass_stub_workflow(workflow_text: str) -> None:
     text = "\n".join(strip_comment(line) for line in workflow_text.splitlines())
     paths = extract_trigger_list(workflow_text, "paths")
     if tuple(paths) != EXPECTED_SAFE_PATHS:
         raise PathFilterError(f"pass-stub paths drift: expected {EXPECTED_SAFE_PATHS}, got {tuple(paths)}")
-    if "needs:" in text:
-        raise PathFilterError("pass-stub gate job must fail directly without dependent skipped jobs")
-    if re.search(r"^\s{4}if:\s+", text, flags=re.MULTILINE):
-        raise PathFilterError("pass-stub gate job must not use job-level if")
     required_literals = (
         "name: CI docs pass stub",
         "pull_request:",
-        "gate:",
-        "name: gate",
-        "python3 scripts/verify_ci_path_filters.py",
-        "$GITHUB_OUTPUT",
     )
     for literal in required_literals:
         if literal not in text:
-            if literal == "name: gate":
-                raise PathFilterError("pass-stub gate job must be named gate")
-            if literal == "python3 scripts/verify_ci_path_filters.py":
-                raise PathFilterError("pass-stub must run changed-file classifier")
             raise PathFilterError(f"pass-stub workflow missing {literal}")
+    for job_name in REQUIRED_PASS_STUB_JOBS:
+        job_block = extract_job_block(workflow_text, job_name)
+        if "needs:" in job_block:
+            raise PathFilterError(f"pass-stub {job_name} job must fail directly without dependent skipped jobs")
+        if re.search(r"^\s{4}if:\s+", job_block, flags=re.MULTILINE):
+            raise PathFilterError(f"pass-stub {job_name} job must not use job-level if")
+        if f"name: {job_name}" not in job_block:
+            raise PathFilterError(f"pass-stub required stub job {job_name} must be named {job_name}")
+        if "python3 scripts/verify_ci_path_filters.py" not in job_block:
+            raise PathFilterError(f"pass-stub required stub job {job_name} must run changed-file classifier")
+        if "$GITHUB_OUTPUT" not in job_block:
+            raise PathFilterError(f"pass-stub required stub job {job_name} must write github output")
     if "--require-docs-only" in text:
         raise PathFilterError("pass-stub must not require docs-only")
 

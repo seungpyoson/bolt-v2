@@ -20,9 +20,9 @@ Rules:
 
 ## PassStubGate
 
-- Job name: `gate`.
-- Emits success only for `docs_only_safe`.
-- Depends on a classifier job that fails if changed files cannot be computed.
+- Job names: `build`, `clippy`, `test`, and `gate`.
+- Each required stub job runs the changed-file classifier directly.
+- Classification failure fails the required stub job directly.
 
 ## BranchHygieneEntry
 

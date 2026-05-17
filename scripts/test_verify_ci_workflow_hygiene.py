@@ -771,6 +771,39 @@ def main() -> int:
             "cancel-in-progress: true",
         ),
     )
+    assert_error(
+        "concurrency group must branch on pull_request event",
+        replace_once(
+            BASE_WORKFLOW,
+            """  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('pr-{0}', github.event.number)
+        || format('{0}-{1}', github.ref_name, github.sha) }}""",
+            "  group: format('pr-{0}', github.event.number)",
+        ),
+    )
+    assert_error(
+        "concurrency group must branch on pull_request event",
+        replace_once(
+            BASE_WORKFLOW,
+            "github.event_name == 'pull_request'\n        &&",
+            "github.event_name != 'pull_request'\n        &&",
+        ),
+    )
+    assert_error(
+        "concurrency group must key pull_request runs by PR number",
+        replace_once(
+            BASE_WORKFLOW,
+            """  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('pr-{0}', github.event.number)
+        || format('{0}-{1}', github.ref_name, github.sha) }}""",
+            """  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('{0}-{1}', github.ref_name, github.sha)
+        || format('pr-{0}', github.event.number) }}""",
+        ),
+    )
     assert_parse_jobs_strips_comments()
     assert_strip_comment_handles_single_quoted_backslash()
     assert_required_job_indentation_is_actionable()

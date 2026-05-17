@@ -448,7 +448,6 @@ jobs:
         run: just deny-advisories
 """
 
-
 BASE_ACTION = """
 name: Setup Environment
 inputs:

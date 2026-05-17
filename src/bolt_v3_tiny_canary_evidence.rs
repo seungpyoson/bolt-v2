@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -159,25 +159,13 @@ impl Phase8StrategyInputSafetyAudit {
                 "required phase8 strategy input evidence sha256 is empty"
             ));
         }
-        let current_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(path)?;
-        if current_sha256 != expected_sha256 {
-            return Err(anyhow!(
-                "phase8 strategy input evidence sha256 does not match current evidence"
-            ));
-        }
-        let file = fs::File::open(path).map_err(|source| {
-            anyhow!(
-                "failed to open phase8 strategy input evidence `{}`: {source}",
-                path.display()
-            )
-        })?;
-        let raw: Phase8StrategyInputEvidenceFile = serde_json::from_reader(BufReader::new(file))
-            .map_err(|source| {
-                anyhow!(
-                    "failed to parse phase8 strategy input evidence `{}`: {source}",
-                    path.display()
-                )
-            })?;
+        let raw: Phase8StrategyInputEvidenceFile =
+            Phase8OperatorApprovalEnvelope::read_json_file_with_expected_sha256(
+                path,
+                expected_sha256,
+                "phase8 strategy input evidence",
+                "phase8 strategy input evidence sha256 does not match current evidence",
+            )?;
         let realized_volatility =
             Decimal::from_str_exact(raw.realized_volatility.trim()).map_err(|source| {
                 anyhow!("failed to parse phase8 strategy input realized_volatility: {source}")
@@ -1140,76 +1128,38 @@ impl Phase8OperatorApprovalEnvelope {
     }
 
     fn validate_financial_envelope_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
-        let current_financial_envelope_sha256 = Self::sha256_file(&self.financial_envelope_path)?;
-        if self.financial_envelope_sha256 != current_financial_envelope_sha256 {
-            return Err(anyhow!(
-                "phase8 operator approval financial_envelope_sha256 does not match current financial envelope"
-            ));
-        }
         let path = Path::new(&self.financial_envelope_path);
-        let file = fs::File::open(path).map_err(|source| {
-            anyhow!(
-                "failed to open phase8 financial envelope `{}`: {source}",
-                path.display()
-            )
-        })?;
         let approved: Phase8FinancialEnvelopeEvidenceFile =
-            serde_json::from_reader(BufReader::new(file)).map_err(|source| {
-                anyhow!(
-                    "failed to parse phase8 financial envelope `{}`: {source}",
-                    path.display()
-                )
-            })?;
+            Self::read_json_file_with_expected_sha256(
+                path,
+                &self.financial_envelope_sha256,
+                "phase8 financial envelope",
+                "phase8 operator approval financial_envelope_sha256 does not match current financial envelope",
+            )?;
         let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded(loaded)?;
         approved.validate_matches(&loaded)
     }
 
     fn validate_pre_run_state_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
-        let current_pre_run_state_sha256 = Self::sha256_file(&self.pre_run_state_path)?;
-        if self.pre_run_state_sha256 != current_pre_run_state_sha256 {
-            return Err(anyhow!(
-                "phase8 operator approval pre_run_state_sha256 does not match current pre-run state evidence"
-            ));
-        }
         let path = Path::new(&self.pre_run_state_path);
-        let file = fs::File::open(path).map_err(|source| {
-            anyhow!(
-                "failed to open phase8 pre-run state evidence `{}`: {source}",
-                path.display()
-            )
-        })?;
-        let approved: Phase8PreRunStateEvidenceFile = serde_json::from_reader(BufReader::new(file))
-            .map_err(|source| {
-                anyhow!(
-                    "failed to parse phase8 pre-run state evidence `{}`: {source}",
-                    path.display()
-                )
-            })?;
+        let approved: Phase8PreRunStateEvidenceFile = Self::read_json_file_with_expected_sha256(
+            path,
+            &self.pre_run_state_sha256,
+            "phase8 pre-run state evidence",
+            "phase8 operator approval pre_run_state_sha256 does not match current pre-run state evidence",
+        )?;
         let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded(loaded)?;
         approved.validate_matches_loaded(&loaded)
     }
 
     fn validate_abort_plan_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
-        let current_abort_plan_sha256 = Self::sha256_file(&self.abort_plan_path)?;
-        if self.abort_plan_sha256 != current_abort_plan_sha256 {
-            return Err(anyhow!(
-                "phase8 operator approval abort_plan_sha256 does not match current abort plan evidence"
-            ));
-        }
         let path = Path::new(&self.abort_plan_path);
-        let file = fs::File::open(path).map_err(|source| {
-            anyhow!(
-                "failed to open phase8 abort plan evidence `{}`: {source}",
-                path.display()
-            )
-        })?;
-        let approved: Phase8AbortPlanEvidenceFile = serde_json::from_reader(BufReader::new(file))
-            .map_err(|source| {
-            anyhow!(
-                "failed to parse phase8 abort plan evidence `{}`: {source}",
-                path.display()
-            )
-        })?;
+        let approved: Phase8AbortPlanEvidenceFile = Self::read_json_file_with_expected_sha256(
+            path,
+            &self.abort_plan_sha256,
+            "phase8 abort plan evidence",
+            "phase8 operator approval abort_plan_sha256 does not match current abort plan evidence",
+        )?;
         let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded(loaded)?;
         approved.validate_matches_loaded(&loaded)
     }
@@ -1334,6 +1284,40 @@ impl Phase8OperatorApprovalEnvelope {
             digest.update(&buffer[..length]);
         }
         Ok(format!("{:x}", digest.finalize()))
+    }
+
+    fn read_json_file_with_expected_sha256<T>(
+        path: impl AsRef<Path>,
+        expected_sha256: &str,
+        artifact_label: &'static str,
+        mismatch_message: &'static str,
+    ) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        let path = path.as_ref();
+        let bytes = fs::read(path).map_err(|source| {
+            anyhow!(
+                "failed to open {artifact_label} `{}`: {source}",
+                path.display()
+            )
+        })?;
+        let current_sha256 = Self::sha256_bytes(&bytes);
+        if expected_sha256 != current_sha256 {
+            return Err(anyhow!(mismatch_message));
+        }
+        serde_json::from_slice(&bytes).map_err(|source| {
+            anyhow!(
+                "failed to parse {artifact_label} `{}`: {source}",
+                path.display()
+            )
+        })
+    }
+
+    fn sha256_bytes(bytes: &[u8]) -> String {
+        let mut digest = Sha256::new();
+        digest.update(bytes);
+        format!("{:x}", digest.finalize())
     }
 
     pub fn root_path(&self) -> PathBuf {

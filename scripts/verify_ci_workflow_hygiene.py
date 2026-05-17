@@ -428,9 +428,7 @@ def shell_assignment_word(token: str) -> bool:
 
 
 SUDO_OPTIONS_WITH_ARGUMENT = {
-    "-A",
     "-a",
-    "-b",
     "-C",
     "-c",
     "-D",
@@ -443,9 +441,7 @@ SUDO_OPTIONS_WITH_ARGUMENT = {
     "-t",
     "-U",
     "-u",
-    "--askpass",
     "--auth-type",
-    "--background",
     "--chdir",
     "--close-from",
     "--command-timeout",
@@ -461,6 +457,8 @@ SUDO_OPTIONS_WITH_OPTIONAL_ARGUMENT = {
     "--preserve-env",
 }
 SUDO_OPTIONS_WITHOUT_ARGUMENT = {
+    "-A",
+    "-b",
     "-E",
     "-e",
     "-H",
@@ -474,6 +472,8 @@ SUDO_OPTIONS_WITHOUT_ARGUMENT = {
     "-s",
     "-V",
     "-v",
+    "--askpass",
+    "--background",
     "--bell",
     "--edit",
     "--help",

@@ -78,7 +78,11 @@ jobs:
           include-deny-version: "true"
       - uses: Swatinem/rust-cache@example
         with:
-          key: deny
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}
       - name: Install cargo-deny
         uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
         with:
@@ -100,8 +104,15 @@ jobs:
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: clippy
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}
+      - uses: actions/cache@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
       - run: just clippy
 
   check-aarch64:
@@ -130,8 +141,16 @@ jobs:
       - uses: Swatinem/rust-cache@example
         if: needs.detector.outputs.build_required != 'true'
         with:
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: check-aarch64
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}
+      - uses: actions/cache@example
+        if: needs.detector.outputs.build_required != 'true'
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
       - if: needs.detector.outputs.build_required != 'true'
         run: just check-aarch64
 
@@ -148,8 +167,15 @@ jobs:
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: source-fence
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}
+      - uses: actions/cache@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
       - run: just source-fence
 
   test-archive:
@@ -166,6 +192,13 @@ jobs:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+      - uses: Swatinem/rust-cache@example
+        with:
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}
       - name: Restore nextest archive
         id: nextest-archive-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -260,8 +293,15 @@ jobs:
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: build
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}
+      - uses: actions/cache@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
       - name: Install zig
         run: |
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
@@ -958,8 +998,48 @@ def main() -> int:
         "check-aarch64 must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
-            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: check-aarch64",
-            "          key: check-aarch64",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}",
+        ),
+    )
+    assert_error(
+        "deny must use shared Cargo registry/git cache key",
+        replace_once(BASE_WORKFLOW, "          shared-key: cargo-registry-git-v1", "          key: deny"),
+    )
+    assert_error(
+        "deny shared Cargo registry/git cache must disable cargo bin caching",
+        replace_once(BASE_WORKFLOW, "          cache-bin: false", "          cache-bin: true"),
+    )
+    assert_error(
+        "deny shared Cargo registry/git cache must not include target directories",
+        replace_once(
+            BASE_WORKFLOW,
+            "          cache-targets: false\n          shared-key: cargo-registry-git-v1",
+            "          cache-targets: false\n          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          shared-key: cargo-registry-git-v1",
+        ),
+    )
+    assert_error(
+        "clippy must use isolated managed target cache",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}\n",
+            "",
+        ),
+    )
+    assert_error(
+        "build managed target cache key must isolate build-aarch64-release",
+        replace_once(
+            BASE_WORKFLOW,
+            "managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-",
+            "managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
+        ),
+    )
+    assert_error(
+        "shared Cargo registry/git cache save must be single-owner",
+        replace_once(
+            BASE_WORKFLOW,
+            "          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}",
+            "          save-if: true",
         ),
     )
     assert_error(
@@ -2110,21 +2190,6 @@ def main() -> int:
         "clippy uses managed target dir but setup does not opt in",
         replace_once(
             BASE_WORKFLOW,
-            '          include-managed-target-dir: "true"\n'
-            "      - uses: Swatinem/rust-cache@example\n"
-            "        with:\n"
-            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n"
-            "          key: clippy",
-            "      - uses: Swatinem/rust-cache@example\n"
-            "        with:\n"
-            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n"
-            "          key: clippy",
-        ),
-    )
-    assert_error(
-        "clippy uses managed target dir but setup does not opt in",
-        replace_once(
-            BASE_WORKFLOW,
             '          include-managed-target-dir: "true"',
             '          # include-managed-target-dir: "true"',
         ),
@@ -2141,8 +2206,8 @@ def main() -> int:
         "clippy must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
-            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: clippy",
-            "          # cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: clippy",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}",
         ),
     )
     assert_error(

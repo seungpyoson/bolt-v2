@@ -225,6 +225,15 @@ TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@0057852bfaa89a56745cba8c729
 TEST_ARCHIVE_UPLOAD_ACTION = "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
+SHARED_REGISTRY_CACHE_KEY = "cargo-registry-git-v1"
+SHARED_REGISTRY_SAVE_IF = "${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}"
+REGISTRY_CACHE_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
+MANAGED_TARGET_CACHE_KEYS = {
+    "clippy": "clippy-host",
+    "check-aarch64": "check-aarch64-dev",
+    "source-fence": "source-fence-test",
+    "build": "build-aarch64-release",
+}
 JUST_LANE_RE = re.compile(
     r"(^|[^A-Za-z0-9_./-])just\s+"
     r"(fmt-check|deny|deny-advisories|clippy|test-archive-run|test-archive|test|build|check-aarch64|source-fence)"
@@ -450,6 +459,18 @@ def setup_action_blocks(job_lines: list[str]) -> list[list[str]]:
     return [block for block in step_blocks(job_lines) if any("./.github/actions/setup-environment" in line for line in block)]
 
 
+def action_blocks(job_lines: list[str], action: str) -> list[list[str]]:
+    return [block for block in step_blocks(job_lines) if any(action in strip_comment(line) for line in block)]
+
+
+def rust_cache_blocks(job_lines: list[str]) -> list[list[str]]:
+    return action_blocks(job_lines, "Swatinem/rust-cache@")
+
+
+def github_cache_blocks(job_lines: list[str]) -> list[list[str]]:
+    return action_blocks(job_lines, "actions/cache@")
+
+
 def block_runs_command(block: list[str], command: str) -> bool:
     for index, line in enumerate(block):
         clean = strip_comment(line)
@@ -516,6 +537,52 @@ def has_run_command(lines: list[str], command: str) -> bool:
 
 def job_has_explicit_cache_key(job_lines: list[str]) -> bool:
     return any(CACHE_KEY_RE.match(strip_comment(line)) for line in job_lines)
+
+
+def shared_registry_cache_errors(job: str, job_lines: list[str]) -> list[str]:
+    blocks = rust_cache_blocks(job_lines)
+    shared_blocks = [
+        block for block in blocks if block_has_input(block, "shared-key", SHARED_REGISTRY_CACHE_KEY)
+    ]
+    if not shared_blocks:
+        return [f"{job} must use shared Cargo registry/git cache key"]
+
+    errors: list[str] = []
+    for block in shared_blocks:
+        if not block_has_input(block, "cache-targets", "false"):
+            errors.append(f"{job} shared Cargo registry/git cache must disable target caching")
+        if not block_has_input(block, "cache-bin", "false"):
+            errors.append(f"{job} shared Cargo registry/git cache must disable cargo bin caching")
+        if not block_has_input(block, "save-if", SHARED_REGISTRY_SAVE_IF):
+            errors.append("shared Cargo registry/git cache save must be single-owner")
+
+    for block in blocks:
+        if block_has_input(block, "cache-directories"):
+            errors.append(f"{job} shared Cargo registry/git cache must not include target directories")
+    return errors
+
+
+def block_is_shared_registry_cache(block: list[str]) -> bool:
+    return (
+        block_has_input(block, "shared-key", SHARED_REGISTRY_CACHE_KEY)
+        and block_has_input(block, "cache-targets", "false")
+        and not block_has_input(block, "cache-directories")
+    )
+
+
+def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
+    expected_key = MANAGED_TARGET_CACHE_KEYS[job]
+    target_blocks = [
+        block
+        for block in github_cache_blocks(job_lines)
+        if block_has_input(block, "path", "${{ steps.setup.outputs.managed_target_dir }}")
+    ]
+    if not target_blocks:
+        return [f"{job} must use isolated managed target cache"]
+
+    if not any(f"managed-target-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{expected_key}-" in uncommented_text(block) for block in target_blocks):
+        return [f"{job} managed target cache key must isolate {expected_key}"]
+    return []
 
 
 def job_just_lanes(job_lines: list[str]) -> set[str]:
@@ -1186,7 +1253,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must declare nextest archive path")
         if not all(input_fragment in archive_text for input_fragment in TEST_ARCHIVE_KEY_INPUTS):
             errors.append("test-archive cache key must include Rust and test graph inputs")
-        if "Swatinem/rust-cache@" in archive_text:
+        if any(not block_is_shared_registry_cache(block) for block in rust_cache_blocks(archive_lines)):
             errors.append("test-archive must not use managed target rust-cache")
         if "include-managed-target-dir:" in archive_text:
             errors.append("test-archive must not opt into managed target dir")
@@ -1309,6 +1376,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
     for job in CACHE_KEY_JOBS:
         if job in jobs and not job_has_explicit_cache_key(jobs[job]):
             errors.append(f"{job} must declare explicit rust-cache key or shared-key")
+
+    for job in REGISTRY_CACHE_JOBS:
+        if job in jobs:
+            errors.extend(shared_registry_cache_errors(job, jobs[job]))
+
+    for job in MANAGED_TARGET_CACHE_KEYS:
+        if job in jobs:
+            errors.extend(managed_target_cache_errors(job, jobs[job]))
 
     return errors
 

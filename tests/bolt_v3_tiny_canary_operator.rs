@@ -131,6 +131,8 @@ fn phase8_operator_harness_waits_for_post_run_proofs_after_runner() {
         .expect("operator harness should wait for post-run operator proofs");
 
     assert!(runner_index < wait_index);
+    assert!(source.contains("observed_errors"));
+    assert!(source.contains("observed errors"));
 }
 
 #[test]
@@ -893,14 +895,17 @@ impl Phase8OperatorLiveResultPaths {
             .saturating_add(loaded.root.nautilus.timeout_shutdown_seconds);
         let poll_interval = Duration::from_secs(loaded.root.nautilus.timeout_shutdown_seconds);
         let deadline = Instant::now() + Duration::from_secs(wait_seconds);
+        let mut observed_errors = Vec::new();
 
         loop {
             match self.to_refs(snapshot, run_id) {
                 Ok(refs) => return Ok(refs),
                 Err(error) => {
+                    observed_errors.push(error.to_string());
                     if Instant::now() >= deadline {
                         anyhow::bail!(
-                            "phase8 post-run operator evidence did not become ready within nautilus.timeout_reconciliation_seconds + nautilus.timeout_shutdown_seconds; last error: {error}"
+                            "phase8 post-run operator evidence did not become ready within nautilus.timeout_reconciliation_seconds + nautilus.timeout_shutdown_seconds; observed errors: {}",
+                            observed_errors.join(" | ")
                         );
                     }
                 }

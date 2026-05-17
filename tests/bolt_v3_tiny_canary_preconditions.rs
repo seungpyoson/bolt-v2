@@ -160,6 +160,31 @@ async fn preflight_blocks_live_order_count_above_one_before_build() {
     assert!(!report.can_enter_live_runner());
 }
 
+#[tokio::test]
+async fn preflight_blocks_missing_live_canary_with_explicit_block_reason() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let report_path = temp.path().join("no-submit-readiness.json");
+    write_satisfied_no_submit_readiness_report(&report_path);
+    let mut loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
+    loaded.root.live_canary = None;
+
+    let report = evaluate_phase8_canary_preflight(
+        &loaded,
+        "7f2d981f584a0378842d9a76fffd9cd03fce2ce5",
+        Phase8StrategyInputSafetyAudit::approved(),
+    )
+    .await;
+
+    assert!(
+        report
+            .block_reasons
+            .contains(&Phase8CanaryBlockReason::LiveOrderCountCapNotOne)
+    );
+    assert!(!report.block_reasons.is_empty());
+    assert_eq!(report.max_live_order_count, None);
+    assert!(!report.can_enter_live_runner());
+}
+
 #[test]
 fn strategy_audit_blocks_non_positive_realized_volatility() {
     let audit =

@@ -337,8 +337,10 @@ pub async fn evaluate_phase8_canary_preflight(
             Phase8CanaryPreflightStatus::RejectedByGate
         }
     };
-    if live_canary.is_some_and(|block| block.max_live_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP)
-    {
+    if !matches!(
+        live_canary,
+        Some(block) if block.max_live_order_count == PHASE8_REQUIRED_LIVE_ORDER_CAP
+    ) {
         block_reasons.push(Phase8CanaryBlockReason::LiveOrderCountCapNotOne);
     }
 

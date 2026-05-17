@@ -1,5 +1,7 @@
 # bolt-v2 Agent Rules
 
+<!-- Docs-only CI pass-stub proof after PR #379 for issue #344. -->
+
 These repo-level rules are in addition to any higher-level agent instructions.
 
 ## Scope Discipline

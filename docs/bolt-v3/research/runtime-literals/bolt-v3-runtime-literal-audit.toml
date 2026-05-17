@@ -1113,6 +1113,22 @@ reason = "This is the Phase 8 strategy-input evidence source identifier required
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
+literal = '''"current"'''
+context = '''const PHASE8_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";'''
+classification = "phase8_strategy_input_market_selection_contract"
+reason = "This is an accepted Phase 8 strategy-input evidence outcome for the current live-entry market selection, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"next"'''
+context = '''const PHASE8_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";'''
+classification = "phase8_strategy_input_market_selection_contract"
+reason = "This is an accepted Phase 8 strategy-input evidence outcome for the next live-entry market selection, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
 literal = '''"phase8 strategy input evidence"'''
 context = '''"phase8 strategy input evidence",'''
 classification = "phase8_approval_bound_artifact_label"

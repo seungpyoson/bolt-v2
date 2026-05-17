@@ -25,6 +25,8 @@ const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;
 const PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION: u32 = 1;
 const PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND: &str = "phase8_operator_approval_consumption";
 const PHASE8_ALLOWED_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
+const PHASE8_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
+const PHASE8_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
 pub const PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID: &str = "phase8-blocked-before-live-runner";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -64,6 +66,7 @@ pub enum Phase8CanaryBlockReason {
     InvalidPricingKurtosis,
     NegativeThetaDecayFactor,
     MissingSelectedMarketIdentity,
+    InvalidMarketSelectionOutcome,
     InvalidSelectedMarketWindow,
     DecisionEvidenceUnavailable,
     BlockedBeforeLiveOrder,
@@ -228,14 +231,22 @@ impl Phase8StrategyInputSafetyAudit {
             pricing_kurtosis,
             theta_decay_factor,
         });
+        let market_selection_outcome = raw.market_selection_outcome.trim();
         audit.block_if(
-            raw.market_selection_outcome.trim().is_empty()
+            market_selection_outcome.is_empty()
                 || raw.polymarket_condition_id.trim().is_empty()
                 || raw.polymarket_market_slug.trim().is_empty()
                 || raw.polymarket_question_id.trim().is_empty()
                 || raw.up_instrument_id.trim().is_empty()
                 || raw.down_instrument_id.trim().is_empty(),
             Phase8CanaryBlockReason::MissingSelectedMarketIdentity,
+        );
+        audit.block_if(
+            !market_selection_outcome.is_empty()
+                && !phase8_market_selection_outcome_is_live_entry_candidate(
+                    market_selection_outcome,
+                ),
+            Phase8CanaryBlockReason::InvalidMarketSelectionOutcome,
         );
         audit.block_if(
             raw.selected_market_observed_timestamp == u64::MIN
@@ -263,7 +274,13 @@ impl Phase8StrategyInputSafetyAudit {
     }
 }
 
+fn phase8_market_selection_outcome_is_live_entry_candidate(outcome: &str) -> bool {
+    outcome == PHASE8_MARKET_SELECTION_OUTCOME_CURRENT
+        || outcome == PHASE8_MARKET_SELECTION_OUTCOME_NEXT
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Phase8StrategyInputEvidenceFile {
     realized_volatility: String,
     seconds_to_expiry: u64,

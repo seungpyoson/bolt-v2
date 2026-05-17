@@ -562,6 +562,53 @@ fn strategy_audit_blocks_missing_selected_market_identity_or_window() {
 }
 
 #[test]
+fn strategy_audit_blocks_invalid_market_selection_outcome() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    std::fs::write(
+        &strategy_input_path,
+        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_outcome":"failed","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+    )
+    .expect("strategy input evidence should write");
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+        .expect("strategy input evidence hash should compute");
+
+    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
+        &strategy_input_path,
+        strategy_input_hash,
+    )
+    .expect("matching strategy input evidence should parse");
+
+    assert!(!audit.is_approved());
+    assert!(
+        audit
+            .block_reasons()
+            .contains(&Phase8CanaryBlockReason::InvalidMarketSelectionOutcome)
+    );
+}
+
+#[test]
+fn strategy_audit_rejects_unknown_input_evidence_fields() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("strategy-input-evidence.json");
+    std::fs::write(
+        &evidence_path,
+        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000,"unreviewed_override":"accepted"}"#,
+    )
+    .expect("strategy input evidence should write");
+    let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
+        .expect("strategy input evidence hash should compute");
+
+    let error = Phase8StrategyInputSafetyAudit::from_evidence_file(&evidence_path, &evidence_hash)
+        .expect_err("unknown strategy input evidence fields should fail");
+
+    assert!(
+        error.to_string().contains("unknown field"),
+        "error should mention unknown strategy input evidence field: {error}"
+    );
+}
+
+#[test]
 fn strategy_audit_verifies_input_evidence_hash_before_approving() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("strategy-input-evidence.json");

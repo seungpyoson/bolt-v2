@@ -6,6 +6,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 nextest_version := "0.9.132"
 deny_version := "0.19.0"
 zigbuild_version := "0.22.1"
+zigbuild_x86_64_unknown_linux_gnu_sha256 := "21e18a5f8ae64b9ed34c5c1cf7bba5af3bd96d77fd43d713eae85b922506d941"
 zig_version := "0.15.2"
 
 target := "aarch64-unknown-linux-gnu"

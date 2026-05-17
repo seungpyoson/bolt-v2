@@ -538,7 +538,7 @@ async fn failed_upload_immediately_starts_next_ready_file_without_retrying_faile
     worker.shutdown().await.unwrap();
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn failed_upload_retry_waits_for_ship_interval_even_if_earlier_roll_occurs() {
     let dir = tempdir().unwrap();
     let uploader = MockUploader::with_outcomes([false, true, true]);
@@ -550,13 +550,13 @@ async fn failed_upload_retry_waits_for_ship_interval_even_if_earlier_roll_occurs
     let worker = spawn_audit_worker(audit_rx, uploader.clone(), cfg);
 
     audit_tx.send(sample_record(100)).unwrap();
-    wait_for_attempts(&uploader, 1).await;
+    wait_for_attempts_without_advancing_time(&uploader, 1).await;
     let failed_path = uploader.calls()[0].local_path.clone();
 
     audit_tx.send(history_record(200)).unwrap();
-    wait_for_attempts(&uploader, 2).await;
+    wait_for_attempts_without_advancing_time(&uploader, 2).await;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::advance(Duration::from_millis(100)).await;
     let calls_before_retry = uploader.calls();
     assert_eq!(
         calls_before_retry.len(),
@@ -578,7 +578,8 @@ async fn failed_upload_retry_waits_for_ship_interval_even_if_earlier_roll_occurs
         "newly rolled files should remain eligible for immediate first upload"
     );
 
-    wait_for_attempts(&uploader, 3).await;
+    tokio::time::advance(Duration::from_millis(150)).await;
+    wait_for_attempts_without_advancing_time(&uploader, 3).await;
     let calls_after_retry = uploader.calls();
     assert_eq!(
         calls_after_retry

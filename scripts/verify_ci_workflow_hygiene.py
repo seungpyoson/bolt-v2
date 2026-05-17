@@ -26,6 +26,7 @@ REQUIRED_JOBS = (
     "clippy",
     "check-aarch64",
     "source-fence",
+    "test-archive",
     "test-shards",
     "test",
     "build",
@@ -44,8 +45,8 @@ DEPLOY_REQUIRED_NEEDS = (
     "source-fence",
     "test",
 )
-TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-shards", "build")
-CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-shards", "build")
+TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "build")
+CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
 LIVE_NODE_TEST_GROUP = "live-node"
 LIVE_NODE_UNIT_TEST_FILTERS = (
     "binary(=bolt_v2)",
@@ -86,6 +87,16 @@ ELSE_RE = re.compile(r"^\s*else\s*$")
 FI_RE = re.compile(r"^\s*fi\s*$")
 TARGET_DIR_OPT_IN_RE = re.compile(r"^\s+include-managed-target-dir:\s*(['\"])true\1\s*$")
 SETUP_TARGET_DIR_EXPORT_RE = re.compile(r"^\s+value:\s*\$\{\{\s*steps\.target_dir\.outputs\.managed_target_dir\s*\}\}\s*$")
+SETUP_TARGET_DIR_RELATIVE_EXPORT_RE = re.compile(
+    r"^\s+value:\s*\$\{\{\s*steps\.target_dir\.outputs\.managed_target_dir_relative\s*\}\}\s*$"
+)
+SETUP_TARGET_DIR_RELATIVE_OUTPUT_RE = re.compile(
+    r'^\s*echo\s+"managed_target_dir_relative=\$managed_target_dir_relative"\s*>>\s*"\$GITHUB_OUTPUT"\s*$'
+)
+SETUP_TARGET_DIR_RELATIVE_COMPUTE = (
+    "managed_target_dir_relative=\"$(python3 -c 'import os, sys; "
+    "print(os.path.relpath(sys.argv[2], sys.argv[1]))' \"$GITHUB_WORKSPACE\" \"$managed_target_dir\")\""
+)
 SETUP_TARGET_DIR_IF_RE = re.compile(
     r"^\s+if:\s*\$\{\{\s*inputs\.include-managed-target-dir\s*==\s*['\"]true['\"]\s*\}\}\s*$"
 )
@@ -110,6 +121,7 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "just --evaluate rust_verification_source_sha",
     "just --evaluate rust_verification_ci_install_script",
     'target-dir --repo "$GITHUB_WORKSPACE"',
+    "os.path.relpath",
 )
 SETUP_ACTION_OUTPUT_MAPPINGS = {
     "rust_toolchain": "steps.shared.outputs.rust_toolchain",
@@ -124,6 +136,7 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
     "rust_verification_source_sha": "steps.shared.outputs.rust_verification_source_sha",
     "rust_verification_ci_install_script": "steps.shared.outputs.rust_verification_ci_install_script",
     "managed_target_dir": "steps.target_dir.outputs.managed_target_dir",
+    "managed_target_dir_relative": "steps.target_dir.outputs.managed_target_dir_relative",
 }
 SETUP_ACTION_ORDERED_STEPS = (
     "Lint workflow contract",
@@ -135,15 +148,47 @@ SETUP_ACTION_ORDERED_STEPS = (
 TEST_FAIL_FAST_FALSE_RE = re.compile(r"^\s+fail-fast:\s*false\s*$")
 TEST_MATRIX_SHARD_RE = re.compile(r"^\s+shard:\s*\[\s*1\s*,\s*2\s*,\s*3\s*,\s*4\s*\]\s*$")
 TEST_SHARD_NAME_RE = re.compile(r"^\s+name:\s*nextest shard \$\{\{\s*matrix\.shard\s*\}\} of 4\s*$")
-TEST_PARTITION_COMMAND = "just test -- --partition count:${{ matrix.shard }}/4"
-TEST_REPRODUCTION_COMMAND = TEST_PARTITION_COMMAND
+TEST_PARTITION_COMMAND = (
+    'just test-archive-run "$RUNNER_TEMP/nextest-archive/nextest-archive.tar.zst" '
+    '"${{ steps.archive-root.outputs.archive_extract_root }}" '
+    "--partition count:${{ matrix.shard }}/4"
+)
+TEST_REPRODUCTION_COMMAND = (
+    "just test-archive-run .nextest-archive/nextest-archive.tar.zst "
+    "<managed-target-parent> "
+    "--partition count:${{ matrix.shard }}/4"
+)
 TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"'
-TEST_SHARED_CACHE_RE = re.compile(r"^\s+shared-key:\s*nextest-v3\s*$")
-TEST_CACHE_SAVE_IF_RE = re.compile(r"^\s+save-if:\s*\$\{\{\s*matrix\.shard\s*==\s*1\s*\}\}\s*$")
+TEST_ARCHIVE_EXTRACT_ROOT_COMMAND = 'archive_extract_root="$(dirname "${{ steps.setup.outputs.managed_target_dir }}")"'
+TEST_ARCHIVE_EXTRACT_ROOT_OUTPUT = 'echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"'
+TEST_ARCHIVE_KEY_INPUTS = (
+    "key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
+    "'Cargo.lock'",
+    "'Cargo.toml'",
+    "'rust-toolchain.toml'",
+    "'.cargo/config.toml'",
+    "'.config/nextest.toml'",
+    "'.claude/rust-verification.toml'",
+    "'justfile'",
+    "'build.rs'",
+    "'src/**'",
+    "'tests/**'",
+    "'benches/**'",
+    "'examples/**'",
+    "'crates/**'",
+    "'specs/**/*.md'",
+)
+TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst"
+TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
+TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
+TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830"
+TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830"
+TEST_ARCHIVE_UPLOAD_ACTION = "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
 JUST_LANE_RE = re.compile(
     r"(^|[^A-Za-z0-9_./-])just\s+"
-    r"(fmt-check|deny|deny-advisories|clippy|test|build|check-aarch64|source-fence)"
+    r"(fmt-check|deny|deny-advisories|clippy|test-archive-run|test-archive|test|build|check-aarch64|source-fence)"
     r"([^A-Za-z0-9_]|$)"
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
@@ -152,13 +197,15 @@ TAIKI_INSTALL_ACTION = "taiki-e/install-action@3771e22aa892e03fd35585fae288baad1
 CI_INSTALL_ACTION_TOOLS = {
     "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
+    "test-archive": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
     "test-shards": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
 }
 CI_SOURCE_BUILD_TOOLS = ("cargo-deny", "cargo-nextest", "cargo-zigbuild")
 CI_INSTALL_ACTION_COMMANDS = {
     "deny": "just deny",
     "advisories": "just deny-advisories",
-    "test-shards": "just test -- --partition count:${{ matrix.shard }}/4",
+    "test-archive": 'just test-archive "$NEXTEST_ARCHIVE_PATH"',
+    "test-shards": TEST_PARTITION_COMMAND,
 }
 CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {"--color", "--config", "-C", "-Z"}
 CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "--quiet", "-q", "--verbose", "-v"}
@@ -357,7 +404,11 @@ def job_has_setup_input(job_lines: list[str], name: str, value: str | None = Non
 
 
 def job_uses_managed_target_dir(job_lines: list[str]) -> bool:
-    return any("steps.setup.outputs.managed_target_dir" in strip_comment(line) for line in job_lines)
+    return any(
+        "steps.setup.outputs.managed_target_dir" in strip_comment(line)
+        or "steps.setup.outputs.managed_target_dir_relative" in strip_comment(line)
+        for line in job_lines
+    )
 
 
 def job_opts_into_managed_target_dir(job_lines: list[str]) -> bool:
@@ -926,12 +977,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "source-fence" in jobs and not job_runs_command(jobs["source-fence"], "just source-fence"):
         errors.append("source-fence must run just source-fence")
 
-    if "test-shards" in jobs:
-        test_shards_needs = extract_needs(jobs["test-shards"])
-        if "detector" not in test_shards_needs:
-            errors.append("test-shards needs detector")
-        if "source-fence" not in test_shards_needs:
-            errors.append("test-shards needs source-fence")
+    if "test-archive" in jobs:
+        test_archive_needs = extract_needs(jobs["test-archive"])
+        if "detector" not in test_archive_needs:
+            errors.append("test-archive needs detector")
+        if "source-fence" not in test_archive_needs:
+            errors.append("test-archive needs source-fence")
+    if "test-shards" in jobs and "test-archive" not in extract_needs(jobs["test-shards"]):
+        errors.append("test-shards needs test-archive")
 
     if "clippy" in jobs:
         clippy_text = uncommented_text(jobs["clippy"])
@@ -953,24 +1006,60 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("check-aarch64 must install aarch64 cross compiler packages")
         errors.extend(check_aarch64_standalone_guard_errors(jobs["check-aarch64"]))
 
+    if "test-archive" in jobs:
+        archive_lines = jobs["test-archive"]
+        archive_text = uncommented_text(archive_lines)
+        if TEST_ARCHIVE_PATH not in archive_text:
+            errors.append("test-archive must declare nextest archive path")
+        if not all(input_fragment in archive_text for input_fragment in TEST_ARCHIVE_KEY_INPUTS):
+            errors.append("test-archive cache key must include Rust and test graph inputs")
+        if "Swatinem/rust-cache@" in archive_text:
+            errors.append("test-archive must not use managed target rust-cache")
+        if "include-managed-target-dir:" in archive_text:
+            errors.append("test-archive must not opt into managed target dir")
+        if "nextest-archive-build-v1" in archive_text:
+            errors.append("test-archive must not save a second archive-build cache")
+        if TEST_ARCHIVE_RESTORE_ACTION not in archive_text:
+            errors.append("test-archive must restore nextest archive cache")
+        if TEST_ARCHIVE_SAVE_ACTION not in archive_text:
+            errors.append("test-archive must save nextest archive cache")
+        if TEST_ARCHIVE_UPLOAD_ACTION not in archive_text:
+            errors.append("test-archive must upload nextest archive artifact")
+        if "restore-keys:" in archive_text:
+            errors.append("test-archive cache must not use restore-keys")
+        if archive_text.count(TEST_ARCHIVE_CACHE_PATH) < 2:
+            errors.append("test-archive cache must use archive path env")
+        if archive_text.count(TEST_ARCHIVE_CACHE_HIT_GUARD) < 3:
+            errors.append("test-archive build must be skipped on archive cache hit")
+        if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
+            errors.append("test-archive must build through just test-archive")
+
     if "test-shards" in jobs:
         test_lines = jobs["test-shards"]
+        test_text = uncommented_text(test_lines)
         if not has_line_matching(test_lines, TEST_FAIL_FAST_FALSE_RE):
             errors.append("test-shards matrix must set fail-fast false")
         if not has_line_matching(test_lines, TEST_MATRIX_SHARD_RE):
             errors.append("test-shards matrix shard must be [1, 2, 3, 4]")
         if not has_line_matching(test_lines, TEST_SHARD_NAME_RE):
             errors.append("test-shards name must describe nextest shard")
+        if not job_has_setup_input(test_lines, "include-managed-target-dir", '"true"'):
+            errors.append("test-shards must resolve managed target dir")
+        if (
+            TEST_ARCHIVE_EXTRACT_ROOT_COMMAND not in test_text
+            or TEST_ARCHIVE_EXTRACT_ROOT_OUTPUT not in test_text
+        ):
+            errors.append("test-shards must extract archive to managed target parent")
         if not has_run_command(test_lines, TEST_PARTITION_COMMAND):
-            errors.append("test-shards must run partitioned nextest through just test")
+            errors.append("test-shards must run partitioned nextest from archive")
         if test_has_inline_shard_reproduction_command(test_lines):
             errors.append("test-shards reproduction command must use YAML block scalar")
         elif not test_has_shard_reproduction_command(test_lines):
             errors.append("test-shards must log shard reproduction command")
-        if not has_line_matching(test_lines, TEST_SHARED_CACHE_RE):
-            errors.append("test-shards cache must use shared nextest key")
-        if not has_line_matching(test_lines, TEST_CACHE_SAVE_IF_RE):
-            errors.append("test-shards cache must save only from shard 1")
+        if TEST_ARCHIVE_DOWNLOAD_ACTION not in test_text:
+            errors.append("test-shards must download nextest archive artifact")
+        if "Swatinem/rust-cache" in test_text:
+            errors.append("test-shards must not restore a per-shard Rust target cache")
 
     if "test" in jobs:
         test_needs = extract_needs(jobs["test"])
@@ -1021,7 +1110,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     for job in TARGET_DIR_JOBS:
         if job in jobs and not job_uses_managed_target_dir(jobs[job]):
-            errors.append(f"{job} must use setup.outputs.managed_target_dir")
+            errors.append(f"{job} must use setup.outputs.managed_target_dir or managed_target_dir_relative")
 
     for job in CACHE_KEY_JOBS:
         if job in jobs and not job_has_explicit_cache_key(jobs[job]):
@@ -1057,7 +1146,7 @@ def verify_managed_workflow(workflow_text: str, workflow_name: str) -> list[str]
                 errors.append(f"{workflow_name} {job} must include deny version")
             if "steps.setup.outputs.deny_version" not in uncommented_text(lines):
                 errors.append(f"{workflow_name} {job} must use setup.outputs.deny_version")
-        if "test" in lanes:
+        if lanes.intersection({"test", "test-archive", "test-archive-run"}):
             if not job_has_setup_input(lines, "include-nextest-version", '"true"'):
                 errors.append(f"{workflow_name} {job} must include nextest version")
             if "steps.setup.outputs.nextest_version" not in uncommented_text(lines):
@@ -1167,6 +1256,12 @@ def verify_setup_action(action_text: str) -> list[str]:
         errors.append("setup action include-managed-target-dir default must be false")
     if not any(SETUP_TARGET_DIR_EXPORT_RE.match(line) for line in uncommented_lines):
         errors.append("setup action must export managed_target_dir from target_dir step")
+    if not any(SETUP_TARGET_DIR_RELATIVE_EXPORT_RE.match(line) for line in uncommented_lines):
+        errors.append("setup action must export managed_target_dir_relative from target_dir step")
+    if not any(line.strip() == SETUP_TARGET_DIR_RELATIVE_COMPUTE for line in uncommented_lines):
+        errors.append("setup action target_dir step must compute managed_target_dir_relative from workspace to target dir")
+    if not any(SETUP_TARGET_DIR_RELATIVE_OUTPUT_RE.match(line) for line in uncommented_lines):
+        errors.append("setup action target_dir step must write managed_target_dir_relative")
     if not any(SETUP_TARGET_DIR_IF_RE.match(line) for line in uncommented_lines):
         errors.append("setup action target dir step must be conditional")
     return errors

@@ -105,6 +105,12 @@ clippy: check-workspace require-rust-verification-owner
 test *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" test {{args}}
 
+test-archive archive *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest archive --locked --archive-file "{{archive}}" {{args}}
+
+test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}" {{args}}
+
 build: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" build
 

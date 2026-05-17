@@ -64,6 +64,7 @@ use crate::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
     bolt_v3_config::{LoadedBoltV3Config, LogLevel, NautilusComponentConfig, RuntimeMode},
+    bolt_v3_decision_evidence::{BoltV3DecisionEvidenceWriter, JsonlBoltV3DecisionEvidenceWriter},
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_providers,
     bolt_v3_secrets::{
@@ -644,7 +645,16 @@ fn build_live_node_with_clients(
     resolved: &ResolvedBoltV3Secrets,
     adapters: BoltV3AdapterConfigs,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
-    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed());
+    let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = Arc::new(
+        JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(BoltV3StrategyRegistrationError::Evidence {
+                message: error.to_string(),
+            })
+        })?,
+    );
+    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(
+        decision_evidence.clone(),
+    ));
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
@@ -656,6 +666,7 @@ fn build_live_node_with_clients(
         resolved,
         crate::bolt_v3_archetypes::runtime_bindings(),
         submit_admission.clone(),
+        decision_evidence.clone(),
     )
     .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
     for strategy in &strategy_summary.registered {

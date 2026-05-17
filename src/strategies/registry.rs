@@ -241,6 +241,13 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+
+        fn record_admission_decision(
+            &self,
+            _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[derive(Debug)]
@@ -330,7 +337,9 @@ mod tests {
         StrategyBuildContext::new(
             Arc::new(NoopFeeProvider),
             Arc::new(NoopDecisionEvidenceWriter),
-            Arc::new(BoltV3SubmitAdmissionState::new_unarmed()),
+            Arc::new(BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                NoopDecisionEvidenceWriter,
+            ))),
         )
     }
 

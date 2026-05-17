@@ -38,11 +38,22 @@ static MOCK_EXEC_SUBMISSIONS: OnceLock<Mutex<Vec<RecordedSubmitOrder>>> = OnceLo
 #[derive(Debug, Default)]
 pub struct RecordingDecisionEvidenceWriter {
     records: Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence>>,
+    admission_decisions:
+        Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence>>,
 }
 
 impl RecordingDecisionEvidenceWriter {
     pub fn records(&self) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence> {
         self.records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn admission_decisions(
+        &self,
+    ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence> {
+        self.admission_decisions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -60,6 +71,17 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(intent.clone());
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        self.admission_decisions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(decision.clone());
         Ok(())
     }
 }

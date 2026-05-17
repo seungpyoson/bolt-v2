@@ -5,9 +5,7 @@
 //! stay outside this core boundary.
 
 use crate::bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey};
-use crate::bolt_v3_decision_evidence::{
-    BoltV3DecisionEvidenceWriter, JsonlBoltV3DecisionEvidenceWriter,
-};
+use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter;
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_live::node::LiveNode;
@@ -101,19 +99,12 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     let mut summary = BoltV3StrategyRegistrationSummary::empty();
     if loaded.strategies.is_empty() {
         return Ok(summary);
     }
-
-    let decision_evidence = Arc::new(
-        JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
-            BoltV3StrategyRegistrationError::Evidence {
-                message: error.to_string(),
-            }
-        })?,
-    );
 
     for strategy in &loaded.strategies {
         let binding = bindings

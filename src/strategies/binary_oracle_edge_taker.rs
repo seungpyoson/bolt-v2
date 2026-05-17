@@ -5695,6 +5695,13 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+
+        fn record_admission_decision(
+            &self,
+            _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[derive(Debug)]
@@ -5708,6 +5715,13 @@ mod tests {
             _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
         ) -> Result<()> {
             anyhow::bail!("intent write failed")
+        }
+
+        fn record_admission_decision(
+            &self,
+            _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("admission decision write failed")
         }
     }
 
@@ -5786,7 +5800,11 @@ mod tests {
         test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
             fee_provider,
             Arc::new(RecordingDecisionEvidenceWriter),
-            Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed()),
+            Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                    RecordingDecisionEvidenceWriter,
+                )),
+            ),
         )
     }
 
@@ -5797,7 +5815,11 @@ mod tests {
         test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
             fee_provider,
             decision_evidence,
-            Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed()),
+            Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                    RecordingDecisionEvidenceWriter,
+                )),
+            ),
         )
     }
 
@@ -5899,7 +5921,9 @@ mod tests {
                 RecordingFeeProvider::cold(),
                 Arc::new(RecordingDecisionEvidenceWriter),
                 Arc::new(
-                    crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(),
+                    crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
+                        Arc::new(RecordingDecisionEvidenceWriter),
+                    ),
                 ),
             ),
         );
@@ -6037,8 +6061,11 @@ mod tests {
 
     #[test]
     fn unarmed_submit_admission_rejects_after_evidence_before_nt_submit() {
-        let submit_admission =
-            Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed());
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
             RecordingFeeProvider::cold(),
             Arc::new(RecordingDecisionEvidenceWriter),
@@ -6101,8 +6128,11 @@ mod tests {
 
     #[test]
     fn armed_submit_admission_allows_nt_submit_after_evidence() {
-        let submit_admission =
-            Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed());
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
         submit_admission
             .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
             .expect("valid gate report should arm submit admission");
@@ -6172,8 +6202,11 @@ mod tests {
 
     #[test]
     fn over_notional_submit_admission_rejects_before_nt_submit() {
-        let submit_admission =
-            Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed());
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
         submit_admission
             .arm(live_canary_gate_report(1, Decimal::new(25, 2)))
             .expect("valid gate report should arm submit admission");
@@ -6239,8 +6272,11 @@ mod tests {
 
     #[test]
     fn exhausted_count_submit_admission_rejects_before_nt_submit() {
-        let submit_admission =
-            Arc::new(crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed());
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
         submit_admission
             .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
             .expect("valid gate report should arm submit admission");

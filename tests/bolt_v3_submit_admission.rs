@@ -1,6 +1,10 @@
 mod support;
 
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+use bolt_v2::bolt_v3_decision_evidence::{
+    BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
+    BoltV3OrderIntentEvidence,
+};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
@@ -33,7 +37,9 @@ fn live_node_runtime_does_not_expose_manual_admission_or_raw_run_bypass() {
 
 #[test]
 fn unarmed_submit_admission_rejects_before_nt_submit() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed();
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    ));
     let request = submit_request(Decimal::new(1, 0));
 
     let result = admission.admit(&request);
@@ -46,7 +52,9 @@ fn unarmed_submit_admission_rejects_before_nt_submit() {
 
 #[test]
 fn armed_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed();
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    ));
     admission
         .arm(support::validated_bolt_v3_live_canary_gate_report(
             1,
@@ -78,7 +86,9 @@ fn armed_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
 
 #[test]
 fn over_notional_cap_rejects_before_nt_submit_without_consuming_count() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed();
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    ));
     admission
         .arm(support::validated_bolt_v3_live_canary_gate_report(
             1,
@@ -100,7 +110,9 @@ fn over_notional_cap_rejects_before_nt_submit_without_consuming_count() {
 
 #[test]
 fn notional_equal_to_cap_is_admitted() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed();
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    ));
     admission
         .arm(support::validated_bolt_v3_live_canary_gate_report(
             1,
@@ -117,7 +129,9 @@ fn notional_equal_to_cap_is_admitted() {
 
 #[test]
 fn non_positive_notional_rejects_before_nt_submit_without_consuming_count() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed();
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    ));
     admission
         .arm(support::validated_bolt_v3_live_canary_gate_report(
             1,
@@ -139,7 +153,9 @@ fn non_positive_notional_rejects_before_nt_submit_without_consuming_count() {
 
 #[test]
 fn second_arm_rejects_without_mutating_validated_bounds() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed();
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    ));
     admission
         .arm(support::validated_bolt_v3_live_canary_gate_report(
             1,
@@ -180,7 +196,9 @@ fn fresh_live_node_build_keeps_submit_admission_internal() {
 
 #[test]
 fn strategy_build_context_carries_shared_submit_admission_handle() {
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
@@ -215,4 +233,127 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         instrument_id: "instrument-1".to_string(),
         notional,
     }
+}
+
+#[derive(Debug)]
+struct FailingDecisionEvidenceWriter;
+
+impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        _decision: &BoltV3AdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "synthetic admission-decision write failure"
+        ))
+    }
+}
+
+#[test]
+fn admit_records_admission_decision_evidence_on_admit_outcome() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(1, 0),
+        ))
+        .expect("valid gate report should arm admission");
+
+    let request = submit_request(Decimal::new(1, 0));
+    admission
+        .admit(&request)
+        .expect("first within-cap submit should admit");
+
+    let decisions = writer.admission_decisions();
+    assert_eq!(
+        decisions.len(),
+        1,
+        "exactly one admission decision recorded"
+    );
+    assert_eq!(decisions[0].outcome, BoltV3AdmissionOutcome::Admitted);
+    assert_eq!(decisions[0].strategy_id, request.strategy_id);
+    assert_eq!(decisions[0].client_order_id, request.client_order_id);
+    assert_eq!(decisions[0].instrument_id, request.instrument_id);
+    assert_eq!(decisions[0].notional, request.notional.to_string());
+}
+
+#[test]
+fn admit_records_admission_decision_evidence_for_each_rejection_path() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
+
+    admission
+        .admit(&submit_request(Decimal::new(1, 0)))
+        .expect_err("unarmed admission must reject");
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(1, 0),
+        ))
+        .expect("valid gate report should arm admission");
+    admission
+        .admit(&submit_request(Decimal::ZERO))
+        .expect_err("zero notional must reject");
+    admission
+        .admit(&submit_request(Decimal::new(2, 0)))
+        .expect_err("over-cap notional must reject");
+    admission
+        .admit(&submit_request(Decimal::new(1, 0)))
+        .expect("first within-cap submit should admit");
+    admission
+        .admit(&submit_request(Decimal::new(1, 0)))
+        .expect_err("second submit must exhaust count cap");
+
+    let outcomes: Vec<BoltV3AdmissionOutcome> = writer
+        .admission_decisions()
+        .into_iter()
+        .map(|d| d.outcome)
+        .collect();
+    assert_eq!(
+        outcomes,
+        vec![
+            BoltV3AdmissionOutcome::RejectedNotArmed,
+            BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
+            BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
+            BoltV3AdmissionOutcome::Admitted,
+            BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+        ],
+        "every admit return path must record evidence with the correct outcome"
+    );
+}
+
+#[test]
+fn admit_surfaces_evidence_write_failure_as_typed_error_and_does_not_consume_count() {
+    let admission =
+        BoltV3SubmitAdmissionState::new_unarmed(Arc::new(FailingDecisionEvidenceWriter));
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(1, 0),
+        ))
+        .expect("valid gate report should arm admission");
+
+    let error = admission
+        .admit(&submit_request(Decimal::new(1, 0)))
+        .expect_err("evidence-write failure must surface as a typed error");
+
+    match error {
+        BoltV3SubmitAdmissionError::EvidenceWriteFailed { reason } => {
+            assert!(
+                reason.contains("synthetic admission-decision write failure"),
+                "wrapped reason must propagate the underlying writer error; got `{reason}`"
+            );
+        }
+        other => panic!("expected EvidenceWriteFailed, got {other:?}"),
+    }
+    assert_eq!(
+        admission.admitted_order_count(),
+        0,
+        "evidence-write failure must not consume an admission slot — the decision is not finalized until audit is durable"
+    );
 }

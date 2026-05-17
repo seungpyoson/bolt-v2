@@ -6,8 +6,8 @@ use anyhow::Result;
 use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_decision_evidence::{
-        BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        decision_evidence_path,
+        BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+        BoltV3OrderIntentKind, decision_evidence_path,
     },
     strategies::registry::FeeProvider,
     strategies::registry::StrategyBuildContext,
@@ -33,6 +33,10 @@ struct NoopDecisionEvidenceWriter;
 
 impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
         Ok(())
     }
 }
@@ -106,7 +110,11 @@ fn strategy_build_context_requires_decision_evidence_value() {
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
         Arc::new(NoopDecisionEvidenceWriter),
-        Arc::new(bolt_v2::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed()),
+        Arc::new(
+            bolt_v2::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                NoopDecisionEvidenceWriter,
+            )),
+        ),
     );
 
     assert!(

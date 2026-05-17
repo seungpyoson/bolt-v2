@@ -96,7 +96,12 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     empty_loaded.strategies.clear();
     let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
         .expect("fixture secrets should resolve");
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed());
+    let decision_evidence: Arc<
+        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(
+        decision_evidence.clone(),
+    ));
     let mut node = make_bolt_v3_live_node_builder(&empty_loaded)
         .expect("v3 LiveNodeBuilder should construct before strategy registration")
         .build()
@@ -109,6 +114,7 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
             &resolved,
             TEST_BINDINGS,
             admission.clone(),
+            decision_evidence.clone(),
         )
         .expect("configured strategy should register through matching runtime binding");
 

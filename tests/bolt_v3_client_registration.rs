@@ -204,8 +204,13 @@ fn empty_venues_root_config_registers_zero_clients() {
     // node must expose no registered NT clients.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-empty-venues-catalog");
     let empty_root = BoltV3RootConfig {
         venues: BTreeMap::new(),
+        persistence: bolt_v2::bolt_v3_config::PersistenceBlock {
+            catalog_directory: temp.path().to_string_lossy().to_string(),
+            ..loaded.root.persistence.clone()
+        },
         ..loaded.root.clone()
     };
     let empty_loaded = LoadedBoltV3Config {

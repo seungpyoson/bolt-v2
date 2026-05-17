@@ -1,10 +1,14 @@
+use crate::bolt_v3_decision_evidence::{
+    BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
+};
 use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
 use rust_decimal::Decimal;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionState {
     inner: Mutex<BoltV3SubmitAdmissionInner>,
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 }
 
 #[derive(Debug)]
@@ -14,12 +18,13 @@ struct BoltV3SubmitAdmissionInner {
 }
 
 impl BoltV3SubmitAdmissionState {
-    pub fn new_unarmed() -> Self {
+    pub fn new_unarmed(decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>) -> Self {
         Self {
             inner: Mutex::new(BoltV3SubmitAdmissionInner {
                 gate_report: None,
                 admitted_order_count: 0,
             }),
+            decision_evidence,
         }
     }
 
@@ -47,22 +52,54 @@ impl BoltV3SubmitAdmissionState {
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        let report = inner
-            .gate_report
-            .as_ref()
-            .ok_or(BoltV3SubmitAdmissionError::NotArmed)?;
+        let outcome = Self::evaluate(&inner, request);
+        let evidence = BoltV3AdmissionDecisionEvidence {
+            strategy_id: request.strategy_id.clone(),
+            client_order_id: request.client_order_id.clone(),
+            instrument_id: request.instrument_id.clone(),
+            notional: request.notional.to_string(),
+            outcome: outcome.clone(),
+        };
+        self.decision_evidence
+            .record_admission_decision(&evidence)
+            .map_err(|err| BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                reason: format!("{err:#}"),
+            })?;
+        match outcome {
+            BoltV3AdmissionOutcome::Admitted => {
+                inner.admitted_order_count += 1;
+                Ok(BoltV3SubmitAdmissionPermit(()))
+            }
+            BoltV3AdmissionOutcome::RejectedNotArmed => Err(BoltV3SubmitAdmissionError::NotArmed),
+            BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
+                Err(BoltV3SubmitAdmissionError::NonPositiveNotional)
+            }
+            BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => {
+                Err(BoltV3SubmitAdmissionError::NotionalCapExceeded)
+            }
+            BoltV3AdmissionOutcome::RejectedCountCapExhausted => {
+                Err(BoltV3SubmitAdmissionError::CountCapExhausted)
+            }
+        }
+    }
+
+    fn evaluate(
+        inner: &BoltV3SubmitAdmissionInner,
+        request: &BoltV3SubmitAdmissionRequest,
+    ) -> BoltV3AdmissionOutcome {
+        let Some(report) = inner.gate_report.as_ref() else {
+            return BoltV3AdmissionOutcome::RejectedNotArmed;
+        };
         if request.notional <= Decimal::ZERO {
-            return Err(BoltV3SubmitAdmissionError::NonPositiveNotional);
+            return BoltV3AdmissionOutcome::RejectedNonPositiveNotional;
         }
         if request.notional > report.max_notional_per_order() {
-            return Err(BoltV3SubmitAdmissionError::NotionalCapExceeded);
+            return BoltV3AdmissionOutcome::RejectedNotionalCapExceeded;
         }
         if inner.admitted_order_count >= report.max_live_order_count() {
-            return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
+            return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
         }
-
-        inner.admitted_order_count += 1;
-        Ok(BoltV3SubmitAdmissionPermit(()))
+        BoltV3AdmissionOutcome::Admitted
     }
 
     pub fn admitted_order_count(&self) -> u32 {
@@ -91,6 +128,7 @@ pub enum BoltV3SubmitAdmissionError {
     CountCapExhausted,
     NonPositiveNotional,
     NotionalCapExceeded,
+    EvidenceWriteFailed { reason: String },
 }
 
 impl std::fmt::Display for BoltV3SubmitAdmissionError {
@@ -106,6 +144,12 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             }
             Self::NotionalCapExceeded => {
                 write!(f, "bolt-v3 submit admission notional cap is exceeded")
+            }
+            Self::EvidenceWriteFailed { reason } => {
+                write!(
+                    f,
+                    "bolt-v3 submit admission failed to record decision evidence: {reason}"
+                )
             }
         }
     }

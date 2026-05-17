@@ -56,17 +56,22 @@ fn phase8_operator_harness_derives_strategy_audit_from_evidence_file() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
 
+    assert!(source.contains("envelope.approved_price_to_beat_source()?"));
     assert!(source.contains("Phase8StrategyInputSafetyAudit::from_evidence_file"));
     let harness_start = source
         .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
         .expect("operator harness start should exist");
     let harness = &source[harness_start..];
+    let source_index = harness
+        .find("let approved_price_to_beat_source = envelope.approved_price_to_beat_source()?")
+        .expect("operator harness should derive approved price source");
     let audit_index = harness
         .find("let strategy_audit = Phase8StrategyInputSafetyAudit::from_evidence_file")
         .expect("operator harness should parse strategy input evidence");
     let consumption_index = harness
         .find("envelope.validate_and_consume_against")
         .expect("operator harness should consume approval");
+    assert!(source_index < audit_index);
     assert!(audit_index < consumption_index);
     assert!(!source.contains(&format!(
         "{}{}",
@@ -833,9 +838,11 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
     let root_hash = Phase8OperatorApprovalEnvelope::sha256_file(&envelope.root_toml_path)?;
     let current_head = phase8_current_checkout_head_sha()?;
     let current_unix_seconds = phase8_current_unix_seconds()?;
+    let approved_price_to_beat_source = envelope.approved_price_to_beat_source()?;
     let strategy_audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
         &envelope.strategy_input_evidence_path,
         &envelope.strategy_input_evidence_sha256,
+        &approved_price_to_beat_source,
     )?;
     envelope.validate_and_consume_against(
         &current_head,

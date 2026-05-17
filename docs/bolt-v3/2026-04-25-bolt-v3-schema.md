@@ -939,6 +939,7 @@ vol_window_secs = 600
 vol_gap_reset_secs = 60
 vol_min_observations = 5
 vol_bridge_valid_secs = 30
+price_to_beat_source = "chainlink_data_streams.report_at_boundary"
 pricing_kurtosis = 3.0
 theta_decay_factor = 1.0
 forced_flat_stale_chainlink_ms = 10000
@@ -1231,6 +1232,7 @@ Runtime fields:
 - `vol_gap_reset_secs`: unsigned integer; gap that resets volatility history
 - `vol_min_observations`: unsigned integer; minimum observations before volatility is live
 - `vol_bridge_valid_secs`: unsigned integer; maximum bridge age for volatility input
+- `price_to_beat_source`: string; configured source identifier that Phase 8 strategy-input evidence must match through the financial envelope
 - `pricing_kurtosis`: float; kurtosis input for binary-oracle pricing
 - `theta_decay_factor`: float; non-negative theta decay multiplier
 - `forced_flat_stale_chainlink_ms`: unsigned integer; Chainlink staleness forced-flat threshold
@@ -1496,6 +1498,7 @@ vol_window_secs = 600
 vol_gap_reset_secs = 60
 vol_min_observations = 5
 vol_bridge_valid_secs = 30
+price_to_beat_source = "chainlink_data_streams.report_at_boundary"
 pricing_kurtosis = 3.0
 theta_decay_factor = 1.0
 forced_flat_stale_chainlink_ms = 10000

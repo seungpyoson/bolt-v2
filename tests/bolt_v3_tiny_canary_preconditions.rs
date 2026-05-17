@@ -13,6 +13,8 @@ use bolt_v2::{
 use rust_decimal::Decimal;
 use serde_json::Value;
 
+const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
+
 fn phase8_required_operator_artifact_terms() -> [&'static str; 27] {
     [
         "BOLT_V3_PHASE8_HEAD_SHA",
@@ -43,6 +45,17 @@ fn phase8_required_operator_artifact_terms() -> [&'static str; 27] {
         "BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH",
         "BOLT_V3_PHASE8_POST_RUN_HYGIENE_PATH",
     ]
+}
+
+fn strategy_audit_from_evidence_file(
+    path: impl AsRef<std::path::Path>,
+    expected_sha256: impl AsRef<str>,
+) -> anyhow::Result<Phase8StrategyInputSafetyAudit> {
+    Phase8StrategyInputSafetyAudit::from_evidence_file(
+        path,
+        expected_sha256,
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+    )
 }
 
 #[test]
@@ -197,7 +210,8 @@ fn strategy_audit_blocks_non_positive_realized_volatility() {
             worst_case_edge_basis_points: Decimal::new(125, 1),
             theta_scaled_min_edge_bps: Decimal::new(125, 1),
             fee_rate_basis_points: Decimal::ZERO,
-            price_to_beat_source: "chainlink_data_streams.report_at_boundary",
+            price_to_beat_source: PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+            expected_price_to_beat_source: PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
             reference_quote_ts_event: 1_234_567_890,
             pricing_kurtosis: Decimal::ZERO,
             theta_decay_factor: Decimal::ZERO,
@@ -223,7 +237,8 @@ fn strategy_audit_blocks_zero_time_to_expiry() {
             worst_case_edge_basis_points: Decimal::new(125, 1),
             theta_scaled_min_edge_bps: Decimal::new(125, 1),
             fee_rate_basis_points: Decimal::ZERO,
-            price_to_beat_source: "chainlink_data_streams.report_at_boundary",
+            price_to_beat_source: PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+            expected_price_to_beat_source: PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
             reference_quote_ts_event: 1_234_567_890,
             pricing_kurtosis: Decimal::ZERO,
             theta_decay_factor: Decimal::ZERO,
@@ -238,6 +253,39 @@ fn strategy_audit_blocks_zero_time_to_expiry() {
 }
 
 #[test]
+fn strategy_audit_binds_price_to_beat_source_to_approved_source() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("strategy-input.json");
+    std::fs::write(
+        &evidence_path,
+        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"operator_configured_source","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+    )
+    .expect("strategy input evidence should write");
+    let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
+        .expect("strategy evidence should hash");
+
+    let approved = Phase8StrategyInputSafetyAudit::from_evidence_file(
+        &evidence_path,
+        &evidence_hash,
+        "operator_configured_source",
+    )
+    .expect("matching configured price source should audit");
+    assert!(approved.is_approved());
+
+    let blocked = Phase8StrategyInputSafetyAudit::from_evidence_file(
+        &evidence_path,
+        &evidence_hash,
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+    )
+    .expect("mismatched configured price source should still produce an audit");
+    assert!(
+        blocked
+            .block_reasons()
+            .contains(&Phase8CanaryBlockReason::UnsupportedPriceToBeatSource)
+    );
+}
+
+#[test]
 fn strategy_audit_blocks_non_positive_spot_or_price_to_beat_evidence() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
@@ -249,11 +297,8 @@ fn strategy_audit_blocks_non_positive_spot_or_price_to_beat_evidence() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -270,11 +315,8 @@ fn strategy_audit_blocks_non_positive_spot_or_price_to_beat_evidence() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -296,11 +338,8 @@ fn strategy_audit_blocks_invalid_edge_or_fee_metrics() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -317,11 +356,8 @@ fn strategy_audit_blocks_invalid_edge_or_fee_metrics() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -338,11 +374,8 @@ fn strategy_audit_blocks_invalid_edge_or_fee_metrics() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -359,11 +392,8 @@ fn strategy_audit_blocks_invalid_edge_or_fee_metrics() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -385,11 +415,8 @@ fn strategy_audit_blocks_non_positive_theta_scaled_min_edge() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -411,11 +438,8 @@ fn strategy_audit_blocks_missing_source_or_reference_timestamp() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -432,11 +456,8 @@ fn strategy_audit_blocks_missing_source_or_reference_timestamp() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -453,11 +474,8 @@ fn strategy_audit_blocks_missing_source_or_reference_timestamp() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -479,11 +497,8 @@ fn strategy_audit_blocks_invalid_kurtosis_or_theta_inputs() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -500,11 +515,8 @@ fn strategy_audit_blocks_invalid_kurtosis_or_theta_inputs() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -526,11 +538,8 @@ fn strategy_audit_blocks_missing_selected_market_identity_or_window() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -547,11 +556,8 @@ fn strategy_audit_blocks_missing_selected_market_identity_or_window() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -573,11 +579,8 @@ fn strategy_audit_blocks_missing_market_selection_timestamp() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -599,11 +602,8 @@ fn strategy_audit_requires_nearest_next_market_selection() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -671,11 +671,8 @@ fn strategy_audit_requires_nearest_next_market_selection() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(audit.is_approved());
 }
@@ -692,11 +689,8 @@ fn strategy_audit_rejects_next_market_without_source_bound_candidates() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -769,11 +763,8 @@ fn strategy_audit_rejects_next_market_candidate_list_truncated_from_source() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -795,11 +786,8 @@ fn strategy_audit_blocks_invalid_market_selection_outcome() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -821,11 +809,8 @@ fn strategy_audit_blocks_market_selection_window_mismatch() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -842,11 +827,8 @@ fn strategy_audit_blocks_market_selection_window_mismatch() {
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &strategy_input_path,
-        strategy_input_hash,
-    )
-    .expect("matching strategy input evidence should parse");
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("matching strategy input evidence should parse");
 
     assert!(!audit.is_approved());
     assert!(
@@ -868,7 +850,7 @@ fn strategy_audit_rejects_unknown_input_evidence_fields() {
     let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
         .expect("strategy input evidence hash should compute");
 
-    let error = Phase8StrategyInputSafetyAudit::from_evidence_file(&evidence_path, &evidence_hash)
+    let error = strategy_audit_from_evidence_file(&evidence_path, &evidence_hash)
         .expect_err("unknown strategy input evidence fields should fail");
 
     assert!(
@@ -889,7 +871,7 @@ fn strategy_audit_verifies_input_evidence_hash_before_approving() {
     let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
         .expect("strategy input evidence hash should compute");
 
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(&evidence_path, &evidence_hash)
+    let audit = strategy_audit_from_evidence_file(&evidence_path, &evidence_hash)
         .expect("matching strategy input evidence should parse");
 
     assert!(audit.is_approved());
@@ -905,7 +887,7 @@ fn strategy_audit_rejects_input_evidence_hash_mismatch() {
     )
     .expect("strategy input evidence should write");
 
-    let error = Phase8StrategyInputSafetyAudit::from_evidence_file(&evidence_path, "wrong-hash")
+    let error = strategy_audit_from_evidence_file(&evidence_path, "wrong-hash")
         .expect_err("mismatched strategy input evidence should fail");
 
     assert!(
@@ -2081,6 +2063,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "market_selection_rule": "active_or_next",
             "retry_interval_seconds": 5,
             "blocked_after_seconds": 60,
+            "price_to_beat_source": PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
             "edge_threshold_basis_points": 100,
             "order_notional_target": "5.00",
             "maximum_position_notional": "10.00",
@@ -2286,6 +2269,38 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     assert!(
         !approval_consumption_path.exists(),
         "target blocked window mismatch must not create consumption evidence"
+    );
+
+    let mut mismatched_price_source_loaded = loaded.clone();
+    let runtime_parameters = mismatched_price_source_loaded.strategies[0]
+        .config
+        .parameters
+        .as_table_mut()
+        .and_then(|parameters| parameters.get_mut("runtime"))
+        .and_then(toml::Value::as_table_mut)
+        .expect("strategy runtime parameters should be a TOML table");
+    runtime_parameters.insert(
+        "price_to_beat_source".to_string(),
+        toml::Value::String("operator_configured_source".to_string()),
+    );
+    let mismatched_price_source_error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &mismatched_price_source_loaded,
+            1_500,
+        )
+        .expect_err("price source mismatch against loaded TOML should fail closed");
+    assert!(
+        mismatched_price_source_error.to_string().contains(
+            "phase8 financial envelope `price_to_beat_source` does not match loaded TOML"
+        ),
+        "error should mention mismatched price source: {mismatched_price_source_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "price source mismatch must not create consumption evidence"
     );
 
     let mut mismatched_edge_loaded = loaded.clone();
@@ -2864,6 +2879,7 @@ fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_orde
         "market_selection_rule": "active_or_next",
         "retry_interval_seconds": 5,
         "blocked_after_seconds": 60,
+        "price_to_beat_source": PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
         "edge_threshold_basis_points": 100,
         "order_notional_target": "5.00",
         "maximum_position_notional": "10.00",

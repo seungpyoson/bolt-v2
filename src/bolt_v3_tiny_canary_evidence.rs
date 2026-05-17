@@ -24,7 +24,6 @@ const PHASE8_REQUIRED_LIVE_ORDER_CAP: u32 = 1;
 const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;
 const PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION: u32 = 1;
 const PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND: &str = "phase8_operator_approval_consumption";
-const PHASE8_ALLOWED_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
 const PHASE8_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
 const PHASE8_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
 const PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND: &str = "market_selection_result";
@@ -92,6 +91,7 @@ pub struct Phase8StrategyInputSafetyInputs<'a> {
     pub theta_scaled_min_edge_bps: Decimal,
     pub fee_rate_basis_points: Decimal,
     pub price_to_beat_source: &'a str,
+    pub expected_price_to_beat_source: &'a str,
     pub reference_quote_ts_event: u64,
     pub pricing_kurtosis: Decimal,
     pub theta_decay_factor: Decimal,
@@ -142,9 +142,12 @@ impl Phase8StrategyInputSafetyAudit {
             block_reasons.push(Phase8CanaryBlockReason::NegativeFeeRateBasisPoints);
         }
         let price_to_beat_source = inputs.price_to_beat_source.trim();
+        let expected_price_to_beat_source = inputs.expected_price_to_beat_source.trim();
         if price_to_beat_source.is_empty() {
             block_reasons.push(Phase8CanaryBlockReason::MissingPriceToBeatSource);
-        } else if price_to_beat_source != PHASE8_ALLOWED_PRICE_TO_BEAT_SOURCE {
+        } else if expected_price_to_beat_source.is_empty()
+            || price_to_beat_source != expected_price_to_beat_source
+        {
             block_reasons.push(Phase8CanaryBlockReason::UnsupportedPriceToBeatSource);
         }
         if inputs.reference_quote_ts_event == 0 {
@@ -166,6 +169,7 @@ impl Phase8StrategyInputSafetyAudit {
     pub fn from_evidence_file(
         path: impl AsRef<Path>,
         expected_sha256: impl AsRef<str>,
+        expected_price_to_beat_source: impl AsRef<str>,
     ) -> Result<Self> {
         let path = path.as_ref();
         let expected_sha256 = expected_sha256.as_ref().trim();
@@ -230,6 +234,7 @@ impl Phase8StrategyInputSafetyAudit {
             theta_scaled_min_edge_bps,
             fee_rate_basis_points,
             price_to_beat_source: &raw.price_to_beat_source,
+            expected_price_to_beat_source: expected_price_to_beat_source.as_ref(),
             reference_quote_ts_event: raw.reference_quote_ts_event,
             pricing_kurtosis,
             theta_decay_factor,
@@ -1406,6 +1411,10 @@ impl Phase8OperatorApprovalEnvelope {
         ))
     }
 
+    pub fn approved_price_to_beat_source(&self) -> Result<String> {
+        Ok(self.read_financial_envelope()?.price_to_beat_source)
+    }
+
     fn validate_approval_window(&self, current_unix_seconds: i64) -> Result<()> {
         if self.approval_not_after_unix_seconds <= self.approval_not_before_unix_seconds {
             return Err(anyhow!(
@@ -1582,6 +1591,7 @@ struct Phase8FinancialEnvelopeEvidenceFile {
     market_selection_rule: String,
     retry_interval_seconds: i64,
     blocked_after_seconds: i64,
+    price_to_beat_source: String,
     edge_threshold_basis_points: i64,
     order_notional_target: String,
     maximum_position_notional: String,
@@ -1675,6 +1685,10 @@ impl Phase8FinancialEnvelopeEvidenceFile {
                 target,
                 stringify!(blocked_after_seconds),
             )?,
+            price_to_beat_source: required_toml_string(
+                runtime_parameters,
+                stringify!(price_to_beat_source),
+            )?,
             edge_threshold_basis_points: required_toml_integer(
                 parameters,
                 stringify!(edge_threshold_basis_points),
@@ -1758,6 +1772,11 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         if self.blocked_after_seconds != loaded.blocked_after_seconds {
             return Err(financial_envelope_mismatch(stringify!(
                 blocked_after_seconds
+            )));
+        }
+        if self.price_to_beat_source != loaded.price_to_beat_source {
+            return Err(financial_envelope_mismatch(stringify!(
+                price_to_beat_source
             )));
         }
         if self.edge_threshold_basis_points != loaded.edge_threshold_basis_points {

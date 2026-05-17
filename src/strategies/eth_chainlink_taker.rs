@@ -4545,6 +4545,7 @@ mod tests {
             vol_gap_reset_secs = 10
             vol_min_observations = 20
             vol_bridge_valid_secs = 10
+            price_to_beat_source = "chainlink_data_streams.report_at_boundary"
             pricing_kurtosis = 0.0
             theta_decay_factor = 0.0
             forced_flat_stale_chainlink_ms = 1500
@@ -5703,6 +5704,7 @@ mod tests {
             vol_gap_reset_secs = 10
             vol_min_observations = 20
             vol_bridge_valid_secs = 10
+            price_to_beat_source = "chainlink_data_streams.report_at_boundary"
             pricing_kurtosis = 0
             theta_decay_factor = 0
             forced_flat_stale_chainlink_ms = 1500
@@ -5769,6 +5771,11 @@ mod tests {
             errors
                 .iter()
                 .any(|e| e.field == "strategies[0].config.vol_bridge_valid_secs")
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.field == "strategies[0].config.price_to_beat_source")
         );
         assert!(
             errors

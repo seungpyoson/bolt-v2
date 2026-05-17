@@ -34,10 +34,10 @@
   - Needs: `[detector, source-fence]`
   - `strategy.fail-fast: false`
   - `strategy.matrix.shard: [1, 2, 3, 4]`
-  - Cache key includes bounded shard dimension
+  - Shared nextest cache key is bounded and saved only by shard 1
   - Command: `just test -- --partition count:${{ matrix.shard }}/4`
   - Reproduction log includes the same local command shape
-- **Validation**: Workflow verifier fails on missing shard values, missing fail-fast false, missing partition command, missing shard-aware cache key, or missing reproduction log.
+- **Validation**: Workflow verifier fails on missing shard values, missing fail-fast false, missing partition command, missing shared nextest cache key, missing shard-1 cache save guard, or missing reproduction log.
 
 ## ShardReproductionCommand
 

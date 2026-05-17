@@ -27,7 +27,7 @@ As the maintainer, I can run the full Rust test lane as four deterministic `carg
 
 **Why this priority**: The #343 baseline records one `test` job running 882 tests across 45 binaries. #332 exists to reduce that monolithic lane without weakening coverage.
 
-**Independent Test**: The workflow hygiene self-test rejects a `test` job without `strategy.matrix.shard: [1, 2, 3, 4]`, without `fail-fast: false`, without `just test -- --partition count:${{ matrix.shard }}/4`, or without shard-specific cache keys/log labels.
+**Independent Test**: The workflow hygiene self-test rejects a `test` job without `strategy.matrix.shard: [1, 2, 3, 4]`, without `fail-fast: false`, without `just test -- --partition count:${{ matrix.shard }}/4`, without the bounded shared nextest cache plus shard-1 save policy, or without shard log labels.
 
 **Acceptance Scenarios**:
 
@@ -69,7 +69,7 @@ As the maintainer, I can extend workflow lint only for the exact #332 topology s
 - The #332 issue body proposes `--partition count:${{ matrix.shard }}/4`; nextest documentation recommends `slice:` over `count:`, but #332 explicitly requires `count:` unless there is a strong reason to deviate.
 - Matrix `fail-fast` defaults to true in GitHub Actions. This feature must set it false so all shard outcomes are observable and cancellation is not an expected sibling-failure side effect.
 - `just test -- --partition ...` must pass args through the managed recipe without introducing a second unmanaged test path.
-- Cache keys must be shard-aware enough for #195 to reason about warm reruns, but not unbounded by commit SHA or arbitrary runtime values.
+- The nextest cache policy must be bounded enough for #195 to reason about warm reruns: all shards restore from `shared-key: nextest-v3`, and only shard 1 saves that cache to avoid four concurrent cold-cache writes.
 - Exact before/after CI timing cannot be completed until the final PR head receives a real CI run; local verification must not be presented as exact-head CI evidence.
 
 ## Requirements
@@ -89,7 +89,7 @@ As the maintainer, I can extend workflow lint only for the exact #332 topology s
 - **FR-011**: `test` MUST continue to depend on `source-fence`, and `gate` MUST continue to require `source-fence` if #342 filters are excluded from full nextest shards.
 - **FR-012**: The branch MUST explicitly document whether source-fence filters are excluded from or intentionally duplicated by full nextest shards.
 - **FR-013**: `just ci-lint-workflow` MUST fail with actionable output if the new `check-aarch64` job, its setup/cache key, gate need, or gate result check is missing.
-- **FR-014**: `just ci-lint-workflow` MUST fail with actionable output if the test matrix shard list, `fail-fast: false`, partition command, shard-aware cache key, or reproduction log command is missing.
+- **FR-014**: `just ci-lint-workflow` MUST fail with actionable output if the test matrix shard list, `fail-fast: false`, partition command, bounded shared nextest cache plus shard-1 save policy, or reproduction log command is missing.
 - **FR-015**: The implementation MUST document before/after critical path expectations using the #343 baseline and MUST update exact run IDs/job durations once final PR-head CI exists.
 - **FR-016**: This branch MUST NOT implement #195 cache artifact persistence, #205 smoke-tag deduplication, #344 pass-stub/docs-only evidence, #340 config relocation, or generic #203 lint cleanup beyond #332-specific topology.
 

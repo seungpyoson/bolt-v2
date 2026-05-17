@@ -23,10 +23,12 @@ REQUIRED_NON_TEST_JOBS = (
     "clippy",
     "check-aarch64",
     "source-fence",
+    "test",
     "build",
     "gate",
 )
 REQUIRED_TEST_SHARDS = 4
+REQUIRED_TEST_SHARD_JOBS = tuple(f"nextest shard {shard} of 4" for shard in range(1, REQUIRED_TEST_SHARDS + 1))
 
 
 class EvidenceError(RuntimeError):
@@ -82,21 +84,14 @@ def validate_required_jobs(jobs_payload: dict[str, object], run_id: str) -> None
                 f"{as_text(job.get('status'))}/{as_text(job.get('conclusion'))}"
             )
 
-    test_jobs = [
-        job
-        for job in jobs
-        if isinstance(job, dict)
-        and (as_text(job.get("name")) == "test" or as_text(job.get("name")).startswith("test ("))
-    ]
-    if len(test_jobs) < REQUIRED_TEST_SHARDS:
+    missing_test_shards = [name for name in REQUIRED_TEST_SHARD_JOBS if name not in by_name]
+    if missing_test_shards:
         raise EvidenceError(
-            f"source run {run_id} has {len(test_jobs)} successful-looking test shards; "
-            f"expected {REQUIRED_TEST_SHARDS} test shards"
+            f"source run {run_id} missing required test shards: {', '.join(missing_test_shards)}"
         )
-    bad_test_jobs = [job for job in test_jobs if not is_successful_job(job)]
+    bad_test_jobs = [name for name in REQUIRED_TEST_SHARD_JOBS if not is_successful_job(by_name[name])]
     if bad_test_jobs:
-        names = ", ".join(as_text(job.get("name")) for job in bad_test_jobs)
-        raise EvidenceError(f"source run {run_id} has non-successful test shards: {names}")
+        raise EvidenceError(f"source run {run_id} has non-successful test shards: {', '.join(bad_test_jobs)}")
 
 
 def validate_artifact(artifacts_payload: dict[str, object], run_id: str, expected_sha: str) -> dict[str, object]:

@@ -16,11 +16,10 @@ Expected before workflow implementation: linter reports the missing #342 `source
 just source-fence
 ```
 
-Expected after implementation: all six verifier scripts pass, then these structural tests pass:
+Expected after implementation: all six verifier scripts pass, then the structural test binaries containing these checks pass through one cargo invocation:
 
 ```bash
-cargo test --test bolt_v3_controlled_connect live_node_module_only_runs_nt_after_live_canary_gate -- --nocapture
-cargo test --test bolt_v3_production_entrypoint -- --nocapture
+cargo test --locked --test bolt_v3_controlled_connect --test bolt_v3_production_entrypoint -- --nocapture
 ```
 
 The actual recipe runs the cargo filters through the managed Rust verification owner.

@@ -22,6 +22,8 @@ const BLOCKED_BEFORE_LIVE_ORDER_REASON: &str = "blocked_before_live_order";
 const BLOCKED_BEFORE_SUBMIT_REASON: &str = "blocked_before_submit";
 const PHASE8_REQUIRED_LIVE_ORDER_CAP: u32 = 1;
 const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;
+const PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION: u32 = 1;
+const PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND: &str = "phase8_operator_approval_consumption";
 pub const PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID: &str = "phase8-blocked-before-live-runner";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -452,6 +454,11 @@ pub struct Phase8OperatorApprovalEnvelope {
     pub strategy_input_evidence_path: String,
     pub strategy_input_evidence_sha256: String,
     pub operator_approval_id: String,
+    pub approval_not_before_unix_seconds: i64,
+    pub approval_not_after_unix_seconds: i64,
+    pub approval_nonce_path: String,
+    pub approval_nonce_sha256: String,
+    pub approval_consumption_path: String,
     pub canary_evidence_path: String,
 }
 
@@ -470,6 +477,15 @@ impl Phase8OperatorApprovalEnvelope {
                 "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256",
             )?,
             operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,
+            approval_not_before_unix_seconds: required_i64_env(
+                "BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS",
+            )?,
+            approval_not_after_unix_seconds: required_i64_env(
+                "BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS",
+            )?,
+            approval_nonce_path: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_PATH")?,
+            approval_nonce_sha256: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256")?,
+            approval_consumption_path: required_env("BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH")?,
             canary_evidence_path: required_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,
         })
     }
@@ -511,6 +527,104 @@ impl Phase8OperatorApprovalEnvelope {
         Ok(())
     }
 
+    pub fn validate_and_consume_against(
+        &self,
+        current_head_sha: &str,
+        current_root_toml_sha256: &str,
+        live_canary_approval_id: &str,
+        current_unix_seconds: i64,
+    ) -> Result<()> {
+        self.validate_against(
+            current_head_sha,
+            current_root_toml_sha256,
+            live_canary_approval_id,
+        )?;
+        self.validate_approval_window(current_unix_seconds)?;
+        let current_nonce_sha256 = Self::sha256_file(&self.approval_nonce_path)?;
+        if self.approval_nonce_sha256 != current_nonce_sha256 {
+            return Err(anyhow!(
+                "phase8 operator approval nonce sha256 does not match current nonce evidence"
+            ));
+        }
+        self.write_approval_consumption_evidence(current_unix_seconds)
+    }
+
+    fn validate_approval_window(&self, current_unix_seconds: i64) -> Result<()> {
+        if self.approval_not_after_unix_seconds < self.approval_not_before_unix_seconds {
+            return Err(anyhow!(
+                "phase8 operator approval not_after is before not_before"
+            ));
+        }
+        if current_unix_seconds < self.approval_not_before_unix_seconds {
+            return Err(anyhow!("phase8 operator approval is not yet valid"));
+        }
+        if current_unix_seconds > self.approval_not_after_unix_seconds {
+            return Err(anyhow!("phase8 operator approval is expired"));
+        }
+        Ok(())
+    }
+
+    fn write_approval_consumption_evidence(&self, current_unix_seconds: i64) -> Result<()> {
+        let path = Path::new(&self.approval_consumption_path);
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent).map_err(|source| {
+                anyhow!(
+                    "failed to create phase8 approval consumption evidence directory `{}`: {source}",
+                    parent.display()
+                )
+            })?;
+        }
+        let evidence = Phase8ApprovalConsumptionEvidence {
+            schema_version: PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION,
+            record_kind: PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND,
+            head_sha: &self.head_sha,
+            root_toml_sha256: &self.root_toml_sha256,
+            ssm_manifest_sha256: &self.ssm_manifest_sha256,
+            strategy_input_evidence_sha256: &self.strategy_input_evidence_sha256,
+            approval_id_hash: sha256_text(&self.operator_approval_id),
+            approval_nonce_sha256: &self.approval_nonce_sha256,
+            approval_not_before_unix_seconds: self.approval_not_before_unix_seconds,
+            approval_not_after_unix_seconds: self.approval_not_after_unix_seconds,
+            canary_evidence_path_hash: sha256_text(&self.canary_evidence_path),
+            consumed_unix_seconds: current_unix_seconds,
+        };
+        let bytes = serde_json::to_vec_pretty(&evidence).map_err(|source| {
+            anyhow!("failed to serialize phase8 approval consumption evidence: {source}")
+        })?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|source| match source.kind() {
+                std::io::ErrorKind::AlreadyExists => anyhow!(
+                    "phase8 operator approval consumption `{}` already consumed; refusing to replay",
+                    path.display()
+                ),
+                _ => anyhow!(
+                    "failed to create phase8 operator approval consumption `{}`: {source}",
+                    path.display()
+                ),
+            })?;
+        if let Err(source) = file.write_all(&bytes) {
+            let _ = fs::remove_file(path);
+            return Err(anyhow!(
+                "failed to write phase8 operator approval consumption `{}`: {source}",
+                path.display()
+            ));
+        }
+        if let Err(source) = file.sync_all() {
+            let _ = fs::remove_file(path);
+            return Err(anyhow!(
+                "failed to sync phase8 operator approval consumption `{}`: {source}",
+                path.display()
+            ));
+        }
+        Ok(())
+    }
+
     pub fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
         let path = path.as_ref();
         let file = fs::File::open(path).map_err(|source| {
@@ -542,6 +656,22 @@ impl Phase8OperatorApprovalEnvelope {
     }
 }
 
+#[derive(Serialize)]
+struct Phase8ApprovalConsumptionEvidence<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    head_sha: &'a str,
+    root_toml_sha256: &'a str,
+    ssm_manifest_sha256: &'a str,
+    strategy_input_evidence_sha256: &'a str,
+    approval_id_hash: String,
+    approval_nonce_sha256: &'a str,
+    approval_not_before_unix_seconds: i64,
+    approval_not_after_unix_seconds: i64,
+    canary_evidence_path_hash: String,
+    consumed_unix_seconds: i64,
+}
+
 fn required_env(name: &str) -> Result<String> {
     let value = env::var(name).map_err(|_| anyhow!("missing required phase8 env `{name}`"))?;
     let trimmed = value.trim();
@@ -549,6 +679,13 @@ fn required_env(name: &str) -> Result<String> {
         return Err(anyhow!("required phase8 env `{name}` is empty"));
     }
     Ok(trimmed.to_string())
+}
+
+fn required_i64_env(name: &str) -> Result<i64> {
+    let value = required_env(name)?;
+    value
+        .parse::<i64>()
+        .map_err(|source| anyhow!("failed to parse phase8 env `{name}` as i64: {source}"))
 }
 
 pub fn phase8_required_env(name: &str) -> Result<String> {

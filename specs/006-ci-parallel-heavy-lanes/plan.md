@@ -39,7 +39,7 @@ Detailed decisions are in [research.md](research.md).
 - Set `strategy.fail-fast: false` so all shard results exist for the aggregate gate.
 - Preserve the managed `just test` path by adding passthrough args instead of adding workflow raw cargo.
 - Intentionally duplicate #342 source-fence filters inside full nextest for this slice, with explicit documentation and one aggregate gate.
-- Add shard-aware but bounded cache keys: independent host clippy/aarch64 keys and a fixed four-shard nextest key dimension.
+- Add bounded cache policy: independent host clippy/aarch64 keys, plus one shared nextest cache key restored by all shards and saved only by shard 1.
 
 ## Phase 1 Design Summary
 

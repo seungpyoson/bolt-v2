@@ -834,6 +834,14 @@ reason = "This is the structural JSON evidence schema version for Phase 8 canary
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "number"
 literal = "1"
+context = "const PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION: u32 = 1;"
+classification = "phase8_approval_consumption_schema_version"
+reason = "This is the structural JSON evidence schema version for Phase 8 approval consumption proof files, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "1"
 context = "const PHASE8_REQUIRED_LIVE_ORDER_CAP: u32 = 1;"
 classification = "phase8_required_single_live_order_cap"
 reason = "This enforces the Phase 8 tiny-canary invariant that the local/operator proof may admit exactly one live order; the configured cap still comes from TOML and must match this invariant."
@@ -921,6 +929,14 @@ reason = "This is a structural evidence label used only when Phase 8 blocks befo
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
+literal = '''"phase8_operator_approval_consumption"'''
+context = '''const PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND: &str = "phase8_operator_approval_consumption";'''
+classification = "phase8_approval_consumption_record_kind"
+reason = "This labels the Phase 8 approval-consumption evidence record used to prevent replay before a live runner attempt."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
 literal = '''"BOLT_V3_PHASE8_HEAD_SHA"'''
 context = '''head_sha: required_env("BOLT_V3_PHASE8_HEAD_SHA")?,'''
 classification = "phase8_canary_operator_envelope_env_name"
@@ -985,10 +1001,66 @@ reason = "This names the non-secret operator approval id field used only for exa
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
+literal = '''"BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS"'''
+context = '''"BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS",'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field containing the approval not-before bound in Unix seconds."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS"'''
+context = '''"BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS",'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field containing the approval not-after bound in Unix seconds."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_APPROVAL_NONCE_PATH"'''
+context = '''approval_nonce_path: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_PATH")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field pointing to the nonce evidence for checksum validation."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256"'''
+context = '''approval_nonce_sha256: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field containing the nonce evidence checksum."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH"'''
+context = '''approval_consumption_path: required_env("BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field where the one-shot approval consumption proof is atomically created."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
 literal = '''"BOLT_V3_PHASE8_EVIDENCE_PATH"'''
 context = '''canary_evidence_path: required_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,'''
 classification = "phase8_canary_operator_envelope_env_name"
 reason = "This names the non-secret operator envelope field where the Phase 8 canary evidence JSON is written."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"phase8 operator approval not_after is before not_before"'''
+context = '''"phase8 operator approval not_after is before not_before"'''
+classification = "phase8_canary_operator_envelope_diagnostic"
+reason = "This fail-closed diagnostic reports an invalid operator approval time window before any live runner attempt."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"phase8 operator approval is expired"'''
+context = '''return Err(anyhow!("phase8 operator approval is expired"));'''
+classification = "phase8_canary_operator_envelope_diagnostic"
+reason = "This fail-closed diagnostic reports an expired operator approval before any live runner attempt."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"

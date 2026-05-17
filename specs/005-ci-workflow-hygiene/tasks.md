@@ -51,11 +51,16 @@
 - [x] T017 Run `just ci-lint-workflow`
 - [x] T018 Run `just fmt-check`
 - [x] T019 Run `git diff --check`
-- [x] T020 Update PR body with exact-head CI and residual #332/#195/#205/#344/#340 scope
-- [x] T021 [P] Document accepted verification-support co-scope in `specs/005-ci-workflow-hygiene/spec.md`
-- [x] T022 [P] Serialize LiveNode-heavy tests in `tests/lake_batch.rs`, `tests/nt_runtime_capture.rs`, and `tests/platform_runtime.rs`
-- [x] T023 [P] Extend pure-Rust verifier alias detection in `scripts/verify_bolt_v3_pure_rust_runtime.py` and `scripts/test_verify_bolt_v3_pure_rust_runtime.py`
-- [ ] T024 [P] Re-record exact-head verification for the spec-kit co-scope traceability fix after commit/push
+- [x] T020 Update PR body with exact-head CI, landed #332 base-topology note, and residual #195/#205/#344/#340 scope
+
+## Phase 7: Prebuilt CI Tool Install Contract
+
+- [x] T021 [P] Add failing verifier self-tests for source-built `cargo-deny`, `cargo-nextest`, and `cargo-zigbuild` regressions in `scripts/test_verify_ci_workflow_hygiene.py`
+- [x] T022 [P] Switch CI/advisory Rust helper tool installs to prebuilt paths in `.github/workflows/ci.yml` and `.github/workflows/advisory.yml`
+- [x] T023 Add pinned `cargo-zigbuild` Linux x86_64 archive SHA256 to `justfile`
+- [x] T024 Export `zigbuild_x86_64_unknown_linux_gnu_sha256` from `.github/actions/setup-environment/action.yml`
+- [x] T025 Enforce install-action pinning, `fallback: none`, source-install rejection, full cargo-zigbuild install steps, and pinned SHA256 use in `scripts/verify_ci_workflow_hygiene.py`
+- [x] T026 Update `spec.md`, `quickstart.md`, `data-model.md`, `research.md`, `plan.md`, and checklist docs for the prebuilt install contract
 
 ## Dependencies
 
@@ -65,13 +70,13 @@
 - T009-T011 depend on T003-T004.
 - T012-T014 depend on T003-T004.
 - T015-T020 after implementation tasks.
-- T021-T024 after accepted co-scope is identified and before final review status.
 
 ## Parallel Opportunities
 
 - T001 and T002 can run in parallel.
 - T006-T008 can be implemented together after parser foundation exists.
 - T009 and T012/T013 touch different files and can proceed after tests define the contract.
+- T021 and T022 can run after T004 because the verifier parser already exists.
 
 ## Implementation Strategy
 

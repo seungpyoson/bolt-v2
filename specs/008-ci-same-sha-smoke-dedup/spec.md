@@ -57,7 +57,7 @@ As the maintainer, I can distinguish implementation readiness from issue closure
 
 - **FR-001**: Same-SHA reuse MUST match the tag SHA exactly against a completed successful `main` push CI run.
 - **FR-002**: The matched source run MUST be workflow `CI` at `.github/workflows/ci.yml`, event `push`, branch `main`, status `completed`, conclusion `success`, and not the current tag run.
-- **FR-003**: Reused source evidence MUST include successful required jobs for the current topology: `detector`, `fmt-check`, `deny`, `clippy`, `check-aarch64`, `source-fence`, four `test` shards, `build`, and `gate`.
+- **FR-003**: Reused source evidence MUST include successful required jobs for the current topology: `detector`, `fmt-check`, `deny`, `clippy`, `check-aarch64`, `source-fence`, four `test` shards, aggregate `test`, `build`, and `gate`.
 - **FR-004**: Evidence resolution MUST fail closed when the source run is absent, stale, incomplete, cancelled, skipped unexpectedly, failed, malformed, or for a different SHA.
 - **FR-005**: Artifact reuse MUST bind to the exact source run and SHA by artifact ID, with artifact name `bolt-v2-binary`, non-expired state, workflow run ID, branch `main`, and matching head SHA.
 - **FR-006**: Tag runs MUST skip duplicate heavy lanes instead of falling back to rerun them.

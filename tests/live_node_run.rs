@@ -1,6 +1,9 @@
 mod support;
 
-use std::time::Duration;
+use std::{
+    sync::{Mutex, MutexGuard},
+    time::Duration,
+};
 
 use bolt_v2::{
     config::Config,
@@ -15,8 +18,18 @@ use support::{
     MockDataClientConfig, MockDataClientFactory, MockExecClientConfig, MockExecutionClientFactory,
 };
 
+static LIVE_NODE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn live_node_test_guard() -> MutexGuard<'static, ()> {
+    LIVE_NODE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[test]
 fn explicit_live_node_config_path_runs_with_registered_clients() {
+    let _guard = live_node_test_guard();
+
     let trader_id = TraderId::from("BOLT-001");
     let data_config = MockDataClientConfig::new("TEST", "TESTVENUE");
     let exec_config = MockExecClientConfig::new("TEST", "TEST-ACCOUNT", "TESTVENUE");
@@ -118,6 +131,8 @@ fn explicit_live_node_config_path_runs_with_registered_clients() {
 
 #[test]
 fn sandbox_startup_path_preserves_environment_when_position_check_is_unset() {
+    let _guard = live_node_test_guard();
+
     let trader_id = TraderId::from("BOLT-001");
     let data_config = MockDataClientConfig::new("TEST", "TESTVENUE");
     let exec_config = MockExecClientConfig::new("TEST", "TEST-ACCOUNT", "TESTVENUE");
@@ -195,6 +210,8 @@ fn sandbox_startup_path_preserves_environment_when_position_check_is_unset() {
 
 #[test]
 fn sandbox_startup_rejects_position_check_interval() {
+    let _guard = live_node_test_guard();
+
     let trader_id = TraderId::from("BOLT-001");
     let data_config = MockDataClientConfig::new("TEST", "TESTVENUE");
     let exec_config = MockExecClientConfig::new("TEST", "TEST-ACCOUNT", "TESTVENUE");
@@ -279,6 +296,8 @@ fn sandbox_startup_rejects_position_check_interval() {
 
 #[test]
 fn builds_bolt_v3_livenode_without_running_event_loop() {
+    let _guard = live_node_test_guard();
+
     use bolt_v2::{
         bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
         bolt_v3_live_node::build_bolt_v3_live_node_with,
@@ -304,6 +323,8 @@ fn builds_bolt_v3_livenode_without_running_event_loop() {
 
 #[test]
 fn bolt_v3_livenode_runtime_carries_resolved_secret_redaction_values() {
+    let _guard = live_node_test_guard();
+
     use bolt_v2::{
         bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
         bolt_v3_live_node::build_bolt_v3_live_node_with,
@@ -352,6 +373,8 @@ fn bolt_v3_no_submit_anyhow_failures_remain_error_sources() {
 
 #[test]
 fn wires_runtime_capture_from_bolt_v3_persistence_config() {
+    let _guard = live_node_test_guard();
+
     use bolt_v2::{
         bolt_v3_config::{
             BoltV3RootConfig, LoadedBoltV3Config, PersistenceBlock, StreamingBlock,

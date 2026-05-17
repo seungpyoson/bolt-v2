@@ -46,3 +46,12 @@
 
 **Alternatives considered**:
 - Pre-build lint for hypothetical shards or reuse paths: rejected because it would create false requirements before the workflow surfaces exist.
+
+## Decision: Enforce prebuilt CI Rust helper-tool installs
+
+**Rationale**: #250 priority item 1 removes repeated CI source builds for `cargo-deny`, `cargo-nextest`, and `cargo-zigbuild`. `cargo-deny` and `cargo-nextest` are available in pinned `taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c`, so those jobs use the action with `fallback: none` and versions from setup outputs. `cargo-zigbuild` `0.22.1` is installed from the upstream Linux x86_64 release archive, with the expected SHA256 pinned in the justfile and exported by setup. The verifier blocks source-build regressions, action fallback, same-origin zigbuild checksum use, and incomplete manual install steps.
+
+**Alternatives considered**:
+- Keep `cargo install --locked`: rejected because it preserves the recurring tool compile time called out by #250.
+- Use `taiki-e/install-action` for `cargo-zigbuild`: rejected because the pinned `0.22.1` archive path and manifest availability did not match the needed release asset.
+- Download the `.sha256` file from the same `cargo-zigbuild` release during CI: rejected after review because it makes the release asset set its own trust anchor.

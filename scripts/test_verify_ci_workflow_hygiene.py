@@ -29,6 +29,18 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'GEMINI.md'
+      - 'REASONIX.md'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.codex/**'
+      - '.gemini/**'
+      - '.opencode/**'
+      - '.pi/**'
+      - '.specify/**'
 
 jobs:
   detector:
@@ -1006,6 +1018,42 @@ def main() -> int:
     assert_error(
         "source-fence must run just source-fence",
         replace_once(BASE_WORKFLOW, "- run: just source-fence", "- run: echo source-fence"),
+    )
+    assert_error(
+        "fmt-check must run just fmt-check",
+        replace_once(BASE_WORKFLOW, "- run: just fmt-check", "- run: echo skip fmt-check"),
+    )
+    assert_error(
+        "deny must run just deny",
+        replace_once(BASE_WORKFLOW, "- run: just deny", "- run: echo skip deny"),
+    )
+    assert_error(
+        "clippy must run just clippy",
+        replace_once(BASE_WORKFLOW, "- run: just clippy", "- run: echo skip clippy"),
+    )
+    assert_error(
+        "build must run just build",
+        replace_once(BASE_WORKFLOW, "- run: just build", "- run: echo skip build"),
+    )
+    assert_error(
+        "pull_request paths-ignore must match baseline",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - '.specify/**'\n",
+            "      - '.specify/**'\n      - 'docs/**'\n",
+        ),
+    )
+    assert_error(
+        "pull_request paths-ignore must match baseline",
+        replace_once(BASE_WORKFLOW, "      - '.specify/**'\n", ""),
+    )
+    assert_error(
+        "pull_request paths-ignore must match baseline",
+        replace_once(
+            BASE_WORKFLOW,
+            "    branches: [main]\n    paths-ignore:\n",
+            "    branches: [main]\n    # paths-ignore:\n",
+        ),
     )
     assert_error(
         "build needs detector",

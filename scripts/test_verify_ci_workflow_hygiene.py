@@ -1109,6 +1109,32 @@ def main() -> int:
         )
     )
     assert_error(
+        "ci.yml docs-tool-smoke must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "  gate:\n",
+            """  docs-tool-smoke:
+    name: docs-tool-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cargo install cargo-deny --locked
+
+  gate:
+""",
+        ),
+    )
+    assert_error(
+        "ci.yml source-fence must not compile cargo-nextest from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just source-fence",
+            """      - run: |
+          cargo install --git https://github.com/nextest-rs/nextest --package cargo-nextest --locked
+          just source-fence""",
+        ),
+    )
+    assert_error(
         "ci.yml test-shards must install cargo-nextest with pinned taiki-e/install-action",
         replace_once(
             BASE_WORKFLOW,
@@ -1234,6 +1260,16 @@ def main() -> int:
             """      - run: |
           cargo install --git https://github.com/rust-cross/cargo-zigbuild --locked
           just build""",
+        ),
+    )
+    assert_error(
+        "ci.yml fmt-check must not compile cargo-zigbuild from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just fmt-check",
+            """      - run: |
+          cargo install --path vendor/cargo-zigbuild --locked
+          just fmt-check""",
         ),
     )
     assert_error(

@@ -150,6 +150,7 @@ CI_INSTALL_ACTION_TOOLS = {
     "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "test-shards": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
 }
+CI_SOURCE_BUILD_TOOLS = ("cargo-deny", "cargo-nextest", "cargo-zigbuild")
 CI_INSTALL_ACTION_COMMANDS = {
     "deny": "just deny",
     "advisories": "just deny-advisories",
@@ -506,6 +507,7 @@ ENV_OPTIONS_WITHOUT_ARGUMENT = {
     "--null",
 }
 TIME_OPTIONS_WITHOUT_ARGUMENT = {"-p"}
+SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")"}
 
 
 def consume_assignment_words(tokens: list[str], index: int) -> int:
@@ -595,15 +597,49 @@ def command_prefix_allows_cargo(prefix: list[str]) -> bool:
 
 
 def cargo_token_is_command(tokens: list[str], index: int) -> bool:
-    boundaries = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")"}
     cursor = index - 1
-    while cursor >= 0 and tokens[cursor] not in boundaries:
+    while cursor >= 0 and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
         cursor -= 1
     prefix = tokens[cursor + 1 : index]
     return command_prefix_allows_cargo(prefix)
 
 
-def runs_cargo_install(text: str) -> bool:
+def source_build_tool_from_token(token: str) -> str | None:
+    token = token.rstrip("/")
+    for tool in CI_SOURCE_BUILD_TOOLS:
+        if token == tool or token.startswith(f"{tool}@"):
+            return tool
+        if token.endswith(f"/{tool}") or token.endswith(f"/{tool}.git"):
+            return tool
+    return None
+
+
+def cargo_install_source_build_tools(tokens: list[str], command_index: int) -> set[str]:
+    tools: set[str] = set()
+    index = command_index + 1
+    while index < len(tokens) and tokens[index] not in SHELL_COMMAND_BOUNDARIES:
+        token = tokens[index]
+        if token in ("--package", "-p") and index + 1 < len(tokens):
+            tool = source_build_tool_from_token(tokens[index + 1])
+            if tool is not None:
+                tools.add(tool)
+            index += 2
+            continue
+        if token.startswith("--package="):
+            tool = source_build_tool_from_token(token.removeprefix("--package="))
+            if tool is not None:
+                tools.add(tool)
+            index += 1
+            continue
+        tool = source_build_tool_from_token(token)
+        if tool is not None:
+            tools.add(tool)
+        index += 1
+    return tools
+
+
+def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
+    tools: set[str] = set()
     for line in text.replace("\\\n", " ").splitlines():
         if "cargo" not in line or "install" not in line:
             continue
@@ -621,8 +657,8 @@ def runs_cargo_install(text: str) -> bool:
             command_index = consume_cargo_global_options(tokens, index + 1)
             if command_index >= len(tokens) or tokens[command_index] != "install":
                 continue
-            return True
-    return False
+            tools.update(cargo_install_source_build_tools(tokens, command_index))
+    return tools
 
 
 def consume_cargo_global_options(tokens: list[str], index: int) -> int:
@@ -1012,13 +1048,14 @@ def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> lis
     errors: list[str] = []
 
     jobs = parse_jobs(workflow_text)
+    for job, job_lines in jobs.items():
+        for tool in sorted(cargo_install_source_build_tools_in_text(uncommented_text(job_lines))):
+            errors.append(f"{workflow_name} {job} must not compile {tool} from source")
+
     for job, (tool, output) in CI_INSTALL_ACTION_TOOLS.items():
         job_lines = jobs.get(job)
         if job_lines is None:
             continue
-        text = uncommented_text(job_lines)
-        if runs_cargo_install(text):
-            errors.append(f"{workflow_name} {job} must not compile {tool} from source")
         step = install_action_tool_step(job_lines, tool, output)
         if step is None:
             errors.append(f"{workflow_name} {job} must install {tool} with pinned taiki-e/install-action")
@@ -1035,8 +1072,6 @@ def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> lis
     if build_lines is None:
         return errors
     build_text = uncommented_text(build_lines)
-    if runs_cargo_install(build_text):
-        errors.append(f"{workflow_name} build must not compile cargo-zigbuild from source")
     if "archive.sha256" in build_text or "steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256" not in build_text:
         errors.append(f"{workflow_name} build must use pinned cargo-zigbuild archive sha256")
     zigbuild_install_index = first_step_containing_literals_in_order(build_lines, ZIGBUILD_PREBUILT_LITERALS)

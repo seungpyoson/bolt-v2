@@ -55,10 +55,11 @@ def required_jobs():
         job("clippy"),
         job("check-aarch64"),
         job("source-fence"),
-        job("test (1)"),
-        job("test (2)"),
-        job("test (3)"),
-        job("test (4)"),
+        job("nextest shard 1 of 4"),
+        job("nextest shard 2 of 4"),
+        job("nextest shard 3 of 4"),
+        job("nextest shard 4 of 4"),
+        job("test"),
         job("build"),
         job("gate"),
     ]
@@ -125,7 +126,7 @@ def assert_rejects_incomplete_required_jobs() -> None:
     broken_jobs = required_jobs()
     broken_jobs[5] = job("source-fence", "skipped")
     assert_raises("source-fence", lambda: select([run_payload()], jobs=broken_jobs))
-    missing_test_shard = [job_payload for job_payload in required_jobs() if job_payload["name"] != "test (4)"]
+    missing_test_shard = [job_payload for job_payload in required_jobs() if job_payload["name"] != "nextest shard 4 of 4"]
     assert_raises("test shards", lambda: select([run_payload()], jobs=missing_test_shard))
 
 

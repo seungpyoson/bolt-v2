@@ -1276,6 +1276,39 @@ fn live_canary_evidence_writer_rejects_block_reasons() {
 }
 
 #[test]
+fn live_canary_evidence_writer_rejects_mutated_strategy_hash() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let mut evidence = Phase8CanaryEvidence::live_canary_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+        valid_live_order_ref(),
+        valid_live_canary_result_refs(),
+        1,
+    )
+    .expect("valid live canary evidence should construct");
+    evidence
+        .live_order_ref
+        .as_mut()
+        .expect("live order ref should exist")
+        .strategy_instance_id_hash =
+        "3434343434343434343434343434343434343434343434343434343434343434".to_string();
+
+    let error = evidence
+        .write_json_file(&evidence_path)
+        .expect_err("mutated live proof strategy hash must not be written");
+
+    assert!(
+        error.to_string().contains("strategy_instance_id_hash"),
+        "error should mention mismatched strategy id hash: {error}"
+    );
+    assert!(
+        !evidence_path.exists(),
+        "mutated live proof strategy hash must not create evidence file"
+    );
+}
+
+#[test]
 fn live_canary_evidence_rejects_unconsumed_submit_admission_count() {
     let error = Phase8CanaryEvidence::live_canary_proof(
         evidence_input(),

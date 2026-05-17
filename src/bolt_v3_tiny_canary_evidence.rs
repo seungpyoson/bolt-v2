@@ -578,6 +578,8 @@ pub struct Phase8CanaryEvidence {
     pub ssm_manifest_sha256: String,
     pub ssm_manifest_ref: Phase8EvidenceRef,
     pub strategy_input_evidence_ref: Phase8EvidenceRef,
+    #[serde(skip)]
+    approved_strategy_instance_id_hash: String,
     pub approval_id_hash: String,
     pub max_live_order_count: u32,
     pub max_notional_per_order: String,
@@ -621,6 +623,7 @@ impl Phase8CanaryEvidence {
             ssm_manifest_sha256: input.ssm_manifest_sha256,
             ssm_manifest_ref: input.ssm_manifest_ref,
             strategy_input_evidence_ref: input.strategy_input_evidence_ref,
+            approved_strategy_instance_id_hash: input.approved_strategy_instance_id_hash,
             approval_id_hash: sha256_text(&input.approval_id),
             max_live_order_count: input.max_live_order_count,
             max_notional_per_order: input.max_notional_per_order.to_string(),
@@ -654,6 +657,7 @@ impl Phase8CanaryEvidence {
             ssm_manifest_sha256: input.ssm_manifest_sha256,
             ssm_manifest_ref: input.ssm_manifest_ref,
             strategy_input_evidence_ref: input.strategy_input_evidence_ref,
+            approved_strategy_instance_id_hash: input.approved_strategy_instance_id_hash,
             approval_id_hash: sha256_text(&input.approval_id),
             max_live_order_count: input.max_live_order_count,
             max_notional_per_order: input.max_notional_per_order.to_string(),
@@ -722,6 +726,7 @@ impl Phase8CanaryEvidence {
             ssm_manifest_sha256: input.ssm_manifest_sha256,
             ssm_manifest_ref: input.ssm_manifest_ref,
             strategy_input_evidence_ref: input.strategy_input_evidence_ref,
+            approved_strategy_instance_id_hash: input.approved_strategy_instance_id_hash,
             approval_id_hash: sha256_text(&input.approval_id),
             max_live_order_count: input.max_live_order_count,
             max_notional_per_order: input.max_notional_per_order.to_string(),
@@ -796,6 +801,10 @@ impl Phase8CanaryEvidence {
             self.schema_version,
             &self.head_sha,
             &self.approval_id_hash,
+        )?;
+        validate_phase8_sha256_field(
+            stringify!(approved_strategy_instance_id_hash),
+            &self.approved_strategy_instance_id_hash,
         )?;
         validate_phase8_canary_cap_values(self.max_live_order_count, &self.max_notional_per_order)?;
         validate_phase8_evidence_hashes(
@@ -897,6 +906,13 @@ impl Phase8CanaryEvidence {
                     decision_evidence_ref,
                 )?;
                 validate_phase8_live_order_ref(live_order_ref)?;
+                if live_order_ref.strategy_instance_id_hash
+                    != self.approved_strategy_instance_id_hash
+                {
+                    return Err(anyhow!(
+                        "phase8 live canary proof live_order_ref.strategy_instance_id_hash does not match approved financial envelope"
+                    ));
+                }
                 validate_phase8_evidence_ref(stringify!(nt_submit_event_ref), nt_submit_event_ref)?;
                 validate_phase8_evidence_ref(
                     stringify!(venue_order_state_ref),

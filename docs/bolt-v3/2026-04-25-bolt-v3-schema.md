@@ -647,6 +647,7 @@ The `[live_canary]` TOML block is necessary but not sufficient for the one tiny-
 - `BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256`: sha256 of the approval nonce evidence
 - `BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH`: path atomically created when the approval is consumed
 - `BOLT_V3_PHASE8_EVIDENCE_PATH`: redacted canary evidence output path
+- The evidence writer rejects live-order proof serialization if `live_order_ref.strategy_instance_id_hash` no longer matches the approved strategy-instance hash derived from the financial envelope.
 
 #### Live-result fields
 

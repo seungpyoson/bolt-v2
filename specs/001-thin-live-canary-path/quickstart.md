@@ -93,6 +93,7 @@ Expected result:
 - client and venue ids recorded as `BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH` and `BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH`
 - NT submit event captured at `BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH`
 - venue accept, fill, or reject captured at `BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH`
+- canary evidence writer binds the approved financial-envelope strategy-instance hash to the live-order proof strategy-instance hash
 - strategy-driven cancel if open, with conditional evidence at `BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH`
 - restart reconciliation through NT at `BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH`
 - post-run hygiene proof at `BOLT_V3_PHASE8_POST_RUN_HYGIENE_PATH`

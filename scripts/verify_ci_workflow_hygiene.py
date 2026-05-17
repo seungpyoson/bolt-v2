@@ -879,8 +879,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "source-fence" in jobs and not job_runs_command(jobs["source-fence"], "just source-fence"):
         errors.append("source-fence must run just source-fence")
 
-    if "test-shards" in jobs and "source-fence" not in extract_needs(jobs["test-shards"]):
-        errors.append("test-shards needs source-fence")
+    if "test-shards" in jobs:
+        test_shards_needs = extract_needs(jobs["test-shards"])
+        if "detector" not in test_shards_needs:
+            errors.append("test-shards needs detector")
+        if "source-fence" not in test_shards_needs:
+            errors.append("test-shards needs source-fence")
 
     if "clippy" in jobs:
         clippy_text = uncommented_text(jobs["clippy"])

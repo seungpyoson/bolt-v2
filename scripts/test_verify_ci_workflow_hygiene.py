@@ -771,6 +771,14 @@ def main() -> int:
         ),
     )
     assert_error(
+        "test-shards needs detector",
+        replace_once(
+            BASE_WORKFLOW,
+            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: [detector, source-fence]",
+            "  test-shards:\n    name: nextest shard ${{ matrix.shard }} of 4\n    needs: source-fence",
+        ),
+    )
+    assert_error(
         "build needs detector",
         replace_once(
             BASE_WORKFLOW,

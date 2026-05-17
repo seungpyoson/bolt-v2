@@ -456,6 +456,9 @@ SUDO_OPTIONS_WITH_ARGUMENT = {
     "--type",
     "--user",
 }
+SUDO_OPTIONS_WITH_OPTIONAL_ARGUMENT = {
+    "--preserve-env",
+}
 SUDO_OPTIONS_WITHOUT_ARGUMENT = {
     "-E",
     "-e",
@@ -477,7 +480,6 @@ SUDO_OPTIONS_WITHOUT_ARGUMENT = {
     "--list",
     "--login",
     "--non-interactive",
-    "--preserve-env",
     "--remove-timestamp",
     "--reset-timestamp",
     "--stdin",
@@ -517,7 +519,9 @@ def consume_option_prefix(
     index: int,
     options_with_argument: set[str],
     options_without_argument: set[str],
+    options_with_optional_argument: set[str] | None = None,
 ) -> int | None:
+    options_with_optional_argument = options_with_optional_argument or set()
     short_options_with_argument = {option for option in options_with_argument if re.match(r"^-[A-Za-z0-9]$", option)}
     short_options_without_argument = {option for option in options_without_argument if re.match(r"^-[A-Za-z0-9]$", option)}
     while index < len(tokens):
@@ -530,6 +534,12 @@ def consume_option_prefix(
             index += 2
             continue
         if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
+            index += 1
+            continue
+        if any(token.startswith(f"{option}=") for option in options_with_optional_argument if option.startswith("--")):
+            index += 1
+            continue
+        if token in options_with_optional_argument:
             index += 1
             continue
         if token in options_without_argument:
@@ -567,7 +577,13 @@ def command_prefix_allows_cargo(prefix: list[str]) -> bool:
         elif token == "time":
             index = consume_option_prefix(prefix, index + 1, set(), TIME_OPTIONS_WITHOUT_ARGUMENT)
         elif token == "sudo":
-            index = consume_option_prefix(prefix, index + 1, SUDO_OPTIONS_WITH_ARGUMENT, SUDO_OPTIONS_WITHOUT_ARGUMENT)
+            index = consume_option_prefix(
+                prefix,
+                index + 1,
+                SUDO_OPTIONS_WITH_ARGUMENT,
+                SUDO_OPTIONS_WITHOUT_ARGUMENT,
+                SUDO_OPTIONS_WITH_OPTIONAL_ARGUMENT,
+            )
         elif token == "env":
             index = consume_option_prefix(prefix, index + 1, ENV_OPTIONS_WITH_ARGUMENT, ENV_OPTIONS_WITHOUT_ARGUMENT)
         else:

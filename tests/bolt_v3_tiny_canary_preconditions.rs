@@ -1001,8 +1001,12 @@ fn loaded_with_live_canary(report_path: &str) -> LoadedBoltV3Config {
 }
 
 fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
+    use bolt_v2::bolt_v3_no_submit_readiness_schema::{
+        NO_SUBMIT_READINESS_SCHEMA_VERSION, SCHEMA_VERSION_KEY,
+    };
+
     let json = serde_json::json!({
-        "schema_version": 1,
+        SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
         "head_sha": "7f2d981f584a0378842d9a76fffd9cd03fce2ce5",
         "root_config_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "operator_approval_id_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

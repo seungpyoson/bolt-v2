@@ -1,4 +1,5 @@
 pub const NO_SUBMIT_READINESS_SCHEMA_VERSION: &str = "bolt-v3.no-submit-readiness.v1";
+pub const SCHEMA_VERSION_KEY: &str = "schema_version";
 pub const STAGES_KEY: &str = "stages";
 pub const STAGE_KEY: &str = "stage";
 pub const STATUS_KEY: &str = "status";

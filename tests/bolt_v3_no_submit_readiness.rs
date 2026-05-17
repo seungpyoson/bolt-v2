@@ -12,8 +12,8 @@ use bolt_v2::{
     bolt_v3_no_submit_readiness_schema::{
         CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
         NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
-        REPORT_WRITE_STAGE, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY, STATUS_KEY,
-        STATUS_SATISFIED,
+        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
+        STATUS_KEY, STATUS_SATISFIED,
     },
 };
 use sha2::{Digest, Sha256};
@@ -25,6 +25,7 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
     let report = serde_json::json!({
+        SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
         STAGES_KEY: [
             { STAGE_KEY: OPERATOR_APPROVAL_STAGE, STATUS_KEY: STATUS_SATISFIED },
             { STAGE_KEY: SECRET_RESOLUTION_STAGE, STATUS_KEY: STATUS_SATISFIED },

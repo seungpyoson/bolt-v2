@@ -16,15 +16,16 @@ use std::{
 };
 
 use rust_decimal::Decimal;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tokio::io::AsyncReadExt;
 
 use crate::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, resolve_root_relative_path},
     bolt_v3_no_submit_readiness_schema::{
         CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
-        OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE,
-        SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
+        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
+        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
+        STATUS_KEY, STATUS_SATISFIED,
     },
 };
 
@@ -118,10 +119,60 @@ pub enum BoltV3LiveCanaryGateError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    ReadinessReportSchemaVersionMismatch {
+        path: PathBuf,
+        expected: &'static str,
+        actual: Option<String>,
+    },
     UnsatisfiedNoSubmitReadinessReport {
         path: PathBuf,
-        reasons: Vec<String>,
+        failures: Vec<NoSubmitReadinessReportFailure>,
     },
+}
+
+/// Typed per-report-shape failures aggregated under
+/// [`BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport`].
+///
+/// The validator collects every failure mode it observes before
+/// returning, so a single rejection carries the complete operator
+/// triage picture rather than only the first failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoSubmitReadinessReportFailure {
+    StagesMissing,
+    StagesNotArray,
+    StagesEmpty,
+    StageEntryMissingStageKey,
+    StageStatusMissing { stage: String },
+    StageStatusNotSatisfied { stage: String, status: String },
+    RequiredStageMissingOrUnsatisfied { stage: String },
+}
+
+impl std::fmt::Display for NoSubmitReadinessReportFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoSubmitReadinessReportFailure::StagesMissing => {
+                write!(f, "stages array is missing")
+            }
+            NoSubmitReadinessReportFailure::StagesNotArray => {
+                write!(f, "stages field is not an array")
+            }
+            NoSubmitReadinessReportFailure::StagesEmpty => {
+                write!(f, "stages array is empty")
+            }
+            NoSubmitReadinessReportFailure::StageEntryMissingStageKey => {
+                write!(f, "stage entry is missing `{STAGE_KEY}`")
+            }
+            NoSubmitReadinessReportFailure::StageStatusMissing { stage } => {
+                write!(f, "stage `{stage}` status is missing")
+            }
+            NoSubmitReadinessReportFailure::StageStatusNotSatisfied { stage, status } => {
+                write!(f, "stage `{stage}` status is `{status}`")
+            }
+            NoSubmitReadinessReportFailure::RequiredStageMissingOrUnsatisfied { stage } => {
+                write!(f, "required stage `{stage}` is missing or unsatisfied")
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for BoltV3LiveCanaryGateError {
@@ -186,12 +237,32 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                     path.display()
                 )
             }
-            BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { path, reasons } => {
+            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+                path,
+                expected,
+                actual,
+            } => match actual {
+                Some(actual) => write!(
+                    f,
+                    "bolt-v3 no-submit readiness report {} schema_version is `{actual}`, expected `{expected}`",
+                    path.display()
+                ),
+                None => write!(
+                    f,
+                    "bolt-v3 no-submit readiness report {} schema_version is missing or not a string, expected `{expected}`",
+                    path.display()
+                ),
+            },
+            BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { path, failures } => {
+                let joined = failures
+                    .iter()
+                    .map(|failure| failure.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
                 write!(
                     f,
-                    "bolt-v3 no-submit readiness report {} is not satisfied: {}",
+                    "bolt-v3 no-submit readiness report {} is not satisfied: {joined}",
                     path.display(),
-                    reasons.join("; ")
                 )
             }
         }
@@ -267,10 +338,31 @@ pub async fn check_bolt_v3_live_canary_gate(
             source,
         }
     })?;
-    validate_no_submit_readiness_report(&report).map_err(|reasons| {
+    let Some(report_object) = report.as_object() else {
+        return Err(
+            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+                path: report_path.clone(),
+                expected: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+                actual: None,
+            },
+        );
+    };
+    let observed_schema_version = report_object
+        .get(SCHEMA_VERSION_KEY)
+        .and_then(Value::as_str);
+    if observed_schema_version != Some(NO_SUBMIT_READINESS_SCHEMA_VERSION) {
+        return Err(
+            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+                path: report_path.clone(),
+                expected: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+                actual: observed_schema_version.map(str::to_string),
+            },
+        );
+    }
+    validate_no_submit_readiness_report(report_object).map_err(|failures| {
         BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport {
             path: report_path.clone(),
-            reasons,
+            failures,
         }
     })?;
 
@@ -339,36 +431,38 @@ fn parse_positive_decimal(
     Ok(decimal)
 }
 
-fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>> {
-    let mut reasons = Vec::new();
-    let report = match report.as_object() {
-        Some(report) => report,
-        None => {
-            reasons.push(format!("expected JSON object, got {report}"));
-            return Err(reasons);
-        }
-    };
+fn validate_no_submit_readiness_report(
+    report: &Map<String, Value>,
+) -> Result<(), Vec<NoSubmitReadinessReportFailure>> {
+    let mut failures = Vec::new();
     match report.get(STAGES_KEY) {
-        None => reasons.push("stages array is missing".to_string()),
+        None => failures.push(NoSubmitReadinessReportFailure::StagesMissing),
         Some(stages_value) => match stages_value.as_array() {
-            None => reasons.push(format!("stages must be an array, got {stages_value}")),
-            Some(stages) if stages.is_empty() => reasons.push("stages array is empty".to_string()),
+            None => failures.push(NoSubmitReadinessReportFailure::StagesNotArray),
+            Some(stages) if stages.is_empty() => {
+                failures.push(NoSubmitReadinessReportFailure::StagesEmpty)
+            }
             Some(stages) => {
                 let mut present_stage_names = std::collections::BTreeSet::new();
                 let mut satisfied_stage_names = std::collections::BTreeSet::new();
                 for stage in stages {
                     let Some(name) = stage.get(STAGE_KEY).and_then(Value::as_str) else {
-                        reasons.push("stage entry is missing `stage`".to_string());
+                        failures.push(NoSubmitReadinessReportFailure::StageEntryMissingStageKey);
                         continue;
                     };
                     present_stage_names.insert(name.to_string());
                     match stage.get(STATUS_KEY).and_then(Value::as_str) {
-                        None => reasons.push(format!("stage `{name}` status is missing")),
+                        None => failures.push(NoSubmitReadinessReportFailure::StageStatusMissing {
+                            stage: name.to_string(),
+                        }),
                         Some(status) if status == STATUS_SATISFIED => {
                             satisfied_stage_names.insert(name.to_string());
                         }
                         Some(status) => {
-                            reasons.push(format!("stage `{name}` status is `{status}`"))
+                            failures.push(NoSubmitReadinessReportFailure::StageStatusNotSatisfied {
+                                stage: name.to_string(),
+                                status: status.to_string(),
+                            })
                         }
                     }
                 }
@@ -376,19 +470,21 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
                     if !present_stage_names.contains(*required_stage)
                         && !satisfied_stage_names.contains(*required_stage)
                     {
-                        reasons.push(format!(
-                            "required stage `{required_stage}` is missing or unsatisfied"
-                        ));
+                        failures.push(
+                            NoSubmitReadinessReportFailure::RequiredStageMissingOrUnsatisfied {
+                                stage: (*required_stage).to_string(),
+                            },
+                        );
                     }
                 }
             }
         },
     }
 
-    if reasons.is_empty() {
+    if failures.is_empty() {
         Ok(())
     } else {
-        Err(reasons)
+        Err(failures)
     }
 }
 

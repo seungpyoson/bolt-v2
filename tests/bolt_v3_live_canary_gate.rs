@@ -2,12 +2,14 @@ mod support;
 
 use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
-    bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
+    bolt_v3_live_canary_gate::{
+        BoltV3LiveCanaryGateError, NoSubmitReadinessReportFailure, check_bolt_v3_live_canary_gate,
+    },
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness_schema::{
         CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
-        OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE,
-        SECRET_RESOLUTION_STAGE,
+        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
+        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
     },
 };
 use tokio::task::LocalSet;
@@ -317,7 +319,13 @@ async fn live_canary_gate_rejects_empty_stage_report() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"{"stages":[]}"#).expect("report fixture should be written");
+    write_report_value(
+        &report_path,
+        serde_json::json!({
+            SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+            "stages": [],
+        }),
+    );
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -335,10 +343,10 @@ async fn live_canary_gate_rejects_empty_stage_report() {
         .expect_err("empty no-submit stage report must fail closed");
 
     match error {
-        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { failures, .. } => {
             assert!(
-                reasons.iter().any(|reason| reason.contains("empty")),
-                "error should name the empty stages array, got {reasons:?}"
+                failures.contains(&NoSubmitReadinessReportFailure::StagesEmpty),
+                "error should name the empty stages array, got {failures:?}"
             );
         }
         other => panic!("expected unsatisfied report rejection, got {other:?}"),
@@ -351,7 +359,13 @@ async fn live_canary_gate_rejects_report_missing_stages_key() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"{"other":true}"#).expect("report fixture should be written");
+    write_report_value(
+        &report_path,
+        serde_json::json!({
+            SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+            "other": true,
+        }),
+    );
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -369,12 +383,10 @@ async fn live_canary_gate_rejects_report_missing_stages_key() {
         .expect_err("missing stages key must fail closed");
 
     match error {
-        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { failures, .. } => {
             assert!(
-                reasons
-                    .iter()
-                    .any(|reason| reason.contains("stages array is missing")),
-                "error should name the missing stages array, got {reasons:?}"
+                failures.contains(&NoSubmitReadinessReportFailure::StagesMissing),
+                "error should name the missing stages array, got {failures:?}"
             );
         }
         other => panic!("expected unsatisfied report rejection, got {other:?}"),
@@ -408,10 +420,14 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
         .expect_err("unsatisfied no-submit report must fail closed");
 
     match error {
-        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { failures, .. } => {
             assert!(
-                reasons.iter().any(|reason| reason.contains("disconnect")),
-                "error should name the blocked stage, got {reasons:?}"
+                failures.iter().any(|failure| matches!(
+                    failure,
+                    NoSubmitReadinessReportFailure::StageStatusNotSatisfied { stage, .. }
+                        if stage == "disconnect"
+                )),
+                "error should name the blocked stage, got {failures:?}"
             );
         }
         other => panic!("expected unsatisfied report rejection, got {other:?}"),
@@ -442,14 +458,21 @@ async fn live_canary_gate_reports_each_unsatisfied_required_stage_once() {
         .expect_err("unsatisfied required stage must fail closed");
 
     match error {
-        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
-            let reference_readiness_reasons = reasons
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { failures, .. } => {
+            let reference_readiness_failures = failures
                 .iter()
-                .filter(|reason| reason.contains(REFERENCE_READINESS_STAGE))
+                .filter(|failure| match failure {
+                    NoSubmitReadinessReportFailure::RequiredStageMissingOrUnsatisfied { stage }
+                    | NoSubmitReadinessReportFailure::StageStatusNotSatisfied { stage, .. }
+                    | NoSubmitReadinessReportFailure::StageStatusMissing { stage } => {
+                        stage == REFERENCE_READINESS_STAGE
+                    }
+                    _ => false,
+                })
                 .count();
             assert_eq!(
-                reference_readiness_reasons, 1,
-                "expected one reason for `{REFERENCE_READINESS_STAGE}`, got {reasons:?}"
+                reference_readiness_failures, 1,
+                "expected one failure for `{REFERENCE_READINESS_STAGE}`, got {failures:?}"
             );
         }
         other => panic!("expected unsatisfied report rejection, got {other:?}"),
@@ -576,7 +599,142 @@ async fn live_canary_gate_rejects_no_submit_report_above_configured_byte_cap() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn live_canary_gate_distinguishes_non_object_report_from_missing_stages() {
+async fn live_canary_gate_rejects_readiness_report_with_missing_schema_version() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_report_value(
+        &report_path,
+        serde_json::json!({
+            "stages": [{ "stage": OPERATOR_APPROVAL_STAGE, "status": "satisfied" }],
+        }),
+    );
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("readiness report missing schema_version must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+            expected,
+            actual,
+            ..
+        } => {
+            assert_eq!(expected, NO_SUBMIT_READINESS_SCHEMA_VERSION);
+            assert!(
+                actual.is_none(),
+                "expected actual=None for missing schema_version, got {actual:?}"
+            );
+        }
+        other => panic!("expected schema-version mismatch rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_readiness_report_with_wrong_schema_version() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_report_value(
+        &report_path,
+        serde_json::json!({
+            SCHEMA_VERSION_KEY: "bolt-v3.no-submit-readiness.v2",
+            "stages": [{ "stage": OPERATOR_APPROVAL_STAGE, "status": "satisfied" }],
+        }),
+    );
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("readiness report with wrong schema_version must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+            expected,
+            actual,
+            ..
+        } => {
+            assert_eq!(expected, NO_SUBMIT_READINESS_SCHEMA_VERSION);
+            assert_eq!(
+                actual.as_deref(),
+                Some("bolt-v3.no-submit-readiness.v2"),
+                "expected actual to carry the unexpected version, got {actual:?}"
+            );
+        }
+        other => panic!("expected schema-version mismatch rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_readiness_report_with_non_string_schema_version() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_report_value(
+        &report_path,
+        serde_json::json!({
+            SCHEMA_VERSION_KEY: 1,
+            "stages": [{ "stage": OPERATOR_APPROVAL_STAGE, "status": "satisfied" }],
+        }),
+    );
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("readiness report with non-string schema_version must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+            expected,
+            actual,
+            ..
+        } => {
+            assert_eq!(expected, NO_SUBMIT_READINESS_SCHEMA_VERSION);
+            assert!(
+                actual.is_none(),
+                "expected actual=None for non-string schema_version, got {actual:?}"
+            );
+        }
+        other => panic!("expected schema-version mismatch rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_non_object_readiness_report_with_schema_version_mismatch() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
@@ -599,15 +757,18 @@ async fn live_canary_gate_distinguishes_non_object_report_from_missing_stages() 
         .expect_err("non-object no-submit readiness report must fail closed");
 
     match error {
-        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+        BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+            expected,
+            actual,
+            ..
+        } => {
+            assert_eq!(expected, NO_SUBMIT_READINESS_SCHEMA_VERSION);
             assert!(
-                reasons
-                    .iter()
-                    .any(|reason| reason.contains("expected JSON object")),
-                "error should name the malformed report object, got {reasons:?}"
+                actual.is_none(),
+                "expected actual=None for non-object report, got {actual:?}"
             );
         }
-        other => panic!("expected unsatisfied report rejection, got {other:?}"),
+        other => panic!("expected schema-version mismatch rejection, got {other:?}"),
     }
 }
 
@@ -617,8 +778,13 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"{"stages":"satisfied"}"#)
-        .expect("report fixture should be written");
+    write_report_value(
+        &report_path,
+        serde_json::json!({
+            SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+            "stages": "satisfied",
+        }),
+    );
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -636,12 +802,10 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
         .expect_err("non-array stages field must fail closed");
 
     match error {
-        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { failures, .. } => {
             assert!(
-                reasons
-                    .iter()
-                    .any(|reason| reason.contains("stages must be an array")),
-                "error should name the malformed stages field, got {reasons:?}"
+                failures.contains(&NoSubmitReadinessReportFailure::StagesNotArray),
+                "error should name the malformed stages field, got {failures:?}"
             );
         }
         other => panic!("expected unsatisfied report rejection, got {other:?}"),
@@ -672,12 +836,10 @@ async fn live_canary_gate_rejects_stage_name_alias() {
         .expect_err("name-only stage identifiers must fail closed");
 
     match error {
-        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { failures, .. } => {
             assert!(
-                reasons
-                    .iter()
-                    .any(|reason| reason.contains("stage entry is missing `stage`")),
-                "error should reject the non-canonical stage field, got {reasons:?}"
+                failures.contains(&NoSubmitReadinessReportFailure::StageEntryMissingStageKey),
+                "error should reject the non-canonical stage field, got {failures:?}"
             );
         }
         other => panic!("expected unsatisfied report rejection, got {other:?}"),
@@ -685,13 +847,18 @@ async fn live_canary_gate_rejects_stage_name_alias() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn live_canary_gate_reports_missing_stage_name_without_placeholder() {
+async fn live_canary_gate_reports_missing_stage_name_as_typed_failure() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"{"stages":[{"status":"blocked"}]}"#)
-        .expect("report fixture should be written");
+    write_report_value(
+        &report_path,
+        serde_json::json!({
+            SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+            "stages": [{ "status": "blocked" }],
+        }),
+    );
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -709,16 +876,10 @@ async fn live_canary_gate_reports_missing_stage_name_without_placeholder() {
         .expect_err("stage entry without canonical stage must fail closed");
 
     match error {
-        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { failures, .. } => {
             assert!(
-                reasons
-                    .iter()
-                    .any(|reason| reason.contains("stage entry is missing `stage`")),
-                "error should name the missing stage field, got {reasons:?}"
-            );
-            assert!(
-                reasons.iter().all(|reason| !reason.contains("<unnamed>")),
-                "error must not use a placeholder stage name, got {reasons:?}"
+                failures.contains(&NoSubmitReadinessReportFailure::StageEntryMissingStageKey),
+                "error should name the missing stage field, got {failures:?}"
             );
         }
         other => panic!("expected unsatisfied report rejection, got {other:?}"),
@@ -726,13 +887,18 @@ async fn live_canary_gate_reports_missing_stage_name_without_placeholder() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn live_canary_gate_reports_missing_stage_status_without_placeholder() {
+async fn live_canary_gate_reports_missing_stage_status_as_typed_failure() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"{"stages":[{"stage":"disconnect"}]}"#)
-        .expect("report fixture should be written");
+    write_report_value(
+        &report_path,
+        serde_json::json!({
+            SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+            "stages": [{ "stage": "disconnect" }],
+        }),
+    );
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -750,16 +916,14 @@ async fn live_canary_gate_reports_missing_stage_status_without_placeholder() {
         .expect_err("stage entry without a status must fail closed");
 
     match error {
-        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { failures, .. } => {
             assert!(
-                reasons
-                    .iter()
-                    .any(|reason| reason == "stage `disconnect` status is missing"),
-                "error should name the missing status for the stage, got {reasons:?}"
-            );
-            assert!(
-                reasons.iter().all(|reason| !reason.contains("<missing>")),
-                "error must not use a placeholder status, got {reasons:?}"
+                failures.iter().any(|failure| matches!(
+                    failure,
+                    NoSubmitReadinessReportFailure::StageStatusMissing { stage }
+                        if stage == "disconnect"
+                )),
+                "error should name the missing status for the stage, got {failures:?}"
             );
         }
         other => panic!("expected unsatisfied report rejection, got {other:?}"),
@@ -790,12 +954,14 @@ async fn live_canary_gate_rejects_noncanonical_satisfied_status() {
         .expect_err("uppercase satisfied status must fail closed");
 
     match report {
-        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { failures, .. } => {
             assert!(
-                reasons
-                    .iter()
-                    .any(|reason| reason == "stage `connect` status is `SATISFIED`"),
-                "error should reject the non-canonical status value, got {reasons:?}"
+                failures.iter().any(|failure| matches!(
+                    failure,
+                    NoSubmitReadinessReportFailure::StageStatusNotSatisfied { stage, status }
+                        if stage == "connect" && status == "SATISFIED"
+                )),
+                "error should reject the non-canonical status value, got {failures:?}"
             );
         }
         other => panic!("expected unsatisfied report rejection, got {other:?}"),
@@ -819,6 +985,14 @@ fn loaded_without_live_canary(loaded: LoadedBoltV3Config) -> LoadedBoltV3Config 
 
 fn write_no_submit_report(path: &std::path::Path, stages: &[(&str, &str)]) {
     write_no_submit_report_with_stage_field(path, "stage", stages);
+}
+
+fn write_report_value(path: &std::path::Path, value: serde_json::Value) {
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&value).expect("report fixture should serialize"),
+    )
+    .expect("report fixture should be written");
 }
 
 fn write_no_submit_report_with_stage_field(
@@ -852,7 +1026,10 @@ fn write_no_submit_report_with_stage_field(
         .iter()
         .map(|(stage, status)| serde_json::json!({ stage_field: stage, "status": status }))
         .collect();
-    let report = serde_json::json!({ "stages": stages });
+    let report = serde_json::json!({
+        SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+        "stages": stages,
+    });
     std::fs::write(
         path,
         serde_json::to_string_pretty(&report).expect("report should serialize"),

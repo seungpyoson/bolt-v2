@@ -626,9 +626,9 @@ reason = "This is the fail-closed diagnostic template for a live-canary notional
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
 literal = '''"; "'''
-context = '''reasons.join("; ")'''
+context = '''.join("; ");'''
 classification = "diagnostic_separator"
-reason = "This separator joins multiple failed no-submit readiness stage diagnostics for display only."
+reason = "This separator joins multiple typed no-submit readiness failure Display strings for the aggregated UnsatisfiedNoSubmitReadinessReport diagnostic; display only."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
@@ -645,6 +645,14 @@ literal = '''"bolt-v3.no-submit-readiness.v1"'''
 context = '''pub const NO_SUBMIT_READINESS_SCHEMA_VERSION: &str = "bolt-v3.no-submit-readiness.v1";'''
 classification = "schema_version_gate"
 reason = "The no-submit readiness schema version is a structural report compatibility gate, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"schema_version"'''
+context = '''pub const SCHEMA_VERSION_KEY: &str = "schema_version";'''
+classification = "no_submit_readiness_report_schema_field"
+reason = "This names the no-submit readiness report top-level schema_version JSON key shared by the producer and fail-closed live-canary gate; it is the structural key the gate looks up to enforce version pinning, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness_schema.rs"
@@ -821,14 +829,6 @@ literal = "1"
 context = "file.take(max_length.saturating_add(1))"
 classification = "bounded_read_sentinel"
 reason = "The gate reads one byte beyond the configured cap to detect oversized reports without reading an unbounded file."
-
-[[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
-kind = "string"
-literal = '''"stages array is empty"'''
-context = '''Some(stages) if stages.is_empty() => reasons.push("stages array is empty".to_string()),'''
-classification = "live_canary_gate_diagnostic_template"
-reason = "This diagnostic distinguishes an empty no-submit readiness report from a malformed or unsatisfied report."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"

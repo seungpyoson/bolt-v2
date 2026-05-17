@@ -604,6 +604,37 @@ fn no_submit_readiness_source_has_no_trade_or_runner_tokens() {
     }
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn no_submit_readiness_serializes_top_level_schema_version_key_matching_constant() {
+    let loaded = loaded_with_test_live_canary();
+    let metadata = BoltV3NoSubmitReadinessReportMetadata::from_loaded(
+        &loaded,
+        "operator-approved-canary-001",
+        "a526e1886f1877fcce0e5c7f667c45375c1709a4",
+    )
+    .await
+    .expect("report metadata should be derived from loaded config");
+
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        metadata,
+        Ok(()),
+        Ok(()),
+        Ok(()),
+        &["secret-value".to_string()],
+    );
+    let value = serde_json::to_value(&report).expect("report should serialize");
+    let object = value
+        .as_object()
+        .expect("serialized readiness report should be a JSON object");
+
+    let top_level_keys: std::collections::BTreeSet<&str> =
+        object.keys().map(String::as_str).collect();
+    assert!(
+        top_level_keys.contains(SCHEMA_VERSION_KEY),
+        "producer must emit top-level key `{SCHEMA_VERSION_KEY}` so the live-canary gate's schema-version pin reads the same JSON key the producer writes; observed top-level keys: {top_level_keys:?}"
+    );
+}
+
 fn loaded_with_live_canary(
     loaded: LoadedBoltV3Config,
     live_canary: LiveCanaryBlock,

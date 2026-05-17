@@ -139,12 +139,21 @@ pub enum BoltV3LiveCanaryGateError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoSubmitReadinessReportFailure {
     StagesMissing,
-    StagesNotArray,
+    StagesNotArray {
+        kind: NoSubmitReadinessReportStagesNotArrayKind,
+    },
     StagesEmpty,
     StageEntryMissingStageKey,
-    StageStatusMissing { stage: String },
-    StageStatusNotSatisfied { stage: String, status: String },
-    RequiredStageMissingOrUnsatisfied { stage: String },
+    StageStatusMissing {
+        stage: String,
+    },
+    StageStatusNotSatisfied {
+        stage: String,
+        status: String,
+    },
+    RequiredStageMissingOrUnsatisfied {
+        stage: String,
+    },
 }
 
 impl std::fmt::Display for NoSubmitReadinessReportFailure {
@@ -153,8 +162,8 @@ impl std::fmt::Display for NoSubmitReadinessReportFailure {
             NoSubmitReadinessReportFailure::StagesMissing => {
                 write!(f, "stages array is missing")
             }
-            NoSubmitReadinessReportFailure::StagesNotArray => {
-                write!(f, "stages field is not an array")
+            NoSubmitReadinessReportFailure::StagesNotArray { kind } => {
+                write!(f, "stages field is not an array (got {kind})")
             }
             NoSubmitReadinessReportFailure::StagesEmpty => {
                 write!(f, "stages array is empty")
@@ -171,6 +180,27 @@ impl std::fmt::Display for NoSubmitReadinessReportFailure {
             NoSubmitReadinessReportFailure::RequiredStageMissingOrUnsatisfied { stage } => {
                 write!(f, "required stage `{stage}` is missing or unsatisfied")
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoSubmitReadinessReportStagesNotArrayKind {
+    Null,
+    Bool,
+    Number,
+    String,
+    Object,
+}
+
+impl std::fmt::Display for NoSubmitReadinessReportStagesNotArrayKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoSubmitReadinessReportStagesNotArrayKind::Null => write!(f, "null"),
+            NoSubmitReadinessReportStagesNotArrayKind::Bool => write!(f, "bool"),
+            NoSubmitReadinessReportStagesNotArrayKind::Number => write!(f, "number"),
+            NoSubmitReadinessReportStagesNotArrayKind::String => write!(f, "string"),
+            NoSubmitReadinessReportStagesNotArrayKind::Object => write!(f, "object"),
         }
     }
 }
@@ -437,48 +467,70 @@ fn validate_no_submit_readiness_report(
     let mut failures = Vec::new();
     match report.get(STAGES_KEY) {
         None => failures.push(NoSubmitReadinessReportFailure::StagesMissing),
-        Some(stages_value) => match stages_value.as_array() {
-            None => failures.push(NoSubmitReadinessReportFailure::StagesNotArray),
-            Some(stages) if stages.is_empty() => {
-                failures.push(NoSubmitReadinessReportFailure::StagesEmpty)
-            }
-            Some(stages) => {
-                let mut present_stage_names = std::collections::BTreeSet::new();
-                let mut satisfied_stage_names = std::collections::BTreeSet::new();
-                for stage in stages {
-                    let Some(name) = stage.get(STAGE_KEY).and_then(Value::as_str) else {
-                        failures.push(NoSubmitReadinessReportFailure::StageEntryMissingStageKey);
-                        continue;
-                    };
-                    present_stage_names.insert(name.to_string());
-                    match stage.get(STATUS_KEY).and_then(Value::as_str) {
-                        None => failures.push(NoSubmitReadinessReportFailure::StageStatusMissing {
+        Some(serde_json::Value::Null) => {
+            failures.push(NoSubmitReadinessReportFailure::StagesNotArray {
+                kind: NoSubmitReadinessReportStagesNotArrayKind::Null,
+            })
+        }
+        Some(serde_json::Value::Bool(_)) => {
+            failures.push(NoSubmitReadinessReportFailure::StagesNotArray {
+                kind: NoSubmitReadinessReportStagesNotArrayKind::Bool,
+            })
+        }
+        Some(serde_json::Value::Number(_)) => {
+            failures.push(NoSubmitReadinessReportFailure::StagesNotArray {
+                kind: NoSubmitReadinessReportStagesNotArrayKind::Number,
+            })
+        }
+        Some(serde_json::Value::String(_)) => {
+            failures.push(NoSubmitReadinessReportFailure::StagesNotArray {
+                kind: NoSubmitReadinessReportStagesNotArrayKind::String,
+            })
+        }
+        Some(serde_json::Value::Object(_)) => {
+            failures.push(NoSubmitReadinessReportFailure::StagesNotArray {
+                kind: NoSubmitReadinessReportStagesNotArrayKind::Object,
+            })
+        }
+        Some(serde_json::Value::Array(stages)) if stages.is_empty() => {
+            failures.push(NoSubmitReadinessReportFailure::StagesEmpty)
+        }
+        Some(serde_json::Value::Array(stages)) => {
+            let mut present_stage_names = std::collections::BTreeSet::new();
+            let mut satisfied_stage_names = std::collections::BTreeSet::new();
+            for stage in stages {
+                let Some(name) = stage.get(STAGE_KEY).and_then(Value::as_str) else {
+                    failures.push(NoSubmitReadinessReportFailure::StageEntryMissingStageKey);
+                    continue;
+                };
+                present_stage_names.insert(name.to_string());
+                match stage.get(STATUS_KEY).and_then(Value::as_str) {
+                    None => failures.push(NoSubmitReadinessReportFailure::StageStatusMissing {
+                        stage: name.to_string(),
+                    }),
+                    Some(status) if status == STATUS_SATISFIED => {
+                        satisfied_stage_names.insert(name.to_string());
+                    }
+                    Some(status) => {
+                        failures.push(NoSubmitReadinessReportFailure::StageStatusNotSatisfied {
                             stage: name.to_string(),
-                        }),
-                        Some(status) if status == STATUS_SATISFIED => {
-                            satisfied_stage_names.insert(name.to_string());
-                        }
-                        Some(status) => {
-                            failures.push(NoSubmitReadinessReportFailure::StageStatusNotSatisfied {
-                                stage: name.to_string(),
-                                status: status.to_string(),
-                            })
-                        }
-                    }
-                }
-                for required_stage in REQUIRED_NO_SUBMIT_READINESS_STAGES {
-                    if !present_stage_names.contains(*required_stage)
-                        && !satisfied_stage_names.contains(*required_stage)
-                    {
-                        failures.push(
-                            NoSubmitReadinessReportFailure::RequiredStageMissingOrUnsatisfied {
-                                stage: (*required_stage).to_string(),
-                            },
-                        );
+                            status: status.to_string(),
+                        })
                     }
                 }
             }
-        },
+            for required_stage in REQUIRED_NO_SUBMIT_READINESS_STAGES {
+                if !present_stage_names.contains(*required_stage)
+                    && !satisfied_stage_names.contains(*required_stage)
+                {
+                    failures.push(
+                        NoSubmitReadinessReportFailure::RequiredStageMissingOrUnsatisfied {
+                            stage: (*required_stage).to_string(),
+                        },
+                    );
+                }
+            }
+        }
     }
 
     if failures.is_empty() {

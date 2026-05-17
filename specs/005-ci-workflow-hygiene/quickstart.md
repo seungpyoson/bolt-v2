@@ -17,7 +17,7 @@ Expected result after implementation: all commands pass.
 ```bash
 rg -n "fmt-check:|needs:|include-managed-target-dir|deploy:|check-aarch64|source-fence|test-shards|taiki-e/install-action|fallback: none|cargo-zigbuild-x86_64-unknown-linux-gnu|needs\\.(detector|fmt-check|deny|clippy|check-aarch64|source-fence|test|build)\\.result" .github/workflows/ci.yml
 rg -n "advisories:|taiki-e/install-action|fallback: none|cargo-deny" .github/workflows/advisory.yml
-rg -n "cargo install cargo-(deny|nextest|zigbuild)" .github/workflows/ci.yml .github/workflows/advisory.yml
+rg -n "cargo(\\s+\\+[A-Za-z0-9_.-]+)?\\s+.*\\binstall\\b.*(cargo-(deny|nextest|zigbuild)|cargo-(deny|nextest|zigbuild)@|--git|--path)|sudo\\s+.*cargo\\s+.*\\binstall\\b|env\\s+.*cargo\\s+.*\\binstall\\b" .github/workflows/ci.yml .github/workflows/advisory.yml
 ```
 
 Expected evidence:
@@ -30,7 +30,7 @@ Expected evidence:
 - `cargo-deny` and `cargo-nextest` use pinned `taiki-e/install-action` with `fallback: none`.
 - `advisory.yml` uses the same pinned `cargo-deny` prebuilt install path with `fallback: none`.
 - `cargo-zigbuild` installs from the pinned-version release archive and verifies the archive checksum before extraction.
-- The raw `cargo install cargo-(deny|nextest|zigbuild)` scan returns no workflow matches.
+- The raw source-build scan returns no workflow matches for direct, toolchain-prefixed, crate-version, `--git`, `--path`, sudo-prefixed, or env-prefixed `cargo install` forms.
 
 ## Verification Gate
 

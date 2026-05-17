@@ -457,6 +457,7 @@ pub enum Phase8CanaryOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Phase8LiveOrderRef {
+    pub strategy_instance_id_hash: String,
     pub client_order_id_hash: String,
     pub venue_order_id_hash: String,
 }
@@ -502,6 +503,7 @@ pub struct Phase8CanaryEvidenceInput {
     pub ssm_manifest_sha256: String,
     pub ssm_manifest_ref: Phase8EvidenceRef,
     pub strategy_input_evidence_ref: Phase8EvidenceRef,
+    pub approved_strategy_instance_id_hash: String,
     pub approval_id: String,
     pub max_live_order_count: u32,
     pub max_notional_per_order: Decimal,
@@ -590,6 +592,11 @@ impl Phase8CanaryEvidence {
         validate_phase8_canary_input(&input)?;
         validate_phase8_evidence_ref(stringify!(decision_evidence_ref), &decision_evidence_ref)?;
         validate_phase8_live_order_ref(&live_order_ref)?;
+        if live_order_ref.strategy_instance_id_hash != input.approved_strategy_instance_id_hash {
+            return Err(anyhow!(
+                "phase8 live canary proof live_order_ref.strategy_instance_id_hash does not match approved financial envelope"
+            ));
+        }
         validate_phase8_evidence_ref(
             stringify!(nt_submit_event_ref),
             &result_refs.nt_submit_event_ref,
@@ -976,6 +983,10 @@ fn validate_phase8_canary_input(input: &Phase8CanaryEvidenceInput) -> Result<()>
         &input.strategy_input_evidence_ref,
         &input.runtime_capture_ref,
     )?;
+    validate_phase8_sha256_field(
+        stringify!(approved_strategy_instance_id_hash),
+        &input.approved_strategy_instance_id_hash,
+    )?;
     if input.max_live_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP {
         return Err(anyhow!(
             "phase8 live canary proof {} expected {PHASE8_REQUIRED_LIVE_ORDER_CAP} got {}",
@@ -1026,6 +1037,11 @@ fn validate_phase8_evidence_ref(
 }
 
 fn validate_phase8_live_order_ref(live_order_ref: &Phase8LiveOrderRef) -> Result<()> {
+    validate_phase8_nested_sha256_field(
+        stringify!(live_order_ref),
+        stringify!(strategy_instance_id_hash),
+        &live_order_ref.strategy_instance_id_hash,
+    )?;
     validate_phase8_nested_sha256_field(
         stringify!(live_order_ref),
         stringify!(client_order_id_hash),
@@ -1255,6 +1271,12 @@ impl Phase8OperatorApprovalEnvelope {
             "phase8 financial envelope",
             "phase8 operator approval financial_envelope_sha256 does not match current financial envelope",
         )
+    }
+
+    pub fn approved_strategy_instance_id_hash(&self) -> Result<String> {
+        Ok(sha256_text(
+            &self.read_financial_envelope()?.strategy_instance_id,
+        ))
     }
 
     fn validate_approval_window(&self, current_unix_seconds: i64) -> Result<()> {

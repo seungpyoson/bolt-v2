@@ -1031,6 +1031,8 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
                 .to_string(),
         },
         Phase8LiveOrderRef {
+            strategy_instance_id_hash:
+                "1212121212121212121212121212121212121212121212121212121212121212".to_string(),
             client_order_id_hash:
                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
             venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
@@ -1130,6 +1132,8 @@ fn live_canary_evidence_rejects_unconsumed_submit_admission_count() {
                 .to_string(),
         },
         Phase8LiveOrderRef {
+            strategy_instance_id_hash:
+                "1212121212121212121212121212121212121212121212121212121212121212".to_string(),
             client_order_id_hash:
                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
             venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
@@ -1203,6 +1207,8 @@ fn live_canary_evidence_rejects_malformed_result_refs() {
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
         Phase8LiveOrderRef {
+            strategy_instance_id_hash:
+                "1212121212121212121212121212121212121212121212121212121212121212".to_string(),
             client_order_id_hash: String::new(),
             venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
                 .to_string(),
@@ -1217,6 +1223,27 @@ fn live_canary_evidence_rejects_malformed_result_refs() {
             .to_string()
             .contains("live_order_ref.client_order_id_hash"),
         "error should mention malformed live order client hash: {error}"
+    );
+}
+
+#[test]
+fn live_canary_evidence_rejects_order_from_unapproved_strategy() {
+    let mut live_order_ref = valid_live_order_ref();
+    live_order_ref.strategy_instance_id_hash =
+        "3434343434343434343434343434343434343434343434343434343434343434".to_string();
+
+    let error = Phase8CanaryEvidence::live_canary_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+        live_order_ref,
+        valid_live_canary_result_refs(),
+        1,
+    )
+    .expect_err("live order from an unapproved strategy must not produce canary proof");
+
+    assert!(
+        error.to_string().contains("strategy_instance_id_hash"),
+        "error should mention mismatched strategy id hash: {error}"
     );
 }
 
@@ -2750,6 +2777,8 @@ fn valid_evidence_ref(path_prefix: &str, record_prefix: &str) -> Phase8EvidenceR
 
 fn valid_live_order_ref() -> Phase8LiveOrderRef {
     Phase8LiveOrderRef {
+        strategy_instance_id_hash:
+            "1212121212121212121212121212121212121212121212121212121212121212".to_string(),
         client_order_id_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             .to_string(),
         venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
@@ -2786,6 +2815,8 @@ fn evidence_input() -> bolt_v2::bolt_v3_tiny_canary_evidence::Phase8CanaryEviden
             record_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_string(),
         },
+        approved_strategy_instance_id_hash:
+            "1212121212121212121212121212121212121212121212121212121212121212".to_string(),
         approval_id: "operator-approved-canary-001".to_string(),
         max_live_order_count: 1,
         max_notional_per_order: Decimal::new(25, 2),

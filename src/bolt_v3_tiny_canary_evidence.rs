@@ -261,6 +261,7 @@ impl Phase8StrategyInputSafetyAudit {
         );
         audit.block_if(
             raw.selected_market_observed_timestamp == u64::MIN
+                || raw.market_selection_timestamp_milliseconds == u64::MIN
                 || raw.polymarket_market_start_timestamp_milliseconds == u64::MIN
                 || raw.polymarket_market_end_timestamp_milliseconds
                     <= raw.polymarket_market_start_timestamp_milliseconds,

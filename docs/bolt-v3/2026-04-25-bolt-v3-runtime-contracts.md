@@ -451,7 +451,7 @@ Definitions:
 - `selected_market_observed_timestamp` = the timestamp when the selected market facts were observed
 - `price_to_beat_value` = decoded Chainlink Data Streams benchmark price from `GET /api/v1/reports?feedID=<feed_id>&timestamp=<boundary_unix>`
 - `price_to_beat_observed_timestamp` = the timestamp when `price_to_beat_value` was observed
-- `price_to_beat_source` current launch-scope value:
+- `price_to_beat_source` is configured by `[parameters.runtime].price_to_beat_source`; current launch-scope value:
   - `chainlink_data_streams.report_at_boundary`
 
 Boundary:
@@ -586,7 +586,7 @@ For the current `binary_oracle_edge_taker`, the reference stream and pricing inp
   - if the latest quote tick does not contain both sides, midpoint is unavailable
   - if the latest midpoint sample is older than `target.retry_interval_seconds` seconds, the reference quote is stale
 - `price_to_beat_source`
-  - `chainlink_data_streams.report_at_boundary`
+  - must match `[parameters.runtime].price_to_beat_source`
 
 There is no fallback from missing price-to-beat metadata to midpoint.
 
@@ -995,7 +995,7 @@ Definitions for the current `binary_oracle_edge_taker` metrics:
 For the current `binary_oracle_edge_taker`, all listed metric keys must be present.
 When `entry_decision` is `no_action`, values available at evaluation time must be non-null, and unavailable values must be serialized as explicit null rather than omitted or synthesized.
 
-Allowed `price_to_beat_source` values:
+Configured `price_to_beat_source` value for the current launch scope:
 
 - `chainlink_data_streams.report_at_boundary`
 

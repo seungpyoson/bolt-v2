@@ -30,6 +30,7 @@ vol_window_secs = 600
 vol_gap_reset_secs = 60
 vol_min_observations = 5
 vol_bridge_valid_secs = 30
+price_to_beat_source = "chainlink_data_streams.report_at_boundary"
 pricing_kurtosis = 3.0
 theta_decay_factor = 1.0
 forced_flat_stale_chainlink_ms = 10000

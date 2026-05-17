@@ -158,6 +158,12 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
     );
     assert_eq!(
         table
+            .get("price_to_beat_source")
+            .and_then(|value| value.as_str()),
+        Some("chainlink_data_streams.report_at_boundary")
+    );
+    assert_eq!(
+        table
             .get("period_duration_secs")
             .and_then(|value| value.as_integer()),
         Some(300)

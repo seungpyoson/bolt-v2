@@ -619,6 +619,129 @@ This section is optional for parse/build-only checks and required before `run_bo
 - must be less than or equal to `risk.default_max_notional_per_order`
 - the run gate does not submit orders; submit-admission code must consume this bound before any live submit
 
+### Phase 8 operator-harness evidence envelope
+
+The `[live_canary]` TOML block is necessary but not sufficient for the one tiny-capital canary operator harness. Before live runner entry, the ignored Phase 8 harness also requires an operator-supplied evidence envelope through these environment fields. Values are evidence paths, sha256s, timestamps, or hashed identifiers; do not put secret values in these fields.
+
+#### Approval and preflight fields
+
+- `BOLT_V3_PHASE8_HEAD_SHA`: exact commit SHA approved for the attempt
+- `BOLT_V3_PHASE8_ROOT_TOML_PATH`: approved root TOML path
+- `BOLT_V3_PHASE8_ROOT_TOML_SHA256`: sha256 of the approved root TOML
+- `BOLT_V3_PHASE8_SSM_MANIFEST_PATH`: redacted SSM path manifest evidence
+- `BOLT_V3_PHASE8_SSM_MANIFEST_SHA256`: sha256 of the redacted SSM manifest evidence
+- `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH`: strategy-input safety evidence path
+- `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256`: sha256 of the strategy-input safety evidence
+- When strategy input evidence reports `market_selection_outcome = "next"`, it must also include `market_selection_source_path` and `market_selection_source_sha256` for a `market_selection_result` artifact with `source = "nt_runtime_selection_snapshot"`. The audit derives nearest-next candidates from that source-bound artifact and rejects a self-reported or truncated candidate list.
+- `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH`: financial-envelope evidence path
+- `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256`: sha256 of the financial-envelope evidence
+- `BOLT_V3_PHASE8_PRE_RUN_STATE_PATH`: pre-run host/account/market/funding/runner/egress state evidence path
+- `BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256`: sha256 of the pre-run state evidence
+- The pre-run state evidence JSON must include sha256 bindings for the host clock-skew proof, venue account-state proof, market-state proof, funding/margin proof, single-runner lock proof, egress-identity proof, CLOB V2 signing/collateral/fee proofs, and release-manifest proof.
+- `BOLT_V3_PHASE8_ABORT_PLAN_PATH`: operator abort/panic plan evidence path
+- `BOLT_V3_PHASE8_ABORT_PLAN_SHA256`: sha256 of the abort/panic plan evidence
+- `BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID`: explicit operator approval identifier
+- `BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS`: earliest allowed approval-consumption time
+- `BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS`: latest allowed approval-consumption time; must be greater than `BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS`
+- `BOLT_V3_PHASE8_APPROVAL_NONCE_PATH`: one-shot approval nonce evidence path
+- `BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256`: sha256 of the approval nonce evidence
+- `BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH`: path atomically created when the approval is consumed
+- `BOLT_V3_PHASE8_EVIDENCE_PATH`: redacted canary evidence output path
+- The evidence writer rejects live-order proof serialization if `live_order_ref.strategy_instance_id_hash` no longer matches the approved strategy-instance hash derived from the financial envelope.
+
+#### Live-result fields
+
+- `BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH`: persisted decision evidence proof path under the NT runtime capture spool
+- `BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH`: client order identifier hash
+- `BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH`: venue order identifier hash
+- `BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH`: NT submit-event evidence path
+- `BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH`: venue accept/fill/reject evidence path
+- `BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH`: optional strategy-driven cancel evidence path when an order remains open
+- `BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH`: restart reconciliation evidence path
+- `BOLT_V3_PHASE8_POST_RUN_HYGIENE_PATH`: post-run raw-secret residue scan and retention/purge evidence path
+
+#### Phase 8 artifact JSON schemas
+
+All Phase 8 operator JSON artifacts are strict: unknown fields reject before live runner entry. String fields named `*_hash`, `*_sha256`, or `*_id_hash` are lowercase hex sha256 values unless stated otherwise. Decimal values are encoded as strings so operator-approved precision is preserved exactly.
+
+`strategy_input_evidence` fields:
+
+- `realized_volatility`: decimal string, positive
+- `seconds_to_expiry`: integer seconds, positive
+- `spot_price`: decimal string, positive
+- `price_to_beat_value`: decimal string, positive
+- `expected_edge_basis_points`: decimal string, positive and equal to `worst_case_edge_basis_points`
+- `worst_case_edge_basis_points`: decimal string, positive and equal to `expected_edge_basis_points`
+- `fee_rate_basis_points`: decimal string, zero or positive
+- `price_to_beat_source`: string, must equal the approved `[parameters.runtime].price_to_beat_source`
+- `reference_quote_ts_event`: integer timestamp, non-zero
+- `pricing_kurtosis`: decimal string, greater than `-6`
+- `theta_decay_factor`: decimal string, zero or positive
+- `theta_scaled_min_edge_bps`: decimal string, positive
+- `market_selection_timestamp_milliseconds`: integer milliseconds
+- `candidate_market_start_timestamps_milliseconds`: optional integer-millisecond list, retained for evidence but not trusted for nearest-next approval
+- `market_selection_source_path`: required path when `market_selection_outcome = "next"`
+- `market_selection_source_sha256`: required sha256 when `market_selection_outcome = "next"`
+- `market_selection_outcome`: string enum, `current` or `next`
+- `polymarket_condition_id`, `polymarket_market_slug`, `polymarket_question_id`, `up_instrument_id`, `down_instrument_id`: selected-market identifiers
+- `selected_market_observed_timestamp`: integer timestamp, non-zero
+- `polymarket_market_start_timestamp_milliseconds`, `polymarket_market_end_timestamp_milliseconds`: integer milliseconds, selected start must precede selected end
+
+`market_selection_result` source artifact fields:
+
+- `record_kind`: string, `market_selection_result`
+- `source`: string, `nt_runtime_selection_snapshot`
+- `market_selection_timestamp_milliseconds`: integer milliseconds matching strategy-input evidence
+- `candidate_market_start_timestamps_milliseconds`: non-empty integer-millisecond list used for nearest-next approval
+- `market_selection_outcome`: string enum, must match strategy-input evidence
+- `polymarket_condition_id`, `polymarket_market_slug`, `polymarket_question_id`, `up_instrument_id`, `down_instrument_id`: selected-market identifiers matching strategy-input evidence
+- `selected_market_observed_timestamp`: integer timestamp matching strategy-input evidence
+- `polymarket_market_start_timestamp_milliseconds`, `polymarket_market_end_timestamp_milliseconds`: integer milliseconds matching strategy-input evidence
+
+`financial_envelope` fields:
+
+- `max_live_order_count`: integer, must equal `1`
+- `max_notional_per_order`: decimal string matching `[live_canary].max_notional_per_order`
+- `strategy_instance_id`, `strategy_venue`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`: strings matching the loaded strategy/TOML
+- `cadence_seconds`, `retry_interval_seconds`, `blocked_after_seconds`: integer seconds matching the loaded target runtime
+- `market_selection_rule`: string matching the loaded target runtime
+- `price_to_beat_source`: string matching `[parameters.runtime].price_to_beat_source`
+- `edge_threshold_basis_points`: integer matching loaded strategy parameters
+- `order_notional_target`, `maximum_position_notional`: decimal strings matching loaded strategy parameters
+- `book_impact_cap_bps`: integer matching `[parameters.runtime].book_impact_cap_bps`
+- `entry_order_type`, `entry_time_in_force`, `exit_order_type`, `exit_time_in_force`: strings matching loaded order parameters
+- `entry_is_post_only`, `entry_is_reduce_only`, `entry_is_quote_quantity`, `exit_is_post_only`, `exit_is_reduce_only`, `exit_is_quote_quantity`: booleans matching loaded order parameters
+
+`pre_run_state` fields:
+
+- `strategy_venue`, `configured_target_id`: strings matching the financial envelope
+- `host_clock_skew_within_bound`, `conflicting_open_orders_absent`, `preexisting_position_absent`, `market_state_approved`, `market_window_approved`, `funding_margin_covers_max_notional_plus_fees`, `single_runner_lock_acquired`, `egress_identity_approved`, `clob_v2_adapter_signing_verified`, `clob_v2_collateral_accounting_verified`, `clob_v2_fee_behavior_verified`, `release_manifest_nt_revision_matches_compiled_pin`: booleans, all must be `true`
+- `host_clock_skew_evidence_hash`, `venue_account_state_evidence_hash`, `market_state_evidence_hash`, `funding_margin_evidence_hash`, `single_runner_lock_evidence_hash`, `egress_identity_evidence_hash`, `clob_v2_adapter_signing_evidence_hash`, `clob_v2_collateral_accounting_evidence_hash`, `clob_v2_fee_behavior_evidence_hash`, `release_manifest_evidence_hash`: sha256 bindings to operator-held evidence artifacts
+- `release_manifest_clob_signing_version`: non-empty string for the CLOB V2 signing release proof
+
+`abort_plan` fields:
+
+- `strategy_venue`, `configured_target_id`: strings matching the financial envelope
+- `cancel_if_open_defined`, `nt_accepted_venue_pending_abort_defined`, `partial_fill_abort_defined`, `network_partition_during_submit_abort_defined`, `panic_gate_trip_abort_defined`: booleans, all must be `true`
+
+Live-result proof JSON files:
+
+- `decision_evidence`, `nt_submit_event`, `venue_order_state`, `strategy_cancel`, and `restart_reconciliation` proofs include `record_kind` set to the matching proof name.
+- `decision_evidence` must include `run_id` and `strategy_instance_id_hash`, and its path must be under the NT runtime capture spool.
+- `nt_submit_event` must include `run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, and `venue_order_id_hash`.
+- `venue_order_state` must include `run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, `venue_order_id_hash`, `venue_order_outcome`, and `order_remains_open`; `venue_order_outcome` is `accepted`, `filled`, or `rejected`, and terminal outcomes require `order_remains_open = false`.
+- `strategy_cancel` is required when `venue_order_state.order_remains_open = true` and includes `run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, and `venue_order_id_hash`.
+- `restart_reconciliation` must include `source_run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, `venue_order_id_hash`, `venue_order_outcome`, and `order_remains_open`; `venue_order_outcome` must be terminal (`filled` or `rejected`), `order_remains_open` must be `false`, and its path must be under the NT runtime capture spool.
+
+`post_run_hygiene` fields:
+
+- `record_kind`: string, `post_run_hygiene`
+- `run_id`: runtime capture run id
+- `strategy_instance_id_hash`, `client_order_id_hash`, `venue_order_id_hash`: approved live-order hashes
+- `raw_secret_residue_absent`: boolean, must be `true`
+- `scanned_artifact_hashes`: non-empty list of sha256 values for scanned artifacts
+- `retention_purge_path_hash`: sha256 binding for the retention/purge path proof
+
 ### `[aws]`
 
 #### `region`
@@ -886,6 +1009,25 @@ is_quote_quantity = false
 edge_threshold_basis_points = 100
 order_notional_target = "5.00"
 maximum_position_notional = "10.00"
+
+[parameters.runtime]
+reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-001"
+warmup_tick_count = 20
+reentry_cooldown_secs = 30
+book_impact_cap_bps = 50
+risk_lambda = 0.5
+exit_hysteresis_bps = 25
+vol_window_secs = 600
+vol_gap_reset_secs = 60
+vol_min_observations = 5
+vol_bridge_valid_secs = 30
+price_to_beat_source = "chainlink_data_streams.report_at_boundary"
+pricing_kurtosis = 3.0
+theta_decay_factor = 1.0
+forced_flat_stale_chainlink_ms = 10000
+forced_flat_thin_book_min_liquidity = 5.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250
 ```
 
 ## 7. Strategy File: Field Semantics
@@ -1152,6 +1294,34 @@ For the current `binary_oracle_edge_taker` archetype:
 - fees are not included in this cap
 - runtime capacity computation is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 7.3
 
+#### `[parameters.runtime]`
+
+- type: table
+- required for `binary_oracle_edge_taker`
+- all fields are required and unknown fields are rejected
+- runtime strategy configuration consumed by the Rust strategy registration path
+- `book_impact_cap_bps` is also bound into the Phase 8 financial-envelope evidence and must match the loaded TOML before a tiny-capital canary proof can be written
+
+Runtime fields:
+
+- `reference_publish_topic`: string; reference-data topic consumed by the runtime strategy
+- `warmup_tick_count`: unsigned integer; fresh-reference warmup count before entry is allowed
+- `reentry_cooldown_secs`: unsigned integer; cooldown after an entry attempt
+- `book_impact_cap_bps`: unsigned integer; maximum allowed book-impact basis points for order construction and Phase 8 financial-envelope proof
+- `risk_lambda`: float; sizing risk coefficient
+- `exit_hysteresis_bps`: integer; exit hysteresis threshold
+- `vol_window_secs`: unsigned integer; realized-volatility window
+- `vol_gap_reset_secs`: unsigned integer; gap that resets volatility history
+- `vol_min_observations`: unsigned integer; minimum observations before volatility is live
+- `vol_bridge_valid_secs`: unsigned integer; maximum bridge age for volatility input
+- `price_to_beat_source`: string; configured source identifier that Phase 8 strategy-input evidence must match through the financial envelope
+- `pricing_kurtosis`: float; kurtosis input for binary-oracle pricing
+- `theta_decay_factor`: float; non-negative theta decay multiplier
+- `forced_flat_stale_chainlink_ms`: unsigned integer; Chainlink staleness forced-flat threshold
+- `forced_flat_thin_book_min_liquidity`: float; thin-book forced-flat liquidity threshold
+- `lead_agreement_min_corr`: float; minimum lead-market agreement correlation
+- `lead_jitter_max_ms`: unsigned integer; maximum lead-market jitter
+
 ## 8. Validation Rules
 
 ### Structural validation
@@ -1398,4 +1568,23 @@ is_quote_quantity = false
 edge_threshold_basis_points = 100
 order_notional_target = "5.00"
 maximum_position_notional = "10.00"
+
+[parameters.runtime]
+reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-001"
+warmup_tick_count = 20
+reentry_cooldown_secs = 30
+book_impact_cap_bps = 50
+risk_lambda = 0.5
+exit_hysteresis_bps = 25
+vol_window_secs = 600
+vol_gap_reset_secs = 60
+vol_min_observations = 5
+vol_bridge_valid_secs = 30
+price_to_beat_source = "chainlink_data_streams.report_at_boundary"
+pricing_kurtosis = 3.0
+theta_decay_factor = 1.0
+forced_flat_stale_chainlink_ms = 10000
+forced_flat_thin_book_min_liquidity = 5.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250
 ```

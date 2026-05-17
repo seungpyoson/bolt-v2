@@ -179,6 +179,7 @@ fn strategy_raw_config() -> Value {
         vol_gap_reset_secs = 10
         vol_min_observations = 1
         vol_bridge_valid_secs = 10
+        price_to_beat_source = "chainlink_data_streams.report_at_boundary"
         pricing_kurtosis = 0.0
         theta_decay_factor = 0.0
         forced_flat_stale_chainlink_ms = 1500

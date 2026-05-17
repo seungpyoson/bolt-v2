@@ -224,6 +224,7 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
         serde_json::json!({
             "record_kind": "post_run_hygiene",
             "run_id": run_id,
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "raw_secret_residue_absent": true,
@@ -368,6 +369,7 @@ fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
         serde_json::json!({
             "record_kind": "post_run_hygiene",
             "run_id": run_id,
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "raw_secret_residue_absent": true,
@@ -483,6 +485,7 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
         serde_json::json!({
             "record_kind": "post_run_hygiene",
             "run_id": run_id,
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "raw_secret_residue_absent": true,
@@ -511,6 +514,108 @@ fn write_json_proof(path: &Path, value: serde_json::Value) {
         serde_json::to_vec(&value).expect("proof should serialize"),
     )
     .expect("proof should write");
+}
+
+#[test]
+fn live_result_paths_reject_unapproved_post_run_hygiene_strategy_hash() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let run_id = "phase8-live-run-001";
+    let approved_strategy_hash = phase8_sha256_text("bitcoin_updown_main");
+    let unapproved_strategy_hash = phase8_sha256_text("bitcoin_updown_secondary");
+    let client_order_id_hash = "c".repeat(64);
+    let venue_order_id_hash = "d".repeat(64);
+    let scanned_hash = "e".repeat(64);
+    let retention_hash = "f".repeat(64);
+    let decision_path = temp.path().join("decision.json");
+    let nt_submit_path = temp.path().join("nt-submit.json");
+    let venue_state_path = temp.path().join("venue-state.json");
+    let restart_path = temp.path().join("restart.json");
+    let post_hygiene_path = temp.path().join("post-hygiene.json");
+    let paths = Phase8OperatorLiveResultPaths {
+        decision_evidence_path: decision_path.to_string_lossy().to_string(),
+        client_order_id_hash: client_order_id_hash.clone(),
+        venue_order_id_hash: venue_order_id_hash.clone(),
+        nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
+        venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: restart_path.to_string_lossy().to_string(),
+        post_run_hygiene_path: post_hygiene_path.to_string_lossy().to_string(),
+    };
+
+    write_json_proof(&decision_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&nt_submit_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&venue_state_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&restart_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({"record_kind": "old"}),
+    );
+    let snapshot = paths
+        .snapshot_before_run()
+        .expect("pre-run snapshot should hash existing proof files");
+
+    write_json_proof(
+        &decision_path,
+        serde_json::json!({
+            "record_kind": "decision_evidence",
+            "run_id": run_id,
+            "strategy_instance_id_hash": approved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &nt_submit_path,
+        serde_json::json!({
+            "record_kind": "nt_submit_event",
+            "run_id": run_id,
+            "strategy_instance_id_hash": approved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &venue_state_path,
+        serde_json::json!({
+            "record_kind": "venue_order_state",
+            "run_id": run_id,
+            "strategy_instance_id_hash": approved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        }),
+    );
+    write_json_proof(
+        &restart_path,
+        serde_json::json!({
+            "record_kind": "restart_reconciliation",
+            "source_run_id": run_id,
+            "strategy_instance_id_hash": approved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": run_id,
+            "strategy_instance_id_hash": unapproved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "raw_secret_residue_absent": true,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }),
+    );
+
+    let error = paths
+        .to_refs(&snapshot, run_id, &approved_strategy_hash)
+        .expect_err("unapproved post-run hygiene strategy proof must fail");
+
+    assert!(
+        error.to_string().contains("strategy_instance_id_hash"),
+        "error should mention strategy hash mismatch: {error}"
+    );
 }
 
 #[test]
@@ -600,6 +705,7 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "post_run_hygiene",
             "run_id": run_id,
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "raw_secret_residue_absent": true,
@@ -632,6 +738,7 @@ fn phase8_post_run_hygiene_proof_requires_secret_scan_and_retention() {
         serde_json::to_vec(&serde_json::json!({
             "record_kind": "post_run_hygiene",
             "run_id": "phase8-run-001",
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_hash,
             "venue_order_id_hash": venue_hash
         }))
@@ -641,6 +748,7 @@ fn phase8_post_run_hygiene_proof_requires_secret_scan_and_retention() {
     let missing_scan_error = phase8_assert_post_run_hygiene_proof(
         proof_path.to_str().expect("proof path should be utf8"),
         "phase8-run-001",
+        &phase8_sha256_text("bitcoin_updown_main"),
         &client_hash,
         &venue_hash,
     )
@@ -657,6 +765,7 @@ fn phase8_post_run_hygiene_proof_requires_secret_scan_and_retention() {
         serde_json::to_vec(&serde_json::json!({
             "record_kind": "post_run_hygiene",
             "run_id": "phase8-run-001",
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_hash,
             "venue_order_id_hash": venue_hash,
             "raw_secret_residue_absent": false,
@@ -669,6 +778,7 @@ fn phase8_post_run_hygiene_proof_requires_secret_scan_and_retention() {
     let residue_error = phase8_assert_post_run_hygiene_proof(
         proof_path.to_str().expect("proof path should be utf8"),
         "phase8-run-001",
+        &phase8_sha256_text("bitcoin_updown_main"),
         &client_hash,
         &venue_hash,
     )
@@ -685,6 +795,7 @@ fn phase8_post_run_hygiene_proof_requires_secret_scan_and_retention() {
         serde_json::to_vec(&serde_json::json!({
             "record_kind": "post_run_hygiene",
             "run_id": "phase8-run-001",
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_hash,
             "venue_order_id_hash": venue_hash,
             "raw_secret_residue_absent": true,
@@ -697,6 +808,7 @@ fn phase8_post_run_hygiene_proof_requires_secret_scan_and_retention() {
     phase8_assert_post_run_hygiene_proof(
         proof_path.to_str().expect("proof path should be utf8"),
         "phase8-run-001",
+        &phase8_sha256_text("bitcoin_updown_main"),
         &client_hash,
         &venue_hash,
     )
@@ -1169,6 +1281,7 @@ impl Phase8OperatorLiveResultPaths {
         phase8_assert_post_run_hygiene_proof(
             &self.post_run_hygiene_path,
             run_id,
+            expected_strategy_instance_id_hash,
             &self.client_order_id_hash,
             &self.venue_order_id_hash,
         )
@@ -1295,6 +1408,7 @@ fn phase8_read_post_run_hygiene_proof(path: &str) -> anyhow::Result<Phase8PostRu
 fn phase8_assert_post_run_hygiene_proof(
     path: &str,
     expected_run_id: &str,
+    expected_strategy_instance_id_hash: &str,
     expected_client_order_id_hash: &str,
     expected_venue_order_id_hash: &str,
 ) -> anyhow::Result<()> {
@@ -1303,7 +1417,7 @@ fn phase8_assert_post_run_hygiene_proof(
         "post_run_hygiene",
         Some(expected_run_id),
         None,
-        None,
+        Some(expected_strategy_instance_id_hash),
         Some(expected_client_order_id_hash),
         Some(expected_venue_order_id_hash),
     )?;

@@ -263,6 +263,10 @@ fn polymarket_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
         data.auto_load_missing_instruments,
         expected_data.auto_load_missing_instruments
     );
+    assert_eq!(
+        data.auto_load_debounce_ms,
+        expected_data.auto_load_debounce_milliseconds
+    );
     assert_eq!(data.transport_backend, expected_data.transport_backend);
 
     let exec = polymarket

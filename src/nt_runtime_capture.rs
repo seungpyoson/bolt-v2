@@ -244,15 +244,7 @@ impl NtRuntimeCaptureGuards {
             }
         }
 
-        match (self.failure_state.error_message(), join_error) {
-            (Some(primary), Some(secondary)) => {
-                log::error!("NT runtime capture secondary error: {secondary}");
-                Err(anyhow!(primary))
-            }
-            (Some(primary), None) => Err(anyhow!(primary)),
-            (None, Some(error)) => Err(error),
-            (None, None) => Ok(()),
-        }
+        classify_capture_shutdown_result(self.failure_state.error_message(), join_error)
     }
 
     fn unsubscribe_all(&mut self) {
@@ -278,6 +270,21 @@ impl NtRuntimeCaptureGuards {
                 &any.trading_state_changed,
             );
         }
+    }
+}
+
+fn classify_capture_shutdown_result(
+    failure_message: Option<String>,
+    join_error: Option<anyhow::Error>,
+) -> Result<()> {
+    match (failure_message, join_error) {
+        (Some(primary), Some(secondary)) => {
+            log::error!("NT runtime capture secondary error: {secondary}");
+            Err(anyhow!(primary))
+        }
+        (Some(primary), None) => Err(anyhow!(primary)),
+        (None, Some(error)) => Err(error),
+        (None, None) => Ok(()),
     }
 }
 
@@ -1007,6 +1014,44 @@ mod tests {
         state.record_failure("failure");
 
         receiver.await.unwrap();
+    }
+
+    #[test]
+    fn capture_shutdown_classification_surfaces_failure_state_when_supervisor_join_succeeded() {
+        let result = classify_capture_shutdown_result(
+            Some("worker recorded failure mid-run".to_string()),
+            None,
+        );
+        let error = result.expect_err(
+            "capture shutdown must not silently return Ok when failure_state has a recorded error",
+        );
+        assert_eq!(error.to_string(), "worker recorded failure mid-run");
+    }
+
+    #[test]
+    fn capture_shutdown_classification_returns_primary_failure_with_secondary_logged() {
+        let result = classify_capture_shutdown_result(
+            Some("primary failure_state error".to_string()),
+            Some(anyhow!("secondary supervisor join error")),
+        );
+        let error =
+            result.expect_err("compound capture failure must surface an error, not return Ok");
+        assert_eq!(error.to_string(), "primary failure_state error");
+    }
+
+    #[test]
+    fn capture_shutdown_classification_propagates_supervisor_join_error_when_failure_state_clean() {
+        let result =
+            classify_capture_shutdown_result(None, Some(anyhow!("supervisor join failed")));
+        let error =
+            result.expect_err("supervisor join error must propagate when failure_state is clean");
+        assert_eq!(error.to_string(), "supervisor join failed");
+    }
+
+    #[test]
+    fn capture_shutdown_classification_returns_ok_when_neither_failure_present() {
+        classify_capture_shutdown_result(None, None)
+            .expect("clean shutdown with no recorded failure and no join error must return Ok");
     }
 
     #[test]

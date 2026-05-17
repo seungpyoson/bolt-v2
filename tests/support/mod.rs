@@ -16,6 +16,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use nautilus_common::enums::Environment;
 use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_common::{
     cache::Cache,
@@ -24,12 +25,23 @@ use nautilus_common::{
     messages::data::{SubscribeInstrument, SubscribeQuotes, SubscribeTrades},
     messages::execution::SubmitOrder,
 };
+use nautilus_live::node::LiveNode;
 use nautilus_model::{
     accounts::AccountAny,
     enums::OmsType,
-    identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, Venue},
+    identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId, Venue},
     types::{AccountBalance, MarginBalance},
 };
+
+const TEST_DELAY_POST_STOP_SECS: u64 = 0;
+
+pub fn fast_test_live_node() -> LiveNode {
+    LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
+        .unwrap()
+        .with_delay_post_stop_secs(TEST_DELAY_POST_STOP_SECS)
+        .build()
+        .unwrap()
+}
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();

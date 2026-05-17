@@ -12,14 +12,11 @@ use bolt_v2::{
     lake_batch::{convert_live_spool_to_parquet, supported_stream_classes},
     nt_runtime_capture,
 };
-use nautilus_common::{
-    enums::Environment,
-    msgbus::{
-        publish_any, publish_deltas, publish_depth10, publish_index_price, publish_mark_price,
-        publish_quote, publish_trade, switchboard,
-    },
+mod support;
+use nautilus_common::msgbus::{
+    publish_any, publish_deltas, publish_depth10, publish_index_price, publish_mark_price,
+    publish_quote, publish_trade, switchboard,
 };
-use nautilus_live::node::LiveNode;
 use nautilus_model::{
     data::BookOrder,
     data::{
@@ -27,11 +24,12 @@ use nautilus_model::{
         OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
     },
     enums::{AggressorSide, BookAction, InstrumentCloseType, OrderSide},
-    identifiers::{InstrumentId, TradeId, TraderId},
+    identifiers::{InstrumentId, TradeId},
     types::{Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use support::fast_test_live_node;
 use tempfile::tempdir;
 use tokio::task::LocalSet;
 
@@ -147,10 +145,7 @@ fn converts_live_spool_into_queryable_parquet_under_separate_output_root() {
     let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
         let guards = nt_runtime_capture::wire_nt_runtime_capture(
@@ -340,10 +335,7 @@ fn converts_legacy_flat_spool_layout() {
     let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
         let guards = nt_runtime_capture::wire_nt_runtime_capture(
@@ -441,10 +433,7 @@ fn converts_all_seven_stream_classes_with_multi_batch_feather() {
     let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
         // flush_interval_ms=1 forces FeatherWriter to flush after each write
@@ -696,10 +685,7 @@ fn allows_preexisting_empty_output_root() {
     let instrument_id = InstrumentId::from("0xabc-123456789.POLYMARKET");
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
         let guards = nt_runtime_capture::wire_nt_runtime_capture(

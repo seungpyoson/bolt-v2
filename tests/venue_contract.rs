@@ -14,19 +14,17 @@ use bolt_v2::{
         Capability, CompletenessReport, Policy, Provenance, StreamContract, VenueContract,
     },
 };
-use nautilus_common::{
-    enums::Environment,
-    msgbus::{
-        publish_any, publish_deltas, publish_mark_price, publish_quote, publish_trade, switchboard,
-    },
+mod support;
+use nautilus_common::msgbus::{
+    publish_any, publish_deltas, publish_mark_price, publish_quote, publish_trade, switchboard,
 };
-use nautilus_live::node::LiveNode;
 use nautilus_model::{
     data::{BookOrder, MarkPriceUpdate, OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick},
     enums::{AggressorSide, BookAction, OrderSide},
-    identifiers::{InstrumentId, TradeId, TraderId},
+    identifiers::{InstrumentId, TradeId},
     types::{Price, Quantity},
 };
+use support::fast_test_live_node;
 use tempfile::tempdir;
 use tokio::task::LocalSet;
 
@@ -254,10 +252,7 @@ fn contract_happy_path_polymarket() {
     let inst = test_instrument_id();
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
@@ -364,10 +359,7 @@ fn contract_fails_when_required_class_absent() {
     let inst = test_instrument_id();
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
@@ -463,10 +455,7 @@ fn contract_failure_uses_preexisting_empty_output_root() {
     let inst = test_instrument_id();
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
@@ -543,10 +532,7 @@ fn contract_fails_when_disabled_supported_stream_has_data() {
     let inst = test_instrument_id();
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
@@ -622,10 +608,7 @@ fn contract_fails_when_disabled_conditional_stream_has_data() {
     let inst = test_instrument_id();
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
@@ -732,10 +715,7 @@ fn contract_fails_when_unsupported_class_has_data() {
     let inst = test_instrument_id();
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
@@ -840,10 +820,7 @@ fn contract_fails_when_unknown_class_has_data() {
     let inst = test_instrument_id();
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
@@ -951,10 +928,7 @@ fn contract_fails_when_unknown_flat_file_has_data() {
     let inst = test_instrument_id();
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
@@ -1064,10 +1038,7 @@ fn assert_contract_ignores_legacy_flat_instruments_file(file_name: &str) {
     let file_name = file_name.to_string();
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
@@ -1186,10 +1157,7 @@ fn contract_ignores_status_directory_infrastructure() {
     let inst = test_instrument_id();
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
@@ -1317,10 +1285,7 @@ fn contract_fails_when_legacy_flat_status_file_is_present() {
     let inst = test_instrument_id();
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
@@ -1430,10 +1395,7 @@ fn contract_happy_path_accepts_legacy_flat_multiword_classes() {
     let inst = test_instrument_id();
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 
@@ -1529,10 +1491,7 @@ fn no_contract_mode_behaves_as_before() {
     let inst = test_instrument_id();
 
     let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-            .unwrap()
-            .build()
-            .unwrap();
+        let mut node = fast_test_live_node();
         let handle = node.handle();
         let instance_id = node.instance_id().to_string();
 

@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use nautilus_model::identifiers::ClientId;
+use nautilus_model::identifiers::{ClientId, Venue};
 use serde::Deserialize;
 
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
@@ -31,7 +31,7 @@ pub struct BoltV3RootConfig {
     #[serde(default)]
     pub live_canary: Option<LiveCanaryBlock>,
     pub aws: AwsBlock,
-    pub venues: BTreeMap<String, VenueBlock>,
+    pub clients: BTreeMap<String, ClientBlock>,
 }
 
 // `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit
@@ -236,24 +236,14 @@ pub struct AwsBlock {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct VenueBlock {
-    pub kind: ProviderKey,
+pub struct ClientBlock {
+    pub venue: Venue,
     #[serde(default)]
     pub data: Option<toml::Value>,
     #[serde(default)]
     pub execution: Option<toml::Value>,
     #[serde(default)]
     pub secrets: Option<toml::Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[serde(transparent)]
-pub struct ProviderKey(String);
-
-impl ProviderKey {
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -440,13 +430,13 @@ mod tests {
         assert_eq!(root.schema_version, 1);
         assert_eq!(root.trader_id, "BOLT-001");
         assert_eq!(root.runtime.mode, RuntimeMode::Live);
-        assert!(root.venues.contains_key("polymarket_main"));
-        assert!(root.venues.contains_key("binance_reference"));
-        let polymarket = &root.venues["polymarket_main"];
-        assert_eq!(polymarket.kind.as_str(), "polymarket");
+        assert!(root.clients.contains_key("polymarket_main"));
+        assert!(root.clients.contains_key("binance_reference"));
+        let polymarket = &root.clients["polymarket_main"];
+        assert_eq!(polymarket.venue, Venue::from("POLYMARKET"));
         assert!(polymarket.execution.is_some());
-        let binance = &root.venues["binance_reference"];
-        assert_eq!(binance.kind.as_str(), "binance");
+        let binance = &root.clients["binance_reference"];
+        assert_eq!(binance.venue, Venue::from("BINANCE"));
         assert!(binance.execution.is_none());
     }
 

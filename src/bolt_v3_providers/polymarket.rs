@@ -42,7 +42,7 @@ use crate::{
         BoltV3AdapterMappingError, BoltV3DataClientAdapterConfig,
         BoltV3ExecutionClientAdapterConfig, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig,
     },
-    bolt_v3_config::VenueBlock,
+    bolt_v3_config::ClientBlock,
     bolt_v3_market_families::updown::{
         self, MarketIdentityPlan, UpdownTargetPlan, updown_market_slug, updown_period_pair,
     },
@@ -56,7 +56,7 @@ use crate::{
     secrets::pad_base64,
 };
 
-pub const KEY: &str = "polymarket";
+pub const KEY: &str = "POLYMARKET";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,
@@ -177,7 +177,7 @@ impl ProviderResolvedSecrets for ResolvedBoltV3PolymarketSecrets {
     }
 }
 
-pub fn validate_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
+pub fn validate_venue(key: &str, venue: &ClientBlock) -> Vec<String> {
     let mut errors = Vec::new();
     if let Some(data) = &venue.data {
         match data.clone().try_into::<PolymarketDataConfig>() {
@@ -444,7 +444,7 @@ pub fn map_adapters(
 
 pub fn build_fee_provider(
     venue_key: &str,
-    venue: &VenueBlock,
+    venue: &ClientBlock,
     resolved: &crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
 ) -> Result<Arc<dyn FeeProvider>, BoltV3AdapterMappingError> {
     let value =

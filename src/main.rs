@@ -67,17 +67,17 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
         SecretsCommand::Check { config } => {
             let loaded = load_bolt_v3_config(&config)?;
             check_no_forbidden_credential_env_vars(&loaded.root)?;
-            for (venue_key, venue) in &loaded.root.venues {
-                if venue.secrets.is_some() {
+            for (client_key, client) in &loaded.root.clients {
+                if client.secrets.is_some() {
                     let binding =
-                        binding_for_provider_key(venue.kind.as_str()).ok_or_else(|| {
+                        binding_for_provider_key(client.venue.as_str()).ok_or_else(|| {
                             format!(
-                                "venues.{venue_key}.kind `{}` is not supported by this build",
-                                venue.kind.as_str()
+                                "clients.{client_key}.venue `{}` is not supported by this build",
+                                client.venue.as_str()
                             )
                         })?;
                     println!(
-                        "venues.{venue_key}: required secret fields present ({})",
+                        "clients.{client_key}: required secret fields present ({})",
                         binding.secret_field_names.join(", ")
                     );
                 }

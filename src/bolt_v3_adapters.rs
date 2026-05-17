@@ -262,27 +262,27 @@ fn map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
     validate_market_identity_target_venues(loaded, plan)?;
     let mut venues = BTreeMap::new();
-    for (venue_key, venue) in &loaded.root.venues {
-        let Some(binding) = binding_for_provider_key(venue.kind.as_str()) else {
+    for (client_key, client) in &loaded.root.clients {
+        let Some(binding) = binding_for_provider_key(client.venue.as_str()) else {
             return Err(BoltV3AdapterMappingError::ValidationInvariant {
-                venue_key: venue_key.clone(),
-                field: "kind",
+                venue_key: client_key.clone(),
+                field: "venue",
                 message: format!(
-                    "provider key `{}` is not supported by this build",
-                    venue.kind.as_str()
+                    "venue `{}` is not supported by this build",
+                    client.venue.as_str()
                 ),
             });
         };
-        validate_provider_market_family_support(venue_key, binding, plan)?;
+        validate_provider_market_family_support(client_key, binding, plan)?;
         let mapped = (binding.map_adapters)(ProviderAdapterMapContext {
             root: &loaded.root,
-            venue_key,
-            venue,
+            venue_key: client_key,
+            venue: client,
             resolved,
             plan,
             clock: clock.clone(),
         })?;
-        venues.insert(venue_key.clone(), mapped);
+        venues.insert(client_key.clone(), mapped);
     }
     Ok(BoltV3AdapterConfigs { venues })
 }
@@ -308,7 +308,7 @@ fn validate_provider_market_family_support(
                 venue_key: target.venue_config_key.to_string(),
                 field: "strategy.target.venue_config_key",
                 message: format!(
-                    "configured target `{}` uses market family `{}` on venue `{}`, but provider kind `{}` does not support that market family",
+                    "configured target `{}` uses market family `{}` on venue `{}`, but provider venue `{}` does not support that market family",
                     target.configured_target_id,
                     target.family_key,
                     target.venue_config_key,
@@ -325,7 +325,7 @@ fn validate_market_identity_target_venues(
     plan: &MarketIdentityPlan,
 ) -> Result<(), BoltV3AdapterMappingError> {
     for target in plan.venue_target_refs() {
-        if !loaded.root.venues.contains_key(target.venue_config_key) {
+        if !loaded.root.clients.contains_key(target.venue_config_key) {
             return Err(BoltV3AdapterMappingError::ValidationInvariant {
                 venue_key: target.venue_config_key.to_string(),
                 field: "strategy.target.venue_config_key",
@@ -369,7 +369,7 @@ mod tests {
         BoltV3SecretError, ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets,
     };
 
-    const FAKE_UPDOWN_PROVIDER_KEY: &str = "fake_updown_provider";
+    const FAKE_UPDOWN_PROVIDER_KEY: &str = "FAKE_UPDOWN_PROVIDER";
 
     #[derive(Debug)]
     struct FakeProviderSecrets;
@@ -386,7 +386,7 @@ mod tests {
 
     fn validate_fake_provider_venue(
         _key: &str,
-        _venue: &crate::bolt_v3_config::VenueBlock,
+        _venue: &crate::bolt_v3_config::ClientBlock,
     ) -> Vec<String> {
         Vec::new()
     }
@@ -401,7 +401,7 @@ mod tests {
     fn map_fake_provider_adapters(
         context: ProviderAdapterMapContext<'_>,
     ) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
-        assert_eq!(context.venue.kind.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
+        assert_eq!(context.venue.venue.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
         assert_eq!(context.venue_key, "polymarket_main");
         assert_eq!(context.plan.updown_targets.len(), 1);
         assert_eq!(
@@ -417,7 +417,7 @@ mod tests {
     fn map_fake_no_target_provider_adapters(
         context: ProviderAdapterMapContext<'_>,
     ) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
-        assert_eq!(context.venue.kind.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
+        assert_eq!(context.venue.venue.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
         assert_eq!(context.venue_key, "polymarket_main");
         assert!(context.plan.updown_targets.is_empty());
         Ok(BoltV3VenueAdapterConfig {
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn injected_provider_binding_can_accept_updown_target_without_core_provider_edit() {
         let fake_root_text = include_str!("../tests/fixtures/bolt_v3/root.toml")
-            .replace("kind = \"polymarket\"", "kind = \"fake_updown_provider\"");
+            .replace("venue = \"POLYMARKET\"", "venue = \"FAKE_UPDOWN_PROVIDER\"");
         let mut loaded = LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
             root: toml::from_str(&fake_root_text).expect("fake-provider root should parse"),
@@ -512,7 +512,7 @@ mod tests {
         };
         loaded
             .root
-            .venues
+            .clients
             .retain(|venue_key, _venue| venue_key == "polymarket_main");
         let plan = MarketIdentityPlan {
             updown_targets: vec![UpdownTargetPlan {
@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn injected_provider_binding_without_family_support_rejects_before_provider_mapping() {
         let fake_root_text = include_str!("../tests/fixtures/bolt_v3/root.toml")
-            .replace("kind = \"polymarket\"", "kind = \"fake_updown_provider\"");
+            .replace("venue = \"POLYMARKET\"", "venue = \"FAKE_UPDOWN_PROVIDER\"");
         let mut loaded = LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
             root: toml::from_str(&fake_root_text).expect("fake-provider root should parse"),
@@ -563,7 +563,7 @@ mod tests {
         };
         loaded
             .root
-            .venues
+            .clients
             .retain(|venue_key, _venue| venue_key == "polymarket_main");
         let plan = MarketIdentityPlan {
             updown_targets: vec![UpdownTargetPlan {
@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn provider_without_family_support_can_map_when_no_target_references_venue() {
         let fake_root_text = include_str!("../tests/fixtures/bolt_v3/root.toml")
-            .replace("kind = \"polymarket\"", "kind = \"fake_updown_provider\"");
+            .replace("venue = \"POLYMARKET\"", "venue = \"FAKE_UPDOWN_PROVIDER\"");
         let mut loaded = LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
             root: toml::from_str(&fake_root_text).expect("fake-provider root should parse"),
@@ -620,7 +620,7 @@ mod tests {
         };
         loaded
             .root
-            .venues
+            .clients
             .retain(|venue_key, _venue| venue_key == "polymarket_main");
         let plan = MarketIdentityPlan {
             updown_targets: Vec::new(),

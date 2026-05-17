@@ -146,7 +146,7 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let polymarket_data = loaded
         .root
-        .venues
+        .clients
         .get_mut("polymarket_main")
         .and_then(|venue| venue.data.as_mut())
         .and_then(toml::Value::as_table_mut)
@@ -324,10 +324,10 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-1"
 
-[venues.polymarket_main]
-kind = "polymarket"
+[clients.polymarket_main]
+venue = "POLYMARKET"
 
-[venues.polymarket_main.execution]
+[clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
 funder_address = "0x1111111111111111111111111111111111111111"

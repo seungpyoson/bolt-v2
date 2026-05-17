@@ -237,7 +237,7 @@ pub fn register_runtime_strategy(
     let venue = context
         .loaded
         .root
-        .venues
+        .clients
         .get(&context.strategy.config.execution_client_id)
         .ok_or_else(|| {
             binding_message(

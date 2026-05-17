@@ -17,8 +17,10 @@
 
 use std::collections::BTreeMap;
 
+use nautilus_model::identifiers::Venue;
+
 use crate::{
-    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, ProviderKey},
+    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
     bolt_v3_providers::{
         self, ProviderSecretResolveContext, ResolvedVenueSecrets, SsmSecretResolver,
     },
@@ -28,7 +30,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForbiddenEnvVarFinding {
     pub venue_key: String,
-    pub provider_key: ProviderKey,
+    pub venue: Venue,
     pub env_var: &'static str,
 }
 
@@ -36,10 +38,10 @@ impl std::fmt::Display for ForbiddenEnvVarFinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "venues.{key} (kind={kind}) declares [secrets] but the forbidden credential environment variable `{var}` is set; \
-             the bolt-v3 secret contract requires SSM resolution and forbids env-var fallbacks for this venue kind",
+            "clients.{key} (venue={venue}) declares [secrets] but the forbidden credential environment variable `{var}` is set; \
+             the bolt-v3 secret contract requires SSM resolution and forbids env-var fallbacks for this venue",
             key = self.venue_key,
-            kind = self.provider_key.as_str(),
+            venue = self.venue.as_str(),
             var = self.env_var,
         )
     }
@@ -81,11 +83,11 @@ where
     F: FnMut(&str) -> bool,
 {
     let mut findings = Vec::new();
-    for (key, venue) in &config.venues {
-        if venue.secrets.is_none() {
+    for (key, client) in &config.clients {
+        if client.secrets.is_none() {
             continue;
         }
-        let blocklist = match bolt_v3_providers::binding_for_provider_key(venue.kind.as_str()) {
+        let blocklist = match bolt_v3_providers::binding_for_provider_key(client.venue.as_str()) {
             Some(binding) => binding.forbidden_env_vars,
             None => &[],
         };
@@ -93,7 +95,7 @@ where
             if env_is_set(env_var) {
                 findings.push(ForbiddenEnvVarFinding {
                     venue_key: key.clone(),
-                    provider_key: venue.kind.clone(),
+                    venue: client.venue,
                     env_var,
                 });
             }
@@ -208,20 +210,20 @@ where
     let region = loaded.root.aws.region.as_str();
     let mut venues = BTreeMap::new();
 
-    for (venue_key, venue) in &loaded.root.venues {
-        match venue.secrets.as_ref() {
+    for (venue_key, client) in &loaded.root.clients {
+        match client.secrets.as_ref() {
             Some(_) => {}
             None => continue,
         }
 
-        let Some(binding) = bolt_v3_providers::binding_for_provider_key(venue.kind.as_str()) else {
+        let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str()) else {
             return Err(BoltV3SecretError {
                 venue_key: venue_key.clone(),
-                field: "kind".to_string(),
+                field: "venue".to_string(),
                 ssm_path: String::new(),
                 source: format!(
-                    "provider key `{}` is not supported by this build",
-                    venue.kind.as_str()
+                    "venue `{}` is not supported by this build",
+                    client.venue.as_str()
                 ),
             });
         };
@@ -229,7 +231,7 @@ where
             ProviderSecretResolveContext {
                 venue_key,
                 region,
-                venue,
+                venue: client,
             },
             &mut resolver,
         )?;
@@ -337,7 +339,7 @@ mod tests {
                 .expect_err("POLYMARKET_PK should trip the polymarket blocklist");
         assert_eq!(error.findings.len(), 1);
         assert_eq!(error.findings[0].venue_key, "polymarket_main");
-        assert_eq!(error.findings[0].provider_key.as_str(), polymarket::KEY);
+        assert_eq!(error.findings[0].venue.as_str(), polymarket::KEY);
         assert_eq!(error.findings[0].env_var, "POLYMARKET_PK");
     }
 
@@ -349,7 +351,7 @@ mod tests {
                 .expect_err("BINANCE_API_SECRET should trip the binance blocklist");
         assert_eq!(error.findings.len(), 1);
         assert_eq!(error.findings[0].venue_key, "binance_reference");
-        assert_eq!(error.findings[0].provider_key.as_str(), binance::KEY);
+        assert_eq!(error.findings[0].venue.as_str(), binance::KEY);
         assert_eq!(error.findings[0].env_var, "BINANCE_API_SECRET");
     }
 

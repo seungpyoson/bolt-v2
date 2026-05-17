@@ -29,6 +29,32 @@ fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
 }
 
 #[test]
+fn bolt_v3_config_uses_clients_section_with_nt_venue_identifier() {
+    // FINDING-3: TOML `[clients.<id>]` (was `[venues.<id>]`) holds an NT Venue
+    // identifier in `venue` (was lowercase `kind`). The NT Venue type wraps a
+    // Ustr and the serde macro enforces correctness at parse time, so the
+    // `venue = "POLYMARKET"` value is checked structurally as well as
+    // semantically.
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use nautilus_model::identifiers::Venue;
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
+
+    let clients = &loaded.root.clients;
+    assert!(clients.contains_key("polymarket_main"));
+    assert!(clients.contains_key("binance_reference"));
+
+    let polymarket = &clients["polymarket_main"];
+    assert_eq!(polymarket.venue, Venue::from("POLYMARKET"));
+    assert!(polymarket.execution.is_some());
+
+    let binance = &clients["binance_reference"];
+    assert_eq!(binance.venue, Venue::from("BINANCE"));
+    assert!(binance.execution.is_none());
+}
+
+#[test]
 fn parses_runtime_config_with_optional_streaming_section() {
     let toml = r#"
         [node]
@@ -723,15 +749,15 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     assert_eq!(loaded.root.trader_id, "BOLT-001");
     assert_eq!(loaded.root.runtime.mode, RuntimeMode::Live);
     assert_eq!(
-        loaded.root.venues["polymarket_main"].kind.as_str(),
-        "polymarket"
+        loaded.root.clients["polymarket_main"].venue.as_str(),
+        "POLYMARKET"
     );
     assert_eq!(
-        loaded.root.venues["binance_reference"].kind.as_str(),
-        "binance"
+        loaded.root.clients["binance_reference"].venue.as_str(),
+        "BINANCE"
     );
-    assert!(loaded.root.venues["polymarket_main"].execution.is_some());
-    assert!(loaded.root.venues["binance_reference"].execution.is_none());
+    assert!(loaded.root.clients["polymarket_main"].execution.is_some());
+    assert!(loaded.root.clients["binance_reference"].execution.is_none());
 
     assert_eq!(loaded.strategies.len(), 1);
     let strategy = &loaded.strategies[0].config;
@@ -958,10 +984,10 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-1"
 
-[venues.polymarket_main]
-kind = "polymarket"
+[clients.polymarket_main]
+venue = "POLYMARKET"
 
-[venues.polymarket_main.execution]
+[clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
 funder_address = "0x1111111111111111111111111111111111111111"
@@ -1093,10 +1119,10 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-1"
 
-[venues.binance_reference]
-kind = "binance"
+[clients.binance_reference]
+venue = "BINANCE"
 
-[venues.binance_reference.data]
+[clients.binance_reference.data]
 product_types = ["spot"]
 environment = "mainnet"
 base_url_http = "https://binance.test.invalid/http"
@@ -1222,10 +1248,10 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-1"
 
-[venues.polymarket_main]
-kind = "polymarket"
+[clients.polymarket_main]
+venue = "POLYMARKET"
 
-[venues.polymarket_main.data]
+[clients.polymarket_main.data]
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 base_url_gamma = "https://gamma-api.polymarket.com"
@@ -1236,7 +1262,7 @@ subscribe_new_markets = false
 update_instruments_interval_minutes = 0
 websocket_max_subscriptions_per_connection = 0
 
-[venues.polymarket_main.execution]
+[clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
 funder_address = "0x1111111111111111111111111111111111111111"
@@ -1249,7 +1275,7 @@ retry_delay_initial_milliseconds = 0
 retry_delay_max_milliseconds = 0
 ack_timeout_seconds = 0
 
-[venues.polymarket_main.secrets]
+[clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
 api_key_ssm_path = "/bolt/polymarket_main/api_key"
 api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
@@ -1626,7 +1652,7 @@ fn rejects_orphan_secrets_block_without_data_or_execution() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "[venues.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\n\n",
+        "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\n\n",
         "",
     );
     let root: BoltV3RootConfig =
@@ -1759,7 +1785,7 @@ fn rejects_binance_data_zero_instrument_status_poll_seconds() {
 fn rejects_polymarket_data_only_venue_with_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let execution_block = "[venues.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_seconds = 60\nmax_retries = 3\nretry_delay_initial_milliseconds = 250\nretry_delay_max_milliseconds = 2000\nack_timeout_seconds = 5\n\n";
+    let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_seconds = 60\nmax_retries = 3\nretry_delay_initial_milliseconds = 250\nretry_delay_max_milliseconds = 2000\nack_timeout_seconds = 5\n\n";
     let mutated = replace_in_fixture_root(execution_block, "");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("polymarket data-only secrets fixture should parse");
@@ -1795,7 +1821,7 @@ fn rejects_polymarket_data_subscribe_new_markets_true_in_current_slice() {
 fn rejects_more_than_one_polymarket_venue_in_current_slice() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let extra_venue = "\n\n[venues.polymarket_secondary]\nkind = \"polymarket\"\n\n[venues.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_seconds = 60\nws_timeout_seconds = 30\nsubscribe_new_markets = false\nupdate_instruments_interval_minutes = 60\nwebsocket_max_subscriptions_per_connection = 200\n\n[venues.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
+    let extra_venue = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_seconds = 60\nws_timeout_seconds = 30\nsubscribe_new_markets = false\nupdate_instruments_interval_minutes = 60\nwebsocket_max_subscriptions_per_connection = 200\n\n[clients.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = format!("{fixture}{extra_venue}");
@@ -1805,7 +1831,7 @@ fn rejects_more_than_one_polymarket_venue_in_current_slice() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("at most one [venues.<id>] block per kind")
+            .any(|m| m.contains("at most one [clients.<id>] block per venue")
                 && m.contains("polymarket")),
         "expected one-venue-per-kind validation error, got: {messages:#?}"
     );

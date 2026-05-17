@@ -22,7 +22,7 @@ use std::{any::Any, fmt, sync::Arc};
 
 use crate::{
     bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig},
-    bolt_v3_config::{BoltV3RootConfig, VenueBlock},
+    bolt_v3_config::{BoltV3RootConfig, ClientBlock},
     bolt_v3_market_families::updown::MarketIdentityPlan,
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
 };
@@ -54,13 +54,13 @@ where
 pub struct ProviderSecretResolveContext<'a> {
     pub venue_key: &'a str,
     pub region: &'a str,
-    pub venue: &'a VenueBlock,
+    pub venue: &'a ClientBlock,
 }
 
 pub struct ProviderAdapterMapContext<'a> {
     pub root: &'a BoltV3RootConfig,
     pub venue_key: &'a str,
-    pub venue: &'a VenueBlock,
+    pub venue: &'a ClientBlock,
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub plan: &'a MarketIdentityPlan,
     pub clock: BoltV3UpdownNowFn,
@@ -80,7 +80,7 @@ impl ProviderCredentialedBlock {
         }
     }
 
-    fn is_present(self, venue: &VenueBlock) -> bool {
+    fn is_present(self, venue: &ClientBlock) -> bool {
         match self {
             Self::Data => venue.data.is_some(),
             Self::Execution => venue.execution.is_some(),
@@ -96,7 +96,7 @@ pub struct ProviderSecretRequirement {
 
 pub struct ProviderBinding {
     pub key: &'static str,
-    pub validate_venue: fn(&str, &VenueBlock) -> Vec<String>,
+    pub validate_venue: fn(&str, &ClientBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
     pub required_secret_blocks: &'static [ProviderSecretRequirement],
     pub secret_field_names: &'static [&'static str],
@@ -160,21 +160,21 @@ pub fn credential_log_modules() -> impl Iterator<Item = &'static str> {
 /// Family-agnostic surface read by core startup validation. Routes
 /// each venue block to its per-provider validator based on provider
 /// key. Returns the full error list for the venue block.
-pub fn validate_venue_block(key: &str, venue: &VenueBlock) -> Vec<String> {
-    match binding_for_provider_key(venue.kind.as_str()) {
+pub fn validate_venue_block(key: &str, client: &ClientBlock) -> Vec<String> {
+    match binding_for_provider_key(client.venue.as_str()) {
         Some(binding) => {
             let mut errors = validate_required_secret_blocks(
                 key,
                 binding.key,
-                venue,
+                client,
                 binding.required_secret_blocks,
             );
-            errors.extend((binding.validate_venue)(key, venue));
+            errors.extend((binding.validate_venue)(key, client));
             errors
         }
         None => vec![format!(
-            "venues.{key}.kind `{}` is not supported by this build",
-            venue.kind.as_str()
+            "clients.{key}.venue `{}` is not supported by this build",
+            client.venue.as_str()
         )],
     }
 }
@@ -182,7 +182,7 @@ pub fn validate_venue_block(key: &str, venue: &VenueBlock) -> Vec<String> {
 fn validate_required_secret_blocks(
     key: &str,
     provider_key: &str,
-    venue: &VenueBlock,
+    venue: &ClientBlock,
     requirements: &[ProviderSecretRequirement],
 ) -> Vec<String> {
     let mut errors = Vec::new();
@@ -206,7 +206,7 @@ fn validate_required_secret_blocks(
 mod tests {
     use super::*;
 
-    fn venue_from_toml(text: &str) -> VenueBlock {
+    fn venue_from_toml(text: &str) -> ClientBlock {
         toml::from_str(text).expect("test venue should parse")
     }
 
@@ -231,7 +231,7 @@ mod tests {
     fn provider_required_secrets_rejects_credentialed_block_without_secrets() {
         let venue = venue_from_toml(
             r#"
-            kind = "fake"
+            venue = "FAKE"
 
             [data]
             "#,
@@ -241,7 +241,7 @@ mod tests {
             consumer: "fake data adapter",
         };
 
-        let errors = validate_required_secret_blocks("fake_venue", "fake", &venue, &[requirement]);
+        let errors = validate_required_secret_blocks("fake_venue", "FAKE", &venue, &[requirement]);
 
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("declares [data] but is missing the required [secrets] block"));
@@ -252,7 +252,7 @@ mod tests {
     fn provider_required_secrets_ignores_absent_credentialed_block() {
         let venue = venue_from_toml(
             r#"
-            kind = "fake"
+            venue = "FAKE"
             "#,
         );
         let requirement = ProviderSecretRequirement {
@@ -260,7 +260,7 @@ mod tests {
             consumer: "fake execution adapter",
         };
 
-        let errors = validate_required_secret_blocks("fake_venue", "fake", &venue, &[requirement]);
+        let errors = validate_required_secret_blocks("fake_venue", "FAKE", &venue, &[requirement]);
 
         assert!(errors.is_empty());
     }

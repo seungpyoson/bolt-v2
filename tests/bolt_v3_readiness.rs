@@ -126,7 +126,7 @@ fn startup_check_reports_empty_venue_stages_as_satisfied_root_facts() {
     let empty_loaded = LoadedBoltV3Config {
         root_path: loaded.root_path.clone(),
         root: BoltV3RootConfig {
-            venues: BTreeMap::new(),
+            clients: BTreeMap::new(),
             ..loaded.root
         },
         strategies: Vec::new(),
@@ -241,7 +241,7 @@ fn startup_check_reports_adapter_mapping_failure_and_redacts_resolved_secrets() 
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     loaded
         .root
-        .venues
+        .clients
         .get_mut("polymarket_main")
         .expect("fixture polymarket_main venue should exist")
         .data

@@ -39,7 +39,7 @@ use crate::{
     bolt_v3_adapters::{
         BoltV3AdapterMappingError, BoltV3DataClientAdapterConfig, BoltV3VenueAdapterConfig,
     },
-    bolt_v3_config::VenueBlock,
+    bolt_v3_config::ClientBlock,
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
         ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedVenueSecrets,
@@ -49,7 +49,7 @@ use crate::{
     secrets::validate_binance_api_secret_shape,
 };
 
-pub const KEY: &str = "binance";
+pub const KEY: &str = "BINANCE";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Data,
@@ -139,7 +139,7 @@ impl ProviderResolvedSecrets for ResolvedBoltV3BinanceSecrets {
     }
 }
 
-pub fn validate_venue(key: &str, venue: &VenueBlock) -> Vec<String> {
+pub fn validate_venue(key: &str, venue: &ClientBlock) -> Vec<String> {
     let mut errors = Vec::new();
     if venue.execution.is_some() {
         errors.push(format!(

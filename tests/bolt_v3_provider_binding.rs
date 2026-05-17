@@ -258,7 +258,7 @@ fn market_identity_path_still_rejects_subscribe_new_markets_true() {
 
     let polymarket_data = loaded
         .root
-        .venues
+        .clients
         .get_mut("polymarket_main")
         .and_then(|venue| venue.data.as_mut())
         .and_then(toml::Value::as_table_mut)

@@ -43,7 +43,7 @@ use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy, NautilusBlock,
-    PersistenceBlock, RiskBlock, VenueBlock,
+    PersistenceBlock, RiskBlock, ClientBlock,
 };
 
 #[derive(Debug)]
@@ -100,7 +100,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_risk_block(&root.risk));
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
-    errors.extend(validate_venues_block(&root.venues));
+    errors.extend(validate_venues_block(&root.clients));
 
     errors
 }
@@ -371,38 +371,38 @@ fn validate_aws_block(block: &AwsBlock) -> Vec<String> {
     errors
 }
 
-fn validate_venues_block(venues: &BTreeMap<String, VenueBlock>) -> Vec<String> {
+fn validate_venues_block(clients: &BTreeMap<String, ClientBlock>) -> Vec<String> {
     let mut errors = Vec::new();
-    if venues.is_empty() {
-        errors.push("venues must define at least one venue block".to_string());
+    if clients.is_empty() {
+        errors.push("clients must define at least one client block".to_string());
         return errors;
     }
-    // The current bolt-v3 scope is one venue per provider key. Multi-venue
-    // routing (multiple keyed venues for the same provider) is not yet
+    // The current bolt-v3 scope is one client per NT venue. Multi-client
+    // routing (multiple keyed clients for the same venue) is not yet
     // covered by the NT typed-venue routing path or by bolt-v3 strategy
     // validation. NT client registration names can differ, but engine
     // instrument subscriptions still key on typed venues such as
     // POLYMARKET/BINANCE, so we fail closed until that routing is
     // explicitly designed.
-    let mut kind_counts: BTreeMap<String, Vec<&str>> = BTreeMap::new();
-    for (key, venue) in venues {
-        kind_counts
-            .entry(venue.kind.as_str().to_string())
+    let mut venue_counts: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for (key, client) in clients {
+        venue_counts
+            .entry(client.venue.as_str().to_string())
             .or_default()
             .push(key.as_str());
     }
-    for (kind, keys) in &kind_counts {
+    for (venue, keys) in &venue_counts {
         if keys.len() > 1 {
             errors.push(format!(
-                "venues: at most one [venues.<id>] block per kind is supported in this slice; \
-                 kind `{kind}` is declared by {} venues: {}",
+                "clients: at most one [clients.<id>] block per venue is supported in this slice; \
+                 venue `{venue}` is declared by {} clients: {}",
                 keys.len(),
                 keys.join(", ")
             ));
         }
     }
-    for (key, venue) in venues {
-        errors.extend(crate::bolt_v3_providers::validate_venue_block(key, venue));
+    for (key, client) in clients {
+        errors.extend(crate::bolt_v3_providers::validate_venue_block(key, client));
     }
     errors
 }
@@ -467,9 +467,9 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             ));
         }
 
-        match root.venues.get(&strategy.execution_client_id) {
+        match root.clients.get(&strategy.execution_client_id) {
             None => errors.push(format!(
-                "{context}: execution_client_id `{}` does not match any [venues.<id>] block",
+                "{context}: execution_client_id `{}` does not match any [clients.<id>] block",
                 strategy.execution_client_id
             )),
             Some(venue) => {
@@ -514,9 +514,9 @@ fn validate_reference_data(
     let mut errors = Vec::new();
 
     for (role, block) in &strategy.reference_data {
-        match root.venues.get(&block.data_client_id) {
+        match root.clients.get(&block.data_client_id) {
             None => errors.push(format!(
-                "{context}: reference_data.{role}.data_client_id `{}` does not match any [venues.<id>] block",
+                "{context}: reference_data.{role}.data_client_id `{}` does not match any [clients.<id>] block",
                 block.data_client_id
             )),
             Some(venue) => {

@@ -172,7 +172,7 @@ fn empty_venues_root_config_registers_zero_clients() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let empty_root = BoltV3RootConfig {
-        venues: BTreeMap::new(),
+        clients: BTreeMap::new(),
         ..loaded.root.clone()
     };
     let empty_loaded = LoadedBoltV3Config {

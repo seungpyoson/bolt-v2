@@ -512,6 +512,12 @@ def consume_assignment_words(tokens: list[str], index: int) -> int:
     return index
 
 
+def compact_short_options_without_argument(token: str, options_without_argument: set[str]) -> bool:
+    if len(token) <= 2 or token.startswith("--") or not token.startswith("-"):
+        return False
+    return all(f"-{option}" in options_without_argument for option in token[1:])
+
+
 def consume_option_prefix(
     tokens: list[str],
     index: int,
@@ -534,6 +540,9 @@ def consume_option_prefix(
             index += 1
             continue
         if len(token) > 2 and token[:2] in options_with_argument:
+            index += 1
+            continue
+        if compact_short_options_without_argument(token, options_without_argument):
             index += 1
             continue
         break

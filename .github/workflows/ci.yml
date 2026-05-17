@@ -177,7 +177,16 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Resolve aarch64 coverage owner
+        run: |
+          if [[ "${{ needs.detector.outputs.build_required }}" == "true" ]]; then
+            echo "build_required=true; aarch64 coverage is provided by build"
+          else
+            echo "build_required=false; running standalone aarch64 check"
+          fi
+
       - name: Setup environment
+        if: needs.detector.outputs.build_required != 'true'
         id: setup
         uses: ./.github/actions/setup-environment
         with:
@@ -188,11 +197,13 @@ jobs:
           include-managed-target-dir: "true"
 
       - name: Install aarch64 cross compiler
+        if: needs.detector.outputs.build_required != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        if: needs.detector.outputs.build_required != 'true'
         with:
           cache-on-failure: true
           cache-targets: false
@@ -200,6 +211,7 @@ jobs:
           key: check-aarch64-v1
 
       - name: check-aarch64
+        if: needs.detector.outputs.build_required != 'true'
         run: just check-aarch64
 
   source-fence:

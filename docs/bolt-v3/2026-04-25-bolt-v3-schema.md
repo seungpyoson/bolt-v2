@@ -925,6 +925,24 @@ is_quote_quantity = false
 edge_threshold_basis_points = 100
 order_notional_target = "5.00"
 maximum_position_notional = "10.00"
+
+[parameters.runtime]
+reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-001"
+warmup_tick_count = 20
+reentry_cooldown_secs = 30
+book_impact_cap_bps = 50
+risk_lambda = 0.5
+exit_hysteresis_bps = 25
+vol_window_secs = 600
+vol_gap_reset_secs = 60
+vol_min_observations = 5
+vol_bridge_valid_secs = 30
+pricing_kurtosis = 3.0
+theta_decay_factor = 1.0
+forced_flat_stale_chainlink_ms = 10000
+forced_flat_thin_book_min_liquidity = 5.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250
 ```
 
 ## 7. Strategy File: Field Semantics
@@ -1191,6 +1209,33 @@ For the current `binary_oracle_edge_taker` archetype:
 - fees are not included in this cap
 - runtime capacity computation is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 7.3
 
+#### `[parameters.runtime]`
+
+- type: table
+- required for `binary_oracle_edge_taker`
+- all fields are required and unknown fields are rejected
+- runtime strategy configuration consumed by the Rust strategy registration path
+- `book_impact_cap_bps` is also bound into the Phase 8 financial-envelope evidence and must match the loaded TOML before a tiny-capital canary proof can be written
+
+Runtime fields:
+
+- `reference_publish_topic`: string; reference-data topic consumed by the runtime strategy
+- `warmup_tick_count`: unsigned integer; fresh-reference warmup count before entry is allowed
+- `reentry_cooldown_secs`: unsigned integer; cooldown after an entry attempt
+- `book_impact_cap_bps`: unsigned integer; maximum allowed book-impact basis points for order construction and Phase 8 financial-envelope proof
+- `risk_lambda`: float; sizing risk coefficient
+- `exit_hysteresis_bps`: integer; exit hysteresis threshold
+- `vol_window_secs`: unsigned integer; realized-volatility window
+- `vol_gap_reset_secs`: unsigned integer; gap that resets volatility history
+- `vol_min_observations`: unsigned integer; minimum observations before volatility is live
+- `vol_bridge_valid_secs`: unsigned integer; maximum bridge age for volatility input
+- `pricing_kurtosis`: float; kurtosis input for binary-oracle pricing
+- `theta_decay_factor`: float; non-negative theta decay multiplier
+- `forced_flat_stale_chainlink_ms`: unsigned integer; Chainlink staleness forced-flat threshold
+- `forced_flat_thin_book_min_liquidity`: float; thin-book forced-flat liquidity threshold
+- `lead_agreement_min_corr`: float; minimum lead-market agreement correlation
+- `lead_jitter_max_ms`: unsigned integer; maximum lead-market jitter
+
 ## 8. Validation Rules
 
 ### Structural validation
@@ -1437,4 +1482,22 @@ is_quote_quantity = false
 edge_threshold_basis_points = 100
 order_notional_target = "5.00"
 maximum_position_notional = "10.00"
+
+[parameters.runtime]
+reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-001"
+warmup_tick_count = 20
+reentry_cooldown_secs = 30
+book_impact_cap_bps = 50
+risk_lambda = 0.5
+exit_hysteresis_bps = 25
+vol_window_secs = 600
+vol_gap_reset_secs = 60
+vol_min_observations = 5
+vol_bridge_valid_secs = 30
+pricing_kurtosis = 3.0
+theta_decay_factor = 1.0
+forced_flat_stale_chainlink_ms = 10000
+forced_flat_thin_book_min_liquidity = 5.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250
 ```

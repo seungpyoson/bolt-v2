@@ -475,7 +475,7 @@ impl Phase8CanaryEvidence {
 
     pub fn blocked_before_submit(
         input: Phase8CanaryEvidenceInput,
-        block_reason: Phase8CanaryBlockReason,
+        block_reasons: Vec<Phase8CanaryBlockReason>,
     ) -> Self {
         Self {
             schema_version: PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION,
@@ -502,7 +502,7 @@ impl Phase8CanaryEvidence {
             runtime_capture_ref: input.runtime_capture_ref,
             nt_lifecycle_refs: Vec::new(),
             outcome: Phase8CanaryOutcome::BlockedBeforeSubmit,
-            block_reasons: vec![block_reason],
+            block_reasons,
         }
     }
 

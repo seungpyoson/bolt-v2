@@ -692,7 +692,7 @@ fn dry_canary_evidence_writer_rejects_existing_json_file() {
 
     let replacement = Phase8CanaryEvidence::blocked_before_submit(
         evidence_input(),
-        Phase8CanaryBlockReason::RootConfigHashUnavailable,
+        vec![Phase8CanaryBlockReason::RootConfigHashUnavailable],
     );
     let error = replacement
         .write_json_file(&evidence_path)
@@ -711,7 +711,7 @@ fn dry_canary_evidence_writer_rejects_existing_json_file() {
 fn decision_evidence_unavailable_blocks_before_submit_admission() {
     let evidence = Phase8CanaryEvidence::blocked_before_submit(
         evidence_input(),
-        Phase8CanaryBlockReason::DecisionEvidenceUnavailable,
+        vec![Phase8CanaryBlockReason::DecisionEvidenceUnavailable],
     );
 
     assert_eq!(evidence.outcome, Phase8CanaryOutcome::BlockedBeforeSubmit);
@@ -726,12 +726,28 @@ fn decision_evidence_unavailable_blocks_before_submit_admission() {
 }
 
 #[test]
+fn blocked_before_submit_preserves_all_preflight_block_reasons() {
+    let block_reasons = vec![
+        Phase8CanaryBlockReason::DecisionEvidenceUnavailable,
+        Phase8CanaryBlockReason::RootConfigHashUnavailable,
+        Phase8CanaryBlockReason::LiveCanaryGateRejected,
+    ];
+
+    let evidence =
+        Phase8CanaryEvidence::blocked_before_submit(evidence_input(), block_reasons.clone());
+
+    assert_eq!(evidence.outcome, Phase8CanaryOutcome::BlockedBeforeSubmit);
+    assert_eq!(evidence.block_reasons, block_reasons);
+    assert!(evidence.decision_evidence_ref.is_none());
+}
+
+#[test]
 fn blocked_canary_evidence_writer_rejects_inconsistent_submit_admission() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("phase8-canary-evidence.json");
     let mut evidence = Phase8CanaryEvidence::blocked_before_submit(
         evidence_input(),
-        Phase8CanaryBlockReason::DecisionEvidenceUnavailable,
+        vec![Phase8CanaryBlockReason::DecisionEvidenceUnavailable],
     );
     evidence.submit_admission_ref.admitted_order_count = 1;
 
@@ -757,7 +773,7 @@ fn blocked_canary_evidence_writer_rejects_decision_evidence_ref() {
     let evidence_path = temp.path().join("phase8-canary-evidence.json");
     let mut evidence = Phase8CanaryEvidence::blocked_before_submit(
         evidence_input(),
-        Phase8CanaryBlockReason::DecisionEvidenceUnavailable,
+        vec![Phase8CanaryBlockReason::DecisionEvidenceUnavailable],
     );
     evidence.decision_evidence_ref = Some(valid_evidence_ref("cccc", "dddd"));
 

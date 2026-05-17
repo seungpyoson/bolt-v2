@@ -2,11 +2,10 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_tiny_canary_evidence::{
-        PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID, Phase8CanaryBlockReason, Phase8CanaryEvidence,
-        Phase8CanaryEvidenceInput, Phase8EvidenceRef, Phase8LiveCanaryResultRefs,
-        Phase8LiveOrderRef, Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef,
-        Phase8StrategyInputSafetyAudit, evaluate_phase8_canary_preflight, phase8_required_env,
-        phase8_sha256_text,
+        PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
+        Phase8EvidenceRef, Phase8LiveCanaryResultRefs, Phase8LiveOrderRef,
+        Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef, Phase8StrategyInputSafetyAudit,
+        evaluate_phase8_canary_preflight, phase8_required_env, phase8_sha256_text,
     },
     nt_runtime_capture::spool_root_for_instance,
 };
@@ -15,7 +14,7 @@ use serde::Deserialize;
 use std::env;
 use std::path::Path;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[test]
 fn phase8_operator_harness_is_ignored_and_uses_production_runner_shape() {
@@ -99,6 +98,7 @@ fn phase8_operator_harness_binds_live_proof_to_runtime_admission_and_spool() {
     assert!(source.contains("admitted_order_count()"));
     assert!(source.contains("spool_root_for_instance"));
     assert!(source.contains("assert_belongs_to_runtime_capture"));
+    assert!(source.contains("to_refs_after_operator_post_run_proofs"));
     assert!(source.contains("assert_changed_after_run"));
     assert!(source.contains("phase8_read_operator_evidence_proof"));
     assert!(!source.contains(&format!("{}{}{}", "BOLT_V3_PHASE8_", "RUNTIME_RUN", "_ID")));
@@ -108,6 +108,29 @@ fn phase8_operator_harness_binds_live_proof_to_runtime_admission_and_spool() {
         "BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH",
         "\")?"
     )));
+}
+
+#[test]
+fn phase8_operator_harness_waits_for_post_run_proofs_after_runner() {
+    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
+        .expect("operator harness source should be readable");
+    let start = source
+        .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
+        .expect("operator harness start should exist");
+    let end = source[start..]
+        .find("\nfn phase8_current_checkout_head_sha")
+        .map(|offset| start + offset)
+        .expect("operator harness end should exist");
+    let harness = &source[start..end];
+
+    let runner_index = harness
+        .find("run_bolt_v3_live_node")
+        .expect("operator harness should use production live runner");
+    let wait_index = harness
+        .find("to_refs_after_operator_post_run_proofs")
+        .expect("operator harness should wait for post-run operator proofs");
+
+    assert!(runner_index < wait_index);
 }
 
 #[test]
@@ -543,11 +566,7 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
                 &root_hash,
                 blocked_runtime_capture_ref,
             )?,
-            preflight
-                .block_reasons
-                .first()
-                .cloned()
-                .unwrap_or(Phase8CanaryBlockReason::BlockedBeforeLiveOrder),
+            preflight.block_reasons,
         );
         evidence.write_json_file(&envelope.canary_evidence_path)?;
         anyhow::bail!("phase8 canary preflight blocked before live runner");
@@ -571,8 +590,13 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
                 .await
                 .map_err(anyhow::Error::from)?;
             let admitted_order_count = node.admitted_order_count();
-            let (decision_evidence_ref, live_order_ref, result_refs) =
-                result_paths.to_refs(&pre_run_snapshot, &runtime_capture.reference.run_id)?;
+            let (decision_evidence_ref, live_order_ref, result_refs) = result_paths
+                .to_refs_after_operator_post_run_proofs(
+                    &pre_run_snapshot,
+                    &runtime_capture.reference.run_id,
+                    &loaded,
+                )
+                .await?;
             let evidence = Phase8CanaryEvidence::live_canary_proof(
                 evidence_input,
                 decision_evidence_ref,
@@ -850,6 +874,40 @@ impl Phase8OperatorLiveResultPaths {
                 post_run_hygiene_ref: phase8_operator_evidence_ref(&self.post_run_hygiene_path)?,
             },
         ))
+    }
+
+    async fn to_refs_after_operator_post_run_proofs(
+        &self,
+        snapshot: &Phase8OperatorLiveResultSnapshot,
+        run_id: &str,
+        loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    ) -> anyhow::Result<(
+        Phase8EvidenceRef,
+        Phase8LiveOrderRef,
+        Phase8LiveCanaryResultRefs,
+    )> {
+        let wait_seconds = loaded
+            .root
+            .nautilus
+            .timeout_reconciliation_seconds
+            .saturating_add(loaded.root.nautilus.timeout_shutdown_seconds);
+        let poll_interval = Duration::from_secs(loaded.root.nautilus.timeout_shutdown_seconds);
+        let deadline = Instant::now() + Duration::from_secs(wait_seconds);
+
+        loop {
+            match self.to_refs(snapshot, run_id) {
+                Ok(refs) => return Ok(refs),
+                Err(error) => {
+                    if Instant::now() >= deadline {
+                        anyhow::bail!(
+                            "phase8 post-run operator evidence did not become ready within nautilus.timeout_reconciliation_seconds + nautilus.timeout_shutdown_seconds; last error: {error}"
+                        );
+                    }
+                }
+            }
+
+            tokio::time::sleep(poll_interval).await;
+        }
     }
 
     fn assert_proof_content(&self, run_id: &str) -> anyhow::Result<()> {

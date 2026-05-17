@@ -74,7 +74,7 @@ LIVE_NODE_NEXTEST_BINARIES = (
 )
 LIVE_NODE_NEXTEST_FILTER = " | ".join(f"binary(={binary})" for binary in LIVE_NODE_NEXTEST_BINARIES)
 BUILD_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*(?:\}\})?\s*$")
-CHECK_AARCH64_JOB_IF_RE = re.compile(r"^    if:\s*.*$")
+CHECK_AARCH64_JOB_LEVEL_IF_RE = re.compile(r"^    if:\s*.*$")
 CHECK_AARCH64_STANDALONE_IF_RE = re.compile(
     r"^\s+(?:-\s*)?if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*!=\s*['\"]true['\"]\s*(?:\}\})?\s*$"
 )
@@ -707,10 +707,6 @@ def check_aarch64_installs_cross_compiler_packages(job_lines: list[str]) -> bool
     return "gcc-aarch64-linux-gnu" in text and "libc6-dev-arm64-cross" in text
 
 
-def block_has_line_matching(block: list[str], pattern: re.Pattern[str]) -> bool:
-    return any(pattern.match(strip_comment(line)) for line in block)
-
-
 def check_aarch64_has_coverage_owner_step(job_lines: list[str]) -> bool:
     for block in step_blocks(job_lines):
         text = uncommented_text(block)
@@ -748,7 +744,7 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
     blocks = step_blocks(job_lines)
     for message, matches in checks:
         for block in blocks:
-            if matches(block) and not block_has_line_matching(block, CHECK_AARCH64_STANDALONE_IF_RE):
+            if matches(block) and not has_line_matching(block, CHECK_AARCH64_STANDALONE_IF_RE):
                 errors.append(message)
                 break
     return errors
@@ -947,8 +943,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "check-aarch64" in jobs:
         if "detector" not in extract_needs(jobs["check-aarch64"]):
             errors.append("check-aarch64 needs detector")
-        if has_line_matching(jobs["check-aarch64"], CHECK_AARCH64_JOB_IF_RE):
-            errors.append("check-aarch64 job must stay present when build_required=true")
+        if has_line_matching(jobs["check-aarch64"], CHECK_AARCH64_JOB_LEVEL_IF_RE):
+            errors.append("check-aarch64 must have no job-level if condition")
         if not check_aarch64_has_coverage_owner_step(jobs["check-aarch64"]):
             errors.append("check-aarch64 must document build-lane aarch64 coverage delegation")
         if "just check-aarch64" not in uncommented_text(jobs["check-aarch64"]):

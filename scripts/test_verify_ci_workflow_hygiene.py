@@ -647,7 +647,7 @@ def main() -> int:
         ),
     )
     assert_error(
-        "check-aarch64 job must stay present when build_required=true",
+        "check-aarch64 must have no job-level if condition",
         replace_once(
             BASE_WORKFLOW,
             "  check-aarch64:\n    name: check-aarch64\n    needs: detector\n    runs-on: ubuntu-latest",

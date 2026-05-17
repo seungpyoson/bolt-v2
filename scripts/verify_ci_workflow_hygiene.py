@@ -512,18 +512,14 @@ def consume_assignment_words(tokens: list[str], index: int) -> int:
     return index
 
 
-def compact_short_options_without_argument(token: str, options_without_argument: set[str]) -> bool:
-    if len(token) <= 2 or token.startswith("--") or not token.startswith("-"):
-        return False
-    return all(f"-{option}" in options_without_argument for option in token[1:])
-
-
 def consume_option_prefix(
     tokens: list[str],
     index: int,
     options_with_argument: set[str],
     options_without_argument: set[str],
 ) -> int | None:
+    short_options_with_argument = {option for option in options_with_argument if re.match(r"^-[A-Za-z0-9]$", option)}
+    short_options_without_argument = {option for option in options_without_argument if re.match(r"^-[A-Za-z0-9]$", option)}
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
@@ -539,11 +535,24 @@ def consume_option_prefix(
         if token in options_without_argument:
             index += 1
             continue
-        if len(token) > 2 and token[:2] in options_with_argument:
-            index += 1
-            continue
-        if compact_short_options_without_argument(token, options_without_argument):
-            index += 1
+        if len(token) > 2 and token.startswith("-") and not token.startswith("--"):
+            offset = 1
+            while offset < len(token):
+                option = f"-{token[offset]}"
+                if option in short_options_without_argument:
+                    offset += 1
+                    continue
+                if option in short_options_with_argument:
+                    if offset + 1 < len(token):
+                        index += 1
+                    elif index + 1 < len(tokens):
+                        index += 2
+                    else:
+                        return None
+                    break
+                return None
+            else:
+                index += 1
             continue
         break
     return index

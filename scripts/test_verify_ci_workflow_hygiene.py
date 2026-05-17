@@ -1053,6 +1053,16 @@ def main() -> int:
             BASE_WORKFLOW,
             "      - run: just deny",
             """      - run: |
+          env -iu RUSTFLAGS cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
           { cargo install cargo-deny --locked; }
           just deny""",
         ),

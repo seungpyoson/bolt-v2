@@ -33,6 +33,13 @@ on:
     branches: [main]
     tags: ["v*"]
 
+concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('pr-{0}', github.event.number)
+        || format('{0}-{1}', github.ref_name, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
   actions: read
@@ -627,6 +634,21 @@ def replace_once(text: str, old: str, new: str) -> str:
     return text.replace(old, new, 1)
 
 
+def without_pr_concurrency(workflow: str) -> str:
+    return replace_once(
+        workflow,
+        """concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('pr-{0}', github.event.number)
+        || format('{0}-{1}', github.ref_name, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+""",
+        "",
+    )
+
+
 def without_inline_need(line: str, job: str) -> str:
     return line.replace(f"{job}, ", "").replace(f", {job}", "")
 
@@ -732,6 +754,56 @@ def assert_nextest_live_node_group_covers_bolt_v3_builders() -> None:
 def main() -> int:
     assert_clean()
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
+    assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
+    assert_error(
+        "concurrency group must key pull_request runs by PR number",
+        replace_once(BASE_WORKFLOW, "format('pr-{0}', github.event.number)", "github.ref_name"),
+    )
+    assert_error(
+        "concurrency group must keep non-PR runs isolated by ref and SHA",
+        replace_once(BASE_WORKFLOW, "format('{0}-{1}', github.ref_name, github.sha)", "github.ref_name"),
+    )
+    assert_error(
+        "cancel-in-progress must be limited to pull_request events",
+        replace_once(
+            BASE_WORKFLOW,
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+            "cancel-in-progress: true",
+        ),
+    )
+    assert_error(
+        "concurrency group must branch on pull_request event",
+        replace_once(
+            BASE_WORKFLOW,
+            """  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('pr-{0}', github.event.number)
+        || format('{0}-{1}', github.ref_name, github.sha) }}""",
+            "  group: format('pr-{0}', github.event.number)",
+        ),
+    )
+    assert_error(
+        "concurrency group must branch on pull_request event",
+        replace_once(
+            BASE_WORKFLOW,
+            "github.event_name == 'pull_request'\n        &&",
+            "github.event_name != 'pull_request'\n        &&",
+        ),
+    )
+    assert_error(
+        "concurrency group must key pull_request runs by PR number",
+        replace_once(
+            BASE_WORKFLOW,
+            """  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('pr-{0}', github.event.number)
+        || format('{0}-{1}', github.ref_name, github.sha) }}""",
+            """  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('{0}-{1}', github.ref_name, github.sha)
+        || format('pr-{0}', github.event.number) }}""",
+        ),
+    )
     assert_parse_jobs_strips_comments()
     assert_strip_comment_handles_single_quoted_backslash()
     assert_required_job_indentation_is_actionable()

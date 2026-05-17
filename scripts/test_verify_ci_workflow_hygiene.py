@@ -82,7 +82,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}
+          save-if: ${{ github.job == 'test-archive' }}
       - name: Install cargo-deny
         uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
         with:
@@ -108,7 +108,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}
+          save-if: ${{ github.job == 'test-archive' }}
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
@@ -145,7 +145,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}
+          save-if: ${{ github.job == 'test-archive' }}
       - uses: actions/cache@example
         if: needs.detector.outputs.build_required != 'true'
         with:
@@ -171,7 +171,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}
+          save-if: ${{ github.job == 'test-archive' }}
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
@@ -198,7 +198,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}
+          save-if: ${{ github.job == 'test-archive' }}
       - name: Restore nextest archive
         id: nextest-archive-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -297,7 +297,7 @@ jobs:
           cache-bin: false
           cache-targets: false
           shared-key: cargo-registry-git-v1
-          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}
+          save-if: ${{ github.job == 'test-archive' }}
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
@@ -971,6 +971,14 @@ def main() -> int:
         ),
     )
     assert_error(
+        "check-aarch64 managed target cache must run only when build_required is not true",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - uses: actions/cache@example\n        if: needs.detector.outputs.build_required != 'true'",
+            "      - uses: actions/cache@example",
+        ),
+    )
+    assert_error(
         "check-aarch64 command must run only when build_required is not true",
         replace_once(
             BASE_WORKFLOW,
@@ -1019,6 +1027,22 @@ def main() -> int:
         ),
     )
     assert_error(
+        "deny shared Cargo registry/git cache must not include target directories",
+        replace_once(
+            BASE_WORKFLOW,
+            "          cache-targets: false\n          shared-key: cargo-registry-git-v1",
+            "          cache-targets: false\n          cache-directories:\n            - ${{ steps.setup.outputs.managed_target_dir }}\n          shared-key: cargo-registry-git-v1",
+        ),
+    )
+    assert_error(
+        "deny must use only shared Cargo registry/git rust-cache blocks",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Install cargo-deny\n",
+            "      - uses: Swatinem/rust-cache@example\n        with:\n          cache-on-failure: true\n          cache-bin: true\n          cache-targets: true\n          key: deny-targets\n      - name: Install cargo-deny\n",
+        ),
+    )
+    assert_error(
         "clippy must use isolated managed target cache",
         replace_once(
             BASE_WORKFLOW,
@@ -1038,7 +1062,7 @@ def main() -> int:
         "shared Cargo registry/git cache save must be single-owner",
         replace_once(
             BASE_WORKFLOW,
-            "          save-if: ${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}",
+            "          save-if: ${{ github.job == 'test-archive' }}",
             "          save-if: true",
         ),
     )

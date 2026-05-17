@@ -7,11 +7,12 @@ Fields:
 - `shared_key`: `cargo-registry-git-v1`
 - `cache_targets`: `false`
 - `cache_bin`: `false`
-- `save_if`: `github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v')`
+- `save_if`: `github.job == 'test-archive'`
 
 Validation:
 
 - Present in deny, clippy, check-aarch64, source-fence, test-archive, and build jobs.
+- Tag reuse has no shared cache save owner; it reuses same-SHA main artifacts instead of running build/test archive lanes.
 - No `cache-directories` in rust-cache blocks.
 
 ## ManagedTargetCache

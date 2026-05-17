@@ -24,4 +24,4 @@
 
 ## Decision: Single save owner for shared registry/git cache
 
-**Rationale**: All jobs can restore the shared key, but only `test-archive` should save on normal PR/main CI. Tag-only runs skip test-archive, so `build` is allowed to save there.
+**Rationale**: All jobs can restore the shared key, but only `test-archive` should save on PR/main CI. Tag reuse runs do not have a shared cache save owner because they skip build/test archive lanes and reuse the same-SHA main artifact path.

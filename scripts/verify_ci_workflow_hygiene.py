@@ -226,7 +226,7 @@ TEST_ARCHIVE_UPLOAD_ACTION = "uses: actions/upload-artifact@043fb46d1a93c77aae65
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
 SHARED_REGISTRY_CACHE_KEY = "cargo-registry-git-v1"
-SHARED_REGISTRY_SAVE_IF = "${{ github.job == 'test-archive' || startsWith(github.ref, 'refs/tags/v') }}"
+SHARED_REGISTRY_SAVE_IF = "${{ github.job == 'test-archive' }}"
 REGISTRY_CACHE_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
 MANAGED_TARGET_CACHE_KEYS = {
     "clippy": "clippy-host",
@@ -500,7 +500,7 @@ def block_has_target_dir_opt_in(block: list[str]) -> bool:
 
 def block_has_input(block: list[str], name: str, value: str | None = None) -> bool:
     if value is None:
-        pattern = re.compile(rf"^\s+{re.escape(name)}:\s*\S+.*$")
+        pattern = re.compile(rf"^\s+{re.escape(name)}:\s*(?:\S+.*)?$")
     else:
         pattern = re.compile(rf"^\s+{re.escape(name)}:\s*{re.escape(value)}\s*$")
     return any(pattern.match(strip_comment(line)) for line in block)
@@ -548,15 +548,15 @@ def shared_registry_cache_errors(job: str, job_lines: list[str]) -> list[str]:
         return [f"{job} must use shared Cargo registry/git cache key"]
 
     errors: list[str] = []
-    for block in shared_blocks:
+    for block in blocks:
+        if not block_has_input(block, "shared-key", SHARED_REGISTRY_CACHE_KEY):
+            errors.append(f"{job} must use only shared Cargo registry/git rust-cache blocks")
         if not block_has_input(block, "cache-targets", "false"):
             errors.append(f"{job} shared Cargo registry/git cache must disable target caching")
         if not block_has_input(block, "cache-bin", "false"):
             errors.append(f"{job} shared Cargo registry/git cache must disable cargo bin caching")
         if not block_has_input(block, "save-if", SHARED_REGISTRY_SAVE_IF):
             errors.append("shared Cargo registry/git cache save must be single-owner")
-
-    for block in blocks:
         if block_has_input(block, "cache-directories"):
             errors.append(f"{job} shared Cargo registry/git cache must not include target directories")
     return errors
@@ -566,7 +566,14 @@ def block_is_shared_registry_cache(block: list[str]) -> bool:
     return (
         block_has_input(block, "shared-key", SHARED_REGISTRY_CACHE_KEY)
         and block_has_input(block, "cache-targets", "false")
+        and block_has_input(block, "cache-bin", "false")
         and not block_has_input(block, "cache-directories")
+    )
+
+
+def block_uses_managed_target_cache(block: list[str]) -> bool:
+    return any("actions/cache@" in strip_comment(line) for line in block) and block_has_input(
+        block, "path", "${{ steps.setup.outputs.managed_target_dir }}"
     )
 
 
@@ -963,6 +970,10 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
         (
             "check-aarch64 cache must run only when build_required is not true",
             lambda block: any("Swatinem/rust-cache" in line for line in block),
+        ),
+        (
+            "check-aarch64 managed target cache must run only when build_required is not true",
+            block_uses_managed_target_cache,
         ),
         (
             "check-aarch64 command must run only when build_required is not true",

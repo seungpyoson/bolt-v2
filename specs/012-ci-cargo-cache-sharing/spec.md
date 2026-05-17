@@ -24,7 +24,7 @@ As the maintainer, I can retain target-dir reuse for compile-heavy jobs while ke
 - **FR-001**: `deny`, `clippy`, `check-aarch64`, `source-fence`, `test-archive`, and `build` MUST use shared Cargo registry/git caching with `shared-key: cargo-registry-git-v1`.
 - **FR-002**: Shared Cargo registry/git cache steps MUST set `cache-targets: false` and `cache-bin: false`.
 - **FR-003**: Shared Cargo registry/git cache steps MUST NOT include `cache-directories`.
-- **FR-004**: Shared Cargo registry/git cache saves MUST be single-owner: `test-archive` for normal CI and `build` for tag-only flow.
+- **FR-004**: Shared Cargo registry/git cache saves MUST be single-owner: `test-archive` only. Tag reuse paths MUST NOT claim a shared cache save owner because tag CI reuses same-SHA main artifacts instead of running the build/test archive lanes.
 - **FR-005**: Managed target dirs MUST use separate `actions/cache` keys for `clippy-host`, `check-aarch64-dev`, `source-fence-test`, and `build-aarch64-release`.
 - **FR-006**: The verifier MUST fail closed if any cache invariant above is weakened.
 - **FR-007**: The change MUST NOT weaken source-fence, test, build, clippy, deny, deploy, or aggregate gate requirements.

@@ -958,6 +958,11 @@ def deploy_logs_reused_evidence(job_lines: list[str]) -> bool:
     return all(item in text for item in required)
 
 
+def deploy_verifies_downloaded_artifact_checksum(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return "cd artifact" in text and "sha256sum -c bolt-v2.sha256" in text
+
+
 def job_permission_has(job_lines: list[str], permission: str, value: str) -> bool:
     return any(re.match(rf"^\s+{re.escape(permission)}:\s*{re.escape(value)}\s*$", strip_comment(line)) for line in job_lines)
 
@@ -1225,6 +1230,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("deploy must download same-SHA main artifact by artifact ID")
         if not deploy_logs_reused_evidence(jobs["deploy"]):
             errors.append("deploy must log reused source run, check suite, artifact, and SHA")
+        if not deploy_verifies_downloaded_artifact_checksum(jobs["deploy"]):
+            errors.append("deploy must verify downloaded artifact checksum")
 
     for job, lines in jobs.items():
         uses_target_dir = job_uses_managed_target_dir(lines)

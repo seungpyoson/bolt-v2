@@ -409,6 +409,10 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ needs.same-sha-main-evidence.outputs.source_run_id }}
           path: artifact/
+      - name: Verify downloaded artifact checksum
+        run: |
+          cd artifact
+          sha256sum -c bolt-v2.sha256
       - run: echo deploy
 """
 
@@ -2018,6 +2022,18 @@ def main() -> int:
     assert_error(
         "deploy must log reused source run",
         replace_once(BASE_WORKFLOW, '          echo "check_suite_id=${{ needs.same-sha-main-evidence.outputs.check_suite_id }}"\n', ""),
+    )
+    assert_error(
+        "deploy must verify downloaded artifact checksum",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Verify downloaded artifact checksum
+        run: |
+          cd artifact
+          sha256sum -c bolt-v2.sha256
+""",
+            "",
+        ),
     )
     assert_error(
         "clippy uses managed target dir but setup does not opt in",

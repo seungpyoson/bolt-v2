@@ -94,6 +94,17 @@ def select(runs, jobs=None, artifacts=None):
     )
 
 
+def select_with_payloads(runs, jobs_by_run_id, artifacts_by_run_id):
+    module = load_script()
+    return module.select_same_sha_main_evidence(
+        runs_payload={"workflow_runs": runs},
+        jobs_payload_by_run_id=jobs_by_run_id,
+        artifacts_payload_by_run_id=artifacts_by_run_id,
+        expected_sha=SHA,
+        current_run_id=24623274722,
+    )
+
+
 def assert_raises(fragment: str, func) -> None:
     try:
         func()
@@ -116,6 +127,45 @@ def assert_selects_exact_main_run() -> None:
         raise AssertionError(evidence)
 
 
+def assert_rejects_current_tag_run_as_source() -> None:
+    assert_raises(
+        "no successful main CI run",
+        lambda: select([run_payload(id=24623274722)]),
+    )
+
+
+def assert_selects_later_complete_candidate_after_newer_incomplete_candidate() -> None:
+    newer_incomplete = run_payload(id=24623219989, updated_at="2026-05-17T10:00:00Z")
+    older_complete = run_payload(id=24623219988, updated_at="2026-05-17T09:00:00Z")
+    evidence = select_with_payloads(
+        [older_complete, newer_incomplete],
+        {
+            24623219988: {"jobs": required_jobs()},
+            24623219989: {"jobs": [job_payload for job_payload in required_jobs() if job_payload["name"] != "gate"]},
+        },
+        {
+            24623219988: {"artifacts": [artifact()]},
+            24623219989: {"artifacts": [artifact(workflow_run={"id": 24623219989, "head_branch": "main", "head_sha": SHA})]},
+        },
+    )
+    if evidence.source_run_id != "24623219988":
+        raise AssertionError(evidence)
+
+
+def assert_rejects_malformed_workflow_runs_payload() -> None:
+    module = load_script()
+    assert_raises(
+        "workflow runs payload is malformed",
+        lambda: module.select_same_sha_main_evidence(
+            runs_payload={"workflow_runs": {"id": 24623219988}},
+            jobs_payload_by_run_id={},
+            artifacts_payload_by_run_id={},
+            expected_sha=SHA,
+            current_run_id=24623274722,
+        ),
+    )
+
+
 def assert_rejects_non_main_or_wrong_sha_runs() -> None:
     assert_raises("no successful main CI run", lambda: select([run_payload(head_branch="release")]))
     assert_raises("no successful main CI run", lambda: select([run_payload(head_sha="0" * 40)]))
@@ -132,6 +182,20 @@ def assert_rejects_incomplete_required_jobs() -> None:
 
 def assert_rejects_untrusted_artifacts() -> None:
     assert_raises("artifact expired", lambda: select([run_payload()], artifacts=[artifact(expired=True)]))
+    assert_raises("missing artifact", lambda: select([run_payload()], artifacts=[]))
+    assert_raises("ambiguous", lambda: select([run_payload()], artifacts=[artifact(), artifact(id=6516430717)]))
+    assert_raises(
+        "workflow_run payload is malformed",
+        lambda: select([run_payload()], artifacts=[artifact(workflow_run="not-an-object")]),
+    )
+    wrong_run_artifact = artifact(
+        workflow_run={"id": 24623274722, "head_branch": "main", "head_sha": SHA}
+    )
+    assert_raises("artifact run ID", lambda: select([run_payload()], artifacts=[wrong_run_artifact]))
+    wrong_branch_artifact = artifact(
+        workflow_run={"id": 24623219988, "head_branch": "release", "head_sha": SHA}
+    )
+    assert_raises("artifact branch", lambda: select([run_payload()], artifacts=[wrong_branch_artifact]))
     wrong_sha_artifact = artifact(
         workflow_run={"id": 24623219988, "head_branch": "main", "head_sha": "0" * 40}
     )
@@ -186,6 +250,9 @@ def assert_api_failures_are_bounded() -> None:
 
 def main() -> int:
     assert_selects_exact_main_run()
+    assert_rejects_current_tag_run_as_source()
+    assert_selects_later_complete_candidate_after_newer_incomplete_candidate()
+    assert_rejects_malformed_workflow_runs_payload()
     assert_rejects_non_main_or_wrong_sha_runs()
     assert_rejects_incomplete_required_jobs()
     assert_rejects_untrusted_artifacts()

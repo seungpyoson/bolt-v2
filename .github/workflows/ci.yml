@@ -511,6 +511,8 @@ jobs:
               echo "clippy unexpectedly ran during tag reuse"
               exit 1
             fi
+            # Tag-side check-aarch64 is a topology no-op; the source main build
+            # required by same-sha-main-evidence carries real aarch64 coverage.
             if [[ "${{ needs.check-aarch64.result }}" != "success" ]]; then
               echo "check-aarch64 did not succeed during tag reuse"
               exit 1
@@ -608,6 +610,11 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ needs.same-sha-main-evidence.outputs.source_run_id }}
           path: artifact/
+
+      - name: Verify downloaded artifact checksum
+        run: |
+          cd artifact
+          sha256sum -c bolt-v2.sha256
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0

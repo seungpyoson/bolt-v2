@@ -102,6 +102,22 @@ BUILD_IF_RE = re.compile(
     r"^    if:\s*\$\{\{\s*!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*&&\s*"
     r"needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*\}\}\s*$"
 )
+PR_CONCURRENCY_EVENT_CHECKS = (
+    "github.event_name == 'pull_request'",
+    'github.event_name == "pull_request"',
+)
+PR_CONCURRENCY_PULL_REQUEST_GROUPS = (
+    "format('pr-{0}', github.event.number)",
+    'format("pr-{0}", github.event.number)',
+)
+PR_CONCURRENCY_NON_PR_GROUPS = (
+    "format('{0}-{1}', github.ref_name, github.sha)",
+    'format("{0}-{1}", github.ref_name, github.sha)',
+)
+PR_CONCURRENCY_CANCEL_LINES = (
+    "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+    'cancel-in-progress: ${{ github.event_name == "pull_request" }}',
+)
 GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
 DEPLOY_IF_RE = re.compile(
     r"^    if:\s*\$\{\{\s*always\(\)\s*&&\s*startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*&&\s*"
@@ -312,6 +328,41 @@ def parse_jobs(workflow_text: str) -> dict[str, list[str]]:
             jobs[current].append(clean)
 
     return jobs
+
+
+def top_level_block(workflow_text: str, key: str) -> list[str]:
+    lines = workflow_text.splitlines()
+    start_line = f"{key}:"
+    for index, line in enumerate(lines):
+        clean = strip_comment(line)
+        if clean != start_line:
+            continue
+        block: list[str] = []
+        for child_line in lines[index + 1 :]:
+            child_clean = strip_comment(child_line)
+            if child_clean and not child_clean.startswith((" ", "\t")):
+                break
+            block.append(child_clean)
+        return block
+    return []
+
+
+def verify_pr_concurrency(workflow_text: str) -> list[str]:
+    block = top_level_block(workflow_text, "concurrency")
+    if not block:
+        return ["workflow must define PR-only concurrency"]
+
+    text = "\n".join(block)
+    errors: list[str] = []
+    if not any(fragment in text for fragment in PR_CONCURRENCY_EVENT_CHECKS):
+        errors.append("concurrency group must branch on pull_request event")
+    if not any(fragment in text for fragment in PR_CONCURRENCY_PULL_REQUEST_GROUPS):
+        errors.append("concurrency group must key pull_request runs by PR number")
+    if not any(fragment in text for fragment in PR_CONCURRENCY_NON_PR_GROUPS):
+        errors.append("concurrency group must keep non-PR runs isolated by ref and SHA")
+    if not any(line in text for line in PR_CONCURRENCY_CANCEL_LINES):
+        errors.append("cancel-in-progress must be limited to pull_request events")
+    return errors
 
 
 def job_header_indent_errors(workflow_text: str) -> list[str]:
@@ -1068,6 +1119,8 @@ def extract_action_output_block(action_text: str, output_name: str) -> list[str]
 def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
     jobs = parse_jobs(workflow_text)
+
+    errors.extend(verify_pr_concurrency(workflow_text))
 
     if not workflow_permissions_have_actions_read(workflow_text):
         errors.append("workflow permissions must include actions: read")

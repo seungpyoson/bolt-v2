@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -24,6 +24,10 @@ const PHASE8_REQUIRED_LIVE_ORDER_CAP: u32 = 1;
 const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;
 const PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION: u32 = 1;
 const PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND: &str = "phase8_operator_approval_consumption";
+const PHASE8_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
+const PHASE8_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
+const PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND: &str = "market_selection_result";
+const PHASE8_MARKET_SELECTION_SOURCE: &str = "nt_runtime_selection_snapshot";
 pub const PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID: &str = "phase8-blocked-before-live-runner";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -50,6 +54,22 @@ pub enum Phase8CanaryBlockReason {
     LiveOrderCountCapNotOne,
     NonPositiveRealizedVolatility,
     NonPositiveTimeToExpiry,
+    NonPositiveSpotPrice,
+    NonPositivePriceToBeatValue,
+    NonPositiveExpectedEdgeBasisPoints,
+    NonPositiveWorstCaseEdgeBasisPoints,
+    EdgeBasisPointsMismatch,
+    NonPositiveThetaScaledMinEdgeBps,
+    NegativeFeeRateBasisPoints,
+    MissingPriceToBeatSource,
+    UnsupportedPriceToBeatSource,
+    MissingReferenceQuoteTsEvent,
+    InvalidPricingKurtosis,
+    NegativeThetaDecayFactor,
+    MissingSelectedMarketIdentity,
+    InvalidMarketSelectionOutcome,
+    InvalidMarketSelectionBinding,
+    InvalidSelectedMarketWindow,
     DecisionEvidenceUnavailable,
     BlockedBeforeLiveOrder,
     RootConfigHashUnavailable,
@@ -59,6 +79,22 @@ pub enum Phase8CanaryBlockReason {
 pub struct Phase8StrategyInputSafetyAudit {
     status: Phase8StrategyInputAuditStatus,
     block_reasons: Vec<Phase8CanaryBlockReason>,
+}
+
+pub struct Phase8StrategyInputSafetyInputs<'a> {
+    pub realized_volatility: Decimal,
+    pub seconds_to_expiry: u64,
+    pub spot_price: Decimal,
+    pub price_to_beat_value: Decimal,
+    pub expected_edge_basis_points: Decimal,
+    pub worst_case_edge_basis_points: Decimal,
+    pub theta_scaled_min_edge_bps: Decimal,
+    pub fee_rate_basis_points: Decimal,
+    pub price_to_beat_source: &'a str,
+    pub expected_price_to_beat_source: &'a str,
+    pub reference_quote_ts_event: u64,
+    pub pricing_kurtosis: Decimal,
+    pub theta_decay_factor: Decimal,
 }
 
 impl Phase8StrategyInputSafetyAudit {
@@ -76,13 +112,52 @@ impl Phase8StrategyInputSafetyAudit {
         }
     }
 
-    pub fn from_strategy_inputs(realized_volatility: Decimal, seconds_to_expiry: u64) -> Self {
+    pub fn from_strategy_inputs(inputs: Phase8StrategyInputSafetyInputs<'_>) -> Self {
         let mut block_reasons = Vec::new();
-        if realized_volatility <= Decimal::ZERO {
+        if inputs.realized_volatility <= Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveRealizedVolatility);
         }
-        if seconds_to_expiry == 0 {
+        if inputs.seconds_to_expiry == 0 {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveTimeToExpiry);
+        }
+        if inputs.spot_price <= Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveSpotPrice);
+        }
+        if inputs.price_to_beat_value <= Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NonPositivePriceToBeatValue);
+        }
+        if inputs.expected_edge_basis_points <= Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveExpectedEdgeBasisPoints);
+        }
+        if inputs.worst_case_edge_basis_points <= Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveWorstCaseEdgeBasisPoints);
+        }
+        if inputs.expected_edge_basis_points != inputs.worst_case_edge_basis_points {
+            block_reasons.push(Phase8CanaryBlockReason::EdgeBasisPointsMismatch);
+        }
+        if inputs.theta_scaled_min_edge_bps <= Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveThetaScaledMinEdgeBps);
+        }
+        if inputs.fee_rate_basis_points < Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NegativeFeeRateBasisPoints);
+        }
+        let price_to_beat_source = inputs.price_to_beat_source.trim();
+        let expected_price_to_beat_source = inputs.expected_price_to_beat_source.trim();
+        if price_to_beat_source.is_empty() {
+            block_reasons.push(Phase8CanaryBlockReason::MissingPriceToBeatSource);
+        } else if expected_price_to_beat_source.is_empty()
+            || price_to_beat_source != expected_price_to_beat_source
+        {
+            block_reasons.push(Phase8CanaryBlockReason::UnsupportedPriceToBeatSource);
+        }
+        if inputs.reference_quote_ts_event == 0 {
+            block_reasons.push(Phase8CanaryBlockReason::MissingReferenceQuoteTsEvent);
+        }
+        if inputs.pricing_kurtosis <= Decimal::new(-6, 0) {
+            block_reasons.push(Phase8CanaryBlockReason::InvalidPricingKurtosis);
+        }
+        if inputs.theta_decay_factor < Decimal::ZERO {
+            block_reasons.push(Phase8CanaryBlockReason::NegativeThetaDecayFactor);
         }
         if block_reasons.is_empty() {
             Self::approved()
@@ -94,6 +169,7 @@ impl Phase8StrategyInputSafetyAudit {
     pub fn from_evidence_file(
         path: impl AsRef<Path>,
         expected_sha256: impl AsRef<str>,
+        expected_price_to_beat_source: impl AsRef<str>,
     ) -> Result<Self> {
         let path = path.as_ref();
         let expected_sha256 = expected_sha256.as_ref().trim();
@@ -102,33 +178,117 @@ impl Phase8StrategyInputSafetyAudit {
                 "required phase8 strategy input evidence sha256 is empty"
             ));
         }
-        let current_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(path)?;
-        if current_sha256 != expected_sha256 {
-            return Err(anyhow!(
-                "phase8 strategy input evidence sha256 does not match current evidence"
-            ));
-        }
-        let file = fs::File::open(path).map_err(|source| {
-            anyhow!(
-                "failed to open phase8 strategy input evidence `{}`: {source}",
-                path.display()
-            )
-        })?;
-        let raw: Phase8StrategyInputEvidenceFile = serde_json::from_reader(BufReader::new(file))
-            .map_err(|source| {
-                anyhow!(
-                    "failed to parse phase8 strategy input evidence `{}`: {source}",
-                    path.display()
-                )
-            })?;
+        let raw: Phase8StrategyInputEvidenceFile =
+            Phase8OperatorApprovalEnvelope::read_json_file_with_expected_sha256(
+                path,
+                expected_sha256,
+                "phase8 strategy input evidence",
+                "phase8 strategy input evidence sha256 does not match current evidence",
+            )?;
         let realized_volatility =
             Decimal::from_str_exact(raw.realized_volatility.trim()).map_err(|source| {
                 anyhow!("failed to parse phase8 strategy input realized_volatility: {source}")
             })?;
-        Ok(Self::from_strategy_inputs(
+        let spot_price = Decimal::from_str_exact(raw.spot_price.trim()).map_err(|source| {
+            anyhow!("failed to parse phase8 strategy input spot_price: {source}")
+        })?;
+        let price_to_beat_value =
+            Decimal::from_str_exact(raw.price_to_beat_value.trim()).map_err(|source| {
+                anyhow!("failed to parse phase8 strategy input price_to_beat_value: {source}")
+            })?;
+        let expected_edge_basis_points =
+            Decimal::from_str_exact(raw.expected_edge_basis_points.trim()).map_err(|source| {
+                anyhow!(
+                    "failed to parse phase8 strategy input expected_edge_basis_points: {source}"
+                )
+            })?;
+        let worst_case_edge_basis_points =
+            Decimal::from_str_exact(raw.worst_case_edge_basis_points.trim()).map_err(|source| {
+                anyhow!(
+                    "failed to parse phase8 strategy input worst_case_edge_basis_points: {source}"
+                )
+            })?;
+        let fee_rate_basis_points = Decimal::from_str_exact(raw.fee_rate_basis_points.trim())
+            .map_err(|source| {
+                anyhow!("failed to parse phase8 strategy input fee_rate_basis_points: {source}")
+            })?;
+        let pricing_kurtosis =
+            Decimal::from_str_exact(raw.pricing_kurtosis.trim()).map_err(|source| {
+                anyhow!("failed to parse phase8 strategy input pricing_kurtosis: {source}")
+            })?;
+        let theta_decay_factor =
+            Decimal::from_str_exact(raw.theta_decay_factor.trim()).map_err(|source| {
+                anyhow!("failed to parse phase8 strategy input theta_decay_factor: {source}")
+            })?;
+        let theta_scaled_min_edge_bps =
+            Decimal::from_str_exact(raw.theta_scaled_min_edge_bps.trim()).map_err(|source| {
+                anyhow!("failed to parse phase8 strategy input theta_scaled_min_edge_bps: {source}")
+            })?;
+        let mut audit = Self::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
             realized_volatility,
-            raw.seconds_to_expiry,
-        ))
+            seconds_to_expiry: raw.seconds_to_expiry,
+            spot_price,
+            price_to_beat_value,
+            expected_edge_basis_points,
+            worst_case_edge_basis_points,
+            theta_scaled_min_edge_bps,
+            fee_rate_basis_points,
+            price_to_beat_source: &raw.price_to_beat_source,
+            expected_price_to_beat_source: expected_price_to_beat_source.as_ref(),
+            reference_quote_ts_event: raw.reference_quote_ts_event,
+            pricing_kurtosis,
+            theta_decay_factor,
+        });
+        let market_selection_outcome = raw.market_selection_outcome.trim();
+        audit.block_if(
+            market_selection_outcome.is_empty()
+                || raw.polymarket_condition_id.trim().is_empty()
+                || raw.polymarket_market_slug.trim().is_empty()
+                || raw.polymarket_question_id.trim().is_empty()
+                || raw.up_instrument_id.trim().is_empty()
+                || raw.down_instrument_id.trim().is_empty(),
+            Phase8CanaryBlockReason::MissingSelectedMarketIdentity,
+        );
+        audit.block_if(
+            !market_selection_outcome.is_empty()
+                && !phase8_market_selection_outcome_is_live_entry_candidate(
+                    market_selection_outcome,
+                ),
+            Phase8CanaryBlockReason::InvalidMarketSelectionOutcome,
+        );
+        let source_bound_candidate_market_start_timestamps_milliseconds =
+            phase8_source_bound_candidate_market_start_timestamps(&raw, market_selection_outcome)?;
+        let candidate_market_start_timestamps_milliseconds = match market_selection_outcome {
+            PHASE8_MARKET_SELECTION_OUTCOME_NEXT => {
+                source_bound_candidate_market_start_timestamps_milliseconds
+                    .as_deref()
+                    .unwrap_or(&[])
+            }
+            _ => raw
+                .candidate_market_start_timestamps_milliseconds
+                .as_deref()
+                .unwrap_or(&[]),
+        };
+        audit.block_if(
+            !market_selection_outcome.is_empty()
+                && !phase8_market_selection_outcome_matches_window(
+                    market_selection_outcome,
+                    raw.market_selection_timestamp_milliseconds,
+                    raw.polymarket_market_start_timestamp_milliseconds,
+                    raw.polymarket_market_end_timestamp_milliseconds,
+                    candidate_market_start_timestamps_milliseconds,
+                ),
+            Phase8CanaryBlockReason::InvalidMarketSelectionBinding,
+        );
+        audit.block_if(
+            raw.selected_market_observed_timestamp == u64::MIN
+                || raw.market_selection_timestamp_milliseconds == u64::MIN
+                || raw.polymarket_market_start_timestamp_milliseconds == u64::MIN
+                || raw.polymarket_market_end_timestamp_milliseconds
+                    <= raw.polymarket_market_start_timestamp_milliseconds,
+            Phase8CanaryBlockReason::InvalidSelectedMarketWindow,
+        );
+        Ok(audit)
     }
 
     pub fn is_approved(&self) -> bool {
@@ -138,12 +298,168 @@ impl Phase8StrategyInputSafetyAudit {
     pub fn block_reasons(&self) -> &[Phase8CanaryBlockReason] {
         &self.block_reasons
     }
+
+    fn block_if(&mut self, condition: bool, reason: Phase8CanaryBlockReason) {
+        if condition {
+            self.status = Phase8StrategyInputAuditStatus::Blocked;
+            self.block_reasons.push(reason);
+        }
+    }
+}
+
+fn phase8_source_bound_candidate_market_start_timestamps(
+    raw: &Phase8StrategyInputEvidenceFile,
+    market_selection_outcome: &str,
+) -> Result<Option<Vec<u64>>> {
+    if market_selection_outcome != PHASE8_MARKET_SELECTION_OUTCOME_NEXT {
+        return Ok(None);
+    }
+    let Some(source_path) = raw
+        .market_selection_source_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|source_path| !source_path.is_empty())
+    else {
+        return Ok(None);
+    };
+    let Some(source_sha256) = raw
+        .market_selection_source_sha256
+        .as_deref()
+        .map(str::trim)
+        .filter(|source_sha256| phase8_is_sha256_hex(source_sha256))
+    else {
+        return Ok(None);
+    };
+
+    phase8_reject_parent_dir(source_path, "market selection source evidence")?;
+    let source: Phase8MarketSelectionSourceEvidenceFile =
+        Phase8OperatorApprovalEnvelope::read_json_file_with_expected_sha256(
+            source_path,
+            source_sha256,
+            "phase8 market selection source evidence",
+            "phase8 market selection source evidence sha256 does not match current evidence",
+        )?;
+
+    if source.record_kind.trim() != PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND
+        || source.source.trim() != PHASE8_MARKET_SELECTION_SOURCE
+        || !phase8_market_selection_source_matches_strategy(raw, &source)
+    {
+        return Ok(None);
+    }
+    if let Some(reported_candidates) = raw.candidate_market_start_timestamps_milliseconds.as_ref()
+        && reported_candidates != &source.candidate_market_start_timestamps_milliseconds
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(source.candidate_market_start_timestamps_milliseconds))
+}
+
+fn phase8_market_selection_source_matches_strategy(
+    raw: &Phase8StrategyInputEvidenceFile,
+    source: &Phase8MarketSelectionSourceEvidenceFile,
+) -> bool {
+    source.market_selection_timestamp_milliseconds == raw.market_selection_timestamp_milliseconds
+        && source.market_selection_outcome.trim() == raw.market_selection_outcome.trim()
+        && source.polymarket_condition_id.trim() == raw.polymarket_condition_id.trim()
+        && source.polymarket_market_slug.trim() == raw.polymarket_market_slug.trim()
+        && source.polymarket_question_id.trim() == raw.polymarket_question_id.trim()
+        && source.up_instrument_id.trim() == raw.up_instrument_id.trim()
+        && source.down_instrument_id.trim() == raw.down_instrument_id.trim()
+        && source.selected_market_observed_timestamp == raw.selected_market_observed_timestamp
+        && source.polymarket_market_start_timestamp_milliseconds
+            == raw.polymarket_market_start_timestamp_milliseconds
+        && source.polymarket_market_end_timestamp_milliseconds
+            == raw.polymarket_market_end_timestamp_milliseconds
+}
+
+fn phase8_market_selection_outcome_is_live_entry_candidate(outcome: &str) -> bool {
+    outcome == PHASE8_MARKET_SELECTION_OUTCOME_CURRENT
+        || outcome == PHASE8_MARKET_SELECTION_OUTCOME_NEXT
+}
+
+fn phase8_market_selection_outcome_matches_window(
+    outcome: &str,
+    market_selection_timestamp_milliseconds: u64,
+    market_start_timestamp_milliseconds: u64,
+    market_end_timestamp_milliseconds: u64,
+    candidate_market_start_timestamps_milliseconds: &[u64],
+) -> bool {
+    match outcome {
+        PHASE8_MARKET_SELECTION_OUTCOME_CURRENT => {
+            market_start_timestamp_milliseconds <= market_selection_timestamp_milliseconds
+                && market_selection_timestamp_milliseconds < market_end_timestamp_milliseconds
+        }
+        PHASE8_MARKET_SELECTION_OUTCOME_NEXT => phase8_market_selection_start_is_nearest_next(
+            market_selection_timestamp_milliseconds,
+            market_start_timestamp_milliseconds,
+            candidate_market_start_timestamps_milliseconds,
+        ),
+        _ => true,
+    }
+}
+
+fn phase8_market_selection_start_is_nearest_next(
+    market_selection_timestamp_milliseconds: u64,
+    market_start_timestamp_milliseconds: u64,
+    candidate_market_start_timestamps_milliseconds: &[u64],
+) -> bool {
+    candidate_market_start_timestamps_milliseconds
+        .iter()
+        .copied()
+        .filter(|candidate_start_timestamp_milliseconds| {
+            *candidate_start_timestamp_milliseconds > market_selection_timestamp_milliseconds
+        })
+        .min()
+        == Some(market_start_timestamp_milliseconds)
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Phase8StrategyInputEvidenceFile {
     realized_volatility: String,
     seconds_to_expiry: u64,
+    spot_price: String,
+    price_to_beat_value: String,
+    expected_edge_basis_points: String,
+    worst_case_edge_basis_points: String,
+    fee_rate_basis_points: String,
+    price_to_beat_source: String,
+    reference_quote_ts_event: u64,
+    pricing_kurtosis: String,
+    theta_decay_factor: String,
+    theta_scaled_min_edge_bps: String,
+    market_selection_timestamp_milliseconds: u64,
+    candidate_market_start_timestamps_milliseconds: Option<Vec<u64>>,
+    market_selection_source_path: Option<String>,
+    market_selection_source_sha256: Option<String>,
+    market_selection_outcome: String,
+    polymarket_condition_id: String,
+    polymarket_market_slug: String,
+    polymarket_question_id: String,
+    up_instrument_id: String,
+    down_instrument_id: String,
+    selected_market_observed_timestamp: u64,
+    polymarket_market_start_timestamp_milliseconds: u64,
+    polymarket_market_end_timestamp_milliseconds: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Phase8MarketSelectionSourceEvidenceFile {
+    record_kind: String,
+    source: String,
+    market_selection_timestamp_milliseconds: u64,
+    candidate_market_start_timestamps_milliseconds: Vec<u64>,
+    market_selection_outcome: String,
+    polymarket_condition_id: String,
+    polymarket_market_slug: String,
+    polymarket_question_id: String,
+    up_instrument_id: String,
+    down_instrument_id: String,
+    selected_market_observed_timestamp: u64,
+    polymarket_market_start_timestamp_milliseconds: u64,
+    polymarket_market_end_timestamp_milliseconds: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -192,8 +508,10 @@ pub async fn evaluate_phase8_canary_preflight(
             Phase8CanaryPreflightStatus::RejectedByGate
         }
     };
-    if live_canary.is_some_and(|block| block.max_live_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP)
-    {
+    if !matches!(
+        live_canary,
+        Some(block) if block.max_live_order_count == PHASE8_REQUIRED_LIVE_ORDER_CAP
+    ) {
         block_reasons.push(Phase8CanaryBlockReason::LiveOrderCountCapNotOne);
     }
 
@@ -243,6 +561,7 @@ pub enum Phase8CanaryOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Phase8LiveOrderRef {
+    pub strategy_instance_id_hash: String,
     pub client_order_id_hash: String,
     pub venue_order_id_hash: String,
 }
@@ -253,6 +572,7 @@ pub struct Phase8LiveCanaryResultRefs {
     pub venue_order_state_ref: Phase8EvidenceRef,
     pub strategy_cancel_ref: Option<Phase8EvidenceRef>,
     pub restart_reconciliation_ref: Phase8EvidenceRef,
+    pub post_run_hygiene_ref: Phase8EvidenceRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -263,6 +583,8 @@ pub struct Phase8CanaryEvidence {
     pub ssm_manifest_sha256: String,
     pub ssm_manifest_ref: Phase8EvidenceRef,
     pub strategy_input_evidence_ref: Phase8EvidenceRef,
+    #[serde(skip)]
+    approved_strategy_instance_id_hash: String,
     pub approval_id_hash: String,
     pub max_live_order_count: u32,
     pub max_notional_per_order: String,
@@ -273,6 +595,7 @@ pub struct Phase8CanaryEvidence {
     pub venue_order_state_ref: Option<Phase8EvidenceRef>,
     pub strategy_cancel_ref: Option<Phase8EvidenceRef>,
     pub restart_reconciliation_ref: Option<Phase8EvidenceRef>,
+    pub post_run_hygiene_ref: Option<Phase8EvidenceRef>,
     pub runtime_capture_ref: Phase8RuntimeCaptureRef,
     pub nt_lifecycle_refs: Vec<Phase8NtLifecycleRef>,
     pub outcome: Phase8CanaryOutcome,
@@ -286,6 +609,7 @@ pub struct Phase8CanaryEvidenceInput {
     pub ssm_manifest_sha256: String,
     pub ssm_manifest_ref: Phase8EvidenceRef,
     pub strategy_input_evidence_ref: Phase8EvidenceRef,
+    pub approved_strategy_instance_id_hash: String,
     pub approval_id: String,
     pub max_live_order_count: u32,
     pub max_notional_per_order: Decimal,
@@ -304,6 +628,7 @@ impl Phase8CanaryEvidence {
             ssm_manifest_sha256: input.ssm_manifest_sha256,
             ssm_manifest_ref: input.ssm_manifest_ref,
             strategy_input_evidence_ref: input.strategy_input_evidence_ref,
+            approved_strategy_instance_id_hash: input.approved_strategy_instance_id_hash,
             approval_id_hash: sha256_text(&input.approval_id),
             max_live_order_count: input.max_live_order_count,
             max_notional_per_order: input.max_notional_per_order.to_string(),
@@ -318,6 +643,7 @@ impl Phase8CanaryEvidence {
             venue_order_state_ref: None,
             strategy_cancel_ref: None,
             restart_reconciliation_ref: None,
+            post_run_hygiene_ref: None,
             runtime_capture_ref: input.runtime_capture_ref,
             nt_lifecycle_refs: Vec::new(),
             outcome: Phase8CanaryOutcome::DryNoSubmitProof,
@@ -327,7 +653,7 @@ impl Phase8CanaryEvidence {
 
     pub fn blocked_before_submit(
         input: Phase8CanaryEvidenceInput,
-        block_reason: Phase8CanaryBlockReason,
+        block_reasons: Vec<Phase8CanaryBlockReason>,
     ) -> Self {
         Self {
             schema_version: PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION,
@@ -336,6 +662,7 @@ impl Phase8CanaryEvidence {
             ssm_manifest_sha256: input.ssm_manifest_sha256,
             ssm_manifest_ref: input.ssm_manifest_ref,
             strategy_input_evidence_ref: input.strategy_input_evidence_ref,
+            approved_strategy_instance_id_hash: input.approved_strategy_instance_id_hash,
             approval_id_hash: sha256_text(&input.approval_id),
             max_live_order_count: input.max_live_order_count,
             max_notional_per_order: input.max_notional_per_order.to_string(),
@@ -350,10 +677,11 @@ impl Phase8CanaryEvidence {
             venue_order_state_ref: None,
             strategy_cancel_ref: None,
             restart_reconciliation_ref: None,
+            post_run_hygiene_ref: None,
             runtime_capture_ref: input.runtime_capture_ref,
             nt_lifecycle_refs: Vec::new(),
             outcome: Phase8CanaryOutcome::BlockedBeforeSubmit,
-            block_reasons: vec![block_reason],
+            block_reasons,
         }
     }
 
@@ -369,6 +697,33 @@ impl Phase8CanaryEvidence {
                 "phase8 live canary proof admitted_order_count expected {PHASE8_REQUIRED_LIVE_ORDER_CAP} got {admitted_order_count}"
             ));
         }
+        validate_phase8_canary_input(&input)?;
+        validate_phase8_evidence_ref(stringify!(decision_evidence_ref), &decision_evidence_ref)?;
+        validate_phase8_live_order_ref(&live_order_ref)?;
+        if live_order_ref.strategy_instance_id_hash != input.approved_strategy_instance_id_hash {
+            return Err(anyhow!(
+                "phase8 live canary proof live_order_ref.strategy_instance_id_hash does not match approved financial envelope"
+            ));
+        }
+        validate_phase8_evidence_ref(
+            stringify!(nt_submit_event_ref),
+            &result_refs.nt_submit_event_ref,
+        )?;
+        validate_phase8_evidence_ref(
+            stringify!(venue_order_state_ref),
+            &result_refs.venue_order_state_ref,
+        )?;
+        if let Some(strategy_cancel_ref) = &result_refs.strategy_cancel_ref {
+            validate_phase8_evidence_ref(stringify!(strategy_cancel_ref), strategy_cancel_ref)?;
+        }
+        validate_phase8_evidence_ref(
+            stringify!(restart_reconciliation_ref),
+            &result_refs.restart_reconciliation_ref,
+        )?;
+        validate_phase8_evidence_ref(
+            stringify!(post_run_hygiene_ref),
+            &result_refs.post_run_hygiene_ref,
+        )?;
         Ok(Self {
             schema_version: PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION,
             head_sha: input.head_sha,
@@ -376,6 +731,7 @@ impl Phase8CanaryEvidence {
             ssm_manifest_sha256: input.ssm_manifest_sha256,
             ssm_manifest_ref: input.ssm_manifest_ref,
             strategy_input_evidence_ref: input.strategy_input_evidence_ref,
+            approved_strategy_instance_id_hash: input.approved_strategy_instance_id_hash,
             approval_id_hash: sha256_text(&input.approval_id),
             max_live_order_count: input.max_live_order_count,
             max_notional_per_order: input.max_notional_per_order.to_string(),
@@ -390,6 +746,7 @@ impl Phase8CanaryEvidence {
             venue_order_state_ref: Some(result_refs.venue_order_state_ref),
             strategy_cancel_ref: result_refs.strategy_cancel_ref,
             restart_reconciliation_ref: Some(result_refs.restart_reconciliation_ref),
+            post_run_hygiene_ref: Some(result_refs.post_run_hygiene_ref),
             runtime_capture_ref: input.runtime_capture_ref,
             nt_lifecycle_refs: Vec::new(),
             outcome: Phase8CanaryOutcome::LiveCanaryProof,
@@ -398,6 +755,7 @@ impl Phase8CanaryEvidence {
     }
 
     pub fn write_json_file(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.validate_before_write()?;
         let path = path.as_ref();
         if let Some(parent) = path
             .parent()
@@ -442,6 +800,436 @@ impl Phase8CanaryEvidence {
         }
         Ok(())
     }
+
+    fn validate_before_write(&self) -> Result<()> {
+        validate_phase8_canary_identity_fields(
+            self.schema_version,
+            &self.head_sha,
+            &self.approval_id_hash,
+        )?;
+        validate_phase8_sha256_field(
+            stringify!(approved_strategy_instance_id_hash),
+            &self.approved_strategy_instance_id_hash,
+        )?;
+        validate_phase8_canary_cap_values(self.max_live_order_count, &self.max_notional_per_order)?;
+        validate_phase8_evidence_hashes(
+            &self.root_config_sha256,
+            &self.ssm_manifest_sha256,
+            &self.ssm_manifest_ref,
+            &self.strategy_input_evidence_ref,
+            &self.runtime_capture_ref,
+        )?;
+        validate_phase8_nt_lifecycle_refs(&self.nt_lifecycle_refs)?;
+        match self.outcome {
+            Phase8CanaryOutcome::DryNoSubmitProof => {
+                validate_phase8_live_refs_absent(self)?;
+                validate_phase8_block_reasons_exact(
+                    &self.block_reasons,
+                    Phase8CanaryBlockReason::BlockedBeforeLiveOrder,
+                )?;
+                validate_phase8_submit_admission_ref(
+                    &self.submit_admission_ref,
+                    SUBMIT_ADMISSION_STATUS_REJECTED,
+                    u32::MIN,
+                    BLOCKED_BEFORE_LIVE_ORDER_REASON,
+                )?;
+                let decision_evidence_ref =
+                    self.decision_evidence_ref.as_ref().ok_or_else(|| {
+                        anyhow!(
+                            "phase8 canary evidence {} must be present for dry proof",
+                            stringify!(decision_evidence_ref)
+                        )
+                    })?;
+                validate_phase8_evidence_ref(
+                    stringify!(decision_evidence_ref),
+                    decision_evidence_ref,
+                )
+            }
+            Phase8CanaryOutcome::BlockedBeforeSubmit => {
+                validate_phase8_optional_absent(
+                    stringify!(decision_evidence_ref),
+                    self.decision_evidence_ref.is_some(),
+                )?;
+                validate_phase8_live_refs_absent(self)?;
+                validate_phase8_block_reasons_present(&self.block_reasons)?;
+                validate_phase8_submit_admission_ref(
+                    &self.submit_admission_ref,
+                    SUBMIT_ADMISSION_STATUS_REJECTED,
+                    u32::MIN,
+                    BLOCKED_BEFORE_SUBMIT_REASON,
+                )
+            }
+            Phase8CanaryOutcome::LiveCanaryProof => {
+                validate_phase8_block_reasons_absent(&self.block_reasons)?;
+                validate_phase8_submit_admission_ref(
+                    &self.submit_admission_ref,
+                    SUBMIT_ADMISSION_STATUS_ACCEPTED,
+                    PHASE8_REQUIRED_LIVE_ORDER_CAP,
+                    NT_ADAPTER_SUBMIT_PROVEN_REASON,
+                )?;
+                let decision_evidence_ref =
+                    self.decision_evidence_ref.as_ref().ok_or_else(|| {
+                        anyhow!(
+                            "phase8 canary evidence {} must be present for live proof",
+                            stringify!(decision_evidence_ref)
+                        )
+                    })?;
+                let live_order_ref = self.live_order_ref.as_ref().ok_or_else(|| {
+                    anyhow!(
+                        "phase8 canary evidence {} must be present for live proof",
+                        stringify!(live_order_ref)
+                    )
+                })?;
+                let nt_submit_event_ref = self.nt_submit_event_ref.as_ref().ok_or_else(|| {
+                    anyhow!(
+                        "phase8 canary evidence {} must be present for live proof",
+                        stringify!(nt_submit_event_ref)
+                    )
+                })?;
+                let venue_order_state_ref =
+                    self.venue_order_state_ref.as_ref().ok_or_else(|| {
+                        anyhow!(
+                            "phase8 canary evidence {} must be present for live proof",
+                            stringify!(venue_order_state_ref)
+                        )
+                    })?;
+                let restart_reconciliation_ref =
+                    self.restart_reconciliation_ref.as_ref().ok_or_else(|| {
+                        anyhow!(
+                            "phase8 canary evidence {} must be present for live proof",
+                            stringify!(restart_reconciliation_ref)
+                        )
+                    })?;
+                let post_run_hygiene_ref = self.post_run_hygiene_ref.as_ref().ok_or_else(|| {
+                    anyhow!(
+                        "phase8 canary evidence {} must be present for live proof",
+                        stringify!(post_run_hygiene_ref)
+                    )
+                })?;
+                validate_phase8_evidence_ref(
+                    stringify!(decision_evidence_ref),
+                    decision_evidence_ref,
+                )?;
+                validate_phase8_live_order_ref(live_order_ref)?;
+                if live_order_ref.strategy_instance_id_hash
+                    != self.approved_strategy_instance_id_hash
+                {
+                    return Err(anyhow!(
+                        "phase8 live canary proof live_order_ref.strategy_instance_id_hash does not match approved financial envelope"
+                    ));
+                }
+                validate_phase8_evidence_ref(stringify!(nt_submit_event_ref), nt_submit_event_ref)?;
+                validate_phase8_evidence_ref(
+                    stringify!(venue_order_state_ref),
+                    venue_order_state_ref,
+                )?;
+                if let Some(strategy_cancel_ref) = &self.strategy_cancel_ref {
+                    validate_phase8_evidence_ref(
+                        stringify!(strategy_cancel_ref),
+                        strategy_cancel_ref,
+                    )?;
+                }
+                validate_phase8_evidence_ref(
+                    stringify!(restart_reconciliation_ref),
+                    restart_reconciliation_ref,
+                )?;
+                validate_phase8_evidence_ref(stringify!(post_run_hygiene_ref), post_run_hygiene_ref)
+            }
+        }
+    }
+}
+
+fn validate_phase8_canary_identity_fields(
+    schema_version: u32,
+    head_sha: &str,
+    approval_id_hash: &str,
+) -> Result<()> {
+    if schema_version != PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION {
+        return Err(anyhow!(
+            "phase8 canary evidence {} expected {PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION} got {schema_version}",
+            stringify!(schema_version)
+        ));
+    }
+    if head_sha.trim().is_empty() {
+        return Err(anyhow!(
+            "phase8 canary evidence {} must not be empty",
+            stringify!(head_sha)
+        ));
+    }
+    validate_phase8_sha256_field(stringify!(approval_id_hash), approval_id_hash)
+}
+
+fn validate_phase8_canary_cap_values(
+    max_live_order_count: u32,
+    max_notional_per_order: &str,
+) -> Result<()> {
+    if max_live_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP {
+        return Err(anyhow!(
+            "phase8 canary evidence {} expected {PHASE8_REQUIRED_LIVE_ORDER_CAP} got {max_live_order_count}",
+            stringify!(max_live_order_count)
+        ));
+    }
+    let max_notional_per_order = max_notional_per_order
+        .parse::<Decimal>()
+        .map_err(|source| {
+            anyhow!(
+                "phase8 canary evidence {} must be a decimal: {source}",
+                stringify!(max_notional_per_order)
+            )
+        })?;
+    if max_notional_per_order <= Decimal::ZERO {
+        return Err(anyhow!(
+            "phase8 canary evidence {} must be positive",
+            stringify!(max_notional_per_order)
+        ));
+    }
+    Ok(())
+}
+
+fn validate_phase8_block_reasons_exact(
+    block_reasons: &[Phase8CanaryBlockReason],
+    expected: Phase8CanaryBlockReason,
+) -> Result<()> {
+    if block_reasons == [expected] {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "phase8 canary evidence {} does not match expected outcome reason",
+            stringify!(block_reasons)
+        ))
+    }
+}
+
+fn validate_phase8_block_reasons_absent(block_reasons: &[Phase8CanaryBlockReason]) -> Result<()> {
+    if block_reasons.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "phase8 canary evidence {} must be empty for live proof",
+            stringify!(block_reasons)
+        ))
+    }
+}
+
+fn validate_phase8_block_reasons_present(block_reasons: &[Phase8CanaryBlockReason]) -> Result<()> {
+    if block_reasons.is_empty() {
+        Err(anyhow!(
+            "phase8 canary evidence {} must not be empty for blocked proof",
+            stringify!(block_reasons)
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_phase8_live_refs_absent(evidence: &Phase8CanaryEvidence) -> Result<()> {
+    validate_phase8_optional_absent(
+        stringify!(live_order_ref),
+        evidence.live_order_ref.is_some(),
+    )?;
+    validate_phase8_optional_absent(
+        stringify!(nt_submit_event_ref),
+        evidence.nt_submit_event_ref.is_some(),
+    )?;
+    validate_phase8_optional_absent(
+        stringify!(venue_order_state_ref),
+        evidence.venue_order_state_ref.is_some(),
+    )?;
+    validate_phase8_optional_absent(
+        stringify!(strategy_cancel_ref),
+        evidence.strategy_cancel_ref.is_some(),
+    )?;
+    validate_phase8_optional_absent(
+        stringify!(restart_reconciliation_ref),
+        evidence.restart_reconciliation_ref.is_some(),
+    )?;
+    validate_phase8_optional_absent(
+        stringify!(post_run_hygiene_ref),
+        evidence.post_run_hygiene_ref.is_some(),
+    )
+}
+
+fn validate_phase8_optional_absent(field: &'static str, present: bool) -> Result<()> {
+    if present {
+        Err(anyhow!(
+            "phase8 canary evidence {field} must be absent for non-live proof"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_phase8_submit_admission_ref(
+    submit_admission_ref: &Phase8SubmitAdmissionRef,
+    expected_status: &str,
+    expected_admitted_order_count: u32,
+    expected_reason: &str,
+) -> Result<()> {
+    if submit_admission_ref.status != expected_status {
+        return Err(anyhow!(
+            "phase8 canary evidence {}.{} expected `{}` got `{}`",
+            stringify!(submit_admission_ref),
+            stringify!(status),
+            expected_status,
+            submit_admission_ref.status
+        ));
+    }
+    if submit_admission_ref.admitted_order_count != expected_admitted_order_count {
+        return Err(anyhow!(
+            "phase8 canary evidence {}.{} expected {} got {}",
+            stringify!(submit_admission_ref),
+            stringify!(admitted_order_count),
+            expected_admitted_order_count,
+            submit_admission_ref.admitted_order_count
+        ));
+    }
+    if submit_admission_ref.reason != expected_reason {
+        return Err(anyhow!(
+            "phase8 canary evidence {}.{} expected `{}` got `{}`",
+            stringify!(submit_admission_ref),
+            stringify!(reason),
+            expected_reason,
+            submit_admission_ref.reason
+        ));
+    }
+    Ok(())
+}
+
+fn validate_phase8_canary_input(input: &Phase8CanaryEvidenceInput) -> Result<()> {
+    validate_phase8_evidence_hashes(
+        &input.root_config_sha256,
+        &input.ssm_manifest_sha256,
+        &input.ssm_manifest_ref,
+        &input.strategy_input_evidence_ref,
+        &input.runtime_capture_ref,
+    )?;
+    validate_phase8_sha256_field(
+        stringify!(approved_strategy_instance_id_hash),
+        &input.approved_strategy_instance_id_hash,
+    )?;
+    if input.max_live_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP {
+        return Err(anyhow!(
+            "phase8 live canary proof {} expected {PHASE8_REQUIRED_LIVE_ORDER_CAP} got {}",
+            stringify!(max_live_order_count),
+            input.max_live_order_count
+        ));
+    }
+    if input.max_notional_per_order <= Decimal::ZERO {
+        return Err(anyhow!(
+            "phase8 live canary proof {} must be positive",
+            stringify!(max_notional_per_order)
+        ));
+    }
+    Ok(())
+}
+
+fn validate_phase8_evidence_hashes(
+    root_config_sha256: &str,
+    ssm_manifest_sha256: &str,
+    ssm_manifest_ref: &Phase8EvidenceRef,
+    strategy_input_evidence_ref: &Phase8EvidenceRef,
+    runtime_capture_ref: &Phase8RuntimeCaptureRef,
+) -> Result<()> {
+    validate_phase8_sha256_field(stringify!(root_config_sha256), root_config_sha256)?;
+    validate_phase8_sha256_field(stringify!(ssm_manifest_sha256), ssm_manifest_sha256)?;
+    validate_phase8_evidence_ref(stringify!(ssm_manifest_ref), ssm_manifest_ref)?;
+    validate_phase8_evidence_ref(
+        stringify!(strategy_input_evidence_ref),
+        strategy_input_evidence_ref,
+    )?;
+    validate_phase8_nested_sha256_field(
+        stringify!(runtime_capture_ref),
+        stringify!(spool_root_hash),
+        &runtime_capture_ref.spool_root_hash,
+    )?;
+    validate_phase8_required_text_field(
+        stringify!(runtime_capture_ref.run_id),
+        &runtime_capture_ref.run_id,
+    )
+}
+
+fn validate_phase8_evidence_ref(
+    label: &'static str,
+    evidence_ref: &Phase8EvidenceRef,
+) -> Result<()> {
+    validate_phase8_nested_sha256_field(label, stringify!(path_hash), &evidence_ref.path_hash)?;
+    validate_phase8_nested_sha256_field(label, stringify!(record_hash), &evidence_ref.record_hash)
+}
+
+fn validate_phase8_live_order_ref(live_order_ref: &Phase8LiveOrderRef) -> Result<()> {
+    validate_phase8_nested_sha256_field(
+        stringify!(live_order_ref),
+        stringify!(strategy_instance_id_hash),
+        &live_order_ref.strategy_instance_id_hash,
+    )?;
+    validate_phase8_nested_sha256_field(
+        stringify!(live_order_ref),
+        stringify!(client_order_id_hash),
+        &live_order_ref.client_order_id_hash,
+    )?;
+    validate_phase8_nested_sha256_field(
+        stringify!(live_order_ref),
+        stringify!(venue_order_id_hash),
+        &live_order_ref.venue_order_id_hash,
+    )
+}
+
+fn validate_phase8_nt_lifecycle_refs(nt_lifecycle_refs: &[Phase8NtLifecycleRef]) -> Result<()> {
+    for nt_lifecycle_ref in nt_lifecycle_refs {
+        validate_phase8_required_text_field(
+            stringify!(nt_lifecycle_refs.kind),
+            &nt_lifecycle_ref.kind,
+        )?;
+        validate_phase8_sha256_field(
+            stringify!(nt_lifecycle_refs.event_hash),
+            &nt_lifecycle_ref.event_hash,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_phase8_required_text_field(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        Err(anyhow!(
+            "phase8 live canary proof {field} must not be empty"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_phase8_nested_sha256_field(parent: &str, child: &str, value: &str) -> Result<()> {
+    let mut field = String::from(parent);
+    field.push('.');
+    field.push_str(child);
+    validate_phase8_sha256_field(&field, value)
+}
+
+fn validate_phase8_sha256_field(field: &str, value: &str) -> Result<()> {
+    if phase8_is_sha256_hex(value) {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "phase8 live canary proof {field} must be a sha256 hash"
+        ))
+    }
+}
+
+fn phase8_is_sha256_hex(value: &str) -> bool {
+    let digest = Sha256::digest([]);
+    value.len() == digest.len() + digest.len() && value.chars().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn phase8_reject_parent_dir(path: &str, label: &str) -> Result<()> {
+    if Path::new(path)
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(anyhow!(
+            "phase8 {label} path must not contain parent directory traversal"
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -453,6 +1241,12 @@ pub struct Phase8OperatorApprovalEnvelope {
     pub ssm_manifest_sha256: String,
     pub strategy_input_evidence_path: String,
     pub strategy_input_evidence_sha256: String,
+    pub financial_envelope_path: String,
+    pub financial_envelope_sha256: String,
+    pub pre_run_state_path: String,
+    pub pre_run_state_sha256: String,
+    pub abort_plan_path: String,
+    pub abort_plan_sha256: String,
     pub operator_approval_id: String,
     pub approval_not_before_unix_seconds: i64,
     pub approval_not_after_unix_seconds: i64,
@@ -476,6 +1270,12 @@ impl Phase8OperatorApprovalEnvelope {
             strategy_input_evidence_sha256: required_env(
                 "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256",
             )?,
+            financial_envelope_path: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH")?,
+            financial_envelope_sha256: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256")?,
+            pre_run_state_path: required_env("BOLT_V3_PHASE8_PRE_RUN_STATE_PATH")?,
+            pre_run_state_sha256: required_env("BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256")?,
+            abort_plan_path: required_env("BOLT_V3_PHASE8_ABORT_PLAN_PATH")?,
+            abort_plan_sha256: required_env("BOLT_V3_PHASE8_ABORT_PLAN_SHA256")?,
             operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,
             approval_not_before_unix_seconds: required_i64_env(
                 "BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS",
@@ -532,6 +1332,7 @@ impl Phase8OperatorApprovalEnvelope {
         current_head_sha: &str,
         current_root_toml_sha256: &str,
         live_canary_approval_id: &str,
+        loaded: &LoadedBoltV3Config,
         current_unix_seconds: i64,
     ) -> Result<()> {
         self.validate_against(
@@ -539,7 +1340,11 @@ impl Phase8OperatorApprovalEnvelope {
             current_root_toml_sha256,
             live_canary_approval_id,
         )?;
+        self.validate_approval_not_consumed()?;
         self.validate_approval_window(current_unix_seconds)?;
+        self.validate_financial_envelope_against(loaded)?;
+        self.validate_pre_run_state_against(loaded)?;
+        self.validate_abort_plan_against(loaded)?;
         let current_nonce_sha256 = Self::sha256_file(&self.approval_nonce_path)?;
         if self.approval_nonce_sha256 != current_nonce_sha256 {
             return Err(anyhow!(
@@ -549,10 +1354,71 @@ impl Phase8OperatorApprovalEnvelope {
         self.write_approval_consumption_evidence(current_unix_seconds)
     }
 
+    fn validate_financial_envelope_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
+        let approved = self.read_financial_envelope()?;
+        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(
+            loaded,
+            &approved.strategy_instance_id,
+        )?;
+        approved.validate_matches(&loaded)
+    }
+
+    fn validate_pre_run_state_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
+        let path = Path::new(&self.pre_run_state_path);
+        let approved: Phase8PreRunStateEvidenceFile = Self::read_json_file_with_expected_sha256(
+            path,
+            &self.pre_run_state_sha256,
+            "phase8 pre-run state evidence",
+            "phase8 operator approval pre_run_state_sha256 does not match current pre-run state evidence",
+        )?;
+        let approved_financial = self.read_financial_envelope()?;
+        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(
+            loaded,
+            &approved_financial.strategy_instance_id,
+        )?;
+        approved.validate_matches_loaded(&loaded)
+    }
+
+    fn validate_abort_plan_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
+        let path = Path::new(&self.abort_plan_path);
+        let approved: Phase8AbortPlanEvidenceFile = Self::read_json_file_with_expected_sha256(
+            path,
+            &self.abort_plan_sha256,
+            "phase8 abort plan evidence",
+            "phase8 operator approval abort_plan_sha256 does not match current abort plan evidence",
+        )?;
+        let approved_financial = self.read_financial_envelope()?;
+        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(
+            loaded,
+            &approved_financial.strategy_instance_id,
+        )?;
+        approved.validate_matches_loaded(&loaded)
+    }
+
+    fn read_financial_envelope(&self) -> Result<Phase8FinancialEnvelopeEvidenceFile> {
+        let path = Path::new(&self.financial_envelope_path);
+        Self::read_json_file_with_expected_sha256(
+            path,
+            &self.financial_envelope_sha256,
+            "phase8 financial envelope",
+            "phase8 operator approval financial_envelope_sha256 does not match current financial envelope",
+        )
+    }
+
+    pub fn approved_strategy_instance_id_hash(&self) -> Result<String> {
+        Ok(sha256_text(
+            &self.read_financial_envelope()?.strategy_instance_id,
+        ))
+    }
+
+    pub fn approved_price_to_beat_source(&self) -> Result<String> {
+        Ok(self.read_financial_envelope()?.price_to_beat_source)
+    }
+
     fn validate_approval_window(&self, current_unix_seconds: i64) -> Result<()> {
-        if self.approval_not_after_unix_seconds < self.approval_not_before_unix_seconds {
+        if self.approval_not_after_unix_seconds <= self.approval_not_before_unix_seconds {
             return Err(anyhow!(
-                "phase8 operator approval not_after is before not_before"
+                "phase8 operator approval not_after must be greater than not_before"
             ));
         }
         if current_unix_seconds < self.approval_not_before_unix_seconds {
@@ -560,6 +1426,19 @@ impl Phase8OperatorApprovalEnvelope {
         }
         if current_unix_seconds > self.approval_not_after_unix_seconds {
             return Err(anyhow!("phase8 operator approval is expired"));
+        }
+        Ok(())
+    }
+
+    fn validate_approval_not_consumed(&self) -> Result<()> {
+        let path = Path::new(&self.approval_consumption_path);
+        if path.try_exists().map_err(|source| {
+            anyhow!(
+                "failed to inspect phase8 operator approval consumption `{}`: {source}",
+                path.display()
+            )
+        })? {
+            return Err(self.approval_already_consumed_error());
         }
         Ok(())
     }
@@ -584,6 +1463,9 @@ impl Phase8OperatorApprovalEnvelope {
             root_toml_sha256: &self.root_toml_sha256,
             ssm_manifest_sha256: &self.ssm_manifest_sha256,
             strategy_input_evidence_sha256: &self.strategy_input_evidence_sha256,
+            financial_envelope_sha256: &self.financial_envelope_sha256,
+            pre_run_state_sha256: &self.pre_run_state_sha256,
+            abort_plan_sha256: &self.abort_plan_sha256,
             approval_id_hash: sha256_text(&self.operator_approval_id),
             approval_nonce_sha256: &self.approval_nonce_sha256,
             approval_not_before_unix_seconds: self.approval_not_before_unix_seconds,
@@ -599,10 +1481,7 @@ impl Phase8OperatorApprovalEnvelope {
             .create_new(true)
             .open(path)
             .map_err(|source| match source.kind() {
-                std::io::ErrorKind::AlreadyExists => anyhow!(
-                    "phase8 operator approval consumption `{}` already consumed; refusing to replay",
-                    path.display()
-                ),
+                std::io::ErrorKind::AlreadyExists => self.approval_already_consumed_error(),
                 _ => anyhow!(
                     "failed to create phase8 operator approval consumption `{}`: {source}",
                     path.display()
@@ -623,6 +1502,13 @@ impl Phase8OperatorApprovalEnvelope {
             ));
         }
         Ok(())
+    }
+
+    fn approval_already_consumed_error(&self) -> anyhow::Error {
+        anyhow!(
+            "phase8 operator approval consumption `{}` already consumed; refusing to replay",
+            self.approval_consumption_path
+        )
     }
 
     pub fn sha256_file(path: impl AsRef<Path>) -> Result<String> {
@@ -651,9 +1537,563 @@ impl Phase8OperatorApprovalEnvelope {
         Ok(format!("{:x}", digest.finalize()))
     }
 
+    fn read_json_file_with_expected_sha256<T>(
+        path: impl AsRef<Path>,
+        expected_sha256: &str,
+        artifact_label: &'static str,
+        mismatch_message: &'static str,
+    ) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        let path = path.as_ref();
+        let bytes = fs::read(path).map_err(|source| {
+            anyhow!(
+                "failed to open {artifact_label} `{}`: {source}",
+                path.display()
+            )
+        })?;
+        let current_sha256 = Self::sha256_bytes(&bytes);
+        if expected_sha256 != current_sha256 {
+            return Err(anyhow!(mismatch_message));
+        }
+        serde_json::from_slice(&bytes).map_err(|source| {
+            anyhow!(
+                "failed to parse {artifact_label} `{}`: {source}",
+                path.display()
+            )
+        })
+    }
+
+    fn sha256_bytes(bytes: &[u8]) -> String {
+        let mut digest = Sha256::new();
+        digest.update(bytes);
+        format!("{:x}", digest.finalize())
+    }
+
     pub fn root_path(&self) -> PathBuf {
         PathBuf::from(&self.root_toml_path)
     }
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct Phase8FinancialEnvelopeEvidenceFile {
+    max_live_order_count: u32,
+    max_notional_per_order: String,
+    strategy_instance_id: String,
+    strategy_venue: String,
+    configured_target_id: String,
+    target_kind: String,
+    rotating_market_family: String,
+    underlying_asset: String,
+    cadence_seconds: i64,
+    market_selection_rule: String,
+    retry_interval_seconds: i64,
+    blocked_after_seconds: i64,
+    price_to_beat_source: String,
+    edge_threshold_basis_points: i64,
+    order_notional_target: String,
+    maximum_position_notional: String,
+    book_impact_cap_bps: i64,
+    entry_order_type: String,
+    entry_time_in_force: String,
+    entry_is_post_only: bool,
+    entry_is_reduce_only: bool,
+    entry_is_quote_quantity: bool,
+    exit_order_type: String,
+    exit_time_in_force: String,
+    exit_is_post_only: bool,
+    exit_is_reduce_only: bool,
+    exit_is_quote_quantity: bool,
+}
+
+impl Phase8FinancialEnvelopeEvidenceFile {
+    fn from_loaded_for_strategy(
+        loaded: &LoadedBoltV3Config,
+        strategy_instance_id: &str,
+    ) -> Result<Self> {
+        let live_canary = loaded
+            .root
+            .live_canary
+            .as_ref()
+            .ok_or_else(|| anyhow!("phase8 financial envelope requires `[live_canary]`"))?;
+        if strategy_instance_id.trim().is_empty() {
+            return Err(anyhow!(
+                "phase8 financial envelope requires non-empty strategy_instance_id"
+            ));
+        }
+        let mut matching_strategies = loaded.strategies.iter().filter(|strategy| {
+            strategy.config.strategy_instance_id.as_str() == strategy_instance_id
+        });
+        let strategy = matching_strategies.next().ok_or_else(|| {
+            anyhow!(
+                "phase8 financial envelope strategy_instance_id does not match a loaded strategy"
+            )
+        })?;
+        if matching_strategies.next().is_some() {
+            return Err(anyhow!(
+                "phase8 financial envelope strategy_instance_id matches multiple loaded strategies"
+            ));
+        }
+        let strategy = &strategy.config;
+        let target = strategy.target.as_table().ok_or_else(|| {
+            anyhow!("phase8 financial envelope strategy target must be a TOML table")
+        })?;
+        let parameters = strategy.parameters.as_table().ok_or_else(|| {
+            anyhow!("phase8 financial envelope strategy parameters must be a TOML table")
+        })?;
+        let runtime_parameters = parameters
+            .get(stringify!(runtime))
+            .and_then(toml::Value::as_table)
+            .ok_or_else(|| {
+                anyhow!(
+                    "phase8 financial envelope strategy runtime parameters must be a TOML table"
+                )
+            })?;
+        let entry_order = parameters
+            .get(stringify!(entry_order))
+            .and_then(toml::Value::as_table)
+            .ok_or_else(|| {
+                anyhow!("phase8 financial envelope strategy entry order must be a TOML table")
+            })?;
+        let exit_order = parameters
+            .get(stringify!(exit_order))
+            .and_then(toml::Value::as_table)
+            .ok_or_else(|| {
+                anyhow!("phase8 financial envelope strategy exit order must be a TOML table")
+            })?;
+        Ok(Self {
+            max_live_order_count: live_canary.max_live_order_count,
+            max_notional_per_order: live_canary.max_notional_per_order.clone(),
+            strategy_instance_id: strategy.strategy_instance_id.clone(),
+            strategy_venue: strategy.venue.clone(),
+            configured_target_id: required_toml_string(target, stringify!(configured_target_id))?,
+            target_kind: required_toml_string(target, stringify!(kind))?,
+            rotating_market_family: required_toml_string(
+                target,
+                stringify!(rotating_market_family),
+            )?,
+            underlying_asset: required_toml_string(target, stringify!(underlying_asset))?,
+            cadence_seconds: required_toml_integer(target, stringify!(cadence_seconds))?,
+            market_selection_rule: required_toml_string(target, stringify!(market_selection_rule))?,
+            retry_interval_seconds: required_toml_integer(
+                target,
+                stringify!(retry_interval_seconds),
+            )?,
+            blocked_after_seconds: required_toml_integer(
+                target,
+                stringify!(blocked_after_seconds),
+            )?,
+            price_to_beat_source: required_toml_string(
+                runtime_parameters,
+                stringify!(price_to_beat_source),
+            )?,
+            edge_threshold_basis_points: required_toml_integer(
+                parameters,
+                stringify!(edge_threshold_basis_points),
+            )?,
+            order_notional_target: required_toml_string(
+                parameters,
+                stringify!(order_notional_target),
+            )?,
+            maximum_position_notional: required_toml_string(
+                parameters,
+                stringify!(maximum_position_notional),
+            )?,
+            book_impact_cap_bps: required_toml_integer(
+                runtime_parameters,
+                stringify!(book_impact_cap_bps),
+            )?,
+            entry_order_type: required_toml_string(entry_order, stringify!(order_type))?,
+            entry_time_in_force: required_toml_string(entry_order, stringify!(time_in_force))?,
+            entry_is_post_only: required_toml_bool(entry_order, stringify!(is_post_only))?,
+            entry_is_reduce_only: required_toml_bool(entry_order, stringify!(is_reduce_only))?,
+            entry_is_quote_quantity: required_toml_bool(
+                entry_order,
+                stringify!(is_quote_quantity),
+            )?,
+            exit_order_type: required_toml_string(exit_order, stringify!(order_type))?,
+            exit_time_in_force: required_toml_string(exit_order, stringify!(time_in_force))?,
+            exit_is_post_only: required_toml_bool(exit_order, stringify!(is_post_only))?,
+            exit_is_reduce_only: required_toml_bool(exit_order, stringify!(is_reduce_only))?,
+            exit_is_quote_quantity: required_toml_bool(exit_order, stringify!(is_quote_quantity))?,
+        })
+    }
+
+    fn validate_matches(&self, loaded: &Self) -> Result<()> {
+        if self.max_live_order_count != loaded.max_live_order_count {
+            return Err(financial_envelope_mismatch(stringify!(
+                max_live_order_count
+            )));
+        }
+        if self.max_notional_per_order != loaded.max_notional_per_order {
+            return Err(financial_envelope_mismatch(stringify!(
+                max_notional_per_order
+            )));
+        }
+        if self.strategy_instance_id != loaded.strategy_instance_id {
+            return Err(financial_envelope_mismatch(stringify!(
+                strategy_instance_id
+            )));
+        }
+        if self.strategy_venue != loaded.strategy_venue {
+            return Err(financial_envelope_mismatch(stringify!(strategy_venue)));
+        }
+        if self.configured_target_id != loaded.configured_target_id {
+            return Err(financial_envelope_mismatch(stringify!(
+                configured_target_id
+            )));
+        }
+        if self.target_kind != loaded.target_kind {
+            return Err(financial_envelope_mismatch(stringify!(target_kind)));
+        }
+        if self.rotating_market_family != loaded.rotating_market_family {
+            return Err(financial_envelope_mismatch(stringify!(
+                rotating_market_family
+            )));
+        }
+        if self.underlying_asset != loaded.underlying_asset {
+            return Err(financial_envelope_mismatch(stringify!(underlying_asset)));
+        }
+        if self.cadence_seconds != loaded.cadence_seconds {
+            return Err(financial_envelope_mismatch(stringify!(cadence_seconds)));
+        }
+        if self.market_selection_rule != loaded.market_selection_rule {
+            return Err(financial_envelope_mismatch(stringify!(
+                market_selection_rule
+            )));
+        }
+        if self.retry_interval_seconds != loaded.retry_interval_seconds {
+            return Err(financial_envelope_mismatch(stringify!(
+                retry_interval_seconds
+            )));
+        }
+        if self.blocked_after_seconds != loaded.blocked_after_seconds {
+            return Err(financial_envelope_mismatch(stringify!(
+                blocked_after_seconds
+            )));
+        }
+        if self.price_to_beat_source != loaded.price_to_beat_source {
+            return Err(financial_envelope_mismatch(stringify!(
+                price_to_beat_source
+            )));
+        }
+        if self.edge_threshold_basis_points != loaded.edge_threshold_basis_points {
+            return Err(financial_envelope_mismatch(stringify!(
+                edge_threshold_basis_points
+            )));
+        }
+        if self.order_notional_target != loaded.order_notional_target {
+            return Err(financial_envelope_mismatch(stringify!(
+                order_notional_target
+            )));
+        }
+        if self.maximum_position_notional != loaded.maximum_position_notional {
+            return Err(financial_envelope_mismatch(stringify!(
+                maximum_position_notional
+            )));
+        }
+        if self.book_impact_cap_bps != loaded.book_impact_cap_bps {
+            return Err(financial_envelope_mismatch(stringify!(book_impact_cap_bps)));
+        }
+        if self.entry_order_type != loaded.entry_order_type {
+            return Err(financial_envelope_mismatch(stringify!(entry_order_type)));
+        }
+        if self.entry_time_in_force != loaded.entry_time_in_force {
+            return Err(financial_envelope_mismatch(stringify!(entry_time_in_force)));
+        }
+        if self.entry_is_post_only != loaded.entry_is_post_only {
+            return Err(financial_envelope_mismatch(stringify!(entry_is_post_only)));
+        }
+        if self.entry_is_reduce_only != loaded.entry_is_reduce_only {
+            return Err(financial_envelope_mismatch(stringify!(
+                entry_is_reduce_only
+            )));
+        }
+        if self.entry_is_quote_quantity != loaded.entry_is_quote_quantity {
+            return Err(financial_envelope_mismatch(stringify!(
+                entry_is_quote_quantity
+            )));
+        }
+        if self.exit_order_type != loaded.exit_order_type {
+            return Err(financial_envelope_mismatch(stringify!(exit_order_type)));
+        }
+        if self.exit_time_in_force != loaded.exit_time_in_force {
+            return Err(financial_envelope_mismatch(stringify!(exit_time_in_force)));
+        }
+        if self.exit_is_post_only != loaded.exit_is_post_only {
+            return Err(financial_envelope_mismatch(stringify!(exit_is_post_only)));
+        }
+        if self.exit_is_reduce_only != loaded.exit_is_reduce_only {
+            return Err(financial_envelope_mismatch(stringify!(exit_is_reduce_only)));
+        }
+        if self.exit_is_quote_quantity != loaded.exit_is_quote_quantity {
+            return Err(financial_envelope_mismatch(stringify!(
+                exit_is_quote_quantity
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn financial_envelope_mismatch(field: &'static str) -> anyhow::Error {
+    anyhow!("phase8 financial envelope `{field}` does not match loaded TOML")
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct Phase8PreRunStateEvidenceFile {
+    strategy_venue: String,
+    configured_target_id: String,
+    host_clock_skew_within_bound: bool,
+    host_clock_skew_evidence_hash: String,
+    conflicting_open_orders_absent: bool,
+    preexisting_position_absent: bool,
+    venue_account_state_evidence_hash: String,
+    market_state_approved: bool,
+    market_window_approved: bool,
+    market_state_evidence_hash: String,
+    funding_margin_covers_max_notional_plus_fees: bool,
+    funding_margin_evidence_hash: String,
+    single_runner_lock_acquired: bool,
+    single_runner_lock_evidence_hash: String,
+    egress_identity_approved: bool,
+    egress_identity_evidence_hash: String,
+    clob_v2_adapter_signing_verified: bool,
+    clob_v2_adapter_signing_evidence_hash: String,
+    clob_v2_collateral_accounting_verified: bool,
+    clob_v2_collateral_accounting_evidence_hash: String,
+    clob_v2_fee_behavior_verified: bool,
+    clob_v2_fee_behavior_evidence_hash: String,
+    release_manifest_clob_signing_version: String,
+    release_manifest_nt_revision_matches_compiled_pin: bool,
+    release_manifest_evidence_hash: String,
+}
+
+impl Phase8PreRunStateEvidenceFile {
+    fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
+        if self.strategy_venue != loaded.strategy_venue {
+            return Err(pre_run_state_mismatch(stringify!(strategy_venue)));
+        }
+        if self.configured_target_id != loaded.configured_target_id {
+            return Err(pre_run_state_mismatch(stringify!(configured_target_id)));
+        }
+        require_pre_run_clearance(
+            stringify!(host_clock_skew_within_bound),
+            self.host_clock_skew_within_bound,
+        )?;
+        require_pre_run_sha256(
+            stringify!(host_clock_skew_evidence_hash),
+            &self.host_clock_skew_evidence_hash,
+        )?;
+        require_pre_run_clearance(
+            stringify!(conflicting_open_orders_absent),
+            self.conflicting_open_orders_absent,
+        )?;
+        require_pre_run_clearance(
+            stringify!(preexisting_position_absent),
+            self.preexisting_position_absent,
+        )?;
+        require_pre_run_sha256(
+            stringify!(venue_account_state_evidence_hash),
+            &self.venue_account_state_evidence_hash,
+        )?;
+        require_pre_run_clearance(
+            stringify!(market_state_approved),
+            self.market_state_approved,
+        )?;
+        require_pre_run_clearance(
+            stringify!(market_window_approved),
+            self.market_window_approved,
+        )?;
+        require_pre_run_sha256(
+            stringify!(market_state_evidence_hash),
+            &self.market_state_evidence_hash,
+        )?;
+        require_pre_run_clearance(
+            stringify!(funding_margin_covers_max_notional_plus_fees),
+            self.funding_margin_covers_max_notional_plus_fees,
+        )?;
+        require_pre_run_sha256(
+            stringify!(funding_margin_evidence_hash),
+            &self.funding_margin_evidence_hash,
+        )?;
+        require_pre_run_clearance(
+            stringify!(single_runner_lock_acquired),
+            self.single_runner_lock_acquired,
+        )?;
+        require_pre_run_sha256(
+            stringify!(single_runner_lock_evidence_hash),
+            &self.single_runner_lock_evidence_hash,
+        )?;
+        require_pre_run_clearance(
+            stringify!(egress_identity_approved),
+            self.egress_identity_approved,
+        )?;
+        require_pre_run_sha256(
+            stringify!(egress_identity_evidence_hash),
+            &self.egress_identity_evidence_hash,
+        )?;
+        require_pre_run_clearance(
+            stringify!(clob_v2_adapter_signing_verified),
+            self.clob_v2_adapter_signing_verified,
+        )?;
+        require_pre_run_sha256(
+            stringify!(clob_v2_adapter_signing_evidence_hash),
+            &self.clob_v2_adapter_signing_evidence_hash,
+        )?;
+        require_pre_run_clearance(
+            stringify!(clob_v2_collateral_accounting_verified),
+            self.clob_v2_collateral_accounting_verified,
+        )?;
+        require_pre_run_sha256(
+            stringify!(clob_v2_collateral_accounting_evidence_hash),
+            &self.clob_v2_collateral_accounting_evidence_hash,
+        )?;
+        require_pre_run_clearance(
+            stringify!(clob_v2_fee_behavior_verified),
+            self.clob_v2_fee_behavior_verified,
+        )?;
+        require_pre_run_sha256(
+            stringify!(clob_v2_fee_behavior_evidence_hash),
+            &self.clob_v2_fee_behavior_evidence_hash,
+        )?;
+        require_pre_run_string(
+            stringify!(release_manifest_clob_signing_version),
+            &self.release_manifest_clob_signing_version,
+        )?;
+        require_pre_run_clearance(
+            stringify!(release_manifest_nt_revision_matches_compiled_pin),
+            self.release_manifest_nt_revision_matches_compiled_pin,
+        )?;
+        require_pre_run_sha256(
+            stringify!(release_manifest_evidence_hash),
+            &self.release_manifest_evidence_hash,
+        )
+    }
+}
+
+fn require_pre_run_clearance(field: &'static str, satisfied: bool) -> Result<()> {
+    if satisfied {
+        Ok(())
+    } else {
+        Err(pre_run_state_blocked(field))
+    }
+}
+
+fn require_pre_run_string(field: &'static str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        Err(pre_run_state_blocked(field))
+    } else {
+        Ok(())
+    }
+}
+
+fn require_pre_run_sha256(field: &'static str, value: &str) -> Result<()> {
+    if phase8_is_sha256_hex(value) {
+        Ok(())
+    } else {
+        Err(pre_run_state_blocked(field))
+    }
+}
+
+fn pre_run_state_mismatch(field: &'static str) -> anyhow::Error {
+    anyhow!("phase8 pre-run state `{field}` does not match loaded TOML")
+}
+
+fn pre_run_state_blocked(field: &'static str) -> anyhow::Error {
+    anyhow!("phase8 pre-run state `{field}` is not satisfied")
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct Phase8AbortPlanEvidenceFile {
+    strategy_venue: String,
+    configured_target_id: String,
+    cancel_if_open_defined: bool,
+    nt_accepted_venue_pending_abort_defined: bool,
+    partial_fill_abort_defined: bool,
+    network_partition_during_submit_abort_defined: bool,
+    panic_gate_trip_abort_defined: bool,
+}
+
+impl Phase8AbortPlanEvidenceFile {
+    fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
+        if self.strategy_venue != loaded.strategy_venue {
+            return Err(abort_plan_mismatch(stringify!(strategy_venue)));
+        }
+        if self.configured_target_id != loaded.configured_target_id {
+            return Err(abort_plan_mismatch(stringify!(configured_target_id)));
+        }
+        require_abort_plan_path(
+            stringify!(cancel_if_open_defined),
+            self.cancel_if_open_defined,
+        )?;
+        require_abort_plan_path(
+            stringify!(nt_accepted_venue_pending_abort_defined),
+            self.nt_accepted_venue_pending_abort_defined,
+        )?;
+        require_abort_plan_path(
+            stringify!(partial_fill_abort_defined),
+            self.partial_fill_abort_defined,
+        )?;
+        require_abort_plan_path(
+            stringify!(network_partition_during_submit_abort_defined),
+            self.network_partition_during_submit_abort_defined,
+        )?;
+        require_abort_plan_path(
+            stringify!(panic_gate_trip_abort_defined),
+            self.panic_gate_trip_abort_defined,
+        )
+    }
+}
+
+fn require_abort_plan_path(field: &'static str, defined: bool) -> Result<()> {
+    if defined {
+        Ok(())
+    } else {
+        Err(abort_plan_blocked(field))
+    }
+}
+
+fn abort_plan_mismatch(field: &'static str) -> anyhow::Error {
+    anyhow!("phase8 abort plan `{field}` does not match loaded TOML")
+}
+
+fn abort_plan_blocked(field: &'static str) -> anyhow::Error {
+    anyhow!("phase8 abort plan `{field}` is not defined")
+}
+
+fn required_toml_string(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &'static str,
+) -> Result<String> {
+    table
+        .get(field)
+        .and_then(toml::Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow!("phase8 financial envelope loaded TOML field `{field}` is missing"))
+}
+
+fn required_toml_integer(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &'static str,
+) -> Result<i64> {
+    table
+        .get(field)
+        .and_then(toml::Value::as_integer)
+        .ok_or_else(|| anyhow!("phase8 financial envelope loaded TOML field `{field}` is missing"))
+}
+
+fn required_toml_bool(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &'static str,
+) -> Result<bool> {
+    table
+        .get(field)
+        .and_then(toml::Value::as_bool)
+        .ok_or_else(|| anyhow!("phase8 financial envelope loaded TOML field `{field}` is missing"))
 }
 
 #[derive(Serialize)]
@@ -664,6 +2104,9 @@ struct Phase8ApprovalConsumptionEvidence<'a> {
     root_toml_sha256: &'a str,
     ssm_manifest_sha256: &'a str,
     strategy_input_evidence_sha256: &'a str,
+    financial_envelope_sha256: &'a str,
+    pre_run_state_sha256: &'a str,
+    abort_plan_sha256: &'a str,
     approval_id_hash: String,
     approval_nonce_sha256: &'a str,
     approval_not_before_unix_seconds: i64,

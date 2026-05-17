@@ -92,6 +92,7 @@ pub struct RuntimeParametersBlock {
     pub vol_gap_reset_secs: u64,
     pub vol_min_observations: u64,
     pub vol_bridge_valid_secs: u64,
+    pub price_to_beat_source: String,
     pub pricing_kurtosis: f64,
     pub theta_decay_factor: f64,
     pub forced_flat_stale_chainlink_ms: u64,

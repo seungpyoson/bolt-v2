@@ -993,6 +993,54 @@ reason = "This names the non-secret operator envelope field containing the strat
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
+literal = '''"BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH"'''
+context = '''financial_envelope_path: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field pointing to the financial envelope evidence for checksum validation."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256"'''
+context = '''financial_envelope_sha256: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field containing the financial envelope evidence checksum."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_PRE_RUN_STATE_PATH"'''
+context = '''pre_run_state_path: required_env("BOLT_V3_PHASE8_PRE_RUN_STATE_PATH")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field pointing to pre-run state evidence for checksum validation."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256"'''
+context = '''pre_run_state_sha256: required_env("BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field containing the pre-run state evidence checksum."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_ABORT_PLAN_PATH"'''
+context = '''abort_plan_path: required_env("BOLT_V3_PHASE8_ABORT_PLAN_PATH")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field pointing to abort plan evidence for checksum validation."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_ABORT_PLAN_SHA256"'''
+context = '''abort_plan_sha256: required_env("BOLT_V3_PHASE8_ABORT_PLAN_SHA256")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the non-secret operator envelope field containing the abort plan evidence checksum."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
 literal = '''"BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID"'''
 context = '''operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,'''
 classification = "phase8_canary_operator_envelope_env_name"
@@ -1049,18 +1097,98 @@ reason = "This names the non-secret operator envelope field where the Phase 8 ca
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"phase8 operator approval not_after is before not_before"'''
-context = '''"phase8 operator approval not_after is before not_before"'''
-classification = "phase8_canary_operator_envelope_diagnostic"
-reason = "This fail-closed diagnostic reports an invalid operator approval time window before any live runner attempt."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
 literal = '''"phase8 operator approval is expired"'''
 context = '''return Err(anyhow!("phase8 operator approval is expired"));'''
 classification = "phase8_canary_operator_envelope_diagnostic"
 reason = "This fail-closed diagnostic reports an expired operator approval before any live runner attempt."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"current"'''
+context = '''const PHASE8_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";'''
+classification = "phase8_strategy_input_market_selection_contract"
+reason = "This is an accepted Phase 8 strategy-input evidence outcome for the current live-entry market selection, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"next"'''
+context = '''const PHASE8_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";'''
+classification = "phase8_strategy_input_market_selection_contract"
+reason = "This is an accepted Phase 8 strategy-input evidence outcome for the next live-entry market selection, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"market_selection_result"'''
+context = '''const PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND: &str = "market_selection_result";'''
+classification = "phase8_strategy_input_market_selection_source_contract"
+reason = "This is the record_kind expected for the source-bound Phase 8 market-selection evidence artifact, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"nt_runtime_selection_snapshot"'''
+context = '''const PHASE8_MARKET_SELECTION_SOURCE: &str = "nt_runtime_selection_snapshot";'''
+classification = "phase8_strategy_input_market_selection_source_contract"
+reason = "This is the Phase 8 source identifier for NT runtime-selection snapshot evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"phase8 strategy input evidence"'''
+context = '''"phase8 strategy input evidence",'''
+classification = "phase8_approval_bound_artifact_label"
+reason = "This label names the approval-bound strategy input artifact in checksum diagnostics; the artifact path and checksum come from the operator envelope."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"market selection source evidence"'''
+context = '''phase8_reject_parent_dir(source_path, "market selection source evidence")?;'''
+classification = "phase8_approval_bound_artifact_label"
+reason = "This label names the source-bound market-selection evidence path in traversal diagnostics; the path comes from the strategy input evidence artifact."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"phase8 market selection source evidence"'''
+context = '''"phase8 market selection source evidence",'''
+classification = "phase8_approval_bound_artifact_label"
+reason = "This label names the source-bound market-selection artifact in checksum diagnostics; the artifact path and checksum come from strategy input evidence."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"phase8 financial envelope"'''
+context = '''"phase8 financial envelope",'''
+classification = "phase8_approval_bound_artifact_label"
+reason = "This label names the approval-bound financial envelope artifact in checksum diagnostics; the artifact path and checksum come from the operator envelope."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"phase8 financial envelope strategy_instance_id matches multiple loaded strategies"'''
+context = '''"phase8 financial envelope strategy_instance_id matches multiple loaded strategies"'''
+classification = "phase8_canary_operator_envelope_diagnostic"
+reason = "This fail-closed diagnostic reports an ambiguous approved strategy id before any live runner attempt."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"phase8 pre-run state evidence"'''
+context = '''"phase8 pre-run state evidence",'''
+classification = "phase8_approval_bound_artifact_label"
+reason = "This label names the approval-bound pre-run state artifact in checksum diagnostics; the artifact path and checksum come from the operator envelope."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"phase8 abort plan evidence"'''
+context = '''"phase8 abort plan evidence",'''
+classification = "phase8_approval_bound_artifact_label"
+reason = "This label names the approval-bound abort plan artifact in checksum diagnostics; the artifact path and checksum come from the operator envelope."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -1253,3 +1381,11 @@ literal = '''b"\n"'''
 context = '''line.extend_from_slice(b"\n");'''
 classification = "decision_evidence_jsonl_record_separator"
 reason = "This is the JSONL line separator for one evidence record per line, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "6"
+context = '''if inputs.pricing_kurtosis <= Decimal::new(-6, 0) {'''
+classification = "phase8_strategy_input_formula_constant"
+reason = "This is the sigma-positive cutoff implied by the strategy fair-probability formula using 1 + pricing_kurtosis / 6, not an operator-configured runtime value."

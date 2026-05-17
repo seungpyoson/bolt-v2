@@ -1335,6 +1335,24 @@ impl Phase8OperatorApprovalEnvelope {
         loaded: &LoadedBoltV3Config,
         current_unix_seconds: i64,
     ) -> Result<()> {
+        self.validate_approved_evidence_against(
+            current_head_sha,
+            current_root_toml_sha256,
+            live_canary_approval_id,
+            loaded,
+            current_unix_seconds,
+        )?;
+        self.consume_approval_after_live_runner_entry_validation(current_unix_seconds)
+    }
+
+    pub fn validate_approved_evidence_against(
+        &self,
+        current_head_sha: &str,
+        current_root_toml_sha256: &str,
+        live_canary_approval_id: &str,
+        loaded: &LoadedBoltV3Config,
+        current_unix_seconds: i64,
+    ) -> Result<()> {
         self.validate_against(
             current_head_sha,
             current_root_toml_sha256,
@@ -1345,12 +1363,16 @@ impl Phase8OperatorApprovalEnvelope {
         self.validate_financial_envelope_against(loaded)?;
         self.validate_pre_run_state_against(loaded)?;
         self.validate_abort_plan_against(loaded)?;
-        let current_nonce_sha256 = Self::sha256_file(&self.approval_nonce_path)?;
-        if self.approval_nonce_sha256 != current_nonce_sha256 {
-            return Err(anyhow!(
-                "phase8 operator approval nonce sha256 does not match current nonce evidence"
-            ));
-        }
+        self.validate_approval_nonce()
+    }
+
+    pub fn consume_approval_after_live_runner_entry_validation(
+        &self,
+        current_unix_seconds: i64,
+    ) -> Result<()> {
+        self.validate_approval_not_consumed()?;
+        self.validate_approval_window(current_unix_seconds)?;
+        self.validate_approval_nonce()?;
         self.write_approval_consumption_evidence(current_unix_seconds)
     }
 
@@ -1439,6 +1461,16 @@ impl Phase8OperatorApprovalEnvelope {
             )
         })? {
             return Err(self.approval_already_consumed_error());
+        }
+        Ok(())
+    }
+
+    fn validate_approval_nonce(&self) -> Result<()> {
+        let current_nonce_sha256 = Self::sha256_file(&self.approval_nonce_path)?;
+        if self.approval_nonce_sha256 != current_nonce_sha256 {
+            return Err(anyhow!(
+                "phase8 operator approval nonce sha256 does not match current nonce evidence"
+            ));
         }
         Ok(())
     }

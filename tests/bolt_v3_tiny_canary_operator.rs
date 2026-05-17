@@ -23,7 +23,8 @@ fn phase8_operator_harness_is_ignored_and_uses_production_runner_shape() {
 
     assert!(source.contains("#[ignore]"));
     assert!(source.contains("Phase8OperatorApprovalEnvelope::from_env"));
-    assert!(source.contains("validate_and_consume_against"));
+    assert!(source.contains("validate_approved_evidence_against"));
+    assert!(source.contains("consume_approval_after_live_runner_entry_validation"));
     assert!(source.contains("evaluate_phase8_canary_preflight"));
     assert!(source.contains("write_json_file"));
     assert!(source.contains("build_bolt_v3_live_node"));
@@ -68,11 +69,15 @@ fn phase8_operator_harness_derives_strategy_audit_from_evidence_file() {
     let audit_index = harness
         .find("let strategy_audit = Phase8StrategyInputSafetyAudit::from_evidence_file")
         .expect("operator harness should parse strategy input evidence");
+    let validation_index = harness
+        .find("envelope.validate_approved_evidence_against")
+        .expect("operator harness should validate approval");
     let consumption_index = harness
-        .find("envelope.validate_and_consume_against")
+        .find("envelope.consume_approval_after_live_runner_entry_validation")
         .expect("operator harness should consume approval");
     assert!(source_index < audit_index);
-    assert!(audit_index < consumption_index);
+    assert!(audit_index < validation_index);
+    assert!(validation_index < consumption_index);
     assert!(!source.contains(&format!(
         "{}{}",
         "Phase8StrategyInputSafetyAudit::", "approved()"
@@ -104,6 +109,45 @@ fn phase8_operator_harness_prevalidates_success_evidence_before_runner() {
 
     assert!(input_index < runner_index);
     assert!(snapshot_index < runner_index);
+}
+
+#[test]
+fn phase8_operator_harness_consumes_approval_after_entry_validation() {
+    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
+        .expect("operator harness source should be readable");
+    let start = source
+        .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
+        .expect("operator harness start should exist");
+    let end = source[start..]
+        .find("\nfn phase8_current_checkout_head_sha")
+        .map(|offset| start + offset)
+        .expect("operator harness end should exist");
+    let harness = &source[start..end];
+
+    let preflight_index = harness
+        .find("let preflight = evaluate_phase8_canary_preflight")
+        .expect("operator harness should evaluate preflight");
+    let result_paths_index = harness
+        .find("let result_paths = Phase8OperatorLiveResultPaths::from_env()?")
+        .expect("operator harness should load live result paths");
+    let path_binding_index = harness
+        .find("result_paths.assert_belongs_to_runtime_capture")
+        .expect("operator harness should bind live result paths to runtime capture");
+    let snapshot_index = harness
+        .find("let pre_run_snapshot = result_paths.snapshot_before_run()?")
+        .expect("operator harness should snapshot result paths");
+    let consumption_index = harness
+        .find("envelope.consume_approval_after_live_runner_entry_validation")
+        .expect("operator harness should consume approval");
+    let runner_index = harness
+        .find("run_bolt_v3_live_node")
+        .expect("operator harness should use production live runner");
+
+    assert!(preflight_index < result_paths_index);
+    assert!(result_paths_index < path_binding_index);
+    assert!(path_binding_index < snapshot_index);
+    assert!(snapshot_index < consumption_index);
+    assert!(consumption_index < runner_index);
 }
 
 #[test]
@@ -185,7 +229,9 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
             "source_run_id": run_id,
             "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
-            "venue_order_id_hash": venue_order_id_hash
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
         }),
     );
     write_json_proof(
@@ -844,7 +890,7 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
         &envelope.strategy_input_evidence_sha256,
         &approved_price_to_beat_source,
     )?;
-    envelope.validate_and_consume_against(
+    envelope.validate_approved_evidence_against(
         &current_head,
         &root_hash,
         loaded
@@ -891,6 +937,10 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
                 evidence_input.approved_strategy_instance_id_hash.clone();
             result_paths.assert_belongs_to_runtime_capture(&runtime_capture.spool_root)?;
             let pre_run_snapshot = result_paths.snapshot_before_run()?;
+            let live_runner_entry_unix_seconds = phase8_current_unix_seconds()?;
+            envelope.consume_approval_after_live_runner_entry_validation(
+                live_runner_entry_unix_seconds,
+            )?;
             run_bolt_v3_live_node(&mut node, &loaded)
                 .await
                 .map_err(anyhow::Error::from)?;

@@ -68,6 +68,7 @@ macro_rules! eth_chainlink_taker_config_fields {
             vol_gap_reset_secs: u64 => as_integer, "integer", "an integer", "missing_vol_gap_reset_secs";
             vol_min_observations: u64 => as_integer, "integer", "an integer", "missing_vol_min_observations";
             vol_bridge_valid_secs: u64 => as_integer, "integer", "an integer", "missing_vol_bridge_valid_secs";
+            price_to_beat_source: PriceToBeatSource => as_str, "string", "a string", "missing_price_to_beat_source";
             pricing_kurtosis: f64 => as_float_or_integer, "float", "a float", "missing_pricing_kurtosis";
             theta_decay_factor: f64 => as_float_or_integer, "float", "a float", "missing_theta_decay_factor";
             forced_flat_stale_chainlink_ms: u64 => as_integer, "integer", "an integer", "missing_forced_flat_stale_chainlink_ms";
@@ -112,6 +113,22 @@ macro_rules! validate_config_fields_impl {
 }
 
 eth_chainlink_taker_config_fields!(define_config_struct);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+enum PriceToBeatSource {
+    #[serde(rename = "chainlink_data_streams.report_at_boundary")]
+    ChainlinkDataStreamsReportAtBoundary,
+}
+
+impl PriceToBeatSource {
+    fn reference_anchor(self, snapshot: &ReferenceSnapshot) -> Option<f64> {
+        match self {
+            Self::ChainlinkDataStreamsReportAtBoundary => {
+                best_healthy_oracle_price(snapshot).or(snapshot.fair_value)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum SelectionPhase {
@@ -333,7 +350,6 @@ struct ActiveMarketState {
     market_id: Option<String>,
     instrument_id: Option<InstrumentId>,
     outcome_fees: OutcomeFeeState,
-    price_to_beat: Option<f64>,
     interval_start_ms: Option<u64>,
     selection_published_at_ms: Option<u64>,
     seconds_to_expiry_at_selection: Option<u64>,
@@ -1142,7 +1158,6 @@ impl ActiveMarketState {
             market_id: Some(market.market_id.clone()),
             instrument_id: Some(InstrumentId::from(market.instrument_id.as_str())),
             outcome_fees: OutcomeFeeState::from_market(market),
-            price_to_beat: market.price_to_beat,
             interval_start_ms: Some(market.start_ts_ms),
             selection_published_at_ms: None,
             seconds_to_expiry_at_selection: Some(market.seconds_to_end),
@@ -1184,18 +1199,18 @@ impl ActiveMarketState {
         Some(seconds_to_expiry_at_selection.saturating_sub(elapsed_seconds))
     }
 
-    fn observe_reference_snapshot(&mut self, snapshot: &ReferenceSnapshot) {
+    fn observe_reference_snapshot(
+        &mut self,
+        snapshot: &ReferenceSnapshot,
+        price_to_beat_source: PriceToBeatSource,
+    ) {
         if self.phase == SelectionPhase::Idle {
             return;
         }
         let Some(interval_start_ms) = self.interval_start_ms else {
             return;
         };
-        let Some(anchor_price) = self
-            .price_to_beat
-            .or_else(|| best_healthy_oracle_price(snapshot))
-            .or(snapshot.fair_value)
-        else {
+        let Some(anchor_price) = price_to_beat_source.reference_anchor(snapshot) else {
             return;
         };
         if snapshot.ts_ms < interval_start_ms {
@@ -1298,7 +1313,8 @@ impl EthChainlinkTaker {
     }
 
     fn observe_reference_snapshot(&mut self, snapshot: &ReferenceSnapshot) {
-        self.active.observe_reference_snapshot(snapshot);
+        self.active
+            .observe_reference_snapshot(snapshot, self.config.price_to_beat_source);
         self.pricing.observe_reference_snapshot(
             snapshot,
             self.config.lead_agreement_min_corr,
@@ -4657,6 +4673,7 @@ mod tests {
                 vol_gap_reset_secs: 10,
                 vol_min_observations: 20,
                 vol_bridge_valid_secs: 10,
+                price_to_beat_source: PriceToBeatSource::ChainlinkDataStreamsReportAtBoundary,
                 pricing_kurtosis: 0.0,
                 theta_decay_factor: 0.0,
                 forced_flat_stale_chainlink_ms: 1500,
@@ -7575,7 +7592,7 @@ mod tests {
     }
 
     #[test]
-    fn interval_open_prefers_polymarket_price_to_beat_over_chainlink() {
+    fn interval_open_uses_chainlink_anchor_when_polymarket_price_to_beat_is_present() {
         let mut strategy = test_strategy();
         let mut snapshot = active_snapshot_with_start("MKT-1", 1_000);
         let SelectionState::Active { market } = &mut snapshot.decision.state else {
@@ -7595,7 +7612,7 @@ mod tests {
             ],
         });
 
-        assert_eq!(strategy.active.interval_open, Some(3_099.0));
+        assert_eq!(strategy.active.interval_open, Some(3_100.0));
     }
 
     #[test]

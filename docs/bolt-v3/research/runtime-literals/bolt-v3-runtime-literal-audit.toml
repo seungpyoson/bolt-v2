@@ -1329,6 +1329,14 @@ reason = "This is an existing taker strategy config schema field name; the value
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"price_to_beat_source"'''
+context = '''"price_to_beat_source",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"pricing_kurtosis"'''
 context = '''"pricing_kurtosis",'''
 classification = "strategy_runtime_schema_field"

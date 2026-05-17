@@ -362,6 +362,11 @@ pub fn raw_taker_config(
         "vol_bridge_valid_secs",
         parameters.runtime.vol_bridge_valid_secs,
     )?;
+    insert_string(
+        &mut table,
+        "price_to_beat_source",
+        parameters.runtime.price_to_beat_source.clone(),
+    );
     insert_float(
         &mut table,
         "pricing_kurtosis",

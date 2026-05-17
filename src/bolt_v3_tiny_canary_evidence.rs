@@ -1588,18 +1588,28 @@ struct Phase8PreRunStateEvidenceFile {
     strategy_venue: String,
     configured_target_id: String,
     host_clock_skew_within_bound: bool,
+    host_clock_skew_evidence_hash: String,
     conflicting_open_orders_absent: bool,
     preexisting_position_absent: bool,
+    venue_account_state_evidence_hash: String,
     market_state_approved: bool,
     market_window_approved: bool,
+    market_state_evidence_hash: String,
     funding_margin_covers_max_notional_plus_fees: bool,
+    funding_margin_evidence_hash: String,
     single_runner_lock_acquired: bool,
+    single_runner_lock_evidence_hash: String,
     egress_identity_approved: bool,
+    egress_identity_evidence_hash: String,
     clob_v2_adapter_signing_verified: bool,
+    clob_v2_adapter_signing_evidence_hash: String,
     clob_v2_collateral_accounting_verified: bool,
+    clob_v2_collateral_accounting_evidence_hash: String,
     clob_v2_fee_behavior_verified: bool,
+    clob_v2_fee_behavior_evidence_hash: String,
     release_manifest_clob_signing_version: String,
     release_manifest_nt_revision_matches_compiled_pin: bool,
+    release_manifest_evidence_hash: String,
 }
 
 impl Phase8PreRunStateEvidenceFile {
@@ -1614,6 +1624,10 @@ impl Phase8PreRunStateEvidenceFile {
             stringify!(host_clock_skew_within_bound),
             self.host_clock_skew_within_bound,
         )?;
+        require_pre_run_sha256(
+            stringify!(host_clock_skew_evidence_hash),
+            &self.host_clock_skew_evidence_hash,
+        )?;
         require_pre_run_clearance(
             stringify!(conflicting_open_orders_absent),
             self.conflicting_open_orders_absent,
@@ -1621,6 +1635,10 @@ impl Phase8PreRunStateEvidenceFile {
         require_pre_run_clearance(
             stringify!(preexisting_position_absent),
             self.preexisting_position_absent,
+        )?;
+        require_pre_run_sha256(
+            stringify!(venue_account_state_evidence_hash),
+            &self.venue_account_state_evidence_hash,
         )?;
         require_pre_run_clearance(
             stringify!(market_state_approved),
@@ -1630,29 +1648,57 @@ impl Phase8PreRunStateEvidenceFile {
             stringify!(market_window_approved),
             self.market_window_approved,
         )?;
+        require_pre_run_sha256(
+            stringify!(market_state_evidence_hash),
+            &self.market_state_evidence_hash,
+        )?;
         require_pre_run_clearance(
             stringify!(funding_margin_covers_max_notional_plus_fees),
             self.funding_margin_covers_max_notional_plus_fees,
+        )?;
+        require_pre_run_sha256(
+            stringify!(funding_margin_evidence_hash),
+            &self.funding_margin_evidence_hash,
         )?;
         require_pre_run_clearance(
             stringify!(single_runner_lock_acquired),
             self.single_runner_lock_acquired,
         )?;
+        require_pre_run_sha256(
+            stringify!(single_runner_lock_evidence_hash),
+            &self.single_runner_lock_evidence_hash,
+        )?;
         require_pre_run_clearance(
             stringify!(egress_identity_approved),
             self.egress_identity_approved,
+        )?;
+        require_pre_run_sha256(
+            stringify!(egress_identity_evidence_hash),
+            &self.egress_identity_evidence_hash,
         )?;
         require_pre_run_clearance(
             stringify!(clob_v2_adapter_signing_verified),
             self.clob_v2_adapter_signing_verified,
         )?;
+        require_pre_run_sha256(
+            stringify!(clob_v2_adapter_signing_evidence_hash),
+            &self.clob_v2_adapter_signing_evidence_hash,
+        )?;
         require_pre_run_clearance(
             stringify!(clob_v2_collateral_accounting_verified),
             self.clob_v2_collateral_accounting_verified,
         )?;
+        require_pre_run_sha256(
+            stringify!(clob_v2_collateral_accounting_evidence_hash),
+            &self.clob_v2_collateral_accounting_evidence_hash,
+        )?;
         require_pre_run_clearance(
             stringify!(clob_v2_fee_behavior_verified),
             self.clob_v2_fee_behavior_verified,
+        )?;
+        require_pre_run_sha256(
+            stringify!(clob_v2_fee_behavior_evidence_hash),
+            &self.clob_v2_fee_behavior_evidence_hash,
         )?;
         require_pre_run_string(
             stringify!(release_manifest_clob_signing_version),
@@ -1661,6 +1707,10 @@ impl Phase8PreRunStateEvidenceFile {
         require_pre_run_clearance(
             stringify!(release_manifest_nt_revision_matches_compiled_pin),
             self.release_manifest_nt_revision_matches_compiled_pin,
+        )?;
+        require_pre_run_sha256(
+            stringify!(release_manifest_evidence_hash),
+            &self.release_manifest_evidence_hash,
         )
     }
 }
@@ -1678,6 +1728,14 @@ fn require_pre_run_string(field: &'static str, value: &str) -> Result<()> {
         Err(pre_run_state_blocked(field))
     } else {
         Ok(())
+    }
+}
+
+fn require_pre_run_sha256(field: &'static str, value: &str) -> Result<()> {
+    if phase8_is_sha256_hex(value) {
+        Ok(())
+    } else {
+        Err(pre_run_state_blocked(field))
     }
 }
 

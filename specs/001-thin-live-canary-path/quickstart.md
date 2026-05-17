@@ -78,6 +78,7 @@ Preconditions:
 - strategy input evidence bound through `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH` and `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256`
 - financial envelope evidence bound through `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH` and `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256`
 - pre-run state evidence bound through `BOLT_V3_PHASE8_PRE_RUN_STATE_PATH` and `BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256`
+- pre-run state evidence carries sha256 hashes for host clock, account state, market state, funding/margin, single-runner lock, egress identity, CLOB V2 signing/collateral/fee behavior, and release-manifest proofs
 - abort plan evidence bound through `BOLT_V3_PHASE8_ABORT_PLAN_PATH` and `BOLT_V3_PHASE8_ABORT_PLAN_SHA256`
 - explicit operator approval id and time window bound to `BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID`, `BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS`, and `BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS`
 - approval nonce evidence at `BOLT_V3_PHASE8_APPROVAL_NONCE_PATH` matches `BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256`

@@ -2039,6 +2039,111 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
 }
 
 #[test]
+fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
+    )
+    .expect("manifest should write");
+    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
+        .expect("manifest hash should compute");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    std::fs::write(
+        &strategy_input_path,
+        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+    )
+    .expect("strategy input evidence should write");
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+        .expect("strategy input evidence hash should compute");
+    let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
+    write_phase8_financial_envelope(&financial_envelope_path, "0.25");
+    let financial_envelope_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
+            .expect("financial envelope hash should compute");
+    let pre_run_state_path = temp.path().join("phase8-pre-run-state.json");
+    let pre_run_json = serde_json::json!({
+        "strategy_venue": "polymarket_main",
+        "configured_target_id": "btc_updown_5m",
+        "host_clock_skew_within_bound": true,
+        "conflicting_open_orders_absent": true,
+        "preexisting_position_absent": true,
+        "market_state_approved": true,
+        "market_window_approved": true,
+        "funding_margin_covers_max_notional_plus_fees": true,
+        "single_runner_lock_acquired": true,
+        "egress_identity_approved": true,
+        "clob_v2_adapter_signing_verified": true,
+        "clob_v2_collateral_accounting_verified": true,
+        "clob_v2_fee_behavior_verified": true,
+        "release_manifest_clob_signing_version": "clob_v2",
+        "release_manifest_nt_revision_matches_compiled_pin": true
+    });
+    std::fs::write(
+        &pre_run_state_path,
+        serde_json::to_vec(&pre_run_json).expect("pre-run state should serialize"),
+    )
+    .expect("pre-run state should write");
+    let pre_run_state_hash = Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+        .expect("pre-run state hash should compute");
+    let abort_plan_path = temp.path().join("phase8-abort-plan.json");
+    write_phase8_abort_plan(&abort_plan_path, false);
+    let abort_plan_hash = Phase8OperatorApprovalEnvelope::sha256_file(&abort_plan_path)
+        .expect("abort plan hash should compute");
+    let approval_nonce_path = temp.path().join("phase8-approval-nonce.json");
+    std::fs::write(
+        &approval_nonce_path,
+        r#"{"record_kind":"phase8_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+    )
+    .expect("approval nonce should write");
+    let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
+        .expect("approval nonce hash should compute");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    let envelope = Phase8OperatorApprovalEnvelope {
+        head_sha: "expected-head".to_string(),
+        root_toml_path: "config/live.local.toml".to_string(),
+        root_toml_sha256: "expected-config-hash".to_string(),
+        ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
+        ssm_manifest_sha256: manifest_hash,
+        strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
+        strategy_input_evidence_sha256: strategy_input_hash,
+        financial_envelope_path: financial_envelope_path.to_string_lossy().to_string(),
+        financial_envelope_sha256: financial_envelope_hash,
+        pre_run_state_path: pre_run_state_path.to_string_lossy().to_string(),
+        pre_run_state_sha256: pre_run_state_hash,
+        abort_plan_path: abort_plan_path.to_string_lossy().to_string(),
+        abort_plan_sha256: abort_plan_hash,
+        operator_approval_id: "operator-approved-canary-001".to_string(),
+        approval_not_before_unix_seconds: 1_000,
+        approval_not_after_unix_seconds: 2_000,
+        approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
+        approval_nonce_sha256: approval_nonce_hash,
+        approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+    };
+
+    let error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            1_500,
+        )
+        .expect_err("pre-run state without artifact hashes should fail closed");
+    assert!(
+        error.to_string().contains("host_clock_skew_evidence_hash"),
+        "error should mention missing pre-run artifact hash: {error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "pre-run state without artifact hashes must not consume approval"
+    );
+}
+
+#[test]
 fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let manifest_path = temp.path().join("phase8-ssm-manifest.json");
@@ -2250,22 +2355,33 @@ fn write_phase8_pre_run_state_with_clob_fee_behavior(
     has_preexisting_position: bool,
     clob_v2_fee_behavior_verified: bool,
 ) {
+    let evidence_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let json = serde_json::json!({
         "strategy_venue": "polymarket_main",
         "configured_target_id": "btc_updown_5m",
         "host_clock_skew_within_bound": true,
+        "host_clock_skew_evidence_hash": evidence_hash,
         "conflicting_open_orders_absent": true,
         "preexisting_position_absent": !has_preexisting_position,
+        "venue_account_state_evidence_hash": evidence_hash,
         "market_state_approved": true,
         "market_window_approved": true,
+        "market_state_evidence_hash": evidence_hash,
         "funding_margin_covers_max_notional_plus_fees": true,
+        "funding_margin_evidence_hash": evidence_hash,
         "single_runner_lock_acquired": true,
+        "single_runner_lock_evidence_hash": evidence_hash,
         "egress_identity_approved": true,
+        "egress_identity_evidence_hash": evidence_hash,
         "clob_v2_adapter_signing_verified": true,
+        "clob_v2_adapter_signing_evidence_hash": evidence_hash,
         "clob_v2_collateral_accounting_verified": true,
+        "clob_v2_collateral_accounting_evidence_hash": evidence_hash,
         "clob_v2_fee_behavior_verified": clob_v2_fee_behavior_verified,
+        "clob_v2_fee_behavior_evidence_hash": evidence_hash,
         "release_manifest_clob_signing_version": "clob_v2",
-        "release_manifest_nt_revision_matches_compiled_pin": true
+        "release_manifest_nt_revision_matches_compiled_pin": true,
+        "release_manifest_evidence_hash": evidence_hash
     });
     std::fs::write(
         path,

@@ -636,6 +636,7 @@ The `[live_canary]` TOML block is necessary but not sufficient for the one tiny-
 - `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256`: sha256 of the financial-envelope evidence
 - `BOLT_V3_PHASE8_PRE_RUN_STATE_PATH`: pre-run host/account/market/funding/runner/egress state evidence path
 - `BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256`: sha256 of the pre-run state evidence
+- The pre-run state evidence JSON must include sha256 bindings for the host clock-skew proof, venue account-state proof, market-state proof, funding/margin proof, single-runner lock proof, egress-identity proof, CLOB V2 signing/collateral/fee proofs, and release-manifest proof.
 - `BOLT_V3_PHASE8_ABORT_PLAN_PATH`: operator abort/panic plan evidence path
 - `BOLT_V3_PHASE8_ABORT_PLAN_SHA256`: sha256 of the abort/panic plan evidence
 - `BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID`: explicit operator approval identifier

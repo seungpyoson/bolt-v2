@@ -448,37 +448,6 @@ jobs:
         run: just deny-advisories
 """
 
-
-BASE_ADVISORY_WORKFLOW = """
-name: Advisory Check
-
-on:
-  workflow_dispatch: {}
-
-env:
-  JUST_VERSION: "1.49.0"
-
-jobs:
-  advisories:
-    name: advisories
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@example
-      - name: Setup environment
-        id: setup
-        uses: ./.github/actions/setup-environment
-        with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
-          just-version: ${{ env.JUST_VERSION }}
-          include-deny-version: "true"
-      - name: Install cargo-deny
-        run: |
-          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked
-      - name: Check advisories
-        run: just deny-advisories
-"""
-
-
 BASE_ACTION = """
 name: Setup Environment
 inputs:
@@ -1916,8 +1885,8 @@ def main() -> int:
             "ci.yml": BASE_WORKFLOW,
             "advisory.yml": replace_once(
                 BASE_ADVISORY_WORKFLOW,
-                'cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked',
-                'cargo install cargo-deny --version "0.18.3" --locked',
+                "tool: cargo-deny@${{ steps.setup.outputs.deny_version }}",
+                "tool: cargo-deny@0.18.3",
             ),
         },
     )

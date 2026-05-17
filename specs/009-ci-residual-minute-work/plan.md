@@ -46,7 +46,7 @@ specs/009-ci-residual-minute-work/
 ## Stage 0 - Evidence And Research
 
 - Re-read #344, #335, #333, #340 live state.
-- Confirm main branch has no required status checks today.
+- Confirm live branch ruleset required contexts before validating pass-stub coverage.
 - Confirm current branch list before any classification.
 - Confirm GitHub skipped-workflow / skipped-job semantics from primary docs.
 
@@ -54,7 +54,7 @@ specs/009-ci-residual-minute-work/
 
 - Represent safe path patterns once in a verifier/classifier.
 - Add docs table covering required #344 examples.
-- Add pass-stub workflow that computes changed files and exposes `gate` only for ignored-safe PRs.
+- Add pass-stub workflow that computes changed files and exposes the required `build`, `clippy`, `test`, and `gate` contexts for ignored-safe PRs.
 - Extend workflow lint to guard pass-stub and docs drift.
 
 ## Stage 2 - Implementation

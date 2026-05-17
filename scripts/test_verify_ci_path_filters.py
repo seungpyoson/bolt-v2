@@ -35,7 +35,7 @@ on:
 """
 
 
-PASS_STUB_FIXTURE = """
+PASS_STUB_HEADER = """
 name: CI docs pass stub
 on:
   pull_request:
@@ -55,6 +55,24 @@ on:
 permissions:
   contents: read
 jobs:
+"""
+
+
+PASS_STUB_JOB_TEMPLATE = """
+  {job}:
+    name: {job}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@example
+      - name: Classify changed files
+        run: python3 scripts/verify_ci_path_filters.py --changed-files changed-files.txt --github-output "$GITHUB_OUTPUT"
+"""
+
+
+PASS_STUB_FIXTURE = PASS_STUB_HEADER + "".join(PASS_STUB_JOB_TEMPLATE.format(job=job) for job in ("build", "clippy", "test", "gate"))
+
+
+PASS_STUB_GATE_ONLY_FIXTURE = PASS_STUB_HEADER + """
   gate:
     name: gate
     runs-on: ubuntu-latest
@@ -68,13 +86,13 @@ jobs:
 DOCS_FIXTURE = """
 | Scenario | Example path | Classification | CI behavior |
 | --- | --- | --- | --- |
-| docs-only root agent doc | `AGENTS.md` | ignored-safe | full CI skipped; pass-stub `gate` runs and succeeds |
+| docs-only root agent doc | `AGENTS.md` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
 | workflow change | `.github/workflows/ci.yml` | full-ci | full CI runs; pass-stub does not trigger |
 | Rust source change | `src/lib.rs` | full-ci | full CI runs; pass-stub does not trigger |
 | managed rust-verification config | `.claude/rust-verification.toml` | full-ci | full CI runs; pass-stub does not trigger |
 | lockfile change | `Cargo.lock` | full-ci | full CI runs; pass-stub does not trigger |
 | mixed docs and source | `AGENTS.md` + `src/lib.rs` | full-ci | full CI runs; pass-stub records `docs_only=false` without blocking |
-| ignored config dir | `.codex/config.toml` | ignored-safe | full CI skipped; pass-stub `gate` runs and succeeds |
+| ignored config dir | `.codex/config.toml` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
 """
 
 
@@ -154,13 +172,18 @@ def assert_verifies_pass_stub_workflow() -> None:
         "      - name: Optional diagnostic\n        if: always()\n        run: echo ok\n      - name: Classify changed files",
     )
     module.verify_pass_stub_workflow(step_if_fixture)
-    assert_raises("pass-stub gate job must be named gate", lambda: module.verify_pass_stub_workflow(PASS_STUB_FIXTURE.replace("name: gate", "name: docs-gate")))
-    assert_raises("pass-stub must run changed-file classifier", lambda: module.verify_pass_stub_workflow(PASS_STUB_FIXTURE.replace("python3 scripts/verify_ci_path_filters.py", "echo ok")))
+    assert_raises("pass-stub required stub job gate must be named gate", lambda: module.verify_pass_stub_workflow(PASS_STUB_FIXTURE.replace("name: gate", "name: docs-gate")))
+    assert_raises("pass-stub required stub job build must run changed-file classifier", lambda: module.verify_pass_stub_workflow(PASS_STUB_FIXTURE.replace("python3 scripts/verify_ci_path_filters.py", "echo ok", 1)))
     require_docs_only_fixture = PASS_STUB_FIXTURE.replace("$GITHUB_OUTPUT", "$GITHUB_OUTPUT\" --require-docs-only")
     assert_raises("pass-stub must not require docs-only", lambda: module.verify_pass_stub_workflow(require_docs_only_fixture))
-    assert_raises("pass-stub gate job must fail directly", lambda: module.verify_pass_stub_workflow(PASS_STUB_FIXTURE.replace("runs-on: ubuntu-latest", "needs: classify-docs-only\n    runs-on: ubuntu-latest", 1)))
+    assert_raises("pass-stub build job must fail directly", lambda: module.verify_pass_stub_workflow(PASS_STUB_FIXTURE.replace("runs-on: ubuntu-latest", "needs: classify-docs-only\n    runs-on: ubuntu-latest", 1)))
     job_if_fixture = PASS_STUB_FIXTURE.replace("    runs-on: ubuntu-latest", "    if: always()\n    runs-on: ubuntu-latest", 1)
-    assert_raises("pass-stub gate job must not use job-level if", lambda: module.verify_pass_stub_workflow(job_if_fixture))
+    assert_raises("pass-stub build job must not use job-level if", lambda: module.verify_pass_stub_workflow(job_if_fixture))
+
+
+def assert_rejects_missing_required_pass_stub_contexts() -> None:
+    module = load_script()
+    assert_raises("pass-stub workflow missing required stub job build", lambda: module.verify_pass_stub_workflow(PASS_STUB_GATE_ONLY_FIXTURE))
 
 
 def assert_verifies_docs_rows() -> None:
@@ -208,6 +231,7 @@ def assert_require_docs_only_fails_closed() -> None:
 def main() -> int:
     assert_extracts_ci_paths_ignore()
     assert_classifies_changed_paths()
+    assert_rejects_missing_required_pass_stub_contexts()
     assert_verifies_pass_stub_workflow()
     assert_verifies_docs_rows()
     assert_writes_github_output()

@@ -5,7 +5,7 @@
 ## Stage 1 - Evidence And Spec
 
 - [x] T001 Re-read live #344, #335, #333, and #340 issue bodies/comments.
-- [x] T002 Confirm `main` required status checks are currently null.
+- [x] T002 Confirm live `main` required status contexts.
 - [x] T003 Create spec-kit artifacts under `specs/009-ci-residual-minute-work/`.
 - [x] T004 Create requirements checklist in `checklists/requirements.md`.
 

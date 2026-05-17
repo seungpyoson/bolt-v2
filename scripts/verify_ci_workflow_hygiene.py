@@ -197,10 +197,13 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'.config/nextest.toml'",
     "'.claude/rust-verification.toml'",
     "'justfile'",
-    "'src/**/*.rs'",
-    "'tests/**/*.rs'",
-    "'benches/**/*.rs'",
-    "'examples/**/*.rs'",
+    "'build.rs'",
+    "'src/**'",
+    "'tests/**'",
+    "'benches/**'",
+    "'examples/**'",
+    "'crates/**'",
+    "'specs/**/*.md'",
 )
 TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst"
 TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"

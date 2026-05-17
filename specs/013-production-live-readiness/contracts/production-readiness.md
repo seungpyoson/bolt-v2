@@ -2,15 +2,15 @@
 
 ## Claim Contract
 
-1. Every readiness claim must name one level: tiny-canary ready, staged-live ready, or production-live ready.
+1. Every readiness claim must name one level: tiny-canary ready, staged live ready, or production live ready.
 2. Tiny-canary readiness permits only one explicitly approved capped canary attempt.
-3. Staged-live readiness permits only operator-supervised repeated runs inside configured stage bounds.
-4. Production-live readiness permits production-grade claims only for the named venue, market family, strategy, host, binary, root TOML, and approval scope.
+3. Staged live readiness permits only operator-supervised repeated runs inside configured stage bounds.
+4. Production live readiness permits production-grade claims only for the named venue, market family, strategy, host, binary, root TOML, and approval scope.
 5. If evidence supports a narrower level, the narrower level is the only allowed claim.
 
 ## Promotion Contract
 
-Promotion from tiny-canary to staged-live requires:
+Promotion from tiny-canary to staged live requires:
 
 - completed canary evidence for NT submit and venue order state
 - strategy cancel evidence when order remains open
@@ -23,7 +23,7 @@ Promotion from tiny-canary to staged-live requires:
 - monitoring/alerting proof
 - deploy provenance proof for each run
 
-Promotion from staged-live to production-live requires:
+Promotion from staged live to production live requires:
 
 - completed staged-run acceptance evidence
 - no open status-map blocker in rows 34-48 unless explicitly waived

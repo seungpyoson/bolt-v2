@@ -25,9 +25,9 @@ The active readiness authority remains:
 
 | Level | Claim Allowed | Required Evidence |
 |---|---|---|
-| Tiny-canary ready | One approved capped canary attempt may enter the live runner. This is not repeated-live or production readiness. | Exact reviewed head, clean worktree, exact root TOML checksum, SSM manifest hash, satisfied no-submit readiness report accepted by the live-canary gate, strategy-input safety evidence, financial-envelope evidence, pre-run state evidence, abort-plan evidence, time-bound approval nonce, submit-admission caps, and local gate tests. |
-| Staged live ready | Repeated operator-supervised live runs may be proposed for a configured stage window. This is not unattended production readiness. | All tiny-canary evidence plus completed canary evidence for NT submit, venue accept/fill/reject, strategy cancel when an order remains open, NT-backed restart reconciliation, post-run hygiene, order-lifecycle tests, restart-reconciliation tests, single-runner protection tests, approval replay-resistance tests, monitoring/alerting proof, and deploy provenance for each run. |
-| Production live ready | Production-grade live trading claims may be made for the configured venue, market family, strategy, host, and root TOML. | All staged-live evidence plus completed staged-run acceptance criteria, no open blocker in rows 34-48 of the source-grounded status map unless explicitly waived, documented operator runbooks exercised at least once, alert routing verified, deploy provenance tied to the reviewed commit and running binary, and explicit operator approval naming the exact scope. |
+| tiny-canary ready | One approved capped canary attempt may enter the live runner. This is not repeated-live or production readiness. | Exact reviewed head, clean worktree, exact root TOML checksum, SSM manifest hash, satisfied no-submit readiness report accepted by the live-canary gate, strategy-input safety evidence, financial-envelope evidence, pre-run state evidence, abort-plan evidence, time-bound approval nonce, submit-admission caps, and local gate tests. |
+| staged live ready | Repeated operator-supervised live runs may be proposed for a configured stage window. This is not unattended production readiness. | All tiny-canary evidence plus completed canary evidence for NT submit, venue accept/fill/reject, strategy cancel when an order remains open, NT-backed restart reconciliation, post-run hygiene, order-lifecycle tests, restart-reconciliation tests, single-runner protection tests, approval replay-resistance tests, monitoring/alerting proof, and deploy provenance for each run. |
+| production live ready | Production-grade live trading claims may be made for the configured venue, market family, strategy, host, and root TOML. | All staged live evidence plus completed staged-run acceptance criteria, no open blocker in rows 34-48 of the source-grounded status map unless explicitly waived, documented operator runbooks exercised at least once, alert routing verified, deploy provenance tied to the reviewed commit and running binary, and explicit operator approval naming the exact scope. |
 
 Any claim must name the level. A PR, issue, or runbook must not say "production
 ready", "live ready", or "ready for trading" without naming the level and
@@ -52,15 +52,17 @@ fields or links:
 - NT submit, venue order state, optional strategy cancel, restart
   reconciliation, and post-run hygiene evidence hashes when live orders are in
   scope
-- monitoring/alerting proof hash for staged-live and production-live claims
+- monitoring/alerting proof hash for staged live and production live claims
 - explicit residual blockers and explicit waivers, if any
 
 Evidence that contains raw secrets, private keys, raw approval ids, or account
 balances is invalid for promotion.
 
+The separate claims are no-submit readiness, tiny-canary readiness, staged live readiness, and production live readiness.
+
 ## Runbooks
 
-These runbooks are required before staged-live readiness and must be linked from
+These runbooks are required before staged live readiness and must be linked from
 the evidence package:
 
 - Repeated-live operation: preflight exact head, root TOML, SSM manifest,
@@ -91,7 +93,7 @@ Existing local gates that can contribute evidence:
 - `cargo test --test bolt_v3_tiny_canary_preconditions -- --nocapture`
 - `cargo test --test bolt_v3_tiny_canary_operator -- --nocapture`
 
-Missing gates that block staged-live and production-live claims until implemented
+Missing gates that block staged live and production live claims until implemented
 or explicitly waived:
 
 - order lifecycle proof from NT order/execution events for submit, accept,

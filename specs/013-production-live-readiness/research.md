@@ -2,7 +2,7 @@
 
 ## Decision: Separate Readiness Claims By Evidence Level
 
-Production readiness must be expressed as three explicit levels: tiny-canary ready, staged-live ready, and production-live ready.
+Production readiness must be expressed as three explicit levels: tiny-canary ready, staged live ready, and production live ready.
 
 **Rationale**: Issue #360 proves one controlled canary path. Repeated live operation adds restart, replay, monitoring, deploy, incident, and hygiene risks that one canary cannot cover.
 
@@ -24,7 +24,7 @@ The canonical Issue #369 claim-level contract lives at `docs/bolt-v3/2026-05-18-
 
 ## Decision: Link Missing Staged/Production Tooling As Blockers
 
-Issue #369's first slice defines and links required tests/tooling rather than implementing every staged-live and production-live blocker.
+Issue #369's first slice defines and links required tests/tooling rather than implementing every staged live and production live blocker.
 
 **Rationale**: The issue acceptance asks to define production readiness and add or link tests/tooling requirements. Rows 34-48 of the status map already list source-backed missing implementation areas. Implementing all of them in this branch would violate minimal slice discipline.
 

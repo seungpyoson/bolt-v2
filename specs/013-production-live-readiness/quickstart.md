@@ -15,7 +15,7 @@ git diff --check
 ## Reviewer Checklist
 
 - Read `docs/bolt-v3/2026-05-18-production-readiness-contract.md`.
-- Confirm the contract defines tiny-canary, staged-live, and production-live readiness.
+- Confirm the contract defines tiny-canary, staged live, and production live readiness.
 - Confirm the contract blocks production-grade claims without evidence or explicit waiver.
 - Confirm `docs/bolt-v3/2026-04-25-bolt-v3-contract-ledger.md` links the contract.
 - Confirm `docs/bolt-v3/2026-04-28-source-grounded-status-map.md` row 48 links the contract.

@@ -17,7 +17,7 @@ Define production-grade Bolt-v3 live-readiness levels beyond Issue #360's one-ca
 **Project Type**: Rust live trading binary over NautilusTrader
 **Performance Goals**: N/A for docs/test gate; no runtime hot path change
 **Constraints**: no live capital, no secret display, SSM-only evidence references, no hardcoded runtime policy in code, no production-ready claim without evidence
-**Scale/Scope**: One Issue #369 readiness-definition slice. Future implementation slices close individual staged-live and production-live blockers.
+**Scale/Scope**: One Issue #369 readiness-definition slice. Future implementation slices close individual staged live and production live blockers.
 
 ## Constitution Check
 

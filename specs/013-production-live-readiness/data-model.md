@@ -31,7 +31,7 @@
   - `operator_waivers`
 - **Validation**:
   - Raw secrets, private keys, raw approval ids, and account balances invalidate the package.
-  - Staged-live and production-live packages must include live-order, monitoring, and deploy provenance evidence.
+  - Staged live and production live packages must include live-order, monitoring, and deploy provenance evidence.
 
 ## OperatorRunbook
 
@@ -42,7 +42,7 @@
   - `evidence_outputs`
   - `failure_blocks`
 - **Validation**:
-  - Staged-live readiness is blocked unless all four runbook kinds are linked.
+  - Staged live readiness is blocked unless all four runbook kinds are linked.
   - Runbooks must not replace the live-canary gate or approval gate.
 
 ## ProductionClaimBlocker
@@ -52,4 +52,4 @@
   - `source_reference`
   - `waiver_reference`
 - **Validation**:
-  - Production-live readiness is blocked while any blocker lacks an explicit operator waiver.
+  - Production live readiness is blocked while any blocker lacks an explicit operator waiver.

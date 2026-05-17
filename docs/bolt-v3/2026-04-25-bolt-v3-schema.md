@@ -651,7 +651,7 @@ The `[live_canary]` TOML block is necessary but not sufficient for the one tiny-
 
 #### Live-result fields
 
-- `BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH`: persisted decision evidence path
+- `BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH`: persisted decision evidence proof path under the NT runtime capture spool
 - `BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH`: client order identifier hash
 - `BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH`: venue order identifier hash
 - `BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH`: NT submit-event evidence path
@@ -727,11 +727,11 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 Live-result proof JSON files:
 
 - `decision_evidence`, `nt_submit_event`, `venue_order_state`, `strategy_cancel`, and `restart_reconciliation` proofs include `record_kind` set to the matching proof name.
-- `decision_evidence` must include `run_id` and `strategy_instance_id_hash`.
+- `decision_evidence` must include `run_id` and `strategy_instance_id_hash`, and its path must be under the NT runtime capture spool.
 - `nt_submit_event` must include `run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, and `venue_order_id_hash`.
 - `venue_order_state` must include `run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, `venue_order_id_hash`, `venue_order_outcome`, and `order_remains_open`; `venue_order_outcome` is `accepted`, `filled`, or `rejected`, and terminal outcomes require `order_remains_open = false`.
 - `strategy_cancel` is required when `venue_order_state.order_remains_open = true` and includes `run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, and `venue_order_id_hash`.
-- `restart_reconciliation` must include `source_run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, and `venue_order_id_hash`, and its path must be under the NT runtime capture spool.
+- `restart_reconciliation` must include `source_run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, `venue_order_id_hash`, `venue_order_outcome`, and `order_remains_open`; `venue_order_outcome` must be terminal (`filled` or `rejected`), `order_remains_open` must be `false`, and its path must be under the NT runtime capture spool.
 
 `post_run_hygiene` fields:
 

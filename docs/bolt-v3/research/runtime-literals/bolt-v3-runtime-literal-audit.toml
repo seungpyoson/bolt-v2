@@ -1591,6 +1591,54 @@ classification = "decision_evidence_jsonl_record_separator"
 reason = "This is the JSONL line separator for one evidence record per line, not a runtime operator value."
 
 [[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = '''2'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 2;'''
+classification = "decision_evidence_envelope_schema_version"
+reason = "This is the decision-evidence JSONL envelope schema version. v2 added the recorded_at_utc_ns, gate_id, gate_version, and kind fields per the P4 round-1 fix. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"CARGO_PKG_VERSION"'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");'''
+classification = "decision_evidence_gate_version_source"
+reason = "This is the env! macro argument naming the compile-time CARGO_PKG_VERSION captured at build time as the gate-version field on each evidence record. The macro requires a literal string argument; the runtime value comes from Cargo.toml, not from operator config."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.order_intent"'''
+context = '''pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";'''
+classification = "decision_evidence_gate_id"
+reason = "This is the stable gate identifier stamped on each order-intent evidence record so operators can correlate JSONL records back to the recording gate. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.submit_admission"'''
+context = '''pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";'''
+classification = "decision_evidence_gate_id"
+reason = "This is the stable gate identifier stamped on each submit-admission evidence record so operators can correlate JSONL records back to the recording gate. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_intent"'''
+context = '''kind: "order_intent",'''
+classification = "decision_evidence_envelope_kind"
+reason = "This is the JSONL envelope discriminator naming the order-intent payload shape. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"admission_decision"'''
+context = '''kind: "admission_decision",'''
+classification = "decision_evidence_envelope_kind"
+reason = "This is the JSONL envelope discriminator naming the admission-decision payload shape. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "string"
 literal = '''"logging.stale_log_source_directory"'''

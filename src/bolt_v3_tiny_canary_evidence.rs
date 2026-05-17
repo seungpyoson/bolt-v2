@@ -256,6 +256,9 @@ impl Phase8StrategyInputSafetyAudit {
                     raw.market_selection_timestamp_milliseconds,
                     raw.polymarket_market_start_timestamp_milliseconds,
                     raw.polymarket_market_end_timestamp_milliseconds,
+                    raw.candidate_market_start_timestamps_milliseconds
+                        .as_deref()
+                        .unwrap_or(&[]),
                 ),
             Phase8CanaryBlockReason::InvalidMarketSelectionBinding,
         );
@@ -296,17 +299,35 @@ fn phase8_market_selection_outcome_matches_window(
     market_selection_timestamp_milliseconds: u64,
     market_start_timestamp_milliseconds: u64,
     market_end_timestamp_milliseconds: u64,
+    candidate_market_start_timestamps_milliseconds: &[u64],
 ) -> bool {
     match outcome {
         PHASE8_MARKET_SELECTION_OUTCOME_CURRENT => {
             market_start_timestamp_milliseconds <= market_selection_timestamp_milliseconds
                 && market_selection_timestamp_milliseconds < market_end_timestamp_milliseconds
         }
-        PHASE8_MARKET_SELECTION_OUTCOME_NEXT => {
-            market_selection_timestamp_milliseconds < market_start_timestamp_milliseconds
-        }
+        PHASE8_MARKET_SELECTION_OUTCOME_NEXT => phase8_market_selection_start_is_nearest_next(
+            market_selection_timestamp_milliseconds,
+            market_start_timestamp_milliseconds,
+            candidate_market_start_timestamps_milliseconds,
+        ),
         _ => true,
     }
+}
+
+fn phase8_market_selection_start_is_nearest_next(
+    market_selection_timestamp_milliseconds: u64,
+    market_start_timestamp_milliseconds: u64,
+    candidate_market_start_timestamps_milliseconds: &[u64],
+) -> bool {
+    candidate_market_start_timestamps_milliseconds
+        .iter()
+        .copied()
+        .filter(|candidate_start_timestamp_milliseconds| {
+            *candidate_start_timestamp_milliseconds > market_selection_timestamp_milliseconds
+        })
+        .min()
+        == Some(market_start_timestamp_milliseconds)
 }
 
 #[derive(Debug, Deserialize)]
@@ -325,6 +346,7 @@ struct Phase8StrategyInputEvidenceFile {
     theta_decay_factor: String,
     theta_scaled_min_edge_bps: String,
     market_selection_timestamp_milliseconds: u64,
+    candidate_market_start_timestamps_milliseconds: Option<Vec<u64>>,
     market_selection_outcome: String,
     polymarket_condition_id: String,
     polymarket_market_slug: String,

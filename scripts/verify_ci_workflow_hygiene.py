@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import shlex
 import sys
 import tomllib
 
@@ -99,6 +100,7 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "just --evaluate target",
     "just --evaluate zig_version",
     "just --evaluate zigbuild_version",
+    "just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256",
     "just --evaluate rust_verification_owner",
     "just --evaluate rust_verification_source_repo",
     "just --evaluate rust_verification_source_sha",
@@ -112,6 +114,7 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
     "target": "steps.shared.outputs.target",
     "zig_version": "steps.shared.outputs.zig_version",
     "zigbuild_version": "steps.shared.outputs.zigbuild_version",
+    "zigbuild_x86_64_unknown_linux_gnu_sha256": "steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256",
     "rust_verification_owner": "steps.shared.outputs.rust_verification_owner",
     "rust_verification_source_repo": "steps.shared.outputs.rust_verification_source_repo",
     "rust_verification_source_sha": "steps.shared.outputs.rust_verification_source_sha",
@@ -141,6 +144,43 @@ JUST_LANE_RE = re.compile(
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
 BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
+TAIKI_INSTALL_ACTION = "taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c"
+CI_INSTALL_ACTION_TOOLS = {
+    "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
+    "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
+    "test-shards": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
+}
+CI_SOURCE_BUILD_TOOLS = ("cargo-deny", "cargo-nextest", "cargo-zigbuild")
+CI_INSTALL_ACTION_COMMANDS = {
+    "deny": "just deny",
+    "advisories": "just deny-advisories",
+    "test-shards": "just test -- --partition count:${{ matrix.shard }}/4",
+}
+CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {"--color", "--config", "-C", "-Z"}
+CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "--quiet", "-q", "--verbose", "-v"}
+ZIGBUILD_PREBUILT_LITERALS = (
+    'version="${{ steps.setup.outputs.zigbuild_version }}"',
+    'archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"',
+    "https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}",
+    "curl \\",
+    "--retry 10",
+    "--retry-delay 3",
+    "--retry-all-errors",
+    "--fail",
+    "--location",
+    "--show-error",
+    "--silent",
+    '--output "$archive"',
+    '"$base_url/$archive"',
+    'expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"',
+    'actual="$(sha256sum "$archive" | awk \'{print $1}\')"',
+    'test "$actual" = "$expected"',
+    'tar --extract --xz --file "$archive"',
+    'mkdir -p "$HOME/.cargo/bin"',
+    'mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"',
+    'chmod +x "$HOME/.cargo/bin/cargo-zigbuild"',
+    "cargo-zigbuild --version",
+)
 
 
 def strip_comment(line: str) -> str:
@@ -339,6 +379,305 @@ def job_has_explicit_cache_key(job_lines: list[str]) -> bool:
 
 def job_just_lanes(job_lines: list[str]) -> set[str]:
     return {match.group(2) for match in JUST_LANE_RE.finditer(uncommented_text(job_lines))}
+
+
+def block_uses_exact_action(block: list[str], action: str) -> bool:
+    pattern = re.compile(rf"^\s*(?:-\s*)?uses:\s*{re.escape(action)}\s*$")
+    return any(pattern.match(strip_comment(line)) for line in block)
+
+
+def install_action_tool_step(job_lines: list[str], tool: str, output: str) -> tuple[int, list[str]] | None:
+    expected_tool = f"{tool}@${{{{ {output} }}}}"
+    for index, block in enumerate(step_blocks(job_lines)):
+        if block_uses_exact_action(block, TAIKI_INSTALL_ACTION) and block_has_input(block, "tool", expected_tool):
+            return index, block
+    return None
+
+
+def first_step_running_command(job_lines: list[str], command: str) -> int | None:
+    for index, block in enumerate(step_blocks(job_lines)):
+        if block_runs_command(block, command):
+            return index
+    return None
+
+
+def first_step_containing_literals(job_lines: list[str], literals: tuple[str, ...]) -> int | None:
+    for index, block in enumerate(step_blocks(job_lines)):
+        text = uncommented_text(block)
+        if all(literal in text for literal in literals):
+            return index
+    return None
+
+
+def first_step_containing_literals_in_order(job_lines: list[str], literals: tuple[str, ...]) -> int | None:
+    for index, block in enumerate(step_blocks(job_lines)):
+        text = uncommented_text(block)
+        position = 0
+        for literal in literals:
+            found = text.find(literal, position)
+            if found < 0:
+                break
+            position = found + len(literal)
+        else:
+            return index
+    return None
+
+
+def shell_assignment_word(token: str) -> bool:
+    return re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", token) is not None
+
+
+SUDO_OPTIONS_WITH_ARGUMENT = {
+    "-a",
+    "-C",
+    "-c",
+    "-D",
+    "-g",
+    "-h",
+    "-p",
+    "-R",
+    "-r",
+    "-T",
+    "-t",
+    "-U",
+    "-u",
+    "--auth-type",
+    "--chdir",
+    "--close-from",
+    "--command-timeout",
+    "--group",
+    "--host",
+    "--login-class",
+    "--prompt",
+    "--role",
+    "--type",
+    "--user",
+}
+SUDO_OPTIONS_WITH_OPTIONAL_ARGUMENT = {
+    "--preserve-env",
+}
+SUDO_OPTIONS_WITHOUT_ARGUMENT = {
+    "-A",
+    "-b",
+    "-E",
+    "-e",
+    "-H",
+    "-i",
+    "-K",
+    "-k",
+    "-l",
+    "-n",
+    "-P",
+    "-S",
+    "-s",
+    "-V",
+    "-v",
+    "--askpass",
+    "--background",
+    "--bell",
+    "--edit",
+    "--help",
+    "--ignore-ticket",
+    "--list",
+    "--login",
+    "--non-interactive",
+    "--remove-timestamp",
+    "--reset-timestamp",
+    "--stdin",
+    "--validate",
+    "--version",
+}
+ENV_OPTIONS_WITH_ARGUMENT = {
+    "-S",
+    "-u",
+    "-C",
+    "--split-string",
+    "--unset",
+    "--chdir",
+    "--block-signal",
+    "--default-signal",
+    "--ignore-signal",
+}
+ENV_OPTIONS_WITHOUT_ARGUMENT = {
+    "-0",
+    "-i",
+    "-v",
+    "--debug",
+    "--ignore-environment",
+    "--null",
+}
+TIME_OPTIONS_WITHOUT_ARGUMENT = {"-p"}
+SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")"}
+
+
+def consume_assignment_words(tokens: list[str], index: int) -> int:
+    while index < len(tokens) and shell_assignment_word(tokens[index]):
+        index += 1
+    return index
+
+
+def consume_option_prefix(
+    tokens: list[str],
+    index: int,
+    options_with_argument: set[str],
+    options_without_argument: set[str],
+    options_with_optional_argument: set[str] | None = None,
+) -> int | None:
+    options_with_optional_argument = options_with_optional_argument or set()
+    short_options_with_argument = {option for option in options_with_argument if re.match(r"^-[A-Za-z0-9]$", option)}
+    short_options_without_argument = {option for option in options_without_argument if re.match(r"^-[A-Za-z0-9]$", option)}
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in options_with_argument:
+            if index + 1 >= len(tokens):
+                return None
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
+            index += 1
+            continue
+        if any(token.startswith(f"{option}=") for option in options_with_optional_argument if option.startswith("--")):
+            index += 1
+            continue
+        if token in options_with_optional_argument:
+            index += 1
+            continue
+        if token in options_without_argument:
+            index += 1
+            continue
+        if len(token) > 2 and token.startswith("-") and not token.startswith("--"):
+            offset = 1
+            while offset < len(token):
+                option = f"-{token[offset]}"
+                if option in short_options_without_argument:
+                    offset += 1
+                    continue
+                if option in short_options_with_argument:
+                    if offset + 1 < len(token):
+                        index += 1
+                    elif index + 1 < len(tokens):
+                        index += 2
+                    else:
+                        return None
+                    break
+                return None
+            else:
+                index += 1
+            continue
+        break
+    return index
+
+
+def command_prefix_allows_cargo(prefix: list[str]) -> bool:
+    index = consume_assignment_words(prefix, 0)
+    while index < len(prefix):
+        token = prefix[index]
+        if token == "command":
+            index += 1
+        elif token == "time":
+            index = consume_option_prefix(prefix, index + 1, set(), TIME_OPTIONS_WITHOUT_ARGUMENT)
+        elif token == "sudo":
+            index = consume_option_prefix(
+                prefix,
+                index + 1,
+                SUDO_OPTIONS_WITH_ARGUMENT,
+                SUDO_OPTIONS_WITHOUT_ARGUMENT,
+                SUDO_OPTIONS_WITH_OPTIONAL_ARGUMENT,
+            )
+        elif token == "env":
+            index = consume_option_prefix(prefix, index + 1, ENV_OPTIONS_WITH_ARGUMENT, ENV_OPTIONS_WITHOUT_ARGUMENT)
+        else:
+            return False
+        if index is None:
+            return False
+        index = consume_assignment_words(prefix, index)
+    return True
+
+
+def cargo_token_is_command(tokens: list[str], index: int) -> bool:
+    cursor = index - 1
+    while cursor >= 0 and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
+        cursor -= 1
+    prefix = tokens[cursor + 1 : index]
+    return command_prefix_allows_cargo(prefix)
+
+
+def source_build_tool_from_token(token: str) -> str | None:
+    token = token.rstrip("/")
+    for tool in CI_SOURCE_BUILD_TOOLS:
+        if token == tool or token.startswith(f"{tool}@"):
+            return tool
+        if token.endswith(f"/{tool}") or token.endswith(f"/{tool}.git"):
+            return tool
+    return None
+
+
+def cargo_install_source_build_tools(tokens: list[str], command_index: int) -> set[str]:
+    tools: set[str] = set()
+    index = command_index + 1
+    while index < len(tokens) and tokens[index] not in SHELL_COMMAND_BOUNDARIES:
+        token = tokens[index]
+        if token in ("--package", "-p") and index + 1 < len(tokens):
+            tool = source_build_tool_from_token(tokens[index + 1])
+            if tool is not None:
+                tools.add(tool)
+            index += 2
+            continue
+        if token.startswith("--package="):
+            tool = source_build_tool_from_token(token.removeprefix("--package="))
+            if tool is not None:
+                tools.add(tool)
+            index += 1
+            continue
+        tool = source_build_tool_from_token(token)
+        if tool is not None:
+            tools.add(tool)
+        index += 1
+    return tools
+
+
+def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
+    tools: set[str] = set()
+    for line in text.replace("\\\n", " ").splitlines():
+        if "cargo" not in line or "install" not in line:
+            continue
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            continue
+        for index, token in enumerate(tokens[:-1]):
+            if token != "cargo":
+                continue
+            if not cargo_token_is_command(tokens, index):
+                continue
+            command_index = consume_cargo_global_options(tokens, index + 1)
+            if command_index >= len(tokens) or tokens[command_index] != "install":
+                continue
+            tools.update(cargo_install_source_build_tools(tokens, command_index))
+    return tools
+
+
+def consume_cargo_global_options(tokens: list[str], index: int) -> int:
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("+"):
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT):
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        break
+    return index
 
 
 def test_has_shard_reproduction_command(job_lines: list[str]) -> bool:
@@ -540,8 +879,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "source-fence" in jobs and not job_runs_command(jobs["source-fence"], "just source-fence"):
         errors.append("source-fence must run just source-fence")
 
-    if "test-shards" in jobs and "source-fence" not in extract_needs(jobs["test-shards"]):
-        errors.append("test-shards needs source-fence")
+    if "test-shards" in jobs:
+        test_shards_needs = extract_needs(jobs["test-shards"])
+        if "detector" not in test_shards_needs:
+            errors.append("test-shards needs detector")
+        if "source-fence" not in test_shards_needs:
+            errors.append("test-shards needs source-fence")
 
     if "clippy" in jobs:
         clippy_text = uncommented_text(jobs["clippy"])
@@ -705,6 +1048,48 @@ def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
     return errors
 
 
+def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> list[str]:
+    errors: list[str] = []
+
+    jobs = parse_jobs(workflow_text)
+    for job, job_lines in jobs.items():
+        for tool in sorted(cargo_install_source_build_tools_in_text(uncommented_text(job_lines))):
+            errors.append(f"{workflow_name} {job} must not compile {tool} from source")
+
+    for job, (tool, output) in CI_INSTALL_ACTION_TOOLS.items():
+        job_lines = jobs.get(job)
+        if job_lines is None:
+            continue
+        step = install_action_tool_step(job_lines, tool, output)
+        if step is None:
+            errors.append(f"{workflow_name} {job} must install {tool} with pinned taiki-e/install-action")
+            continue
+        install_index, block = step
+        if not block_has_input(block, "fallback", "none"):
+            errors.append(f"{workflow_name} {job} install-action fallback must be none")
+        command = CI_INSTALL_ACTION_COMMANDS[job]
+        command_index = first_step_running_command(job_lines, command)
+        if command_index is not None and install_index >= command_index:
+            errors.append(f"{workflow_name} {job} must install {tool} before {command}")
+
+    build_lines = jobs.get("build")
+    if build_lines is None:
+        return errors
+    build_text = uncommented_text(build_lines)
+    if "archive.sha256" in build_text or "steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256" not in build_text:
+        errors.append(f"{workflow_name} build must use pinned cargo-zigbuild archive sha256")
+    zigbuild_install_index = first_step_containing_literals_in_order(build_lines, ZIGBUILD_PREBUILT_LITERALS)
+    if zigbuild_install_index is None:
+        errors.append(f"{workflow_name} build must install cargo-zigbuild from checksum-verified prebuilt release")
+    else:
+        build_command_index = first_step_running_command(build_lines, "just build")
+        if build_command_index is not None and zigbuild_install_index >= build_command_index:
+            errors.append(f"{workflow_name} build must install cargo-zigbuild before just build")
+    if 'test "$actual" = "$expected"' not in build_text:
+        errors.append(f"{workflow_name} build must verify cargo-zigbuild archive checksum")
+    return errors
+
+
 def verify_setup_action(action_text: str) -> list[str]:
     errors: list[str] = []
     uncommented_lines = [strip_comment(line) for line in action_text.splitlines()]
@@ -790,6 +1175,7 @@ def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config
             errors.extend(verify_workflow(workflow_text))
         errors.extend(verify_managed_workflow(workflow_text, workflow_name))
         errors.extend(verify_build_artifacts(workflow_text, workflow_name))
+        errors.extend(verify_prebuilt_tool_installs(workflow_text, workflow_name))
     errors.extend(verify_setup_action(action_text))
     errors.extend(verify_nextest_config(nextest_config_text))
     return errors

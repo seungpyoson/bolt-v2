@@ -136,8 +136,10 @@ jobs:
           key: cargo-deny
 
       - name: Install cargo-deny
-        run: |
-          cargo install cargo-deny --version "${{ steps.setup.outputs.deny_version }}" --locked
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c # v2.78.2
+        with:
+          tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
+          fallback: none
 
       - name: deny
         run: just deny
@@ -267,8 +269,10 @@ jobs:
           save-if: ${{ matrix.shard == 1 }}
 
       - name: Install cargo-nextest
-        run: |
-          cargo install cargo-nextest --version "${{ steps.setup.outputs.nextest_version }}" --locked
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c # v2.78.2
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
 
       - name: Show shard reproduction command
         run: |
@@ -330,7 +334,27 @@ jobs:
 
       - name: Install cargo-zigbuild
         run: |
-          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked
+          version="${{ steps.setup.outputs.zigbuild_version }}"
+          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
+          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
+          curl \
+            --retry 10 \
+            --retry-delay 3 \
+            --retry-all-errors \
+            --fail \
+            --location \
+            --show-error \
+            --silent \
+            --output "$archive" \
+            "$base_url/$archive"
+          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
+          actual="$(sha256sum "$archive" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          tar --extract --xz --file "$archive"
+          mkdir -p "$HOME/.cargo/bin"
+          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
+          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
+          cargo-zigbuild --version
 
       - name: build
         run: just build

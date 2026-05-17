@@ -41,7 +41,7 @@
 **Independent Test**: `just ci-lint-workflow` passes only when fmt-check has no detector need, build remains detector-gated, and deploy directly needs required lanes.
 
 - [x] T012 [US3] Remove `fmt-check` detector dependency in `.github/workflows/ci.yml`
-- [x] T013 [US3] Add direct deploy needs for detector, fmt-check, deny, clippy, source-fence, and test in `.github/workflows/ci.yml`
+- [x] T013 [US3] Add direct deploy needs for detector, fmt-check, deny, clippy, check-aarch64, source-fence, and test in `.github/workflows/ci.yml`
 - [x] T014 [US3] Enforce fmt-check/build/deploy semantics in `scripts/verify_ci_workflow_hygiene.py`
 
 ## Phase 6: Polish & Cross-Cutting
@@ -51,7 +51,16 @@
 - [x] T017 Run `just ci-lint-workflow`
 - [x] T018 Run `just fmt-check`
 - [x] T019 Run `git diff --check`
-- [x] T020 Update PR body with exact-head CI and residual #332/#195/#205/#344/#340 scope
+- [x] T020 Update PR body with exact-head CI, landed #332 base-topology note, and residual #195/#205/#344/#340 scope
+
+## Phase 7: Prebuilt CI Tool Install Contract
+
+- [x] T021 [P] Add failing verifier self-tests for source-built `cargo-deny`, `cargo-nextest`, and `cargo-zigbuild` regressions in `scripts/test_verify_ci_workflow_hygiene.py`
+- [x] T022 [P] Switch CI/advisory Rust helper tool installs to prebuilt paths in `.github/workflows/ci.yml` and `.github/workflows/advisory.yml`
+- [x] T023 Add pinned `cargo-zigbuild` Linux x86_64 archive SHA256 to `justfile`
+- [x] T024 Export `zigbuild_x86_64_unknown_linux_gnu_sha256` from `.github/actions/setup-environment/action.yml`
+- [x] T025 Enforce install-action pinning, `fallback: none`, source-install rejection, full cargo-zigbuild install steps, and pinned SHA256 use in `scripts/verify_ci_workflow_hygiene.py`
+- [x] T026 Update `spec.md`, `quickstart.md`, `data-model.md`, `research.md`, `plan.md`, and checklist docs for the prebuilt install contract
 
 ## Dependencies
 
@@ -67,6 +76,7 @@
 - T001 and T002 can run in parallel.
 - T006-T008 can be implemented together after parser foundation exists.
 - T009 and T012/T013 touch different files and can proceed after tests define the contract.
+- T021 and T022 can run after T004 because the verifier parser already exists.
 
 ## Implementation Strategy
 

@@ -34,13 +34,15 @@ use nautilus_model::{
 };
 
 const TEST_DELAY_POST_STOP_SECS: u64 = 0;
+const TEST_TRADER_ID: &str = "TESTER-001";
 
+#[track_caller]
 pub fn fast_test_live_node() -> LiveNode {
-    LiveNode::builder(TraderId::from("TESTER-001"), Environment::Live)
-        .unwrap()
+    LiveNode::builder(TraderId::from(TEST_TRADER_ID), Environment::Live)
+        .expect("LiveNode builder should initialize with test defaults")
         .with_delay_post_stop_secs(TEST_DELAY_POST_STOP_SECS)
         .build()
-        .unwrap()
+        .expect("LiveNode should build with test defaults")
 }
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);

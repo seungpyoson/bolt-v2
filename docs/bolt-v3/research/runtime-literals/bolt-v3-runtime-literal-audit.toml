@@ -40,16 +40,16 @@ reason = "The Binance provider binding owns the NT credential-log module path th
 [[allowed]]
 path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
-literal = "\"Binance reference-data venue\""
-context = "consumer: \"Binance reference-data venue\","
+literal = "\"Binance reference-data client\""
+context = "consumer: \"Binance reference-data client\","
 classification = "provider_secret_requirement_label"
 reason = "This label explains the provider-owned credential-consuming block covered by the central required-[secrets] validation."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
-literal = "\"Polymarket execution venue\""
-context = "consumer: \"Polymarket execution venue\","
+literal = "\"Polymarket execution client\""
+context = "consumer: \"Polymarket execution client\","
 classification = "provider_secret_requirement_label"
 reason = "This label explains the provider-owned credential-consuming block covered by the central required-[secrets] validation."
 

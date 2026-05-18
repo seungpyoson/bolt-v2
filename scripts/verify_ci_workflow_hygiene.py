@@ -207,7 +207,7 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'rust-toolchain.toml'",
     "'.cargo/config.toml'",
     "'.config/nextest.toml'",
-    "'.claude/rust-verification.toml'",
+    "'ci/rust-verification.toml'",
     "'justfile'",
     "'build.rs'",
     "'src/**'",

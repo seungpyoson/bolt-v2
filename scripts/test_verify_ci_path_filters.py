@@ -25,6 +25,7 @@ on:
       - 'REASONIX.md'
       - 'LICENSE'
       - '.github/ISSUE_TEMPLATE/**'
+      - '.claude/**'
       - '.codex/**'
       - '.gemini/**'
       - '.opencode/**'
@@ -47,6 +48,7 @@ on:
       - 'REASONIX.md'
       - 'LICENSE'
       - '.github/ISSUE_TEMPLATE/**'
+      - '.claude/**'
       - '.codex/**'
       - '.gemini/**'
       - '.opencode/**'
@@ -89,9 +91,10 @@ DOCS_FIXTURE = """
 | docs-only root agent doc | `AGENTS.md` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
 | workflow change | `.github/workflows/ci.yml` | full-ci | full CI runs; pass-stub does not trigger |
 | Rust source change | `src/lib.rs` | full-ci | full CI runs; pass-stub does not trigger |
-| managed rust-verification config | `.claude/rust-verification.toml` | full-ci | full CI runs; pass-stub does not trigger |
+| managed rust-verification config | `ci/rust-verification.toml` | full-ci | full CI runs; pass-stub does not trigger |
 | lockfile change | `Cargo.lock` | full-ci | full CI runs; pass-stub does not trigger |
 | mixed docs and source | `AGENTS.md` + `src/lib.rs` | full-ci | full CI runs; pass-stub records `docs_only=false` without blocking |
+| ignored Claude agent dir | `.claude/skills/speckit-plan/SKILL.md` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
 | ignored config dir | `.codex/config.toml` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
 """
 
@@ -128,6 +131,7 @@ def assert_extracts_ci_paths_ignore() -> None:
         "REASONIX.md",
         "LICENSE",
         ".github/ISSUE_TEMPLATE/**",
+        ".claude/**",
         ".codex/**",
         ".gemini/**",
         ".opencode/**",
@@ -144,10 +148,11 @@ def assert_classifies_changed_paths() -> None:
     cases = {
         ("AGENTS.md",): True,
         (".codex/settings.json", ".specify/feature.json"): True,
+        (".claude/skills/speckit-plan/SKILL.md",): True,
         (".github/ISSUE_TEMPLATE/bug.yml",): True,
         ("src/lib.rs",): False,
         (".github/workflows/ci.yml",): False,
-        (".claude/rust-verification.toml",): False,
+        ("ci/rust-verification.toml",): False,
         ("Cargo.lock",): False,
         ("AGENTS.md", "src/lib.rs"): False,
         ("docs/ci/paths-ignore-behavior.md",): False,
@@ -161,6 +166,10 @@ def assert_classifies_changed_paths() -> None:
         actual = module.docs_only_safe(changed, safe)
         if actual != expected:
             raise AssertionError((changed, actual, expected))
+    assert_raises(
+        "forbidden ignored build path",
+        lambda: module.docs_only_safe((".claude/rust-verification.toml",), safe),
+    )
     assert_raises("changed file list is empty", lambda: module.docs_only_safe((), safe))
 
 
@@ -228,6 +237,23 @@ def assert_require_docs_only_fails_closed() -> None:
         raise AssertionError(text)
 
 
+def assert_verifies_rust_policy_location() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = pathlib.Path(tmpdir)
+        policy = root / "ci" / "rust-verification.toml"
+        legacy = root / ".claude" / "rust-verification.toml"
+        policy.parent.mkdir()
+        policy.write_text("[commands]\n", encoding="utf-8")
+        module.verify_rust_policy_location(policy, legacy)
+        legacy.parent.mkdir()
+        legacy.write_text("[commands]\n", encoding="utf-8")
+        assert_raises("legacy managed rust-verification config must not exist", lambda: module.verify_rust_policy_location(policy, legacy))
+        legacy.unlink()
+        policy.unlink()
+        assert_raises("managed rust-verification config missing", lambda: module.verify_rust_policy_location(policy, legacy))
+
+
 def main() -> int:
     assert_extracts_ci_paths_ignore()
     assert_classifies_changed_paths()
@@ -237,6 +263,7 @@ def main() -> int:
     assert_writes_github_output()
     assert_input_reads_are_bounded()
     assert_require_docs_only_fails_closed()
+    assert_verifies_rust_policy_location()
     print("OK: CI path-filter verifier self-tests passed.")
     return 0
 

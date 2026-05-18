@@ -9,9 +9,10 @@ Push and tag events do not use `paths-ignore`; they always run CI.
 | docs-only root agent doc | `AGENTS.md` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
 | workflow change | `.github/workflows/ci.yml` | full-ci | full CI runs; pass-stub does not trigger |
 | Rust source change | `src/lib.rs` | full-ci | full CI runs; pass-stub does not trigger |
-| managed rust-verification config | `.claude/rust-verification.toml` | full-ci | full CI runs; pass-stub does not trigger |
+| managed rust-verification config | `ci/rust-verification.toml` | full-ci | full CI runs; pass-stub does not trigger |
 | lockfile change | `Cargo.lock` | full-ci | full CI runs; pass-stub does not trigger |
 | mixed docs and source | `AGENTS.md` + `src/lib.rs` | full-ci | full CI runs; pass-stub records `docs_only=false` without blocking |
+| ignored Claude agent dir | `.claude/skills/speckit-plan/SKILL.md` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
 | ignored config dir | `.codex/config.toml` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
 
 The pass-stub required-check jobs have no job-level `if:` condition. GitHub reports skipped jobs as successful, so the classifier fails each required stub job directly when the changed-file list is empty, unavailable, or cannot be classified. If classification succeeds and any path is outside the ignored-safe set, full CI owns the real required signals.
@@ -24,6 +25,7 @@ Safe ignored paths are intentionally narrow:
 - `REASONIX.md`
 - `LICENSE`
 - `.github/ISSUE_TEMPLATE/**`
+- `.claude/**`
 - `.codex/**`
 - `.gemini/**`
 - `.opencode/**`

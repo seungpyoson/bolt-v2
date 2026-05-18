@@ -14,6 +14,8 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 DEFAULT_PASS_STUB_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci-docs-pass-stub.yml"
 DEFAULT_DOCS = REPO_ROOT / "docs" / "ci" / "paths-ignore-behavior.md"
+DEFAULT_RUST_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
+LEGACY_RUST_POLICY = REPO_ROOT / ".claude" / "rust-verification.toml"
 EXPECTED_SAFE_PATHS = (
     "AGENTS.md",
     "CLAUDE.md",
@@ -21,11 +23,17 @@ EXPECTED_SAFE_PATHS = (
     "REASONIX.md",
     "LICENSE",
     ".github/ISSUE_TEMPLATE/**",
+    ".claude/**",
     ".codex/**",
     ".gemini/**",
     ".opencode/**",
     ".pi/**",
     ".specify/**",
+)
+FORBIDDEN_IGNORED_BUILD_PATHS = frozenset(
+    {
+        ".claude/rust-verification.toml",
+    }
 )
 REQUIRED_DOC_SCENARIOS = (
     "docs-only root agent doc",
@@ -34,6 +42,7 @@ REQUIRED_DOC_SCENARIOS = (
     "managed rust-verification config",
     "lockfile change",
     "mixed docs and source",
+    "ignored Claude agent dir",
     "ignored config dir",
 )
 REQUIRED_PASS_STUB_JOBS = ("build", "clippy", "test", "gate")
@@ -120,6 +129,8 @@ def docs_only_safe(changed_files: tuple[str, ...] | list[str], safe_paths: tuple
     for path in changed_files:
         if not path.strip():
             raise PathFilterError("changed file list contains an empty path")
+        if path in FORBIDDEN_IGNORED_BUILD_PATHS:
+            raise PathFilterError(f"forbidden ignored build path changed: {path}")
         if not any(path_matches_pattern(path, pattern) for pattern in safe_paths):
             return False
     return True
@@ -215,6 +226,16 @@ def verify_docs_table(docs_text: str) -> None:
             raise PathFilterError(f"docs missing required scenario {scenario}")
 
 
+def verify_rust_policy_location(
+    policy_path: pathlib.Path = DEFAULT_RUST_POLICY,
+    legacy_path: pathlib.Path = LEGACY_RUST_POLICY,
+) -> None:
+    if not policy_path.exists():
+        raise PathFilterError(f"managed rust-verification config missing: {policy_path}")
+    if legacy_path.exists():
+        raise PathFilterError(f"legacy managed rust-verification config must not exist: {legacy_path}")
+
+
 def verify_repository(
     *,
     ci_workflow: pathlib.Path = DEFAULT_CI_WORKFLOW,
@@ -233,6 +254,10 @@ def verify_repository(
         errors.append(str(exc))
     try:
         verify_docs_table(read_text_bounded(docs, "docs"))
+    except Exception as exc:  # noqa: BLE001
+        errors.append(str(exc))
+    try:
+        verify_rust_policy_location()
     except Exception as exc:  # noqa: BLE001
         errors.append(str(exc))
     return errors

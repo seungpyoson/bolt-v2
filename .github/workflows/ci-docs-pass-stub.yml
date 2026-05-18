@@ -10,6 +10,7 @@ on:
       - 'REASONIX.md'
       - 'LICENSE'
       - '.github/ISSUE_TEMPLATE/**'
+      - '.claude/**'
       - '.codex/**'
       - '.gemini/**'
       - '.opencode/**'

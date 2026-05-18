@@ -172,7 +172,7 @@ Current implementation behavior:
 - Bolt-v3 maps the complete pinned `LoggerConfig` field set without relying on `LoggerConfig::default()` inheritance; `file_config` stays `None` and `clear_log_file` stays `false` because the pinned Rust live runtime rejects any other value at build-time validation
 - Bolt-v3 maps the remaining top-level `LiveNodeConfig` residuals explicitly and does not rely on top-level `LiveNodeConfig::default()` inheritance
 - `scripts/verify_bolt_v3_runtime_literals.py` scans production root `src/bolt_v3_*.rs` files plus files under `src/bolt_v3_*` module directories and requires candidate runtime-bearing literals to be classified in `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`
-- the baseline fixture asserts all explicit data-engine values, `nt_bypass = false`, `100/00:00:01` submit/modify rate limits, an empty NT per-instrument notional map, `nt_debug = false`, current NT-default `nt_qsize`, and all explicit exec-engine values
+- the baseline fixture asserts all explicit data-engine values, `risk.nautilus.bypass = false`, `100/00:00:01` submit/modify rate limits, an empty NT per-instrument notional map, `risk.nautilus.debug = false`, current NT-default `risk.nautilus.qsize`, and all explicit exec-engine values
 
 Future synchronization behavior:
 
@@ -267,24 +267,24 @@ Current Polymarket loading contract:
 - on each evaluation of that closure, it yields market slugs for the current and next cadence windows for each configured `underlying_asset`
 - bolt invokes NautilusTrader's `request_instruments` path at startup and when the generated current/next slug pair changes under the NautilusTrader node clock
 - normal retry ticks read NautilusTrader cache only
-- if the `request_instruments` call for the current slug pair fails, retry that request at `target.retry_interval_seconds` until it succeeds or the slug pair changes
+- if the `request_instruments` call for the current slug pair fails, retry that request at `target.retry_interval_secs` until it succeeds or the slug pair changes
 - `subscribe_new_markets` remains `false` in the current live-trading scope
 - broad Polymarket instrument loading without target-derived filters is forbidden
 
 Current `updown` slug derivation rule:
 
-- slug format: `"{underlying_asset_lowercase}-updown-{cadence_slug_token}-{period_start_unix_seconds}"`
-- `cadence_slug_token` is a runtime-contract-defined token for `cadence_seconds`
+- slug format: `"{underlying_asset_lowercase}-updown-{cadence_slug_token}-{period_start_unix_secs}"`
+- `cadence_slug_token` is a runtime-contract-defined token for `cadence_secs`
 - currently defined mappings:
   - `60` -> `1m`
   - `300` -> `5m`
   - `900` -> `15m`
   - `3600` -> `1h`
   - `14400` -> `4h`
-- any other `cadence_seconds` value is unsupported until this runtime contract defines its slug token
-- `now_unix_seconds` comes from the NautilusTrader node clock
-- `current_period_start_unix_seconds = floor(now_unix_seconds / cadence_seconds) * cadence_seconds`
-- `next_period_start_unix_seconds = current_period_start_unix_seconds + cadence_seconds`
+- any other `cadence_secs` value is unsupported until this runtime contract defines its slug token
+- `now_unix_secs` comes from the NautilusTrader node clock
+- `current_period_start_unix_secs = floor(now_unix_secs / cadence_secs) * cadence_secs`
+- `next_period_start_unix_secs = current_period_start_unix_secs + cadence_secs`
 - the current market-selection process yields exactly two market slugs per configured `updown` target on each evaluation:
   - current-period slug
   - next-period slug
@@ -304,9 +304,9 @@ For `market_selection_rule = "active_or_next"`:
 
 For current `updown`:
 
-- `current` means the role whose selected market time window satisfies `polymarket_market_start_timestamp_milliseconds <= market_selection_timestamp_milliseconds < polymarket_market_end_timestamp_milliseconds`
+- `current` means the role whose selected market time window satisfies `polymarket_market_start_timestamp_ms <= market_selection_timestamp_ms < polymarket_market_end_timestamp_ms`
 
-- `next` means the role whose selected market `polymarket_market_start_timestamp_milliseconds` is the smallest value greater than `market_selection_timestamp_milliseconds`
+- `next` means the role whose selected market `polymarket_market_start_timestamp_ms` is the smallest value greater than `market_selection_timestamp_ms`
 
 Prohibited behaviors:
 
@@ -321,13 +321,13 @@ If a rotating-market target cannot be selected:
 
 - emit `market_selection_result`
 - remain non-trading
-- retry at `target.retry_interval_seconds`
+- retry at `target.retry_interval_secs`
 - no backoff
 
-If market selection keeps failing for `target.blocked_after_seconds`:
+If market selection keeps failing for `target.blocked_after_secs`:
 
 - mark the strategy blocked/degraded
-- continue retrying at `target.retry_interval_seconds` unless the strategy is stopped
+- continue retrying at `target.retry_interval_secs` unless the strategy is stopped
 
 Blocked/degraded operational behavior:
 
@@ -361,16 +361,16 @@ Exact fields:
 - `venue_kind`
 - `rotating_market_family`
 - `underlying_asset`
-- `cadence_seconds`
+- `cadence_secs`
 - `market_selection_rule`
-- `retry_interval_seconds`
-- `blocked_after_seconds`
+- `retry_interval_secs`
+- `blocked_after_secs`
 
 Field constraints:
 
 - `target_kind = "rotating_market"`
-- `venue_config_key` is the exact strategy-file `venue` reference
-- `venue_kind = "polymarket"` for the current `updown` scope
+- `venue_config_key` is the exact strategy-file `execution_client_id` reference (one of the keys under root `[clients.<id>]`)
+- `venue_kind = "POLYMARKET"` (the NT `Venue` identifier) for the current `updown` scope
 - `rotating_market_family = "updown"`
 - `market_selection_rule = "active_or_next"`
 
@@ -407,8 +407,8 @@ If `target_kind = "rotating_market"` and `rotating_market_family = "updown"`, th
 - `polymarket_question_id`
 - `up_instrument_id`
 - `down_instrument_id`
-- `polymarket_market_start_timestamp_milliseconds`
-- `polymarket_market_end_timestamp_milliseconds`
+- `polymarket_market_start_timestamp_ms`
+- `polymarket_market_end_timestamp_ms`
 
 Definitions:
 
@@ -418,8 +418,8 @@ Definitions:
 - `polymarket_question_id` = the Polymarket question identifier string for the selected market
 - `up_instrument_id` = the literal NautilusTrader instrument identifier string for the `Up` instrument
 - `down_instrument_id` = the literal NautilusTrader instrument identifier string for the `Down` instrument
-- `polymarket_market_start_timestamp_milliseconds` = selected market start timestamp in Unix milliseconds
-- `polymarket_market_end_timestamp_milliseconds` = selected market end timestamp in Unix milliseconds
+- `polymarket_market_start_timestamp_ms` = selected market start timestamp in Unix milliseconds
+- `polymarket_market_end_timestamp_ms` = selected market end timestamp in Unix milliseconds
 
 Boundary:
 
@@ -476,12 +476,12 @@ Allowed variants:
 - `next`
 - `failed`
 
-`market_selection_timestamp_milliseconds` is the NautilusTrader node-clock Unix millisecond timestamp used for the market-selection attempt and for classifying a selected market as `current` or `next`.
+`market_selection_timestamp_ms` is the NautilusTrader node-clock Unix millisecond timestamp used for the market-selection attempt and for classifying a selected market as `current` or `next`.
 
 `current` and `next` variants contain:
 
 - `configured_updown_target`
-- `market_selection_timestamp_milliseconds`
+- `market_selection_timestamp_ms`
 - `updown_selected_market_facts`
 
 `selected_market` is reachable through `updown_selected_market_facts.selected_market`.
@@ -490,7 +490,7 @@ Do not duplicate it as a sibling field in a successful `market_selection_result`
 The `failed` variant contains:
 
 - `configured_updown_target`
-- `market_selection_timestamp_milliseconds`
+- `market_selection_timestamp_ms`
 - `market_selection_failure_reason`
 
 Allowed `market_selection_failure_reason` values:
@@ -584,7 +584,7 @@ For the current `binary_oracle_edge_taker`, the reference stream and pricing inp
   - derived from the latest two-sided midpoint on `reference_data.primary`
   - midpoint formula: `(best_bid_price + best_ask_price) / 2`
   - if the latest quote tick does not contain both sides, midpoint is unavailable
-  - if the latest midpoint sample is older than `target.retry_interval_seconds` seconds, the reference quote is stale
+  - if the latest midpoint sample is older than `target.retry_interval_secs` seconds, the reference quote is stale
 - `price_to_beat_source`
   - must match `[parameters.runtime].price_to_beat_source`
 
@@ -597,20 +597,20 @@ The current realized-volatility estimator is defined as:
 - input samples:
   - midpoint samples from `reference_data.primary`
 - retention window:
-  - keep midpoint samples whose timestamps fall within the trailing `target.cadence_seconds` seconds
+  - keep midpoint samples whose timestamps fall within the trailing `target.cadence_secs` seconds
 - reset rule:
-  - if the gap between consecutive midpoint samples exceeds `target.retry_interval_seconds` seconds, reset the estimator state
+  - if the gap between consecutive midpoint samples exceeds `target.retry_interval_secs` seconds, reset the estimator state
 - readiness rule:
   - at least two midpoint samples are required
   - sample timestamps used for the estimator must be strictly increasing
-  - `elapsed_seconds`, measured from the first retained sample timestamp to the last retained sample timestamp, must be strictly positive
+  - `elapsed_secs`, measured from the first retained sample timestamp to the last retained sample timestamp, must be strictly positive
 - return formula:
   - for each consecutive midpoint pair, compute `log(current_midpoint / previous_midpoint)`
 - annualization formula:
   - `SECONDS_PER_YEAR = 31_536_000`
-  - `realized_volatility = sqrt((sum_squared_log_returns / elapsed_seconds) * SECONDS_PER_YEAR)`
+  - `realized_volatility = sqrt((sum_squared_log_returns / elapsed_secs) * SECONDS_PER_YEAR)`
 - bridge-valid rule:
-  - if the last ready realized-volatility value is older than `target.retry_interval_seconds` seconds, realized volatility is not ready
+  - if the last ready realized-volatility value is older than `target.retry_interval_secs` seconds, realized volatility is not ready
 
 ### 7.3 Current `binary_oracle_edge_taker` entry evaluation
 
@@ -820,11 +820,11 @@ Definitions:
 - `trader_id`
   - the exact root-file `trader_id` value
 - `venue_config_key`
-  - the keyed trading venue reference from the strategy file
-  - not a reference-data venue key
+  - the strategy file's `execution_client_id` (a `[clients.<id>]` key)
+  - not a reference-data client key
 - `venue_kind`
-  - the exact `kind` value from the configured venue block referenced by `venue_config_key`
-  - for the current `updown` scope, `polymarket`
+  - the exact NT `Venue` identifier value from the `[clients.<id>]` block referenced by `venue_config_key`
+  - for the current `updown` scope, `POLYMARKET`
   - describes the implicit execution leg in the Phase 1 execution-leg model
 - `runtime_mode`
   - the exact root-file `[runtime].mode` value
@@ -872,13 +872,13 @@ Event-schema version is `1`.
 Required additional fields:
 
 - `target_kind`
-- `market_selection_timestamp_milliseconds`
+- `market_selection_timestamp_ms`
 - `market_selection_outcome`
 - `market_selection_failure_reason`
 
 `market_selection_failure_reason` must be null when `market_selection_outcome` is `current` or `next`.
 `market_selection_failure_reason` must be non-null when `market_selection_outcome = "failed"`.
-`market_selection_timestamp_milliseconds` is the NautilusTrader node-clock Unix millisecond timestamp used to classify the selected market as `current` or `next`.
+`market_selection_timestamp_ms` is the NautilusTrader node-clock Unix millisecond timestamp used to classify the selected market as `current` or `next`.
 
 Allowed `market_selection_outcome` values are the variant names defined for `market_selection_result` in Section 6.4 (`current`, `next`, `failed`).
 
@@ -888,10 +888,10 @@ If `target_kind = "rotating_market"`, the event must also contain these configur
 
 - `rotating_market_family`
 - `underlying_asset`
-- `cadence_seconds`
+- `cadence_secs`
 - `market_selection_rule`
-- `retry_interval_seconds`
-- `blocked_after_seconds`
+- `retry_interval_secs`
+- `blocked_after_secs`
 
 If `target_kind = "rotating_market"` and `rotating_market_family = "updown"` and market selection succeeds, the event must also contain these selected market and selected market facts fields:
 
@@ -901,8 +901,8 @@ If `target_kind = "rotating_market"` and `rotating_market_family = "updown"` and
 - `up_instrument_id`
 - `down_instrument_id`
 - `selected_market_observed_timestamp`
-- `polymarket_market_start_timestamp_milliseconds`
-- `polymarket_market_end_timestamp_milliseconds`
+- `polymarket_market_start_timestamp_ms`
+- `polymarket_market_end_timestamp_ms`
 - `price_to_beat_value`
 - `price_to_beat_observed_timestamp`
 - `price_to_beat_source`
@@ -1373,7 +1373,7 @@ The bolt-v3 build path returns a `LiveNode` in `Idle` state with NT data and exe
 Controlled-connect boundary contract:
 
 - opt-in: `build_bolt_v3_live_node` and its `_with` / `_with_summary` siblings do not invoke this boundary; a caller must call it explicitly on a node previously returned by one of those builders
-- bounded: the dispatched engine-level connect futures are wrapped in `tokio::time::timeout` driven by `nautilus.timeout_connection_seconds`; on timeout the boundary returns `BoltV3LiveNodeError::ConnectTimeout { timeout_seconds }` and the caller owns subsequent disconnect/teardown via `disconnect_bolt_v3_clients`
+- bounded: the dispatched engine-level connect futures are wrapped in `tokio::time::timeout` driven by `nautilus.timeout_connection_secs`; on timeout the boundary returns `BoltV3LiveNodeError::ConnectTimeout { timeout_secs }` and the caller owns subsequent disconnect/teardown via `disconnect_bolt_v3_clients`
 - dispatch + connected check: the pinned NT `DataEngine::connect` and `ExecutionEngine::connect` dispatchers swallow individual client `connect()` errors and only log them, so after the dispatch returns the boundary consults `NautilusKernel::check_engines_connected()` and returns `BoltV3LiveNodeError::ConnectIncomplete` if any registered client did not transition to `is_connected`; this slice intentionally keeps the error variant generic and does not synthesize a per-client failure list
 - not NT cache or instrument readiness: the boundary does not gate on NT cache contents, instrument-availability checks, or any readiness predicate beyond `kernel.check_engines_connected()`; cache/instrument readiness is owned by a future slice
 - no copying NT private drain logic: the boundary does not copy or reimplement NT's private `flush_pending_data`, `drive_with_event_buffering`, or runner/channel internals; it strictly composes the public `kernel.connect_*` and `kernel.check_engines_connected` API surface
@@ -1386,7 +1386,7 @@ Errors from individual NT client `connect()` calls are surfaced via NT's logger;
 Controlled-disconnect boundary contract:
 
 - recovery counterpart to controlled-connect: callers should invoke `disconnect_bolt_v3_clients` after a `ConnectTimeout` or `ConnectIncomplete` to drain any partially-connected NT clients under a bounded timeout
-- bounded: the `kernel.disconnect_clients` future is wrapped in `tokio::time::timeout` driven by `nautilus.timeout_disconnection_seconds`; on timeout the boundary returns `BoltV3LiveNodeError::DisconnectTimeout { timeout_seconds }`
+- bounded: the `kernel.disconnect_clients` future is wrapped in `tokio::time::timeout` driven by `nautilus.timeout_disconnection_secs`; on timeout the boundary returns `BoltV3LiveNodeError::DisconnectTimeout { timeout_secs }`
 - error-propagating: NT's engine-level disconnect aggregator returns `anyhow::Result<()>`, and the boundary surfaces any `Err(..)` as `BoltV3LiveNodeError::DisconnectFailed(error)` rather than silently swallowing it
 - failure recovery: pinned NT's `NautilusKernel::disconnect_clients` calls data-engine disconnect before execution-engine disconnect and can short-circuit on a data-engine `Err`; after `DisconnectFailed`, the `LiveNode` is in an indeterminate cleanup state and production recovery should rebuild a fresh `LiveNode` rather than assuming every client disconnected
 - pinned-NT-only: the boundary reaches NT only through `LiveNode::kernel_mut().disconnect_clients` (the pinned NT controlled-disconnect API surface); it does not call `LiveNode::stop` and never enters NT's runner-driven lifecycle

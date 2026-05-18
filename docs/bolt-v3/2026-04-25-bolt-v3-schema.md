@@ -87,17 +87,17 @@ strategy_files = [
 ]
 
 [runtime]
-mode = "live"
+mode = "Live"
 
 [nautilus]
 load_state = true
 save_state = true
-timeout_connection_seconds = 30
-timeout_reconciliation_seconds = 60
-timeout_portfolio_seconds = 10
-timeout_disconnection_seconds = 10
-delay_post_stop_seconds = 5
-timeout_shutdown_seconds = 10
+timeout_connection_secs = 30
+timeout_reconciliation_secs = 60
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 5
+timeout_shutdown_secs = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -110,7 +110,7 @@ validate_data_sequence = false
 buffer_deltas = false
 emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
-external_client_ids = []
+external_clients = []
 debug = false
 graceful_shutdown_on_error = false
 qsize = 100000
@@ -119,30 +119,30 @@ qsize = 100000
 load_cache = true
 snapshot_orders = false
 snapshot_positions = false
-snapshot_positions_interval_seconds = 0
-external_client_ids = []
+snapshot_positions_interval_secs = 0
+external_clients = []
 debug = false
 reconciliation = true
-reconciliation_startup_delay_seconds = 10
+reconciliation_startup_delay_secs = 10
 reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []
 filter_unclaimed_external_orders = false
 filter_position_reports = false
 filtered_client_order_ids = []
 generate_missing_orders = true
-inflight_check_interval_milliseconds = 2000
-inflight_check_threshold_milliseconds = 5000
+inflight_check_interval_ms = 2000
+inflight_check_threshold_ms = 5000
 inflight_check_retries = 5
-open_check_interval_seconds = 0
+open_check_interval_secs = 0
 open_check_lookback_mins = 60
-open_check_threshold_milliseconds = 5000
+open_check_threshold_ms = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
-single_order_query_delay_milliseconds = 100
-position_check_interval_seconds = 0
+single_order_query_delay_ms = 100
+position_check_interval_secs = 0
 position_check_lookback_mins = 60
-position_check_threshold_milliseconds = 5000
+position_check_threshold_ms = 5000
 position_check_retries = 3
 purge_closed_orders_interval_mins = 0
 purge_closed_orders_buffer_mins = 0
@@ -151,7 +151,7 @@ purge_closed_positions_buffer_mins = 0
 purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
-own_books_audit_interval_seconds = 0
+own_books_audit_interval_secs = 0
 graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
@@ -159,24 +159,26 @@ manage_own_order_books = false
 
 [risk]
 default_max_notional_per_order = "10.00"
-nt_bypass = false
-nt_max_order_submit_rate = "100/00:00:01"
-nt_max_order_modify_rate = "100/00:00:01"
-nt_max_notional_per_order = {}
-nt_debug = false
-nt_graceful_shutdown_on_error = false
-nt_qsize = 100000
+
+[risk.nautilus]
+bypass = false
+max_order_submit_rate = "100/00:00:01"
+max_order_modify_rate = "100/00:00:01"
+max_notional_per_order = {}
+debug = false
+graceful_shutdown_on_error = false
+qsize = 100000
 
 [logging]
-standard_output_level = "INFO"
-file_level = "INFO"
+stdout_level = "INFO"
+fileout_level = "INFO"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
-flush_interval_milliseconds = 1000
+flush_interval_ms = 1000
 replace_existing = false
 rotation_kind = "none"
 
@@ -190,50 +192,50 @@ max_notional_per_order = "1.00"
 [aws]
 region = "eu-west-1"
 
-[venues.polymarket_main]
-kind = "polymarket"
+[clients.polymarket_main]
+venue = "POLYMARKET"
 
-[venues.polymarket_main.data]
+[clients.polymarket_main.data]
 base_url_http = "https://clob.polymarket.com" # NT: nautilus_polymarket::config::PolymarketDataClientConfig.base_url_http
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market" # NT: PolymarketDataClientConfig.base_url_ws
 base_url_gamma = "https://gamma-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_gamma
 base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_data_api
-http_timeout_seconds = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
-ws_timeout_seconds = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
+http_timeout_secs = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
+ws_timeout_secs = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
 subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets — forced false in current bolt-v3 scope
 update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 
-[venues.polymarket_main.execution]
+[clients.polymarket_main.execution]
 account_id = "POLYMARKET-001" # NT: nautilus_model::identifiers::AccountId
 signature_type = "poly_proxy" # NT: nautilus_polymarket::common::enums::SignatureType
 funder_address = "0x1111111111111111111111111111111111111111" # NT: PolymarketExecClientConfig.funder
 base_url_http = "https://clob.polymarket.com" # NT: PolymarketExecClientConfig.base_url_http
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user" # NT: PolymarketExecClientConfig.base_url_ws
 base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketExecClientConfig.base_url_data_api
-http_timeout_seconds = 60 # NT: PolymarketExecClientConfig.http_timeout_secs
+http_timeout_secs = 60 # NT: PolymarketExecClientConfig.http_timeout_secs
 max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
-retry_delay_initial_milliseconds = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
-retry_delay_max_milliseconds = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
-ack_timeout_seconds = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
+retry_delay_initial_ms = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
+retry_delay_max_ms = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
+ack_timeout_secs = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
 
-[venues.polymarket_main.secrets]
+[clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
 api_key_ssm_path = "/bolt/polymarket_main/api_key"
 api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
 passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
 
-[venues.binance_reference]
-kind = "binance"
+[clients.binance_reference]
+venue = "BINANCE"
 
-[venues.binance_reference.data]
+[clients.binance_reference.data]
 product_types = ["spot"] # NT: nautilus_binance::config::BinanceDataClientConfig.product_types
 environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
-instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
+instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 
-[venues.binance_reference.secrets]
+[clients.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"
 api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 ```
@@ -298,36 +300,36 @@ The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-le
 - required: yes
 - maps to Nautilus live-node state saving
 
-#### `timeout_connection_seconds`
+#### `timeout_connection_secs`
 
 - type: positive integer
 - required: yes
 - bounds the explicit bolt-v3 controlled-connect boundary
 
-#### `timeout_reconciliation_seconds`
+#### `timeout_reconciliation_secs`
 
 - type: positive integer
 - required: yes
 
-#### `timeout_portfolio_seconds`
+#### `timeout_portfolio_secs`
 
 - type: positive integer
 - required: yes
 
-#### `timeout_disconnection_seconds`
+#### `timeout_disconnection_secs`
 
 - type: positive integer
 - required: yes
 - bounds the explicit bolt-v3 controlled-disconnect boundary
 
-#### `delay_post_stop_seconds`
+#### `delay_post_stop_secs`
 
 - type: non-negative integer
 - required: yes
 - maps to Nautilus `LiveNodeConfig.delay_post_stop`
 - note: Nautilus builder helper naming uses `with_delay_post_stop_secs`, but the config field itself is `delay_post_stop`
 
-#### `timeout_shutdown_seconds`
+#### `timeout_shutdown_secs`
 
 - type: positive integer
 - required: yes
@@ -337,7 +339,7 @@ The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-le
 
 ### `[nautilus.data_engine]`
 
-All pinned `LiveDataEngineConfig` fields are explicit in TOML and mapped into the NautilusTrader Rust live-node config. Empty `external_client_ids` maps to Nautilus `None`. `time_bars_origins` keys must be Nautilus `BarAggregation` variant strings such as `Minute`, and values are origin offsets in nanoseconds.
+All pinned `LiveDataEngineConfig` fields are explicit in TOML and mapped into the NautilusTrader Rust live-node config. Empty `external_clients` maps to Nautilus `None`. `time_bars_origins` keys must be Nautilus `BarAggregation` variant strings such as `Minute`, and values are origin offsets in nanoseconds.
 
 Fields rejected by NautilusTrader's current Rust live runtime are still required in TOML at the only accepted value so upstream default drift cannot silently change the built node:
 
@@ -356,7 +358,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `buffer_deltas` | boolean | `LiveDataEngineConfig.buffer_deltas` |
 | `emit_quotes_from_book` | boolean | `LiveDataEngineConfig.emit_quotes_from_book` |
 | `emit_quotes_from_book_depths` | boolean | `LiveDataEngineConfig.emit_quotes_from_book_depths` |
-| `external_client_ids` | array of valid NT client IDs; empty maps to `None` | `LiveDataEngineConfig.external_clients` |
+| `external_clients` | array of valid NT client IDs; empty maps to `None` | `LiveDataEngineConfig.external_clients` |
 | `debug` | boolean | `LiveDataEngineConfig.debug` |
 | `graceful_shutdown_on_error` | must be `false` | `LiveDataEngineConfig.graceful_shutdown_on_error` |
 | `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, currently `100000` at NT rev `38b912a8b0fe14e4046773973ff46a3b798b1e3e` | `LiveDataEngineConfig.qsize` |
@@ -380,7 +382,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 - `0` means unbounded lookback and maps to Nautilus `None`
 - any positive value maps to that exact bounded minute count
 
-#### `reconciliation_startup_delay_seconds`
+#### `reconciliation_startup_delay_secs`
 
 - type: non-negative integer
 - required: yes
@@ -395,7 +397,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 - maps to Nautilus `LiveExecEngineConfig.max_single_order_queries_per_cycle`
 - current baseline value is `10`
 
-#### `position_check_threshold_milliseconds`
+#### `position_check_threshold_ms`
 
 - type: positive integer
 - required: yes
@@ -409,8 +411,8 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `load_cache` | boolean | `LiveExecEngineConfig.load_cache` |
 | `snapshot_orders` | must be `false` | `LiveExecEngineConfig.snapshot_orders` |
 | `snapshot_positions` | must be `false` | `LiveExecEngineConfig.snapshot_positions` |
-| `snapshot_positions_interval_seconds` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.snapshot_positions_interval_secs` |
-| `external_client_ids` | array of valid NT client IDs; empty maps to `None` | `LiveExecEngineConfig.external_clients` |
+| `snapshot_positions_interval_secs` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.snapshot_positions_interval_secs` |
+| `external_clients` | array of valid NT client IDs; empty maps to `None` | `LiveExecEngineConfig.external_clients` |
 | `debug` | boolean | `LiveExecEngineConfig.debug` |
 | `reconciliation` | boolean | `LiveExecEngineConfig.reconciliation` |
 | `reconciliation_instrument_ids` | array of valid NT instrument IDs; empty maps to `None` | `LiveExecEngineConfig.reconciliation_instrument_ids` |
@@ -418,16 +420,16 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `filter_position_reports` | boolean | `LiveExecEngineConfig.filter_position_reports` |
 | `filtered_client_order_ids` | array of valid NT client order IDs; empty maps to `None` | `LiveExecEngineConfig.filtered_client_order_ids` |
 | `generate_missing_orders` | boolean | `LiveExecEngineConfig.generate_missing_orders` |
-| `inflight_check_interval_milliseconds` | non-negative integer | `LiveExecEngineConfig.inflight_check_interval_ms` |
-| `inflight_check_threshold_milliseconds` | positive integer | `LiveExecEngineConfig.inflight_check_threshold_ms` |
+| `inflight_check_interval_ms` | non-negative integer | `LiveExecEngineConfig.inflight_check_interval_ms` |
+| `inflight_check_threshold_ms` | positive integer | `LiveExecEngineConfig.inflight_check_threshold_ms` |
 | `inflight_check_retries` | non-negative integer | `LiveExecEngineConfig.inflight_check_retries` |
-| `open_check_interval_seconds` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.open_check_interval_secs` |
+| `open_check_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.open_check_interval_secs` |
 | `open_check_lookback_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.open_check_lookback_mins` |
-| `open_check_threshold_milliseconds` | positive integer | `LiveExecEngineConfig.open_check_threshold_ms` |
+| `open_check_threshold_ms` | positive integer | `LiveExecEngineConfig.open_check_threshold_ms` |
 | `open_check_missing_retries` | non-negative integer | `LiveExecEngineConfig.open_check_missing_retries` |
 | `open_check_open_only` | boolean | `LiveExecEngineConfig.open_check_open_only` |
-| `single_order_query_delay_milliseconds` | non-negative integer | `LiveExecEngineConfig.single_order_query_delay_ms` |
-| `position_check_interval_seconds` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.position_check_interval_secs` |
+| `single_order_query_delay_ms` | non-negative integer | `LiveExecEngineConfig.single_order_query_delay_ms` |
+| `position_check_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.position_check_interval_secs` |
 | `position_check_lookback_mins` | non-negative integer; NT pins this as `u32`, so `0` passes through as a 0-minute lookback rather than mapping to `None` | `LiveExecEngineConfig.position_check_lookback_mins` |
 | `position_check_retries` | non-negative integer | `LiveExecEngineConfig.position_check_retries` |
 | `purge_closed_orders_interval_mins` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.purge_closed_orders_interval_mins` |
@@ -437,7 +439,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `purge_account_events_interval_mins` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.purge_account_events_interval_mins` |
 | `purge_account_events_lookback_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.purge_account_events_lookback_mins` |
 | `purge_from_database` | must be `false` | `LiveExecEngineConfig.purge_from_database` |
-| `own_books_audit_interval_seconds` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.own_books_audit_interval_secs` |
+| `own_books_audit_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.own_books_audit_interval_secs` |
 | `graceful_shutdown_on_error` | must be `false` | `LiveExecEngineConfig.graceful_shutdown_on_error` |
 | `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, currently `100000` at NT rev `38b912a8b0fe14e4046773973ff46a3b798b1e3e` | `LiveExecEngineConfig.qsize` |
 | `allow_overfills` | boolean | `LiveExecEngineConfig.allow_overfills` |
@@ -453,28 +455,28 @@ This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTra
 - required: yes
 - root-level entity per-order notional cap
 - enforced by bolt-v3 strategy validation: each strategy file's `parameters.order_notional_target` must be `<=` this value
-- not automatically expanded into NautilusTrader per-instrument maps; `nt_max_notional_per_order` is the explicit NT map when instrument-level caps are intentionally configured
+- not automatically expanded into NautilusTrader per-instrument maps; `risk.nautilus.max_notional_per_order` is the explicit NT map when instrument-level caps are intentionally configured
 
-#### `nt_bypass`
+#### `bypass` (inside `[risk.nautilus]`)
 
 - type: boolean
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.bypass`
 - must remain `false` for production configurations unless a separately reviewed safety exception is approved
 
-#### `nt_max_order_submit_rate`
+#### `max_order_submit_rate` (inside `[risk.nautilus]`)
 
 - type: rate-limit string in Nautilus `limit/HH:MM:SS` format
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.max_order_submit_rate`
 
-#### `nt_max_order_modify_rate`
+#### `max_order_modify_rate` (inside `[risk.nautilus]`)
 
 - type: rate-limit string in Nautilus `limit/HH:MM:SS` format
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.max_order_modify_rate`
 
-#### `nt_max_notional_per_order`
+#### `max_notional_per_order` (inside `[risk.nautilus]`)
 
 - type: TOML inline table mapping Nautilus instrument IDs to decimal notional strings
 - required: yes
@@ -482,21 +484,21 @@ This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTra
 - values must be positive decimal strings
 - `{}` means no NT per-instrument cap is configured; Bolt-v3 still enforces `default_max_notional_per_order` at config validation time
 
-#### `nt_debug`
+#### `debug` (inside `[risk.nautilus]`)
 
 - type: boolean
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.debug`
 - current baseline value is `false`
 
-#### `nt_graceful_shutdown_on_error`
+#### `graceful_shutdown_on_error` (inside `[risk.nautilus]`)
 
 - type: boolean
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.graceful_shutdown_on_error`
 - must remain `false`; NautilusTrader rejects non-default values on the current Rust live runtime
 
-#### `nt_qsize`
+#### `qsize` (inside `[risk.nautilus]`)
 
 - type: positive integer
 - required: yes
@@ -505,7 +507,7 @@ This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTra
 
 ### `[logging]`
 
-#### `standard_output_level`
+#### `stdout_level`
 
 - type: string enum
 - required: yes
@@ -517,7 +519,7 @@ This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTra
   - `ERROR`
   - `OFF`
 
-#### `file_level`
+#### `fileout_level`
 
 - type: string enum
 - required: yes
@@ -529,7 +531,7 @@ This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTra
   - `ERROR`
   - `OFF`
 
-Bolt-v3 also installs unconditional module-level filters that suppress NT's credential info logs from `nautilus_polymarket::common::credential` and `nautilus_binance::common::credential` to `WARN`, regardless of `standard_output_level` and `file_level`. These two NT modules log credential-derived material at info-level (Polymarket address/funder/api-key prefixes; Binance auto-detected key type), so bolt-v3 forces them lower than the root level rather than letting an `INFO` root level surface those prefixes in stdout or the file writer.
+Bolt-v3 also installs unconditional module-level filters that suppress NT's credential info logs from `nautilus_polymarket::common::credential` and `nautilus_binance::common::credential` to `WARN`, regardless of `stdout_level` and `fileout_level`. These two NT modules log credential-derived material at info-level (Polymarket address/funder/api-key prefixes; Binance auto-detected key type), so bolt-v3 forces them lower than the root level rather than letting an `INFO` root level surface those prefixes in stdout or the file writer.
 
 Bolt-v3 sets every pinned NautilusTrader `LoggerConfig` field explicitly before handing the config to `LiveNodeBuilder::from_config`. TOML owns `stdout_level` and `fileout_level`; bolt-v3 owns the credential module filters; `component_level` is empty, `log_components_only = false`, `is_colored = true`, `print_config = false`, `use_tracing = false`, and `bypass_logging = false`.
 
@@ -560,7 +562,7 @@ The schema does not expose a separate raw-capture backend, rotation policy, or w
 - current allowed value:
   - `file`
 
-#### `flush_interval_milliseconds`
+#### `flush_interval_ms`
 
 - type: positive integer
 - required: yes
@@ -678,32 +680,32 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 - `pricing_kurtosis`: decimal string, greater than `-6`
 - `theta_decay_factor`: decimal string, zero or positive
 - `theta_scaled_min_edge_bps`: decimal string, positive
-- `market_selection_timestamp_milliseconds`: integer milliseconds
-- `candidate_market_start_timestamps_milliseconds`: optional integer-millisecond list, retained for evidence but not trusted for nearest-next approval
+- `market_selection_timestamp_ms`: integer milliseconds
+- `candidate_market_start_timestamps_ms`: optional integer-millisecond list, retained for evidence but not trusted for nearest-next approval
 - `market_selection_source_path`: required path when `market_selection_outcome = "next"`
 - `market_selection_source_sha256`: required sha256 when `market_selection_outcome = "next"`
 - `market_selection_outcome`: string enum, `current` or `next`
 - `polymarket_condition_id`, `polymarket_market_slug`, `polymarket_question_id`, `up_instrument_id`, `down_instrument_id`: selected-market identifiers
 - `selected_market_observed_timestamp`: integer timestamp, non-zero
-- `polymarket_market_start_timestamp_milliseconds`, `polymarket_market_end_timestamp_milliseconds`: integer milliseconds, selected start must precede selected end
+- `polymarket_market_start_timestamp_ms`, `polymarket_market_end_timestamp_ms`: integer milliseconds, selected start must precede selected end
 
 `market_selection_result` source artifact fields:
 
 - `record_kind`: string, `market_selection_result`
 - `source`: string, `nt_runtime_selection_snapshot`
-- `market_selection_timestamp_milliseconds`: integer milliseconds matching strategy-input evidence
-- `candidate_market_start_timestamps_milliseconds`: non-empty integer-millisecond list used for nearest-next approval
+- `market_selection_timestamp_ms`: integer milliseconds matching strategy-input evidence
+- `candidate_market_start_timestamps_ms`: non-empty integer-millisecond list used for nearest-next approval
 - `market_selection_outcome`: string enum, must match strategy-input evidence
 - `polymarket_condition_id`, `polymarket_market_slug`, `polymarket_question_id`, `up_instrument_id`, `down_instrument_id`: selected-market identifiers matching strategy-input evidence
 - `selected_market_observed_timestamp`: integer timestamp matching strategy-input evidence
-- `polymarket_market_start_timestamp_milliseconds`, `polymarket_market_end_timestamp_milliseconds`: integer milliseconds matching strategy-input evidence
+- `polymarket_market_start_timestamp_ms`, `polymarket_market_end_timestamp_ms`: integer milliseconds matching strategy-input evidence
 
 `financial_envelope` fields:
 
 - `max_live_order_count`: integer, must equal `1`
 - `max_notional_per_order`: decimal string matching `[live_canary].max_notional_per_order`
 - `strategy_instance_id`, `strategy_venue`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`: strings matching the loaded strategy/TOML
-- `cadence_seconds`, `retry_interval_seconds`, `blocked_after_seconds`: integer seconds matching the loaded target runtime
+- `cadence_secs`, `retry_interval_secs`, `blocked_after_secs`: integer seconds matching the loaded target runtime
 - `market_selection_rule`: string matching the loaded target runtime
 - `price_to_beat_source`: string matching `[parameters.runtime].price_to_beat_source`
 - `edge_threshold_basis_points`: integer matching loaded strategy parameters
@@ -751,7 +753,7 @@ Live-result proof JSON files:
 - used by the Rust Amazon Web Services Systems Manager client
 - no implicit region fallback
 
-### `[venues.<identifier>]`
+### `[clients.<identifier>]`
 
 #### Venue key
 
@@ -764,15 +766,15 @@ Live-result proof JSON files:
 The key is a configuration reference name.
 It is not the trader identifier.
 
-#### `kind`
+#### `venue`
 
-- type: string enum
+- type: NautilusTrader `Venue` identifier (string)
 - required: yes
 - current allowed values:
-  - `polymarket`
-  - `binance`
+  - `POLYMARKET`
+  - `BINANCE`
 
-### `[venues.<identifier>.data]`
+### `[clients.<identifier>.data]`
 
 Presence of `[data]` means a data client is configured.
 
@@ -802,12 +804,12 @@ Presence of `[data]` means a data client is configured.
 - type: string
 - required: yes
 
-##### `http_timeout_seconds`
+##### `http_timeout_secs`
 
 - type: positive integer
 - required: yes
 
-##### `ws_timeout_seconds`
+##### `ws_timeout_secs`
 
 - type: positive integer
 - required: yes
@@ -834,10 +836,10 @@ Presence of `[data]` means a data client is configured.
 
 No other Polymarket data-client fields are exposed in the current schema unless they are confirmed on the pinned NautilusTrader Rust adapter surface.
 
-For current reference-data venues other than Polymarket, each venue kind defines its own allowed `[data]` field set.
-Unknown fields fail validation against the venue-kind-specific set in Section 8.
+For current reference-data clients other than Polymarket, each client's `venue` defines its own allowed `[data]` field set.
+Unknown fields fail validation against the venue-specific set in Section 8.
 
-### `[venues.<identifier>.execution]`
+### `[clients.<identifier>.execution]`
 
 Presence of `[execution]` means an execution client is configured.
 
@@ -876,17 +878,17 @@ bolt parses this string enum and maps it to the current pinned Nautilus/Polymark
 - type: positive integer
 - required: yes
 
-#### `retry_delay_initial_milliseconds`
+#### `retry_delay_initial_ms`
 
 - type: positive integer
 - required: yes
 
-#### `retry_delay_max_milliseconds`
+#### `retry_delay_max_ms`
 
 - type: positive integer
 - required: yes
 
-#### `ack_timeout_seconds`
+#### `ack_timeout_secs`
 
 - type: positive integer
 - required: yes
@@ -899,9 +901,9 @@ The current schema also requires these pinned adapter fields to be explicit:
 - `base_url_http`
 - `base_url_ws`
 - `base_url_data_api`
-- `http_timeout_seconds`
+- `http_timeout_secs`
 
-### `[venues.<identifier>.secrets]`
+### `[clients.<identifier>.secrets]`
 
 Presence of `[secrets]` means the venue requires credential resolution.
 The block must be consumed by an adapter in the same venue:
@@ -960,7 +962,7 @@ For current Binance reference-data use:
 - maps to Nautilus `BinanceDataClientConfig.base_url_ws`
 - explicit TOML ownership prevents NautilusTrader from falling back to its compiled-in Binance WebSocket URL
 
-##### `instrument_status_poll_seconds`
+##### `instrument_status_poll_secs`
 
 - type: positive integer
 - required: yes
@@ -982,10 +984,10 @@ configured_target_id = "btc_updown_5m"
 kind = "rotating_market"
 rotating_market_family = "updown"
 underlying_asset = "BTC"
-cadence_seconds = 300
+cadence_secs = 300
 market_selection_rule = "active_or_next"
-retry_interval_seconds = 5
-blocked_after_seconds = 60
+retry_interval_secs = 5
+blocked_after_secs = 60
 
 [reference_data.primary]
 venue = "binance_reference"
@@ -1077,11 +1079,11 @@ Nautilus strategy identity mapping for live trading:
   - `netting`
 - maps directly to Nautilus `StrategyConfig.oms_type`
 
-#### `venue`
+#### `execution_client_id`
 
-- type: keyed reference string
+- type: keyed reference string (one of the keys under root `[clients.<id>]`)
 - required: yes
-- must reference a root venue block that includes `[execution]`
+- must reference a root client block that includes `[execution]`
 
 ### `[target]`
 
@@ -1117,10 +1119,10 @@ If `kind = "rotating_market"`:
 - `configured_target_id` is required
 - `rotating_market_family` is required
 - `underlying_asset` is required
-- `cadence_seconds` is required
+- `cadence_secs` is required
 - `market_selection_rule` is required
-- `retry_interval_seconds` is required
-- `blocked_after_seconds` is required
+- `retry_interval_secs` is required
+- `blocked_after_secs` is required
 - `instrument_id` is forbidden
 
 ##### `rotating_market_family`
@@ -1141,7 +1143,7 @@ If `kind = "rotating_market"`:
   - underscore
 - runtime slug derivation lowercases this value for the `updown` market-slug asset segment
 
-##### `cadence_seconds`
+##### `cadence_secs`
 
 - type: integer
 - required: yes
@@ -1156,13 +1158,13 @@ If `kind = "rotating_market"`:
 - current allowed value:
   - `active_or_next`
 
-##### `retry_interval_seconds`
+##### `retry_interval_secs`
 
 - type: positive integer
 - required for rotating-market targets
 - configured per strategy; examples use `5`
 
-##### `blocked_after_seconds`
+##### `blocked_after_secs`
 
 - type: positive integer
 - required for rotating-market targets
@@ -1171,7 +1173,7 @@ If `kind = "rotating_market"`:
 These fields live in the strategy file because they control that strategy's market-selection behavior.
 The schema does not hardcode `BTC`, `ETH`, or `300` as the only supported `updown` target values; those may appear in examples only.
 
-The runtime projection of the strategy-file `[target]` block plus the top-level `venue` field into `configured_updown_target` is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 6.1.
+The runtime projection of the strategy-file `[target]` block plus the top-level `execution_client_id` field into `configured_updown_target` is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 6.1.
 
 ### `[reference_data.<name>]`
 
@@ -1185,9 +1187,9 @@ If present:
 
 Fields:
 
-#### `venue`
+#### `data_client_id`
 
-- type: keyed reference string
+- type: keyed reference string (one of the keys under root `[clients.<id>]`)
 - required
 
 #### `instrument_id`
@@ -1333,10 +1335,10 @@ Must fail if:
 - a strategy file path is duplicated
 - a referenced file does not exist
 - a venue reference points to a missing venue
-- a strategy `venue` points to a data-only venue
-- a reference-data venue points to a venue without `[data]`
-- more than one `[venues.<identifier>]` block declares the same `kind` in the current one-venue-per-kind slice
-- a `[secrets]` block is present without the same venue-kind's consuming adapter block
+- a strategy `execution_client_id` points to a data-only client (no `[execution]` block)
+- a reference-data `data_client_id` points to a client without `[data]`
+- more than one `[clients.<identifier>]` block declares the same `venue` (NT `Venue` identifier) in the current one-client-per-venue slice
+- a `[secrets]` block is present without the same venue's consuming adapter block
 - an SSM parameter path is empty or does not start with `/`
 - two listed strategy files declare the same `strategy_instance_id`
 - two listed strategy files declare the same `order_id_tag`
@@ -1347,9 +1349,9 @@ Must fail if:
 - `target.kind = "rotating_market"` includes fields not valid for rotating-market targets
 - `target.kind = "instrument"` is selected before instrument targets are added by a future contract slice
 - `target.underlying_asset` is empty, longer than 32 characters, or contains characters outside uppercase ASCII letters, digits, and underscore
-- `target.cadence_seconds` is not positive or is not divisible by `60`
-- `target.cadence_seconds` does not have a runtime-contract-defined slug-token mapping
-- a field appears under `[venues.<identifier>.data]` or `[venues.<identifier>.execution]` that is not allowed for that venue `kind`
+- `target.cadence_secs` is not positive or is not divisible by `60`
+- `target.cadence_secs` does not have a runtime-contract-defined slug-token mapping
+- a field appears under `[clients.<identifier>.data]` or `[clients.<identifier>.execution]` that is not allowed for that client's `venue`
 - archetype-specific parameter sections contain fields not allowed for the declared `strategy_archetype`
 - archetype-specific order parameters contain any combination not explicitly allowed for that archetype
 - `order_notional_target` exceeds `root risk.default_max_notional_per_order`
@@ -1375,17 +1377,17 @@ strategy_files = [
 ]
 
 [runtime]
-mode = "live"
+mode = "Live"
 
 [nautilus]
 load_state = true
 save_state = true
-timeout_connection_seconds = 30
-timeout_reconciliation_seconds = 60
-timeout_portfolio_seconds = 10
-timeout_disconnection_seconds = 10
-delay_post_stop_seconds = 5
-timeout_shutdown_seconds = 10
+timeout_connection_secs = 30
+timeout_reconciliation_secs = 60
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 5
+timeout_shutdown_secs = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -1398,7 +1400,7 @@ validate_data_sequence = false
 buffer_deltas = false
 emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
-external_client_ids = []
+external_clients = []
 debug = false
 graceful_shutdown_on_error = false
 qsize = 100000
@@ -1407,30 +1409,30 @@ qsize = 100000
 load_cache = true
 snapshot_orders = false
 snapshot_positions = false
-snapshot_positions_interval_seconds = 0
-external_client_ids = []
+snapshot_positions_interval_secs = 0
+external_clients = []
 debug = false
 reconciliation = true
-reconciliation_startup_delay_seconds = 10
+reconciliation_startup_delay_secs = 10
 reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []
 filter_unclaimed_external_orders = false
 filter_position_reports = false
 filtered_client_order_ids = []
 generate_missing_orders = true
-inflight_check_interval_milliseconds = 2000
-inflight_check_threshold_milliseconds = 5000
+inflight_check_interval_ms = 2000
+inflight_check_threshold_ms = 5000
 inflight_check_retries = 5
-open_check_interval_seconds = 0
+open_check_interval_secs = 0
 open_check_lookback_mins = 60
-open_check_threshold_milliseconds = 5000
+open_check_threshold_ms = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
-single_order_query_delay_milliseconds = 100
-position_check_interval_seconds = 0
+single_order_query_delay_ms = 100
+position_check_interval_secs = 0
 position_check_lookback_mins = 60
-position_check_threshold_milliseconds = 5000
+position_check_threshold_ms = 5000
 position_check_retries = 3
 purge_closed_orders_interval_mins = 0
 purge_closed_orders_buffer_mins = 0
@@ -1439,7 +1441,7 @@ purge_closed_positions_buffer_mins = 0
 purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
-own_books_audit_interval_seconds = 0
+own_books_audit_interval_secs = 0
 graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
@@ -1447,24 +1449,26 @@ manage_own_order_books = false
 
 [risk]
 default_max_notional_per_order = "10.00"
-nt_bypass = false
-nt_max_order_submit_rate = "100/00:00:01"
-nt_max_order_modify_rate = "100/00:00:01"
-nt_max_notional_per_order = {}
-nt_debug = false
-nt_graceful_shutdown_on_error = false
-nt_qsize = 100000
+
+[risk.nautilus]
+bypass = false
+max_order_submit_rate = "100/00:00:01"
+max_order_modify_rate = "100/00:00:01"
+max_notional_per_order = {}
+debug = false
+graceful_shutdown_on_error = false
+qsize = 100000
 
 [logging]
-standard_output_level = "INFO"
-file_level = "INFO"
+stdout_level = "INFO"
+fileout_level = "INFO"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
-flush_interval_milliseconds = 1000
+flush_interval_ms = 1000
 replace_existing = false
 rotation_kind = "none"
 
@@ -1478,50 +1482,50 @@ max_notional_per_order = "1.00"
 [aws]
 region = "eu-west-1"
 
-[venues.polymarket_main]
-kind = "polymarket"
+[clients.polymarket_main]
+venue = "POLYMARKET"
 
-[venues.polymarket_main.data]
+[clients.polymarket_main.data]
 base_url_http = "https://clob.polymarket.com" # NT: nautilus_polymarket::config::PolymarketDataClientConfig.base_url_http
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market" # NT: PolymarketDataClientConfig.base_url_ws
 base_url_gamma = "https://gamma-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_gamma
 base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_data_api
-http_timeout_seconds = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
-ws_timeout_seconds = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
+http_timeout_secs = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
+ws_timeout_secs = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
 subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets — forced false in current bolt-v3 scope
 update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 
-[venues.polymarket_main.execution]
+[clients.polymarket_main.execution]
 account_id = "POLYMARKET-001" # NT: nautilus_model::identifiers::AccountId
 signature_type = "poly_proxy" # NT: nautilus_polymarket::common::enums::SignatureType
 funder_address = "0x1111111111111111111111111111111111111111" # NT: PolymarketExecClientConfig.funder
 base_url_http = "https://clob.polymarket.com" # NT: PolymarketExecClientConfig.base_url_http
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user" # NT: PolymarketExecClientConfig.base_url_ws
 base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketExecClientConfig.base_url_data_api
-http_timeout_seconds = 60 # NT: PolymarketExecClientConfig.http_timeout_secs
+http_timeout_secs = 60 # NT: PolymarketExecClientConfig.http_timeout_secs
 max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
-retry_delay_initial_milliseconds = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
-retry_delay_max_milliseconds = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
-ack_timeout_seconds = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
+retry_delay_initial_ms = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
+retry_delay_max_ms = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
+ack_timeout_secs = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
 
-[venues.polymarket_main.secrets]
+[clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
 api_key_ssm_path = "/bolt/polymarket_main/api_key"
 api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
 passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
 
-[venues.binance_reference]
-kind = "binance"
+[clients.binance_reference]
+venue = "BINANCE"
 
-[venues.binance_reference.data]
+[clients.binance_reference.data]
 product_types = ["spot"] # NT: nautilus_binance::config::BinanceDataClientConfig.product_types
 environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
-instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
+instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 
-[venues.binance_reference.secrets]
+[clients.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"
 api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 ```
@@ -1541,10 +1545,10 @@ configured_target_id = "btc_updown_5m"
 kind = "rotating_market"
 rotating_market_family = "updown"
 underlying_asset = "BTC"
-cadence_seconds = 300
+cadence_secs = 300
 market_selection_rule = "active_or_next"
-retry_interval_seconds = 5
-blocked_after_seconds = 60
+retry_interval_secs = 5
+blocked_after_secs = 60
 
 [reference_data.primary]
 venue = "binance_reference"

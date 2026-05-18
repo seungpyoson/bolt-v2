@@ -36,6 +36,7 @@ on:
       - 'REASONIX.md'
       - 'LICENSE'
       - '.github/ISSUE_TEMPLATE/**'
+      - '.claude/**'
       - '.codex/**'
       - '.gemini/**'
       - '.opencode/**'
@@ -1356,6 +1357,10 @@ def main() -> int:
             "      - '.specify/**'\n",
             "      - '.specify/**'\n      - 'docs/**'\n",
         ),
+    )
+    assert_error(
+        "pull_request paths-ignore must match baseline",
+        replace_once(BASE_WORKFLOW, "      - '.claude/**'\n", ""),
     )
     assert_error(
         "pull_request paths-ignore must match baseline",

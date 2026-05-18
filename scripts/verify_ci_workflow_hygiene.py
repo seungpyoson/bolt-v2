@@ -68,6 +68,7 @@ JOB_REQUIRED_JUST_RECIPE = {
     "build": "build",
 }
 CI_PR_PATHS_IGNORE_BASELINE = (
+    ".claude/**",
     ".codex/**",
     ".gemini/**",
     ".github/ISSUE_TEMPLATE/**",

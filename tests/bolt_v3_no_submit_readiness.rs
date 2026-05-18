@@ -455,12 +455,37 @@ fn no_submit_readiness_sync_runner_uses_localset_after_build() {
     let build_pos = source
         .find("build_bolt_v3_live_node(loaded)")
         .expect("sync runner must build the live node");
+    let runner_source = source
+        .split("pub fn run_bolt_v3_no_submit_readiness(")
+        .nth(1)
+        .expect("sync runner must exist");
+    let approval_check_pos = runner_source
+        .find("configured_operator_approval_hash(loaded)?")
+        .expect("sync runner must validate configured operator approval");
+    let runner_build_pos = runner_source
+        .find("build_bolt_v3_live_node(loaded)")
+        .expect("sync runner must build the live node");
+    assert!(
+        approval_check_pos < runner_build_pos,
+        "configured operator approval must be validated before live-node build"
+    );
     let localset_pos = source
         .find("tokio::task::LocalSet::new()")
         .expect("sync runner must create a LocalSet");
     assert!(
         build_pos < localset_pos,
         "SSM-backed live-node build must happen before entering the readiness Tokio runtime"
+    );
+    let readiness_runtime_pos = source
+        .find("let readiness_runtime = no_submit_readiness_tokio_runtime()?")
+        .expect("sync runner must build the readiness Tokio runtime");
+    assert!(
+        build_pos < readiness_runtime_pos,
+        "SSM-backed live-node build must happen before creating the no-submit Tokio runtime"
+    );
+    assert!(
+        !source.contains("let metadata_runtime = no_submit_readiness_tokio_runtime()?"),
+        "sync runner must not create a metadata Tokio runtime before live-node build"
     );
 }
 

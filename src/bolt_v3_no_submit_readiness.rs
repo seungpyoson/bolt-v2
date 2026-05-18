@@ -357,17 +357,15 @@ pub fn run_bolt_v3_no_submit_readiness(
     if tokio::runtime::Handle::try_current().is_ok() {
         return Err(BoltV3NoSubmitReadinessError::ActiveTokioRuntime);
     }
-
-    let metadata_runtime = no_submit_readiness_tokio_runtime()?;
-    let metadata =
-        metadata_runtime.block_on(BoltV3NoSubmitReadinessReportMetadata::from_loaded(loaded))?;
-    drop(metadata_runtime);
+    configured_operator_approval_hash(loaded)?;
 
     let mut runtime = build_bolt_v3_live_node(loaded)
         .map_err(|source| BoltV3NoSubmitReadinessError::LiveNode { source })?;
     let redacted_values = runtime.redaction_values().to_vec();
 
     let readiness_runtime = no_submit_readiness_tokio_runtime()?;
+    let metadata =
+        readiness_runtime.block_on(BoltV3NoSubmitReadinessReportMetadata::from_loaded(loaded))?;
     let local = tokio::task::LocalSet::new();
     Ok(
         readiness_runtime.block_on(local.run_until(run_bolt_v3_no_submit_readiness_on_runtime(

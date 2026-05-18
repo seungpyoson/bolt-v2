@@ -158,16 +158,16 @@ impl std::fmt::Display for BoltV3SecretError {
         if self.ssm_path.is_empty() {
             write!(
                 f,
-                "clients.{venue}.secrets.{field}: {source}",
-                venue = self.client_key,
+                "clients.{client_key}.secrets.{field}: {source}",
+                client_key = self.client_key,
                 field = self.field,
                 source = self.source,
             )
         } else {
             write!(
                 f,
-                "clients.{venue}.secrets.{field} (path={path}): {source}",
-                venue = self.client_key,
+                "clients.{client_key}.secrets.{field} (path={path}): {source}",
+                client_key = self.client_key,
                 field = self.field,
                 path = self.ssm_path,
                 source = self.source,
@@ -178,7 +178,7 @@ impl std::fmt::Display for BoltV3SecretError {
 
 impl std::error::Error for BoltV3SecretError {}
 
-/// Resolve every configured bolt-v3 venue `[secrets]` block from Amazon Web
+/// Resolve every configured bolt-v3 client `[secrets]` block from Amazon Web
 /// Services Systems Manager using `[aws].region` and the explicit per-client
 /// SSM paths in the parsed root config. Production startup must use this
 /// function; tests should call [`resolve_bolt_v3_secrets_with`] with an
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn flags_set_polymarket_var_for_configured_polymarket_venue() {
+    fn flags_set_polymarket_var_for_configured_polymarket_client() {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
         let error =
             check_no_forbidden_credential_env_vars_with(&root, |var| var == "POLYMARKET_PK")
@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn flags_set_binance_var_for_configured_binance_venue() {
+    fn flags_set_binance_var_for_configured_binance_client() {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
         let error =
             check_no_forbidden_credential_env_vars_with(&root, |var| var == "BINANCE_API_SECRET")
@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_configured_bolt_v3_venue_secrets_from_ssm_paths() {
+    fn resolves_configured_bolt_v3_client_secrets_from_ssm_paths() {
         let loaded = fixture_loaded_config();
         let mut calls = Vec::new();
 
@@ -435,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn ssm_failure_reports_bolt_v3_venue_field_and_path() {
+    fn ssm_failure_reports_bolt_v3_client_field_and_path() {
         let loaded = fixture_loaded_config();
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {

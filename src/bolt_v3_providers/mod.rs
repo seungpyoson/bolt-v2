@@ -158,8 +158,8 @@ pub fn credential_log_modules() -> impl Iterator<Item = &'static str> {
 }
 
 /// Family-agnostic surface read by core startup validation. Routes
-/// each venue block to its per-provider validator based on provider
-/// key. Returns the full error list for the venue block.
+/// each client block to its per-provider validator based on provider
+/// key. Returns the full error list for the client block.
 pub fn validate_client_block(key: &str, client: &ClientBlock) -> Vec<String> {
     match binding_for_provider_key(client.venue.as_str()) {
         Some(binding) => {

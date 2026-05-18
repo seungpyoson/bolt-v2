@@ -117,6 +117,17 @@ path_scoped_forbidden:
     include_globs:
       - docs/bolt-v3/[0-9]*-bolt-v3-*.md
     reason: "Bolt-v3 client blocks store the NT Venue identifier in `venue`; operator-facing contracts should not call that value a kind"
+  - from: "venues."
+    to: "clients."
+    include_globs:
+      - docs/bolt-v3/[0-9]*-bolt-v3-*.md
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - config/**/*.toml
+      - contracts/**/*.toml
+      - tests/**/*.toml
+      - tests/fixtures/**/*.toml
+    reason: "Bolt-v3 config paths use `[clients.<id>]`; legacy `[venues.<id>]` table/path residues must fail source-fence"
 
 accepted_non_nt_names:
   - name: decision_trace_id

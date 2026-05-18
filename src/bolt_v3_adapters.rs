@@ -31,21 +31,21 @@ use crate::{
 pub type BoltV3MarketClockFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 
 /// Provider-owned NT data-client factory and config for one configured
-/// Bolt-v3 venue data block.
+/// Bolt-v3 client data block.
 pub struct BoltV3DataClientAdapterConfig {
     pub factory: Box<dyn DataClientFactory>,
     pub config: Box<dyn ClientConfig>,
 }
 
 /// Provider-owned NT execution-client factory and config for one configured
-/// Bolt-v3 venue execution block.
+/// Bolt-v3 client execution block.
 pub struct BoltV3ExecutionClientAdapterConfig {
     pub factory: Box<dyn ExecutionClientFactory>,
     pub config: Box<dyn ClientConfig>,
 }
 
 /// Mapped provider-owned adapter assemblies for one configured Bolt-v3
-/// venue. Sub-configs are present iff the corresponding
+/// client. Sub-configs are present iff the corresponding
 /// `[clients.<id>.<block>]` section is present in the validated config.
 pub struct BoltV3ClientAdapterConfig {
     pub data: Option<BoltV3DataClientAdapterConfig>,
@@ -114,7 +114,7 @@ pub enum BoltV3AdapterMappingError {
         client_key: String,
         expected_provider_key: &'static str,
     },
-    /// A venue requires resolved secrets but none were found in the
+    /// A client requires resolved secrets but none were found in the
     /// passed-in `ResolvedBoltV3Secrets`. Validation guarantees a
     /// `[secrets]` block exists, so reaching this branch indicates the
     /// resolved-secrets value was constructed inconsistently with the
@@ -614,7 +614,6 @@ mod tests {
                 );
                 assert!(rendered.starts_with("clients.polymarket_main:"));
                 assert!(rendered.contains("strategy.execution_client_id"));
-                assert!(!rendered.contains("venues."));
                 assert!(!rendered.contains("provider venue"));
                 assert!(!rendered.contains("strategy.target."));
             }
@@ -623,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_without_family_support_can_map_when_no_target_references_venue() {
+    fn provider_without_family_support_can_map_when_no_target_references_client() {
         let fake_root_text = include_str!("../tests/fixtures/bolt_v3/root.toml")
             .replace("venue = \"POLYMARKET\"", "venue = \"FAKE_UPDOWN_PROVIDER\"");
         let mut loaded = LoadedBoltV3Config {
@@ -634,7 +633,7 @@ mod tests {
         loaded
             .root
             .clients
-            .retain(|client_key, _venue| client_key == "polymarket_main");
+            .retain(|client_key, _client| client_key == "polymarket_main");
         let plan = MarketIdentityPlan {
             updown_targets: Vec::new(),
         };
@@ -662,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_polymarket_venue_data_and_execution_blocks_from_fixture() {
+    fn maps_polymarket_client_data_and_execution_blocks_from_fixture() {
         let loaded = fixture_loaded_config();
         let resolved = fixture_resolved_secrets();
 
@@ -743,7 +742,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_binance_venue_data_block_from_fixture() {
+    fn maps_binance_client_data_block_from_fixture() {
         let loaded = fixture_loaded_config();
         let resolved = fixture_resolved_secrets();
 
@@ -801,7 +800,6 @@ mod tests {
         assert!(rendered.contains("(provider=POLYMARKET)"));
         assert!(!rendered.contains("(kind="));
         assert!(!rendered.contains("(venue="));
-        assert!(!rendered.contains("venues."));
         match error {
             BoltV3AdapterMappingError::MissingResolvedSecrets {
                 client_key,
@@ -834,7 +832,6 @@ mod tests {
         assert!(rendered.contains("(provider=BINANCE)"));
         assert!(!rendered.contains("(kind="));
         assert!(!rendered.contains("(venue="));
-        assert!(!rendered.contains("venues."));
         match error {
             BoltV3AdapterMappingError::MissingResolvedSecrets {
                 client_key,
@@ -866,7 +863,6 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("configured client provider"));
         assert!(!rendered.contains("validated venue kind"));
-        assert!(!rendered.contains("venues."));
         match error {
             BoltV3AdapterMappingError::SecretKindMismatch {
                 client_key,

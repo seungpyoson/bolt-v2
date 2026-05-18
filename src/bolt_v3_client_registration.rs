@@ -40,7 +40,7 @@ pub struct BoltV3RegisteredClient {
     pub execution: bool,
 }
 
-/// Per-venue summary of which NT factory kinds were added to the
+/// Per-client summary of which NT factory kinds were added to the
 /// [`LiveNodeBuilder`] during the bolt-v3 client-registration smoke.
 /// Keyed by the bolt-v3 client identifier (the TOML `[clients.<id>]`
 /// table key, which the boundary also uses as the NT registration
@@ -55,11 +55,11 @@ pub struct BoltV3RegistrationSummary {
 #[derive(Debug)]
 pub enum BoltV3ClientRegistrationError {
     /// `LiveNodeBuilder::add_data_client` rejected the data factory for
-    /// a venue (e.g. duplicate registration name). The wrapped string
+    /// a client (e.g. duplicate registration name). The wrapped string
     /// is the underlying NT error message.
     AddDataClient { client_key: String, message: String },
     /// `LiveNodeBuilder::add_exec_client` rejected the execution
-    /// factory for a venue (e.g. duplicate registration name).
+    /// factory for a client (e.g. duplicate registration name).
     AddExecClient { client_key: String, message: String },
 }
 
@@ -90,7 +90,7 @@ impl std::error::Error for BoltV3ClientRegistrationError {}
 /// every configured `[clients.<id>]` block in `adapters`, using the
 /// bolt-v3 client identifier as the NT registration name. Returns the
 /// updated builder paired with an inspectable summary of which client
-/// kinds were registered per venue.
+/// kinds were registered per configured client.
 ///
 /// This function does not call `connect`, `disconnect`, `run`, any
 /// `subscribe_*` API, market selection, order construction, or any
@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn fixture_venues_register_one_data_and_one_exec_for_polymarket_and_one_data_for_binance() {
+    fn fixture_clients_register_one_data_and_one_exec_for_polymarket_and_one_data_for_binance() {
         let adapters = fixture_adapters();
 
         let (_builder, summary) = register_bolt_v3_clients(fresh_builder(), adapters)
@@ -258,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn polymarket_venue_with_only_data_block_does_not_register_an_exec_client() {
+    fn polymarket_client_with_only_data_block_does_not_register_an_exec_client() {
         let adapters = BoltV3AdapterConfigs {
             clients: BTreeMap::from([(
                 "polymarket_data_only".to_string(),
@@ -293,7 +293,7 @@ mod tests {
         let registered = summary
             .clients
             .get("polymarket_data_only")
-            .expect("data-only venue must appear in summary");
+            .expect("data-only client must appear in summary");
         assert!(registered.data);
         assert!(
             !registered.execution,
@@ -302,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn binance_venue_with_no_data_block_records_data_false_in_summary() {
+    fn binance_client_with_no_data_block_records_data_false_in_summary() {
         let adapters = BoltV3AdapterConfigs {
             clients: BTreeMap::from([(
                 "binance_no_data".to_string(),
@@ -317,7 +317,7 @@ mod tests {
         let registered = summary
             .clients
             .get("binance_no_data")
-            .expect("binance venue must appear in summary");
+            .expect("binance client must appear in summary");
         assert!(!registered.data, "no [data] block, so no data registration");
         assert!(!registered.execution);
     }
@@ -360,7 +360,6 @@ mod tests {
                     }
                 );
                 assert!(rendered.starts_with("clients.polymarket_main:"));
-                assert!(!rendered.contains("venues."));
             }
             other => panic!("expected AddDataClient error, got {other:?}"),
         }
@@ -404,7 +403,6 @@ mod tests {
                     }
                 );
                 assert!(rendered.starts_with("clients.polymarket_main:"));
-                assert!(!rendered.contains("venues."));
             }
             other => panic!("expected AddExecClient error, got {other:?}"),
         }

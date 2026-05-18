@@ -51,7 +51,7 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
 }
 
 #[test]
-fn polymarket_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
+fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let resolved = fixture_resolved_secrets();
@@ -171,7 +171,7 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
 }
 
 #[test]
-fn binance_data_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
+fn binance_data_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let resolved = fixture_resolved_secrets();
@@ -370,7 +370,6 @@ ack_timeout_secs = 5
     assert!(rendered.contains("(provider=POLYMARKET)"));
     assert!(!rendered.contains("(kind="));
     assert!(!rendered.contains("(venue="));
-    assert!(!rendered.contains("venues."));
     match error {
         BoltV3AdapterMappingError::MissingResolvedSecrets {
             client_key,

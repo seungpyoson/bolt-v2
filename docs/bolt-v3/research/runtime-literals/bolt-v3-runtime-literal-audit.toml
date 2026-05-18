@@ -504,16 +504,16 @@ reason = "This label names the Polymarket execution config field being validated
 [[allowed]]
 path = "src/bolt_v3_secrets.rs"
 kind = "string"
-literal = "\"clients.{venue}.secrets.{field}: {source}\""
-context = "\"clients.{venue}.secrets.{field}: {source}\","
+literal = "\"clients.{client_key}.secrets.{field}: {source}\""
+context = "\"clients.{client_key}.secrets.{field}: {source}\","
 classification = "diagnostic_template"
 reason = "This is an error-display template for a failed SSM secret resolution without an exposed path, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_secrets.rs"
 kind = "string"
-literal = "\"clients.{venue}.secrets.{field} (path={path}): {source}\""
-context = "\"clients.{venue}.secrets.{field} (path={path}): {source}\","
+literal = "\"clients.{client_key}.secrets.{field} (path={path}): {source}\""
+context = "\"clients.{client_key}.secrets.{field} (path={path}): {source}\","
 classification = "diagnostic_template"
 reason = "This is an error-display template for a failed SSM secret resolution with a redacted path context, not an operator runtime value."
 

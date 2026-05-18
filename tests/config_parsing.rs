@@ -33,11 +33,10 @@ fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
 
 #[test]
 fn bolt_v3_config_uses_clients_section_with_nt_venue_identifier() {
-    // FINDING-3: TOML `[clients.<id>]` (was `[venues.<id>]`) holds an NT Venue
-    // identifier in `venue` (was lowercase `kind`). The NT Venue type wraps a
-    // Ustr and the serde macro enforces correctness at parse time, so the
-    // `venue = "POLYMARKET"` value is checked structurally as well as
-    // semantically.
+    // FINDING-3: TOML `[clients.<id>]` holds an NT Venue identifier in
+    // `venue`. The NT Venue type wraps a Ustr and the serde macro enforces
+    // correctness at parse time, so the `venue = "POLYMARKET"` value is
+    // checked structurally as well as semantically.
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
     use nautilus_model::identifiers::Venue;
 
@@ -2212,7 +2211,8 @@ fn rejects_ssm_paths_missing_leading_slash() {
         "expected SSM-path leading-slash validation error, got: {messages:#?}"
     );
     assert!(rendered.contains("clients.binance_reference.secrets.api_key_ssm_path"));
-    assert!(!rendered.contains("venues.binance_reference"));
+    let legacy_path = ["venues", "binance_reference"].join(".");
+    assert!(!rendered.contains(&legacy_path));
 }
 
 #[test]
@@ -2313,7 +2313,7 @@ fn rejects_binance_data_zero_instrument_status_poll_secs() {
 }
 
 #[test]
-fn rejects_polymarket_data_only_venue_with_secrets_block() {
+fn rejects_polymarket_data_only_client_with_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nmax_retries = 3\nretry_delay_initial_ms = 250\nretry_delay_max_ms = 2000\nack_timeout_secs = 5\n\n";

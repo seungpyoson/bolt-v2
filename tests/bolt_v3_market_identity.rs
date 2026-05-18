@@ -846,9 +846,9 @@ fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
 }
 
 #[test]
-fn validate_module_must_not_own_provider_venue_validation() {
+fn validate_module_must_not_own_provider_client_validation() {
     // Bolt-v3 startup validation must stay provider-neutral and
-    // dispatch provider-specific venue-block validation out to the
+    // dispatch provider-specific client-block validation out to the
     // per-provider binding modules. The validation policy for
     // Polymarket and Binance client blocks (data/execution/secrets
     // shape rules, EVM funder-address syntax, retry-bounds ordering,
@@ -856,7 +856,7 @@ fn validate_module_must_not_own_provider_venue_validation() {
     // per-provider secret-path ownership, base-URL emptiness,
     // instrument-status-poll positivity) belongs to the per-provider
     // binding modules under `crate::bolt_v3_providers`, not to core
-    // validation. Validate.rs may still hand the venue block to a
+    // validation. Validate.rs may still hand the client block to a
     // family-agnostic provider dispatcher
     // (`bolt_v3_providers::validate_client_block`) for routing; the
     // substrings forbidden below pin policy *ownership* (function
@@ -864,7 +864,7 @@ fn validate_module_must_not_own_provider_venue_validation() {
     // those validators), not the dispatch call itself.
     let src = include_str!("../src/bolt_v3_validate.rs");
     let forbidden = [
-        // Per-provider venue-block validators that owned the policy
+        // Per-provider client-block validators that owned the policy
         // before this slice.
         "validate_polymarket_venue",
         "validate_binance_venue",
@@ -891,9 +891,9 @@ fn validate_module_must_not_own_provider_venue_validation() {
     for symbol in forbidden {
         assert!(
             !src.contains(symbol),
-            "src/bolt_v3_validate.rs must not own provider-specific venue validation; \
+            "src/bolt_v3_validate.rs must not own provider-specific client validation; \
              source unexpectedly references `{symbol}`. \
-             Move Polymarket / Binance venue, data, execution, funder-address, \
+             Move Polymarket / Binance client, data, execution, funder-address, \
              retry-bounds, secret-path, and EVM-syntax validators (and the \
              provider-shaped block types they consume) into \
              src/bolt_v3_providers/polymarket.rs and src/bolt_v3_providers/binance.rs; \

@@ -127,7 +127,7 @@ fn startup_check_reports_success_facts_without_connecting() {
 }
 
 #[test]
-fn startup_check_reports_empty_venue_stages_as_satisfied_root_facts() {
+fn startup_check_reports_empty_client_stages_as_satisfied_root_facts() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let empty_loaded = LoadedBoltV3Config {
@@ -155,7 +155,7 @@ fn startup_check_reports_empty_venue_stages_as_satisfied_root_facts() {
         assert_eq!(
             statuses_for(&report, stage),
             vec![BoltV3StartupCheckStatus::Satisfied],
-            "{stage:?} should be explicitly satisfied at root level for empty venue configs: {report:#?}"
+            "{stage:?} should be explicitly satisfied at root level for empty client configs: {report:#?}"
         );
     }
 }

@@ -187,7 +187,7 @@ fn empty_clients_root_config_registers_zero_clients() {
         Err("resolver must not be called when no clients are configured")
     };
     let (node, summary) = build_bolt_v3_live_node_with_summary(&empty_loaded, |_| false, resolver)
-        .expect("empty venue set should still build a clean LiveNode");
+        .expect("empty client set should still build a clean LiveNode");
     assert!(summary.clients.is_empty());
     assert!(node.registered_data_client_ids().is_empty());
     assert!(node.registered_exec_client_ids().is_empty());

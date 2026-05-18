@@ -174,15 +174,15 @@ where
                     "no client adapter configs mapped",
                 );
             } else {
-                for (client_key, venue) in &adapters.clients {
+                for (client_key, client) in &adapters.clients {
                     report.push(
                         BoltV3StartupCheckStage::AdapterMapping,
                         BoltV3StartupCheckSubject::Client(client_key.clone()),
                         BoltV3StartupCheckStatus::Satisfied,
                         format!(
                             "mapped adapter configs for client `{client_key}`: data={} execution={}",
-                            venue.data.is_some(),
-                            venue.execution.is_some()
+                            client.data.is_some(),
+                            client.execution.is_some()
                         ),
                     );
                 }
@@ -313,14 +313,14 @@ fn push_registration_summary(
         return;
     }
 
-    for (client_key, venue) in &summary.clients {
+    for (client_key, client) in &summary.clients {
         report.push(
             BoltV3StartupCheckStage::ClientRegistration,
             BoltV3StartupCheckSubject::Client(client_key.clone()),
             BoltV3StartupCheckStatus::Satisfied,
             format!(
                 "registered NT clients for client `{client_key}`: data={} execution={}",
-                venue.data, venue.execution
+                client.data, client.execution
             ),
         );
     }

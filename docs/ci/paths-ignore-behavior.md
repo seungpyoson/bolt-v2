@@ -10,6 +10,7 @@ Push and tag events do not use `paths-ignore`; they always run CI.
 | workflow change | `.github/workflows/ci.yml` | full-ci | full CI runs; pass-stub does not trigger |
 | Rust source change | `src/lib.rs` | full-ci | full CI runs; pass-stub does not trigger |
 | managed rust-verification config | `ci/rust-verification.toml` | full-ci | full CI runs; pass-stub does not trigger |
+| forbidden legacy rust-verification config | `.claude/rust-verification.toml` | invalid | pass-stub classifier fails closed |
 | lockfile change | `Cargo.lock` | full-ci | full CI runs; pass-stub does not trigger |
 | mixed docs and source | `AGENTS.md` + `src/lib.rs` | full-ci | full CI runs; pass-stub records `docs_only=false` without blocking |
 | ignored Claude agent dir | `.claude/skills/speckit-plan/SKILL.md` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |

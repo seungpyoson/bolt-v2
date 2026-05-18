@@ -40,6 +40,7 @@ REQUIRED_DOC_SCENARIOS = (
     "workflow change",
     "Rust source change",
     "managed rust-verification config",
+    "forbidden legacy rust-verification config",
     "lockfile change",
     "mixed docs and source",
     "ignored Claude agent dir",
@@ -127,11 +128,14 @@ def docs_only_safe(changed_files: tuple[str, ...] | list[str], safe_paths: tuple
     if not changed_files:
         raise PathFilterError("changed file list is empty")
     for path in changed_files:
-        if not path.strip():
+        normalized = path.strip()
+        if normalized.startswith("./"):
+            normalized = normalized[2:]
+        if not normalized:
             raise PathFilterError("changed file list contains an empty path")
-        if path in FORBIDDEN_IGNORED_BUILD_PATHS:
+        if normalized in FORBIDDEN_IGNORED_BUILD_PATHS:
             raise PathFilterError(f"forbidden ignored build path changed: {path}")
-        if not any(path_matches_pattern(path, pattern) for pattern in safe_paths):
+        if not any(path_matches_pattern(normalized, pattern) for pattern in safe_paths):
             return False
     return True
 

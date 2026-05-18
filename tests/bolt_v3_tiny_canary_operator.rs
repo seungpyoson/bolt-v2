@@ -1034,6 +1034,12 @@ fn phase8_operator_head_is_resolved_from_checkout() -> anyhow::Result<()> {
     Ok(())
 }
 
+// `#[rustfmt::skip]` pins the source layout of this async fn because the
+// self-reflective sibling tests (`phase8_operator_harness_derives_strategy_audit_from_evidence_file`,
+// `phase8_operator_harness_consumes_approval_after_entry_validation`) scan this fn's source bytes
+// for specific substrings (e.g. `envelope.consume_approval_after_live_runner_entry_validation`).
+// Future `cargo fmt` runs would otherwise reflow multi-line method chains and break those scans.
+#[rustfmt::skip]
 #[tokio::test(flavor = "current_thread")]
 #[ignore]
 async fn phase8_operator_harness_requires_exact_approval_before_live_runner() -> anyhow::Result<()>
@@ -1097,8 +1103,9 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
             result_paths.assert_belongs_to_runtime_capture(&runtime_capture.spool_root)?;
             let pre_run_snapshot = result_paths.snapshot_before_run()?;
             let live_runner_entry_unix_secs = phase8_current_unix_secs()?;
-            envelope
-                .consume_approval_after_live_runner_entry_validation(live_runner_entry_unix_secs)?;
+            envelope.consume_approval_after_live_runner_entry_validation(
+                live_runner_entry_unix_secs,
+            )?;
             run_bolt_v3_live_node(&mut node, &loaded)
                 .await
                 .map_err(anyhow::Error::from)?;

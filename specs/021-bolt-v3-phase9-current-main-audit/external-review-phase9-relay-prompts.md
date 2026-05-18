@@ -45,4 +45,4 @@ This is documentation and audit evidence state only; do not propose runtime code
 - keep PR #392 downstream
 - do not carry retired path/head/PR references as current evidence
 
-Return blocking findings first, then non-blocking findings, with file and line evidence. If no blocking findings exist, say that explicitly and list residual risks.
+Return first line exactly as `Verdict: APPROVE`, `Verdict: REQUEST_CHANGES`, or `Verdict: NEEDS_INFO`. Then list blocking findings first, then non-blocking findings, with file and line evidence. If no blocking findings exist, say that explicitly and list residual risks.

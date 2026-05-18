@@ -75,7 +75,7 @@ The operator can send the current P9 artifacts to Claude, Gemini, Kimi, DeepSeek
 - **FR-007**: Cleanup MUST be bounded, behavior-test protected, externally reviewed when material, and user-approved before runtime implementation.
 - **FR-008**: P9 external review MUST include Claude, Gemini, Kimi, DeepSeek, GLM, and Grok unless the operator explicitly waives one reviewer.
 - **FR-009**: Direct API reviewer source transmission MUST use approval-token records and MUST not expose raw secrets.
-- **FR-010**: The final recommendation MUST use the narrowest true claim level: source-reviewed gate, no-submit readiness, tiny-canary readiness, staged live, production live, blocked, or stop.
+- **FR-010**: The final recommendation MUST use the contract vocabulary: ready for no-submit only, ready for tiny live order approval, blocked with exact blockers, or stop. Accepted source-review scope MUST be named separately from live-readiness recommendation.
 - **FR-011**: PR #392 work MUST remain downstream; PR #331 may document the dependency but MUST NOT implement PR #392 scope.
 
 ### Key Entities

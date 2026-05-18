@@ -28,6 +28,8 @@ The final recommendation must be exactly one of:
 - `blocked with exact blockers`
 - `stop`
 
+The recommendation vocabulary is narrower than the broader claim taxonomy used in planning notes. If source review is accepted but live evidence is missing, the final recommendation remains `blocked with exact blockers` and the accepted source-review scope must be named separately.
+
 ## Cleanup Rules
 
 Cleanup may not start unless:

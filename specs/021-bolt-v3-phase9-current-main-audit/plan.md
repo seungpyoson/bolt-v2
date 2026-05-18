@@ -37,7 +37,7 @@ Finish PR #331 as one systematic Phase 9 audit/remediation branch. P0-P8 source-
 - P0-P6 status: closed before P7/P8/P9 window; P6 linkage gate fixed and re-verified in PR #331.
 - P7 status: source/review gate closed in PR evidence comment `4479704791`; no real SSM/venue operator run claimed.
 - P8 status: source/review gate closed in PR evidence comment `4479505648`; no tiny-capital canary run claimed.
-- P9 status: artifact sync in progress; P9 external review pending after commit, push, and exact-head CI.
+- P9 status: committed artifacts are the protocol snapshot; exact-head CI, reviewer job IDs, and final closure state belong in PR #331 evidence comments after push.
 - PR #392 relationship: downstream PR #392 remains open and separate; it should rebase after PR #331 lands.
 
 ## Project Structure
@@ -99,7 +99,7 @@ After PR #331 P9 source-review gate closes, inspect PR #392 metadata and body fo
 Scope is limited to stale documentation/evidence artifacts touched in this P9 sync.
 
 - Remove stale current-claim text, not historical facts needed for audit trail.
-- Replace overbroad readiness language with narrow claim levels.
+- Replace overbroad readiness language with the contract recommendation vocabulary and separate source-review scope language.
 - Keep runtime/trading/provider/secret code unchanged unless a new blocker proves a code defect.
 - Put exact-head external review evidence in PR comments to avoid self-referential commit-SHA churn.
 

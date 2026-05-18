@@ -36,9 +36,9 @@
 - [x] T013 Remove duplicate fixture/helper code only if targeted tests remain green.
 - [x] T014 Clean naming/error drift only where current schema or tests require it.
 
-## Phase 4: P7-P9 Packet Review
+## Phase 4: P7-P9 Packet Reconstruction And Local Gates
 
-**Purpose**: Complete PR #331 review obligations beyond P6.
+**Purpose**: Reconstruct packet evidence and run local gates before exact-head review.
 
 - [x] T015 [P7] Reconstruct P7 packet scope from PR #331 packet matrix and current exact head.
 - [x] T016 [P7] Run required local checks for P7 touched surfaces.
@@ -48,7 +48,6 @@
 - [x] T020 [P8] Obtain adversarial review, then record or defer nonblockers.
 - [x] T021 [P9] Reconstruct P9 packet scope from PR #331 packet matrix and current exact head.
 - [x] T022 [P9] Run local artifact checks for P9 touched surfaces.
-- [ ] T023 [P9] Obtain six-reviewer adversarial review, then fix or disprove findings.
 
 ## Phase 5: Exact-Head Verification
 
@@ -60,15 +59,23 @@
 - [ ] T027 Commit P9 artifact sync after T022 and T024-T026 pass.
 - [ ] T028 Push PR #331 branch.
 - [ ] T029 Verify GitHub checks on pushed exact head.
-- [ ] T030 Record P9 closure evidence in PR #331 after six-reviewer gate has no unresolved blockers.
 
-## Phase 6: PR #392 Boundary
+## Phase 6: P9 External Review
+
+**Purpose**: Review only the pushed exact head after CI is green.
+
+- [ ] T030 [P9] Obtain six-reviewer adversarial review on pushed exact head, then fix or disprove findings.
+- [ ] T031 Record P9 closure evidence in PR #331 after six-reviewer gate has no unresolved blockers.
+
+The committed task list is not the final evidence ledger for T027-T031. Flipping those boxes after execution would create a new unreviewed head. Final completion evidence belongs in the PR #331 closure comment.
+
+## Phase 7: PR #392 Boundary
 
 **Purpose**: Keep downstream work out of PR #331.
 
-- [ ] T031 Confirm PR #392 still states or implies PR #331 must land first.
-- [ ] T032 Do not implement PR #392 scope inside PR #331.
-- [ ] T033 Record final PR #331 handoff: head SHA, checks, packet status P0-P9, residual blockers, and PR #392 next step.
+- [ ] T032 Confirm PR #392 still states or implies PR #331 must land first.
+- [ ] T033 Do not implement PR #392 scope inside PR #331.
+- [ ] T034 Record final PR #331 handoff: head SHA, checks, packet status P0-P9, residual blockers, and PR #392 next step.
 
 ## Dependencies & Execution Order
 
@@ -76,7 +83,7 @@
 - Phase 2 blocks P7-P9 because P6 was the active blocking packet.
 - P7 and P8 are closed before P9.
 - P9 external review waits for clean pushed exact head and green CI.
-- Phase 6 waits for PR #331 P9 source-review closure.
+- PR #392 boundary review waits for PR #331 P9 source-review closure.
 
 ## Implementation Strategy
 

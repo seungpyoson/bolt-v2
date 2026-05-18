@@ -21,7 +21,7 @@ Scope: PR #331 P9 artifacts and merge-owned review state only.
 | --- | --- | --- |
 | Stale head claim | P9 artifacts named an old main/head as current audit state. | Replaced with command-driven exact-head review process. |
 | Stale path claim | P9 artifacts referenced retired Phase 9 paths and retired live-local example config as current evidence. | Replaced with current `specs/021...` paths and live-local absence checks that avoid stale current-claim references. |
-| Overbroad readiness language | Some text implied Phase 9 could certify final readiness after source review. | Replaced with claim-level language: source-reviewed gate, no-submit readiness, tiny-canary readiness, staged live, production live, blocked, or stop. |
+| Overbroad readiness language | Some text implied Phase 9 could certify final readiness after source review. | Replaced with contract recommendation vocabulary and separate source-review scope language. |
 | Review evidence churn | A committed disposition file with exact final head would stale itself after commit. | Current exact-head review results are recorded in PR evidence comments; this file stores process and pending/current state. |
 | Scope confusion | PR #392 relationship could be mistaken as PR #331 implementation scope. | PR #392 is explicitly downstream; no PR #392 implementation occurs in PR #331. |
 
@@ -36,8 +36,10 @@ Scope: PR #331 P9 artifacts and merge-owned review state only.
 - Stale-reference scan: PASS.
 - Debt-marker scan: PASS.
 - Diff hygiene: PASS.
-- Exact-head CI: pending after commit/push.
-- P9 six-reviewer gate: pending after exact-head CI green.
+- Exact-head CI: recorded in PR comments after commit/push.
+- P9 six-reviewer gate: recorded in PR comments after exact-head CI green.
+
+This committed report is a cleanup protocol snapshot. Post-commit CI, reviewer job IDs, and final closure state belong in PR comments because updating them here would create a new unreviewed head.
 
 ## Changed Files In This P9 Sync
 

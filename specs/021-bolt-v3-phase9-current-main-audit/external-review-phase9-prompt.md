@@ -51,6 +51,6 @@ Questions:
 
 Return:
 
-- `APPROVE`, `REQUEST_CHANGES`, or `NEEDS_INFO`
+- First line exactly: `Verdict: APPROVE`, `Verdict: REQUEST_CHANGES`, or `Verdict: NEEDS_INFO`
 - severity-ranked findings with file/line evidence
 - explicit statement whether P9 source-review closure may proceed after local verification and CI

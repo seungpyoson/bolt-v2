@@ -2,7 +2,9 @@
 
 Status: P9 current-head external review pending.
 
-This file records the review protocol and current disposition state. Exact-head reviewer job IDs and final P9 closure evidence are recorded in PR #331 comments after the branch is committed, pushed, and CI is green. That avoids a self-referential SHA problem where committing final review results changes the reviewed head.
+This file records the review protocol and pre-review disposition state. Exact-head reviewer job IDs and final P9 closure evidence are recorded in PR #331 comments after the branch is committed, pushed, and CI is green. That avoids a self-referential SHA problem where committing final review results changes the reviewed head.
+
+Do not update this committed file with completed reviewer statuses after review. The PR comment is the final evidence ledger for post-commit state.
 
 ## Required Reviewers
 

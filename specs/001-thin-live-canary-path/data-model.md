@@ -150,13 +150,22 @@ Fields:
 - exact commit SHA
 - config checksum
 - SSM path identifiers only
+- strategy-input evidence reference and source-bound market selection proof
+- financial envelope reference, including approved strategy-instance hash, one-order cap, notional cap, target binding, price-to-beat source, order parameters, and book-impact cap
+- pre-run state evidence reference for host clock, venue account state, market/window approval, funding/margin, single-runner lock, egress identity, CLOB V2 signing/collateral/fee checks, and release manifest
+- abort plan evidence reference for cancel-if-open, NT-accepted/venue-pending, partial-fill, network-partition, and panic-gate paths
+- one-shot approval nonce and consumption evidence
+- submit-admission status and admitted order count
+- decision evidence reference
 - submitted order id and client order id
 - NT order event facts
 - venue accept/fill/reject facts
 - strategy-driven cancel facts if order remains open
-- restart reconciliation facts
+- restart reconciliation facts through the NT runtime capture spool
+- post-run hygiene proof for raw-secret residue absence, scanned artifact hashes, and retention/purge binding
 
 Rules:
 - one approved capped order maximum for MVP
 - no credential values
 - local mocks cannot populate live proof fields
+- live proof order ids and post-run hygiene proof must match the approved strategy-instance hash

@@ -1,59 +1,52 @@
-# Implementation Plan: Bolt-v3 Phase 9 Comprehensive Audit
+# Implementation Plan: PR #331 Phase 9 Completion
 
-**Branch**: `019-bolt-v3-phase9-audit-fresh` | **Date**: 2026-05-14 | **Spec**: `spec.md`
-**Input**: Feature specification from `specs/019-bolt-v3-phase9-audit-fresh/spec.md`
+**Branch**: `022-bolt-v3-phase9-current-main-audit` | **Date**: 2026-05-18 | **Spec**: `specs/021-bolt-v3-phase9-current-main-audit/spec.md`
+**Input**: Complete PR #331 Phase 9 packet closure through P9, while preserving merged `origin/main` production-readiness artifacts that PR #392 depends on.
 
 ## Summary
 
-Create a current-main Phase 9 audit package that records source-backed readiness blockers, cleanup gates, stale-artifact disposition, and external-review protocol. This branch does not edit runtime code, does not push or merge without user approval, and does not run live capital.
+Finish PR #331 as one systematic Phase 9 audit/remediation branch. The current work is not only P6: P6 is the active blocking packet, while P7-P9 remain required review packets before PR #331 can be called ready. The merge from `origin/main` must preserve all accepted PR #331 fixes, preserve the merged production-readiness surface for PR #392, and leave a clean exact head for remaining packet review.
 
 ## Technical Context
 
-**Language/Version**: Rust crate; docs-only slice
-**Primary Dependencies**: NautilusTrader Rust crates, Rust AWS SDK for SSM, existing repo verifiers
-**Storage**: Markdown audit artifacts under `specs/019-bolt-v3-phase9-audit-fresh/`
-**Testing**: `cargo test --lib`, source scans, debt-marker scans, `git diff --check`, no-mistakes runtime proof
-**Target Platform**: Local development repo and future GitHub PR review
-**Project Type**: Rust CLI/library with bolt-v3 live-node path
-**Performance Goals**: None for docs-only slice
-**Constraints**: main is source of truth; no stale branch continuation; no live capital; no hardcoded runtime values; no dual paths; SSM-only secrets; pure Rust runtime; NT owns lifecycle/reconciliation/cache/adapters/orders
-**Scale/Scope**: Audit current main and fresh Phase 7/8 residual scope; implementation cleanup requires a later reviewed task
+**Language/Version**: Rust workspace, current repo toolchain
+**Primary Dependencies**: NautilusTrader Rust crates, Rust AWS SDK for SSM, existing Bolt-v3 verifiers, cargo tests
+**Storage**: TOML config, Markdown SpecKit/docs artifacts, redacted evidence references only
+**Testing**: targeted cargo tests, full `cargo test`, `cargo fmt --check`, `git diff --check`, `just clippy`, source-fence/verifier gates where touched
+**Target Platform**: PR #331 exact-head review and later GitHub merge gate
+**Project Type**: Pure Rust live trading binary over NautilusTrader
+**Performance Goals**: No runtime performance goal for this merge/review slice; preserve live-gate fail-closed behavior
+**Constraints**: no live capital, no secret display, TOML-only runtime values, SSM-only secrets, no Python runtime, no dual submit paths, no stale branch proof, no production-ready claim without evidence
+**Scale/Scope**: PR #331 Phase 9 packets P0-P9. PR #392 remains downstream and rebases after PR #331 lands.
 
 ## Constitution Check
 
-*GATE: Must pass before research and re-check before tasks.*
+*GATE: Must pass before continuing merge cleanup. Re-check after P7-P9 review.*
 
-- NT-first thin layer: PASS for this docs-only plan. Any later cleanup must not rebuild NT lifecycle, reconciliation, cache, adapter behavior, or order machinery.
-- Generic core, concrete edges: WARNING. Existing status-map evidence still marks provider-specific adapter, secret, and client registration placement as partial.
-- Single path and config-controlled runtime: WARNING. Current main has live runner gate and submit admission, but no accepted Phase 7 no-submit readiness on main and no accepted Phase 8 canary path.
-- Test-first safety gates: PASS for this plan. Runtime cleanup is blocked until one behavior test per vertical slice exists.
-- Evidence before claims: PASS for audit artifacts; BLOCKED for final readiness certification until Phase 7/8 are accepted.
-- Minimal slice discipline: PASS. This branch is Phase 9 audit planning only.
-
-Spec-kit note: runtime-listed `speckit-*` skill paths were absent on disk in this session. Fallback used repo `.specify` templates and recorded this as tool availability evidence.
+- NT-first thin layer: PASS. Merge work must not add Bolt-owned order lifecycle, reconciliation, cache, adapter behavior, or order machinery.
+- Generic core, concrete edges: PASS unless P7-P9 review proves a concrete provider or family leak remains.
+- Single path and config-controlled runtime: PASS. P6 linkage fix keeps readiness/live gate state tied to one configured TOML/report path; no env-var replacement path is allowed.
+- Test-first safety gates: PASS. Any semantic conflict fix must first reproduce by compiler/test failure or existing regression test.
+- Evidence before claims: PASS only after local checks and exact-head PR checks are current.
+- Minimal slice discipline: PASS. PR #331 remains Phase 9 audit/remediation; PR #392 remains downstream.
 
 ## Current Evidence
 
-- Anchor: before these planning artifact edits, Phase 9 worktree `HEAD`, `main`, and `origin/main` all equal `d6f55774c32b71a242dcf78b8292a7f9e537afab`; PR commits after that anchor are docs-only Phase 9 artifacts.
-- no-mistakes: `/Users/spson/.local/bin/no-mistakes`; version `v1.17.0-6-gc0008cf`; daemon running pid `53732`.
-- Baseline test: `cargo test --lib` passed with 446 passed, 0 failed, 1 ignored. The ignored entry is `clients::chainlink::tests::live_chainlink_stream_smoke_works_with_generated_runtime_config`, which is explicitly ignored because it requires `config/live.toml` with resolvable Chainlink testnet credentials.
-- Phase 7/8 on main: current main still has stale unchecked Phase 7/8 tasks in `specs/001-thin-live-canary-path/tasks.md:87-106`; fresh local Phase 7/8 branches are not accepted main scope.
-- Live config: `ls -l config/live.local.toml` returned no such file in this fresh worktree.
-- Live canary gate: `src/bolt_v3_live_node.rs:350-364` gates `LiveNode::run` on `[live_canary]` and arms submit admission.
-- Strategy submit ordering: `src/strategies/eth_chainlink_taker.rs:2827-2838` records decision evidence, runs submit admission, then calls NT `submit_order`.
-- Strategy inputs: `config/live.local.example.toml:132-155` warns the active example is BTC and ETH template must not be uncommented without matching ETH ruleset/reference venues.
-- Runtime contract: `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md:718-724` lists strategy input snapshot, volatility, kurtosis, theta, sizing, and order construction surfaces as runtime contract concerns.
-- Status map: `docs/bolt-v3/2026-04-28-source-grounded-status-map.md:101-112` marks order construction, dry-run, execution gate, shadow mode, deploy trust, panic/service policy, tiny live canary, production live trading, provider-leak verifier, and cost/fee facts as missing or partial.
-- Live ops: `rg -n "runbook|rollback|on-call|incident response|alert" docs/bolt-v3 docs/postmortems config/live.local.example.toml` found only a reconnect alert threshold and archived rollback mention; current runbook/rollback/on-call evidence is missing.
+- PR #331 branch: `022-bolt-v3-phase9-current-main-audit`.
+- PR #331 purpose: Phase 9 hardcode/dual-path audit and remediation.
+- P0-P5 status: closed before this merge window; must be re-verified by exact-head packet review, not assumed from stale branch state.
+- P6 status: blocking finding fixed in PR #331, then merge conflicts appeared after `origin/main` advanced.
+- P7-P9 status: pending.
+- PR #392 relationship: downstream PR #392 says PR #331 must merge first, then PR #392 rebases on new `main`.
+- Active merge condition: `origin/main` production-readiness artifacts under `specs/013-production-live-readiness/` and related docs/tests must be preserved unless they conflict with PR #331 safety rules.
 
 ## Project Structure
 
 ### Documentation
 
 ```text
-specs/019-bolt-v3-phase9-audit-fresh/
+specs/021-bolt-v3-phase9-current-main-audit/
 ├── spec.md
-├── checklists/requirements.md
 ├── plan.md
 ├── research.md
 ├── data-model.md
@@ -61,10 +54,13 @@ specs/019-bolt-v3-phase9-audit-fresh/
 ├── quickstart.md
 ├── audit-report.md
 ├── ai-slop-cleanup-report.md
-├── external-review-phase9-prompt.md
 ├── external-review-phase9-disposition.md
-├── external-review-phase9-relay-prompts.md
 └── tasks.md
+
+specs/013-production-live-readiness/
+├── plan.md
+├── tasks.md
+└── ...
 ```
 
 ### Source Code
@@ -72,47 +68,52 @@ specs/019-bolt-v3-phase9-audit-fresh/
 ```text
 src/
 tests/
-docs/
-config/
+docs/bolt-v3/
 scripts/
+config/
 ```
 
-**Structure Decision**: Phase 9 artifacts live under one spec directory. No runtime files are touched in this planning slice.
+**Structure Decision**: Keep PR #331 Phase 9 execution state in `specs/021-bolt-v3-phase9-current-main-audit/`. Keep downstream production-readiness artifacts in `specs/013-production-live-readiness/` because they are already present on `origin/main` and PR #392 depends on them.
 
 ## Phase Plan
 
-### Phase 0 - Research
+### Phase 0 - Behavior Lock
 
-Classify current-main evidence across required audit categories. Output: `research.md` and `audit-report.md`.
+Use existing compiler errors, targeted tests, and source-fence checks as the behavior lock. Do not make speculative cleanup edits. If a conflict produces a design choice, stop and request review; if it produces a stale fixture or mechanical merge mismatch, fix only that mismatch and rerun the targeted test.
 
-### Phase 1 - Contracts
+### Phase 1 - Merge Completion
 
-Define audit evidence schema and cleanup decision rules. Output: `data-model.md` and `contracts/audit-evidence.md`.
+Resolve all merge conflicts from `origin/main` into PR #331. Preserve PR #331 P0-P6 safety behavior and `origin/main` production-readiness artifacts. Prove no conflict markers or unresolved index entries remain.
 
-### Phase 2 - Tasks
+### Phase 2 - P6 Re-Verification
 
-Create TDD-oriented task list that blocks implementation until external reviews approve the plan and user approves the next action. Output: `tasks.md`.
+Re-run focused no-submit/live-canary tests proving the gate validates readiness linkage fields and fails closed on drift. Fixtures must satisfy current linkage contract instead of weakening the gate.
 
-### Phase 3 - Review Gate
+### Phase 3 - P7-P9 Packet Review
 
-After user-approved push, run exact-head checks and external reviews. Minimum reviewers for this session: Claude, DeepSeek, GLM. Record findings in `external-review-phase9-disposition.md`.
+Run remaining packet review in order. Use external/adversarial review where packet process requires it. Do not majority-vote subjective architecture findings; accept only evidence-backed approvals or fix/disprove findings.
 
-### Phase 4 - Implementation Gate
+### Phase 4 - Exact-Head Verification
 
-No runtime cleanup starts unless Phase 3 produces unanimous non-blocking approval or all blocking findings are fixed/disproved and reviewed.
+After P7-P9 close, run full local verification, push, verify PR #331 exact head and CI. Do not claim readiness or mergeability from stale metadata.
 
-## Risks
+### Phase 5 - Downstream PR #392 Handoff
 
-- Final Phase 9 cannot certify readiness while Phase 7/8 are not accepted on main.
-- Strategy-input safety remains blocked for live action because live ETH feed, market, venue references, economics, and current config are not source-proven.
-- Live ops readiness is incomplete without current runbook, rollback, alerting, and incident response evidence.
-- Provider-boundary verifiers are partial; cleanup may be larger than Phase 9 should absorb.
+After PR #331 is clean and green, confirm PR #392 still expects rebase after #331. Do not start PR #392 implementation inside PR #331.
+
+## AI-Slop Cleanup Plan
+
+Scope is limited to merge-owned edits and review artifacts touched in this session.
+
+- Dead code deletion: only remove code proven unused by compiler/tests or stale conflict residue.
+- Duplication: only collapse repeated fixture helpers if tests are green and behavior stays identical.
+- Naming/error handling: only adjust names/errors required by current schema or failing tests.
+- Test reinforcement: prefer current public behavior tests over implementation-shape assertions.
 
 ## Stop Conditions
 
-- Dirty worktree not understood.
-- Any stale branch artifact treated as accepted scope.
-- Any reviewer blocking finding unresolved.
-- Any live-order or soak command requested without exact user-approved head/SHA and command.
-- Any secret exposure risk.
-- Any unresolved Chainlink/feed, strategy math, or NT boundary ambiguity.
+- Same fix approach fails twice.
+- Any unresolved design choice appears in P6-P9.
+- Any reviewer blocker remains unresolved.
+- Any branch/head/PR claim cannot be verified from source command output.
+- Any live-order, deploy, secret, or production action appears.

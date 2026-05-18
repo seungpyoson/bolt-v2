@@ -649,10 +649,10 @@ reason = "This label identifies the live-canary config field being parsed as a p
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness_schema.rs"
 kind = "string"
-literal = '''"bolt-v3.no-submit-readiness.v1"'''
-context = '''pub const NO_SUBMIT_READINESS_SCHEMA_VERSION: &str = "bolt-v3.no-submit-readiness.v1";'''
+literal = '''"bolt-v3.no-submit-readiness.v2"'''
+context = '''pub const NO_SUBMIT_READINESS_SCHEMA_VERSION: &str = "bolt-v3.no-submit-readiness.v2";'''
 classification = "schema_version_gate"
-reason = "The no-submit readiness schema version is a structural report compatibility gate, not an operator runtime value."
+reason = "The no-submit readiness schema version is a structural report compatibility gate; v2 adds linkage fields validated by the live-canary gate."
 
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness_schema.rs"
@@ -993,6 +993,54 @@ reason = "This names the config field used in a validation diagnostic; the runti
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
+literal = '''"[live_canary.operator_evidence].financial_envelope_path"'''
+context = '''"[live_canary.operator_evidence].financial_envelope_path",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"[live_canary.operator_evidence].financial_envelope_sha256"'''
+context = '''"[live_canary.operator_evidence].financial_envelope_sha256",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"[live_canary.operator_evidence].pre_run_state_path"'''
+context = '''"[live_canary.operator_evidence].pre_run_state_path",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"[live_canary.operator_evidence].pre_run_state_sha256"'''
+context = '''"[live_canary.operator_evidence].pre_run_state_sha256",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"[live_canary.operator_evidence].abort_plan_path"'''
+context = '''"[live_canary.operator_evidence].abort_plan_path",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"[live_canary.operator_evidence].abort_plan_sha256"'''
+context = '''"[live_canary.operator_evidence].abort_plan_sha256",'''
+classification = "tiny_canary_operator_evidence_config_diagnostic"
+reason = "This names the config field used in a validation diagnostic; the runtime value itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
 literal = '''"[live_canary].approval_id"'''
 context = '''"[live_canary].approval_id",'''
 classification = "tiny_canary_operator_evidence_config_diagnostic"
@@ -1041,18 +1089,18 @@ reason = "This labels the tiny canary approval-consumption evidence record used 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"tiny canary operator approval not_after is before not_before"'''
-context = '''"tiny canary operator approval not_after is before not_before"'''
-classification = "tiny_canary_operator_envelope_diagnostic"
-reason = "This fail-closed diagnostic reports an invalid operator approval time window before any live runner attempt."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
 literal = '''"tiny canary operator approval is expired"'''
 context = '''return Err(anyhow!("tiny canary operator approval is expired"));'''
 classification = "tiny_canary_operator_envelope_diagnostic"
 reason = "This fail-closed diagnostic reports an expired operator approval before any live runner attempt."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "-6"
+context = '''if inputs.pricing_kurtosis <= Decimal::new(-6, 0) {'''
+classification = "tiny_canary_strategy_input_formula_constant"
+reason = "This is the fixed fail-closed lower bound for the pricing-kurtosis input contract, not an operator-configured runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -2901,3 +2949,187 @@ literal = '''"disabled"'''
 context = '''if config.as_str() == Some("disabled") {'''
 classification = "nt_config_optional_component_sentinel"
 reason = "This is the stable TOML sentinel for absent optional NT component blocks, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''b"bolt-v3.config-bundle.v1\n"'''
+context = '''const CONFIG_BUNDLE_CHECKSUM_DOMAIN: &[u8] = b"bolt-v3.config-bundle.v1\n";'''
+classification = "config_bundle_checksum_domain_separator"
+reason = "This domain separator pins the config-bundle checksum format used to bind no-submit readiness to the loaded TOML bundle."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "number"
+literal = "1"
+context = '''hasher.update((strategy_texts.len() as u32 + 1).to_be_bytes());'''
+classification = "config_bundle_checksum_root_entry_count"
+reason = "This adds the root TOML entry to the strategy-fragment count for deterministic checksum framing."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "number"
+literal = "0"
+context = '''update_config_bundle_entry(&mut hasher, 0, "root", root_text.as_bytes());'''
+classification = "config_bundle_checksum_entry_kind"
+reason = "This structural tag distinguishes the root TOML entry inside the config-bundle checksum framing."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"root"'''
+context = '''update_config_bundle_entry(&mut hasher, 0, "root", root_text.as_bytes());'''
+classification = "config_bundle_checksum_root_label"
+reason = "This structural label identifies the root TOML bytes inside the config-bundle checksum framing."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "number"
+literal = "0"
+context = '''sorted_strategy_texts.sort_by(|left, right| left.0.cmp(&right.0));'''
+classification = "config_bundle_checksum_tuple_field_index"
+reason = "This tuple index sorts strategy-fragment paths for deterministic config-bundle checksum framing."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "number"
+literal = "1"
+context = '''update_config_bundle_entry(&mut hasher, 1, relative_path, text.as_bytes());'''
+classification = "config_bundle_checksum_entry_kind"
+reason = "This structural tag distinguishes strategy-fragment TOML entries inside the config-bundle checksum framing."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"approval_id_hash"'''
+context = '''pub const APPROVAL_ID_HASH_KEY: &str = "approval_id_hash";'''
+classification = "no_submit_readiness_report_schema_field"
+reason = "This names the approval-id hash linkage field shared by the producer and fail-closed live-canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"executable_identity"'''
+context = '''pub const EXECUTABLE_IDENTITY_KEY: &str = "executable_identity";'''
+classification = "no_submit_readiness_report_schema_field"
+reason = "This names the executable-identity linkage field shared by the producer and fail-closed live-canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"config_bundle_checksum"'''
+context = '''pub const CONFIG_BUNDLE_CHECKSUM_KEY: &str = "config_bundle_checksum";'''
+classification = "no_submit_readiness_report_schema_field"
+reason = "This names the config-bundle checksum linkage field shared by the producer and fail-closed live-canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "number"
+literal = "1"
+context = "const TINY_CANARY_REQUIRED_LIVE_ORDER_CAP: u32 = 1;"
+classification = "tiny_canary_live_order_cap_contract"
+reason = "This is the fixed tiny-canary proof contract requiring exactly one admitted live order before evidence can pass."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"current"'''
+context = '''const TINY_CANARY_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";'''
+classification = "tiny_canary_strategy_input_market_selection_contract"
+reason = "This is an accepted strategy-input evidence outcome for the current live-entry market selection, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"next"'''
+context = '''const TINY_CANARY_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";'''
+classification = "tiny_canary_strategy_input_market_selection_contract"
+reason = "This is an accepted strategy-input evidence outcome for the next live-entry market selection, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"market_selection_result"'''
+context = '''const TINY_CANARY_MARKET_SELECTION_SOURCE_RECORD_KIND: &str = "market_selection_result";'''
+classification = "tiny_canary_strategy_input_market_selection_source_contract"
+reason = "This is the record_kind expected for the source-bound market-selection evidence artifact, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"nt_runtime_selection_snapshot"'''
+context = '''const TINY_CANARY_MARKET_SELECTION_SOURCE: &str = "nt_runtime_selection_snapshot";'''
+classification = "tiny_canary_strategy_input_market_selection_source_contract"
+reason = "This is the source identifier for NT runtime-selection snapshot evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"tiny canary strategy input evidence"'''
+context = '''"tiny canary strategy input evidence",'''
+classification = "tiny_canary_approval_bound_artifact_label"
+reason = "This label names the approval-bound strategy input artifact in checksum diagnostics; the artifact path and checksum come from operator evidence."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"market selection source evidence"'''
+context = '''tiny_canary_reject_parent_dir(source_path, "market selection source evidence")?;'''
+classification = "tiny_canary_approval_bound_artifact_label"
+reason = "This label names the source-bound market-selection evidence path in traversal diagnostics; the path comes from strategy input evidence."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"tiny canary market selection source evidence"'''
+context = '''"tiny canary market selection source evidence",'''
+classification = "tiny_canary_approval_bound_artifact_label"
+reason = "This label names the source-bound market-selection artifact in checksum diagnostics; the artifact path and checksum come from strategy input evidence."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"tiny canary pre-run state evidence"'''
+context = '''"tiny canary pre-run state evidence",'''
+classification = "tiny_canary_approval_bound_artifact_label"
+reason = "This label names the approval-bound pre-run state artifact in checksum diagnostics; the artifact path and checksum come from operator evidence."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"tiny canary abort plan evidence"'''
+context = '''"tiny canary abort plan evidence",'''
+classification = "tiny_canary_approval_bound_artifact_label"
+reason = "This label names the approval-bound abort plan artifact in checksum diagnostics; the artifact path and checksum come from operator evidence."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"tiny canary financial envelope"'''
+context = '''"tiny canary financial envelope",'''
+classification = "tiny_canary_approval_bound_artifact_label"
+reason = "This label names the approval-bound financial envelope artifact in checksum diagnostics; the artifact path and checksum come from operator evidence."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"tiny canary financial envelope strategy_instance_id matches multiple loaded strategies"'''
+context = '''"tiny canary financial envelope strategy_instance_id matches multiple loaded strategies"'''
+classification = "tiny_canary_financial_envelope_diagnostic"
+reason = "This fail-closed diagnostic reports an ambiguous strategy_instance_id binding before any live runner attempt."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"price_to_beat_source"'''
+context = '''"price_to_beat_source",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"bolt-v3 no-submit readiness report written"'''
+context = '''println!("bolt-v3 no-submit readiness report written");'''
+classification = "cli_success_message"
+reason = "This prints successful readiness report generation after the CLI command completes; it is not a runtime operator value."

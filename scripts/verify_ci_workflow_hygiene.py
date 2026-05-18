@@ -30,12 +30,14 @@ REQUIRED_JOBS = (
     "test-shards",
     "test",
     "build",
+    "same-sha-main-evidence",
     "gate",
     "deploy",
 )
 GATE_REQUIRED = ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build")
 DEPLOY_REQUIRED_NEEDS = (
     "gate",
+    "same-sha-main-evidence",
     "build",
     "detector",
     "fmt-check",
@@ -45,7 +47,17 @@ DEPLOY_REQUIRED_NEEDS = (
     "source-fence",
     "test",
 )
-TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "build")
+TAG_SKIPPED_JOBS = ("fmt-check", "deny", "clippy", "source-fence", "test", "build")
+TAG_SKIP_REQUIRED_JOBS = (
+    "fmt-check",
+    "deny",
+    "clippy",
+    "source-fence",
+    "test-archive",
+    "test-shards",
+    "test",
+)
+TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-shards", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
 JOB_REQUIRED_JUST_RECIPE = {
     "fmt-check": "fmt-check",
@@ -90,13 +102,40 @@ LIVE_NODE_NEXTEST_BINARIES = (
     "venue_contract",
 )
 LIVE_NODE_NEXTEST_FILTER = " | ".join(f"binary(={binary})" for binary in LIVE_NODE_NEXTEST_BINARIES)
-BUILD_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*(?:\}\})?\s*$")
 CHECK_AARCH64_JOB_LEVEL_IF_RE = re.compile(r"^    if:\s*.*$")
 CHECK_AARCH64_STANDALONE_IF_RE = re.compile(
     r"^\s+(?:-\s*)?if:\s*(?:\$\{\{\s*)?needs\.detector\.outputs\.build_required\s*!=\s*['\"]true['\"]\s*(?:\}\})?\s*$"
 )
+TAG_SKIP_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
+TAG_SKIP_ALWAYS_IF_RE = re.compile(
+    r"^    if:\s*\$\{\{\s*(?:"
+    r"!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*&&\s*always\(\)"
+    r"|always\(\)\s*&&\s*!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)"
+    r")\s*\}\}\s*$"
+)
+SAME_SHA_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
+BUILD_IF_RE = re.compile(
+    r"^    if:\s*\$\{\{\s*!startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*&&\s*"
+    r"needs\.detector\.outputs\.build_required\s*==\s*['\"]true['\"]\s*\}\}\s*$"
+)
+PR_CONCURRENCY_EVENT_RE = re.compile(r"github\.event_name\s*==\s*['\"]pull_request['\"]")
+PR_CONCURRENCY_PULL_REQUEST_BRANCH_RE = re.compile(
+    r"github\.event_name\s*==\s*['\"]pull_request['\"]\s*&&\s*"
+    r"format\(\s*['\"]pr-\{0\}['\"]\s*,\s*github\.event\.number\s*\)"
+)
+PR_CONCURRENCY_NON_PR_FALLBACK_RE = re.compile(
+    r"\|\|\s*format\(\s*['\"]\{0\}-\{1\}['\"]\s*,\s*github\.ref_name\s*,\s*github\.sha\s*\)"
+)
+PR_CONCURRENCY_CANCEL_LINES = (
+    "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+    'cancel-in-progress: ${{ github.event_name == "pull_request" }}',
+)
 GATE_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?always\(\)\s*(?:\}\})?\s*$")
-DEPLOY_IF_RE = re.compile(r"^    if:\s*(?:\$\{\{\s*)?startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*(?:\}\})?\s*$")
+DEPLOY_IF_RE = re.compile(
+    r"^    if:\s*\$\{\{\s*always\(\)\s*&&\s*startsWith\(github\.ref,\s*['\"]refs/tags/v['\"]\)\s*&&\s*"
+    r"needs\.gate\.result\s*==\s*['\"]success['\"]\s*&&\s*"
+    r"needs\.same-sha-main-evidence\.result\s*==\s*['\"]success['\"]\s*\}\}\s*$"
+)
 EXIT_RE = re.compile(r"^\s*exit(?:\s+([0-9]+))?\s*$", re.MULTILINE)
 IF_OR_ELIF_RE = re.compile(r"^\s*(if|elif)\s+\[\[\s*(?P<condition>.*?)\s*\]\];\s*then\s*$")
 ELSE_RE = re.compile(r"^\s*else\s*$")
@@ -202,6 +241,15 @@ TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@0057852bfaa89a56745cba8c729
 TEST_ARCHIVE_UPLOAD_ACTION = "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
+SHARED_REGISTRY_CACHE_KEY = "cargo-registry-git-v1"
+SHARED_REGISTRY_SAVE_IF = "${{ github.job == 'test-archive' }}"
+REGISTRY_CACHE_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
+MANAGED_TARGET_CACHE_KEYS = {
+    "clippy": "clippy-host",
+    "check-aarch64": "check-aarch64-dev",
+    "source-fence": "source-fence-test",
+    "build": "build-aarch64-release",
+}
 JUST_LANE_RE = re.compile(
     r"(^|[^A-Za-z0-9_./-])just\s+"
     r"(fmt-check|deny|deny-advisories|clippy|test-archive-run|test-archive|test|build|check-aarch64|source-fence)"
@@ -345,6 +393,53 @@ def parse_jobs(workflow_text: str) -> dict[str, list[str]]:
     return jobs
 
 
+def top_level_block(workflow_text: str, key: str) -> list[str]:
+    lines = workflow_text.splitlines()
+    start_line = f"{key}:"
+    for index, line in enumerate(lines):
+        clean = strip_comment(line)
+        if clean != start_line:
+            continue
+        block: list[str] = []
+        for child_line in lines[index + 1 :]:
+            child_clean = strip_comment(child_line)
+            if child_clean and not child_clean.startswith((" ", "\t")):
+                break
+            block.append(child_clean)
+        return block
+    return []
+
+
+def verify_pr_concurrency(workflow_text: str) -> list[str]:
+    block = top_level_block(workflow_text, "concurrency")
+    if not block:
+        return ["workflow must define PR-only concurrency"]
+
+    group_lines: list[str] = []
+    cancel_lines: list[str] = []
+    seen_cancel = False
+    for line in block:
+        if line.strip().startswith("cancel-in-progress:"):
+            seen_cancel = True
+        if seen_cancel:
+            cancel_lines.append(line)
+        else:
+            group_lines.append(line)
+
+    group_text = " ".join(line.strip() for line in group_lines if line.strip())
+    cancel_text = "\n".join(cancel_lines)
+    errors: list[str] = []
+    if not PR_CONCURRENCY_EVENT_RE.search(group_text):
+        errors.append("concurrency group must branch on pull_request event")
+    if not PR_CONCURRENCY_PULL_REQUEST_BRANCH_RE.search(group_text):
+        errors.append("concurrency group must key pull_request runs by PR number")
+    if not PR_CONCURRENCY_NON_PR_FALLBACK_RE.search(group_text):
+        errors.append("concurrency group must keep non-PR runs isolated by ref and SHA")
+    if not any(line in cancel_text for line in PR_CONCURRENCY_CANCEL_LINES):
+        errors.append("cancel-in-progress must be limited to pull_request events")
+    return errors
+
+
 def job_header_indent_errors(workflow_text: str) -> list[str]:
     errors: list[str] = []
     required_job_re = re.compile(rf"^(?P<indent>\s+)({'|'.join(re.escape(job) for job in REQUIRED_JOBS)}):\s*$")
@@ -422,6 +517,18 @@ def setup_action_blocks(job_lines: list[str]) -> list[list[str]]:
     return [block for block in step_blocks(job_lines) if any("./.github/actions/setup-environment" in line for line in block)]
 
 
+def action_blocks(job_lines: list[str], action: str) -> list[list[str]]:
+    return [block for block in step_blocks(job_lines) if any(action in strip_comment(line) for line in block)]
+
+
+def rust_cache_blocks(job_lines: list[str]) -> list[list[str]]:
+    return action_blocks(job_lines, "Swatinem/rust-cache@")
+
+
+def github_cache_blocks(job_lines: list[str]) -> list[list[str]]:
+    return action_blocks(job_lines, "actions/cache@")
+
+
 def block_runs_command(block: list[str], command: str) -> bool:
     for index, line in enumerate(block):
         clean = strip_comment(line)
@@ -449,12 +556,47 @@ def block_has_target_dir_opt_in(block: list[str]) -> bool:
     return any(TARGET_DIR_OPT_IN_RE.match(strip_comment(line)) for line in block)
 
 
+def unquote_yaml_scalar(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def block_input_items(block: list[str]) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    with_indent: int | None = None
+    input_indent: int | None = None
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if not clean.strip():
+            continue
+        if with_indent is None:
+            match = re.match(r"^(\s*)with:\s*$", clean)
+            if match is not None:
+                with_indent = len(match.group(1))
+                input_indent = with_indent + 2
+            continue
+
+        indent = len(clean) - len(clean.lstrip(" "))
+        if indent <= with_indent:
+            break
+        if indent != input_indent:
+            continue
+        match = re.match(rf"^\s{{{input_indent}}}([A-Za-z0-9_.-]+):\s*(.*)$", clean)
+        if match is not None:
+            items.append((match.group(1), match.group(2).strip()))
+    return items
+
+
 def block_has_input(block: list[str], name: str, value: str | None = None) -> bool:
-    if value is None:
-        pattern = re.compile(rf"^\s+{re.escape(name)}:\s*\S+.*$")
-    else:
-        pattern = re.compile(rf"^\s+{re.escape(name)}:\s*{re.escape(value)}\s*$")
-    return any(pattern.match(strip_comment(line)) for line in block)
+    expected = None if value is None else unquote_yaml_scalar(value)
+    for item_name, item_value in block_input_items(block):
+        if item_name != name:
+            continue
+        if expected is None or unquote_yaml_scalar(item_value) == expected:
+            return True
+    return False
 
 
 def job_has_setup_input(job_lines: list[str], name: str, value: str | None = None) -> bool:
@@ -488,6 +630,59 @@ def has_run_command(lines: list[str], command: str) -> bool:
 
 def job_has_explicit_cache_key(job_lines: list[str]) -> bool:
     return any(CACHE_KEY_RE.match(strip_comment(line)) for line in job_lines)
+
+
+def shared_registry_cache_errors(job: str, job_lines: list[str]) -> list[str]:
+    blocks = rust_cache_blocks(job_lines)
+    shared_blocks = [
+        block for block in blocks if block_has_input(block, "shared-key", SHARED_REGISTRY_CACHE_KEY)
+    ]
+    if not shared_blocks:
+        return [f"{job} must use shared Cargo registry/git cache key"]
+
+    errors: list[str] = []
+    for block in blocks:
+        if not block_has_input(block, "shared-key", SHARED_REGISTRY_CACHE_KEY):
+            errors.append(f"{job} must use only shared Cargo registry/git rust-cache blocks")
+        if not block_has_input(block, "cache-targets", "false"):
+            errors.append(f"{job} shared Cargo registry/git cache must disable target caching")
+        if not block_has_input(block, "cache-bin", "false"):
+            errors.append(f"{job} shared Cargo registry/git cache must disable cargo bin caching")
+        if not block_has_input(block, "save-if", SHARED_REGISTRY_SAVE_IF):
+            errors.append(f"{job} shared Cargo registry/git cache save must be single-owner")
+        if block_has_input(block, "cache-directories"):
+            errors.append(f"{job} shared Cargo registry/git cache must not include target directories")
+    return errors
+
+
+def block_is_shared_registry_cache(block: list[str]) -> bool:
+    return (
+        block_has_input(block, "shared-key", SHARED_REGISTRY_CACHE_KEY)
+        and block_has_input(block, "cache-targets", "false")
+        and block_has_input(block, "cache-bin", "false")
+        and not block_has_input(block, "cache-directories")
+    )
+
+
+def block_uses_managed_target_cache(block: list[str]) -> bool:
+    return any("actions/cache@" in strip_comment(line) for line in block) and block_has_input(
+        block, "path", "${{ steps.setup.outputs.managed_target_dir }}"
+    )
+
+
+def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
+    expected_key = MANAGED_TARGET_CACHE_KEYS[job]
+    target_blocks = [
+        block
+        for block in github_cache_blocks(job_lines)
+        if block_has_input(block, "path", "${{ steps.setup.outputs.managed_target_dir }}")
+    ]
+    if not target_blocks:
+        return [f"{job} must use isolated managed target cache"]
+
+    if not any(f"managed-target-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{expected_key}-" in uncommented_text(block) for block in target_blocks):
+        return [f"{job} managed target cache key must isolate {expected_key}"]
+    return []
 
 
 def job_just_lanes(job_lines: list[str]) -> set[str]:
@@ -806,6 +1001,30 @@ def test_has_inline_shard_reproduction_command(job_lines: list[str]) -> bool:
     return False
 
 
+def job_skips_tag_reuse(job_lines: list[str]) -> bool:
+    return has_line_matching(job_lines, TAG_SKIP_IF_RE) or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
+
+
+def job_if_uses_always(job_lines: list[str]) -> bool:
+    return has_line_matching(job_lines, GATE_IF_RE) or has_line_matching(job_lines, TAG_SKIP_ALWAYS_IF_RE)
+
+
+def same_sha_job_has_outputs(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    required = (
+        "source_run_id: ${{ steps.evidence.outputs.source_run_id }}",
+        "check_suite_id: ${{ steps.evidence.outputs.check_suite_id }}",
+        "artifact_id: ${{ steps.evidence.outputs.artifact_id }}",
+        "source_sha: ${{ steps.evidence.outputs.source_sha }}",
+    )
+    return all(item in text for item in required)
+
+
+def same_sha_job_runs_resolver(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return "id: evidence" in text and "python3 scripts/find_same_sha_main_evidence.py" in text
+
+
 def clippy_installs_aarch64_toolchain(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "gcc-aarch64-linux-gnu" in text or "libc6-dev-arm64-cross" in text
@@ -844,6 +1063,10 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
         (
             "check-aarch64 cache must run only when build_required is not true",
             lambda block: any("Swatinem/rust-cache" in line for line in block),
+        ),
+        (
+            "check-aarch64 managed target cache must run only when build_required is not true",
+            block_uses_managed_target_cache,
         ),
         (
             "check-aarch64 command must run only when build_required is not true",
@@ -922,6 +1145,60 @@ def collect_if_chain_bodies(lines: list[str], start: int, condition: str) -> dic
             continue
         bodies[current].append(line)
     return None
+
+
+def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
+    errors: list[str] = []
+    if 'tag_ref="${{ startsWith(github.ref, \'refs/tags/v\') }}"' not in gate_text and (
+        'tag_ref="${{ startsWith(github.ref, "refs/tags/v") }}"' not in gate_text
+    ):
+        errors.append("gate must compute tag_ref")
+    if not branch_exits(gate_text, "if", '"${{ needs.same-sha-main-evidence.result }}" != "success"'):
+        errors.append("gate must check same-sha-main-evidence success")
+    if not branch_exits(gate_text, "if", '"${{ needs.same-sha-main-evidence.result }}" != "skipped"'):
+        errors.append("gate must check same-sha-main-evidence skip on non-tag")
+    for job in TAG_SKIPPED_JOBS:
+        if not branch_exits(gate_text, "if", f'"${{{{ needs.{job}.result }}}}" != "skipped"'):
+            errors.append(f"gate must require {job} skipped on tag reuse")
+    if not branch_exits(gate_text, "if", '"${{ needs.check-aarch64.result }}" != "success"'):
+        errors.append("gate must require check-aarch64 success on tag reuse")
+    return errors
+
+
+def deploy_downloads_same_sha_artifact(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    required = (
+        "actions/download-artifact",
+        "artifact-ids: ${{ needs.same-sha-main-evidence.outputs.artifact_id }}",
+        "github-token: ${{ github.token }}",
+        "repository: ${{ github.repository }}",
+        "run-id: ${{ needs.same-sha-main-evidence.outputs.source_run_id }}",
+    )
+    return all(item in text for item in required)
+
+
+def deploy_logs_reused_evidence(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    required = (
+        "needs.same-sha-main-evidence.outputs.source_run_id",
+        "needs.same-sha-main-evidence.outputs.check_suite_id",
+        "needs.same-sha-main-evidence.outputs.artifact_id",
+        "needs.same-sha-main-evidence.outputs.source_sha",
+    )
+    return all(item in text for item in required)
+
+
+def deploy_verifies_downloaded_artifact_checksum(job_lines: list[str]) -> bool:
+    text = uncommented_text(job_lines)
+    return "cd artifact" in text and "sha256sum -c bolt-v2.sha256" in text
+
+
+def job_permission_has(job_lines: list[str], permission: str, value: str) -> bool:
+    return any(re.match(rf"^\s+{re.escape(permission)}:\s*{re.escape(value)}\s*$", strip_comment(line)) for line in job_lines)
+
+
+def workflow_permissions_have_actions_read(workflow_text: str) -> bool:
+    return re.search(r"(?m)^permissions:\n(?:^\s+[A-Za-z0-9_-]+:\s+\w+\n)*^\s+actions:\s+read\s*$", workflow_text) is not None
 
 
 def branch_body(gate_text: str, keyword: str, condition: str) -> str | None:
@@ -1035,12 +1312,21 @@ def verify_workflow(workflow_text: str) -> list[str]:
             f"got {actual_push_paths_ignore!r}"
         )
 
+    errors.extend(verify_pr_concurrency(workflow_text))
+
+    if not workflow_permissions_have_actions_read(workflow_text):
+        errors.append("workflow permissions must include actions: read")
+
     for job in REQUIRED_JOBS:
         if job not in jobs:
             errors.append(f"missing required job {job}")
 
     if "fmt-check" in jobs and "detector" in extract_needs(jobs["fmt-check"]):
         errors.append("fmt-check must not need detector")
+
+    for job in TAG_SKIP_REQUIRED_JOBS:
+        if job in jobs and not job_skips_tag_reuse(jobs[job]):
+            errors.append(f"{job} must skip on tag reuse")
 
     if "source-fence" in jobs and "detector" not in extract_needs(jobs["source-fence"]):
         # FR-005: #342 owns the early-fail source-fence lane, so it remains detector-gated.
@@ -1084,8 +1370,6 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must declare nextest archive path")
         if not all(input_fragment in archive_text for input_fragment in TEST_ARCHIVE_KEY_INPUTS):
             errors.append("test-archive cache key must include Rust and test graph inputs")
-        if "Swatinem/rust-cache@" in archive_text:
-            errors.append("test-archive must not use managed target rust-cache")
         if "include-managed-target-dir:" in archive_text:
             errors.append("test-archive must not opt into managed target dir")
         if "nextest-archive-build-v1" in archive_text:
@@ -1139,14 +1423,24 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test needs test-shards")
         if not gate_checks_lane_success(test_text, "test-shards"):
             errors.append("test must check needs.test-shards.result")
-        if not has_line_matching(jobs["test"], GATE_IF_RE):
+        if not job_if_uses_always(jobs["test"]):
             errors.append("test must use always()")
 
     if "build" in jobs:
         if "detector" not in extract_needs(jobs["build"]):
             errors.append("build needs detector")
         if not has_line_matching(jobs["build"], BUILD_IF_RE):
-            errors.append("build must gate on needs.detector.outputs.build_required")
+            errors.append("build must gate on needs.detector.outputs.build_required and skip tag reuse")
+
+    if "same-sha-main-evidence" in jobs:
+        if "detector" not in extract_needs(jobs["same-sha-main-evidence"]):
+            errors.append("same-sha-main-evidence needs detector")
+        if not has_line_matching(jobs["same-sha-main-evidence"], SAME_SHA_IF_RE):
+            errors.append("same-sha-main-evidence must be tag-gated")
+        if not same_sha_job_has_outputs(jobs["same-sha-main-evidence"]):
+            errors.append("same-sha-main-evidence must expose source run, check suite, artifact, and SHA outputs")
+        if not same_sha_job_runs_resolver(jobs["same-sha-main-evidence"]):
+            errors.append("same-sha-main-evidence must run resolver script")
 
     if "gate" in jobs:
         gate_needs = extract_needs(jobs["gate"])
@@ -1160,6 +1454,9 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 checks_result = gate_checks_lane_success(gate_text, job)
             if not checks_result:
                 errors.append(f"gate must check needs.{job}.result")
+        if "same-sha-main-evidence" not in gate_needs:
+            errors.append("gate needs same-sha-main-evidence")
+        errors.extend(gate_checks_same_sha_reuse(gate_text))
         if not has_line_matching(jobs["gate"], GATE_IF_RE):
             errors.append("gate must use always()")
 
@@ -1170,6 +1467,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"deploy needs {job}")
         if not has_line_matching(jobs["deploy"], DEPLOY_IF_RE):
             errors.append("deploy must be tag-gated")
+        if not job_permission_has(jobs["deploy"], "actions", "read"):
+            errors.append("deploy permissions must include actions: read")
+        if not deploy_downloads_same_sha_artifact(jobs["deploy"]):
+            errors.append("deploy must download same-SHA main artifact by artifact ID")
+        if not deploy_logs_reused_evidence(jobs["deploy"]):
+            errors.append("deploy must log reused source run, check suite, artifact, and SHA")
+        if not deploy_verifies_downloaded_artifact_checksum(jobs["deploy"]):
+            errors.append("deploy must verify downloaded artifact checksum")
 
     for job, lines in jobs.items():
         uses_target_dir = job_uses_managed_target_dir(lines)
@@ -1186,6 +1491,14 @@ def verify_workflow(workflow_text: str) -> list[str]:
     for job in CACHE_KEY_JOBS:
         if job in jobs and not job_has_explicit_cache_key(jobs[job]):
             errors.append(f"{job} must declare explicit rust-cache key or shared-key")
+
+    for job in REGISTRY_CACHE_JOBS:
+        if job in jobs:
+            errors.extend(shared_registry_cache_errors(job, jobs[job]))
+
+    for job in MANAGED_TARGET_CACHE_KEYS:
+        if job in jobs:
+            errors.extend(managed_target_cache_errors(job, jobs[job]))
 
     return errors
 

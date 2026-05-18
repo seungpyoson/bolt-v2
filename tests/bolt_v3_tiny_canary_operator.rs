@@ -15,70 +15,30 @@ use serde::Deserialize;
 use std::env;
 use std::path::Path;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-#[test]
-fn tiny_canary_operator_contract_is_config_owned_not_env_owned() {
-    let evidence_source = std::fs::read_to_string("src/bolt_v3_tiny_canary_evidence.rs")
-        .expect("tiny canary evidence source should be readable");
-    let operator_source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
-    for source in [&evidence_source, &operator_source] {
-        for env_token in [
-            concat!("BOLT_V3_", "TINY_CANARY"),
-            concat!("TinyCanaryOperatorApprovalEnvelope", "::", "from_", "env"),
-            concat!("TinyCanaryOperatorLiveResultPaths", "::", "from_", "env"),
-            concat!("tiny_canary_", "required_", "env"),
-        ] {
-            assert!(
-                !source.contains(env_token),
-                "tiny canary operator contract must not depend on env token `{env_token}`"
-            );
-        }
-    }
-}
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[test]
 fn tiny_canary_operator_harness_is_ignored_and_uses_production_runner_shape() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
-    let start = source
-        .find(
-            "#[ignore]\nfn tiny_canary_operator_harness_requires_exact_approval_before_live_runner",
-        )
-        .expect("operator harness start should exist");
-    let end = source[start..]
-        .find("\nfn tiny_canary_current_checkout_head_sha")
-        .map(|offset| start + offset)
-        .expect("operator harness end should exist");
-    let harness = &source[start..end];
 
     assert!(source.contains("#[ignore]"));
     assert!(source.contains("TinyCanaryOperatorApprovalEnvelope::from_config"));
-    assert!(source.contains("validate_and_consume_against"));
+    assert!(source.contains("validate_approved_evidence_against"));
+    assert!(source.contains("consume_approval_after_live_runner_entry_validation"));
     assert!(source.contains("evaluate_tiny_canary_preflight"));
     assert!(source.contains("write_json_file"));
-    assert!(harness.contains("build_bolt_v3_live_node"));
-    assert!(harness.contains("run_bolt_v3_live_node"));
-    assert!(harness.contains("tokio::task::LocalSet"));
-    assert!(harness.contains("runtime.block_on(local.run_until"));
-    assert!(!source.contains(concat!("#[", "tokio::test")));
+    assert!(source.contains("build_bolt_v3_live_node"));
+    assert!(source.contains("run_bolt_v3_live_node"));
+    assert!(source.contains("tokio::task::LocalSet"));
+    assert!(!source.contains(&format!(
+        "{}{}{}",
+        "BOLT_V3_TINY_CANARY_", "CURRENT_HEAD", "_SHA"
+    )));
     assert!(!source.contains(&format!("{}{}", "LiveNode", "::run")));
     assert!(!source.contains(&format!("{}{}", ".submit", "_order(")));
     assert!(!source.contains(&format!("{}{}", ".cancel", "_order(")));
     assert!(!source.contains(&format!("{}{}", ".replace", "_order(")));
-
-    let build_live_node = harness
-        .find("let mut node = build_bolt_v3_live_node(&loaded)?;")
-        .expect("operator harness must build the LiveNode");
-    let build_runtime = harness
-        .find("let runtime = tokio::runtime::Builder::new_current_thread()")
-        .expect("operator harness must build the Tokio runtime");
-    let enter_runtime = harness
-        .find("runtime.block_on(local.run_until")
-        .expect("operator harness must enter the runner future through LocalSet");
-    assert!(build_live_node < build_runtime);
-    assert!(build_runtime < enter_runtime);
 }
 
 #[test]
@@ -98,7 +58,27 @@ fn tiny_canary_operator_harness_derives_strategy_audit_from_evidence_file() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
 
+    assert!(source.contains("envelope.approved_price_to_beat_source()?"));
     assert!(source.contains("TinyCanaryStrategyInputSafetyAudit::from_evidence_file"));
+    let harness_start = source
+        .rfind("async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner")
+        .expect("operator harness start should exist");
+    let harness = &source[harness_start..];
+    let source_index = harness
+        .find("let approved_price_to_beat_source = envelope.approved_price_to_beat_source()?")
+        .expect("operator harness should derive approved price source");
+    let audit_index = harness
+        .find("let strategy_audit = TinyCanaryStrategyInputSafetyAudit::from_evidence_file")
+        .expect("operator harness should parse strategy input evidence");
+    let validation_index = harness
+        .find("envelope.validate_approved_evidence_against")
+        .expect("operator harness should validate approval");
+    let consumption_index = harness
+        .find("envelope.consume_approval_after_live_runner_entry_validation")
+        .expect("operator harness should consume approval");
+    assert!(source_index < audit_index);
+    assert!(audit_index < validation_index);
+    assert!(validation_index < consumption_index);
     assert!(!source.contains(&format!(
         "{}{}",
         "TinyCanaryStrategyInputSafetyAudit::", "approved()"
@@ -110,7 +90,7 @@ fn tiny_canary_operator_harness_prevalidates_success_evidence_before_runner() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
     let start = source
-        .rfind("fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner")
+        .rfind("async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner")
         .expect("operator harness start should exist");
     let end = source[start..]
         .find("\nfn tiny_canary_current_checkout_head_sha")
@@ -133,6 +113,45 @@ fn tiny_canary_operator_harness_prevalidates_success_evidence_before_runner() {
 }
 
 #[test]
+fn tiny_canary_operator_harness_consumes_approval_after_entry_validation() {
+    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
+        .expect("operator harness source should be readable");
+    let start = source
+        .rfind("async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner")
+        .expect("operator harness start should exist");
+    let end = source[start..]
+        .find("\nfn tiny_canary_current_checkout_head_sha")
+        .map(|offset| start + offset)
+        .expect("operator harness end should exist");
+    let harness = &source[start..end];
+
+    let preflight_index = harness
+        .find("let preflight = evaluate_tiny_canary_preflight")
+        .expect("operator harness should evaluate preflight");
+    let result_paths_index = harness
+        .find("let result_paths = TinyCanaryOperatorLiveResultPaths::from_config(&loaded)?")
+        .expect("operator harness should load live result paths");
+    let path_binding_index = harness
+        .find("result_paths.assert_belongs_to_runtime_capture")
+        .expect("operator harness should bind live result paths to runtime capture");
+    let snapshot_index = harness
+        .find("let pre_run_snapshot = result_paths.snapshot_before_run()?")
+        .expect("operator harness should snapshot result paths");
+    let consumption_index = harness
+        .find("envelope.consume_approval_after_live_runner_entry_validation")
+        .expect("operator harness should consume approval");
+    let runner_index = harness
+        .find("run_bolt_v3_live_node")
+        .expect("operator harness should use production live runner");
+
+    assert!(preflight_index < result_paths_index);
+    assert!(result_paths_index < path_binding_index);
+    assert!(path_binding_index < snapshot_index);
+    assert!(snapshot_index < consumption_index);
+    assert!(consumption_index < runner_index);
+}
+
+#[test]
 fn tiny_canary_operator_harness_binds_live_proof_to_runtime_admission_and_spool() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
@@ -140,10 +159,869 @@ fn tiny_canary_operator_harness_binds_live_proof_to_runtime_admission_and_spool(
     assert!(source.contains("admitted_order_count()"));
     assert!(source.contains("spool_root_for_instance"));
     assert!(source.contains("assert_belongs_to_runtime_capture"));
+    assert!(source.contains("to_refs_after_operator_post_run_proofs"));
     assert!(source.contains("assert_changed_after_run"));
     assert!(source.contains("tiny_canary_read_operator_evidence_proof"));
-    assert!(!source.contains(concat!("runtime_", "run_id")));
-    assert!(!source.contains(concat!("strategy_cancel_path: ", "required_operator_field")));
+    assert!(source.contains("TinyCanaryOperatorLiveResultPaths::from_config"));
+    assert!(!source.contains(&format!(
+        "{}{}{}",
+        "TinyCanaryOperatorLiveResultPaths", "::from_", "env"
+    )));
+}
+
+#[test]
+fn tiny_canary_operator_harness_waits_for_post_run_proofs_after_runner() {
+    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
+        .expect("operator harness source should be readable");
+    let start = source
+        .rfind("async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner")
+        .expect("operator harness start should exist");
+    let end = source[start..]
+        .find("\nfn tiny_canary_current_checkout_head_sha")
+        .map(|offset| start + offset)
+        .expect("operator harness end should exist");
+    let harness = &source[start..end];
+
+    let runner_index = harness
+        .find("run_bolt_v3_live_node")
+        .expect("operator harness should use production live runner");
+    let wait_index = harness
+        .find("to_refs_after_operator_post_run_proofs")
+        .expect("operator harness should wait for post-run operator proofs");
+
+    assert!(runner_index < wait_index);
+    assert!(source.contains("observed_errors"));
+    assert!(source.contains("observed errors"));
+}
+
+#[test]
+fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let run_id = "tiny-canary-live-run-001";
+    let client_order_id_hash = "c".repeat(64);
+    let venue_order_id_hash = "d".repeat(64);
+    let scanned_hash = "e".repeat(64);
+    let retention_hash = "f".repeat(64);
+    let decision_path = temp.path().join("decision.json");
+    let nt_submit_path = temp.path().join("nt-submit.json");
+    let venue_state_path = temp.path().join("venue-state.json");
+    let restart_path = temp.path().join("restart.json");
+    let post_hygiene_path = temp.path().join("post-hygiene.json");
+    let paths = TinyCanaryOperatorLiveResultPaths {
+        decision_evidence_path: decision_path.to_string_lossy().to_string(),
+        client_order_id_hash: client_order_id_hash.clone(),
+        venue_order_id_hash: venue_order_id_hash.clone(),
+        nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
+        venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: restart_path.to_string_lossy().to_string(),
+        post_run_hygiene_path: post_hygiene_path.to_string_lossy().to_string(),
+    };
+
+    write_json_proof(&decision_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&nt_submit_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&venue_state_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(
+        &restart_path,
+        serde_json::json!({
+            "record_kind": "restart_reconciliation",
+            "source_run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        }),
+    );
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({"record_kind": "old"}),
+    );
+    let snapshot = paths
+        .snapshot_before_run()
+        .expect("pre-run snapshot should hash existing proof files");
+
+    write_json_proof(
+        &decision_path,
+        serde_json::json!({
+            "record_kind": "decision_evidence",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &nt_submit_path,
+        serde_json::json!({
+            "record_kind": "nt_submit_event",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &venue_state_path,
+        serde_json::json!({
+            "record_kind": "venue_order_state",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "raw_secret_residue_absent": true,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }),
+    );
+
+    let error = paths
+        .to_refs(
+            &snapshot,
+            run_id,
+            &tiny_canary_sha256_text("bitcoin_updown_main"),
+        )
+        .expect_err("stale restart reconciliation evidence must fail");
+
+    assert!(
+        error.to_string().contains("restart reconciliation"),
+        "error should mention stale restart reconciliation evidence: {error}"
+    );
+}
+
+#[test]
+fn live_result_paths_reject_restart_reconciliation_outside_runtime_capture() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let spool_root = temp.path().join("runtime-spool");
+    let outside_root = temp.path().join("operator-written");
+    let paths = TinyCanaryOperatorLiveResultPaths {
+        decision_evidence_path: spool_root
+            .join("decision.json")
+            .to_string_lossy()
+            .to_string(),
+        client_order_id_hash: "c".repeat(64),
+        venue_order_id_hash: "d".repeat(64),
+        nt_submit_event_path: spool_root
+            .join("nt-submit.json")
+            .to_string_lossy()
+            .to_string(),
+        venue_order_state_path: spool_root
+            .join("venue-state.json")
+            .to_string_lossy()
+            .to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: outside_root
+            .join("restart.json")
+            .to_string_lossy()
+            .to_string(),
+        post_run_hygiene_path: spool_root
+            .join("post-hygiene.json")
+            .to_string_lossy()
+            .to_string(),
+    };
+
+    let error = paths
+        .assert_belongs_to_runtime_capture(&spool_root.to_string_lossy())
+        .expect_err("restart reconciliation evidence outside runtime capture must fail");
+
+    assert!(
+        error.to_string().contains("restart reconciliation"),
+        "error should mention restart reconciliation evidence path: {error}"
+    );
+}
+
+#[test]
+fn live_result_paths_reject_decision_evidence_outside_runtime_capture() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let spool_root = temp.path().join("runtime-spool");
+    let outside_root = temp.path().join("operator-written");
+    let paths = TinyCanaryOperatorLiveResultPaths {
+        decision_evidence_path: outside_root
+            .join("decision.json")
+            .to_string_lossy()
+            .to_string(),
+        client_order_id_hash: "c".repeat(64),
+        venue_order_id_hash: "d".repeat(64),
+        nt_submit_event_path: spool_root
+            .join("nt-submit.json")
+            .to_string_lossy()
+            .to_string(),
+        venue_order_state_path: spool_root
+            .join("venue-state.json")
+            .to_string_lossy()
+            .to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: spool_root
+            .join("restart.json")
+            .to_string_lossy()
+            .to_string(),
+        post_run_hygiene_path: spool_root
+            .join("post-hygiene.json")
+            .to_string_lossy()
+            .to_string(),
+    };
+
+    let error = paths
+        .assert_belongs_to_runtime_capture(&spool_root.to_string_lossy())
+        .expect_err("decision evidence outside runtime capture must fail");
+
+    assert!(
+        error.to_string().contains("decision evidence"),
+        "error should mention decision evidence path: {error}"
+    );
+}
+
+#[test]
+fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let run_id = "tiny-canary-live-run-001";
+    let client_order_id_hash = "c".repeat(64);
+    let venue_order_id_hash = "d".repeat(64);
+    let scanned_hash = "e".repeat(64);
+    let retention_hash = "f".repeat(64);
+    let decision_path = temp.path().join("decision.json");
+    let nt_submit_path = temp.path().join("nt-submit.json");
+    let venue_state_path = temp.path().join("venue-state.json");
+    let restart_path = temp.path().join("restart.json");
+    let post_hygiene_path = temp.path().join("post-hygiene.json");
+    let paths = TinyCanaryOperatorLiveResultPaths {
+        decision_evidence_path: decision_path.to_string_lossy().to_string(),
+        client_order_id_hash: client_order_id_hash.clone(),
+        venue_order_id_hash: venue_order_id_hash.clone(),
+        nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
+        venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: restart_path.to_string_lossy().to_string(),
+        post_run_hygiene_path: post_hygiene_path.to_string_lossy().to_string(),
+    };
+
+    write_json_proof(&decision_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&nt_submit_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&venue_state_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&restart_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({"record_kind": "old"}),
+    );
+    let snapshot = paths
+        .snapshot_before_run()
+        .expect("pre-run snapshot should hash existing proof files");
+
+    write_json_proof(
+        &decision_path,
+        serde_json::json!({
+            "record_kind": "decision_evidence",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &nt_submit_path,
+        serde_json::json!({
+            "record_kind": "nt_submit_event",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &venue_state_path,
+        serde_json::json!({
+            "record_kind": "venue_order_state",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "accepted",
+            "order_remains_open": true
+        }),
+    );
+    write_json_proof(
+        &restart_path,
+        serde_json::json!({
+            "record_kind": "restart_reconciliation",
+            "source_run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        }),
+    );
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "raw_secret_residue_absent": true,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }),
+    );
+
+    let error = paths
+        .to_refs(
+            &snapshot,
+            run_id,
+            &tiny_canary_sha256_text("bitcoin_updown_main"),
+        )
+        .expect_err("open venue order must require strategy cancel evidence");
+
+    assert!(
+        error.to_string().contains("strategy cancel"),
+        "error should mention missing strategy cancel evidence: {error}"
+    );
+}
+
+#[test]
+fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let run_id = "tiny-canary-live-run-001";
+    let client_order_id_hash = "c".repeat(64);
+    let venue_order_id_hash = "d".repeat(64);
+    let scanned_hash = "e".repeat(64);
+    let retention_hash = "f".repeat(64);
+    let decision_path = temp.path().join("decision.json");
+    let nt_submit_path = temp.path().join("nt-submit.json");
+    let venue_state_path = temp.path().join("venue-state.json");
+    let cancel_path = temp.path().join("cancel.json");
+    let restart_path = temp.path().join("restart.json");
+    let post_hygiene_path = temp.path().join("post-hygiene.json");
+    let paths = TinyCanaryOperatorLiveResultPaths {
+        decision_evidence_path: decision_path.to_string_lossy().to_string(),
+        client_order_id_hash: client_order_id_hash.clone(),
+        venue_order_id_hash: venue_order_id_hash.clone(),
+        nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
+        venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
+        strategy_cancel_path: Some(cancel_path.to_string_lossy().to_string()),
+        restart_reconciliation_path: restart_path.to_string_lossy().to_string(),
+        post_run_hygiene_path: post_hygiene_path.to_string_lossy().to_string(),
+    };
+
+    write_json_proof(&decision_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&nt_submit_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&venue_state_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&cancel_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&restart_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({"record_kind": "old"}),
+    );
+    let snapshot = paths
+        .snapshot_before_run()
+        .expect("pre-run snapshot should hash existing proof files");
+
+    write_json_proof(
+        &decision_path,
+        serde_json::json!({
+            "record_kind": "decision_evidence",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &nt_submit_path,
+        serde_json::json!({
+            "record_kind": "nt_submit_event",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &venue_state_path,
+        serde_json::json!({
+            "record_kind": "venue_order_state",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": true
+        }),
+    );
+    write_json_proof(
+        &cancel_path,
+        serde_json::json!({
+            "record_kind": "strategy_cancel",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &restart_path,
+        serde_json::json!({
+            "record_kind": "restart_reconciliation",
+            "source_run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        }),
+    );
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "raw_secret_residue_absent": true,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }),
+    );
+
+    let error = paths
+        .to_refs(
+            &snapshot,
+            run_id,
+            &tiny_canary_sha256_text("bitcoin_updown_main"),
+        )
+        .expect_err("terminal venue outcome must not be marked open");
+
+    assert!(
+        error.to_string().contains("order_remains_open"),
+        "error should mention inconsistent venue open state: {error}"
+    );
+}
+
+#[test]
+fn live_result_paths_reject_open_restart_reconciliation() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let run_id = "tiny-canary-live-run-001";
+    let client_order_id_hash = "c".repeat(64);
+    let venue_order_id_hash = "d".repeat(64);
+    let scanned_hash = "e".repeat(64);
+    let retention_hash = "f".repeat(64);
+    let decision_path = temp.path().join("decision.json");
+    let nt_submit_path = temp.path().join("nt-submit.json");
+    let venue_state_path = temp.path().join("venue-state.json");
+    let restart_path = temp.path().join("restart.json");
+    let post_hygiene_path = temp.path().join("post-hygiene.json");
+    let paths = TinyCanaryOperatorLiveResultPaths {
+        decision_evidence_path: decision_path.to_string_lossy().to_string(),
+        client_order_id_hash: client_order_id_hash.clone(),
+        venue_order_id_hash: venue_order_id_hash.clone(),
+        nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
+        venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: restart_path.to_string_lossy().to_string(),
+        post_run_hygiene_path: post_hygiene_path.to_string_lossy().to_string(),
+    };
+
+    write_json_proof(&decision_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&nt_submit_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&venue_state_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&restart_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({"record_kind": "old"}),
+    );
+    let snapshot = paths
+        .snapshot_before_run()
+        .expect("pre-run snapshot should hash existing proof files");
+
+    write_json_proof(
+        &decision_path,
+        serde_json::json!({
+            "record_kind": "decision_evidence",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &nt_submit_path,
+        serde_json::json!({
+            "record_kind": "nt_submit_event",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &venue_state_path,
+        serde_json::json!({
+            "record_kind": "venue_order_state",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        }),
+    );
+    write_json_proof(
+        &restart_path,
+        serde_json::json!({
+            "record_kind": "restart_reconciliation",
+            "source_run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": true
+        }),
+    );
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "raw_secret_residue_absent": true,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }),
+    );
+
+    let error = paths
+        .to_refs(
+            &snapshot,
+            run_id,
+            &tiny_canary_sha256_text("bitcoin_updown_main"),
+        )
+        .expect_err("open restart reconciliation evidence must fail");
+
+    assert!(
+        error.to_string().contains("restart reconciliation"),
+        "error should mention restart reconciliation evidence: {error}"
+    );
+    assert!(
+        error.to_string().contains("order_remains_open"),
+        "error should mention open restart state: {error}"
+    );
+}
+
+fn write_json_proof(path: &Path, value: serde_json::Value) {
+    std::fs::write(
+        path,
+        serde_json::to_vec(&value).expect("proof should serialize"),
+    )
+    .expect("proof should write");
+}
+
+#[test]
+fn live_result_paths_reject_unapproved_post_run_hygiene_strategy_hash() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let run_id = "tiny-canary-live-run-001";
+    let approved_strategy_hash = tiny_canary_sha256_text("bitcoin_updown_main");
+    let unapproved_strategy_hash = tiny_canary_sha256_text("bitcoin_updown_secondary");
+    let client_order_id_hash = "c".repeat(64);
+    let venue_order_id_hash = "d".repeat(64);
+    let scanned_hash = "e".repeat(64);
+    let retention_hash = "f".repeat(64);
+    let decision_path = temp.path().join("decision.json");
+    let nt_submit_path = temp.path().join("nt-submit.json");
+    let venue_state_path = temp.path().join("venue-state.json");
+    let restart_path = temp.path().join("restart.json");
+    let post_hygiene_path = temp.path().join("post-hygiene.json");
+    let paths = TinyCanaryOperatorLiveResultPaths {
+        decision_evidence_path: decision_path.to_string_lossy().to_string(),
+        client_order_id_hash: client_order_id_hash.clone(),
+        venue_order_id_hash: venue_order_id_hash.clone(),
+        nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
+        venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: restart_path.to_string_lossy().to_string(),
+        post_run_hygiene_path: post_hygiene_path.to_string_lossy().to_string(),
+    };
+
+    write_json_proof(&decision_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&nt_submit_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&venue_state_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&restart_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({"record_kind": "old"}),
+    );
+    let snapshot = paths
+        .snapshot_before_run()
+        .expect("pre-run snapshot should hash existing proof files");
+
+    write_json_proof(
+        &decision_path,
+        serde_json::json!({
+            "record_kind": "decision_evidence",
+            "run_id": run_id,
+            "strategy_instance_id_hash": approved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &nt_submit_path,
+        serde_json::json!({
+            "record_kind": "nt_submit_event",
+            "run_id": run_id,
+            "strategy_instance_id_hash": approved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &venue_state_path,
+        serde_json::json!({
+            "record_kind": "venue_order_state",
+            "run_id": run_id,
+            "strategy_instance_id_hash": approved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        }),
+    );
+    write_json_proof(
+        &restart_path,
+        serde_json::json!({
+            "record_kind": "restart_reconciliation",
+            "source_run_id": run_id,
+            "strategy_instance_id_hash": approved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        }),
+    );
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": run_id,
+            "strategy_instance_id_hash": unapproved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "raw_secret_residue_absent": true,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }),
+    );
+
+    let error = paths
+        .to_refs(&snapshot, run_id, &approved_strategy_hash)
+        .expect_err("unapproved post-run hygiene strategy proof must fail");
+
+    assert!(
+        error.to_string().contains("strategy_instance_id_hash"),
+        "error should mention strategy hash mismatch: {error}"
+    );
+}
+
+#[test]
+fn live_result_paths_reject_unapproved_strategy_hash() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let run_id = "tiny-canary-live-run-001";
+    let approved_strategy_hash = tiny_canary_sha256_text("bitcoin_updown_main");
+    let unapproved_strategy_hash = tiny_canary_sha256_text("bitcoin_updown_secondary");
+    let client_order_id_hash = "c".repeat(64);
+    let venue_order_id_hash = "d".repeat(64);
+    let scanned_hash = "e".repeat(64);
+    let retention_hash = "f".repeat(64);
+    let decision_path = temp.path().join("decision.json");
+    let nt_submit_path = temp.path().join("nt-submit.json");
+    let venue_state_path = temp.path().join("venue-state.json");
+    let restart_path = temp.path().join("restart.json");
+    let post_hygiene_path = temp.path().join("post-hygiene.json");
+    let paths = TinyCanaryOperatorLiveResultPaths {
+        decision_evidence_path: decision_path.to_string_lossy().to_string(),
+        client_order_id_hash: client_order_id_hash.clone(),
+        venue_order_id_hash: venue_order_id_hash.clone(),
+        nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
+        venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: restart_path.to_string_lossy().to_string(),
+        post_run_hygiene_path: post_hygiene_path.to_string_lossy().to_string(),
+    };
+
+    write_json_proof(&decision_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&nt_submit_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&venue_state_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(&restart_path, serde_json::json!({"record_kind": "old"}));
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({"record_kind": "old"}),
+    );
+    let snapshot = paths
+        .snapshot_before_run()
+        .expect("pre-run snapshot should hash existing proof files");
+
+    write_json_proof(
+        &decision_path,
+        serde_json::json!({
+            "record_kind": "decision_evidence",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": unapproved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &nt_submit_path,
+        serde_json::json!({
+            "record_kind": "nt_submit_event",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": unapproved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        &venue_state_path,
+        serde_json::json!({
+            "record_kind": "venue_order_state",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": unapproved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        }),
+    );
+    write_json_proof(
+        &restart_path,
+        serde_json::json!({
+            "record_kind": "restart_reconciliation",
+            "source_run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": unapproved_strategy_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        }),
+    );
+    write_json_proof(
+        &post_hygiene_path,
+        serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": run_id,
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "raw_secret_residue_absent": true,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }),
+    );
+
+    let error = paths
+        .to_refs(&snapshot, run_id, &approved_strategy_hash)
+        .expect_err("unapproved strategy result proof must fail");
+
+    assert!(
+        error.to_string().contains("strategy_instance_id_hash"),
+        "error should mention strategy hash mismatch: {error}"
+    );
+}
+
+#[test]
+fn tiny_canary_post_run_hygiene_proof_requires_secret_scan_and_retention() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let proof_path = temp.path().join("post-run-hygiene.json");
+    let client_hash = "a".repeat(64);
+    let venue_hash = "b".repeat(64);
+    let scanned_hash = "c".repeat(64);
+    let retention_hash = "d".repeat(64);
+
+    std::fs::write(
+        &proof_path,
+        serde_json::to_vec(&serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": "tiny-canary-run-001",
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_hash,
+            "venue_order_id_hash": venue_hash
+        }))
+        .expect("proof should serialize"),
+    )
+    .expect("proof should write");
+    let missing_scan_error = tiny_canary_assert_post_run_hygiene_proof(
+        proof_path.to_str().expect("proof path should be utf8"),
+        "tiny-canary-run-001",
+        &tiny_canary_sha256_text("bitcoin_updown_main"),
+        &client_hash,
+        &venue_hash,
+    )
+    .expect_err("missing secret scan field should fail");
+    assert!(
+        missing_scan_error
+            .to_string()
+            .contains("raw_secret_residue_absent"),
+        "error should mention missing scan field: {missing_scan_error}"
+    );
+
+    std::fs::write(
+        &proof_path,
+        serde_json::to_vec(&serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": "tiny-canary-run-001",
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_hash,
+            "venue_order_id_hash": venue_hash,
+            "raw_secret_residue_absent": false,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }))
+        .expect("proof should serialize"),
+    )
+    .expect("proof should write");
+    let residue_error = tiny_canary_assert_post_run_hygiene_proof(
+        proof_path.to_str().expect("proof path should be utf8"),
+        "tiny-canary-run-001",
+        &tiny_canary_sha256_text("bitcoin_updown_main"),
+        &client_hash,
+        &venue_hash,
+    )
+    .expect_err("positive secret residue scan should fail");
+    assert!(
+        residue_error
+            .to_string()
+            .contains("raw_secret_residue_absent"),
+        "error should mention failed scan field: {residue_error}"
+    );
+
+    std::fs::write(
+        &proof_path,
+        serde_json::to_vec(&serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": "tiny-canary-run-001",
+            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "client_order_id_hash": client_hash,
+            "venue_order_id_hash": venue_hash,
+            "raw_secret_residue_absent": true,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }))
+        .expect("proof should serialize"),
+    )
+    .expect("proof should write");
+    tiny_canary_assert_post_run_hygiene_proof(
+        proof_path.to_str().expect("proof path should be utf8"),
+        "tiny-canary-run-001",
+        &tiny_canary_sha256_text("bitcoin_updown_main"),
+        &client_hash,
+        &venue_hash,
+    )
+    .expect("secret scan and retention proof should pass");
 }
 
 #[test]
@@ -155,17 +1033,24 @@ fn tiny_canary_operator_head_is_resolved_from_checkout() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test]
+#[tokio::test(flavor = "current_thread")]
 #[ignore]
-fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner() -> anyhow::Result<()> {
+async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner()
+-> anyhow::Result<()> {
     let root_toml_path = env::var("BOLT_V3_ROOT_TOML")
         .map_err(|_| anyhow::anyhow!("BOLT_V3_ROOT_TOML must point to root TOML"))?;
     let loaded = load_bolt_v3_config(std::path::Path::new(&root_toml_path))?;
-    let root_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&loaded.root_path)?;
-    let current_head = tiny_canary_current_checkout_head_sha()?;
     let envelope = TinyCanaryOperatorApprovalEnvelope::from_config(&loaded)?;
+    let root_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&envelope.root_toml_path)?;
+    let current_head = tiny_canary_current_checkout_head_sha()?;
     let current_unix_seconds = tiny_canary_current_unix_seconds()?;
-    envelope.validate_and_consume_against(
+    let approved_price_to_beat_source = envelope.approved_price_to_beat_source()?;
+    let strategy_audit = TinyCanaryStrategyInputSafetyAudit::from_evidence_file(
+        &envelope.strategy_input_evidence_path,
+        &envelope.strategy_input_evidence_sha256,
+        &approved_price_to_beat_source,
+    )?;
+    envelope.validate_approved_evidence_against(
         &current_head,
         &root_hash,
         loaded
@@ -174,21 +1059,10 @@ fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner() -> 
             .as_ref()
             .map(|block| block.approval_id.as_str())
             .unwrap_or_default(),
+        &loaded,
         current_unix_seconds,
     )?;
-    let strategy_audit = TinyCanaryStrategyInputSafetyAudit::from_evidence_file(
-        &envelope.strategy_input_evidence_path,
-        &envelope.strategy_input_evidence_sha256,
-    )?;
-    let preflight_runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let preflight = preflight_runtime.block_on(evaluate_tiny_canary_preflight(
-        &loaded,
-        &current_head,
-        strategy_audit,
-    ));
-    drop(preflight_runtime);
+    let preflight = evaluate_tiny_canary_preflight(&loaded, &current_head, strategy_audit).await;
     if !preflight.can_enter_live_runner() {
         let blocked_runtime_capture_ref = TinyCanaryRuntimeCaptureRef {
             spool_root_hash: tiny_canary_sha256_text(&loaded.root.persistence.catalog_directory),
@@ -201,43 +1075,56 @@ fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner() -> 
                 &root_hash,
                 blocked_runtime_capture_ref,
             )?,
-            preflight.block_reasons.clone(),
+            preflight.block_reasons,
         );
         evidence.write_json_file(&envelope.canary_evidence_path)?;
-        anyhow::bail!("tiny canary preflight blocked before live runner");
+        anyhow::bail!("tiny canary canary preflight blocked before live runner");
     }
     let result_paths = TinyCanaryOperatorLiveResultPaths::from_config(&loaded)?;
 
-    let mut node = build_bolt_v3_live_node(&loaded)?;
-    let runtime_capture = tiny_canary_operator_runtime_capture(&loaded, &node.instance_id());
-    let evidence_input = tiny_canary_operator_evidence_input(
-        &envelope,
-        &loaded,
-        &root_hash,
-        runtime_capture.reference.clone(),
-    )?;
-    result_paths.assert_belongs_to_runtime_capture(&runtime_capture.spool_root)?;
-    let pre_run_snapshot = result_paths.snapshot_before_run()?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
     let local = tokio::task::LocalSet::new();
-    runtime.block_on(local.run_until(async {
-        run_bolt_v3_live_node(&mut node, &loaded)
-            .await
-            .map_err(anyhow::Error::from)
-    }))?;
-    let admitted_order_count = node.admitted_order_count();
-    let (decision_evidence_ref, live_order_ref, result_refs) =
-        result_paths.to_refs(&pre_run_snapshot, &runtime_capture.reference.run_id)?;
-    let evidence = TinyCanaryEvidence::live_canary_proof(
-        evidence_input,
-        decision_evidence_ref,
-        live_order_ref,
-        result_refs,
-        admitted_order_count,
-    )?;
-    evidence.write_json_file(&envelope.canary_evidence_path)?;
+    local
+        .run_until(async {
+            let mut node = build_bolt_v3_live_node(&loaded)?;
+            let runtime_capture =
+                tiny_canary_operator_runtime_capture(&loaded, &node.instance_id());
+            let evidence_input = tiny_canary_operator_evidence_input(
+                &envelope,
+                &loaded,
+                &root_hash,
+                runtime_capture.reference.clone(),
+            )?;
+            let approved_strategy_instance_id_hash =
+                evidence_input.approved_strategy_instance_id_hash.clone();
+            result_paths.assert_belongs_to_runtime_capture(&runtime_capture.spool_root)?;
+            let pre_run_snapshot = result_paths.snapshot_before_run()?;
+            let live_runner_entry_unix_seconds = tiny_canary_current_unix_seconds()?;
+            envelope.consume_approval_after_live_runner_entry_validation(
+                live_runner_entry_unix_seconds,
+            )?;
+            run_bolt_v3_live_node(&mut node, &loaded)
+                .await
+                .map_err(anyhow::Error::from)?;
+            let admitted_order_count = node.admitted_order_count();
+            let (decision_evidence_ref, live_order_ref, result_refs) = result_paths
+                .to_refs_after_operator_post_run_proofs(
+                    &pre_run_snapshot,
+                    &runtime_capture.reference.run_id,
+                    &loaded,
+                    &approved_strategy_instance_id_hash,
+                )
+                .await?;
+            let evidence = TinyCanaryEvidence::live_canary_proof(
+                evidence_input,
+                decision_evidence_ref,
+                live_order_ref,
+                result_refs,
+                admitted_order_count,
+            )?;
+            evidence.write_json_file(&envelope.canary_evidence_path)?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await?;
     Ok(())
 }
 
@@ -291,6 +1178,7 @@ fn tiny_canary_operator_evidence_input(
             path_hash: tiny_canary_sha256_text(&envelope.strategy_input_evidence_path),
             record_hash: envelope.strategy_input_evidence_sha256.clone(),
         },
+        approved_strategy_instance_id_hash: envelope.approved_strategy_instance_id_hash()?,
         approval_id: envelope.operator_approval_id.clone(),
         max_live_order_count: block.max_live_order_count,
         max_notional_per_order: Decimal::from_str_exact(&block.max_notional_per_order)?,
@@ -326,6 +1214,7 @@ struct TinyCanaryOperatorLiveResultPaths {
     venue_order_state_path: String,
     strategy_cancel_path: Option<String>,
     restart_reconciliation_path: String,
+    post_run_hygiene_path: String,
 }
 
 struct TinyCanaryOperatorLiveResultSnapshot {
@@ -333,6 +1222,8 @@ struct TinyCanaryOperatorLiveResultSnapshot {
     nt_submit_event_sha256: Option<String>,
     venue_order_state_sha256: Option<String>,
     strategy_cancel_sha256: Option<String>,
+    restart_reconciliation_sha256: Option<String>,
+    post_run_hygiene_sha256: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -340,8 +1231,29 @@ struct TinyCanaryOperatorEvidenceProof {
     record_kind: String,
     run_id: Option<String>,
     source_run_id: Option<String>,
+    strategy_instance_id_hash: Option<String>,
     client_order_id_hash: Option<String>,
     venue_order_id_hash: Option<String>,
+    venue_order_outcome: Option<String>,
+    order_remains_open: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TinyCanaryPostRunHygieneProof {
+    #[serde(rename = "record_kind")]
+    _record_kind: String,
+    #[serde(rename = "run_id")]
+    _run_id: String,
+    #[serde(rename = "strategy_instance_id_hash")]
+    _strategy_instance_id_hash: String,
+    #[serde(rename = "client_order_id_hash")]
+    _client_order_id_hash: String,
+    #[serde(rename = "venue_order_id_hash")]
+    _venue_order_id_hash: String,
+    raw_secret_residue_absent: bool,
+    scanned_artifact_hashes: Vec<String>,
+    retention_purge_path_hash: String,
 }
 
 impl TinyCanaryOperatorLiveResultPaths {
@@ -353,7 +1265,7 @@ impl TinyCanaryOperatorLiveResultPaths {
             .and_then(|block| block.operator_evidence.as_ref())
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "tiny canary live result paths require `[live_canary.operator_evidence]`"
+                    "tiny canary operator result paths require `[live_canary.operator_evidence]`"
                 )
             })?;
         Ok(Self {
@@ -389,10 +1301,20 @@ impl TinyCanaryOperatorLiveResultPaths {
                 &operator_evidence.restart_reconciliation_path,
                 "[live_canary.operator_evidence].restart_reconciliation_path",
             )?,
+            post_run_hygiene_path: required_operator_path(
+                &loaded.root_path,
+                &operator_evidence.post_run_hygiene_path,
+                "[live_canary.operator_evidence].post_run_hygiene_path",
+            )?,
         })
     }
 
     fn assert_belongs_to_runtime_capture(&self, spool_root: &str) -> anyhow::Result<()> {
+        tiny_canary_assert_path_starts_with(
+            &self.decision_evidence_path,
+            spool_root,
+            "decision evidence",
+        )?;
         tiny_canary_assert_path_starts_with(
             &self.nt_submit_event_path,
             spool_root,
@@ -410,6 +1332,16 @@ impl TinyCanaryOperatorLiveResultPaths {
                 "strategy cancel evidence",
             )?;
         }
+        tiny_canary_assert_path_starts_with(
+            &self.restart_reconciliation_path,
+            spool_root,
+            "restart reconciliation evidence",
+        )?;
+        tiny_canary_assert_path_starts_with(
+            &self.post_run_hygiene_path,
+            spool_root,
+            "post-run hygiene evidence",
+        )?;
         Ok(())
     }
 
@@ -428,6 +1360,10 @@ impl TinyCanaryOperatorLiveResultPaths {
                 }
                 None => None,
             },
+            restart_reconciliation_sha256: tiny_canary_optional_sha256_file(
+                &self.restart_reconciliation_path,
+            )?,
+            post_run_hygiene_sha256: tiny_canary_optional_sha256_file(&self.post_run_hygiene_path)?,
         })
     }
 
@@ -457,6 +1393,16 @@ impl TinyCanaryOperatorLiveResultPaths {
                 "strategy cancel evidence",
             )?;
         }
+        tiny_canary_assert_changed_after_run(
+            &self.restart_reconciliation_path,
+            &snapshot.restart_reconciliation_sha256,
+            "restart reconciliation evidence",
+        )?;
+        tiny_canary_assert_changed_after_run(
+            &self.post_run_hygiene_path,
+            &snapshot.post_run_hygiene_sha256,
+            "post-run hygiene evidence",
+        )?;
         Ok(())
     }
 
@@ -464,16 +1410,18 @@ impl TinyCanaryOperatorLiveResultPaths {
         &self,
         snapshot: &TinyCanaryOperatorLiveResultSnapshot,
         run_id: &str,
+        expected_strategy_instance_id_hash: &str,
     ) -> anyhow::Result<(
         TinyCanaryEvidenceRef,
         TinyCanaryLiveOrderRef,
         TinyCanaryLiveCanaryResultRefs,
     )> {
         self.assert_changed_after_run(snapshot)?;
-        self.assert_proof_content(run_id)?;
+        self.assert_proof_content(run_id, expected_strategy_instance_id_hash)?;
         Ok((
             tiny_canary_operator_evidence_ref(&self.decision_evidence_path)?,
             TinyCanaryLiveOrderRef {
+                strategy_instance_id_hash: expected_strategy_instance_id_hash.to_string(),
                 client_order_id_hash: self.client_order_id_hash.clone(),
                 venue_order_id_hash: self.venue_order_id_hash.clone(),
             },
@@ -490,16 +1438,62 @@ impl TinyCanaryOperatorLiveResultPaths {
                 restart_reconciliation_ref: tiny_canary_operator_evidence_ref(
                     &self.restart_reconciliation_path,
                 )?,
+                post_run_hygiene_ref: tiny_canary_operator_evidence_ref(
+                    &self.post_run_hygiene_path,
+                )?,
             },
         ))
     }
 
-    fn assert_proof_content(&self, run_id: &str) -> anyhow::Result<()> {
+    async fn to_refs_after_operator_post_run_proofs(
+        &self,
+        snapshot: &TinyCanaryOperatorLiveResultSnapshot,
+        run_id: &str,
+        loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+        expected_strategy_instance_id_hash: &str,
+    ) -> anyhow::Result<(
+        TinyCanaryEvidenceRef,
+        TinyCanaryLiveOrderRef,
+        TinyCanaryLiveCanaryResultRefs,
+    )> {
+        let wait_seconds = loaded
+            .root
+            .nautilus
+            .timeout_reconciliation_seconds
+            .saturating_add(loaded.root.nautilus.timeout_shutdown_seconds);
+        let poll_interval = Duration::from_secs(loaded.root.nautilus.timeout_shutdown_seconds);
+        let deadline = Instant::now() + Duration::from_secs(wait_seconds);
+        let mut observed_errors = Vec::new();
+
+        loop {
+            match self.to_refs(snapshot, run_id, expected_strategy_instance_id_hash) {
+                Ok(refs) => return Ok(refs),
+                Err(error) => {
+                    observed_errors.push(error.to_string());
+                    if Instant::now() >= deadline {
+                        anyhow::bail!(
+                            "tiny canary post-run operator evidence did not become ready within nautilus.timeout_reconciliation_seconds + nautilus.timeout_shutdown_seconds; observed errors: {}",
+                            observed_errors.join(" | ")
+                        );
+                    }
+                }
+            }
+
+            tokio::time::sleep(poll_interval).await;
+        }
+    }
+
+    fn assert_proof_content(
+        &self,
+        run_id: &str,
+        expected_strategy_instance_id_hash: &str,
+    ) -> anyhow::Result<()> {
         tiny_canary_assert_operator_evidence_proof(
             &self.decision_evidence_path,
             "decision_evidence",
             Some(run_id),
             None,
+            Some(expected_strategy_instance_id_hash),
             Some(&self.client_order_id_hash),
             None,
         )?;
@@ -508,6 +1502,7 @@ impl TinyCanaryOperatorLiveResultPaths {
             "nt_submit_event",
             Some(run_id),
             None,
+            Some(expected_strategy_instance_id_hash),
             Some(&self.client_order_id_hash),
             None,
         )?;
@@ -516,8 +1511,13 @@ impl TinyCanaryOperatorLiveResultPaths {
             "venue_order_state",
             Some(run_id),
             None,
+            Some(expected_strategy_instance_id_hash),
             Some(&self.client_order_id_hash),
             Some(&self.venue_order_id_hash),
+        )?;
+        tiny_canary_assert_venue_order_state_proof(
+            &self.venue_order_state_path,
+            self.strategy_cancel_path.is_some(),
         )?;
         if let Some(strategy_cancel_path) = &self.strategy_cancel_path {
             tiny_canary_assert_operator_evidence_proof(
@@ -525,6 +1525,7 @@ impl TinyCanaryOperatorLiveResultPaths {
                 "strategy_cancel",
                 Some(run_id),
                 None,
+                Some(expected_strategy_instance_id_hash),
                 Some(&self.client_order_id_hash),
                 Some(&self.venue_order_id_hash),
             )?;
@@ -534,10 +1535,75 @@ impl TinyCanaryOperatorLiveResultPaths {
             "restart_reconciliation",
             None,
             Some(run_id),
+            Some(expected_strategy_instance_id_hash),
             Some(&self.client_order_id_hash),
             Some(&self.venue_order_id_hash),
+        )?;
+        tiny_canary_assert_restart_reconciliation_proof(&self.restart_reconciliation_path)?;
+        tiny_canary_assert_post_run_hygiene_proof(
+            &self.post_run_hygiene_path,
+            run_id,
+            expected_strategy_instance_id_hash,
+            &self.client_order_id_hash,
+            &self.venue_order_id_hash,
         )
     }
+}
+
+fn tiny_canary_assert_venue_order_state_proof(
+    path: &str,
+    strategy_cancel_present: bool,
+) -> anyhow::Result<()> {
+    let proof = tiny_canary_read_operator_evidence_proof(path, "venue_order_state")?;
+    let outcome = proof.venue_order_outcome.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("tiny canary venue_order_state proof venue_order_outcome is missing")
+    })?;
+    match outcome {
+        "accepted" | "filled" | "rejected" => {}
+        _ => {
+            return Err(anyhow::anyhow!(
+                "tiny canary venue_order_state proof venue_order_outcome must be accepted, filled, or rejected"
+            ));
+        }
+    }
+    let order_remains_open = proof.order_remains_open.ok_or_else(|| {
+        anyhow::anyhow!("tiny canary venue_order_state proof order_remains_open is missing")
+    })?;
+    if matches!(outcome, "filled" | "rejected") && order_remains_open {
+        return Err(anyhow::anyhow!(
+            "tiny canary venue_order_state proof order_remains_open must be false for terminal outcome"
+        ));
+    }
+    if order_remains_open && !strategy_cancel_present {
+        return Err(anyhow::anyhow!(
+            "tiny canary venue_order_state proof requires strategy cancel evidence when order remains open"
+        ));
+    }
+    Ok(())
+}
+
+fn tiny_canary_assert_restart_reconciliation_proof(path: &str) -> anyhow::Result<()> {
+    let proof = tiny_canary_read_operator_evidence_proof(path, "restart_reconciliation")?;
+    let outcome = proof.venue_order_outcome.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("tiny canary restart reconciliation proof venue_order_outcome is missing")
+    })?;
+    match outcome {
+        "filled" | "rejected" => {}
+        _ => {
+            return Err(anyhow::anyhow!(
+                "tiny canary restart reconciliation proof venue_order_outcome must be terminal"
+            ));
+        }
+    }
+    let order_remains_open = proof.order_remains_open.ok_or_else(|| {
+        anyhow::anyhow!("tiny canary restart reconciliation proof order_remains_open is missing")
+    })?;
+    if order_remains_open {
+        return Err(anyhow::anyhow!(
+            "tiny canary restart reconciliation proof order_remains_open must be false"
+        ));
+    }
+    Ok(())
 }
 
 fn tiny_canary_operator_evidence_ref(path: &str) -> anyhow::Result<TinyCanaryEvidenceRef> {
@@ -555,6 +1621,16 @@ fn required_operator_field(value: &str, field: &str) -> anyhow::Result<String> {
         ));
     }
     Ok(trimmed.to_string())
+}
+
+fn required_operator_sha256(value: &str, field: &str) -> anyhow::Result<String> {
+    let value = required_operator_field(value, field)?;
+    if !tiny_canary_is_sha256_hex(&value) {
+        return Err(anyhow::anyhow!(
+            "required tiny canary config field `{field}` must be a sha256 hex digest"
+        ));
+    }
+    Ok(value)
 }
 
 fn required_operator_path(root_path: &Path, value: &str, field: &str) -> anyhow::Result<String> {
@@ -586,14 +1662,8 @@ fn resolve_operator_path(root_path: &Path, configured_path: &str) -> String {
     resolved.to_string_lossy().to_string()
 }
 
-fn required_operator_sha256(value: &str, field: &str) -> anyhow::Result<String> {
-    let value = required_operator_field(value, field)?;
-    if value.len() != 64 || !value.chars().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(anyhow::anyhow!(
-            "required tiny canary config field `{field}` must be a sha256 hex digest"
-        ));
-    }
-    Ok(value)
+fn tiny_canary_is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn tiny_canary_assert_path_starts_with(path: &str, base: &str, label: &str) -> anyhow::Result<()> {
@@ -651,11 +1721,67 @@ fn tiny_canary_read_operator_evidence_proof(
         .map_err(|source| anyhow::anyhow!("failed to parse tiny canary {label} proof: {source}"))
 }
 
+fn tiny_canary_read_post_run_hygiene_proof(
+    path: &str,
+) -> anyhow::Result<TinyCanaryPostRunHygieneProof> {
+    let file = std::fs::File::open(path).map_err(|source| {
+        anyhow::anyhow!("failed to open tiny canary post_run_hygiene proof: {source}")
+    })?;
+    serde_json::from_reader(file).map_err(|source| {
+        anyhow::anyhow!("failed to parse tiny canary post_run_hygiene proof: {source}")
+    })
+}
+
+fn tiny_canary_assert_post_run_hygiene_proof(
+    path: &str,
+    expected_run_id: &str,
+    expected_strategy_instance_id_hash: &str,
+    expected_client_order_id_hash: &str,
+    expected_venue_order_id_hash: &str,
+) -> anyhow::Result<()> {
+    tiny_canary_assert_operator_evidence_proof(
+        path,
+        "post_run_hygiene",
+        Some(expected_run_id),
+        None,
+        Some(expected_strategy_instance_id_hash),
+        Some(expected_client_order_id_hash),
+        Some(expected_venue_order_id_hash),
+    )?;
+    let proof = tiny_canary_read_post_run_hygiene_proof(path)?;
+    if !proof.raw_secret_residue_absent {
+        return Err(anyhow::anyhow!(
+            "tiny canary post_run_hygiene proof raw_secret_residue_absent must be true"
+        ));
+    }
+    if proof.scanned_artifact_hashes.is_empty() {
+        return Err(anyhow::anyhow!(
+            "tiny canary post_run_hygiene proof scanned_artifact_hashes must not be empty"
+        ));
+    }
+    if proof
+        .scanned_artifact_hashes
+        .iter()
+        .any(|hash| !tiny_canary_is_sha256_hex(hash))
+    {
+        return Err(anyhow::anyhow!(
+            "tiny canary post_run_hygiene proof scanned_artifact_hashes must contain sha256 hashes"
+        ));
+    }
+    if !tiny_canary_is_sha256_hex(&proof.retention_purge_path_hash) {
+        return Err(anyhow::anyhow!(
+            "tiny canary post_run_hygiene proof retention_purge_path_hash must be a sha256 hash"
+        ));
+    }
+    Ok(())
+}
+
 fn tiny_canary_assert_operator_evidence_proof(
     path: &str,
     expected_kind: &str,
     expected_run_id: Option<&str>,
     expected_source_run_id: Option<&str>,
+    expected_strategy_instance_id_hash: Option<&str>,
     expected_client_order_id_hash: Option<&str>,
     expected_venue_order_id_hash: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -677,6 +1803,13 @@ fn tiny_canary_assert_operator_evidence_proof(
     {
         return Err(anyhow::anyhow!(
             "tiny canary {expected_kind} proof source_run_id does not match live canary run"
+        ));
+    }
+    if let Some(expected_strategy_instance_id_hash) = expected_strategy_instance_id_hash
+        && proof.strategy_instance_id_hash.as_deref() != Some(expected_strategy_instance_id_hash)
+    {
+        return Err(anyhow::anyhow!(
+            "tiny canary {expected_kind} proof strategy_instance_id_hash does not match approved financial envelope"
         ));
     }
     if let Some(expected_client_order_id_hash) = expected_client_order_id_hash

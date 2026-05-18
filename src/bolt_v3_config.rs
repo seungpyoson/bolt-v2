@@ -238,6 +238,12 @@ pub struct LiveCanaryOperatorEvidenceBlock {
     pub ssm_manifest_sha256: String,
     pub strategy_input_evidence_path: String,
     pub strategy_input_evidence_sha256: String,
+    pub financial_envelope_path: String,
+    pub financial_envelope_sha256: String,
+    pub pre_run_state_path: String,
+    pub pre_run_state_sha256: String,
+    pub abort_plan_path: String,
+    pub abort_plan_sha256: String,
     pub canary_evidence_path: String,
     pub approval_not_before_unix_seconds: i64,
     pub approval_not_after_unix_seconds: i64,
@@ -251,6 +257,7 @@ pub struct LiveCanaryOperatorEvidenceBlock {
     pub venue_order_state_path: String,
     pub strategy_cancel_path: Option<String>,
     pub restart_reconciliation_path: String,
+    pub post_run_hygiene_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

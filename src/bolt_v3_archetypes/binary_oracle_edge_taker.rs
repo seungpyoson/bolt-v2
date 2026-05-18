@@ -93,6 +93,7 @@ pub struct RuntimeParametersBlock {
     pub vol_gap_reset_secs: u64,
     pub vol_min_observations: u64,
     pub vol_bridge_valid_secs: u64,
+    pub price_to_beat_source: String,
     pub pricing_kurtosis: f64,
     pub theta_decay_factor: f64,
     pub forced_flat_stale_reference_ms: u64,
@@ -587,6 +588,11 @@ pub fn raw_taker_config(
         "vol_bridge_valid_secs",
         parameters.runtime.vol_bridge_valid_secs,
     )?;
+    insert_string(
+        &mut table,
+        "price_to_beat_source",
+        parameters.runtime.price_to_beat_source.clone(),
+    );
     insert_float(
         &mut table,
         "pricing_kurtosis",

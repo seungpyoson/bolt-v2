@@ -16,6 +16,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use nautilus_common::enums::Environment;
 use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_common::{
     cache::Cache,
@@ -24,13 +25,26 @@ use nautilus_common::{
     messages::data::{SubscribeInstrument, SubscribeQuotes, SubscribeTrades},
     messages::execution::SubmitOrder,
 };
+use nautilus_live::node::LiveNode;
 use nautilus_model::{
     accounts::AccountAny,
     enums::OmsType,
-    identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, Venue},
+    identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId, Venue},
     types::{AccountBalance, MarginBalance},
 };
 use sha2::{Digest, Sha256};
+
+const TEST_DELAY_POST_STOP_SECS: u64 = 0;
+const TEST_TRADER_ID: &str = "TESTER-001";
+
+#[track_caller]
+pub fn fast_test_live_node() -> LiveNode {
+    LiveNode::builder(TraderId::from(TEST_TRADER_ID), Environment::Live)
+        .expect("LiveNode builder should initialize with test defaults")
+        .with_delay_post_stop_secs(TEST_DELAY_POST_STOP_SECS)
+        .build()
+        .expect("LiveNode should build with test defaults")
+}
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();

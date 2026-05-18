@@ -44,6 +44,7 @@ env:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   detector:
@@ -94,6 +95,7 @@ jobs:
 
   fmt-check:
     name: fmt-check
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -117,6 +119,7 @@ jobs:
   deny:
     name: deny
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -132,8 +135,10 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
+          cache-bin: false
           cache-targets: false
-          key: cargo-deny
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' }}
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c # v2.78.2
@@ -147,6 +152,7 @@ jobs:
   clippy:
     name: clippy
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -163,9 +169,15 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
+          cache-bin: false
           cache-targets: false
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: clippy-host-v1
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' }}
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
 
       - name: clippy
         run: just clippy
@@ -206,9 +218,16 @@ jobs:
         if: needs.detector.outputs.build_required != 'true'
         with:
           cache-on-failure: true
+          cache-bin: false
           cache-targets: false
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: check-aarch64-v1
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' }}
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: needs.detector.outputs.build_required != 'true'
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
 
       - name: check-aarch64
         if: needs.detector.outputs.build_required != 'true'
@@ -217,6 +236,7 @@ jobs:
   source-fence:
     name: source-fence
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -239,9 +259,15 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
+          cache-bin: false
           cache-targets: false
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: source-fence-v1-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' }}
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
 
       - name: source-fence
         env:
@@ -255,6 +281,7 @@ jobs:
   test-archive:
     name: nextest archive
     needs: [detector, source-fence]
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
@@ -275,6 +302,14 @@ jobs:
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' }}
 
       - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
@@ -311,6 +346,7 @@ jobs:
   test-shards:
     name: nextest shard ${{ matrix.shard }} of 4
     needs: test-archive
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -356,7 +392,7 @@ jobs:
   test:
     name: test
     needs: test-shards
-    if: ${{ always() }}
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}
     runs-on: ubuntu-latest
     steps:
       - name: Check test shards
@@ -370,7 +406,7 @@ jobs:
   build:
     name: build
     needs: detector
-    if: needs.detector.outputs.build_required == 'true'
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -388,9 +424,15 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
+          cache-bin: false
           cache-targets: false
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: cross-aarch64
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' }}
+
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -450,17 +492,82 @@ jobs:
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
           retention-days: 30
 
+  same-sha-main-evidence:
+    name: same-sha-main-evidence
+    needs: detector
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      source_run_id: ${{ steps.evidence.outputs.source_run_id }}
+      check_suite_id: ${{ steps.evidence.outputs.check_suite_id }}
+      artifact_id: ${{ steps.evidence.outputs.artifact_id }}
+      source_sha: ${{ steps.evidence.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Resolve same-SHA main evidence
+        id: evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/find_same_sha_main_evidence.py
+
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - name: Check required lanes
         shell: bash
         run: |
+          tag_ref="${{ startsWith(github.ref, 'refs/tags/v') }}"
           if [[ "${{ needs.detector.result }}" != "success" ]]; then
             echo "detector did not succeed"
+            exit 1
+          fi
+          if [[ "$tag_ref" == "true" ]]; then
+            if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
+              echo "same-sha-main-evidence did not succeed"
+              exit 1
+            fi
+            if [[ "${{ needs.fmt-check.result }}" != "skipped" ]]; then
+              echo "fmt-check unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
+              echo "deny unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
+              echo "clippy unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            # Tag-side check-aarch64 is a topology no-op; the source main build
+            # required by same-sha-main-evidence carries real aarch64 coverage.
+            if [[ "${{ needs.check-aarch64.result }}" != "success" ]]; then
+              echo "check-aarch64 did not succeed during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
+              echo "source-fence unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
+              echo "test unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
+              echo "build unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            exit 0
+          fi
+          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
+            echo "same-sha-main-evidence unexpectedly ran outside tag reuse"
             exit 1
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
@@ -502,11 +609,12 @@ jobs:
 
   deploy:
     name: deploy
-    needs: [gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.gate.result == 'success' && needs.same-sha-main-evidence.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -522,11 +630,26 @@ jobs:
             exit 1
           fi
 
+      - name: Log reused main-run evidence
+        run: |
+          echo "source_run_id=${{ needs.same-sha-main-evidence.outputs.source_run_id }}"
+          echo "check_suite_id=${{ needs.same-sha-main-evidence.outputs.check_suite_id }}"
+          echo "artifact_id=${{ needs.same-sha-main-evidence.outputs.artifact_id }}"
+          echo "source_sha=${{ needs.same-sha-main-evidence.outputs.source_sha }}"
+
       - name: Download artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: bolt-v2-binary
+          artifact-ids: ${{ needs.same-sha-main-evidence.outputs.artifact_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.same-sha-main-evidence.outputs.source_run_id }}
           path: artifact/
+
+      - name: Verify downloaded artifact checksum
+        run: |
+          cd artifact
+          sha256sum -c bolt-v2.sha256
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37 # v6.1.0

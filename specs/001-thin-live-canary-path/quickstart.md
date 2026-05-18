@@ -73,14 +73,29 @@ Preconditions:
 - all local gates pass
 - no-submit readiness report accepted
 - submit admission consumes live canary report
-- explicit operator approval window configured in `[live_canary.operator_evidence]`
-- approval nonce evidence path and checksum configured in `[live_canary.operator_evidence]`
-- configured approval consumption path does not exist before the attempt; the harness atomically creates it before live runner entry
+- exact head and root TOML hash bound through `approval_envelope_path`
+- redacted SSM manifest bound through `ssm_manifest_path` and `ssm_manifest_sha256`
+- strategy input evidence bound through `strategy_input_evidence_path` and `strategy_input_evidence_sha256`
+- `next` strategy input evidence includes `market_selection_source_path` and `market_selection_source_sha256` for the NT runtime `market_selection_result` source artifact; nearest-next candidates come from that source artifact, not from the strategy evidence file alone
+- financial envelope evidence bound through `financial_envelope_path` and `financial_envelope_sha256`
+- pre-run state evidence bound through `pre_run_state_path` and `pre_run_state_sha256`
+- pre-run state evidence carries sha256 hashes for host clock, account state, market state, funding/margin, single-runner lock, egress identity, CLOB V2 signing/collateral/fee behavior, and release-manifest proofs
+- abort plan evidence bound through `abort_plan_path` and `abort_plan_sha256`
+- explicit operator approval id comes from `[live_canary].approval_id`
+- non-zero approval time window configured with `approval_not_before_unix_seconds` and `approval_not_after_unix_seconds`; `not_after` must be greater than `not_before`
+- approval nonce evidence at `approval_nonce_path` matches `approval_nonce_sha256`
+- `approval_consumption_path` does not exist before the attempt; the harness atomically creates it before live runner entry
+- `canary_evidence_path` names the redacted canary evidence output
 - max live order count and notional cap configured in TOML
 
 Expected result:
 - at most one NT-submitted order
-- venue accept, fill, or reject captured
-- strategy-driven cancel if open
-- restart reconciliation through NT
+- decision evidence at `decision_evidence_path`
+- client and venue ids recorded as `client_order_id_hash` and `venue_order_id_hash`
+- NT submit event captured at `nt_submit_event_path`
+- venue accept, fill, or reject captured at `venue_order_state_path`
+- canary evidence writer binds the approved financial-envelope strategy-instance hash to the live-order proof strategy-instance hash
+- strategy-driven cancel if open, with conditional evidence at `strategy_cancel_path`
+- restart reconciliation through NT at `restart_reconciliation_path`
+- post-run hygiene proof at `post_run_hygiene_path`
 - redacted canary evidence artifact

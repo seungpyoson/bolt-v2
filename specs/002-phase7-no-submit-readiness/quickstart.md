@@ -54,5 +54,5 @@ Phase 8 live action remains blocked until:
 
 - Real no-submit report exists.
 - Report is accepted by live-canary gate.
-- `binary_oracle_edge_taker` strategy-input safety audit approves Chainlink feed path, reference venues, market selection, volatility, kurtosis, theta, fee/slippage model, caps, and edge economics.
+- Current strategy-input safety audit approves the configured binary-oracle edge taker inputs, including the approved price-to-beat source, reference quote timestamp, source-bound market selection, volatility, kurtosis, theta, fee/slippage model, caps, and edge economics.
 - User explicitly approves exact head and live command.

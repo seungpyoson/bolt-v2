@@ -85,6 +85,7 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             vol_gap_reset_secs: u64 => Integer;
             vol_min_observations: u64 => Integer;
             vol_bridge_valid_secs: u64 => Integer;
+            price_to_beat_source: String => String;
             pricing_kurtosis: f64 => Float;
             theta_decay_factor: f64 => Float;
             forced_flat_stale_reference_ms: u64 => Integer;
@@ -5611,6 +5612,7 @@ mod tests {
             vol_gap_reset_secs = 10
             vol_min_observations = 20
             vol_bridge_valid_secs = 10
+            price_to_beat_source = "chainlink_data_streams.report_at_boundary"
             pricing_kurtosis = 0.0
             theta_decay_factor = 0.0
             forced_flat_stale_reference_ms = 1500
@@ -5888,6 +5890,7 @@ mod tests {
                 vol_gap_reset_secs: 10,
                 vol_min_observations: 20,
                 vol_bridge_valid_secs: 10,
+                price_to_beat_source: "chainlink_data_streams.report_at_boundary".to_string(),
                 pricing_kurtosis: 0.0,
                 theta_decay_factor: 0.0,
                 forced_flat_stale_reference_ms: 1500,

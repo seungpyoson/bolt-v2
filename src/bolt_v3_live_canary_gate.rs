@@ -573,13 +573,9 @@ fn validate_no_submit_readiness_report(
         report,
         APPROVAL_ID_HASH_KEY,
         expected_approval_id_hash,
-        NoSubmitReadinessReportFailure::ApprovalIdHashMismatch {
-            expected: expected_approval_id_hash.to_string(),
-            actual: report
-                .get(APPROVAL_ID_HASH_KEY)
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+        |expected, actual| NoSubmitReadinessReportFailure::ApprovalIdHashMismatch {
+            expected,
+            actual,
         },
     );
     validate_linkage_field(
@@ -587,13 +583,9 @@ fn validate_no_submit_readiness_report(
         report,
         EXECUTABLE_IDENTITY_KEY,
         expected_executable_identity,
-        NoSubmitReadinessReportFailure::ExecutableIdentityMismatch {
-            expected: expected_executable_identity.to_string(),
-            actual: report
-                .get(EXECUTABLE_IDENTITY_KEY)
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+        |expected, actual| NoSubmitReadinessReportFailure::ExecutableIdentityMismatch {
+            expected,
+            actual,
         },
     );
     validate_linkage_field(
@@ -601,13 +593,9 @@ fn validate_no_submit_readiness_report(
         report,
         CONFIG_BUNDLE_CHECKSUM_KEY,
         expected_config_bundle_checksum,
-        NoSubmitReadinessReportFailure::ConfigBundleChecksumMismatch {
-            expected: expected_config_bundle_checksum.to_string(),
-            actual: report
-                .get(CONFIG_BUNDLE_CHECKSUM_KEY)
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+        |expected, actual| NoSubmitReadinessReportFailure::ConfigBundleChecksumMismatch {
+            expected,
+            actual,
         },
     );
     match report.get(STAGES_KEY) {
@@ -690,7 +678,7 @@ fn validate_linkage_field(
     report: &Map<String, Value>,
     field: &'static str,
     expected: &str,
-    mismatch: NoSubmitReadinessReportFailure,
+    mismatch: impl FnOnce(String, String) -> NoSubmitReadinessReportFailure,
 ) {
     let Some(value) = report.get(field) else {
         failures.push(NoSubmitReadinessReportFailure::LinkageFieldMissing { field });
@@ -708,7 +696,7 @@ fn validate_linkage_field(
         return;
     }
     if actual != expected {
-        failures.push(mismatch);
+        failures.push(mismatch(expected.to_string(), actual.to_string()));
     }
 }
 

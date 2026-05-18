@@ -10,8 +10,8 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
-GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]"
-DEPLOY_NEEDS = "needs: [gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
+GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]"
+DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
 
 
 def load_verifier():
@@ -41,6 +41,20 @@ on:
       - '.opencode/**'
       - '.pi/**'
       - '.specify/**'
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('pr-{0}', github.event.number)
+        || format('{0}-{1}', github.ref_name, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   detector:
@@ -51,6 +65,7 @@ jobs:
 
   fmt-check:
     name: fmt-check
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -65,6 +80,7 @@ jobs:
   deny:
     name: deny
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -74,7 +90,11 @@ jobs:
           include-deny-version: "true"
       - uses: Swatinem/rust-cache@example
         with:
-          key: deny
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' }}
       - name: Install cargo-deny
         uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
         with:
@@ -85,6 +105,7 @@ jobs:
   clippy:
     name: clippy
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -95,8 +116,15 @@ jobs:
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: clippy
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' }}
+      - uses: actions/cache@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
       - run: just clippy
 
   check-aarch64:
@@ -125,14 +153,23 @@ jobs:
       - uses: Swatinem/rust-cache@example
         if: needs.detector.outputs.build_required != 'true'
         with:
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: check-aarch64
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' }}
+      - uses: actions/cache@example
+        if: needs.detector.outputs.build_required != 'true'
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
       - if: needs.detector.outputs.build_required != 'true'
         run: just check-aarch64
 
   source-fence:
     name: source-fence
     needs: detector
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -142,13 +179,21 @@ jobs:
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: source-fence
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' }}
+      - uses: actions/cache@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
       - run: just source-fence
 
   test-archive:
     name: nextest archive
     needs: [detector, source-fence]
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
@@ -159,6 +204,13 @@ jobs:
           claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+      - uses: Swatinem/rust-cache@example
+        with:
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' }}
       - name: Restore nextest archive
         id: nextest-archive-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -193,6 +245,7 @@ jobs:
   test-shards:
     name: nextest shard ${{ matrix.shard }} of 4
     needs: test-archive
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -229,7 +282,7 @@ jobs:
   test:
     name: test
     needs: test-shards
-    if: ${{ always() }}
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -240,7 +293,7 @@ jobs:
   build:
     name: build
     needs: detector
-    if: needs.detector.outputs.build_required == 'true'
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -252,8 +305,15 @@ jobs:
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
-          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}
-          key: build
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: ${{ github.job == 'test-archive' }}
+      - uses: actions/cache@example
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
       - name: Install zig
         run: |
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
@@ -302,14 +362,60 @@ jobs:
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
 
+  same-sha-main-evidence:
+    name: same-sha-main-evidence
+    needs: detector
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      source_run_id: ${{ steps.evidence.outputs.source_run_id }}
+      check_suite_id: ${{ steps.evidence.outputs.check_suite_id }}
+      artifact_id: ${{ steps.evidence.outputs.artifact_id }}
+      source_sha: ${{ steps.evidence.outputs.source_sha }}
+    steps:
+      - name: Resolve same-SHA main evidence
+        id: evidence
+        run: python3 scripts/find_same_sha_main_evidence.py
+
   gate:
     name: gate
-    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]
+    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - run: |
+          tag_ref="${{ startsWith(github.ref, 'refs/tags/v') }}"
           if [[ "${{ needs.detector.result }}" != "success" ]]; then
+            exit 1
+          fi
+          if [[ "$tag_ref" == "true" ]]; then
+            if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.fmt-check.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.check-aarch64.result }}" != "success" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            exit 0
+          fi
+          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
             exit 1
           fi
           if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
@@ -342,10 +448,30 @@ jobs:
 
   deploy:
     name: deploy
-    needs: [gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.gate.result == 'success' && needs.same-sha-main-evidence.result == 'success' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     steps:
+      - run: |
+          echo "source_run_id=${{ needs.same-sha-main-evidence.outputs.source_run_id }}"
+          echo "check_suite_id=${{ needs.same-sha-main-evidence.outputs.check_suite_id }}"
+          echo "artifact_id=${{ needs.same-sha-main-evidence.outputs.artifact_id }}"
+          echo "source_sha=${{ needs.same-sha-main-evidence.outputs.source_sha }}"
+      - uses: actions/download-artifact@example
+        with:
+          artifact-ids: ${{ needs.same-sha-main-evidence.outputs.artifact_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.same-sha-main-evidence.outputs.source_run_id }}
+          path: artifact/
+      - name: Verify downloaded artifact checksum
+        run: |
+          cd artifact
+          sha256sum -c bolt-v2.sha256
       - run: echo deploy
 """
 
@@ -380,7 +506,6 @@ jobs:
       - name: Check advisories
         run: just deny-advisories
 """
-
 
 BASE_ACTION = """
 name: Setup Environment
@@ -561,8 +686,35 @@ def replace_once(text: str, old: str, new: str) -> str:
     return text.replace(old, new, 1)
 
 
+def without_pr_concurrency(workflow: str) -> str:
+    return replace_once(
+        workflow,
+        """concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('pr-{0}', github.event.number)
+        || format('{0}-{1}', github.ref_name, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+""",
+        "",
+    )
+
+
 def without_inline_need(line: str, job: str) -> str:
     return line.replace(f"{job}, ", "").replace(f", {job}", "")
+
+
+def without_job_if(workflow: str, job: str) -> str:
+    lines = workflow.splitlines()
+    start = next(i for i, line in enumerate(lines) if line == f"  {job}:")
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if lines[i].startswith("  ") and not lines[i].startswith("    ") and lines[i].strip().endswith(":"):
+            end = i
+            break
+    filtered = [line for i, line in enumerate(lines) if not (start < i < end and line.startswith("    if: "))]
+    return "\n".join(filtered) + "\n"
 
 
 def assert_parse_jobs_strips_comments() -> None:
@@ -654,6 +806,56 @@ def assert_nextest_live_node_group_covers_bolt_v3_builders() -> None:
 def main() -> int:
     assert_clean()
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
+    assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
+    assert_error(
+        "concurrency group must key pull_request runs by PR number",
+        replace_once(BASE_WORKFLOW, "format('pr-{0}', github.event.number)", "github.ref_name"),
+    )
+    assert_error(
+        "concurrency group must keep non-PR runs isolated by ref and SHA",
+        replace_once(BASE_WORKFLOW, "format('{0}-{1}', github.ref_name, github.sha)", "github.ref_name"),
+    )
+    assert_error(
+        "cancel-in-progress must be limited to pull_request events",
+        replace_once(
+            BASE_WORKFLOW,
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+            "cancel-in-progress: true",
+        ),
+    )
+    assert_error(
+        "concurrency group must branch on pull_request event",
+        replace_once(
+            BASE_WORKFLOW,
+            """  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('pr-{0}', github.event.number)
+        || format('{0}-{1}', github.ref_name, github.sha) }}""",
+            "  group: format('pr-{0}', github.event.number)",
+        ),
+    )
+    assert_error(
+        "concurrency group must branch on pull_request event",
+        replace_once(
+            BASE_WORKFLOW,
+            "github.event_name == 'pull_request'\n        &&",
+            "github.event_name != 'pull_request'\n        &&",
+        ),
+    )
+    assert_error(
+        "concurrency group must key pull_request runs by PR number",
+        replace_once(
+            BASE_WORKFLOW,
+            """  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('pr-{0}', github.event.number)
+        || format('{0}-{1}', github.ref_name, github.sha) }}""",
+            """  group: >-
+    ${{ github.event_name == 'pull_request'
+        && format('{0}-{1}', github.ref_name, github.sha)
+        || format('pr-{0}', github.event.number) }}""",
+        ),
+    )
     assert_parse_jobs_strips_comments()
     assert_strip_comment_handles_single_quoted_backslash()
     assert_required_job_indentation_is_actionable()
@@ -671,17 +873,44 @@ def main() -> int:
         "test-shards",
         "test",
         "build",
+        "same-sha-main-evidence",
         "gate",
         "deploy",
     ):
         assert_error(f"missing required job {job}", without_job(BASE_WORKFLOW, job))
     for job in ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build"):
         assert_error("gate needs " + job, replace_once(BASE_WORKFLOW, GATE_NEEDS, without_inline_need(GATE_NEEDS, job)))
+        if job == "build":
+            continue
+        if job == "check-aarch64":
+            assert_error(
+                f"gate must check needs.{job}.result",
+                BASE_WORKFLOW.replace(
+                    f'"${{{{ needs.{job}.result }}}}" != "success"',
+                    f'"${{{{ omitted.{job}.result }}}}" != "success"',
+                ),
+            )
+            continue
         assert_error(
             f"gate must check needs.{job}.result",
-            replace_once(BASE_WORKFLOW, f"needs.{job}.result", f"omitted.{job}.result"),
+            replace_once(
+                BASE_WORKFLOW,
+                f'"${{{{ needs.{job}.result }}}}" != "success"',
+                f'"${{{{ omitted.{job}.result }}}}" != "success"',
+            ),
         )
-    for job in ("gate", "build", "detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test"):
+    for job in (
+        "gate",
+        "same-sha-main-evidence",
+        "build",
+        "detector",
+        "fmt-check",
+        "deny",
+        "clippy",
+        "check-aarch64",
+        "source-fence",
+        "test",
+    ):
         assert_error("deploy needs " + job, replace_once(BASE_WORKFLOW, DEPLOY_NEEDS, without_inline_need(DEPLOY_NEEDS, job)))
     assert_error(
         "check-aarch64 needs detector",
@@ -754,6 +983,14 @@ def main() -> int:
         ),
     )
     assert_error(
+        "check-aarch64 managed target cache must run only when build_required is not true",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - uses: actions/cache@example\n        if: needs.detector.outputs.build_required != 'true'",
+            "      - uses: actions/cache@example",
+        ),
+    )
+    assert_error(
         "check-aarch64 command must run only when build_required is not true",
         replace_once(
             BASE_WORKFLOW,
@@ -781,9 +1018,80 @@ def main() -> int:
         "check-aarch64 must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
-            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: check-aarch64",
-            "          key: check-aarch64",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}",
         ),
+    )
+    assert_error(
+        "deny must use shared Cargo registry/git cache key",
+        replace_once(BASE_WORKFLOW, "          shared-key: cargo-registry-git-v1", "          key: deny"),
+    )
+    assert_error(
+        "deny shared Cargo registry/git cache must disable cargo bin caching",
+        replace_once(BASE_WORKFLOW, "          cache-bin: false", "          cache-bin: true"),
+    )
+    assert_error(
+        "deny shared Cargo registry/git cache must not include target directories",
+        replace_once(
+            BASE_WORKFLOW,
+            "          cache-targets: false\n          shared-key: cargo-registry-git-v1",
+            "          cache-targets: false\n          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          shared-key: cargo-registry-git-v1",
+        ),
+    )
+    assert_error(
+        "deny shared Cargo registry/git cache must not include target directories",
+        replace_once(
+            BASE_WORKFLOW,
+            "          cache-targets: false\n          shared-key: cargo-registry-git-v1",
+            "          cache-targets: false\n          cache-directories:\n            - ${{ steps.setup.outputs.managed_target_dir }}\n          shared-key: cargo-registry-git-v1",
+        ),
+    )
+    assert_error(
+        "deny must use only shared Cargo registry/git rust-cache blocks",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - name: Install cargo-deny\n",
+            "      - uses: Swatinem/rust-cache@example\n        with:\n          cache-on-failure: true\n          cache-bin: true\n          cache-targets: true\n          key: deny-targets\n      - name: Install cargo-deny\n",
+        ),
+    )
+    assert_error(
+        "clippy must use isolated managed target cache",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}\n",
+            "",
+        ),
+    )
+    assert_error(
+        "build managed target cache key must isolate build-aarch64-release",
+        replace_once(
+            BASE_WORKFLOW,
+            "managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-",
+            "managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
+        ),
+    )
+    assert_error(
+        "deny shared Cargo registry/git cache save must be single-owner",
+        replace_once(
+            BASE_WORKFLOW,
+            "          save-if: ${{ github.job == 'test-archive' }}",
+            "          save-if: true",
+        ),
+    )
+    assert_error(
+        "deny shared Cargo registry/git cache save must be single-owner",
+        replace_once(
+            BASE_WORKFLOW,
+            "          save-if: ${{ github.job == 'test-archive' }}",
+            "          cache-comment: |\n            save-if: ${{ github.job == 'test-archive' }}",
+        ),
+    )
+    assert_clean(
+        replace_once(
+            BASE_WORKFLOW,
+            "          cache-bin: false",
+            '          cache-bin: "false"',
+        )
     )
     assert_error(
         "test-shards matrix must set fail-fast false",
@@ -849,7 +1157,7 @@ def main() -> int:
         )
     )
     assert_error(
-        "test-archive must not use managed target rust-cache",
+        "test-archive must use only shared Cargo registry/git rust-cache blocks",
         replace_once(
             BASE_WORKFLOW,
             "      - name: Restore nextest archive",
@@ -985,7 +1293,11 @@ def main() -> int:
     )
     assert_error(
         "test must use always()",
-        replace_once(BASE_WORKFLOW, "  test:\n    name: test\n    needs: test-shards\n    if: ${{ always() }}", "  test:\n    name: test\n    needs: test-shards"),
+        replace_once(
+            BASE_WORKFLOW,
+            "  test:\n    name: test\n    needs: test-shards\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}",
+            "  test:\n    name: test\n    needs: test-shards",
+        ),
     )
     assert_error(
         "clippy must not run check-aarch64",
@@ -1019,6 +1331,8 @@ def main() -> int:
         "source-fence must run just source-fence",
         replace_once(BASE_WORKFLOW, "- run: just source-fence", "- run: echo source-fence"),
     )
+    for job in ("fmt-check", "deny", "clippy", "source-fence", "test-archive", "test-shards", "test"):
+        assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))
     assert_error(
         "fmt-check must run just fmt-check",
         replace_once(BASE_WORKFLOW, "- run: just fmt-check", "- run: echo skip fmt-check"),
@@ -1059,8 +1373,8 @@ def main() -> int:
         "on.push must have no paths-ignore",
         replace_once(
             BASE_WORKFLOW,
-            "      - '.specify/**'\n\njobs:",
-            "      - '.specify/**'\n\n  push:\n    branches: [main]\n    paths-ignore:\n      - 'docs/**'\n\njobs:",
+            '  push:\n    branches: [main]\n    tags: ["v*"]\n',
+            '  push:\n    branches: [main]\n    tags: ["v*"]\n    paths-ignore:\n      - \'docs/**\'\n',
         ),
     )
     assert_error(
@@ -1075,16 +1389,50 @@ def main() -> int:
         "build must gate on needs.detector.outputs.build_required",
         replace_once(
             BASE_WORKFLOW,
-            "if: needs.detector.outputs.build_required == 'true'",
-            "if: needs.detector.outputs.build_required != 'true'",
+            "if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}",
+            "if: ${{ needs.detector.outputs.build_required != 'true' }}",
         ),
     )
     assert_error(
         "build must gate on needs.detector.outputs.build_required",
         replace_once(
-            replace_once(BASE_WORKFLOW, "    if: needs.detector.outputs.build_required == 'true'\n", ""),
+            replace_once(
+                BASE_WORKFLOW,
+                "    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}\n",
+                "",
+            ),
             "      - uses: ./.github/actions/setup-environment",
             "      - if: needs.detector.outputs.build_required == 'true'\n        uses: ./.github/actions/setup-environment",
+        ),
+    )
+    assert_error("same-sha-main-evidence needs detector", replace_once(BASE_WORKFLOW, "    needs: detector\n    if: startsWith(github.ref, 'refs/tags/v')", "    if: startsWith(github.ref, 'refs/tags/v')"))
+    assert_error("same-sha-main-evidence must be tag-gated", without_job_if(BASE_WORKFLOW, "same-sha-main-evidence"))
+    assert_error(
+        "same-sha-main-evidence must expose source run",
+        replace_once(BASE_WORKFLOW, "      artifact_id: ${{ steps.evidence.outputs.artifact_id }}\n", ""),
+    )
+    assert_error(
+        "same-sha-main-evidence must run resolver script",
+        replace_once(BASE_WORKFLOW, "python3 scripts/find_same_sha_main_evidence.py", "python3 scripts/other.py"),
+    )
+    assert_error(
+        "gate needs same-sha-main-evidence",
+        replace_once(BASE_WORKFLOW, GATE_NEEDS, without_inline_need(GATE_NEEDS, "same-sha-main-evidence")),
+    )
+    assert_error(
+        "gate must check same-sha-main-evidence success",
+        replace_once(
+            BASE_WORKFLOW,
+            '"${{ needs.same-sha-main-evidence.result }}" != "success"',
+            '"${{ needs.same-sha-main-evidence.result }}" != "skipped"',
+        ),
+    )
+    assert_error(
+        "gate must require build skipped on tag reuse",
+        replace_once(
+            BASE_WORKFLOW,
+            '"${{ needs.build.result }}" != "skipped"',
+            '"${{ needs.build.result }}" != "success"',
         ),
     )
     assert_error(
@@ -1747,8 +2095,8 @@ def main() -> int:
         "gate must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  gate:\n    name: gate\n    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]\n    if: ${{ always() }}",
-            "  gate:\n    name: gate\n    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]\n    if: ${{ always() && false }}",
+            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}",
+            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    if: ${{{{ always() && false }}}}",
         ),
     )
     assert_error(
@@ -1756,11 +2104,11 @@ def main() -> int:
         replace_once(
             replace_once(
                 BASE_WORKFLOW,
-                "  gate:\n    name: gate\n    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]\n    if: ${{ always() }}\n",
-                "  gate:\n    name: gate\n    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]\n",
+                f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}\n",
+                f"  gate:\n    name: gate\n    {GATE_NEEDS}\n",
             ),
-            "  gate:\n    name: gate\n    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]\n    runs-on: ubuntu-latest\n    steps:\n      - run: |",
-            "  gate:\n    name: gate\n    needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build]\n    runs-on: ubuntu-latest\n    steps:\n      - if: ${{ always() }}\n        run: |",
+            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - run: |",
+            f"  gate:\n    name: gate\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - if: ${{{{ always() }}}}\n        run: |",
         ),
     )
     assert_error(
@@ -1887,29 +2235,50 @@ def main() -> int:
     )
     assert_error(
         "deploy must be tag-gated",
-        replace_once(BASE_WORKFLOW, "if: startsWith(github.ref, 'refs/tags/v')", "if: ${{ always() }}"),
+        replace_once(
+            BASE_WORKFLOW,
+            "if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.gate.result == 'success' && needs.same-sha-main-evidence.result == 'success' }}",
+            "if: ${{ always() }}",
+        ),
     )
     assert_error(
         "deploy must be tag-gated",
         replace_once(
-            replace_once(BASE_WORKFLOW, "    if: startsWith(github.ref, 'refs/tags/v')\n", ""),
+            replace_once(
+                BASE_WORKFLOW,
+                "    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.gate.result == 'success' && needs.same-sha-main-evidence.result == 'success' }}\n",
+                "",
+            ),
             "      - run: echo deploy",
             "      - if: startsWith(github.ref, 'refs/tags/v')\n        run: echo deploy",
         ),
     )
     assert_error(
-        "clippy uses managed target dir but setup does not opt in",
+        "deploy permissions must include actions: read",
+        replace_once(BASE_WORKFLOW, "      actions: read\n      id-token: write", "      id-token: write"),
+    )
+    assert_error(
+        "deploy must download same-SHA main artifact by artifact ID",
         replace_once(
             BASE_WORKFLOW,
-            '          include-managed-target-dir: "true"\n'
-            "      - uses: Swatinem/rust-cache@example\n"
-            "        with:\n"
-            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n"
-            "          key: clippy",
-            "      - uses: Swatinem/rust-cache@example\n"
-            "        with:\n"
-            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n"
-            "          key: clippy",
+            "          artifact-ids: ${{ needs.same-sha-main-evidence.outputs.artifact_id }}",
+            "          name: bolt-v2-binary",
+        ),
+    )
+    assert_error(
+        "deploy must log reused source run",
+        replace_once(BASE_WORKFLOW, '          echo "check_suite_id=${{ needs.same-sha-main-evidence.outputs.check_suite_id }}"\n', ""),
+    )
+    assert_error(
+        "deploy must verify downloaded artifact checksum",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Verify downloaded artifact checksum
+        run: |
+          cd artifact
+          sha256sum -c bolt-v2.sha256
+""",
+            "",
         ),
     )
     assert_error(
@@ -1932,8 +2301,8 @@ def main() -> int:
         "clippy must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
-            "          cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: clippy",
-            "          # cache-directories: ${{ steps.setup.outputs.managed_target_dir }}\n          key: clippy",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}",
         ),
     )
     assert_error(

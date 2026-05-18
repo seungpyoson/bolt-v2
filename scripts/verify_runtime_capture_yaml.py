@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 try:
@@ -150,7 +151,9 @@ PATTERN_HELPER_RE = re.compile(r"\b([a-z][a-z0-9_]*_pattern)\(\)")
 PATTERN_HELPER_DEF_RE_TEMPLATE = r"\bfn\s+{}\s*\("
 RAW_STRING_START_RE = re.compile(r"(?:b|c)?r(#{0,255})\"")
 SUBSCRIBE_CALL_RE = re.compile(r"\b(subscribe_[a-z0-9_]+)\s*\(", re.MULTILINE)
-SUBSCRIBE_FN_RE = re.compile(r"^pub fn (subscribe_[a-z0-9_]+)\b", re.MULTILINE)
+SUBSCRIBE_FN_RE = re.compile(
+    r"^pub\s+(?:async\s+)?fn\s+(subscribe_[a-z0-9_]+)\b", re.MULTILINE
+)
 TEST_FN_RE_TEMPLATE = r"\b(?:async\s+)?fn\s+{}\s*\("
 RISK_DIR_CONST_RE = re.compile(
     r'const\s+RISK_DIR:\s*&str\s*=\s*(?:stringify!\(risk\)|"risk")\s*;'
@@ -180,8 +183,11 @@ def has_risk_jsonl_path(src_text: str) -> bool:
 
 
 def has_pattern_helper_definition(src_text: str, helper: str) -> bool:
+    definition_text = strip_rust_comments_and_strings(src_text)
     return (
-        re.search(PATTERN_HELPER_DEF_RE_TEMPLATE.format(re.escape(helper)), src_text)
+        re.search(
+            PATTERN_HELPER_DEF_RE_TEMPLATE.format(re.escape(helper)), definition_text
+        )
         is not None
     )
 
@@ -191,12 +197,13 @@ def load_yaml(path: Path):
 
 
 def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
-    cargo_text = read(REPO_ROOT / "Cargo.toml")
-    dependency_rows = re.findall(
-        r'^\s*(nautilus-[\w-]+)\s*=\s*\{([^\n]*)\}',
-        cargo_text,
-        re.MULTILINE,
-    )
+    cargo_doc = tomllib.loads(read(REPO_ROOT / "Cargo.toml"))
+    dependencies = cargo_doc.get("dependencies", {})
+    dependency_rows = [
+        (crate, spec)
+        for crate, spec in dependencies.items()
+        if isinstance(crate, str) and crate.startswith("nautilus-")
+    ]
     if not dependency_rows:
         findings.append(
             (
@@ -207,8 +214,20 @@ def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
         return None
 
     revs: set[str] = set()
-    for crate, body in dependency_rows:
-        if "nautechsystems/nautilus_trader.git" not in body:
+    for crate, spec in dependency_rows:
+        if not isinstance(spec, dict):
+            findings.append(
+                (
+                    "13.pin_revision_mismatch",
+                    f"Cargo.toml dependency {crate} must use an inline table",
+                )
+            )
+            continue
+        git_source = spec.get("git")
+        if (
+            not isinstance(git_source, str)
+            or "nautechsystems/nautilus_trader.git" not in git_source
+        ):
             findings.append(
                 (
                     "13.pin_revision_mismatch",
@@ -216,8 +235,8 @@ def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
                 )
             )
             continue
-        match = re.search(r'\brev\s*=\s*"([0-9a-f]{40})"', body)
-        if not match:
+        revision = spec.get("rev")
+        if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
             findings.append(
                 (
                     "13.pin_revision_missing",
@@ -225,7 +244,7 @@ def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
                 )
             )
             continue
-        revs.add(match.group(1))
+        revs.add(revision)
     if len(revs) != 1:
         findings.append(
             (
@@ -375,7 +394,8 @@ def source_subscribe_calls(
     src_text = strip_rust_comments_and_strings(src_text)
     calls: set[tuple[str, str]] = set()
     for match in SUBSCRIBE_CALL_RE.finditer(src_text):
-        prefix = src_text[max(0, match.start() - 16) : match.start()]
+        line_start = src_text.rfind("\n", 0, match.start()) + 1
+        prefix = src_text[line_start : match.start()]
         if re.search(r"\bfn\s+$", prefix):
             continue
         fn_name = match.group(1)
@@ -440,6 +460,7 @@ def collect_failures() -> list[tuple[str, str]]:
     naming_audit_doc = load_yaml(NAMING_AUDIT_PATH) or {}
     src_text = read(SRC_PATH)
     test_text = read(TEST_PATH)
+    test_definition_text = strip_rust_comments_and_strings(test_text)
     surfaces_text = read(SURFACES_PATH)
     feas_text = read(FEAS_PATH)
     runtime_contracts_text = read(RUNTIME_CONTRACTS_PATH)
@@ -901,7 +922,8 @@ def collect_failures() -> list[tuple[str, str]]:
     for stream, row in current_by_stream.items():
         for test_name in row.get("test_coverage") or []:
             if not re.search(
-                TEST_FN_RE_TEMPLATE.format(re.escape(str(test_name))), test_text
+                TEST_FN_RE_TEMPLATE.format(re.escape(str(test_name))),
+                test_definition_text,
             ):
                 findings.append(
                     (

@@ -299,6 +299,26 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assertEqual([], VERIFIER.collect_failures())
 
+    def test_collect_failures_rejects_commented_pattern_helper_definitions(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] = fixture["src_text"].replace(
+                "fn quotes_pattern() {}",
+                "// fn quotes_pattern() {}",
+            )
+
+        self.assert_collects("3.captured_now_pattern_missing_in_src", mutate)
+
+    def test_collect_failures_rejects_string_embedded_pattern_helper_definitions(
+        self,
+    ) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] = fixture["src_text"].replace(
+                "fn quotes_pattern() {}",
+                'let _doc = "fn quotes_pattern() {}";',
+            )
+
+        self.assert_collects("3.captured_now_pattern_missing_in_src", mutate)
+
     def test_collect_failures_rejects_safe_missing_rows_without_evidence(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             row = fixture["surfaces"]["surfaces"][2]
@@ -541,6 +561,23 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assertEqual([], VERIFIER.collect_failures())
 
+    def test_collect_failures_ignores_wide_spaced_subscribe_function_definitions(
+        self,
+    ) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] += """
+                pub fn                         subscribe_trades(
+                    pattern: Pattern,
+                    handler: Handler,
+                ) {
+                    let _ = (pattern, handler);
+                }
+            """
+
+        self.write_fixture(mutate)
+
+        self.assertEqual([], VERIFIER.collect_failures())
+
     def test_collect_failures_rejects_current_capture_storage_mismatches(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             fixture["current_capture"]["captured_streams"][0]["storage_format"] = "JSONL"
@@ -587,6 +624,29 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assert_collects("13.pin_revision_missing", mutate)
 
+    def test_collect_failures_accepts_quoted_table_cargo_pin(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["cargo_text"] = (
+                '[dependencies."nautilus-common"]\n'
+                'git = "https://github.com/nautechsystems/nautilus_trader.git"\n'
+                f'rev = "{self.PINNED_REV}"\n'
+            )
+
+        self.write_fixture(mutate)
+
+        self.assertEqual([], VERIFIER.collect_failures())
+
+    def test_collect_failures_accepts_async_pinned_subscribe_apis(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["nt_api_text"] = fixture["nt_api_text"].replace(
+                "pub fn subscribe_quotes(",
+                "pub async fn subscribe_quotes(",
+            )
+
+        self.write_fixture(mutate)
+
+        self.assertEqual([], VERIFIER.collect_failures())
+
     def test_collect_failures_rejects_missing_runtime_contract_pin(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             fixture["runtime_contracts_text"] = "runtime contract without pin\n"
@@ -616,6 +676,17 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
             fixture["current_capture"]["captured_streams"][0]["test_coverage"] = [
                 "missing_quotes_test"
             ]
+
+        self.assert_collects("14.current_capture_missing_test", mutate)
+
+    def test_collect_failures_rejects_commented_current_capture_test_functions(
+        self,
+    ) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["test_text"] = fixture["test_text"].replace(
+                "fn captures_quote_ticks() {}",
+                "// fn captures_quote_ticks() {}",
+            )
 
         self.assert_collects("14.current_capture_missing_test", mutate)
 

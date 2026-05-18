@@ -17,7 +17,7 @@ live_config := "config/live.toml"
 repo_root := justfile_directory()
 rust_verification_owner := env_var('HOME') + "/.claude/lib/rust_verification.py"
 rust_verification_source_repo := "seungpyoson/claude-config"
-rust_verification_source_sha := "50a8b4fb40d5ec4a83de2fa545083355970a7c78"
+rust_verification_source_sha := "cc6e0fb82459b8589ce02f543295d52ba39ebcaf"
 rust_verification_require_script := "scripts/require_rust_verification_owner.sh"
 rust_verification_ci_install_script := "scripts/install_ci_rust_verification_owner.sh"
 

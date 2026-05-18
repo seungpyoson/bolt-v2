@@ -234,7 +234,7 @@ pub struct BoltV3StrategyConfig {
     pub strategy_archetype: StrategyArchetypeKey,
     pub order_id_tag: String,
     pub oms_type: OmsType,
-    pub execution_client_id: String,
+    pub execution_client_id: ClientId,
     /// Raw `[target]` envelope. The strategy envelope keeps the TOML
     /// field name `target` but its Rust type is a generic raw-TOML
     /// container so target-shape fields live in the per-family binding
@@ -261,7 +261,7 @@ impl StrategyArchetypeKey {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReferenceDataBlock {
-    pub data_client_id: String,
+    pub data_client_id: ClientId,
     pub instrument_id: InstrumentId,
 }
 

@@ -227,7 +227,7 @@ pub fn register_runtime_strategy(
         .loaded
         .root
         .clients
-        .get(&context.strategy.config.execution_client_id)
+        .get(context.strategy.config.execution_client_id.as_str())
         .ok_or_else(|| {
             binding_message(
                 &context,
@@ -238,7 +238,7 @@ pub fn register_runtime_strategy(
             )
         })?;
     let fee_provider = polymarket::build_fee_provider(
-        &context.strategy.config.execution_client_id,
+        context.strategy.config.execution_client_id.as_str(),
         venue,
         context.resolved,
     )
@@ -296,7 +296,7 @@ pub fn raw_taker_config(
     insert_string(
         &mut table,
         "client_id",
-        strategy.config.execution_client_id.clone(),
+        strategy.config.execution_client_id.to_string(),
     );
     insert_u64(
         &mut table,

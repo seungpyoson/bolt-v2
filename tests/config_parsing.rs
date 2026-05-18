@@ -14,10 +14,13 @@ fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
     let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
 
     let strategy = &loaded.strategies[0].config;
-    assert_eq!(strategy.execution_client_id, "polymarket_main");
+    assert_eq!(
+        strategy.execution_client_id,
+        nautilus_model::identifiers::ClientId::from("polymarket_main")
+    );
     assert_eq!(
         strategy.reference_data["primary"].data_client_id,
-        "binance_reference"
+        nautilus_model::identifiers::ClientId::from("binance_reference")
     );
 
     let data_engine = &loaded.root.nautilus.data_engine;
@@ -187,6 +190,74 @@ fn bolt_v3_reference_data_instrument_id_rejects_empty_string_at_parse_time() {
             || rendered.contains("missing")
             || rendered.contains("separator"),
         "rejection should explain the empty instrument_id, got: {rendered}"
+    );
+}
+
+#[test]
+fn bolt_v3_strategy_execution_client_id_uses_nt_typed_identifier() {
+    // `BoltV3StrategyConfig.execution_client_id` is typed as
+    // `nautilus_model::identifiers::ClientId`. The strategy block is
+    // parsed via `toml::from_str(&content)` directly (borrowed source),
+    // so NT's `impl_serialization_for_identifier!` macro routes the
+    // value through `ClientId::new_checked` and rejects empty / non-ascii
+    // strings at parse time without a bolt-side runtime guard.
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use nautilus_model::identifiers::ClientId;
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
+
+    let strategy = &loaded.strategies[0].config;
+    let execution_client_id: ClientId = strategy.execution_client_id;
+    assert_eq!(execution_client_id, ClientId::from("polymarket_main"));
+
+    let primary = strategy
+        .reference_data
+        .get("primary")
+        .expect("binary_oracle fixture should have reference_data.primary");
+    let data_client_id: ClientId = primary.data_client_id;
+    assert_eq!(data_client_id, ClientId::from("binance_reference"));
+}
+
+#[test]
+fn bolt_v3_strategy_execution_client_id_rejects_empty_string_at_parse_time() {
+    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
+
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let mutated = strategy_toml.replace(
+        "execution_client_id = \"polymarket_main\"",
+        "execution_client_id = \"\"",
+    );
+    let err = toml::from_str::<BoltV3StrategyConfig>(&mutated)
+        .expect_err("empty execution_client_id should be rejected by NT ClientId serde");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("empty") || rendered.contains("invalid"),
+        "rejection should explain the empty execution_client_id, got: {rendered}"
+    );
+}
+
+#[test]
+fn bolt_v3_reference_data_data_client_id_rejects_empty_string_at_parse_time() {
+    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
+
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let mutated = strategy_toml.replace(
+        "data_client_id = \"binance_reference\"",
+        "data_client_id = \"\"",
+    );
+    let err = toml::from_str::<BoltV3StrategyConfig>(&mutated)
+        .expect_err("empty data_client_id should be rejected by NT ClientId serde");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("empty") || rendered.contains("invalid"),
+        "rejection should explain the empty data_client_id, got: {rendered}"
     );
 }
 
@@ -1133,7 +1204,7 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     assert!(strategy.reference_data.contains_key("primary"));
     assert_eq!(
         strategy.reference_data["primary"].data_client_id,
-        "binance_reference"
+        nautilus_model::identifiers::ClientId::from("binance_reference")
     );
 }
 

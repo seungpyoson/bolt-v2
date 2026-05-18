@@ -393,7 +393,8 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
     // Mutate the strategy to bind to the Binance reference venue.
-    loaded.strategies[0].config.execution_client_id = "binance_reference".to_string();
+    loaded.strategies[0].config.execution_client_id =
+        nautilus_model::identifiers::ClientId::from("binance_reference");
 
     let resolved = fixture_resolved_secrets();
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
@@ -426,7 +427,8 @@ fn provider_binding_rejects_updown_target_bound_to_unknown_venue() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
-    loaded.strategies[0].config.execution_client_id = "venue_does_not_exist".to_string();
+    loaded.strategies[0].config.execution_client_id =
+        nautilus_model::identifiers::ClientId::from("venue_does_not_exist");
 
     let resolved = fixture_resolved_secrets();
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");

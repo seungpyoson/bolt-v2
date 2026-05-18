@@ -471,7 +471,7 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             ));
         }
 
-        match root.clients.get(&strategy.execution_client_id) {
+        match root.clients.get(strategy.execution_client_id.as_str()) {
             None => errors.push(format!(
                 "{context}: execution_client_id `{}` does not match any [clients.<id>] block",
                 strategy.execution_client_id
@@ -528,7 +528,7 @@ fn validate_reference_data(
     let mut errors = Vec::new();
 
     for (role, block) in &strategy.reference_data {
-        match root.clients.get(&block.data_client_id) {
+        match root.clients.get(block.data_client_id.as_str()) {
             None => errors.push(format!(
                 "{context}: reference_data.{role}.data_client_id `{}` does not match any [clients.<id>] block",
                 block.data_client_id

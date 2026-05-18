@@ -317,6 +317,68 @@ fn bolt_v3_strategy_oms_type_rejects_non_netting_variants() {
 }
 
 #[test]
+fn bolt_v3_strategy_execution_client_id_rejects_data_only_client_with_client_vocabulary() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nmax_retries = 3\nretry_delay_initial_ms = 250\nretry_delay_max_ms = 2000\nack_timeout_secs = 5\n\n";
+    let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(execution_block, ""))
+        .expect("data-only polymarket fixture should parse");
+    let strategy: BoltV3StrategyConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&root, &loaded);
+    let rendered = messages.join("\n");
+    assert!(rendered.contains("strategy execution_client_id `polymarket_main`"));
+    assert!(rendered.contains("execution-capable client"));
+    assert!(rendered.contains("referenced client has no [execution] block"));
+    assert!(!rendered.contains("execution-capable venue"));
+    assert!(!rendered.contains("referenced venue"));
+}
+
+#[test]
+fn bolt_v3_reference_data_client_id_rejects_execution_only_client_with_client_vocabulary() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let data_block = "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\n\n";
+    let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(data_block, ""))
+        .expect("execution-only binance fixture should parse");
+    let strategy: BoltV3StrategyConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&root, &loaded);
+    let rendered = messages.join("\n");
+    assert!(rendered.contains("reference_data.primary.data_client_id `binance_reference`"));
+    assert!(rendered.contains("data-capable client"));
+    assert!(rendered.contains("referenced client has no [data] block"));
+    assert!(!rendered.contains("data-capable venue"));
+    assert!(!rendered.contains("referenced venue"));
+}
+
+#[test]
 fn bolt_v3_runtime_mode_uses_nt_environment_enum() {
     // FINDING-1: `runtime.mode` is typed as `nautilus_common::enums::Environment`
     // (not a bolt shadow `RuntimeMode`). NT's `Environment` derives serde

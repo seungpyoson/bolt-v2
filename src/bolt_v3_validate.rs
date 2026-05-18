@@ -3,7 +3,7 @@
 //! Schema rules: docs/bolt-v3/2026-04-25-bolt-v3-schema.md Section 8.
 //!
 //! This module owns common strategy-envelope validation (schema
-//! version, uniqueness of instance / order-id-tag, venue / execution
+//! version, uniqueness of instance / order-id-tag, client / execution
 //! lookup, per-role reference-data structural validation), root-block
 //! validation, and root risk decimal syntax only. Market-family-shaped
 //! target rules
@@ -26,8 +26,8 @@
 //! deserialization, cross-block presence rules, provider data /
 //! execution bounds, EVM funder-address syntax, provider secret-path
 //! ownership) is owned by the per-provider binding modules under
-//! `crate::bolt_v3_providers`; `validate_venues_block` dispatches each
-//! venue block through `crate::bolt_v3_providers::validate_venue_block`.
+//! `crate::bolt_v3_providers`; `validate_clients_block` dispatches each
+//! client block through `crate::bolt_v3_providers::validate_venue_block`.
 //! Only the genuinely provider-neutral SSM parameter-path utility
 //! (`validate_ssm_parameter_path`) stays in this module and is exposed
 //! `pub(crate)` so the per-provider secret validators can call it the
@@ -106,7 +106,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_risk_block(&root.risk));
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
-    errors.extend(validate_venues_block(&root.clients));
+    errors.extend(validate_clients_block(&root.clients));
 
     errors
 }
@@ -375,7 +375,7 @@ fn validate_aws_block(block: &AwsBlock) -> Vec<String> {
     errors
 }
 
-fn validate_venues_block(clients: &BTreeMap<String, ClientBlock>) -> Vec<String> {
+fn validate_clients_block(clients: &BTreeMap<String, ClientBlock>) -> Vec<String> {
     let mut errors = Vec::new();
     if clients.is_empty() {
         errors.push("clients must define at least one client block".to_string());
@@ -476,11 +476,11 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
                 "{context}: execution_client_id `{}` does not match any [clients.<id>] block",
                 strategy.execution_client_id
             )),
-            Some(venue) => {
-                if venue.execution.is_none() {
+            Some(client) => {
+                if client.execution.is_none() {
                     errors.push(format!(
-                        "{context}: strategy execution_client_id `{}` must reference an execution-capable venue \
-                         (the referenced venue has no [execution] block)",
+                        "{context}: strategy execution_client_id `{}` must reference an execution-capable client \
+                         (the referenced client has no [execution] block)",
                         strategy.execution_client_id
                     ));
                 }
@@ -533,11 +533,11 @@ fn validate_reference_data(
                 "{context}: reference_data.{role}.data_client_id `{}` does not match any [clients.<id>] block",
                 block.data_client_id
             )),
-            Some(venue) => {
-                if venue.data.is_none() {
+            Some(client) => {
+                if client.data.is_none() {
                     errors.push(format!(
-                        "{context}: reference_data.{role}.data_client_id `{}` must reference a data-capable venue \
-                         (the referenced venue has no [data] block)",
+                        "{context}: reference_data.{role}.data_client_id `{}` must reference a data-capable client \
+                         (the referenced client has no [data] block)",
                         block.data_client_id
                     ));
                 }

@@ -302,6 +302,7 @@ mod tests {
     fn fixture_loaded_config() -> LoadedBoltV3Config {
         LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: "test-config-bundle-checksum".to_string(),
             root: toml::from_str(minimal_root_toml()).unwrap(),
             strategies: Vec::new(),
         }

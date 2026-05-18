@@ -13,6 +13,7 @@ use std::{
 };
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use toml::Value;
 
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
@@ -365,6 +366,7 @@ pub struct LoadedStrategy {
 #[derive(Debug, Clone)]
 pub struct LoadedBoltV3Config {
     pub root_path: PathBuf,
+    pub config_bundle_checksum: String,
     pub root: BoltV3RootConfig,
     pub strategies: Vec<LoadedStrategy>,
 }
@@ -420,6 +422,7 @@ pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV
         })?;
 
     let mut strategies = Vec::with_capacity(root.strategy_files.len());
+    let mut strategy_texts = Vec::with_capacity(root.strategy_files.len());
     let mut seen_paths = HashSet::new();
     let mut path_errors: Vec<String> = Vec::new();
 
@@ -449,6 +452,7 @@ pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV
                 path: absolute.clone(),
                 message: error.to_string(),
             })?;
+        strategy_texts.push((relative.clone(), text));
         strategies.push(LoadedStrategy {
             config_path: absolute,
             relative_path: relative.clone(),
@@ -468,9 +472,35 @@ pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV
 
     Ok(LoadedBoltV3Config {
         root_path: root_path.to_path_buf(),
+        config_bundle_checksum: config_bundle_checksum(&root_text, &strategy_texts),
         root,
         strategies,
     })
+}
+
+const CONFIG_BUNDLE_CHECKSUM_DOMAIN: &[u8] = b"bolt-v3.config-bundle.v1\n";
+
+fn config_bundle_checksum(root_text: &str, strategy_texts: &[(String, String)]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(CONFIG_BUNDLE_CHECKSUM_DOMAIN);
+    hasher.update((strategy_texts.len() as u32 + 1).to_be_bytes());
+    update_config_bundle_entry(&mut hasher, 0, "root", root_text.as_bytes());
+
+    let mut sorted_strategy_texts: Vec<_> = strategy_texts.iter().collect();
+    sorted_strategy_texts.sort_by(|left, right| left.0.cmp(&right.0));
+    for (relative_path, text) in sorted_strategy_texts {
+        update_config_bundle_entry(&mut hasher, 1, relative_path, text.as_bytes());
+    }
+
+    hex::encode(hasher.finalize())
+}
+
+fn update_config_bundle_entry(hasher: &mut Sha256, kind: u8, key: &str, content: &[u8]) {
+    hasher.update([kind]);
+    hasher.update((key.len() as u32).to_be_bytes());
+    hasher.update(key.as_bytes());
+    hasher.update((content.len() as u64).to_be_bytes());
+    hasher.update(content);
 }
 
 pub(crate) fn resolve_root_relative_path(

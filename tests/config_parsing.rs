@@ -77,6 +77,48 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
 }
 
 #[test]
+fn config_bundle_checksum_changes_when_loaded_strategy_toml_changes() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+
+    let case = support::TempCaseDir::new("config-bundle-checksum-strategy");
+    let root_path = case.path().join("root.toml");
+    let strategies_dir = case.path().join("strategies");
+    let strategy_path = strategies_dir.join("binary_oracle.toml");
+
+    std::fs::create_dir_all(&strategies_dir).expect("strategy fixture directory should be created");
+    std::fs::copy(
+        support::repo_path("tests/fixtures/bolt_v3/root.toml"),
+        &root_path,
+    )
+    .expect("root fixture should copy into temp case");
+    std::fs::copy(
+        support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        &strategy_path,
+    )
+    .expect("strategy fixture should copy into temp case");
+
+    let before = load_bolt_v3_config(&root_path)
+        .expect("fixture should load before mutation")
+        .config_bundle_checksum;
+
+    let strategy_text =
+        std::fs::read_to_string(&strategy_path).expect("strategy fixture should be readable");
+    std::fs::write(
+        &strategy_path,
+        format!("{strategy_text}\n# checksum must include loaded strategy TOML bytes\n"),
+    )
+    .expect("strategy fixture should be mutated");
+
+    let after = load_bolt_v3_config(&root_path)
+        .expect("fixture should load after mutation")
+        .config_bundle_checksum;
+
+    assert!(!before.trim().is_empty());
+    assert!(!after.trim().is_empty());
+    assert_ne!(before, after);
+}
+
+#[test]
 fn root_example_declares_live_canary_gate_contract() {
     use bolt_v2::bolt_v3_config::{BoltV3RootConfig, RuntimeMode};
 

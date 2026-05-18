@@ -13,6 +13,7 @@ use bolt_v2::{
         REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
     },
 };
+use sha2::{Digest, Sha256};
 use tokio::task::LocalSet;
 
 #[test]
@@ -257,6 +258,82 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
         report_path.as_path(),
         "absolute report path should be preserved"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_stale_no_submit_linkage_fields() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let base_loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+
+    for case in [
+        (
+            "approval-id",
+            "stale-approval-id-hash".to_string(),
+            current_executable_identity(),
+            base_loaded.config_bundle_checksum.clone(),
+            NoSubmitReadinessReportFailure::ApprovalIdHashMismatch {
+                expected: sha256_hex("operator-approved-canary-001".as_bytes()),
+                actual: "stale-approval-id-hash".to_string(),
+            },
+        ),
+        (
+            "executable",
+            sha256_hex("operator-approved-canary-001".as_bytes()),
+            "stale-executable-identity".to_string(),
+            base_loaded.config_bundle_checksum.clone(),
+            NoSubmitReadinessReportFailure::ExecutableIdentityMismatch {
+                expected: current_executable_identity(),
+                actual: "stale-executable-identity".to_string(),
+            },
+        ),
+        (
+            "config-bundle",
+            sha256_hex("operator-approved-canary-001".as_bytes()),
+            current_executable_identity(),
+            "stale-config-bundle-checksum".to_string(),
+            NoSubmitReadinessReportFailure::ConfigBundleChecksumMismatch {
+                expected: base_loaded.config_bundle_checksum.clone(),
+                actual: "stale-config-bundle-checksum".to_string(),
+            },
+        ),
+    ] {
+        let (name, approval_id_hash, executable_identity, config_bundle_checksum, expected) = case;
+        let report_path = tempdir
+            .path()
+            .join(format!("no-submit-readiness-{name}.json"));
+        let loaded = loaded_with_live_canary(
+            base_loaded.clone(),
+            LiveCanaryBlock {
+                approval_id: "operator-approved-canary-001".to_string(),
+                no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+                max_live_order_count: 1,
+                max_notional_per_order: "1.00".to_string(),
+                max_no_submit_readiness_report_bytes: 4096,
+                operator_evidence: None,
+            },
+        );
+        write_no_submit_report_with_linkage(
+            &report_path,
+            &approval_id_hash,
+            &executable_identity,
+            &config_bundle_checksum,
+        );
+
+        let error = check_bolt_v3_live_canary_gate(&loaded)
+            .await
+            .expect_err("stale no-submit linkage must fail closed");
+
+        match error {
+            BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { failures, .. } => {
+                assert!(
+                    failures.contains(&expected),
+                    "expected {expected:?} for {name}, got {failures:?}"
+                );
+            }
+            other => panic!("expected no-submit report rejection, got {other:?}"),
+        }
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -652,7 +729,7 @@ async fn live_canary_gate_rejects_readiness_report_with_wrong_schema_version() {
     write_report_value(
         &report_path,
         serde_json::json!({
-            SCHEMA_VERSION_KEY: "bolt-v3.no-submit-readiness.v2",
+            SCHEMA_VERSION_KEY: "bolt-v3.no-submit-readiness.v1",
             "stages": [{ "stage": OPERATOR_APPROVAL_STAGE, "status": "satisfied" }],
         }),
     );
@@ -681,7 +758,7 @@ async fn live_canary_gate_rejects_readiness_report_with_wrong_schema_version() {
             assert_eq!(expected, NO_SUBMIT_READINESS_SCHEMA_VERSION);
             assert_eq!(
                 actual.as_deref(),
-                Some("bolt-v3.no-submit-readiness.v2"),
+                Some("bolt-v3.no-submit-readiness.v1"),
                 "expected actual to carry the unexpected version, got {actual:?}"
             );
         }
@@ -1158,6 +1235,36 @@ fn write_no_submit_report(path: &std::path::Path, stages: &[(&str, &str)]) {
     write_no_submit_report_with_stage_field(path, "stage", stages);
 }
 
+fn write_no_submit_report_with_linkage(
+    path: &std::path::Path,
+    approval_id_hash: &str,
+    executable_identity: &str,
+    config_bundle_checksum: &str,
+) {
+    let stages = [
+        OPERATOR_APPROVAL_STAGE,
+        SECRET_RESOLUTION_STAGE,
+        LIVE_NODE_BUILD_STAGE,
+        CONTROLLED_CONNECT_STAGE,
+        REFERENCE_READINESS_STAGE,
+        CONTROLLED_DISCONNECT_STAGE,
+        REPORT_WRITE_STAGE,
+    ]
+    .into_iter()
+    .map(|stage| serde_json::json!({ "stage": stage, "status": "satisfied" }))
+    .collect::<Vec<_>>();
+    write_report_value(
+        path,
+        serde_json::json!({
+            SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+            "approval_id_hash": approval_id_hash,
+            "executable_identity": executable_identity,
+            "config_bundle_checksum": config_bundle_checksum,
+            "stages": stages,
+        }),
+    );
+}
+
 fn write_report_value(path: &std::path::Path, value: serde_json::Value) {
     std::fs::write(
         path,
@@ -1199,6 +1306,13 @@ fn write_no_submit_report_with_stage_field(
         .collect();
     let report = serde_json::json!({
         SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+        "approval_id_hash": sha256_hex("operator-approved-canary-001".as_bytes()),
+        "executable_identity": current_executable_identity(),
+        "config_bundle_checksum": load_bolt_v3_config(
+            &support::repo_path("tests/fixtures/bolt_v3/root.toml")
+        )
+        .expect("fixture v3 config should load")
+        .config_bundle_checksum,
         "stages": stages,
     });
     std::fs::write(
@@ -1206,4 +1320,13 @@ fn write_no_submit_report_with_stage_field(
         serde_json::to_string_pretty(&report).expect("report should serialize"),
     )
     .expect("report fixture should be written");
+}
+
+fn current_executable_identity() -> String {
+    let path = std::env::current_exe().expect("current test executable path should resolve");
+    sha256_hex(&std::fs::read(path).expect("current test executable should be readable"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }

@@ -497,6 +497,7 @@ mod tests {
         let root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
         LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: "test-config-bundle-checksum".to_string(),
             root,
             strategies: Vec::new(),
         }
@@ -580,6 +581,7 @@ mod tests {
             .replace("kind = \"polymarket\"", "kind = \"fake_updown_provider\"");
         let mut loaded = LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: "test-config-bundle-checksum".to_string(),
             root: toml::from_str(&fake_root_text).expect("fake-provider root should parse"),
             strategies: Vec::new(),
         };
@@ -630,6 +632,7 @@ mod tests {
             .replace("kind = \"polymarket\"", "kind = \"fake_updown_provider\"");
         let mut loaded = LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: "test-config-bundle-checksum".to_string(),
             root: toml::from_str(&fake_root_text).expect("fake-provider root should parse"),
             strategies: Vec::new(),
         };
@@ -686,6 +689,7 @@ mod tests {
             .replace("kind = \"polymarket\"", "kind = \"fake_updown_provider\"");
         let mut loaded = LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: "test-config-bundle-checksum".to_string(),
             root: toml::from_str(&fake_root_text).expect("fake-provider root should parse"),
             strategies: Vec::new(),
         };

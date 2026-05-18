@@ -215,6 +215,7 @@ fn empty_venues_root_config_registers_zero_clients() {
     };
     let empty_loaded = LoadedBoltV3Config {
         root_path: loaded.root_path.clone(),
+        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         root: empty_root,
         strategies: Vec::new(),
     };

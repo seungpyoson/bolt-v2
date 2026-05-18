@@ -8,7 +8,6 @@ Produce authenticated no-submit readiness evidence without entering the live run
 
 - Loaded bolt-v3 root TOML.
 - `[live_canary]` approval id and no-submit report path.
-- Operator approval id for real SSM/venue readiness.
 - Existing SSM-only secret resolver.
 - Existing bolt-v3 live-node build path.
 
@@ -26,25 +25,25 @@ Required guarantees:
 
 ## Real Operator Contract
 
-Real readiness harness is ignored by default.
+Real readiness runs through the production `bolt-v2` binary.
 
 Required preconditions:
 
 1. Explicit operator approval in current runtime turn.
-2. Exact head SHA recorded.
-3. Approved bolt-v3 root TOML checksum recorded.
-4. Approval id matches `[live_canary].approval_id`.
-5. Report path comes from `[live_canary].no_submit_readiness_report_path`.
+2. Approved bolt-v3 root TOML path.
+3. `[live_canary].approval_id` is present.
+4. Report path comes from `[live_canary].no_submit_readiness_report_path`.
 
 Required behavior:
 
-1. Reject missing or mismatched approval before secret resolution.
+1. Reject missing configured approval before secret resolution.
 2. Resolve secrets only through Rust AWS SDK SSM path.
 3. Build production-shaped bolt-v3 runtime.
 4. Perform controlled NT start/readiness/stop.
 5. Place zero orders.
 6. Write redacted report.
-7. Return failure when any required readiness stage is not satisfied.
+7. Record `approval_id_hash`, `executable_identity`, and `config_bundle_checksum`.
+8. Return failure when any required readiness stage is not satisfied.
 
 ## Reference-readiness Stage
 

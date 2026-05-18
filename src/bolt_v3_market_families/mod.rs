@@ -318,6 +318,7 @@ mod tests {
             toml::from_str(include_str!("../../tests/fixtures/bolt_v3/root.toml")).unwrap();
         LoadedBoltV3Config {
             root_path: std::path::PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: "test-config-bundle-checksum".to_string(),
             root,
             strategies: Vec::new(),
         }

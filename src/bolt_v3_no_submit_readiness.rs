@@ -29,8 +29,13 @@ use crate::{
 pub enum BoltV3NoSubmitReadinessError {
     MissingLiveCanaryConfig,
     MissingOperatorApprovalId,
-    MissingHeadSha,
-    OperatorApprovalIdMismatch,
+    CurrentExecutablePath {
+        source: std::io::Error,
+    },
+    ExecutableIdentityRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     ActiveTokioRuntime,
     RuntimeBuild {
         source: std::io::Error,
@@ -54,10 +59,6 @@ pub enum BoltV3NoSubmitReadinessError {
     ReportSerialize {
         source: serde_json::Error,
     },
-    RootConfigChecksumRead {
-        path: PathBuf,
-        source: std::io::Error,
-    },
 }
 
 impl std::fmt::Display for BoltV3NoSubmitReadinessError {
@@ -72,10 +73,14 @@ impl std::fmt::Display for BoltV3NoSubmitReadinessError {
                     "bolt-v3 no-submit readiness operator approval id is empty"
                 )
             }
-            Self::MissingHeadSha => write!(f, "bolt-v3 no-submit readiness head SHA is empty"),
-            Self::OperatorApprovalIdMismatch => write!(
+            Self::CurrentExecutablePath { source } => write!(
                 f,
-                "bolt-v3 no-submit readiness operator approval id does not match `[live_canary]`"
+                "failed to resolve bolt-v3 no-submit readiness executable path: {source}"
+            ),
+            Self::ExecutableIdentityRead { path, source } => write!(
+                f,
+                "failed to read bolt-v3 no-submit readiness executable {}: {source}",
+                path.display()
             ),
             Self::ActiveTokioRuntime => write!(
                 f,
@@ -114,11 +119,6 @@ impl std::fmt::Display for BoltV3NoSubmitReadinessError {
                     "failed to serialize bolt-v3 no-submit readiness report: {source}"
                 )
             }
-            Self::RootConfigChecksumRead { path, source } => write!(
-                f,
-                "failed to read bolt-v3 root TOML {} for no-submit checksum: {source}",
-                path.display()
-            ),
         }
     }
 }
@@ -128,15 +128,14 @@ impl std::error::Error for BoltV3NoSubmitReadinessError {
         match self {
             Self::RuntimeBuild { source } => Some(source),
             Self::LiveNode { source } => Some(source),
+            Self::CurrentExecutablePath { source } => Some(source),
+            Self::ExecutableIdentityRead { source, .. } => Some(source),
             Self::ReportParentCreate { source, .. } | Self::ReportWrite { source, .. } => {
                 Some(source)
             }
             Self::ReportSerialize { source } => Some(source),
-            Self::RootConfigChecksumRead { source, .. } => Some(source),
             Self::MissingLiveCanaryConfig
             | Self::MissingOperatorApprovalId
-            | Self::MissingHeadSha
-            | Self::OperatorApprovalIdMismatch
             | Self::ActiveTokioRuntime
             | Self::ReportTooLarge { .. } => None,
         }
@@ -162,34 +161,19 @@ pub struct BoltV3NoSubmitReadinessStage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3NoSubmitReadinessReportMetadata {
     pub approval_id_hash: String,
-    pub head_sha: String,
-    pub config_checksum: String,
-    pub report_path: String,
+    pub executable_identity: String,
+    pub config_bundle_checksum: String,
 }
 
 impl BoltV3NoSubmitReadinessReportMetadata {
     pub async fn from_loaded(
         loaded: &LoadedBoltV3Config,
-        operator_approval_id: &str,
-        head_sha: &str,
     ) -> Result<Self, BoltV3NoSubmitReadinessError> {
-        let trimmed_head = head_sha.trim();
-        if trimmed_head.is_empty() {
-            return Err(BoltV3NoSubmitReadinessError::MissingHeadSha);
-        }
-        let approval_id_hash = validate_operator_approval(loaded, operator_approval_id)?;
-        let block = loaded
-            .root
-            .live_canary
-            .as_ref()
-            .ok_or(BoltV3NoSubmitReadinessError::MissingLiveCanaryConfig)?;
+        let approval_id_hash = configured_operator_approval_hash(loaded)?;
         Ok(Self {
             approval_id_hash,
-            head_sha: trimmed_head.to_string(),
-            config_checksum: root_config_checksum(loaded).await?,
-            report_path: configured_report_path(loaded, &block.no_submit_readiness_report_path)
-                .to_string_lossy()
-                .to_string(),
+            executable_identity: executable_identity().await?,
+            config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         })
     }
 }
@@ -198,9 +182,8 @@ impl BoltV3NoSubmitReadinessReportMetadata {
 pub struct BoltV3NoSubmitReadinessReport {
     pub schema_version: &'static str,
     pub approval_id_hash: String,
-    pub head_sha: String,
-    pub config_checksum: String,
-    pub report_path: String,
+    pub executable_identity: String,
+    pub config_bundle_checksum: String,
     pub stages: Vec<BoltV3NoSubmitReadinessStage>,
 }
 
@@ -299,9 +282,8 @@ pub fn run_bolt_v3_no_submit_readiness_from_stage_results(
     BoltV3NoSubmitReadinessReport {
         schema_version: NO_SUBMIT_READINESS_SCHEMA_VERSION,
         approval_id_hash: metadata.approval_id_hash,
-        head_sha: metadata.head_sha,
-        config_checksum: metadata.config_checksum,
-        report_path: metadata.report_path,
+        executable_identity: metadata.executable_identity,
+        config_bundle_checksum: metadata.config_bundle_checksum,
         stages,
     }
 }
@@ -371,17 +353,14 @@ pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
 
 pub fn run_bolt_v3_no_submit_readiness(
     loaded: &LoadedBoltV3Config,
-    operator_approval_id: &str,
-    head_sha: &str,
 ) -> Result<BoltV3NoSubmitReadinessReport, BoltV3NoSubmitReadinessError> {
     if tokio::runtime::Handle::try_current().is_ok() {
         return Err(BoltV3NoSubmitReadinessError::ActiveTokioRuntime);
     }
 
     let metadata_runtime = no_submit_readiness_tokio_runtime()?;
-    let metadata = metadata_runtime.block_on(
-        BoltV3NoSubmitReadinessReportMetadata::from_loaded(loaded, operator_approval_id, head_sha),
-    )?;
+    let metadata =
+        metadata_runtime.block_on(BoltV3NoSubmitReadinessReportMetadata::from_loaded(loaded))?;
     drop(metadata_runtime);
 
     let mut runtime = build_bolt_v3_live_node(loaded)
@@ -408,14 +387,9 @@ fn no_submit_readiness_tokio_runtime()
         .map_err(|source| BoltV3NoSubmitReadinessError::RuntimeBuild { source })
 }
 
-fn validate_operator_approval(
+fn configured_operator_approval_hash(
     loaded: &LoadedBoltV3Config,
-    operator_approval_id: &str,
 ) -> Result<String, BoltV3NoSubmitReadinessError> {
-    let supplied = operator_approval_id.trim();
-    if supplied.is_empty() {
-        return Err(BoltV3NoSubmitReadinessError::MissingOperatorApprovalId);
-    }
     let configured = loaded
         .root
         .live_canary
@@ -426,24 +400,19 @@ fn validate_operator_approval(
     if configured.is_empty() {
         return Err(BoltV3NoSubmitReadinessError::MissingOperatorApprovalId);
     }
-    let supplied_hash = sha256_hex(supplied.as_bytes());
-    let configured_hash = sha256_hex(configured.as_bytes());
-    if supplied_hash != configured_hash {
-        return Err(BoltV3NoSubmitReadinessError::OperatorApprovalIdMismatch);
-    }
-    Ok(supplied_hash)
+    Ok(sha256_hex(configured.as_bytes()))
 }
 
 fn configured_report_path(loaded: &LoadedBoltV3Config, configured: &str) -> PathBuf {
     resolve_root_relative_path(&loaded.root_path, configured)
 }
 
-async fn root_config_checksum(
-    loaded: &LoadedBoltV3Config,
-) -> Result<String, BoltV3NoSubmitReadinessError> {
-    let bytes = tokio::fs::read(&loaded.root_path).await.map_err(|source| {
-        BoltV3NoSubmitReadinessError::RootConfigChecksumRead {
-            path: loaded.root_path.clone(),
+async fn executable_identity() -> Result<String, BoltV3NoSubmitReadinessError> {
+    let path = std::env::current_exe()
+        .map_err(|source| BoltV3NoSubmitReadinessError::CurrentExecutablePath { source })?;
+    let bytes = tokio::fs::read(&path).await.map_err(|source| {
+        BoltV3NoSubmitReadinessError::ExecutableIdentityRead {
+            path: path.clone(),
             source,
         }
     })?;

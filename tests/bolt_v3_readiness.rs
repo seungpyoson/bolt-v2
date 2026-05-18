@@ -125,6 +125,7 @@ fn startup_check_reports_empty_venue_stages_as_satisfied_root_facts() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let empty_loaded = LoadedBoltV3Config {
         root_path: loaded.root_path.clone(),
+        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         root: BoltV3RootConfig {
             venues: BTreeMap::new(),
             ..loaded.root

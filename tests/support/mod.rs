@@ -30,6 +30,7 @@ use nautilus_model::{
     identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, Venue},
     types::{AccountBalance, MarginBalance},
 };
+use sha2::{Digest, Sha256};
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MOCK_DATA_SUBSCRIPTIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
@@ -155,7 +156,7 @@ pub fn validated_bolt_v3_live_canary_gate_report(
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
     loaded.root.risk.default_max_notional_per_order = max_notional_per_order.to_string();
     let report_path = temp.path().join("no-submit-readiness.json");
-    write_satisfied_no_submit_readiness_report(&report_path);
+    write_satisfied_no_submit_readiness_report(&report_path, &loaded.config_bundle_checksum);
     loaded.root.live_canary = Some(bolt_v2::bolt_v3_config::LiveCanaryBlock {
         approval_id: "operator-approved-canary-001".to_string(),
         no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
@@ -174,7 +175,7 @@ pub fn validated_bolt_v3_live_canary_gate_report(
         .expect("valid live canary fixture should pass gate")
 }
 
-fn write_satisfied_no_submit_readiness_report(path: &Path) {
+fn write_satisfied_no_submit_readiness_report(path: &Path, config_bundle_checksum: &str) {
     use bolt_v2::bolt_v3_no_submit_readiness_schema::{
         CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
         NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
@@ -183,6 +184,9 @@ fn write_satisfied_no_submit_readiness_report(path: &Path) {
 
     let report = serde_json::json!({
         SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+        "approval_id_hash": sha256_hex("operator-approved-canary-001".as_bytes()),
+        "executable_identity": current_executable_identity(),
+        "config_bundle_checksum": config_bundle_checksum,
         "stages": [
             { "stage": OPERATOR_APPROVAL_STAGE, "status": "satisfied" },
             { "stage": SECRET_RESOLUTION_STAGE, "status": "satisfied" },
@@ -198,6 +202,15 @@ fn write_satisfied_no_submit_readiness_report(path: &Path) {
         serde_json::to_vec(&report).expect("report JSON should encode"),
     )
     .expect("readiness report should be written");
+}
+
+fn current_executable_identity() -> String {
+    let path = std::env::current_exe().expect("current test executable path should resolve");
+    sha256_hex(&fs::read(path).expect("current test executable should be readable"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }
 
 impl Drop for TempCaseDir {

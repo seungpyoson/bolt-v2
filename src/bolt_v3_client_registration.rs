@@ -148,6 +148,7 @@ mod tests {
         let root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
         LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: "test-config-bundle-checksum".to_string(),
             root,
             strategies: Vec::new(),
         }

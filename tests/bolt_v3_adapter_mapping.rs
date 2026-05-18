@@ -807,6 +807,7 @@ fn missing_or_invalid_root_config_remains_caught_by_validation_not_mapper_defaul
     // error driven by the resolved-secrets gap, not a default.
     let loaded = LoadedBoltV3Config {
         root_path: support::repo_path("tests/fixtures/bolt_v3/root.toml"),
+        config_bundle_checksum: "test-config-bundle-checksum".to_string(),
         root,
         strategies: Vec::new(),
     };

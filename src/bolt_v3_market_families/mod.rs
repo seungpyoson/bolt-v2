@@ -28,6 +28,7 @@ struct TargetFamilyDispatch {
     rotating_market_family: String,
 }
 
+#[derive(Clone)]
 pub struct MarketFamilyValidationBinding {
     pub key: &'static str,
     pub validate_target: fn(&str, &toml::Value) -> Vec<String>,
@@ -350,6 +351,22 @@ mod tests {
         strategy
     }
 
+    /// Deserialize the fixture strategy and remove the
+    /// `rotating_market_family` discriminator from its raw `[target]`
+    /// envelope. Used by tests that exercise the parent dispatcher's
+    /// own `TargetParseFailed` arm (raw TOML missing the field the
+    /// dispatcher reads to route).
+    fn fixture_strategy_without_family_discriminator() -> LoadedStrategy {
+        let mut strategy = fixture_strategy_with_family("updown");
+        strategy
+            .config
+            .target
+            .as_table_mut()
+            .expect("strategy [target] should be a TOML table")
+            .remove("rotating_market_family");
+        strategy
+    }
+
     #[test]
     fn validation_can_use_injected_family_binding_without_editing_production_registry() {
         let target = toml::toml! {
@@ -428,26 +445,8 @@ mod tests {
 
         let combined_bindings: Vec<MarketFamilyValidationBinding> = validation_bindings()
             .iter()
-            .map(|binding| MarketFamilyValidationBinding {
-                key: binding.key,
-                validate_target: binding.validate_target,
-                instrument_filter_target_for_strategy: binding
-                    .instrument_filter_target_for_strategy,
-                target_runtime_fields: binding.target_runtime_fields,
-                select_binary_option_market: binding.select_binary_option_market,
-            })
-            .chain(
-                FAKE_FAMILY_BINDINGS
-                    .iter()
-                    .map(|binding| MarketFamilyValidationBinding {
-                        key: binding.key,
-                        validate_target: binding.validate_target,
-                        instrument_filter_target_for_strategy: binding
-                            .instrument_filter_target_for_strategy,
-                        target_runtime_fields: binding.target_runtime_fields,
-                        select_binary_option_market: binding.select_binary_option_market,
-                    }),
-            )
+            .chain(FAKE_FAMILY_BINDINGS.iter())
+            .cloned()
             .collect();
 
         // The fake binding errors loud when its strategy reaches it.
@@ -468,6 +467,42 @@ mod tests {
                 "expected fake binding's Other error, got {other:?} — \
                  a TargetParseFailed here means updown was incorrectly called on the \
                  fixture_family strategy"
+            ),
+        }
+    }
+
+    #[test]
+    fn instrument_filters_dispatcher_rejects_strategy_with_missing_family_discriminator() {
+        // The parent dispatcher reads `target.rotating_market_family`
+        // from each strategy's raw TOML before routing to a family
+        // binding. If the discriminator field is absent, the dispatcher
+        // must surface its own `TargetParseFailed` keyed on the
+        // strategy id — not silently fall through to UnsupportedFamily
+        // or to a family binding.
+        let mut loaded = fixture_loaded_config();
+        loaded
+            .strategies
+            .push(fixture_strategy_without_family_discriminator());
+        let strategy_id = loaded.strategies[0].config.strategy_instance_id.clone();
+
+        match instrument_filters_from_config(&loaded) {
+            Err(InstrumentFilterError::TargetParseFailed {
+                strategy_instance_id,
+                message,
+            }) => {
+                assert_eq!(strategy_instance_id, strategy_id);
+                assert!(
+                    message.contains("rotating_market_family"),
+                    "error message should name the missing discriminator field: {message}"
+                );
+                assert!(
+                    message.contains("missing field"),
+                    "error message should say missing field: {message}"
+                );
+            }
+            other => panic!(
+                "expected TargetParseFailed from the parent dispatcher when \
+                 rotating_market_family is absent, got {other:?}"
             ),
         }
     }

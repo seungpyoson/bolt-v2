@@ -39,7 +39,7 @@ Live-readiness blockers:
 - P7 external review returned `APPROVE` with no blockers from Claude, Gemini, Kimi, DeepSeek, GLM, and Grok.
 - P8 external review returned `APPROVE` with no blockers from Claude, Gemini, Kimi, DeepSeek, GLM, and Grok.
 - CI was green before this P9 artifact sync; exact-head CI must rerun after commit/push.
-- Status-map rows 2, 3, 5, 8, 14-17, 39, 41, 43, and 49 record implemented source/test/verifier surfaces for current source coverage.
+- Status-map rows 2, 3, 5, 8, 14-17, 39, 41, 43, and 49 record implemented source/test/verifier surfaces for current source coverage; any partial row status remains a live-readiness gap, not a source-review closure claim.
 
 ## FR-003 Coverage Map
 

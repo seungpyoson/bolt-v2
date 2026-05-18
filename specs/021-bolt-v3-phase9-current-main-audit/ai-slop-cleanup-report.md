@@ -44,15 +44,20 @@ This committed report is a cleanup protocol snapshot. Post-commit CI, reviewer j
 ## Changed Files In This P9 Sync
 
 - `specs/021-bolt-v3-phase9-current-main-audit/spec.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/data-model.md`
 - `specs/021-bolt-v3-phase9-current-main-audit/plan.md`
 - `specs/021-bolt-v3-phase9-current-main-audit/research.md`
 - `specs/021-bolt-v3-phase9-current-main-audit/tasks.md`
 - `specs/021-bolt-v3-phase9-current-main-audit/audit-report.md`
 - `specs/021-bolt-v3-phase9-current-main-audit/quickstart.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/contracts/audit-evidence.md`
 - `specs/021-bolt-v3-phase9-current-main-audit/external-review-phase9-prompt.md`
 - `specs/021-bolt-v3-phase9-current-main-audit/external-review-phase9-disposition.md`
 - `specs/021-bolt-v3-phase9-current-main-audit/external-review-phase9-relay-prompts.md`
 - `specs/021-bolt-v3-phase9-current-main-audit/checklists/requirements.md`
+- `specs/001-thin-live-canary-path/tasks.md`
+- `config/root.example.toml`
+- `config/strategies/binary_oracle.example.toml`
 
 ## Remaining Risks
 

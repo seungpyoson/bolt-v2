@@ -84,6 +84,10 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 
 **Independent Test**: Local tests cover report schema and zero-order guard. Ignored operator test produces real artifact only with explicit approval.
 
+Live-readiness evidence note: T038 and T046 stay unchecked until explicit
+operator-run evidence exists. PR #331 P9 cites those unchecked tasks only as
+blockers, not as deferred approval to trade.
+
 - [x] T034 [US4] Write failing schema tests for no-submit readiness report producer and gate consumer compatibility.
 - [x] T035 [US4] Write zero-order source/behavior fence proving readiness code cannot call submit, cancel, replace, or amend order APIs.
 - [x] T036 [US4] Implement minimal no-submit readiness runner using existing bolt-v3 build and controlled-connect/disconnect boundaries.

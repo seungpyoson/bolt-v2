@@ -33,13 +33,20 @@
 - `job_id`: reviewer job id or failure id
 - `source_transmission`: approval-token evidence for direct API reviewers
 - `status`: `approve`, `approve-with-findings`, `request-changes`, `needs-info`, `failed`, or `blocked`
+- `status_mapping`: external prompt verdicts map as follows:
+  `Verdict: APPROVE` maps to `approve` or `approve-with-findings`;
+  `Verdict: REQUEST_CHANGES` maps to `request-changes`;
+  `Verdict: NEEDS_INFO` maps to `needs-info`; `failed` records tool or
+  review-quality failure; `blocked` records source-access or review-infrastructure
+  blockage before a substantive verdict.
 - `findings`: list of findings with accept/disprove/defer decision
 - `blocking`: whether implementation may proceed
 
-## Example Instances
+## Synthetic Example Instances
 
 These examples map the schema to current Phase 9 artifacts; they are not new
-findings.
+findings. Example job ids are synthetic unless they are recorded in a PR
+evidence comment.
 
 ```text
 AuditFinding {

@@ -70,5 +70,7 @@ is_quote_quantity = false
 
 [parameters]
 edge_threshold_basis_points = 100
+# Example strategy sizing only. Root live-canary caps still bound any approved
+# live run through submit admission.
 order_notional_target = "5.00"
 maximum_position_notional = "10.00"

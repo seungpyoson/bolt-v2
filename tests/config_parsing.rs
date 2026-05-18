@@ -295,25 +295,30 @@ fn bolt_v3_strategy_oms_type_rejects_non_netting_variants() {
     )
     .expect("stable root should parse");
 
-    let mutated_strategy = std::fs::read_to_string(support::repo_path(
-        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-    ))
-    .expect("strategy fixture should be readable")
-    .replace("oms_type = \"netting\"", "oms_type = \"hedging\"");
-    let strategy: BoltV3StrategyConfig =
-        toml::from_str(&mutated_strategy).expect("hedging oms_type should parse via NT enum");
-    let loaded = vec![LoadedStrategy {
-        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
-        relative_path: "strategies/binary_oracle.toml".to_string(),
-        config: strategy,
-    }];
-    let messages = validate_strategies(&stable_root, &loaded);
-    assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("oms_type") && m.contains("Netting")),
-        "expected oms_type rejection citing supported Netting variant, got: {messages:#?}"
-    );
+    for unsupported_oms_type in ["hedging", "unspecified"] {
+        let mutated_strategy = std::fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable")
+        .replace(
+            "oms_type = \"netting\"",
+            &format!("oms_type = \"{unsupported_oms_type}\""),
+        );
+        let strategy: BoltV3StrategyConfig = toml::from_str(&mutated_strategy)
+            .expect("unsupported oms_type should parse via NT enum");
+        let loaded = vec![LoadedStrategy {
+            config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+            relative_path: "strategies/binary_oracle.toml".to_string(),
+            config: strategy,
+        }];
+        let messages = validate_strategies(&stable_root, &loaded);
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("oms_type") && m.contains("Netting")),
+            "expected oms_type rejection citing supported Netting variant for {unsupported_oms_type}, got: {messages:#?}"
+        );
+    }
 }
 
 #[test]

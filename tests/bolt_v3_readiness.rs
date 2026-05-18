@@ -220,7 +220,7 @@ fn startup_check_reports_secret_resolution_failure_and_skips_downstream() {
         "{report:#?}"
     );
     let text = report_text(&report);
-    assert!(text.contains("venues.polymarket_main.secrets.private_key"));
+    assert!(text.contains("clients.polymarket_main.secrets.private_key"));
     assert!(text.contains("/bolt/polymarket_main/private_key"));
     assert_no_resolved_secret_values(&text);
     assert_eq!(

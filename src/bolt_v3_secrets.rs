@@ -113,19 +113,19 @@ pub type ResolvedBoltV3VenueSecrets = ResolvedVenueSecrets;
 
 #[derive(Clone)]
 pub struct ResolvedBoltV3Secrets {
-    pub venues: BTreeMap<String, ResolvedBoltV3VenueSecrets>,
+    pub clients: BTreeMap<String, ResolvedBoltV3VenueSecrets>,
 }
 
 impl ResolvedBoltV3Secrets {
-    pub fn get_as<T: 'static>(&self, venue_key: &str) -> Option<&T> {
-        self.venues
-            .get(venue_key)
+    pub fn get_as<T: 'static>(&self, client_key: &str) -> Option<&T> {
+        self.clients
+            .get(client_key)
             .and_then(|secrets| secrets.as_any().downcast_ref())
     }
 
     pub fn redaction_values(&self) -> Vec<String> {
         let mut values = self
-            .venues
+            .clients
             .values()
             .flat_map(|secrets| secrets.redaction_values())
             .filter(|value| !value.is_empty())
@@ -140,7 +140,7 @@ impl ResolvedBoltV3Secrets {
 impl std::fmt::Debug for ResolvedBoltV3Secrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResolvedBoltV3Secrets")
-            .field("venues", &self.venues)
+            .field("clients", &self.clients)
             .finish()
     }
 }
@@ -158,7 +158,7 @@ impl std::fmt::Display for BoltV3SecretError {
         if self.ssm_path.is_empty() {
             write!(
                 f,
-                "venues.{venue}.secrets.{field}: {source}",
+                "clients.{venue}.secrets.{field}: {source}",
                 venue = self.venue_key,
                 field = self.field,
                 source = self.source,
@@ -166,7 +166,7 @@ impl std::fmt::Display for BoltV3SecretError {
         } else {
             write!(
                 f,
-                "venues.{venue}.secrets.{field} (path={path}): {source}",
+                "clients.{venue}.secrets.{field} (path={path}): {source}",
                 venue = self.venue_key,
                 field = self.field,
                 path = self.ssm_path,
@@ -208,9 +208,9 @@ where
     E: std::fmt::Display,
 {
     let region = loaded.root.aws.region.as_str();
-    let mut venues = BTreeMap::new();
+    let mut clients = BTreeMap::new();
 
-    for (venue_key, client) in &loaded.root.clients {
+    for (client_key, client) in &loaded.root.clients {
         match client.secrets.as_ref() {
             Some(_) => {}
             None => continue,
@@ -218,7 +218,7 @@ where
 
         let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str()) else {
             return Err(BoltV3SecretError {
-                venue_key: venue_key.clone(),
+                venue_key: client_key.clone(),
                 field: "venue".to_string(),
                 ssm_path: String::new(),
                 source: format!(
@@ -229,16 +229,16 @@ where
         };
         let resolved = (binding.resolve_secrets)(
             ProviderSecretResolveContext {
-                venue_key,
+                venue_key: client_key,
                 region,
                 venue: client,
             },
             &mut resolver,
         )?;
-        venues.insert(venue_key.clone(), resolved);
+        clients.insert(client_key.clone(), resolved);
     }
 
-    Ok(ResolvedBoltV3Secrets { venues })
+    Ok(ResolvedBoltV3Secrets { clients })
 }
 
 pub fn resolve_field(
@@ -373,7 +373,7 @@ mod tests {
         })
         .expect("fixture secrets should resolve");
 
-        assert_eq!(resolved.venues.len(), 2);
+        assert_eq!(resolved.clients.len(), 2);
         assert!(
             calls.iter().all(|(region, _)| region == "eu-west-1"),
             "all SSM calls must use [aws].region from the fixture root.toml: {calls:#?}"
@@ -448,7 +448,7 @@ mod tests {
         let message = error.to_string();
 
         assert!(
-            message.contains("venues.binance_reference.secrets.api_secret_ssm_path"),
+            message.contains("clients.binance_reference.secrets.api_secret_ssm_path"),
             "expected field context in error: {message}"
         );
         assert!(

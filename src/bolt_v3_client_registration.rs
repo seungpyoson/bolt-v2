@@ -180,16 +180,16 @@ mod tests {
     }
 
     fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
-        let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
-        venues.insert(
+        let mut clients: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
+        clients.insert(
             "polymarket_main".to_string(),
             Arc::new(fixture_polymarket_secrets()),
         );
-        venues.insert(
+        clients.insert(
             "binance_reference".to_string(),
             Arc::new(fixture_binance_secrets()),
         );
-        ResolvedBoltV3Secrets { venues }
+        ResolvedBoltV3Secrets { clients }
     }
 
     fn fixture_adapters() -> BoltV3AdapterConfigs {

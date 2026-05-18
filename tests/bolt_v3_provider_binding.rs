@@ -64,8 +64,8 @@ fn set_target_field(strategy: &mut LoadedStrategy, key: &str, value: toml::Value
 }
 
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
-    let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
-    venues.insert(
+    let mut clients: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
+    clients.insert(
         "polymarket_main".to_string(),
         Arc::new(ResolvedBoltV3PolymarketSecrets {
             private_key: "binding-poly-private-key".to_string(),
@@ -74,14 +74,14 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
             passphrase: "binding-poly-passphrase".to_string(),
         }),
     );
-    venues.insert(
+    clients.insert(
         "binance_reference".to_string(),
         Arc::new(ResolvedBoltV3BinanceSecrets {
             api_key: "binding-binance-api-key".to_string(),
             api_secret: "binding-binance-api-secret".to_string(),
         }),
     );
-    ResolvedBoltV3Secrets { venues }
+    ResolvedBoltV3Secrets { clients }
 }
 
 fn fixed_clock(now_unix_secs: i64) -> BoltV3UpdownNowFn {

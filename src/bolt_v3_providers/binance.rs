@@ -143,25 +143,25 @@ pub fn validate_venue(key: &str, venue: &ClientBlock) -> Vec<String> {
     let mut errors = Vec::new();
     if venue.execution.is_some() {
         errors.push(format!(
-            "venues.{key} (kind=binance) is not allowed to declare an [execution] block in the current bolt-v3 scope"
+            "clients.{key} (venue=BINANCE) is not allowed to declare an [execution] block in the current bolt-v3 scope"
         ));
     }
     if let Some(data) = &venue.data {
         match data.clone().try_into::<BinanceDataConfig>() {
             Ok(parsed) => errors.extend(validate_data_bounds(key, &parsed)),
-            Err(message) => errors.push(format!("venues.{key}.data: {message}")),
+            Err(message) => errors.push(format!("clients.{key}.data: {message}")),
         }
     }
     if let Some(secrets) = &venue.secrets {
         if venue.data.is_none() {
             errors.push(format!(
-                "venues.{key} (kind=binance) declares [secrets] but no [data] block is configured; \
+                "clients.{key} (venue=BINANCE) declares [secrets] but no [data] block is configured; \
                  Binance [secrets] are only allowed alongside the data adapter that consumes them"
             ));
         }
         match secrets.clone().try_into::<BinanceSecretsConfig>() {
             Ok(parsed) => errors.extend(validate_secret_paths(key, &parsed)),
-            Err(message) => errors.push(format!("venues.{key}.secrets: {message}")),
+            Err(message) => errors.push(format!("clients.{key}.secrets: {message}")),
         }
     }
     errors
@@ -175,7 +175,7 @@ fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
     ];
     for (field, value) in url_fields {
         if value.trim().is_empty() {
-            errors.push(format!("venues.{key}.data.{field} must be a non-empty URL"));
+            errors.push(format!("clients.{key}.data.{field} must be a non-empty URL"));
         }
     }
     // The bolt-v3 schema deliberately rejects `0` rather than treating
@@ -185,7 +185,7 @@ fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
     // here keeps the bolt-v3 instrument-status-poll cadence explicit.
     if data.instrument_status_poll_secs == 0 {
         errors.push(format!(
-            "venues.{key}.data.instrument_status_poll_secs must be a positive integer"
+            "clients.{key}.data.instrument_status_poll_secs must be a positive integer"
         ));
     }
     errors
@@ -303,7 +303,7 @@ fn secrets_for<'a>(
     venue_key: &str,
     resolved: &'a crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
 ) -> Result<&'a ResolvedBoltV3BinanceSecrets, BoltV3AdapterMappingError> {
-    match resolved.venues.get(venue_key) {
+    match resolved.clients.get(venue_key) {
         Some(inner) => inner.as_any().downcast_ref().ok_or_else(|| {
             BoltV3AdapterMappingError::SecretKindMismatch {
                 venue_key: venue_key.to_string(),

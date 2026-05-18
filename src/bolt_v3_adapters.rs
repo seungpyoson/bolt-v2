@@ -489,16 +489,16 @@ mod tests {
     }
 
     fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
-        let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
-        venues.insert(
+        let mut clients: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
+        clients.insert(
             "polymarket_main".to_string(),
             Arc::new(fixture_polymarket_secrets()),
         );
-        venues.insert(
+        clients.insert(
             "binance_reference".to_string(),
             Arc::new(fixture_binance_secrets()),
         );
-        ResolvedBoltV3Secrets { venues }
+        ResolvedBoltV3Secrets { clients }
     }
 
     #[test]
@@ -525,7 +525,7 @@ mod tests {
             }],
         };
         let resolved = ResolvedBoltV3Secrets {
-            venues: BTreeMap::new(),
+            clients: BTreeMap::new(),
         };
         let clock = Arc::new(|| 601_i64);
 
@@ -576,7 +576,7 @@ mod tests {
             }],
         };
         let resolved = ResolvedBoltV3Secrets {
-            venues: BTreeMap::new(),
+            clients: BTreeMap::new(),
         };
         let clock = Arc::new(|| 601_i64);
 
@@ -626,7 +626,7 @@ mod tests {
             updown_targets: Vec::new(),
         };
         let resolved = ResolvedBoltV3Secrets {
-            venues: BTreeMap::new(),
+            clients: BTreeMap::new(),
         };
         let clock = Arc::new(|| 601_i64);
 
@@ -775,12 +775,12 @@ mod tests {
         // Provide the binance_reference secret entry so map iteration
         // reaches `polymarket_main` (which is alphabetically later in
         // the BTreeMap) and trips on the missing polymarket secrets.
-        let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
-        venues.insert(
+        let mut clients: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
+        clients.insert(
             "binance_reference".to_string(),
             Arc::new(fixture_binance_secrets()),
         );
-        let resolved = ResolvedBoltV3Secrets { venues };
+        let resolved = ResolvedBoltV3Secrets { clients };
 
         let error = map_bolt_v3_adapters(&loaded, &resolved)
             .expect_err("missing resolved secrets must surface as a mapper error");
@@ -803,12 +803,12 @@ mod tests {
         // fails when it reaches `binance_reference` with no entry. This
         // pairs with the polymarket case so neither alphabetical
         // position can hide an unmapped resolved-secrets gap.
-        let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
-        venues.insert(
+        let mut clients: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
+        clients.insert(
             "polymarket_main".to_string(),
             Arc::new(fixture_polymarket_secrets()),
         );
-        let resolved = ResolvedBoltV3Secrets { venues };
+        let resolved = ResolvedBoltV3Secrets { clients };
 
         let error = map_bolt_v3_adapters(&loaded, &resolved)
             .expect_err("missing binance resolved secrets must surface as a mapper error");
@@ -827,16 +827,16 @@ mod tests {
     #[test]
     fn mismatched_resolved_secret_kind_is_a_mapping_error() {
         let loaded = fixture_loaded_config();
-        let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
-        venues.insert(
+        let mut clients: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
+        clients.insert(
             "polymarket_main".to_string(),
             Arc::new(fixture_binance_secrets()),
         );
-        venues.insert(
+        clients.insert(
             "binance_reference".to_string(),
             Arc::new(fixture_binance_secrets()),
         );
-        let resolved = ResolvedBoltV3Secrets { venues };
+        let resolved = ResolvedBoltV3Secrets { clients };
 
         let error = map_bolt_v3_adapters(&loaded, &resolved)
             .expect_err("mismatched resolved secret kind must surface as a mapper error");

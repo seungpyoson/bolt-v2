@@ -38,16 +38,16 @@ fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
 }
 
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
-    let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
-    venues.insert(
+    let mut clients: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
+    clients.insert(
         "polymarket_main".to_string(),
         Arc::new(fixture_polymarket_secrets()),
     );
-    venues.insert(
+    clients.insert(
         "binance_reference".to_string(),
         Arc::new(fixture_binance_secrets()),
     );
-    ResolvedBoltV3Secrets { venues }
+    ResolvedBoltV3Secrets { clients }
 }
 
 #[test]
@@ -362,7 +362,7 @@ ack_timeout_secs = 5
         strategies: Vec::new(),
     };
     let empty_resolved = ResolvedBoltV3Secrets {
-        venues: BTreeMap::new(),
+        clients: BTreeMap::new(),
     };
     let error = map_bolt_v3_adapters(&loaded, &empty_resolved)
         .expect_err("mapper must not synthesize defaults for missing resolved secrets");

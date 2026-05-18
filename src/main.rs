@@ -89,8 +89,8 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
             check_no_forbidden_credential_env_vars(&loaded.root)?;
             let ssm_resolver_session = SsmResolverSession::new()?;
             let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
-            for venue_key in resolved.venues.keys() {
-                println!("venues.{venue_key}: secrets resolved successfully");
+            for client_key in resolved.clients.keys() {
+                println!("clients.{client_key}: secrets resolved successfully");
             }
             Ok(())
         }

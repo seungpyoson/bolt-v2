@@ -182,7 +182,7 @@ pub fn validate_venue(key: &str, venue: &ClientBlock) -> Vec<String> {
     if let Some(data) = &venue.data {
         match data.clone().try_into::<PolymarketDataConfig>() {
             Ok(parsed) => errors.extend(validate_data_bounds(key, &parsed)),
-            Err(message) => errors.push(format!("venues.{key}.data: {message}")),
+            Err(message) => errors.push(format!("clients.{key}.data: {message}")),
         }
     }
     if let Some(execution) = &venue.execution {
@@ -190,14 +190,14 @@ pub fn validate_venue(key: &str, venue: &ClientBlock) -> Vec<String> {
             Ok(parsed) => {
                 if parsed.account_id.trim().is_empty() {
                     errors.push(format!(
-                        "venues.{key}.execution.account_id must be a non-empty string"
+                        "clients.{key}.execution.account_id must be a non-empty string"
                     ));
                 }
                 errors.extend(validate_funder_address(key, &parsed));
                 errors.extend(validate_execution_bounds(key, &parsed));
             }
             Err(message) => {
-                errors.push(format!("venues.{key}.execution: {message}"));
+                errors.push(format!("clients.{key}.execution: {message}"));
             }
         }
     }
@@ -208,13 +208,13 @@ pub fn validate_venue(key: &str, venue: &ClientBlock) -> Vec<String> {
         // misconfiguration rather than a silent no-op.
         if venue.execution.is_none() {
             errors.push(format!(
-                "venues.{key} (kind=polymarket) declares [secrets] but no [execution] block is configured; \
+                "clients.{key} (venue=POLYMARKET) declares [secrets] but no [execution] block is configured; \
                  Polymarket [secrets] are only allowed alongside the execution adapter that consumes them"
             ));
         }
         match secrets.clone().try_into::<PolymarketSecretsConfig>() {
             Ok(parsed) => errors.extend(validate_secret_paths(key, &parsed)),
-            Err(message) => errors.push(format!("venues.{key}.secrets: {message}")),
+            Err(message) => errors.push(format!("clients.{key}.secrets: {message}")),
         }
     }
     errors
@@ -233,12 +233,12 @@ fn validate_funder_address(key: &str, execution: &PolymarketExecutionConfig) -> 
     );
     match (requires_funder, funder) {
         (true, None) => errors.push(format!(
-            "venues.{key}.execution.funder_address is required when signature_type is `poly_proxy` or `poly_gnosis_safe`"
+            "clients.{key}.execution.funder_address is required when signature_type is `poly_proxy` or `poly_gnosis_safe`"
         )),
         (_, Some(value)) => {
             if let Err(message) = check_evm_address_syntax(value) {
                 errors.push(format!(
-                    "venues.{key}.execution.funder_address is not a valid EVM public address ({message}): `{value}`"
+                    "clients.{key}.execution.funder_address is not a valid EVM public address ({message}): `{value}`"
                 ));
             }
         }
@@ -278,7 +278,7 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
     for (field, value) in positive_fields {
         if *value == 0 {
             errors.push(format!(
-                "venues.{key}.data.{field} must be a positive integer"
+                "clients.{key}.data.{field} must be a positive integer"
             ));
         }
     }
@@ -291,7 +291,7 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
     // closed here keeps that invariant honest.
     if data.subscribe_new_markets {
         errors.push(format!(
-            "venues.{key}.data.subscribe_new_markets must be false in the current bolt-v3 scope; \
+            "clients.{key}.data.subscribe_new_markets must be false in the current bolt-v3 scope; \
              the pinned NT Polymarket data client subscribes to all markets via \
              `ws_client.subscribe_market(vec![])` during connect when this flag is true, \
              which violates the bolt-v3 controlled-connect boundary until the \
@@ -319,13 +319,13 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
     for (field, value) in positive_fields {
         if *value == 0 {
             errors.push(format!(
-                "venues.{key}.execution.{field} must be a positive integer"
+                "clients.{key}.execution.{field} must be a positive integer"
             ));
         }
     }
     if execution.retry_delay_initial_ms > execution.retry_delay_max_ms {
         errors.push(format!(
-            "venues.{key}.execution.retry_delay_initial_ms ({}) must be <= retry_delay_max_ms ({})",
+            "clients.{key}.execution.retry_delay_initial_ms ({}) must be <= retry_delay_max_ms ({})",
             execution.retry_delay_initial_ms, execution.retry_delay_max_ms
         ));
     }
@@ -625,7 +625,7 @@ fn secrets_for<'a>(
     venue_key: &str,
     resolved: &'a crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
 ) -> Result<&'a ResolvedBoltV3PolymarketSecrets, BoltV3AdapterMappingError> {
-    match resolved.venues.get(venue_key) {
+    match resolved.clients.get(venue_key) {
         Some(inner) => inner.as_any().downcast_ref().ok_or_else(|| {
             BoltV3AdapterMappingError::SecretKindMismatch {
                 venue_key: venue_key.to_string(),

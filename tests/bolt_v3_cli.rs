@@ -61,7 +61,7 @@ fn bolt_v3_secrets_check_rejects_missing_provider_secret_field() {
     assert!(!output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("venues.polymarket_main.secrets:"));
+    assert!(stderr.contains("clients.polymarket_main.secrets:"));
     assert!(stderr.contains("api_secret_ssm_path"));
 }
 

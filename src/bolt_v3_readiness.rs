@@ -125,15 +125,15 @@ where
 
     let resolved = match resolve_bolt_v3_secrets_with(loaded, resolver) {
         Ok(resolved) => {
-            if resolved.venues.is_empty() {
+            if resolved.clients.is_empty() {
                 report.push(
                     BoltV3StartupCheckStage::SecretResolution,
                     BoltV3StartupCheckSubject::Root,
                     BoltV3StartupCheckStatus::Satisfied,
-                    "no venue secrets configured",
+                    "no client secrets configured",
                 );
             } else {
-                for venue_key in resolved.venues.keys() {
+                for venue_key in resolved.clients.keys() {
                     report.push(
                         BoltV3StartupCheckStage::SecretResolution,
                         BoltV3StartupCheckSubject::Venue(venue_key.clone()),

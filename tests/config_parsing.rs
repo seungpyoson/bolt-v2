@@ -1502,15 +1502,15 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
         toml::from_str(toml_text).expect("polymarket bounds TOML should parse");
     let messages = validate_root_only(&root);
     let expected = [
-        "venues.polymarket_main.data.http_timeout_secs must be a positive integer",
-        "venues.polymarket_main.data.ws_timeout_secs must be a positive integer",
-        "venues.polymarket_main.data.update_instruments_interval_minutes must be a positive integer",
-        "venues.polymarket_main.data.websocket_max_subscriptions_per_connection must be a positive integer",
-        "venues.polymarket_main.execution.http_timeout_secs must be a positive integer",
-        "venues.polymarket_main.execution.max_retries must be a positive integer",
-        "venues.polymarket_main.execution.retry_delay_initial_ms must be a positive integer",
-        "venues.polymarket_main.execution.retry_delay_max_ms must be a positive integer",
-        "venues.polymarket_main.execution.ack_timeout_secs must be a positive integer",
+        "clients.polymarket_main.data.http_timeout_secs must be a positive integer",
+        "clients.polymarket_main.data.ws_timeout_secs must be a positive integer",
+        "clients.polymarket_main.data.update_instruments_interval_minutes must be a positive integer",
+        "clients.polymarket_main.data.websocket_max_subscriptions_per_connection must be a positive integer",
+        "clients.polymarket_main.execution.http_timeout_secs must be a positive integer",
+        "clients.polymarket_main.execution.max_retries must be a positive integer",
+        "clients.polymarket_main.execution.retry_delay_initial_ms must be a positive integer",
+        "clients.polymarket_main.execution.retry_delay_max_ms must be a positive integer",
+        "clients.polymarket_main.execution.ack_timeout_secs must be a positive integer",
     ];
     for needle in expected {
         assert!(

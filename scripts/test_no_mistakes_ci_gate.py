@@ -135,6 +135,32 @@ def test_evaluate_ci_gate_rejects_pending_ci():
         tmpdir.cleanup()
 
 
+def test_evaluate_ci_gate_uses_newest_workflow_run_for_each_name():
+    module = load_module()
+    tmpdir = tempfile.TemporaryDirectory()
+    repo = _init_repo(pathlib.Path(tmpdir.name))
+    head = _head(repo)
+
+    def fake_json_output(argv, cwd, description):
+        if argv[:3] == ["gh", "pr", "view"]:
+            return {"number": 1, "headRefOid": head, "url": "https://example.invalid/pr/1"}
+        if argv[:3] == ["gh", "run", "list"]:
+            runs = _fake_completed_runs(head)
+            older_failed_ci = dict(runs[0], databaseId=0, conclusion="failure")
+            return [runs[0], older_failed_ci]
+        raise AssertionError(f"unexpected command: {argv}")
+
+    original = module._json_output
+    module._json_output = fake_json_output
+    try:
+        ok, messages = module.evaluate_ci_gate(repo)
+        assert ok is True
+        assert any("CI completed successfully" in message for message in messages)
+    finally:
+        module._json_output = original
+        tmpdir.cleanup()
+
+
 def test_main_reports_prerequisite_errors_without_running_cargo():
     module = load_module()
     tmpdir = tempfile.TemporaryDirectory()
@@ -161,6 +187,7 @@ def main() -> int:
     test_evaluate_ci_gate_passes_when_exact_head_ci_is_green()
     test_evaluate_ci_gate_rejects_stale_pr_head()
     test_evaluate_ci_gate_rejects_pending_ci()
+    test_evaluate_ci_gate_uses_newest_workflow_run_for_each_name()
     test_main_reports_prerequisite_errors_without_running_cargo()
     print("OK: no-mistakes CI gate self-tests passed.")
     return 0

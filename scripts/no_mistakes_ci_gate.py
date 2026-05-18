@@ -95,7 +95,13 @@ def evaluate_ci_gate(cwd: Path) -> tuple[bool, list[str]]:
         return False, messages
 
     runs = _workflow_runs(cwd, head)
-    by_name = {str(run.get("name")): run for run in runs if run.get("headSha") in (None, head)}
+    by_name: dict[str, dict[str, object]] = {}
+    for run in runs:
+        if run.get("headSha") not in (None, head):
+            continue
+        name = str(run.get("name"))
+        if name not in by_name:
+            by_name[name] = run
     ok = True
     saw_accepted_workflow = False
     for workflow in ACCEPTED_WORKFLOWS:

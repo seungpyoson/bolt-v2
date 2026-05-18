@@ -220,8 +220,8 @@ TEST_ARCHIVE_KEY_INPUTS = (
 TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst"
 TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
-TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830"
-TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830"
+TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"
+TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_UPLOAD_ACTION = "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")

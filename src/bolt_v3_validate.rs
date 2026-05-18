@@ -96,6 +96,15 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     if root.strategy_files.is_empty() {
         errors.push("strategy_files must list at least one strategy file".to_string());
     }
+    // FINDING-1: NT's `Environment` has Backtest/Sandbox/Live; bolt-v3 is a
+    // live-trading LiveNode wrapper and must reject the other variants
+    // explicitly rather than booting NT's kernel in an unsupported mode.
+    if root.runtime.mode != nautilus_common::enums::Environment::Live {
+        errors.push(format!(
+            "runtime.mode `{:?}` is not supported by bolt-v3 (only Live is implemented)",
+            root.runtime.mode
+        ));
+    }
     errors.extend(validate_nautilus_block(&root.nautilus));
     errors.extend(validate_risk_block(&root.risk));
     errors.extend(validate_persistence_block(&root.persistence));

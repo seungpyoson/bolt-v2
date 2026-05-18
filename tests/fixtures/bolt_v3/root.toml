@@ -6,7 +6,7 @@ strategy_files = [
 ]
 
 [runtime]
-mode = "live"
+mode = "Live"
 
 [nautilus]
 load_state = true

@@ -12,6 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use nautilus_common::enums::Environment;
 use nautilus_model::{
     enums::OmsType,
     identifiers::{ClientId, Venue},
@@ -48,13 +49,7 @@ pub struct BoltV3RootConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeBlock {
-    pub mode: RuntimeMode,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum RuntimeMode {
-    Live,
+    pub mode: Environment,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -432,7 +427,7 @@ mod tests {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
         assert_eq!(root.schema_version, 1);
         assert_eq!(root.trader_id, "BOLT-001");
-        assert_eq!(root.runtime.mode, RuntimeMode::Live);
+        assert_eq!(root.runtime.mode, Environment::Live);
         assert!(root.clients.contains_key("polymarket_main"));
         assert!(root.clients.contains_key("binance_reference"));
         let polymarket = &root.clients["polymarket_main"];

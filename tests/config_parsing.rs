@@ -110,6 +110,46 @@ fn bolt_v3_strategy_oms_type_rejects_non_netting_variants() {
 }
 
 #[test]
+fn bolt_v3_runtime_mode_uses_nt_environment_enum() {
+    // FINDING-1: `runtime.mode` is typed as `nautilus_common::enums::Environment`
+    // (not a bolt shadow `RuntimeMode`). NT's `Environment` derives serde
+    // directly without `#[serde(rename_all)]`, so the on-disk fixture value
+    // is PascalCase (`mode = "Live"`). Bolt's validator rejects Backtest and
+    // Sandbox explicitly because the binary is a live-trading node only.
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use nautilus_common::enums::Environment;
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
+
+    let mode: Environment = loaded.root.runtime.mode;
+    assert_eq!(mode, Environment::Live);
+}
+
+#[test]
+fn bolt_v3_runtime_mode_rejects_backtest_and_sandbox_variants() {
+    // FINDING-1: bolt-v3 only supports `Environment::Live`. The binary is a
+    // live LiveNode wrapper, so the validator must reject `Backtest` and
+    // `Sandbox` explicitly rather than letting them silently flow into NT's
+    // kernel boot path.
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for variant in ["Backtest", "Sandbox"] {
+        let mutated = replace_in_fixture_root(
+            "mode = \"Live\"",
+            &format!("mode = \"{variant}\""),
+        );
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("non-Live Environment variant should parse via NT");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages.iter().any(|m| m.contains("runtime.mode") && m.contains("Live")),
+            "expected runtime.mode rejection citing Live variant for `{variant}`, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn bolt_v3_archetype_order_params_use_nt_canonical_enums() {
     // FINDING-1: archetype `[parameters.*_order]` rows are typed with NT's
     // canonical `OrderType` and `TimeInForce` (not bolt shadow enums).
@@ -863,8 +903,9 @@ disable_after_ms = 5000"#,
 #[test]
 fn parses_minimal_bolt_v3_root_and_strategy_config() {
     use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock;
-    use bolt_v2::bolt_v3_config::{RuntimeMode, load_bolt_v3_config};
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
     use bolt_v2::bolt_v3_market_families::updown::{TargetBlock, TargetKind};
+    use nautilus_common::enums::Environment;
     use nautilus_model::enums::{OrderType, TimeInForce};
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
@@ -872,7 +913,7 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
 
     assert_eq!(loaded.root.schema_version, 1);
     assert_eq!(loaded.root.trader_id, "BOLT-001");
-    assert_eq!(loaded.root.runtime.mode, RuntimeMode::Live);
+    assert_eq!(loaded.root.runtime.mode, Environment::Live);
     assert_eq!(
         loaded.root.clients["polymarket_main"].venue.as_str(),
         "POLYMARKET"
@@ -1006,7 +1047,7 @@ trader_id = "BOLT-001"
 strategy_files = ["strategies/binary_oracle.toml"]
 
 [runtime]
-mode = "live"
+mode = "Live"
 
 [nautilus]
 load_state = true
@@ -1143,7 +1184,7 @@ trader_id = "BOLT-001"
 strategy_files = ["strategies/binary_oracle.toml"]
 
 [runtime]
-mode = "live"
+mode = "Live"
 
 [nautilus]
 load_state = true
@@ -1274,7 +1315,7 @@ trader_id = "BOLT-001"
 strategy_files = ["strategies/binary_oracle.toml"]
 
 [runtime]
-mode = "live"
+mode = "Live"
 
 [nautilus]
 load_state = true

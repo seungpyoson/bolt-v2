@@ -227,7 +227,7 @@ trader_id = "BOLT-001"
 strategy_files = ["strategies/binary_oracle.toml"]
 
 [runtime]
-mode = "live"
+mode = "Live"
 
 [nautilus]
 load_state = true

@@ -56,7 +56,7 @@ use crate::{
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
-    bolt_v3_config::{LoadedBoltV3Config, RuntimeMode},
+    bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_providers,
     bolt_v3_secrets::{
@@ -662,9 +662,7 @@ fn make_bolt_v3_live_node_builder_from_config(
 
 pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
     let trader_id = TraderId::from(loaded.root.trader_id.as_str());
-    let environment = match loaded.root.runtime.mode {
-        RuntimeMode::Live => Environment::Live,
-    };
+    let environment = loaded.root.runtime.mode;
     let mut module_level: AHashMap<Ustr, LevelFilter> = AHashMap::new();
     for module_path in bolt_v3_providers::credential_log_modules() {
         module_level.insert(Ustr::from(module_path), LevelFilter::Warn);

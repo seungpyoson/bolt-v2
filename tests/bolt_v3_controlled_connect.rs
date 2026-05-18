@@ -129,7 +129,7 @@ fn builder_path_passes_explicit_risk_engine_to_nt_build() {
     // Mutate after Bolt's config-load validation so this test proves the
     // production builder passes the risk engine config to NT's own build-time
     // validation, instead of constructing a fresh default engine config.
-    loaded.root.risk.nt_max_order_submit_rate = "not-a-rate-limit".to_string();
+    loaded.root.risk.nautilus.max_order_submit_rate = "not-a-rate-limit".to_string();
 
     let error = make_bolt_v3_live_node_builder(&loaded)
         .expect("v3 builder should construct from fixture")

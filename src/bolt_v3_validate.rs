@@ -253,30 +253,30 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
             value = block.default_max_notional_per_order
         ));
     }
-    if block.nt_bypass {
-        errors.push("risk.nt_bypass must be false".to_string());
+    if block.nautilus.bypass {
+        errors.push("risk.nautilus.bypass must be false".to_string());
     }
-    if block.nt_graceful_shutdown_on_error {
+    if block.nautilus.graceful_shutdown_on_error {
         errors.push(
-            "risk.nt_graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
+            "risk.nautilus.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
                 .to_string(),
         );
     }
     let nt_risk_default = nautilus_live::config::LiveRiskEngineConfig::default();
-    if block.nt_qsize != nt_risk_default.qsize {
+    if block.nautilus.qsize != nt_risk_default.qsize {
         errors.push(format!(
-            "risk.nt_qsize must match NT default {}; NT rejects non-default qsize on the Rust live runtime",
+            "risk.nautilus.qsize must match NT default {}; NT rejects non-default qsize on the Rust live runtime",
             nt_risk_default.qsize
         ));
     }
     for (label, value) in [
         (
-            "risk.nt_max_order_submit_rate",
-            block.nt_max_order_submit_rate.as_str(),
+            "risk.nautilus.max_order_submit_rate",
+            block.nautilus.max_order_submit_rate.as_str(),
         ),
         (
-            "risk.nt_max_order_modify_rate",
-            block.nt_max_order_modify_rate.as_str(),
+            "risk.nautilus.max_order_modify_rate",
+            block.nautilus.max_order_modify_rate.as_str(),
         ),
     ] {
         if let Err(reason) = validate_rate_limit_string(value) {
@@ -285,24 +285,24 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
             ));
         }
     }
-    for (instrument_id, notional) in &block.nt_max_notional_per_order {
+    for (instrument_id, notional) in &block.nautilus.max_notional_per_order {
         // Mirrors NT's `LiveRiskEngineConfig::validate_runtime_support`;
         // keep this early-bound config validation aligned on pin bumps.
         if let Err(error) = InstrumentId::from_str(instrument_id) {
             errors.push(format!(
-                "risk.nt_max_notional_per_order key `{instrument_id}` is not a valid Nautilus instrument ID ({error})"
+                "risk.nautilus.max_notional_per_order key `{instrument_id}` is not a valid Nautilus instrument ID ({error})"
             ));
         }
         match parse_decimal_string(notional) {
             Ok(value) if value <= Decimal::ZERO => {
                 errors.push(format!(
-                    "risk.nt_max_notional_per_order[`{instrument_id}`] must be a positive decimal string: `{notional}`"
+                    "risk.nautilus.max_notional_per_order[`{instrument_id}`] must be a positive decimal string: `{notional}`"
                 ));
             }
             Ok(_) => {}
             Err(reason) => {
                 errors.push(format!(
-                    "risk.nt_max_notional_per_order[`{instrument_id}`] is not a valid decimal string ({reason}): `{notional}`"
+                    "risk.nautilus.max_notional_per_order[`{instrument_id}`] is not a valid decimal string ({reason}): `{notional}`"
                 ));
             }
         }

@@ -139,20 +139,26 @@ pub struct NautilusExecEngineBlock {
 #[serde(deny_unknown_fields)]
 pub struct RiskBlock {
     pub default_max_notional_per_order: String,
-    pub nt_bypass: bool,
-    pub nt_max_order_submit_rate: String,
-    pub nt_max_order_modify_rate: String,
-    pub nt_max_notional_per_order: BTreeMap<String, String>,
-    pub nt_debug: bool,
-    pub nt_graceful_shutdown_on_error: bool,
-    pub nt_qsize: u32,
+    pub nautilus: NautilusRiskBlock,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NautilusRiskBlock {
+    pub bypass: bool,
+    pub max_order_submit_rate: String,
+    pub max_order_modify_rate: String,
+    pub max_notional_per_order: BTreeMap<String, String>,
+    pub debug: bool,
+    pub graceful_shutdown_on_error: bool,
+    pub qsize: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LoggingBlock {
-    pub standard_output_level: LogLevel,
-    pub file_level: LogLevel,
+    pub stdout_level: LogLevel,
+    pub fileout_level: LogLevel,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

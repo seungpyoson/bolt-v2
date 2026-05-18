@@ -670,8 +670,8 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         module_level.insert(Ustr::from(module_path), LevelFilter::Warn);
     }
     let logging = LoggerConfig {
-        stdout_level: loaded.root.logging.standard_output_level.to_level_filter(),
-        fileout_level: loaded.root.logging.file_level.to_level_filter(),
+        stdout_level: loaded.root.logging.stdout_level.to_level_filter(),
+        fileout_level: loaded.root.logging.fileout_level.to_level_filter(),
         component_level: AHashMap::new(),
         module_level,
         log_components_only: false,
@@ -758,21 +758,22 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         manage_own_order_books: exec.manage_own_order_books,
     };
     let risk_engine = nautilus_live::config::LiveRiskEngineConfig {
-        bypass: loaded.root.risk.nt_bypass,
-        max_order_submit_rate: loaded.root.risk.nt_max_order_submit_rate.clone(),
-        max_order_modify_rate: loaded.root.risk.nt_max_order_modify_rate.clone(),
+        bypass: loaded.root.risk.nautilus.bypass,
+        max_order_submit_rate: loaded.root.risk.nautilus.max_order_submit_rate.clone(),
+        max_order_modify_rate: loaded.root.risk.nautilus.max_order_modify_rate.clone(),
         // Bolt stores this as a BTreeMap for deterministic config/debug output;
         // NT's live risk config consumes the same string pairs as a HashMap.
         max_notional_per_order: loaded
             .root
             .risk
-            .nt_max_notional_per_order
+            .nautilus
+            .max_notional_per_order
             .clone()
             .into_iter()
             .collect(),
-        debug: loaded.root.risk.nt_debug,
-        graceful_shutdown_on_error: loaded.root.risk.nt_graceful_shutdown_on_error,
-        qsize: loaded.root.risk.nt_qsize,
+        debug: loaded.root.risk.nautilus.debug,
+        graceful_shutdown_on_error: loaded.root.risk.nautilus.graceful_shutdown_on_error,
+        qsize: loaded.root.risk.nautilus.qsize,
     };
 
     // Explicit struct literal: upstream NT `LiveNodeConfig` field additions must be
@@ -1146,7 +1147,7 @@ mod tests {
     #[test]
     fn live_node_config_maps_explicit_nt_risk_debug_from_v3_root() {
         let mut loaded = fixture_loaded_config();
-        loaded.root.risk.nt_debug = true;
+        loaded.root.risk.nautilus.debug = true;
 
         let cfg = make_live_node_config(&loaded);
 
@@ -1169,12 +1170,14 @@ mod tests {
         loaded
             .root
             .risk
-            .nt_max_notional_per_order
+            .nautilus
+            .max_notional_per_order
             .insert("ETHUSDT.BINANCE".to_string(), "12345.00".to_string());
         loaded
             .root
             .risk
-            .nt_max_notional_per_order
+            .nautilus
+            .max_notional_per_order
             .insert("BTCUSDT.BINANCE".to_string(), "25000.50".to_string());
         let cfg = make_live_node_config(&loaded);
 

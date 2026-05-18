@@ -2,16 +2,17 @@
 //!
 //! This module owns:
 //!
-//! 1. The archetype's `[parameters]` block shape (`ParametersBlock`),
-//!    its `[parameters.entry_order]` / `[parameters.exit_order]` row
-//!    shape (`OrderParams`), and the order-type / time-in-force enums
-//!    those rows reference (`ArchetypeOrderType`,
-//!    `ArchetypeTimeInForce`). Core config in
+//! 1. The archetype's `[parameters]` block shape (`ParametersBlock`)
+//!    and its `[parameters.entry_order]` / `[parameters.exit_order]`
+//!    row shape (`OrderParams`). The `order_type` and `time_in_force`
+//!    fields on `OrderParams` are typed with NT's canonical
+//!    `nautilus_model::enums::{OrderType, TimeInForce}`; this archetype's
+//!    validator allow-lists the specific combinations it supports rather
+//!    than defining a narrower shadow enum. Core config in
 //!    `crate::bolt_v3_config` keeps the strategy envelope and the
-//!    field name `parameters`, but the row shape and enum values are
-//!    archetype-specific and live here so a future archetype can
-//!    introduce its own parameter row without reaching back into core
-//!    config.
+//!    field name `parameters`, but the row shape is archetype-specific
+//!    and lives here so a future archetype can introduce its own
+//!    parameter row without reaching back into core config.
 //! 2. The archetype's bolt-v3 startup-validation policy:
 //!    - the required reference-data role
 //!      (`[reference_data.primary]`),

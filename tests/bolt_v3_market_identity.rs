@@ -694,6 +694,9 @@ fn config_module_must_not_own_archetype_parameter_or_order_types() {
     let forbidden = [
         "pub struct ParametersBlock",
         "pub struct OrderParams",
+        // Shadow order-type / time-in-force enum definitions are forbidden
+        // entirely: archetype-shaped rows now use NT's canonical
+        // `nautilus_model::enums::{OrderType, TimeInForce}` directly.
         "pub enum ArchetypeOrderType",
         "pub enum ArchetypeTimeInForce",
     ];
@@ -702,11 +705,11 @@ fn config_module_must_not_own_archetype_parameter_or_order_types() {
             !src.contains(symbol),
             "src/bolt_v3_config.rs must not own archetype parameter or order types; \
              source unexpectedly defines `{symbol}`. \
-             Move ParametersBlock, OrderParams, ArchetypeOrderType, and \
-             ArchetypeTimeInForce to \
-             src/bolt_v3_archetypes/binary_oracle_edge_taker.rs; reference \
-             the archetype-owned ParametersBlock from the strategy \
-             envelope instead of redefining it in core config."
+             ParametersBlock and OrderParams belong in \
+             src/bolt_v3_archetypes/binary_oracle_edge_taker.rs and reference \
+             NT's canonical OrderType / TimeInForce enums; reference the \
+             archetype-owned ParametersBlock from the strategy envelope instead \
+             of redefining it in core config."
         );
     }
 }

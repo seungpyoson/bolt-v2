@@ -16,7 +16,7 @@ live_root_example := "config/root.example.toml"
 repo_root := justfile_directory()
 rust_verification_owner := env_var('HOME') + "/.claude/lib/rust_verification.py"
 rust_verification_source_repo := "seungpyoson/claude-config"
-rust_verification_source_sha := "50a8b4fb40d5ec4a83de2fa545083355970a7c78"
+rust_verification_source_sha := "cc6e0fb82459b8589ce02f543295d52ba39ebcaf"
 rust_verification_require_script := "scripts/require_rust_verification_owner.sh"
 rust_verification_ci_install_script := "scripts/install_ci_rust_verification_owner.sh"
 
@@ -200,8 +200,8 @@ ci-lint-workflow:
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
     just_target='{{target}}'
     managed_build_profile='release'
-    toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
-    toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
+    toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('ci/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
+    toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('ci/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
     if ! python3 scripts/test_verify_ci_workflow_hygiene.py; then
         failed=1
     fi
@@ -233,12 +233,12 @@ ci-lint-workflow:
     done
 
     if [ "$toml_target" != "$just_target" ]; then
-        echo "ERROR: justfile target ($just_target) does not match .claude/rust-verification.toml build target ($toml_target)"
+        echo "ERROR: justfile target ($just_target) does not match ci/rust-verification.toml build target ($toml_target)"
         failed=1
     fi
 
     if [ "$toml_profile" != "$managed_build_profile" ]; then
-        echo "ERROR: managed-build profile ($managed_build_profile) does not match .claude/rust-verification.toml build profile ($toml_profile)"
+        echo "ERROR: managed-build profile ($managed_build_profile) does not match ci/rust-verification.toml build profile ($toml_profile)"
         failed=1
     fi
 

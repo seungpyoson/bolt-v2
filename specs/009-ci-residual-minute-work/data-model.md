@@ -16,7 +16,8 @@ Rules:
 
 - Empty changed-file input is invalid.
 - Mixed safe+unsafe paths are `full_ci_required`.
-- `.claude/rust-verification.toml`, `Cargo.lock`, workflow files, Rust source, `docs/**`, and `specs/**` are `full_ci_required`.
+- `ci/rust-verification.toml`, `Cargo.lock`, workflow files, Rust source, `docs/**`, and `specs/**` are `full_ci_required`.
+- `.claude/rust-verification.toml` is invalid if it appears in changed-file input after the policy move, even though `.claude/**` is otherwise ignored-safe agent state.
 
 ## PassStubGate
 

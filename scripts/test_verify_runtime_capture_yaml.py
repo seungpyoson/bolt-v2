@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
 import sys
 import tempfile
 import unittest
@@ -218,6 +220,21 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
         self.write_fixture()
 
         self.assertEqual([], VERIFIER.collect_failures())
+
+    def test_main_returns_zero_for_consistent_fixture(self) -> None:
+        self.write_fixture()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, VERIFIER.main())
+
+    def test_main_returns_one_when_fixture_has_violations(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] += "\nnormalized_sink\n"
+
+        self.write_fixture(mutate)
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(1, VERIFIER.main())
 
     def test_collect_failures_rejects_stale_runtime_capture_references(self) -> None:
         self.assert_collects(

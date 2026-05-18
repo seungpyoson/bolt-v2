@@ -55,6 +55,61 @@ fn bolt_v3_config_uses_clients_section_with_nt_venue_identifier() {
 }
 
 #[test]
+fn bolt_v3_strategy_oms_type_uses_nt_canonical_enum() {
+    // FINDING-1: `strategy.oms_type` is typed as `nautilus_model::enums::OmsType`
+    // (not a bolt shadow enum). NT's enum_strum_serde! macro makes deserialize
+    // case-insensitive, so the fixture's `oms_type = "netting"` (lowercase)
+    // continues to parse. Bolt's validator rejects non-Netting variants
+    // explicitly because the surrounding code only supports the Netting OMS
+    // model today.
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use nautilus_model::enums::OmsType;
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
+
+    let oms_type: OmsType = loaded.strategies[0].config.oms_type;
+    assert_eq!(oms_type, OmsType::Netting);
+}
+
+#[test]
+fn bolt_v3_strategy_oms_type_rejects_non_netting_variants() {
+    // FINDING-1: bolt only supports `OmsType::Netting`. Other NT variants
+    // (`Unspecified`, `Hedging`) must be rejected by the bolt validator
+    // because position/risk accounting elsewhere assumes Netting semantics.
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+
+    let mutated_strategy = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace("oms_type = \"netting\"", "oms_type = \"hedging\"");
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&mutated_strategy).expect("hedging oms_type should parse via NT enum");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("oms_type") && m.contains("Netting")),
+        "expected oms_type rejection citing supported Netting variant, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn parses_runtime_config_with_optional_streaming_section() {
     let toml = r#"
         [node]

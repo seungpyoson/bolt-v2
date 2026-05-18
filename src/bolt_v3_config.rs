@@ -12,7 +12,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use nautilus_model::identifiers::{ClientId, Venue};
+use nautilus_model::{
+    enums::OmsType,
+    identifiers::{ClientId, Venue},
+};
 use serde::Deserialize;
 
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
@@ -282,12 +285,6 @@ impl StrategyArchetypeKey {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum OmsType {
-    Netting,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

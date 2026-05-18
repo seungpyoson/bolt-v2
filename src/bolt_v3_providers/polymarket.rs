@@ -1,11 +1,11 @@
-//! Per-provider binding for `polymarket` venue config block shapes
+//! Per-provider binding for `POLYMARKET` client config block shapes
 //! and per-venue startup validation.
 //!
-//! Owns the concrete shape of `[venues.<name>.data]`,
-//! `[venues.<name>.execution]`, and `[venues.<name>.secrets]` for any
-//! venue whose `kind = "polymarket"` provider key is configured. Core
+//! Owns the concrete shape of `[clients.<name>.data]`,
+//! `[clients.<name>.execution]`, and `[clients.<name>.secrets]` for any
+//! client whose `venue = "POLYMARKET"` NT venue is configured. Core
 //! config in `crate::bolt_v3_config` only owns the root/strategy envelope
-//! and raw provider-key field; the provider-shaped block types and their
+//! and raw NT venue field; the provider-shaped block types and their
 //! serde rules live here so provider-specific schema evolution does not
 //! reach back into the envelope module.
 //!

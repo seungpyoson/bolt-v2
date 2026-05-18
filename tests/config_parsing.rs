@@ -2102,12 +2102,15 @@ fn rejects_ssm_paths_missing_leading_slash() {
     );
     let root: BoltV3RootConfig = toml::from_str(&mutated).expect("ssm-path mutation should parse");
     let messages = validate_root_only(&root);
+    let rendered = messages.join("\n");
     assert!(
         messages.iter().any(|m| m.contains("binance_reference")
             && m.contains("api_key_ssm_path")
             && m.contains("absolute-style SSM parameter path starting with `/`")),
         "expected SSM-path leading-slash validation error, got: {messages:#?}"
     );
+    assert!(rendered.contains("clients.binance_reference.secrets.api_key_ssm_path"));
+    assert!(!rendered.contains("venues.binance_reference"));
 }
 
 #[test]

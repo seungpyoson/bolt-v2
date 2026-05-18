@@ -721,7 +721,7 @@ fn config_module_must_not_own_provider_specific_config_block_types() {
     // provider binding modules. The config module owns the root and
     // strategy envelope plus minimal dispatch identifiers like
     // `VenueKind::Polymarket` / `VenueKind::Binance`; concrete
-    // `[venues.<name>.{data,execution,secrets}]` block shapes belong to
+    // `[clients.<name>.{data,execution,secrets}]` block shapes belong to
     // a per-provider binding (`crate::bolt_v3_providers::polymarket` or
     // `crate::bolt_v3_providers::binance`), not to core config. The
     // type names forbidden below pin policy *ownership* — none of these

@@ -46,7 +46,7 @@ pub struct BoltV3ExecutionClientAdapterConfig {
 
 /// Mapped provider-owned adapter assemblies for one configured Bolt-v3
 /// venue. Sub-configs are present iff the corresponding
-/// `[venues.<id>.<block>]` section is present in the validated config.
+/// `[clients.<id>.<block>]` section is present in the validated config.
 pub struct BoltV3VenueAdapterConfig {
     pub data: Option<BoltV3DataClientAdapterConfig>,
     pub execution: Option<BoltV3ExecutionClientAdapterConfig>,
@@ -64,8 +64,8 @@ impl BoltV3ExecutionClientAdapterConfig {
     }
 }
 
-/// Mapped NT-native adapter configs keyed by the bolt-v3 venue
-/// identifier (the TOML `[venues.<id>]` table key).
+/// Mapped NT-native adapter configs keyed by the bolt-v3 client
+/// identifier (the TOML `[clients.<id>]` table key).
 pub struct BoltV3AdapterConfigs {
     pub venues: BTreeMap<String, BoltV3VenueAdapterConfig>,
 }
@@ -160,7 +160,7 @@ impl std::fmt::Display for BoltV3AdapterMappingError {
                 expected_provider_key,
             } => write!(
                 f,
-                "venues.{venue_key}: resolved secret kind does not match validated venue kind \
+                "clients.{venue_key}: resolved secret kind does not match validated venue kind \
                  (expected {kind})",
                 kind = expected_provider_key,
             ),
@@ -169,7 +169,7 @@ impl std::fmt::Display for BoltV3AdapterMappingError {
                 expected_provider_key,
             } => write!(
                 f,
-                "venues.{venue_key} (kind={kind}) requires resolved SSM secrets but none were \
+                "clients.{venue_key} (kind={kind}) requires resolved SSM secrets but none were \
                  supplied to the adapter mapper",
                 kind = expected_provider_key,
             ),
@@ -179,7 +179,7 @@ impl std::fmt::Display for BoltV3AdapterMappingError {
                 message,
             } => write!(
                 f,
-                "venues.{venue_key}.{block}: failed to deserialize into NT-native config: {message}",
+                "clients.{venue_key}.{block}: failed to deserialize into NT-native config: {message}",
             ),
             BoltV3AdapterMappingError::NumericRange {
                 venue_key,
@@ -187,7 +187,7 @@ impl std::fmt::Display for BoltV3AdapterMappingError {
                 message,
             } => write!(
                 f,
-                "venues.{venue_key}.{field}: bolt-v3 value does not fit the NT-native field type: {message}",
+                "clients.{venue_key}.{field}: bolt-v3 value does not fit the NT-native field type: {message}",
             ),
             BoltV3AdapterMappingError::ValidationInvariant {
                 venue_key,
@@ -195,7 +195,7 @@ impl std::fmt::Display for BoltV3AdapterMappingError {
                 message,
             } => write!(
                 f,
-                "venues.{venue_key}.{field}: bolt-v3 validation invariant failed at adapter mapping: {message}",
+                "clients.{venue_key}: bolt-v3 validation invariant failed for {field}: {message}",
             ),
         }
     }
@@ -306,9 +306,9 @@ fn validate_provider_market_family_support(
         {
             return Err(BoltV3AdapterMappingError::ValidationInvariant {
                 venue_key: target.venue_config_key.to_string(),
-                field: "strategy.target.venue_config_key",
+                field: "strategy.execution_client_id",
                 message: format!(
-                    "configured target `{}` uses market family `{}` on venue `{}`, but provider venue `{}` does not support that market family",
+                    "configured target `{}` uses market family `{}` on client `{}`, but provider venue `{}` does not support that market family",
                     target.configured_target_id,
                     target.family_key,
                     target.venue_config_key,
@@ -328,9 +328,9 @@ fn validate_market_identity_target_venues(
         if !loaded.root.clients.contains_key(target.venue_config_key) {
             return Err(BoltV3AdapterMappingError::ValidationInvariant {
                 venue_key: target.venue_config_key.to_string(),
-                field: "strategy.target.venue_config_key",
+                field: "strategy.execution_client_id",
                 message: format!(
-                    "configured target `{}` references unknown venue `{}`",
+                    "configured target `{}` references unknown client `{}`",
                     target.configured_target_id, target.venue_config_key,
                 ),
             });
@@ -602,8 +602,20 @@ mod tests {
                 message,
             } => {
                 assert_eq!(venue_key, "polymarket_main");
-                assert_eq!(field, "strategy.target.venue_config_key");
+                assert_eq!(field, "strategy.execution_client_id");
                 assert!(message.contains("does not support that market family"));
+                let rendered = format!(
+                    "{}",
+                    BoltV3AdapterMappingError::ValidationInvariant {
+                        venue_key,
+                        field,
+                        message,
+                    }
+                );
+                assert!(rendered.starts_with("clients.polymarket_main:"));
+                assert!(rendered.contains("strategy.execution_client_id"));
+                assert!(!rendered.contains("venues."));
+                assert!(!rendered.contains("strategy.target.venue_config_key"));
             }
             other => panic!("expected ValidationInvariant, got {other}"),
         }

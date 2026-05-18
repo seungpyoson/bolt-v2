@@ -232,7 +232,7 @@ pub fn register_runtime_strategy(
             binding_message(
                 &context,
                 format!(
-                    "strategy execution_client_id `{}` is not present in loaded venues",
+                    "strategy execution_client_id `{}` is not present in loaded clients",
                     context.strategy.config.execution_client_id
                 ),
             )

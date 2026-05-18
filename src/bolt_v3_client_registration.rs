@@ -3,7 +3,7 @@
 //! Translates a [`BoltV3AdapterConfigs`] value into NT-native
 //! `add_data_client` / `add_exec_client` calls on a
 //! [`nautilus_live::builder::LiveNodeBuilder`] for every configured
-//! `[venues.<id>]` block. The bolt-v3 venue identifier is reused as the
+//! `[clients.<id>]` block. The bolt-v3 client identifier is reused as the
 //! NT registration name so per-venue routing stays addressable.
 //!
 //! This module accumulates registration intent on the builder. Bolt-v3
@@ -31,7 +31,7 @@ use crate::bolt_v3_adapters::BoltV3AdapterConfigs;
 
 /// Inspectable record of which NT client kinds the bolt-v3 boundary
 /// added to the [`LiveNodeBuilder`] for one configured venue. A `false`
-/// flag means the corresponding `[venues.<id>.<block>]` was absent in
+/// flag means the corresponding `[clients.<id>.<block>]` was absent in
 /// the validated config so no `add_*_client` call was made for that
 /// kind.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -42,7 +42,7 @@ pub struct BoltV3RegisteredVenue {
 
 /// Per-venue summary of which NT factory kinds were added to the
 /// [`LiveNodeBuilder`] during the bolt-v3 client-registration smoke.
-/// Keyed by the bolt-v3 venue identifier (the TOML `[venues.<id>]`
+/// Keyed by the bolt-v3 client identifier (the TOML `[clients.<id>]`
 /// table key, which the boundary also uses as the NT registration
 /// name). The summary is the only inspectable surface this module
 /// exposes; the builder itself owns the actual factory and config
@@ -68,11 +68,11 @@ impl std::fmt::Display for BoltV3ClientRegistrationError {
         match self {
             Self::AddDataClient { venue_key, message } => write!(
                 f,
-                "venues.{venue_key}: NT LiveNodeBuilder rejected data client: {message}"
+                "clients.{venue_key}: NT LiveNodeBuilder rejected data client: {message}"
             ),
             Self::AddExecClient { venue_key, message } => write!(
                 f,
-                "venues.{venue_key}: NT LiveNodeBuilder rejected execution client: {message}"
+                "clients.{venue_key}: NT LiveNodeBuilder rejected execution client: {message}"
             ),
         }
     }
@@ -81,8 +81,8 @@ impl std::fmt::Display for BoltV3ClientRegistrationError {
 impl std::error::Error for BoltV3ClientRegistrationError {}
 
 /// Adds an NT data and/or execution client factory to `builder` for
-/// every configured `[venues.<id>]` block in `adapters`, using the
-/// bolt-v3 venue identifier as the NT registration name. Returns the
+/// every configured `[clients.<id>]` block in `adapters`, using the
+/// bolt-v3 client identifier as the NT registration name. Returns the
 /// updated builder paired with an inspectable summary of which client
 /// kinds were registered per venue.
 ///
@@ -339,6 +339,12 @@ mod tests {
                     message.contains("already registered"),
                     "underlying NT error should explain duplicate registration: {message}"
                 );
+                let rendered = format!(
+                    "{}",
+                    BoltV3ClientRegistrationError::AddDataClient { venue_key, message }
+                );
+                assert!(rendered.starts_with("clients.polymarket_main:"));
+                assert!(!rendered.contains("venues."));
             }
             other => panic!("expected AddDataClient error, got {other:?}"),
         }
@@ -371,6 +377,12 @@ mod tests {
                     message.contains("already registered"),
                     "underlying NT error should explain duplicate registration: {message}"
                 );
+                let rendered = format!(
+                    "{}",
+                    BoltV3ClientRegistrationError::AddExecClient { venue_key, message }
+                );
+                assert!(rendered.starts_with("clients.polymarket_main:"));
+                assert!(!rendered.contains("venues."));
             }
             other => panic!("expected AddExecClient error, got {other:?}"),
         }

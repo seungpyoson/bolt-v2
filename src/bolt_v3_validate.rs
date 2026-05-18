@@ -22,7 +22,7 @@
 //! matching archetype validator via
 //! `crate::bolt_v3_archetypes::validate_strategy_archetype`.
 //! Per-provider venue-block validation (provider-shaped
-//! `[venues.<id>.{data,execution,secrets}]` rules: typed
+//! `[clients.<id>.{data,execution,secrets}]` rules: typed
 //! deserialization, cross-block presence rules, provider data /
 //! execution bounds, EVM funder-address syntax, provider secret-path
 //! ownership) is owned by the per-provider binding modules under
@@ -422,7 +422,7 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
     let trimmed = value.trim();
     if trimmed.is_empty() {
         errors.push(format!(
-            "venues.{key}.secrets.{field} must be a non-empty SSM path"
+            "clients.{key}.secrets.{field} must be a non-empty SSM path"
         ));
     } else if !trimmed.starts_with('/') {
         // The Rust AWS SDK accepts both `name`-style and `/name`-style
@@ -431,7 +431,7 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
         // like `/bolt/<venue>/<field>` is the only supported shape and
         // typos that drop the leading slash fail closed at startup.
         errors.push(format!(
-            "venues.{key}.secrets.{field} must be an absolute-style SSM parameter path starting with `/`: `{value}`"
+            "clients.{key}.secrets.{field} must be an absolute-style SSM parameter path starting with `/`: `{value}`"
         ));
     }
     errors

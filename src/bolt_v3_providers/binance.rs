@@ -1,10 +1,10 @@
-//! Per-provider binding for `binance` venue config block shapes and
+//! Per-provider binding for `BINANCE` client config block shapes and
 //! per-venue startup validation.
 //!
-//! Owns the concrete shape of `[venues.<name>.data]` and
-//! `[venues.<name>.secrets]` for any venue whose `kind = "binance"`
-//! provider key is configured. Core config in `crate::bolt_v3_config`
-//! only owns the root/strategy envelope and raw provider-key field; the
+//! Owns the concrete shape of `[clients.<name>.data]` and
+//! `[clients.<name>.secrets]` for any client whose `venue = "BINANCE"`
+//! NT venue is configured. Core config in `crate::bolt_v3_config`
+//! only owns the root/strategy envelope and raw NT venue field; the
 //! provider-shaped block types and their
 //! serde rules live here so provider-specific schema evolution does
 //! not reach back into the envelope module.

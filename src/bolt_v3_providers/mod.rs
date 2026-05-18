@@ -1,14 +1,14 @@
-//! Per-provider binding root for bolt-v3 venue config block shapes
+//! Per-provider binding root for bolt-v3 client config block shapes
 //! and per-venue startup-validation policy.
 //!
 //! Core config in `crate::bolt_v3_config` owns the root and strategy
-//! envelopes plus raw provider keys. Concrete provider key literals and
-//! `[venues.<name>.{data,execution,secrets}]` block shapes live in
+//! envelopes plus NT venue identifiers. Concrete NT venue literals and
+//! `[clients.<name>.{data,execution,secrets}]` block shapes live in
 //! per-provider binding modules under this root.
 //!
 //! This module also owns the family-agnostic dispatch surface that
 //! core startup validation in `crate::bolt_v3_validate` calls into:
-//! every `[venues.<id>]` block is routed here, the provider key is read
+//! every `[clients.<id>]` block is routed here, the NT venue is read
 //! once, and the matching per-provider
 //! validator owns the rest of the structural venue-shape rules.
 //! Provider-neutral helpers used by more than one provider validator

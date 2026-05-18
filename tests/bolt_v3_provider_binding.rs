@@ -409,7 +409,7 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
             message,
         } => {
             assert_eq!(venue_key, "binance_reference");
-            assert_eq!(field, "strategy.target.venue_config_key");
+            assert_eq!(field, "strategy.execution_client_id");
             assert!(
                 message.contains("does not support that market family"),
                 "error message should explain the family/provider compatibility boundary: {message}"
@@ -420,9 +420,9 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
 }
 
 #[test]
-fn provider_binding_rejects_updown_target_bound_to_unknown_venue() {
+fn provider_binding_rejects_updown_target_bound_to_unknown_client() {
     // A target whose `venue_config_key` does not appear under
-    // `[venues]` is also a misconfiguration the binding layer must
+    // `[clients]` is also a misconfiguration the binding layer must
     // reject explicitly rather than silently produce no filter.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -435,7 +435,7 @@ fn provider_binding_rejects_updown_target_bound_to_unknown_venue() {
     let clock = fixed_clock(0);
 
     let error = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
-        .expect_err("unknown venue binding must fail loud at the adapter boundary");
+        .expect_err("unknown client binding must fail loud at the adapter boundary");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
             venue_key,
@@ -443,10 +443,10 @@ fn provider_binding_rejects_updown_target_bound_to_unknown_venue() {
             message,
         } => {
             assert_eq!(venue_key, "venue_does_not_exist");
-            assert_eq!(field, "strategy.target.venue_config_key");
+            assert_eq!(field, "strategy.execution_client_id");
             assert!(
-                message.contains("unknown venue"),
-                "error message should describe the unknown-venue case: {message}"
+                message.contains("unknown client"),
+                "error message should describe the unknown-client case: {message}"
             );
         }
         other => panic!("expected ValidationInvariant, got {other}"),

@@ -140,6 +140,57 @@ ack_timeout_secs = 5
 }
 
 #[test]
+fn bolt_v3_reference_data_instrument_id_uses_nt_typed_identifier() {
+    // `ReferenceDataBlock.instrument_id` is typed as
+    // `nautilus_model::identifiers::InstrumentId`. The strategy block is
+    // parsed via `toml::from_str(&content)` directly (borrowed source),
+    // so NT's `impl_serialization_for_identifier!` macro runs and routes
+    // through `InstrumentId::new_checked`, eliminating the bolt-side
+    // runtime empty / non-empty guard.
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use nautilus_model::identifiers::InstrumentId;
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
+
+    let reference = loaded.strategies[0]
+        .config
+        .reference_data
+        .get("primary")
+        .expect("binary_oracle strategy fixture should have reference_data.primary");
+    let instrument_id: InstrumentId = reference.instrument_id;
+    assert_eq!(instrument_id.to_string(), "BTCUSDT.BINANCE");
+}
+
+#[test]
+fn bolt_v3_reference_data_instrument_id_rejects_empty_string_at_parse_time() {
+    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
+
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let mutated = strategy_toml.replace(
+        "instrument_id = \"BTCUSDT.BINANCE\"",
+        "instrument_id = \"\"",
+    );
+    let err = toml::from_str::<BoltV3StrategyConfig>(&mutated)
+        .expect_err("empty instrument_id should be rejected by NT InstrumentId serde");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("InstrumentId"),
+        "rejection should cite the NT InstrumentId parser, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("empty")
+            || rendered.contains("invalid")
+            || rendered.contains("missing")
+            || rendered.contains("separator"),
+        "rejection should explain the empty instrument_id, got: {rendered}"
+    );
+}
+
+#[test]
 fn bolt_v3_strategy_oms_type_uses_nt_canonical_enum() {
     // FINDING-1: `strategy.oms_type` is typed as `nautilus_model::enums::OmsType`
     // (not a bolt shadow enum). NT's enum_strum_serde! macro makes deserialize

@@ -313,8 +313,8 @@ where
                 .reference_data
                 .iter()
                 .filter_map(|(role, reference)| {
-                    let instrument_id = reference.instrument_id.trim();
-                    (!cached.contains(instrument_id)).then(|| {
+                    let instrument_id = reference.instrument_id.to_string();
+                    (!cached.contains(instrument_id.as_str())).then(|| {
                         format!(
                             "{} reference_data.{role} instrument_id `{instrument_id}`",
                             strategy.relative_path

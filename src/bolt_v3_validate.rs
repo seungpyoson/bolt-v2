@@ -543,11 +543,6 @@ fn validate_reference_data(
                 }
             }
         }
-        if block.instrument_id.trim().is_empty() {
-            errors.push(format!(
-                "{context}: reference_data.{role}.instrument_id must not be empty"
-            ));
-        }
     }
 
     errors

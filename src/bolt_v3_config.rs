@@ -15,7 +15,7 @@ use std::{
 use nautilus_common::enums::{Environment, LogLevel};
 use nautilus_model::{
     enums::OmsType,
-    identifiers::{ClientId, TraderId, Venue},
+    identifiers::{ClientId, InstrumentId, TraderId, Venue},
 };
 use serde::Deserialize;
 
@@ -262,7 +262,7 @@ impl StrategyArchetypeKey {
 #[serde(deny_unknown_fields)]
 pub struct ReferenceDataBlock {
     pub data_client_id: String,
-    pub instrument_id: String,
+    pub instrument_id: InstrumentId,
 }
 
 #[derive(Debug, Clone)]

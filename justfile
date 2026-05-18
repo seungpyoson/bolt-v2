@@ -194,10 +194,19 @@ ci-lint-workflow:
     if ! python3 scripts/test_verify_ci_path_filters.py; then
         failed=1
     fi
+    if ! python3 scripts/test_no_mistakes_ci_gate.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_verify_no_mistakes_rust_routing.py; then
+        failed=1
+    fi
     if ! python3 scripts/verify_ci_path_filters.py; then
         failed=1
     fi
     if ! python3 scripts/verify_ci_workflow_hygiene.py; then
+        failed=1
+    fi
+    if ! python3 scripts/verify_no_mistakes_rust_routing.py; then
         failed=1
     fi
 

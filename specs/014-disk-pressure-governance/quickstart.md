@@ -27,7 +27,7 @@ ps -axo pid,ppid,comm,args | rg 'cargo|rustc|rust_verification|nextest|claude|co
 
 ## 2. Classify The Consumer
 
-Verified local snapshot from 2026-05-18:
+Verified local snapshot for operator `spson` on 2026-05-18:
 
 | Path | Size | Classification |
 |---|---:|---|

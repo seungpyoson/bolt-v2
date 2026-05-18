@@ -8,7 +8,7 @@
 | #48 | Investigation history | No new implementation PR; forward work maps to #374 or #286 |
 | #70 | Closed investigation | No PR unless new evidence reopens the symptom |
 | #124 | Managed-cache symptom | No direct implementation PR; forward work maps to #286 |
-| #125 | Claude task-output incident anchor | bolt-v2-side anchor only; implementation belongs to `claude-config` tracking |
+| #125 | Claude task-output incident anchor | bolt-v2-side anchor only; implementation belongs to `seungpyoson/claude-config#597` |
 | #286 | Managed Rust cache retention | One implementation PR for status/prune/retention policy |
 | #374 | Wrapper hardening | One implementation PR after Phase 1 cargo-path enumeration is pinned |
 | #375 | Developer-tool hygiene | One implementation PR after Phase 1 developer-tool enumeration is pinned |
@@ -26,6 +26,8 @@
 
 ## Verified Cargo Routing Evidence
 
+Snapshot scope: operator `spson`, local machine, 2026-05-18.
+
 - `just` resolves bolt-v2 Rust target output to `/Users/spson/.cache/rust-verification/bolt-v2/target`.
 - Checked bolt-v2 worktrees resolve to the same managed target path.
 - no-mistakes v1.18.3 had no `CARGO_TARGET_DIR` in the daemon environment during the 2026-05-18 check.
@@ -35,7 +37,7 @@
 ## Cleanup Safety Contract
 
 - Status/dry-run before apply.
-- Refuse apply when matching active writer/build processes are detected unless a later issue defines a reviewed emergency override.
+- Refuse apply when matching active writer/build processes are detected unless #286 defines a reviewed emergency override.
 - Never unlink live Claude `.output` files as a reclaim mechanism.
 - Never delete whole managed target cache by default.
 - Never remove pinned or active Rust toolchains.

@@ -63,12 +63,12 @@ As the operator, I can prove every known disk-writing surface is inventoried and
 **Acceptance Scenarios**:
 
 1. **Given** bolt-v3 runtime, local CI/test artifacts, cargo registry, or cargo git growth occurs, **When** representative runs are measured, **Then** requirements capture path, size, growth rate, policy, and owner.
-2. **Given** a new 5 GB class appears under `~`, **When** it is not owned by existing issues, **Then** requirements define how it is surfaced and triaged.
+2. **Given** a new path family crosses the configured newly-large threshold under `~`, **When** it is not owned by existing issues, **Then** requirements define how it is surfaced and triaged.
 
 ## Edge Cases
 
 - A path belongs to machine-level caches such as npm, Homebrew, or Xcode DerivedData: this epic records it as out of scope and routes it to machine/dev-environment config, not bolt-v2.
-- #125 Claude task-output containment belongs to `claude-config` implementation after the bolt-v2 incident anchor; bolt-v2 must not pretend to fix it locally.
+- #125 Claude task-output containment belongs to `claude-config` implementation after the bolt-v2 incident anchor; bolt-v2 must not pretend to fix it locally. The current external owner is `seungpyoson/claude-config#597`.
 - #70 is closed as resolved-by-investigation; repeating that incident requires equivalent scratch diagnostics, not current bolt-v2 runtime.
 - A cleanup command finds active `cargo`, `rustc`, `rust_verification.py`, agent, or holder processes: destructive apply behavior must refuse or require explicit operator action.
 - Full local test execution is requested while free disk is low, shell routing is unproven, or exact-head CI can provide the broad signal: requirements prefer draft PR plus CI runners instead of duplicate raw local cargo.

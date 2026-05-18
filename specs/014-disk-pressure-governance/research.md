@@ -26,7 +26,7 @@
 
 ## Decision: Treat no-mistakes as a verified Cargo-routing gap
 
-**Rationale**: On 2026-05-18, no-mistakes v1.18.3 was running without `CARGO_TARGET_DIR` in the daemon environment. The repo `.no-mistakes.yaml` configures raw `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check`. A recorded bolt-v2 no-mistakes run wrote Cargo output under `/Users/spson/.no-mistakes/worktrees/70a6a97b9d39/01KRQ799H1N51HC3PH5ZNKMWN9/target/...` and failed with `No space left on device`. This proves no-mistakes is not only theoretical drift; it is a real unmanaged target producer.
+**Rationale**: For operator `spson` on 2026-05-18, no-mistakes v1.18.3 was running without `CARGO_TARGET_DIR` in the daemon environment. The repo `.no-mistakes.yaml` configures raw `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check`. A recorded bolt-v2 no-mistakes run wrote Cargo output under `/Users/spson/.no-mistakes/worktrees/70a6a97b9d39/01KRQ799H1N51HC3PH5ZNKMWN9/target/...` and failed with `No space left on device`. This proves no-mistakes is not only theoretical drift; it is a real unmanaged target producer.
 
 **Alternatives considered**:
 - Assume no-mistakes inherits managed routing: rejected by daemon env check and historical failure path.

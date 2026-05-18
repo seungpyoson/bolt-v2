@@ -39,11 +39,7 @@ use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::D
 use ahash::AHashMap;
 use anyhow::Result;
 use log::LevelFilter;
-use nautilus_common::{
-    enums::Environment,
-    logging::{logger::LoggerConfig, writer::FileWriterConfig},
-};
-use nautilus_core::{UUID4, UnixNanos};
+use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_live::{
     builder::LiveNodeBuilder,
     config::LiveNodeConfig,
@@ -53,9 +49,6 @@ use nautilus_model::{
     enums::BarIntervalType,
     identifiers::{ClientId, StrategyId, TraderId},
 };
-use nautilus_system::config::{RotationConfig, StreamingConfig};
-use serde::Deserialize;
-use serde::de::DeserializeOwned;
 use ustr::Ustr;
 
 use crate::{
@@ -63,7 +56,10 @@ use crate::{
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
-    bolt_v3_config::{LoadedBoltV3Config, LogLevel, NautilusComponentConfig, RuntimeMode},
+    bolt_v3_config::{
+        LoadedBoltV3Config, LogLevel, NautilusComponentConfig, RuntimeMode,
+        is_disabled_nautilus_component,
+    },
     bolt_v3_decision_evidence::{BoltV3DecisionEvidenceWriter, JsonlBoltV3DecisionEvidenceWriter},
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_providers,
@@ -723,8 +719,6 @@ pub fn make_live_node_config(
                 .to_level_filter(),
         );
     }
-    let file_config =
-        optional_file_writer_config("logging.file_config", &loaded.root.logging.file_config)?;
     let logging = LoggerConfig {
         stdout_level: loaded.root.logging.standard_output_level.to_level_filter(),
         fileout_level: loaded.root.logging.file_level.to_level_filter(),
@@ -735,7 +729,10 @@ pub fn make_live_node_config(
         print_config: loaded.root.logging.print_config,
         use_tracing: loaded.root.logging.use_tracing,
         bypass_logging: loaded.root.logging.bypass_logging,
-        file_config,
+        file_config: disabled_component_none(
+            "logging.file_config",
+            &loaded.root.logging.file_config,
+        )?,
         clear_log_file: loaded.root.logging.clear_log_file,
     };
     let nautilus = &loaded.root.nautilus;
@@ -842,18 +839,18 @@ pub fn make_live_node_config(
         load_state: nautilus.load_state,
         save_state: nautilus.save_state,
         logging,
-        instance_id: optional_instance_id("nautilus.instance_id", &nautilus.instance_id)?,
+        instance_id: disabled_component_none("nautilus.instance_id", &nautilus.instance_id)?,
         timeout_connection: Duration::from_secs(nautilus.timeout_connection_seconds),
         timeout_reconciliation: Duration::from_secs(nautilus.timeout_reconciliation_seconds),
         timeout_portfolio: Duration::from_secs(nautilus.timeout_portfolio_seconds),
         timeout_disconnection: Duration::from_secs(nautilus.timeout_disconnection_seconds),
         delay_post_stop: Duration::from_secs(nautilus.delay_post_stop_seconds),
         timeout_shutdown: Duration::from_secs(nautilus.timeout_shutdown_seconds),
-        cache: optional_toml_config("nautilus.cache", &nautilus.cache)?,
-        msgbus: optional_toml_config("nautilus.msgbus", &nautilus.msgbus)?,
-        portfolio: optional_toml_config("nautilus.portfolio", &nautilus.portfolio)?,
-        emulator: optional_toml_config("nautilus.emulator", &nautilus.emulator)?,
-        streaming: optional_streaming_config("nautilus.streaming", &nautilus.streaming)?,
+        cache: disabled_component_none("nautilus.cache", &nautilus.cache)?,
+        msgbus: disabled_component_none("nautilus.msgbus", &nautilus.msgbus)?,
+        portfolio: disabled_component_none("nautilus.portfolio", &nautilus.portfolio)?,
+        emulator: disabled_component_none("nautilus.emulator", &nautilus.emulator)?,
+        streaming: disabled_component_none("nautilus.streaming", &nautilus.streaming)?,
         loop_debug: nautilus.loop_debug,
         data_engine,
         risk_engine,
@@ -863,154 +860,17 @@ pub fn make_live_node_config(
     })
 }
 
-fn optional_toml_config<T>(
+fn disabled_component_none<T>(
     field: &'static str,
     config: &NautilusComponentConfig,
-) -> Result<Option<T>, BoltV3LiveNodeBuilderError>
-where
-    T: DeserializeOwned,
-{
-    if disabled_component(config) {
+) -> Result<Option<T>, BoltV3LiveNodeBuilderError> {
+    if is_disabled_nautilus_component(config) {
         return Ok(None);
     }
-    config
-        .clone()
-        .try_into()
-        .map(Some)
-        .map_err(|source| config_mapping_error(field, source))
-}
-
-fn optional_instance_id(
-    field: &'static str,
-    config: &NautilusComponentConfig,
-) -> Result<Option<UUID4>, BoltV3LiveNodeBuilderError> {
-    if disabled_component(config) {
-        return Ok(None);
-    }
-    let Some(value) = config.as_str() else {
-        return Err(BoltV3LiveNodeBuilderError::ConfigMapping {
-            field,
-            message: "expected UUID string or \"disabled\"".to_string(),
-        });
-    };
-    UUID4::from_str(value)
-        .map(Some)
-        .map_err(|source| BoltV3LiveNodeBuilderError::ConfigMapping {
-            field,
-            message: source,
-        })
-}
-
-fn optional_file_writer_config(
-    field: &'static str,
-    config: &NautilusComponentConfig,
-) -> Result<Option<FileWriterConfig>, BoltV3LiveNodeBuilderError> {
-    optional_toml_config::<BoltV3FileWriterConfig>(field, config)
-        .map(|value| value.map(FileWriterConfig::from))
-}
-
-fn optional_streaming_config(
-    field: &'static str,
-    config: &NautilusComponentConfig,
-) -> Result<Option<StreamingConfig>, BoltV3LiveNodeBuilderError> {
-    optional_toml_config::<BoltV3StreamingConfig>(field, config)
-        .map(|value| value.map(StreamingConfig::from))
-}
-
-fn disabled_component(config: &NautilusComponentConfig) -> bool {
-    if config.as_str() == Some("disabled") {
-        return true;
-    }
-    false
-}
-
-fn config_mapping_error(
-    field: &'static str,
-    source: toml::de::Error,
-) -> BoltV3LiveNodeBuilderError {
-    BoltV3LiveNodeBuilderError::ConfigMapping {
+    Err(BoltV3LiveNodeBuilderError::ConfigMapping {
         field,
-        message: source.to_string(),
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BoltV3FileWriterConfig {
-    directory: Option<String>,
-    file_name: Option<String>,
-    file_format: Option<String>,
-    file_rotate: Option<BoltV3FileRotateConfig>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BoltV3FileRotateConfig {
-    max_file_size: u64,
-    max_backup_count: u32,
-}
-
-impl From<BoltV3FileWriterConfig> for FileWriterConfig {
-    fn from(config: BoltV3FileWriterConfig) -> Self {
-        FileWriterConfig::new(
-            config.directory,
-            config.file_name,
-            config.file_format,
-            config
-                .file_rotate
-                .map(|rotate| (rotate.max_file_size, rotate.max_backup_count)),
-        )
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BoltV3StreamingConfig {
-    catalog_path: String,
-    fs_protocol: String,
-    flush_interval_ms: u64,
-    replace_existing: bool,
-    rotation_config: BoltV3RotationConfig,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum BoltV3RotationConfig {
-    Size { max_size: u64 },
-    Interval { interval_ns: u64 },
-    ScheduledDates { interval_ns: u64, schedule_ns: u64 },
-    NoRotation,
-}
-
-impl From<BoltV3StreamingConfig> for StreamingConfig {
-    fn from(config: BoltV3StreamingConfig) -> Self {
-        StreamingConfig::new(
-            config.catalog_path,
-            config.fs_protocol,
-            config.flush_interval_ms,
-            config.replace_existing,
-            RotationConfig::from(config.rotation_config),
-        )
-    }
-}
-
-impl From<BoltV3RotationConfig> for RotationConfig {
-    fn from(config: BoltV3RotationConfig) -> Self {
-        match config {
-            BoltV3RotationConfig::Size { max_size } => RotationConfig::Size { max_size },
-            BoltV3RotationConfig::Interval { interval_ns } => {
-                RotationConfig::Interval { interval_ns }
-            }
-            BoltV3RotationConfig::ScheduledDates {
-                interval_ns,
-                schedule_ns,
-            } => RotationConfig::ScheduledDates {
-                interval_ns,
-                schedule_ns: UnixNanos::from(schedule_ns),
-            },
-            BoltV3RotationConfig::NoRotation => RotationConfig::NoRotation,
-        }
-    }
+        message: "must be \"disabled\"; NT Rust live runtime rejects configured component blocks in current bolt-v3 scope".to_string(),
+    })
 }
 
 fn logger_levels(
@@ -1225,97 +1085,48 @@ mod tests {
     }
 
     #[test]
-    fn live_node_config_maps_configured_nt_component_blocks() {
-        let mut loaded = fixture_loaded_config();
-        loaded.root.nautilus.instance_id =
-            toml::Value::String("2d89666b-1a1e-4a75-b193-4eb3b454c757".to_string());
-        loaded.root.nautilus.cache = toml_table(
-            r#"
-            use_trader_prefix = false
-            tick_capacity = 321
-            bar_capacity = 654
-            "#,
-        );
-        loaded.root.nautilus.msgbus = toml_table(
-            r#"
-            streams_prefix = "bolt-stream"
-            stream_per_topic = false
-            "#,
-        );
-        loaded.root.nautilus.portfolio = toml_table(
-            r#"
-            use_mark_prices = true
-            bar_updates = false
-            "#,
-        );
-        loaded.root.nautilus.emulator = toml_table(
-            r#"
-            debug = true
-            "#,
-        );
-        loaded.root.nautilus.streaming = toml_table(
-            r#"
-            catalog_path = "/tmp/bolt-v3-catalog"
-            fs_protocol = "file"
-            flush_interval_ms = 250
-            replace_existing = true
+    fn live_node_config_rejects_disabled_only_component_bypass() {
+        let cases: [(&str, fn(&mut LoadedBoltV3Config)); 7] = [
+            ("nautilus.instance_id", |loaded: &mut LoadedBoltV3Config| {
+                loaded.root.nautilus.instance_id =
+                    toml::Value::String("2d89666b-1a1e-4a75-b193-4eb3b454c757".to_string());
+            }),
+            ("nautilus.cache", |loaded: &mut LoadedBoltV3Config| {
+                loaded.root.nautilus.cache = toml_table("use_trader_prefix = false");
+            }),
+            ("nautilus.msgbus", |loaded: &mut LoadedBoltV3Config| {
+                loaded.root.nautilus.msgbus = toml_table("streams_prefix = \"bolt-stream\"");
+            }),
+            ("nautilus.portfolio", |loaded: &mut LoadedBoltV3Config| {
+                loaded.root.nautilus.portfolio = toml_table("use_mark_prices = true");
+            }),
+            ("nautilus.emulator", |loaded: &mut LoadedBoltV3Config| {
+                loaded.root.nautilus.emulator = toml_table("debug = true");
+            }),
+            ("nautilus.streaming", |loaded: &mut LoadedBoltV3Config| {
+                loaded.root.nautilus.streaming = toml_table("catalog_path = \"/tmp/catalog\"");
+            }),
+            ("logging.file_config", |loaded: &mut LoadedBoltV3Config| {
+                loaded.root.logging.file_config = toml_table("directory = \"logs\"");
+            }),
+        ];
 
-            [rotation_config]
-            kind = "size"
-            max_size = 2048
-            "#,
-        );
-        loaded.root.logging.file_config = toml_table(
-            r#"
-            directory = "logs"
-            file_name = "bolt-v3.log"
-            file_format = "json"
-
-            [file_rotate]
-            max_file_size = 4096
-            max_backup_count = 3
-            "#,
-        );
-
-        let cfg = make_live_node_config(&loaded).expect("configured NT components should map");
-
-        assert_eq!(
-            cfg.instance_id
-                .expect("instance id should be configured")
-                .to_string(),
-            "2d89666b-1a1e-4a75-b193-4eb3b454c757"
-        );
-        let cache = cfg.cache.expect("cache config should map");
-        assert!(!cache.use_trader_prefix);
-        assert_eq!(cache.tick_capacity, 321);
-        assert_eq!(cache.bar_capacity, 654);
-        let msgbus = cfg.msgbus.expect("msgbus config should map");
-        assert_eq!(msgbus.streams_prefix, "bolt-stream");
-        assert!(!msgbus.stream_per_topic);
-        let portfolio = cfg.portfolio.expect("portfolio config should map");
-        assert!(portfolio.use_mark_prices);
-        assert!(!portfolio.bar_updates);
-        assert!(cfg.emulator.expect("emulator config should map").debug);
-        let streaming = cfg.streaming.expect("streaming config should map");
-        assert_eq!(streaming.catalog_path, "/tmp/bolt-v3-catalog");
-        match streaming.rotation_config {
-            RotationConfig::Size { max_size } => assert_eq!(max_size, 2048),
-            other => panic!("expected size rotation, got {other:?}"),
+        for (expected_field, mutate) in cases {
+            let mut loaded = fixture_loaded_config();
+            mutate(&mut loaded);
+            let error = make_live_node_config(&loaded)
+                .expect_err("disabled-only component bypass must fail before NT builder");
+            match error {
+                BoltV3LiveNodeBuilderError::ConfigMapping { field, message } => {
+                    assert_eq!(field, expected_field);
+                    assert!(
+                        message.contains("must be \"disabled\""),
+                        "mapping error should name disabled-only contract: {message}"
+                    );
+                }
+                other => panic!("expected config mapping error, got {other:?}"),
+            }
         }
-        let file_config = cfg
-            .logging
-            .file_config
-            .expect("logger file config should map");
-        assert_eq!(file_config.directory.as_deref(), Some("logs"));
-        assert_eq!(file_config.file_name.as_deref(), Some("bolt-v3.log"));
-        assert_eq!(file_config.file_format.as_deref(), Some("json"));
-        assert_eq!(
-            file_config
-                .file_rotate
-                .expect("file rotation should map")
-                .max_file_size,
-            4096
-        );
     }
 
     #[test]
@@ -1329,8 +1140,8 @@ mod tests {
             BoltV3LiveNodeBuilderError::ConfigMapping { field, message } => {
                 assert_eq!(field, "nautilus.cache");
                 assert!(
-                    message.contains("invalid type") || message.contains("expected"),
-                    "mapping error should explain the parse failure: {message}"
+                    message.contains("must be \"disabled\""),
+                    "mapping error should explain the disabled-only contract: {message}"
                 );
             }
             other => panic!("expected config mapping error, got {other:?}"),

@@ -80,6 +80,12 @@ pub struct NautilusBlock {
 
 pub type NautilusComponentConfig = Value;
 
+pub const DISABLED_NAUTILUS_COMPONENT: &str = "disabled";
+
+pub fn is_disabled_nautilus_component(config: &NautilusComponentConfig) -> bool {
+    config.as_str() == Some(DISABLED_NAUTILUS_COMPONENT)
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NautilusDataEngineBlock {

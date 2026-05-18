@@ -41,8 +41,9 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
-    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy, LoggingBlock, NautilusBlock,
-    PersistenceBlock, RiskBlock, VenueBlock,
+    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, DISABLED_NAUTILUS_COMPONENT, LoadedStrategy,
+    LoggingBlock, NautilusBlock, NautilusComponentConfig, PersistenceBlock, RiskBlock, VenueBlock,
+    is_disabled_nautilus_component,
 };
 
 #[derive(Debug)]
@@ -107,6 +108,16 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
 
 fn validate_nautilus_block(block: &NautilusBlock) -> Vec<String> {
     let mut errors = Vec::new();
+    for (field, config) in [
+        ("nautilus.instance_id", &block.instance_id),
+        ("nautilus.cache", &block.cache),
+        ("nautilus.msgbus", &block.msgbus),
+        ("nautilus.portfolio", &block.portfolio),
+        ("nautilus.emulator", &block.emulator),
+        ("nautilus.streaming", &block.streaming),
+    ] {
+        validate_disabled_nautilus_component(field, config, &mut errors);
+    }
     if block.loop_debug {
         errors.push(
             "nautilus.loop_debug must be false; NT Rust live runtime rejects true".to_string(),
@@ -318,6 +329,7 @@ fn validate_rate_limit_string(value: &str) -> Result<(), String> {
 
 fn validate_logging_block(block: &LoggingBlock) -> Vec<String> {
     let mut errors = Vec::new();
+    validate_disabled_nautilus_component("logging.file_config", &block.file_config, &mut errors);
     if block.credential_module_level.to_level_filter() > log::LevelFilter::Warn {
         errors.push(format!(
             "logging.credential_module_level must be WARN or stricter; configured {:?}",
@@ -345,6 +357,19 @@ fn validate_logging_block(block: &LoggingBlock) -> Vec<String> {
         }
     }
     errors
+}
+
+fn validate_disabled_nautilus_component(
+    field: &str,
+    config: &NautilusComponentConfig,
+    errors: &mut Vec<String>,
+) {
+    if is_disabled_nautilus_component(config) {
+        return;
+    }
+    errors.push(format!(
+        "{field} must be \"{DISABLED_NAUTILUS_COMPONENT}\"; NT Rust live runtime rejects configured component blocks in current bolt-v3 scope"
+    ));
 }
 
 fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {

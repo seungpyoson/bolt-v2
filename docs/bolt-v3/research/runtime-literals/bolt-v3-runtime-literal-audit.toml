@@ -2938,17 +2938,25 @@ reason = "This is a stable decision-evidence reason code, not an operator runtim
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
 literal = '''"logging.file_config"'''
-context = '''optional_file_writer_config("logging.file_config", &loaded.root.logging.file_config)?;'''
+context = '''"logging.file_config",'''
 classification = "nt_config_mapping_field_path"
-reason = "This names the TOML field being mapped into the NT logger file writer config; the value comes from bolt-v3 TOML."
+reason = "This names the TOML field being checked as a disabled-only NT logger file writer config; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"logging.file_config"'''
+context = '''validate_disabled_nautilus_component("logging.file_config", &block.file_config, &mut errors);'''
+classification = "nt_config_validation_field_path"
+reason = "This names the TOML field being validated as disabled-only before NT live-node construction; the value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
 kind = "string"
 literal = '''"disabled"'''
-context = '''if config.as_str() == Some("disabled") {'''
+context = '''pub const DISABLED_NAUTILUS_COMPONENT: &str = "disabled";'''
 classification = "nt_config_optional_component_sentinel"
-reason = "This is the stable TOML sentinel for absent optional NT component blocks, not an operator runtime value."
+reason = "This is the stable TOML sentinel for absent optional NT component blocks, centralized for validation and mapping."
 
 [[allowed]]
 path = "src/bolt_v3_config.rs"

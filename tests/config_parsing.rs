@@ -1843,6 +1843,57 @@ fn rejects_nautilus_loop_debug_true_for_rust_live_runtime() {
 }
 
 #[test]
+fn rejects_nautilus_disabled_only_components_before_live_node_build() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let cases = [
+        (
+            "instance_id = \"disabled\"",
+            "instance_id = \"2d89666b-1a1e-4a75-b193-4eb3b454c757\"",
+            "nautilus.instance_id",
+        ),
+        (
+            "cache = \"disabled\"",
+            "cache = { use_trader_prefix = false, tick_capacity = 321, bar_capacity = 654 }",
+            "nautilus.cache",
+        ),
+        (
+            "msgbus = \"disabled\"",
+            "msgbus = { streams_prefix = \"bolt-stream\", stream_per_topic = false }",
+            "nautilus.msgbus",
+        ),
+        (
+            "portfolio = \"disabled\"",
+            "portfolio = { use_mark_prices = true, bar_updates = false }",
+            "nautilus.portfolio",
+        ),
+        (
+            "emulator = \"disabled\"",
+            "emulator = { debug = true }",
+            "nautilus.emulator",
+        ),
+        (
+            "streaming = \"disabled\"",
+            "streaming = { catalog_path = \"/tmp/bolt-v3-catalog\", fs_protocol = \"file\", flush_interval_ms = 250, replace_existing = true, rotation_config = { kind = \"size\", max_size = 2048 } }",
+            "nautilus.streaming",
+        ),
+    ];
+
+    for (needle, replacement, field) in cases {
+        let mutated = replace_in_fixture_root(needle, replacement);
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("disabled-only component fixture should parse");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains(field) && m.contains("must be \"disabled\"")),
+            "expected disabled-only validation error for {field}, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_logging_credential_module_level_below_warn() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
@@ -1858,6 +1909,25 @@ fn rejects_logging_credential_module_level_below_warn() {
             |m| m.contains("logging.credential_module_level") && m.contains("WARN or stricter")
         ),
         "expected credential module log-level validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_logging_file_config_before_live_node_build() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "file_config = \"disabled\"",
+        "file_config = { directory = \"logs\", file_name = \"bolt-v3.log\", file_format = \"json\" }",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("logging file-config fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("logging.file_config") && m.contains("must be \"disabled\"")),
+        "expected file_config disabled-only validation error, got: {messages:#?}"
     );
 }
 

@@ -308,7 +308,7 @@ fn validate_provider_market_family_support(
                 venue_key: target.venue_config_key.to_string(),
                 field: "strategy.execution_client_id",
                 message: format!(
-                    "configured target `{}` uses market family `{}` on client `{}`, but provider venue `{}` does not support that market family",
+                    "configured target `{}` uses market family `{}` on client `{}`, but provider `{}` does not support that market family",
                     target.configured_target_id,
                     target.family_key,
                     target.venue_config_key,
@@ -547,7 +547,7 @@ mod tests {
         let fake = configs
             .venues
             .get("polymarket_main")
-            .expect("fake provider venue should map");
+            .expect("fake provider client should map");
         assert!(fake.data.is_none());
         assert!(fake.execution.is_none());
     }
@@ -615,6 +615,7 @@ mod tests {
                 assert!(rendered.starts_with("clients.polymarket_main:"));
                 assert!(rendered.contains("strategy.execution_client_id"));
                 assert!(!rendered.contains("venues."));
+                assert!(!rendered.contains("provider venue"));
                 assert!(!rendered.contains("strategy.target.venue_config_key"));
             }
             other => panic!("expected ValidationInvariant, got {other}"),

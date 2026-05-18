@@ -668,8 +668,12 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         module_level.insert(Ustr::from(module_path), LevelFilter::Warn);
     }
     let logging = LoggerConfig {
-        stdout_level: loaded.root.logging.stdout_level.to_level_filter(),
-        fileout_level: loaded.root.logging.fileout_level.to_level_filter(),
+        stdout_level: nautilus_common::logging::map_log_level_to_filter(
+            loaded.root.logging.stdout_level,
+        ),
+        fileout_level: nautilus_common::logging::map_log_level_to_filter(
+            loaded.root.logging.fileout_level,
+        ),
         component_level: AHashMap::new(),
         module_level,
         log_components_only: false,

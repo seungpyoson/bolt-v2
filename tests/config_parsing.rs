@@ -150,6 +150,56 @@ fn bolt_v3_runtime_mode_rejects_backtest_and_sandbox_variants() {
 }
 
 #[test]
+fn bolt_v3_logging_levels_use_nt_canonical_enum() {
+    // FINDING-1: `logging.stdout_level` and `logging.fileout_level` are typed
+    // as `nautilus_common::enums::LogLevel` (not a bolt shadow). NT's
+    // LogLevel uses explicit `#[serde(rename = "UPPERCASE")]` per variant
+    // (and notably uses `Warning` rather than the bolt shadow's `Warn`), so
+    // the fixture's `stdout_level = "INFO"` / `fileout_level = "INFO"`
+    // continue to parse unchanged.
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use nautilus_common::enums::LogLevel;
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
+
+    let stdout_level: LogLevel = loaded.root.logging.stdout_level;
+    let fileout_level: LogLevel = loaded.root.logging.fileout_level;
+    assert_eq!(stdout_level, LogLevel::Info);
+    assert_eq!(fileout_level, LogLevel::Info);
+}
+
+#[test]
+fn bolt_v3_logging_levels_accept_nt_warning_uppercase_spelling() {
+    // FINDING-1: NT spells warning-level as `"WARNING"` (its shadow had
+    // `Warn`). Switching to the NT canonical enum means `stdout_level = "WARNING"`
+    // is the supported spelling; `"WARN"` is no longer accepted. Lock this so
+    // a future regression to `Warn` immediately fails.
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+    use nautilus_common::enums::LogLevel;
+
+    let warning_root = replace_in_fixture_root(
+        "stdout_level = \"INFO\"",
+        "stdout_level = \"WARNING\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&warning_root).expect("NT WARNING level should parse");
+    assert_eq!(root.logging.stdout_level, LogLevel::Warning);
+
+    let warn_root = replace_in_fixture_root(
+        "stdout_level = \"INFO\"",
+        "stdout_level = \"WARN\"",
+    );
+    let err = toml::from_str::<BoltV3RootConfig>(&warn_root)
+        .expect_err("legacy WARN spelling should be rejected by NT LogLevel");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("WARN") && (rendered.contains("variant") || rendered.contains("unknown")),
+        "rejection should reference the WARN spelling and explain it is unknown, got: {rendered}"
+    );
+}
+
+#[test]
 fn bolt_v3_archetype_order_params_use_nt_canonical_enums() {
     // FINDING-1: archetype `[parameters.*_order]` rows are typed with NT's
     // canonical `OrderType` and `TimeInForce` (not bolt shadow enums).

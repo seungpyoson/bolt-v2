@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use nautilus_common::enums::Environment;
+use nautilus_common::enums::{Environment, LogLevel};
 use nautilus_model::{
     enums::OmsType,
     identifiers::{ClientId, Venue},
@@ -157,30 +157,6 @@ pub struct NautilusRiskBlock {
 pub struct LoggingBlock {
     pub stdout_level: LogLevel,
     pub fileout_level: LogLevel,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum LogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-    Off,
-}
-
-impl LogLevel {
-    pub fn to_level_filter(self) -> log::LevelFilter {
-        match self {
-            LogLevel::Trace => log::LevelFilter::Trace,
-            LogLevel::Debug => log::LevelFilter::Debug,
-            LogLevel::Info => log::LevelFilter::Info,
-            LogLevel::Warn => log::LevelFilter::Warn,
-            LogLevel::Error => log::LevelFilter::Error,
-            LogLevel::Off => log::LevelFilter::Off,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

@@ -147,6 +147,8 @@ SUB_EVIDENCE_KEYWORDS = (
 )
 LINE_REF_RE = re.compile(r":\d+(?:-\d+)?\b")
 PATTERN_HELPER_RE = re.compile(r"\b([a-z][a-z0-9_]*_pattern)\(\)")
+PATTERN_HELPER_DEF_RE_TEMPLATE = r"\bfn\s+{}\s*\("
+RAW_STRING_START_RE = re.compile(r"(?:b|c)?r(#{0,255})\"")
 SUBSCRIBE_CALL_RE = re.compile(r"\b(subscribe_[a-z0-9_]+)\s*\(", re.MULTILINE)
 SUBSCRIBE_FN_RE = re.compile(r"^pub fn (subscribe_[a-z0-9_]+)\b", re.MULTILINE)
 TEST_FN_RE_TEMPLATE = r"\b(?:async\s+)?fn\s+{}\s*\("
@@ -170,6 +172,13 @@ def has_risk_jsonl_path(src_text: str) -> bool:
         RISK_DIR_CONST_RE.search(src_text) is not None
         and RISK_JSONL_FILENAME in src_text
         and RISK_JSONL_PATH_RE.search(src_text) is not None
+    )
+
+
+def has_pattern_helper_definition(src_text: str, helper: str) -> bool:
+    return (
+        re.search(PATTERN_HELPER_DEF_RE_TEMPLATE.format(re.escape(helper)), src_text)
+        is not None
     )
 
 
@@ -241,6 +250,18 @@ def strip_rust_comments_and_strings(text: str) -> str:
                 break
             result.append("\n" * text[i : end + 2].count("\n"))
             i = end + 2
+            continue
+        raw_match = RAW_STRING_START_RE.match(text, i)
+        if raw_match is not None:
+            end_marker = '"' + raw_match.group(1)
+            end = text.find(end_marker, raw_match.end())
+            if end == -1:
+                result.append("\n" * text[i:].count("\n"))
+                break
+            raw_literal = text[i : end + len(end_marker)]
+            result.append('""')
+            result.append("\n" * raw_literal.count("\n"))
+            i = end + len(end_marker)
             continue
         char = text[i]
         if char == '"':
@@ -332,7 +353,8 @@ def source_subscribe_calls(
             findings.append(
                 (
                     "11.source_subscribe_parse_failed",
-                    f"could not find closing parenthesis for {fn_name} call near byte {match.start()}",
+                    f"could not find closing parenthesis for {fn_name} call "
+                    f"near byte {match.start()}",
                 )
             )
             continue
@@ -355,7 +377,8 @@ def source_subscribe_calls(
                 (
                     "11.source_subscribe_no_pattern_helper",
                     f"src/nt_runtime_capture.rs calls {fn_name} with "
-                    f"{len(helpers)} *_pattern() helpers in the first argument; expected exactly one",
+                    f"{len(helpers)} *_pattern() helpers in the first argument; "
+                    f"expected exactly one",
                 )
             )
             continue
@@ -467,7 +490,7 @@ def collect_failures() -> list[tuple[str, str]]:
                     f"(captured_now) lacks storage_format",
                 )
             )
-        if helper and f"fn {helper}()" not in src_text:
+        if helper and not has_pattern_helper_definition(src_text, helper):
             findings.append(
                 (
                     "3.captured_now_pattern_missing_in_src",

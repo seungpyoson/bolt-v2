@@ -9,6 +9,7 @@ import io
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from typing import Any, Callable
 
@@ -20,6 +21,7 @@ if SPEC is None or SPEC.loader is None:
 VERIFIER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = VERIFIER
 SPEC.loader.exec_module(VERIFIER)
+ORIGINAL_FIND_PINNED_NT_API_PATH = VERIFIER.find_pinned_nt_api_path
 
 
 class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
@@ -256,6 +258,17 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assert_collects("3.captured_now_missing_source_subscribe_fn", mutate)
 
+    def test_collect_failures_accepts_pattern_helper_with_spaced_definition(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] = fixture["src_text"].replace(
+                "fn quotes_pattern() {}",
+                "fn quotes_pattern () {}",
+            )
+
+        self.write_fixture(mutate)
+
+        self.assertEqual([], VERIFIER.collect_failures())
+
     def test_collect_failures_rejects_safe_missing_rows_without_evidence(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             row = fixture["surfaces"]["surfaces"][2]
@@ -263,8 +276,11 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
             del row["subscriber_evidence"]
             row["nt_path"] = "crates/common/src/msgbus/api"
 
-        self.assert_collects("4.safe_missing_no_publisher_evidence", mutate)
-        self.assert_collects("4.safe_missing_no_subscriber_evidence", mutate)
+        self.write_fixture(mutate)
+        failure_ids = [check_id for check_id, _ in VERIFIER.collect_failures()]
+
+        self.assertIn("4.safe_missing_no_publisher_evidence", failure_ids)
+        self.assertIn("4.safe_missing_no_subscriber_evidence", failure_ids)
 
     def test_collect_failures_rejects_missing_risk_jsonl_capture_path(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
@@ -274,6 +290,22 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
             )
 
         self.assert_collects("5.risk_jsonl_path_missing_in_src", mutate)
+
+    def test_collect_failures_rejects_missing_risk_surface_row(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"] = [
+                row
+                for row in fixture["surfaces"]["surfaces"]
+                if row.get("topic_pattern") != "events.risk"
+            ]
+
+        self.assert_collects("5.risk_row_missing", mutate)
+
+    def test_collect_failures_rejects_risk_surface_not_captured_now(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"][1]["bolt_status"] = "deferred_capture"
+
+        self.assert_collects("5.risk_not_captured_now", mutate)
 
     def test_collect_failures_rejects_order_book_deltas_feather_storage(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
@@ -302,6 +334,20 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assert_collects("9.pinned_subscribe_api_missing", mutate)
 
+    def test_collect_failures_rejects_missing_pinned_nt_checkout(self) -> None:
+        self.write_fixture()
+        empty_home = tempfile.TemporaryDirectory()
+        self.addCleanup(empty_home.cleanup)
+        self.patch_verifier_attr(
+            "find_pinned_nt_api_path",
+            ORIGINAL_FIND_PINNED_NT_API_PATH,
+        )
+
+        with mock.patch.object(VERIFIER.Path, "home", return_value=Path(empty_home.name)):
+            failure_ids = [check_id for check_id, _ in VERIFIER.collect_failures()]
+
+        self.assertIn("9.pinned_nt_api_missing", failure_ids)
+
     def test_collect_failures_rejects_storage_recommendation_mismatches(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             fixture["surfaces"]["surfaces"][0]["suggested_capture_storage"] = "jsonl"
@@ -319,6 +365,47 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assert_collects("11.source_subscribe_not_captured_now", mutate)
 
+    def test_collect_failures_rejects_source_subscribe_literal_patterns(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] += """
+                fn literal_subscription() {
+                    subscribe_trades(MStr::pattern("data.trades"), handler, None);
+                }
+            """
+
+        self.assert_collects("11.source_subscribe_literal_pattern", mutate)
+
+    def test_collect_failures_rejects_source_subscribe_without_pattern_helper(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] += """
+                fn dynamic_subscription() {
+                    subscribe_trades(build_topic(), handler, None);
+                }
+            """
+
+        self.assert_collects("11.source_subscribe_no_pattern_helper", mutate)
+
+    def test_collect_failures_rejects_captured_surface_missing_source_call(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            row = fixture["surfaces"]["surfaces"][0]
+            row["source_subscribe_fn"] = "subscribe_trades"
+            row["bolt_pattern_helper"] = "trades_pattern"
+            fixture["src_text"] += "\nfn trades_pattern() {}\n"
+
+        self.assert_collects("11.captured_now_not_in_source", mutate)
+
+    def test_collect_failures_ignores_source_subscribe_calls_inside_raw_strings(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] += '''
+                fn raw_doc_fixture() {
+                    let _doc = r#"prefix " subscribe_trades(trades_pattern(), handler, None)"#;
+                }
+            '''
+
+        self.write_fixture(mutate)
+
+        self.assertEqual([], VERIFIER.collect_failures())
+
     def test_collect_failures_rejects_current_capture_storage_mismatches(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             fixture["current_capture"]["captured_streams"][0]["storage_format"] = "JSONL"
@@ -330,6 +417,28 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
             fixture["naming_audit"]["nautilus_trader_revision"] = "0" * 40
 
         self.assert_collects("13.pin_revision_mismatch", mutate)
+
+    def test_collect_failures_rejects_missing_cargo_pin(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["cargo_text"] = (
+                "[dependencies]\n"
+                'nautilus-common = { git = "https://github.com/nautechsystems/'
+                'nautilus_trader.git" }\n'
+            )
+
+        self.assert_collects("13.pin_revision_missing", mutate)
+
+    def test_collect_failures_rejects_missing_runtime_contract_pin(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["runtime_contracts_text"] = "runtime contract without pin\n"
+
+        self.assert_collects("13.runtime_contract_pin_missing", mutate)
+
+    def test_collect_failures_rejects_surfaces_yaml_pin_literals(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"][0]["reason"] = self.PINNED_REV
+
+        self.assert_collects("13.surfaces_yaml_pin_literal", mutate)
 
     def test_collect_failures_rejects_stale_current_capture_streams(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:

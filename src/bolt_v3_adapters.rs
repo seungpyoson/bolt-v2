@@ -107,7 +107,7 @@ impl fmt::Debug for BoltV3AdapterConfigs {
 
 #[derive(Debug)]
 pub enum BoltV3AdapterMappingError {
-    /// The validated venue kind and the resolved secret kind disagree.
+    /// The configured client provider and the resolved secret provider disagree.
     /// Indicates an internal-consistency bug between the resolver output
     /// and the mapper inputs.
     SecretKindMismatch {
@@ -160,7 +160,7 @@ impl std::fmt::Display for BoltV3AdapterMappingError {
                 expected_provider_key,
             } => write!(
                 f,
-                "clients.{venue_key}: resolved secret kind does not match validated venue kind \
+                "clients.{venue_key}: resolved secret provider does not match configured client provider \
                  (expected {kind})",
                 kind = expected_provider_key,
             ),
@@ -853,6 +853,10 @@ mod tests {
 
         let error = map_bolt_v3_adapters(&loaded, &resolved)
             .expect_err("mismatched resolved secret kind must surface as a mapper error");
+        let rendered = error.to_string();
+        assert!(rendered.contains("configured client provider"));
+        assert!(!rendered.contains("validated venue kind"));
+        assert!(!rendered.contains("venues."));
         match error {
             BoltV3AdapterMappingError::SecretKindMismatch {
                 venue_key,

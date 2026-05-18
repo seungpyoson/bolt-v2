@@ -1496,6 +1496,8 @@ ack_timeout_secs = 5
     );
     assert!(rendered.contains("Polymarket execution client"));
     assert!(!rendered.contains("Polymarket execution venue"));
+    assert!(rendered.contains("(provider=POLYMARKET)"));
+    assert!(!rendered.contains("(venue="));
 }
 
 #[test]
@@ -1630,6 +1632,30 @@ instrument_status_poll_secs = 3600
     );
     assert!(rendered.contains("Binance reference-data client"));
     assert!(!rendered.contains("Binance reference-data venue"));
+    assert!(rendered.contains("(provider=BINANCE)"));
+    assert!(!rendered.contains("(venue="));
+}
+
+#[test]
+fn rejects_binance_execution_block_with_provider_vocabulary() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let mutated =
+        format!("{fixture}\n\n[clients.binance_reference.execution]\nnot_allowed = true\n");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("binance execution mutation should parse");
+    let messages = validate_root_only(&root);
+    let rendered = messages.join("\n");
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("[execution]")
+            && m.contains("not allowed")),
+        "expected Binance execution-block rejection, got: {messages:#?}"
+    );
+    assert!(rendered.contains("(provider=BINANCE)"));
+    assert!(!rendered.contains("(venue="));
 }
 
 #[test]
@@ -2157,12 +2183,15 @@ fn rejects_orphan_secrets_block_without_data_or_execution() {
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("orphan-secrets fixture should parse");
     let messages = validate_root_only(&root);
+    let rendered = messages.join("\n");
     assert!(
         messages.iter().any(|m| m.contains("binance_reference")
             && m.contains("[secrets]")
             && m.contains("no [data] block is configured")),
         "expected orphan-secrets validation error, got: {messages:#?}"
     );
+    assert!(rendered.contains("(provider=BINANCE)"));
+    assert!(!rendered.contains("(venue="));
 }
 
 #[test]
@@ -2292,12 +2321,15 @@ fn rejects_polymarket_data_only_venue_with_secrets_block() {
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("polymarket data-only secrets fixture should parse");
     let messages = validate_root_only(&root);
+    let rendered = messages.join("\n");
     assert!(
         messages.iter().any(|m| m.contains("polymarket_main")
             && m.contains("[secrets]")
             && m.contains("[execution]")),
         "expected Polymarket data-only secrets validation error, got: {messages:#?}"
     );
+    assert!(rendered.contains("(provider=POLYMARKET)"));
+    assert!(!rendered.contains("(venue="));
 }
 
 #[test]

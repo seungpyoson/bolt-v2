@@ -222,7 +222,7 @@ pub fn validate_venue(key: &str, venue: &ClientBlock) -> Vec<String> {
         // misconfiguration rather than a silent no-op.
         if venue.execution.is_none() {
             errors.push(format!(
-                "clients.{key} (venue=POLYMARKET) declares [secrets] but no [execution] block is configured; \
+                "clients.{key} (provider=POLYMARKET) declares [secrets] but no [execution] block is configured; \
                  Polymarket [secrets] are only allowed alongside the execution adapter that consumes them"
             ));
         }

@@ -192,7 +192,7 @@ fn validate_required_secret_blocks(
     for requirement in requirements {
         if requirement.block.is_present(venue) {
             errors.push(format!(
-                "clients.{key} (venue={provider_key}) declares [{}] but is missing the required [secrets] block; \
+                "clients.{key} (provider={provider_key}) declares [{}] but is missing the required [secrets] block; \
                  the bolt-v3 secret contract requires SSM credential resolution for every {}",
                 requirement.block.as_str(),
                 requirement.consumer

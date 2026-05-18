@@ -1,64 +1,67 @@
 # Phase 9 Audit Report
 
-Status: preliminary current-main audit. Not final Phase 9 readiness certification.
-
-Head audited: `d6f55774c32b71a242dcf78b8292a7f9e537afab`.
+Status: PR #331 P9 exact-head audit artifact. Not live-readiness certification.
 
 ## Decision
 
-Recommendation: blocked with exact blockers.
+Recommendation: blocked for live readiness. P9 source-review closure remains pending until this artifact sync is committed, pushed, exact-head CI is green, and six external reviewers return no unresolved blockers.
 
-Blockers:
+Current source-review state:
 
-- Phase 7 and Phase 8 are not accepted on main.
-- No source-backed active `config/live.local.toml` exists in this fresh worktree.
-- Phase 8 strategy-input safety is not approved for live capital.
-- Live ops readiness lacks current runbook, rollback, alerting, on-call, and incident-response evidence.
-- Provider-boundary and cost/fee fact verifier gaps remain open.
+- P7 source/review gate is closed for PR #331 source review. No real SSM/venue operator run was executed or claimed.
+- P8 source/review gate is closed for PR #331 source review. No tiny live canary run was executed or claimed.
+- P9 artifacts are synchronized here for current review. Exact PR head must be injected at review time and recorded in PR evidence comments.
+
+Live-readiness blockers:
+
+- No approved real SSM/venue no-submit run evidence exists from this checkout.
+- No approved tiny-capital canary run evidence exists from this checkout.
+- No active untracked operator root TOML is present in this worktree.
+- Staged/production live runbooks, monitoring, deploy provenance, panic/service policy, restart reconciliation, and order-lifecycle evidence remain missing.
+- Source-grounded status-map live-readiness gaps remain open.
 
 ## Findings
 
 | ID | Severity | Category | Finding | Evidence | Recommendation |
 | --- | --- | --- | --- | --- | --- |
-| P9-BLOCKER-001 | blocker | Phase readiness | Final Phase 9 certification is blocked until fresh Phase 7/8 work is accepted or waived. | `specs/001-thin-live-canary-path/tasks.md:87-106` shows unchecked Phase 7/8 tasks on main. | Push/review/accept Phase 7 and Phase 8 first, or explicitly waive. |
-| P9-BLOCKER-002 | blocker | Live config | Active local operator config is absent from this fresh worktree. | `ls -l config/live.local.toml` returned "No such file or directory". | No live/no-submit claim from this checkout without approved config evidence. |
-| P9-BLOCKER-003 | blocker | Strategy safety | ETH canary inputs are not approved. | `config/live.local.example.toml:132-155` says BTC example is active and ETH template needs matching ETH ruleset/reference venues; `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md:718-724` lists unresolved strategy input/math/order surfaces. | Keep Phase 8 live action blocked until strategy-input safety audit is approved. |
-| P9-BLOCKER-004 | blocker | Live ops | Current live ops package is missing. | `rg -n "runbook|rollback|on-call|incident response|alert"` found only `config/live.local.example.toml:99` and archived rollback mention; postmortem lines `313-332` list required ops direction. | Add runbook, rollback, alerting, on-call, incident response, and storage/log controls before soak. |
-| P9-HIGH-001 | high | NT boundary | Main has submit ordering through decision evidence and admission, but this is not live proof. | `src/strategies/eth_chainlink_taker.rs:2827-2838` records intent, admits, then calls NT `submit_order`. | Treat as Phase 6 prerequisite only; Phase 8 must add NT event evidence. |
-| P9-HIGH-002 | high | Provider boundary | Provider adapter, secret, and registration ownership remains partial. | `docs/bolt-v3/2026-04-28-source-grounded-status-map.md:76-78`; `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md:404-431`. | Plan a later provider-boundary verifier/refactor slice; do not bundle into Phase 7/8. |
-| P9-HIGH-003 | high | Production readiness | Production readiness remains incomplete: order construction, execution gate, and panic/service policy are partial; dry-run, shadow mode, deploy trust, tiny live canary, production live trading, provider-leak verifier, and cost/fee facts are missing. | `docs/bolt-v3/2026-04-28-source-grounded-status-map.md:101-112`. | Maintain no-submit posture until these gates are addressed or explicitly scoped out. |
-| P9-MED-001 | medium | Pure Rust runtime | Python exists as verifier tooling; runtime pure-Rust claim needs a dedicated verifier. | `scripts/verify_bolt_v3_*.py` are tooling; status map row 3 marks the `no Python runtime` verifier as missing at `docs/bolt-v3/2026-04-28-source-grounded-status-map.md:65`. | Add a scoped verifier if the claim becomes release-gating. |
-| P9-MED-002 | medium | Hardcoded value audit | Existing runtime-literal verifier covers only scoped Bolt-v3 production paths, not all repo runtime paths. | `docs/bolt-v3/2026-04-28-source-grounded-status-map.md:67` says status remains partial. | Keep hardcoded-runtime audit partial until broader scope is selected. |
-| P9-MED-003 | medium | Stale artifacts | Older docs/specs still reference stale branches and unfinished Phase 7/8 tasks. | `specs/001-thin-live-canary-path/plan.md:53-55`; `specs/001-thin-live-canary-path/tasks.md:87-106`. | Close or supersede stale artifacts after fresh Phase 7/8 are accepted. |
+| P9-BLOCKER-001 | blocker | No-submit live evidence | P7 source review is accepted for PR #331, but the real SSM/venue no-submit operator run is not executed. | PR #331 P7 closure comment records no live operator run; `specs/001-thin-live-canary-path/tasks.md` leaves T038 unchecked. | Do not claim no-submit live readiness until an explicitly approved real run produces redacted evidence. |
+| P9-BLOCKER-002 | blocker | Tiny canary evidence | P8 source review is accepted for PR #331, but no tiny-capital live canary was run. | PR #331 P8 closure comment records no tiny canary run; `specs/001-thin-live-canary-path/tasks.md` leaves T046 unchecked. | Do not claim tiny-canary completion until explicit operator approval names exact head and command and evidence is stored. |
+| P9-BLOCKER-003 | blocker | Active config | This worktree has no active untracked operator config. | `ls -l config/live.local{.example,}.toml config/root.example.toml config/strategies/binary_oracle.example.toml` shows both live-local paths absent and tracked examples present. | No live/no-submit operator claim from this checkout without approved root TOML evidence and checksum. |
+| P9-BLOCKER-004 | blocker | Strategy/live inputs | The tracked example strategy is BTC updown sample config, not approved live-capital input evidence. | `config/strategies/binary_oracle.example.toml` names `underlying_asset = "BTC"` and `instrument_id = "BTCUSDT.BINANCE"`; P8 live canary T046 remains unchecked. | Keep live action blocked until strategy-input safety evidence is exact-head, source-bound, and approved. |
+| P9-BLOCKER-005 | blocker | Staged/production ops | Staged and production live readiness gates remain missing. | `docs/bolt-v3/2026-05-18-production-readiness-contract.md` requires runbooks and lists missing order lifecycle, restart reconciliation, single-runner, approval replay, monitoring, and deploy provenance gates. | Keep staged/production claims blocked until required gates are implemented or explicitly waived. |
+| P9-HIGH-001 | high | Source-grounded live gaps | Status-map rows 21, 22, 25, 27, 34-38, 40, 42, 44-48, 50, and 51 remain missing or partial. | `docs/bolt-v3/2026-04-28-source-grounded-status-map.md` lists missing activated-scope evidence, catalog round-trip, NT readiness, Chainlink anchor, lifecycle, reconciliation, observability, dry-run, shadow, deploy trust, panic gate, CLOB V2 readiness, tiny live canary, production live trading, cost/fee facts, and broad discovery activation. | Treat these as live-readiness blockers, not PR #331 source-review blockers unless P9 external review proves otherwise. |
+| P9-HIGH-002 | high | Operator claim language | Any broad "live ready" or "production ready" claim would overstate evidence. | Production-readiness contract requires claim levels and says the narrowest true claim wins. | Use exact claim level only: source-reviewed gate, no-submit readiness, tiny-canary readiness, staged live, production live, blocked, or stop. |
+| P9-MED-001 | medium | Stale artifact risk | Older Phase 9 artifacts referenced retired paths, retired PR state, and stale head claims as current evidence. | This sync removes those references from current-claim artifacts and requires exact-head injection at review time. | Keep P9 review scoped to this directory plus current supporting docs. |
 
 ## Positive Evidence
 
-- Live runner wrapper validates canary gate and arms submit admission before `LiveNode::run`: `src/bolt_v3_live_node.rs:350-364`.
-- Gate contract requires `[live_canary]`, approval id, report path, byte cap, order count cap, and notional cap before runner entry: `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md:1410-1414`.
-- Baseline `cargo test --lib` passed: 446 passed, 0 failed, 1 ignored. The ignored test is `clients::chainlink::tests::live_chainlink_stream_smoke_works_with_generated_runtime_config`, explicitly ignored because it requires `config/live.toml` with resolvable Chainlink testnet credentials.
-- no-mistakes runtime is installed and daemon is running in this session.
+- P7 local proof passed on the previously recorded source-review head: no-submit readiness 21/21, live-canary gate 32/32, CLI no-submit command exposure 1/1.
+- P7 external review returned `APPROVE` with no blockers from Claude, Gemini, Kimi, DeepSeek, GLM, and Grok.
+- P8 external review returned `APPROVE` with no blockers from Claude, Gemini, Kimi, DeepSeek, GLM, and Grok.
+- CI was green before this P9 artifact sync; exact-head CI must rerun after commit/push.
+- Status-map rows 2, 3, 5, 8, 14-17, 39, 41, 43, and 49 record implemented source/test/verifier surfaces for current source coverage.
 
 ## FR-003 Coverage Map
 
 | Category | Disposition |
 | --- | --- |
-| Hardcoded runtime values | Covered by P9-MED-002; current verifier is partial and remains a named release gap. |
-| Dual paths | Covered by P9-HIGH-001 and the no-submit submit-ordering evidence; final live proof remains blocked. |
-| Debt markers | Covered by T008 and quickstart artifact scans; no cleanup debt is accepted in this planning slice. |
-| Brittle architecture | Covered by P9-HIGH-002 and P9-HIGH-003 as provider-boundary and production-readiness gaps. |
-| AI slop | Covered by `ai-slop-cleanup-report.md`; all cleanup candidates remain blocked pending tests and review. |
-| NT boundary violations | Covered by P9-HIGH-001 and P9-HIGH-002; NT remains the required lifecycle/order boundary. |
-| SSM-only secret source | Requirements and checklist require SSM-only secrets; dedicated positive source-scan certification remains a named evidence gap before release certification. |
-| Pure Rust runtime | Covered by P9-MED-001; Python is verifier tooling only, while runtime verifier coverage remains partial. |
-| Runtime config grouping | Covered by live-canary gate contract evidence and grouped config prerequisites. |
-| Stale docs/specs/tasks | Covered by P9-MED-003. |
-| Source fences | Cleanup status requires a behavior test or source fence before any cleanup target. |
-| Test quality | Covered by baseline `cargo test --lib` evidence plus the ignored-test identity above. |
-| External review disposition | Covered by `external-review-phase9-disposition.md`. |
-| Production readiness gaps | Covered by P9-HIGH-003. |
-| Strategy math/feed assumptions | Covered by P9-BLOCKER-003. |
-| Live ops readiness | Covered by P9-BLOCKER-004. |
+| Hardcoded runtime values | Current source coverage implemented by runtime-literal and default/policy fences; broader product widening remains future scope. |
+| Dual paths | P6/P7/P8 gates close stale readiness/gate linkage paths for PR #331 source review; live proof remains blocked. |
+| Debt markers | P9 artifact sync must pass debt-marker and stale-reference scans before review. |
+| Brittle architecture | Provider and archetype boundaries have current module interfaces; status-map rows still name live-readiness architecture gaps. |
+| AI slop | Cleanup is bounded to stale artifact repair and review evidence; no runtime refactor is performed here. |
+| NT boundary violations | Current runner enters NT only after live-canary gate acceptance; lifecycle/reconciliation proof remains a live-readiness gap. |
+| SSM-only secret source | Current providers use Rust AWS SDK SSM only; P7 real run evidence remains unexecuted. |
+| Pure Rust runtime | Current source-scan gate implemented; Python remains verifier tooling only. |
+| Runtime config grouping | Current root/strategy TOML owns runtime values; active operator config is absent from this checkout. |
+| Stale docs/specs/tasks | This artifact sync removes known stale P9 current-claim text before review. |
+| Source fences | `just source-fence` was green before this artifact sync and exact-head CI must rerun after push. |
+| Test quality | Targeted P7/P8 tests passed; final exact-head verification must rerun after this artifact sync. |
+| External review disposition | P7 and P8 closed; P9 external review remains pending on updated artifacts. |
+| Production readiness gaps | Production readiness remains blocked by the contract and status-map rows. |
+| Strategy math/feed assumptions | Strategy-input safety remains live-evidence gated; no live-capital run claimed. |
+| Live ops readiness | Staged/production runbooks, monitoring, deploy provenance, and incident response remain blockers. |
 
 ## Cleanup Status
 
-No cleanup performed in this planning slice. Cleanup requires external review and one behavior test or source fence per target.
+P9 cleanup in this sync is documentation-only stale-claim removal. No Rust runtime, trading, provider, secret, or live execution code is changed by this audit report.

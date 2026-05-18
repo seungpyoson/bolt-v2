@@ -1,80 +1,82 @@
-# Feature Specification: Bolt-v3 Phase 9 Comprehensive Audit
+# Feature Specification: PR #331 Phase 9 Current-Head Audit
 
-**Feature Branch**: `019-bolt-v3-phase9-audit-fresh`
+**Feature Branch**: `022-bolt-v3-phase9-current-main-audit`
 **Created**: 2026-05-14
-**Status**: Draft
-**Input**: User description: "Audit bolt-v3 architecture, hardcoded runtime values, dual paths, debt, NT boundary, SSM-only secrets, pure Rust runtime, stale specs/tasks, test quality, external review disposition, strategy assumptions, and live ops readiness after Phase 7/8 readiness. Do not merge. Do not perform live capital or soak without explicit approval."
+**Updated**: 2026-05-18
+**Status**: PR #331 P9 audit artifact sync. Not live-readiness certification.
+**Input**: Complete PR #331 Phase 9 audit/remediation through P9 with evidence, while keeping PR #392 downstream and out of PR #331.
 
 ## User Scenarios & Testing
 
 ### User Story 1 - Evidence-Backed Audit Report (Priority: P1)
 
-The operator can read one current-main audit report that separates accepted evidence, gaps, and blockers across architecture, config, secrets, NT ownership, strategy input assumptions, tests, stale artifacts, and live operations.
+The operator can read one PR #331 audit report that separates accepted source-review evidence, unrun live evidence, and remaining blockers across architecture, config, secrets, NT ownership, strategy assumptions, tests, stale artifacts, and live operations.
 
-**Why this priority**: Phase 9 exists to decide whether bolt-v3 is ready for no-submit only, ready for tiny live order approval, or blocked. That decision must be source-backed.
+**Why this priority**: Phase 9 decides what PR #331 can truthfully claim. Source-review closure, no-submit live readiness, tiny-canary completion, staged live, and production live are separate claim levels.
 
-**Independent Test**: Review `audit-report.md` and verify every material finding has at least one file/line citation, command output, PR metadata, test output, or reviewer job record.
+**Independent Test**: Review `audit-report.md` and verify every material finding has file/line evidence, command output, PR metadata, test output, reviewer job record, or a named evidence gap.
 
 **Acceptance Scenarios**:
 
-1. **Given** current main at `d6f55774c32b71a242dcf78b8292a7f9e537afab`, **When** the Phase 9 audit report is reviewed, **Then** it states that final Phase 9 readiness is blocked until fresh Phase 7 and Phase 8 branches are accepted or explicitly waived.
-2. **Given** a readiness claim, **When** the claim is checked, **Then** it maps to concrete evidence and does not rely on stale branch code.
-3. **Given** a live-capital claim, **When** the report is checked, **Then** it blocks live action unless the exact head, exact command, and user approval are present.
+1. **Given** PR #331 current head is checked with `gh pr view 331 --json headRefOid,baseRefOid,mergeStateStatus,state`, **When** the Phase 9 audit report is reviewed, **Then** it distinguishes source-review closure from live-readiness certification.
+2. **Given** P7 and P8 source-review comments exist, **When** the report uses them, **Then** it states those reviews do not prove real SSM/venue no-submit execution or tiny-capital live execution.
+3. **Given** a live-capital claim, **When** the report is checked, **Then** it blocks that claim unless explicit operator approval names exact head, exact command, config checksum, and redacted evidence.
 
 ---
 
-### User Story 2 - Cleanup Gate (Priority: P2)
+### User Story 2 - Stale Artifact Cleanup Gate (Priority: P2)
 
-The operator can see exactly which cleanup is allowed, which cleanup is blocked, and which behavior tests must exist before any code cleanup starts.
+The operator can see which P9 artifacts were stale and verify the cleanup is documentation-only unless a separate behavior test and approval gate exists.
 
-**Why this priority**: Phase 9 includes AI slop cleanup only after behavior tests lock the target behavior; cleanup must not become unreviewed refactor drift.
+**Why this priority**: Phase 9 cleanup must remove stale claims without drifting into unreviewed runtime refactor or PR #392 scope.
 
-**Independent Test**: Review `ai-slop-cleanup-report.md` and `tasks.md` and confirm no cleanup task edits runtime code before a targeted behavior test, reviewed plan, and user approval.
+**Independent Test**: Run the stale-reference and debt-marker scans in `quickstart.md`; confirm P9 artifacts no longer carry retired path/head/PR references as current evidence.
 
 **Acceptance Scenarios**:
 
-1. **Given** stale docs or weak verifier coverage, **When** cleanup is proposed, **Then** the proposal names the exact file scope and behavior test that must pass before the edit.
-2. **Given** an untested code cleanup candidate, **When** Phase 9 is executed, **Then** the task list blocks that cleanup and records the missing evidence.
+1. **Given** an old P9 artifact references retired PR/path/head state, **When** Phase 9 sync runs, **Then** the artifact is updated or clearly marked historical and non-authoritative.
+2. **Given** cleanup would touch runtime code, **When** Phase 9 executes, **Then** the task list blocks that cleanup until a behavior test, reviewed plan, and user approval exist.
 
 ---
 
-### User Story 3 - Review-Ready Plan (Priority: P3)
+### User Story 3 - Six-Reviewer P9 Gate (Priority: P3)
 
-The operator can send the Phase 9 spec, checklist, plan, tasks, audit report, and cleanup report to external reviewers and triage findings before any implementation branch work proceeds.
+The operator can send the current P9 artifacts to Claude, Gemini, Kimi, DeepSeek, GLM, and Grok after branch is clean, pushed, and exact-head CI is green.
 
-**Why this priority**: User policy requires external approval before implementation and at least Claude, DeepSeek, and GLM for this session.
+**Why this priority**: User policy requires adversarial external review before closing the P9 gate. The review is evidence adjudication, not majority voting.
 
-**Independent Test**: After the branch is clean and pushed, run external plan reviews against exact head and record all findings in a disposition file before code implementation starts.
+**Independent Test**: After commit/push/CI, run custom/adversarial reviews against the exact PR head and record job IDs, approvals, blockers, nonblockers, and dispositions in PR evidence comments.
 
 **Acceptance Scenarios**:
 
-1. **Given** a dirty, unpushed, or stale branch, **When** external review is requested, **Then** the workflow stops before source transmission.
-2. **Given** a direct API reviewer, **When** source is sent, **Then** approval-token flow records `source_content_transmission: not_sent` before user-approved transmission proceeds.
-3. **Given** a blocking reviewer finding, **When** triage runs, **Then** the finding is accepted and fixed or disproved with evidence before implementation.
+1. **Given** the branch is dirty, unpushed, stale, or CI is not green, **When** external review is requested, **Then** the workflow stops before source transmission.
+2. **Given** DeepSeek or GLM source is sent, **When** source transmission occurs, **Then** approval-token evidence is recorded and no secrets are exposed.
+3. **Given** a blocking reviewer finding, **When** triage runs, **Then** the finding is fixed or disproved with source evidence before P9 closure.
 
 ## Edge Cases
 
-- Phase 7 or Phase 8 local branches exist but are not pushed, reviewed, or merged into main.
-- A stale PR branch contains useful text but conflicts with current main.
-- A fixture or documentation literal looks like a runtime hardcoded value.
-- A Python verification script exists even though the runtime must remain a pure Rust binary.
-- A strategy input is configurable but its economic or feed-source assumption is not production-approved.
-- Live ops evidence exists as incident history, but not as an approved current runbook, alert, rollback, and incident-response package.
+- P7/P8 were reviewed at a prior source head, then P9 documentation-only sync changes the PR head.
+- Current main advances after P9 artifacts are committed.
+- A tracked example TOML is present, but no active operator root TOML is present.
+- A stale review disposition file exists from an older planning PR and could be mistaken for current P9 review evidence.
+- A Python verification script exists even though the runtime must remain pure Rust.
+- A strategy input is configurable, but its feed/economic assumption is not approved for live capital.
 
 ## Requirements
 
 ### Functional Requirements
 
-- **FR-001**: The audit MUST start from current `main` and MUST NOT treat PR #318, PR #319, or PR #320 as accepted implementation scope.
-- **FR-002**: The audit MUST classify current Phase 7, Phase 8, and Phase 9 readiness separately.
+- **FR-001**: The audit MUST anchor to live PR #331 metadata from GitHub before making PR-state claims.
+- **FR-002**: The audit MUST classify P7 source review, P8 source review, and P9 audit review separately.
 - **FR-003**: The audit MUST cover hardcoded runtime values, dual paths, debt markers, brittle architecture, AI slop, NT boundary violations, SSM-only secret source, pure Rust runtime, runtime config grouping, stale docs/specs/tasks, source fences, test quality, external review disposition, production readiness gaps, strategy math/feed assumptions, and live ops readiness.
-- **FR-004**: The audit MUST distinguish runtime code from tests, fixtures, docs, and verification scripts before labeling a finding as a production violation.
-- **FR-005**: The audit MUST fail closed on any unresolved live-capital, secret-exposure, Chainlink/feed-source, strategy-math, NT-boundary, or external-review blocker.
-- **FR-006**: The audit MUST state that no live order, no soak, and no real-capital command can run without explicit user approval for exact head/SHA and command.
-- **FR-007**: Cleanup MUST be bounded, behavior-test protected, externally reviewed when material, and user-approved before implementation.
-- **FR-008**: External review of Phase 9 artifacts MUST include Claude, DeepSeek, and GLM at minimum before implementation.
+- **FR-004**: The audit MUST distinguish runtime code from tests, fixtures, docs, tracked examples, and verifier scripts before labeling a finding as a production violation.
+- **FR-005**: The audit MUST fail closed on unresolved live-capital, secret-exposure, Chainlink/feed-source, strategy-math, NT-boundary, or external-review blockers.
+- **FR-006**: The audit MUST state that no live order, no soak, no deploy, and no real-capital command can run without explicit operator approval for exact head and command.
+- **FR-007**: Cleanup MUST be bounded, behavior-test protected, externally reviewed when material, and user-approved before runtime implementation.
+- **FR-008**: P9 external review MUST include Claude, Gemini, Kimi, DeepSeek, GLM, and Grok unless the operator explicitly waives one reviewer.
 - **FR-009**: Direct API reviewer source transmission MUST use approval-token records and MUST not expose raw secrets.
-- **FR-010**: The final recommendation MUST be one of: ready for no-submit only, ready for tiny live order approval, blocked with exact blockers, or stop.
+- **FR-010**: The final recommendation MUST use the narrowest true claim level: source-reviewed gate, no-submit readiness, tiny-canary readiness, staged live, production live, blocked, or stop.
+- **FR-011**: PR #392 work MUST remain downstream; PR #331 may document the dependency but MUST NOT implement PR #392 scope.
 
 ### Key Entities
 
@@ -88,13 +90,14 @@ The operator can send the Phase 9 spec, checklist, plan, tasks, audit report, an
 ### Measurable Outcomes
 
 - **SC-001**: Audit report covers every FR-003 category with evidence or a named evidence gap.
-- **SC-002**: No Phase 9 implementation task can begin until spec, checklist, plan, tasks, and external-review disposition are present on a clean pushed branch.
-- **SC-003**: All live-capital paths remain blocked unless explicit user approval includes exact head/SHA and command.
-- **SC-004**: Debt-marker scan over Phase 9 artifacts returns no unresolved template markers.
-- **SC-005**: no-mistakes runtime proof is recorded before external review and before any PR readiness claim.
+- **SC-002**: No P9 external review starts until the branch is clean, committed, pushed, and exact-head CI is green.
+- **SC-003**: All live-capital paths remain blocked unless explicit operator approval includes exact head and command.
+- **SC-004**: Debt-marker scan over P9 artifacts returns no unresolved template markers.
+- **SC-005**: Stale-reference scan over P9 artifacts returns no retired current-claim references.
+- **SC-006**: Six-reviewer P9 gate has no unresolved blockers before P9 source-review closure is claimed.
 
 ## Assumptions
 
-- Phase 9 in this branch is an audit and planning slice from current main, not a final post-Phase7/8 readiness certification.
-- Fresh Phase 7 and Phase 8 local branches may inform residual scope, but until pushed, reviewed, accepted, and merged, main remains the only accepted runtime source.
-- The exact active local operator config is intentionally untracked; absence of `config/live.local.toml` in this checkout is not a secret failure by itself, but blocks source-backed live readiness.
+- P7 and P8 source-review gates are closed for PR #331 source review at the previously recorded source head; their live operator runs remain unexecuted unless later evidence proves otherwise.
+- P9 documentation-only sync creates a new PR head; exact-head review prompts must inject the live head at review time instead of relying on a self-referential committed SHA.
+- Absence of active local operator config in this checkout is not a secret failure by itself, but blocks source-backed live readiness claims.

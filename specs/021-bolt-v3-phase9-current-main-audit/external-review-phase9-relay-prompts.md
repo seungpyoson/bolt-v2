@@ -1,71 +1,48 @@
 # Phase 9 External Review Relay Prompts
 
-Status: retained source-free fallback only. Direct DeepSeek and GLM reviews are
-recorded in `external-review-phase9-disposition.md`; this file is not
-external-review evidence.
+Status: retained source-free fallback only. Direct plugin/API reviews are the preferred current path.
 
-Purpose: provide relay text for DeepSeek and GLM only if future direct API
-source transmission is unavailable. The operator must supply the selected files
-to the reviewer through an approved channel and record the returned findings in
-`external-review-phase9-disposition.md`.
+Purpose: provide manual relay text only if a reviewer plugin/API path is unavailable. The operator must supply selected files through an approved channel and record returned findings in PR #331 evidence comments.
 
 Before use:
 
-1. Replace `<EXACT_PR_HEAD>` with the current PR head SHA.
-2. Confirm the base is `origin/main` at
-   `d6f55774c32b71a242dcf78b8292a7f9e537afab`, or update this file before use.
-3. Attach or otherwise provide the selected Phase 9 files listed below.
-4. Do not treat this relay prompt as satisfying `FR-008`; only a completed
-   DeepSeek or GLM review, or an explicit user waiver, satisfies that gate.
+1. Fetch live PR #331 metadata:
+   `gh pr view 331 --json headRefOid,baseRefOid,mergeStateStatus,state`
+2. Confirm local `git rev-parse HEAD` equals PR `headRefOid`.
+3. Confirm exact-head CI is green.
+4. Attach or provide the selected files listed below.
+5. Do not treat this relay prompt as satisfying the review gate until returned findings are recorded.
 
 ## Selected Files
 
-- `specs/019-bolt-v3-phase9-audit-fresh/spec.md`
-- `specs/019-bolt-v3-phase9-audit-fresh/checklists/requirements.md`
-- `specs/019-bolt-v3-phase9-audit-fresh/plan.md`
-- `specs/019-bolt-v3-phase9-audit-fresh/research.md`
-- `specs/019-bolt-v3-phase9-audit-fresh/data-model.md`
-- `specs/019-bolt-v3-phase9-audit-fresh/contracts/audit-evidence.md`
-- `specs/019-bolt-v3-phase9-audit-fresh/quickstart.md`
-- `specs/019-bolt-v3-phase9-audit-fresh/audit-report.md`
-- `specs/019-bolt-v3-phase9-audit-fresh/ai-slop-cleanup-report.md`
-- `specs/019-bolt-v3-phase9-audit-fresh/external-review-phase9-prompt.md`
-- `specs/019-bolt-v3-phase9-audit-fresh/tasks.md`
-- `specs/019-bolt-v3-phase9-audit-fresh/external-review-phase9-disposition.md`
-- `specs/019-bolt-v3-phase9-audit-fresh/external-review-phase9-relay-prompts.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/spec.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/checklists/requirements.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/plan.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/research.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/data-model.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/contracts/audit-evidence.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/quickstart.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/audit-report.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/ai-slop-cleanup-report.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/external-review-phase9-prompt.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/tasks.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/external-review-phase9-disposition.md`
+- `specs/021-bolt-v3-phase9-current-main-audit/external-review-phase9-relay-prompts.md`
+- `docs/bolt-v3/2026-04-28-source-grounded-status-map.md`
+- `docs/bolt-v3/2026-05-18-production-readiness-contract.md`
 
-## DeepSeek Relay Prompt
+## Relay Prompt
 
-Review PR #327 Phase 9 comprehensive audit planning slice on exact head
-`<EXACT_PR_HEAD>` against `origin/main`
-`d6f55774c32b71a242dcf78b8292a7f9e537afab`.
+Review PR #331 Phase 9 audit artifacts on the exact head and base supplied by the operator.
 
-This is documentation and audit planning state only; do not propose code edits.
-Verify the artifacts satisfy the Phase 9 audit requirements, remain
-source-grounded, keep final live readiness blocked until Phase 7 and Phase 8
-prerequisites are accepted on main, and do not authorize soak or live capital.
-Check that Gemini and Claude review-response items are addressed and that the
-external-review disposition accurately records unresolved DeepSeek and GLM
-approval gating.
+This is documentation and audit evidence state only; do not propose runtime code edits unless you identify a source-backed blocker that invalidates the audit. Verify the artifacts:
 
-Return blocking findings first, then non-blocking findings, with file and line
-evidence. If no blocking findings exist, say that explicitly and list residual
-risks.
+- satisfy the Phase 9 audit requirements
+- remain source-grounded
+- distinguish P7/P8 source-review closure from unrun live evidence
+- keep no-submit live readiness, tiny-canary completion, staged live, and production live blocked until their exact evidence exists
+- avoid authorizing soak, deploy, or live capital
+- keep PR #392 downstream
+- do not carry retired path/head/PR references as current evidence
 
-## GLM Relay Prompt
-
-Review PR #327 Phase 9 comprehensive audit planning slice on exact head
-`<EXACT_PR_HEAD>` against `origin/main`
-`d6f55774c32b71a242dcf78b8292a7f9e537afab`.
-
-This is documentation and audit planning state only; do not propose code edits.
-Verify the artifacts satisfy the Phase 9 audit requirements, remain
-source-grounded, keep final live readiness blocked until Phase 7 and Phase 8
-prerequisites are accepted on main, and do not authorize soak or live capital.
-Check that Gemini and Claude review-response items are addressed and that the
-external-review disposition accurately records unresolved DeepSeek and GLM
-approval gating.
-
-Return blocking findings first, then non-blocking findings, with file and line
-evidence. If no blocking findings exist, say that explicitly and list residual
-risks.
+Return blocking findings first, then non-blocking findings, with file and line evidence. If no blocking findings exist, say that explicitly and list residual risks.

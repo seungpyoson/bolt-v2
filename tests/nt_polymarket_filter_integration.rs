@@ -1,32 +1,33 @@
 use std::sync::Arc;
 
+use bolt_v2::bolt_v3_market_families::updown::{updown_market_slug, updown_period_pair};
 use nautilus_network::retry::RetryConfig;
 use nautilus_polymarket::{
     filters::MarketSlugFilter, http::gamma::PolymarketGammaHttpClient,
     providers::PolymarketInstrumentProvider,
 };
 
-// This is a pin-surface test, not a bolt-v3 runtime implementation.
-// The documented slug contract is mirrored here only to prove the pinned NT filter accepts it.
+// Pin-surface test: drive the production slug formatter so a future
+// change to `updown_market_slug` or `updown_period_pair` fails this
+// test loudly. The helper takes `cadence_slug_token` explicitly so the
+// caller — not the helper — owns the TOML-derived token (T060).
 fn first_live_updown_slugs(
     underlying_asset: &str,
-    cadence_seconds: u64,
-    now_unix_seconds: u64,
+    cadence_seconds: i64,
+    cadence_slug_token: &str,
+    now_unix_seconds: i64,
 ) -> Vec<String> {
-    let period_start = (now_unix_seconds / cadence_seconds) * cadence_seconds;
-    let next_period_start = period_start + cadence_seconds;
-    let cadence_minutes = cadence_seconds / 60;
-    let asset = underlying_asset.to_lowercase();
-
+    let (current_start, next_start) = updown_period_pair(cadence_seconds, now_unix_seconds)
+        .expect("valid cadence and non-negative now_unix_seconds");
     vec![
-        format!("{asset}-updown-{cadence_minutes}m-{period_start}"),
-        format!("{asset}-updown-{cadence_minutes}m-{next_period_start}"),
+        updown_market_slug(underlying_asset, cadence_slug_token, current_start),
+        updown_market_slug(underlying_asset, cadence_slug_token, next_start),
     ]
 }
 
 #[test]
 fn first_live_updown_slug_rule_matches_expected_shape() {
-    let slugs = first_live_updown_slugs("BTC", 300, 1_800);
+    let slugs = first_live_updown_slugs("BTC", 300, "5m", 1_800);
     assert_eq!(
         slugs,
         vec![
@@ -38,7 +39,7 @@ fn first_live_updown_slug_rule_matches_expected_shape() {
 
 #[test]
 fn pinned_polymarket_provider_accepts_market_slug_filters() {
-    let slugs = first_live_updown_slugs("BTC", 300, 1_800);
+    let slugs = first_live_updown_slugs("BTC", 300, "5m", 1_800);
     let filter = MarketSlugFilter::from_slugs(slugs);
     let http_client = PolymarketGammaHttpClient::new(
         Some("https://gamma.test.invalid".to_string()),

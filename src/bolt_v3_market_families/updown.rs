@@ -42,7 +42,7 @@ pub fn validation_binding() -> MarketFamilyValidationBinding {
     MarketFamilyValidationBinding {
         key: KEY,
         validate_target: validate_target_block,
-        instrument_filter_targets,
+        instrument_filter_target_for_strategy,
         target_runtime_fields,
         select_binary_option_market,
     }
@@ -65,6 +65,17 @@ pub struct TargetBlock {
     pub rotating_market_family: RotatingMarketFamily,
     pub underlying_asset: String,
     pub cadence_seconds: i64,
+    /// Operator-supplied slug token spliced into the market slug
+    /// alongside `cadence_seconds`. The operator must pair the two so
+    /// the resulting `<asset>-updown-<token>-<period>` slug matches the
+    /// venue's actual catalog (e.g. `cadence_seconds = 300` pairs with
+    /// `"5m"` on Polymarket). Validation is structural only
+    /// (`validate_slug_token`): non-empty + lowercase ASCII alphanum.
+    /// A syntactically valid but venue-mismatched token (e.g.
+    /// `cadence_seconds = 300` with `"1h"`) produces well-formed slugs
+    /// that never match real markets, so market selection silently
+    /// returns no candidates. Operators verify the pair against the
+    /// live venue catalog at config time.
     pub cadence_slug_token: String,
     pub market_selection_rule: MarketSelectionRule,
     pub retry_interval_seconds: u64,
@@ -179,6 +190,13 @@ pub fn validate_target_cadence(context: &str, cadence_seconds: i64) -> Vec<Strin
     errors
 }
 
+/// Structural validation for an operator-supplied cadence slug token.
+/// Enforces non-empty + lowercase ASCII alphanumeric only; the
+/// (cadence_seconds, cadence_slug_token) pair is operator-owned and
+/// the venue catalog is the only source of truth for whether they
+/// match, so semantic mismatch (e.g. `cadence_seconds = 300` paired
+/// with `"1h"`) is intentionally not enforced here. See
+/// `TargetBlock::cadence_slug_token` for the operator contract.
 fn validate_slug_token(context: &str, field: &str, value: &str, errors: &mut Vec<String>) {
     if value.is_empty() {
         errors.push(format!("{context}: {field} must not be empty"));
@@ -362,24 +380,20 @@ pub fn instrument_filters_from_config(
     Ok(UpdownInstrumentFilterConfig { updown_targets })
 }
 
-pub fn instrument_filter_targets(
-    loaded: &LoadedBoltV3Config,
-) -> Result<Vec<InstrumentFilterTarget>, InstrumentFilterError> {
-    let updown_filters =
-        instrument_filters_from_config(loaded).map_err(InstrumentFilterError::from)?;
-    Ok(updown_filters
-        .updown_targets
-        .iter()
-        .map(|target| InstrumentFilterTarget {
-            strategy_instance_id: target.strategy_instance_id.clone(),
-            family_key: KEY,
-            configured_target_id: target.configured_target_id.clone(),
-            venue: target.venue.clone(),
-            underlying_asset: target.underlying_asset.clone(),
-            cadence_seconds: target.cadence_seconds,
-            cadence_slug_token: target.cadence_slug_token.clone(),
-        })
-        .collect())
+pub fn instrument_filter_target_for_strategy(
+    strategy: &LoadedStrategy,
+) -> Result<Option<InstrumentFilterTarget>, InstrumentFilterError> {
+    let target =
+        instrument_filter_target_from_strategy(strategy).map_err(InstrumentFilterError::from)?;
+    Ok(target.map(|target| InstrumentFilterTarget {
+        strategy_instance_id: target.strategy_instance_id,
+        family_key: KEY,
+        configured_target_id: target.configured_target_id,
+        venue: target.venue,
+        underlying_asset: target.underlying_asset,
+        cadence_seconds: target.cadence_seconds,
+        cadence_slug_token: target.cadence_slug_token,
+    }))
 }
 
 pub fn target_runtime_fields(

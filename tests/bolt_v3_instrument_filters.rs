@@ -47,6 +47,18 @@ fn set_target_field(strategy: &mut LoadedStrategy, key: &str, value: toml::Value
         .insert(key.to_string(), value);
 }
 
+/// Remove a single field from the strategy's raw `[target]` TOML
+/// envelope. Pairs with `set_target_field` for negative-case tests that
+/// exercise the missing-field deserialization path.
+fn remove_target_field(strategy: &mut LoadedStrategy, key: &str) {
+    strategy
+        .config
+        .target
+        .as_table_mut()
+        .expect("strategy [target] should be a TOML table")
+        .remove(key);
+}
+
 #[test]
 fn instrument_filters_from_config_from_fixture_yields_one_updown_target_config() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
@@ -205,6 +217,32 @@ fn instrument_filters_from_config_uses_configured_cadence_slug_token() {
         instrument_filters.updown_targets[0].cadence_slug_token,
         "2m"
     );
+}
+
+#[test]
+fn instrument_filters_from_config_rejects_missing_cadence_slug_token() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+
+    remove_target_field(&mut loaded.strategies[0], "cadence_slug_token");
+
+    match instrument_filters_from_config(&loaded) {
+        Err(BoltV3InstrumentFilterError::TargetParseFailed {
+            strategy_instance_id,
+            message,
+        }) => {
+            assert_eq!(strategy_instance_id, "bitcoin_updown_main");
+            assert!(
+                message.contains("cadence_slug_token"),
+                "error message should name the missing field: {message}"
+            );
+            assert!(
+                message.contains("missing field"),
+                "error message should say missing field: {message}"
+            );
+        }
+        other => panic!("expected TargetParseFailed for missing cadence_slug_token; got {other:?}"),
+    }
 }
 
 #[test]

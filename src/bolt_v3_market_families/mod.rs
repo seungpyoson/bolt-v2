@@ -9,7 +9,7 @@ pub mod updown;
 use serde::Deserialize;
 
 use crate::{
-    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
     bolt_v3_instrument_filters::{
         InstrumentFilterConfig, InstrumentFilterError, InstrumentFilterTarget,
     },
@@ -31,8 +31,15 @@ struct TargetFamilyDispatch {
 pub struct MarketFamilyValidationBinding {
     pub key: &'static str,
     pub validate_target: fn(&str, &toml::Value) -> Vec<String>,
-    pub instrument_filter_targets:
-        fn(&LoadedBoltV3Config) -> Result<Vec<InstrumentFilterTarget>, InstrumentFilterError>,
+    /// Per-strategy projector. The parent dispatcher
+    /// (`instrument_filters_from_config_with_bindings`) reads each
+    /// strategy's `target.rotating_market_family` first and routes only
+    /// the matching strategies into this function; family bindings
+    /// never see strategies from a different family, so a future
+    /// non-updown strategy cannot fail inside the updown binding's
+    /// typed deserialization.
+    pub instrument_filter_target_for_strategy:
+        fn(&LoadedStrategy) -> Result<Option<InstrumentFilterTarget>, InstrumentFilterError>,
     pub target_runtime_fields:
         fn(&toml::Value) -> Result<TargetRuntimeFields, InstrumentFilterError>,
     pub select_binary_option_market:
@@ -74,7 +81,7 @@ pub struct TargetRuntimeFields {
 const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[MarketFamilyValidationBinding {
     key: updown::KEY,
     validate_target: updown::validate_target_block,
-    instrument_filter_targets: updown::instrument_filter_targets,
+    instrument_filter_target_for_strategy: updown::instrument_filter_target_for_strategy,
     target_runtime_fields: updown::target_runtime_fields,
     select_binary_option_market: updown::select_binary_option_market,
 }];
@@ -94,8 +101,28 @@ pub fn instrument_filters_from_config_with_bindings(
     bindings: &[MarketFamilyValidationBinding],
 ) -> Result<InstrumentFilterConfig, InstrumentFilterError> {
     let mut targets = Vec::new();
-    for binding in bindings {
-        targets.extend((binding.instrument_filter_targets)(loaded)?);
+    for strategy in &loaded.strategies {
+        let dispatch: TargetFamilyDispatch =
+            strategy.config.target.clone().try_into().map_err(|error| {
+                InstrumentFilterError::TargetParseFailed {
+                    strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+                    message: format!("target: {error}"),
+                }
+            })?;
+        let binding = bindings
+            .iter()
+            .find(|binding| binding.key == dispatch.rotating_market_family)
+            .ok_or_else(|| InstrumentFilterError::UnsupportedFamily {
+                context: Some(format!(
+                    "strategy `{}`",
+                    strategy.config.strategy_instance_id
+                )),
+                family_key: dispatch.rotating_market_family.clone(),
+                supported: bindings.iter().map(|b| b.key).collect(),
+            })?;
+        if let Some(target) = (binding.instrument_filter_target_for_strategy)(strategy)? {
+            targets.push(target);
+        }
     }
     Ok(InstrumentFilterConfig::new(targets))
 }
@@ -246,18 +273,18 @@ mod tests {
         &[MarketFamilyValidationBinding {
             key: "fixture_family",
             validate_target: fake_validate_target,
-            instrument_filter_targets: fake_instrument_filter_targets,
+            instrument_filter_target_for_strategy: fake_instrument_filter_target_for_strategy,
             target_runtime_fields: fake_target_runtime_fields,
             select_binary_option_market: fake_select_binary_option_market,
         }];
 
-    fn fake_instrument_filter_targets(
-        loaded: &LoadedBoltV3Config,
-    ) -> Result<Vec<InstrumentFilterTarget>, InstrumentFilterError> {
+    fn fake_instrument_filter_target_for_strategy(
+        strategy: &LoadedStrategy,
+    ) -> Result<Option<InstrumentFilterTarget>, InstrumentFilterError> {
         Err(InstrumentFilterError::Other {
             message: format!(
-                "fixture_family binding invoked for {}",
-                loaded.root.trader_id
+                "fixture_family binding invoked for strategy `{}`",
+                strategy.config.strategy_instance_id
             ),
         })
     }
@@ -295,6 +322,34 @@ mod tests {
         }
     }
 
+    /// Deserialize the fixture strategy and overwrite its
+    /// `target.rotating_market_family` discriminator. Used by tests
+    /// that need a non-updown strategy in `loaded.strategies` so the
+    /// per-strategy dispatcher routes to an injected fake binding.
+    fn fixture_strategy_with_family(family: &str) -> LoadedStrategy {
+        let strategy_config: crate::bolt_v3_config::BoltV3StrategyConfig = toml::from_str(
+            include_str!("../../tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        )
+        .unwrap();
+        let mut strategy = LoadedStrategy {
+            config_path: std::path::PathBuf::from(
+                "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+            ),
+            relative_path: "strategies/binary_oracle.toml".to_string(),
+            config: strategy_config,
+        };
+        strategy
+            .config
+            .target
+            .as_table_mut()
+            .expect("strategy [target] should be a TOML table")
+            .insert(
+                "rotating_market_family".to_string(),
+                toml::Value::String(family.to_string()),
+            );
+        strategy
+    }
+
     #[test]
     fn validation_can_use_injected_family_binding_without_editing_production_registry() {
         let target = toml::toml! {
@@ -324,24 +379,97 @@ mod tests {
 
     #[test]
     fn instrument_filters_use_injected_family_binding_without_parent_family_branch() {
-        let loaded = fixture_loaded_config();
-        let production_filters = instrument_filters_from_config(&loaded).unwrap();
-        assert_eq!(
-            production_filters.target_refs().count(),
-            0,
-            "fixture has no loaded strategies, so production registry should not emit filters"
-        );
+        let mut loaded = fixture_loaded_config();
+        loaded
+            .strategies
+            .push(fixture_strategy_with_family("fixture_family"));
 
+        // Production registry has only updown; a fixture_family
+        // strategy must be rejected as UnsupportedFamily, not silently
+        // dispatched to updown.
+        let production_error = instrument_filters_from_config(&loaded)
+            .expect_err("production registry must reject unknown family");
+        match &production_error {
+            InstrumentFilterError::UnsupportedFamily { family_key, .. } => {
+                assert_eq!(family_key, "fixture_family");
+            }
+            other => panic!("expected UnsupportedFamily, got {other:?}"),
+        }
+
+        // Injected fake binding owns dispatch for the fixture_family
+        // strategy and returns its own error, proving the per-strategy
+        // dispatcher routes by `target.rotating_market_family`.
         let injected_error =
             instrument_filters_from_config_with_bindings(&loaded, FAKE_FAMILY_BINDINGS)
                 .expect_err("fake binding should own this dispatch and return its error");
         assert_eq!(
             injected_error.to_string(),
             format!(
-                "fixture_family binding invoked for {}",
-                loaded.root.trader_id
+                "fixture_family binding invoked for strategy `{}`",
+                loaded.strategies[0].config.strategy_instance_id
             )
         );
+    }
+
+    #[test]
+    fn instrument_filters_dispatch_routes_each_strategy_to_its_family_binding() {
+        // Two strategies, one updown and one fixture_family. The
+        // per-strategy dispatcher must read each strategy's
+        // `target.rotating_market_family` and call only the matching
+        // binding. With the prior broadcast dispatch, the updown
+        // binding would have iterated every strategy and failed
+        // updown-typed deserialization on the fixture_family strategy
+        // before the fake binding could handle it.
+        let mut loaded = fixture_loaded_config();
+        let updown_strategy = fixture_strategy_with_family(updown::KEY);
+        let fake_strategy = fixture_strategy_with_family("fixture_family");
+        loaded.strategies.push(updown_strategy);
+        loaded.strategies.push(fake_strategy);
+
+        let combined_bindings: Vec<MarketFamilyValidationBinding> = validation_bindings()
+            .iter()
+            .map(|binding| MarketFamilyValidationBinding {
+                key: binding.key,
+                validate_target: binding.validate_target,
+                instrument_filter_target_for_strategy: binding
+                    .instrument_filter_target_for_strategy,
+                target_runtime_fields: binding.target_runtime_fields,
+                select_binary_option_market: binding.select_binary_option_market,
+            })
+            .chain(
+                FAKE_FAMILY_BINDINGS
+                    .iter()
+                    .map(|binding| MarketFamilyValidationBinding {
+                        key: binding.key,
+                        validate_target: binding.validate_target,
+                        instrument_filter_target_for_strategy: binding
+                            .instrument_filter_target_for_strategy,
+                        target_runtime_fields: binding.target_runtime_fields,
+                        select_binary_option_market: binding.select_binary_option_market,
+                    }),
+            )
+            .collect();
+
+        // The fake binding errors loud when its strategy reaches it.
+        // The dispatcher must surface that error, proving the fake
+        // strategy was routed to the fake binding and not to updown.
+        let dispatch_error =
+            instrument_filters_from_config_with_bindings(&loaded, &combined_bindings)
+                .expect_err("fake binding must reject the fixture_family strategy");
+        match &dispatch_error {
+            InstrumentFilterError::Other { message } => {
+                assert!(
+                    message.contains("fixture_family binding invoked for strategy"),
+                    "fake binding should surface its own error, not an updown deserialization \
+                     failure: {message}"
+                );
+            }
+            other => panic!(
+                "expected fake binding's Other error, got {other:?} — \
+                 a TargetParseFailed here means updown was incorrectly called on the \
+                 fixture_family strategy"
+            ),
+        }
     }
 
     #[test]

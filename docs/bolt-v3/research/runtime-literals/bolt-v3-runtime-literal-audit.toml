@@ -270,6 +270,14 @@ classification = "diagnostic_template"
 reason = "Mirror of the internal BoltV3InstrumentFilterError::PeriodPairOverflow Display template on the public InstrumentFilterError enum, so operator triage output is preserved across the typed-error conversion. Not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "string"
+literal = "\"strategy `{}`\""
+context = "\"strategy `{}`\","
+classification = "diagnostic_template"
+reason = "This is the operator-diagnostic context label emitted by the per-strategy instrument-filter dispatcher when a strategy's rotating_market_family is not registered. It identifies which strategy produced the UnsupportedFamily error and is not an operator-tunable runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = "\"{asset_lower}-{family_key}-{cadence_slug_token}-{period_start_unix_seconds}\""

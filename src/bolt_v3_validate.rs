@@ -109,24 +109,24 @@ fn validate_nautilus_block(block: &NautilusBlock) -> Vec<String> {
     let mut errors = Vec::new();
     let positive_fields: &[(&str, u64)] = &[
         (
-            "nautilus.timeout_connection_seconds",
-            block.timeout_connection_seconds,
+            "nautilus.timeout_connection_secs",
+            block.timeout_connection_secs,
         ),
         (
-            "nautilus.timeout_reconciliation_seconds",
-            block.timeout_reconciliation_seconds,
+            "nautilus.timeout_reconciliation_secs",
+            block.timeout_reconciliation_secs,
         ),
         (
-            "nautilus.timeout_portfolio_seconds",
-            block.timeout_portfolio_seconds,
+            "nautilus.timeout_portfolio_secs",
+            block.timeout_portfolio_secs,
         ),
         (
-            "nautilus.timeout_disconnection_seconds",
-            block.timeout_disconnection_seconds,
+            "nautilus.timeout_disconnection_secs",
+            block.timeout_disconnection_secs,
         ),
         (
-            "nautilus.timeout_shutdown_seconds",
-            block.timeout_shutdown_seconds,
+            "nautilus.timeout_shutdown_secs",
+            block.timeout_shutdown_secs,
         ),
     ];
     for (label, value) in positive_fields {
@@ -178,20 +178,20 @@ fn validate_exec_engine_block(
     let mut errors = Vec::new();
     let positive_fields: &[(&str, u64)] = &[
         (
-            "nautilus.exec_engine.inflight_check_threshold_milliseconds",
-            block.inflight_check_threshold_milliseconds as u64,
+            "nautilus.exec_engine.inflight_check_threshold_ms",
+            block.inflight_check_threshold_ms as u64,
         ),
         (
-            "nautilus.exec_engine.open_check_threshold_milliseconds",
-            block.open_check_threshold_milliseconds as u64,
+            "nautilus.exec_engine.open_check_threshold_ms",
+            block.open_check_threshold_ms as u64,
         ),
         (
             "nautilus.exec_engine.max_single_order_queries_per_cycle",
             block.max_single_order_queries_per_cycle as u64,
         ),
         (
-            "nautilus.exec_engine.position_check_threshold_milliseconds",
-            block.position_check_threshold_milliseconds as u64,
+            "nautilus.exec_engine.position_check_threshold_ms",
+            block.position_check_threshold_ms as u64,
         ),
     ];
     for (label, value) in positive_fields {
@@ -354,9 +354,9 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
             block.catalog_directory
         ));
     }
-    if block.streaming.flush_interval_milliseconds == 0 {
+    if block.streaming.flush_interval_ms == 0 {
         errors.push(
-            "persistence.streaming.flush_interval_milliseconds must be a positive integer"
+            "persistence.streaming.flush_interval_ms must be a positive integer"
                 .to_string(),
         );
     }

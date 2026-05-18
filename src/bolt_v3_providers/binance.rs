@@ -79,7 +79,7 @@ pub struct BinanceDataConfig {
     /// as `Some(...)` so NT does not silently fall back to the
     /// compiled-in default endpoint.
     pub base_url_ws: String,
-    pub instrument_status_poll_seconds: u64,
+    pub instrument_status_poll_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -183,9 +183,9 @@ fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
     // this as a poll interval and a missing/zero value would leave NT
     // free to fall back to its own default cadence. Failing closed
     // here keeps the bolt-v3 instrument-status-poll cadence explicit.
-    if data.instrument_status_poll_seconds == 0 {
+    if data.instrument_status_poll_secs == 0 {
         errors.push(format!(
-            "venues.{key}.data.instrument_status_poll_seconds must be a positive integer"
+            "venues.{key}.data.instrument_status_poll_secs must be a positive integer"
         ));
     }
     errors
@@ -294,7 +294,7 @@ fn map_data(
         base_url_ws: Some(cfg.base_url_ws),
         api_key: Some(secrets.api_key.clone()),
         api_secret: Some(secrets.api_secret.clone()),
-        instrument_status_poll_secs: cfg.instrument_status_poll_seconds,
+        instrument_status_poll_secs: cfg.instrument_status_poll_secs,
         transport_backend: Default::default(),
     })
 }

@@ -520,7 +520,7 @@ mod tests {
                 configured_target_id: "fake-updown".to_string(),
                 venue_config_key: "polymarket_main".to_string(),
                 underlying_asset: "BTC".to_string(),
-                cadence_seconds: 300,
+                cadence_secs: 300,
                 cadence_slug_token: "5m".to_string(),
             }],
         };
@@ -571,7 +571,7 @@ mod tests {
                 configured_target_id: "fake-updown".to_string(),
                 venue_config_key: "polymarket_main".to_string(),
                 underlying_asset: "BTC".to_string(),
-                cadence_seconds: 300,
+                cadence_secs: 300,
                 cadence_slug_token: "5m".to_string(),
             }],
         };

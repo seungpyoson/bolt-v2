@@ -6,7 +6,7 @@
 //!
 //! This module owns the updown family's market-identity surface as a
 //! pure data boundary. It projects a validated bolt-v3 configuration
-//! plus an injected `now_unix_seconds` value into a
+//! plus an injected `now_unix_secs` value into a
 //! `MarketIdentityPlan` plus current/next updown market slug
 //! candidates. It registers nothing, opens no client, mutates no
 //! shared instrument index, depends on no live wall-clock source, and
@@ -18,7 +18,7 @@
 //! its target-shape checks structural and dispatches updown-specific
 //! cadence rules to `validate_target_cadence` here, so the schema
 //! validator and this market-family planner share one source of
-//! truth for supported `cadence_seconds` values.
+//! truth for supported `cadence_secs` values.
 //!
 //! This module is family-specific by design: it lives under
 //! `bolt_v3_market_families::updown` so the family-agnostic core
@@ -51,7 +51,7 @@ pub fn validation_binding() -> MarketFamilyValidationBinding {
 }
 
 /// Updown rotating-cadence target block. Owned by the updown market-
-/// family binding because `cadence_seconds`, `underlying_asset`,
+/// family binding because `cadence_secs`, `underlying_asset`,
 /// `rotating_market_family`, and `market_selection_rule` are family-
 /// shaped fields. The strategy envelope (`crate::bolt_v3_config::
 /// BoltV3StrategyConfig`) keeps the TOML field name `[target]` as a
@@ -64,10 +64,10 @@ pub struct TargetBlock {
     pub kind: TargetKind,
     pub rotating_market_family: RotatingMarketFamily,
     pub underlying_asset: String,
-    pub cadence_seconds: i64,
+    pub cadence_secs: i64,
     pub market_selection_rule: MarketSelectionRule,
-    pub retry_interval_seconds: u64,
-    pub blocked_after_seconds: u64,
+    pub retry_interval_secs: u64,
+    pub blocked_after_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -102,7 +102,7 @@ pub fn deserialize_target_block(target: &toml::Value) -> Result<TargetBlock, Str
         .map_err(|error| error.to_string())
 }
 
-/// Runtime-contract `cadence_seconds -> slug-token` table for the
+/// Runtime-contract `cadence_secs -> slug-token` table for the
 /// updown market family. Authoritative reference:
 /// `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 5.3.
 const UPDOWN_CADENCE_SLUG_TOKEN_TABLE: &[(i64, &str)] = &[
@@ -114,18 +114,18 @@ const UPDOWN_CADENCE_SLUG_TOKEN_TABLE: &[(i64, &str)] = &[
 ];
 
 /// Look up the runtime-contract slug-token for a configured updown
-/// `cadence_seconds`, or `None` if the value is not in the table.
-pub fn updown_cadence_slug_token(cadence_seconds: i64) -> Option<&'static str> {
+/// `cadence_secs`, or `None` if the value is not in the table.
+pub fn updown_cadence_slug_token(cadence_secs: i64) -> Option<&'static str> {
     UPDOWN_CADENCE_SLUG_TOKEN_TABLE
         .iter()
-        .find_map(|(seconds, token)| (*seconds == cadence_seconds).then_some(*token))
+        .find_map(|(seconds, token)| (*seconds == cadence_secs).then_some(*token))
 }
 
-/// Enumerate the `cadence_seconds` values currently supported by the
+/// Enumerate the `cadence_secs` values currently supported by the
 /// runtime-contract slug-token table, in declaration order. Used in
 /// startup-validation error messages so the operator sees the exact
 /// allowed set.
-pub fn supported_updown_cadence_seconds() -> Vec<i64> {
+pub fn supported_updown_cadence_secs() -> Vec<i64> {
     UPDOWN_CADENCE_SLUG_TOKEN_TABLE
         .iter()
         .map(|(seconds, _)| *seconds)
@@ -168,16 +168,16 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
         ));
     }
 
-    errors.extend(validate_target_cadence(context, block.cadence_seconds));
+    errors.extend(validate_target_cadence(context, block.cadence_secs));
 
-    if block.retry_interval_seconds == 0 {
+    if block.retry_interval_secs == 0 {
         errors.push(format!(
-            "{context}: target.retry_interval_seconds must be a positive integer"
+            "{context}: target.retry_interval_secs must be a positive integer"
         ));
     }
-    if block.blocked_after_seconds == 0 {
+    if block.blocked_after_secs == 0 {
         errors.push(format!(
-            "{context}: target.blocked_after_seconds must be a positive integer"
+            "{context}: target.blocked_after_secs must be a positive integer"
         ));
     }
 
@@ -197,20 +197,20 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
 /// targets. Owns the positive / minute-aligned / table-membership
 /// rules so core startup validation can stay structural and dispatch
 /// per-family cadence policy here.
-pub fn validate_target_cadence(context: &str, cadence_seconds: i64) -> Vec<String> {
+pub fn validate_target_cadence(context: &str, cadence_secs: i64) -> Vec<String> {
     let mut errors = Vec::new();
-    if cadence_seconds <= 0 {
+    if cadence_secs <= 0 {
         errors.push(format!(
-            "{context}: target.cadence_seconds must be a positive integer (got {cadence_seconds})"
+            "{context}: target.cadence_secs must be a positive integer (got {cadence_secs})"
         ));
-    } else if cadence_seconds % 60 != 0 {
+    } else if cadence_secs % 60 != 0 {
         errors.push(format!(
-            "{context}: target.cadence_seconds must be divisible by 60 (got {cadence_seconds})"
+            "{context}: target.cadence_secs must be divisible by 60 (got {cadence_secs})"
         ));
-    } else if updown_cadence_slug_token(cadence_seconds).is_none() {
-        let supported = supported_updown_cadence_seconds();
+    } else if updown_cadence_slug_token(cadence_secs).is_none() {
+        let supported = supported_updown_cadence_secs();
         errors.push(format!(
-            "{context}: target.cadence_seconds={cadence_seconds} has no runtime-contract-defined updown slug-token mapping; supported values are {supported:?}"
+            "{context}: target.cadence_secs={cadence_secs} has no runtime-contract-defined updown slug-token mapping; supported values are {supported:?}"
         ));
     }
     errors
@@ -252,18 +252,18 @@ pub struct UpdownTargetPlan {
     pub configured_target_id: String,
     pub venue_config_key: String,
     pub underlying_asset: String,
-    pub cadence_seconds: i64,
+    pub cadence_secs: i64,
     pub cadence_slug_token: String,
 }
 
 /// Current and next updown market-slug candidates for a single
-/// `UpdownTargetPlan` evaluated against an injected `now_unix_seconds`
+/// `UpdownTargetPlan` evaluated against an injected `now_unix_secs`
 /// value (intended to come from the NautilusTrader node clock at the
 /// caller, not from this module).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdownSlugCandidates {
-    pub current_period_start_unix_seconds: i64,
-    pub next_period_start_unix_seconds: i64,
+    pub current_period_start_unix_secs: i64,
+    pub next_period_start_unix_secs: i64,
     pub current_market_slug: String,
     pub next_market_slug: String,
 }
@@ -273,19 +273,19 @@ pub enum BoltV3MarketIdentityError {
     NonPositiveCadenceSeconds {
         strategy_instance_id: Option<String>,
         configured_target_id: Option<String>,
-        cadence_seconds: i64,
+        cadence_secs: i64,
     },
     UnsupportedCadenceSeconds {
         strategy_instance_id: Option<String>,
         configured_target_id: Option<String>,
-        cadence_seconds: i64,
+        cadence_secs: i64,
     },
     NegativeNowUnixSeconds {
-        now_unix_seconds: i64,
+        now_unix_secs: i64,
     },
     PeriodPairOverflow {
-        now_unix_seconds: i64,
-        cadence_seconds: i64,
+        now_unix_secs: i64,
+        cadence_secs: i64,
     },
     /// The strategy envelope's raw `[target]` value failed updown typed
     /// deserialization at planning time. Validation runs the same
@@ -306,33 +306,33 @@ impl std::fmt::Display for BoltV3MarketIdentityError {
             BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
                 strategy_instance_id,
                 configured_target_id,
-                cadence_seconds,
+                cadence_secs,
             } => write!(
                 f,
-                "{prefix}target.cadence_seconds must be a positive integer (got {cadence_seconds})",
+                "{prefix}target.cadence_secs must be a positive integer (got {cadence_secs})",
                 prefix = format_target_prefix(strategy_instance_id, configured_target_id),
             ),
             BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
                 strategy_instance_id,
                 configured_target_id,
-                cadence_seconds,
+                cadence_secs,
             } => write!(
                 f,
-                "{prefix}target.cadence_seconds={cadence_seconds} has no runtime-contract-defined updown slug-token mapping",
+                "{prefix}target.cadence_secs={cadence_secs} has no runtime-contract-defined updown slug-token mapping",
                 prefix = format_target_prefix(strategy_instance_id, configured_target_id),
             ),
-            BoltV3MarketIdentityError::NegativeNowUnixSeconds { now_unix_seconds } => {
+            BoltV3MarketIdentityError::NegativeNowUnixSeconds { now_unix_secs } => {
                 write!(
                     f,
-                    "now_unix_seconds must be non-negative (got {now_unix_seconds})"
+                    "now_unix_secs must be non-negative (got {now_unix_secs})"
                 )
             }
             BoltV3MarketIdentityError::PeriodPairOverflow {
-                now_unix_seconds,
-                cadence_seconds,
+                now_unix_secs,
+                cadence_secs,
             } => write!(
                 f,
-                "updown period pair overflows i64 (now_unix_seconds={now_unix_seconds}, cadence_seconds={cadence_seconds})"
+                "updown period pair overflows i64 (now_unix_secs={now_unix_secs}, cadence_secs={cadence_secs})"
             ),
             BoltV3MarketIdentityError::TargetParseFailed {
                 strategy_instance_id,
@@ -363,7 +363,7 @@ impl std::error::Error for BoltV3MarketIdentityError {}
 /// `UpdownTargetPlan`. Returns the full `MarketIdentityPlan` in the
 /// same sequence as the configured strategies. Fails loud if a
 /// strategy's target has been mutated to bypass schema validation
-/// (non-positive or unsupported `cadence_seconds`).
+/// (non-positive or unsupported `cadence_secs`).
 pub fn plan_market_identity(
     loaded: &LoadedBoltV3Config,
 ) -> Result<MarketIdentityPlan, BoltV3MarketIdentityError> {
@@ -396,20 +396,20 @@ fn plan_strategy_updown_target(
     let RotatingMarketFamily::Updown = target.rotating_market_family;
 
     let configured_target_id = target.configured_target_id.clone();
-    if target.cadence_seconds <= 0 {
+    if target.cadence_secs <= 0 {
         return Err(BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
             strategy_instance_id: Some(strategy_instance_id),
             configured_target_id: Some(configured_target_id),
-            cadence_seconds: target.cadence_seconds,
+            cadence_secs: target.cadence_secs,
         });
     }
-    let token = match updown_cadence_slug_token(target.cadence_seconds) {
+    let token = match updown_cadence_slug_token(target.cadence_secs) {
         Some(token) => token,
         None => {
             return Err(BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
                 strategy_instance_id: Some(strategy_instance_id),
                 configured_target_id: Some(configured_target_id),
-                cadence_seconds: target.cadence_seconds,
+                cadence_secs: target.cadence_secs,
             });
         }
     };
@@ -419,61 +419,61 @@ fn plan_strategy_updown_target(
         configured_target_id,
         venue_config_key,
         underlying_asset: target.underlying_asset.clone(),
-        cadence_seconds: target.cadence_seconds,
+        cadence_secs: target.cadence_secs,
         cadence_slug_token: token.to_string(),
     }))
 }
 
 /// Compute the current and next updown period start values from
-/// `cadence_seconds` and `now_unix_seconds`, following the runtime
+/// `cadence_secs` and `now_unix_secs`, following the runtime
 /// contract:
 ///   `current = floor(now / cadence) * cadence`
 ///   `next = current + cadence`
 pub fn updown_period_pair(
-    cadence_seconds: i64,
-    now_unix_seconds: i64,
+    cadence_secs: i64,
+    now_unix_secs: i64,
 ) -> Result<(i64, i64), BoltV3MarketIdentityError> {
-    if cadence_seconds <= 0 {
+    if cadence_secs <= 0 {
         return Err(BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
             strategy_instance_id: None,
             configured_target_id: None,
-            cadence_seconds,
+            cadence_secs,
         });
     }
-    if now_unix_seconds < 0 {
-        return Err(BoltV3MarketIdentityError::NegativeNowUnixSeconds { now_unix_seconds });
+    if now_unix_secs < 0 {
+        return Err(BoltV3MarketIdentityError::NegativeNowUnixSeconds { now_unix_secs });
     }
-    let current = (now_unix_seconds / cadence_seconds) * cadence_seconds;
-    let next = current.checked_add(cadence_seconds).ok_or(
+    let current = (now_unix_secs / cadence_secs) * cadence_secs;
+    let next = current.checked_add(cadence_secs).ok_or(
         BoltV3MarketIdentityError::PeriodPairOverflow {
-            now_unix_seconds,
-            cadence_seconds,
+            now_unix_secs,
+            cadence_secs,
         },
     )?;
     Ok((current, next))
 }
 
 /// Format the runtime-contract updown market slug:
-///   `"{underlying_asset_lowercase}-updown-{cadence_slug_token}-{period_start_unix_seconds}"`.
+///   `"{underlying_asset_lowercase}-updown-{cadence_slug_token}-{period_start_unix_secs}"`.
 pub fn updown_market_slug(
     asset: &str,
     cadence_slug_token: &str,
-    period_start_unix_seconds: i64,
+    period_start_unix_secs: i64,
 ) -> String {
     format!(
-        "{asset_lower}-updown-{cadence_slug_token}-{period_start_unix_seconds}",
+        "{asset_lower}-updown-{cadence_slug_token}-{period_start_unix_secs}",
         asset_lower = asset.to_ascii_lowercase()
     )
 }
 
 /// Produce the current and next updown market-slug candidates for a
-/// single `UpdownTargetPlan` evaluated at `now_unix_seconds`.
+/// single `UpdownTargetPlan` evaluated at `now_unix_secs`.
 pub fn candidates_for_target(
     target_plan: &UpdownTargetPlan,
-    now_unix_seconds: i64,
+    now_unix_secs: i64,
 ) -> Result<UpdownSlugCandidates, BoltV3MarketIdentityError> {
     let (current_start, next_start) =
-        updown_period_pair(target_plan.cadence_seconds, now_unix_seconds)?;
+        updown_period_pair(target_plan.cadence_secs, now_unix_secs)?;
     let current_market_slug = updown_market_slug(
         &target_plan.underlying_asset,
         &target_plan.cadence_slug_token,
@@ -485,8 +485,8 @@ pub fn candidates_for_target(
         next_start,
     );
     Ok(UpdownSlugCandidates {
-        current_period_start_unix_seconds: current_start,
-        next_period_start_unix_seconds: next_start,
+        current_period_start_unix_secs: current_start,
+        next_period_start_unix_secs: next_start,
         current_market_slug,
         next_market_slug,
     })
@@ -524,7 +524,7 @@ mod tests {
             Err(BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
                 strategy_instance_id: None,
                 configured_target_id: None,
-                cadence_seconds: 0,
+                cadence_secs: 0,
             })
         ));
     }

@@ -771,7 +771,7 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
         .try_into()
         .expect("fixture target block should deserialize as updown TargetBlock");
     assert_eq!(target.kind, TargetKind::RotatingMarket);
-    assert_eq!(target.cadence_seconds, 300);
+    assert_eq!(target.cadence_secs, 300);
     let parameters: ParametersBlock = strategy
         .parameters
         .clone()
@@ -892,12 +892,12 @@ mode = "live"
 [nautilus]
 load_state = true
 save_state = true
-timeout_connection_seconds = 30
-timeout_reconciliation_seconds = 60
-timeout_portfolio_seconds = 10
-timeout_disconnection_seconds = 10
-delay_post_stop_seconds = 5
-timeout_shutdown_seconds = 10
+timeout_connection_secs = 30
+timeout_reconciliation_secs = 60
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 5
+timeout_shutdown_secs = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -918,29 +918,29 @@ qsize = 100000
 load_cache = true
 snapshot_orders = false
 snapshot_positions = false
-snapshot_positions_interval_seconds = 0
+snapshot_positions_interval_secs = 0
 debug = false
 reconciliation = true
-reconciliation_startup_delay_seconds = 10
+reconciliation_startup_delay_secs = 10
 reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []
 filter_unclaimed_external_orders = false
 filter_position_reports = false
 filtered_client_order_ids = []
 generate_missing_orders = true
-inflight_check_interval_milliseconds = 2000
-inflight_check_threshold_milliseconds = 5000
+inflight_check_interval_ms = 2000
+inflight_check_threshold_ms = 5000
 inflight_check_retries = 5
-open_check_interval_seconds = 0
+open_check_interval_secs = 0
 open_check_lookback_mins = 60
-open_check_threshold_milliseconds = 5000
+open_check_threshold_ms = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
-single_order_query_delay_milliseconds = 100
-position_check_interval_seconds = 0
+single_order_query_delay_ms = 100
+position_check_interval_secs = 0
 position_check_lookback_mins = 60
-position_check_threshold_milliseconds = 5000
+position_check_threshold_ms = 5000
 position_check_retries = 3
 purge_closed_orders_interval_mins = 0
 purge_closed_orders_buffer_mins = 0
@@ -949,7 +949,7 @@ purge_closed_positions_buffer_mins = 0
 purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
-own_books_audit_interval_seconds = 0
+own_books_audit_interval_secs = 0
 graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
@@ -977,7 +977,7 @@ order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
-flush_interval_milliseconds = 1000
+flush_interval_ms = 1000
 replace_existing = false
 rotation_kind = "none"
 
@@ -994,11 +994,11 @@ funder_address = "0x1111111111111111111111111111111111111111"
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 base_url_data_api = "https://data-api.polymarket.com"
-http_timeout_seconds = 60
+http_timeout_secs = 60
 max_retries = 3
-retry_delay_initial_milliseconds = 250
-retry_delay_max_milliseconds = 2000
-ack_timeout_seconds = 5
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+ack_timeout_secs = 5
 "#;
 
     let root: BoltV3RootConfig =
@@ -1027,12 +1027,12 @@ mode = "live"
 [nautilus]
 load_state = true
 save_state = true
-timeout_connection_seconds = 30
-timeout_reconciliation_seconds = 60
-timeout_portfolio_seconds = 10
-timeout_disconnection_seconds = 10
-delay_post_stop_seconds = 5
-timeout_shutdown_seconds = 10
+timeout_connection_secs = 30
+timeout_reconciliation_secs = 60
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 5
+timeout_shutdown_secs = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -1053,29 +1053,29 @@ qsize = 100000
 load_cache = true
 snapshot_orders = false
 snapshot_positions = false
-snapshot_positions_interval_seconds = 0
+snapshot_positions_interval_secs = 0
 debug = false
 reconciliation = true
-reconciliation_startup_delay_seconds = 10
+reconciliation_startup_delay_secs = 10
 reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []
 filter_unclaimed_external_orders = false
 filter_position_reports = false
 filtered_client_order_ids = []
 generate_missing_orders = true
-inflight_check_interval_milliseconds = 2000
-inflight_check_threshold_milliseconds = 5000
+inflight_check_interval_ms = 2000
+inflight_check_threshold_ms = 5000
 inflight_check_retries = 5
-open_check_interval_seconds = 0
+open_check_interval_secs = 0
 open_check_lookback_mins = 60
-open_check_threshold_milliseconds = 5000
+open_check_threshold_ms = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
-single_order_query_delay_milliseconds = 100
-position_check_interval_seconds = 0
+single_order_query_delay_ms = 100
+position_check_interval_secs = 0
 position_check_lookback_mins = 60
-position_check_threshold_milliseconds = 5000
+position_check_threshold_ms = 5000
 position_check_retries = 3
 purge_closed_orders_interval_mins = 0
 purge_closed_orders_buffer_mins = 0
@@ -1084,7 +1084,7 @@ purge_closed_positions_buffer_mins = 0
 purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
-own_books_audit_interval_seconds = 0
+own_books_audit_interval_secs = 0
 graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
@@ -1112,7 +1112,7 @@ order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
-flush_interval_milliseconds = 1000
+flush_interval_ms = 1000
 replace_existing = false
 rotation_kind = "none"
 
@@ -1127,7 +1127,7 @@ product_types = ["spot"]
 environment = "mainnet"
 base_url_http = "https://binance.test.invalid/http"
 base_url_ws = "wss://binance.test.invalid/ws"
-instrument_status_poll_seconds = 3600
+instrument_status_poll_secs = 3600
 "#;
 
     let root: BoltV3RootConfig =
@@ -1156,12 +1156,12 @@ mode = "live"
 [nautilus]
 load_state = true
 save_state = true
-timeout_connection_seconds = 30
-timeout_reconciliation_seconds = 60
-timeout_portfolio_seconds = 10
-timeout_disconnection_seconds = 10
-delay_post_stop_seconds = 5
-timeout_shutdown_seconds = 10
+timeout_connection_secs = 30
+timeout_reconciliation_secs = 60
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 5
+timeout_shutdown_secs = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -1182,29 +1182,29 @@ qsize = 100000
 load_cache = true
 snapshot_orders = false
 snapshot_positions = false
-snapshot_positions_interval_seconds = 0
+snapshot_positions_interval_secs = 0
 debug = false
 reconciliation = true
-reconciliation_startup_delay_seconds = 10
+reconciliation_startup_delay_secs = 10
 reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []
 filter_unclaimed_external_orders = false
 filter_position_reports = false
 filtered_client_order_ids = []
 generate_missing_orders = true
-inflight_check_interval_milliseconds = 2000
-inflight_check_threshold_milliseconds = 5000
+inflight_check_interval_ms = 2000
+inflight_check_threshold_ms = 5000
 inflight_check_retries = 5
-open_check_interval_seconds = 0
+open_check_interval_secs = 0
 open_check_lookback_mins = 60
-open_check_threshold_milliseconds = 5000
+open_check_threshold_ms = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
-single_order_query_delay_milliseconds = 100
-position_check_interval_seconds = 0
+single_order_query_delay_ms = 100
+position_check_interval_secs = 0
 position_check_lookback_mins = 60
-position_check_threshold_milliseconds = 5000
+position_check_threshold_ms = 5000
 position_check_retries = 3
 purge_closed_orders_interval_mins = 0
 purge_closed_orders_buffer_mins = 0
@@ -1213,7 +1213,7 @@ purge_closed_positions_buffer_mins = 0
 purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
-own_books_audit_interval_seconds = 0
+own_books_audit_interval_secs = 0
 graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
@@ -1241,7 +1241,7 @@ order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
-flush_interval_milliseconds = 1000
+flush_interval_ms = 1000
 replace_existing = false
 rotation_kind = "none"
 
@@ -1256,8 +1256,8 @@ base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 base_url_gamma = "https://gamma-api.polymarket.com"
 base_url_data_api = "https://data-api.polymarket.com"
-http_timeout_seconds = 0
-ws_timeout_seconds = 0
+http_timeout_secs = 0
+ws_timeout_secs = 0
 subscribe_new_markets = false
 update_instruments_interval_minutes = 0
 websocket_max_subscriptions_per_connection = 0
@@ -1269,11 +1269,11 @@ funder_address = "0x1111111111111111111111111111111111111111"
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 base_url_data_api = "https://data-api.polymarket.com"
-http_timeout_seconds = 0
+http_timeout_secs = 0
 max_retries = 0
-retry_delay_initial_milliseconds = 0
-retry_delay_max_milliseconds = 0
-ack_timeout_seconds = 0
+retry_delay_initial_ms = 0
+retry_delay_max_ms = 0
+ack_timeout_secs = 0
 
 [clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
@@ -1286,15 +1286,15 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
         toml::from_str(toml_text).expect("polymarket bounds TOML should parse");
     let messages = validate_root_only(&root);
     let expected = [
-        "venues.polymarket_main.data.http_timeout_seconds must be a positive integer",
-        "venues.polymarket_main.data.ws_timeout_seconds must be a positive integer",
+        "venues.polymarket_main.data.http_timeout_secs must be a positive integer",
+        "venues.polymarket_main.data.ws_timeout_secs must be a positive integer",
         "venues.polymarket_main.data.update_instruments_interval_minutes must be a positive integer",
         "venues.polymarket_main.data.websocket_max_subscriptions_per_connection must be a positive integer",
-        "venues.polymarket_main.execution.http_timeout_seconds must be a positive integer",
+        "venues.polymarket_main.execution.http_timeout_secs must be a positive integer",
         "venues.polymarket_main.execution.max_retries must be a positive integer",
-        "venues.polymarket_main.execution.retry_delay_initial_milliseconds must be a positive integer",
-        "venues.polymarket_main.execution.retry_delay_max_milliseconds must be a positive integer",
-        "venues.polymarket_main.execution.ack_timeout_seconds must be a positive integer",
+        "venues.polymarket_main.execution.retry_delay_initial_ms must be a positive integer",
+        "venues.polymarket_main.execution.retry_delay_max_ms must be a positive integer",
+        "venues.polymarket_main.execution.ack_timeout_secs must be a positive integer",
     ];
     for needle in expected {
         assert!(
@@ -1367,29 +1367,29 @@ fn rejects_zero_explicit_nt_exec_runtime_values() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "inflight_check_threshold_milliseconds = 5000\ninflight_check_retries = 5",
-        "inflight_check_threshold_milliseconds = 0\ninflight_check_retries = 5",
+        "inflight_check_threshold_ms = 5000\ninflight_check_retries = 5",
+        "inflight_check_threshold_ms = 0\ninflight_check_retries = 5",
     )
     .replace(
-        "open_check_threshold_milliseconds = 5000\nopen_check_missing_retries = 5",
-        "open_check_threshold_milliseconds = 0\nopen_check_missing_retries = 5",
+        "open_check_threshold_ms = 5000\nopen_check_missing_retries = 5",
+        "open_check_threshold_ms = 0\nopen_check_missing_retries = 5",
     )
     .replace(
-        "max_single_order_queries_per_cycle = 10\nsingle_order_query_delay_milliseconds = 100",
-        "max_single_order_queries_per_cycle = 0\nsingle_order_query_delay_milliseconds = 100",
+        "max_single_order_queries_per_cycle = 10\nsingle_order_query_delay_ms = 100",
+        "max_single_order_queries_per_cycle = 0\nsingle_order_query_delay_ms = 100",
     )
     .replace(
-        "position_check_threshold_milliseconds = 5000\nposition_check_retries = 3",
-        "position_check_threshold_milliseconds = 0\nposition_check_retries = 3",
+        "position_check_threshold_ms = 5000\nposition_check_retries = 3",
+        "position_check_threshold_ms = 0\nposition_check_retries = 3",
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("zero NT exec defaults fixture should parse");
     let messages = validate_root_only(&root);
     for needle in [
-        "nautilus.exec_engine.inflight_check_threshold_milliseconds must be a positive integer",
-        "nautilus.exec_engine.open_check_threshold_milliseconds must be a positive integer",
+        "nautilus.exec_engine.inflight_check_threshold_ms must be a positive integer",
+        "nautilus.exec_engine.open_check_threshold_ms must be a positive integer",
         "nautilus.exec_engine.max_single_order_queries_per_cycle must be a positive integer",
-        "nautilus.exec_engine.position_check_threshold_milliseconds must be a positive integer",
+        "nautilus.exec_engine.position_check_threshold_ms must be a positive integer",
     ] {
         assert!(
             messages.iter().any(|m| m.contains(needle)),
@@ -1652,7 +1652,7 @@ fn rejects_orphan_secrets_block_without_data_or_execution() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\n\n",
+        "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\n\n",
         "",
     );
     let root: BoltV3RootConfig =
@@ -1763,19 +1763,19 @@ fn allows_missing_funder_address_for_eoa_signature_type() {
 }
 
 #[test]
-fn rejects_binance_data_zero_instrument_status_poll_seconds() {
+fn rejects_binance_data_zero_instrument_status_poll_secs() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs",
-        "instrument_status_poll_seconds = 0 # NT: BinanceDataClientConfig.instrument_status_poll_secs",
+        "instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs",
+        "instrument_status_poll_secs = 0 # NT: BinanceDataClientConfig.instrument_status_poll_secs",
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("zero-poll-interval fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
         messages.iter().any(|m| m.contains("binance_reference")
-            && m.contains("instrument_status_poll_seconds")
+            && m.contains("instrument_status_poll_secs")
             && m.contains("must be a positive integer")),
         "expected positive-integer poll-interval validation error, got: {messages:#?}"
     );
@@ -1785,7 +1785,7 @@ fn rejects_binance_data_zero_instrument_status_poll_seconds() {
 fn rejects_polymarket_data_only_venue_with_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_seconds = 60\nmax_retries = 3\nretry_delay_initial_milliseconds = 250\nretry_delay_max_milliseconds = 2000\nack_timeout_seconds = 5\n\n";
+    let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nmax_retries = 3\nretry_delay_initial_ms = 250\nretry_delay_max_ms = 2000\nack_timeout_secs = 5\n\n";
     let mutated = replace_in_fixture_root(execution_block, "");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("polymarket data-only secrets fixture should parse");
@@ -1821,7 +1821,7 @@ fn rejects_polymarket_data_subscribe_new_markets_true_in_current_slice() {
 fn rejects_more_than_one_polymarket_venue_in_current_slice() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let extra_venue = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_seconds = 60\nws_timeout_seconds = 30\nsubscribe_new_markets = false\nupdate_instruments_interval_minutes = 60\nwebsocket_max_subscriptions_per_connection = 200\n\n[clients.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
+    let extra_venue = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nupdate_instruments_interval_minutes = 60\nwebsocket_max_subscriptions_per_connection = 200\n\n[clients.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = format!("{fixture}{extra_venue}");

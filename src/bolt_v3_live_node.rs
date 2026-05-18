@@ -211,7 +211,7 @@ pub enum BoltV3LiveNodeError {
     /// ([`connect_bolt_v3_clients`]) bounds the dispatched
     /// `NautilusKernel::connect_data_clients` and
     /// `NautilusKernel::connect_exec_clients` calls by the
-    /// `nautilus.timeout_connection_seconds` value from the loaded
+    /// `nautilus.timeout_connection_secs` value from the loaded
     /// bolt-v3 config. A `ConnectTimeout` is surfaced when that bound
     /// elapses before NT's engine-level connect dispatchers return,
     /// instead of the controlled-connect call hanging indefinitely.
@@ -220,7 +220,7 @@ pub enum BoltV3LiveNodeError {
     /// distinguish a 1-second test timeout from a 30-second
     /// production timeout without re-reading the source config.
     ConnectTimeout {
-        timeout_seconds: u64,
+        timeout_secs: u64,
     },
     /// The bolt-v3 controlled-connect boundary dispatched both NT
     /// engine-level connect futures within the configured bound, but
@@ -240,14 +240,14 @@ pub enum BoltV3LiveNodeError {
     /// The bolt-v3 controlled-disconnect boundary
     /// ([`disconnect_bolt_v3_clients`]) bounds the
     /// `NautilusKernel::disconnect_clients` future by the
-    /// `nautilus.timeout_disconnection_seconds` value from the loaded
+    /// `nautilus.timeout_disconnection_secs` value from the loaded
     /// bolt-v3 config. A `DisconnectTimeout` is surfaced when that
     /// bound elapses before NT finishes disconnecting all data and
     /// execution clients, instead of the controlled-disconnect call
     /// hanging indefinitely. The wrapped value is the configured
     /// timeout the boundary applied (in seconds).
     DisconnectTimeout {
-        timeout_seconds: u64,
+        timeout_secs: u64,
     },
     /// The bolt-v3 controlled-disconnect boundary dispatched
     /// `NautilusKernel::disconnect_clients` and NT returned an
@@ -256,11 +256,11 @@ pub enum BoltV3LiveNodeError {
     /// from its engine-level disconnect aggregator.
     DisconnectFailed(anyhow::Error),
     NoSubmitStartTimeout {
-        timeout_seconds: u64,
+        timeout_secs: u64,
     },
     NoSubmitStartFailed(anyhow::Error),
     NoSubmitStopTimeout {
-        timeout_seconds: u64,
+        timeout_secs: u64,
     },
     NoSubmitStopFailed(anyhow::Error),
 }
@@ -315,10 +315,10 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 "LiveNode run failed and NT runtime capture shutdown failed: \
                  run error: {run_error}; shutdown error: {shutdown_error}"
             ),
-            BoltV3LiveNodeError::ConnectTimeout { timeout_seconds } => write!(
+            BoltV3LiveNodeError::ConnectTimeout { timeout_secs } => write!(
                 f,
                 "bolt-v3 controlled-connect exceeded the configured \
-                 nautilus.timeout_connection_seconds bound ({timeout_seconds}s)"
+                 nautilus.timeout_connection_secs bound ({timeout_secs}s)"
             ),
             BoltV3LiveNodeError::ConnectIncomplete => write!(
                 f,
@@ -327,28 +327,28 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                  returned false; at least one registered NT data or execution client did \
                  not transition to is_connected after NT swallowed/logged its connect error"
             ),
-            BoltV3LiveNodeError::DisconnectTimeout { timeout_seconds } => write!(
+            BoltV3LiveNodeError::DisconnectTimeout { timeout_secs } => write!(
                 f,
                 "bolt-v3 controlled-disconnect exceeded the configured \
-                 nautilus.timeout_disconnection_seconds bound ({timeout_seconds}s)"
+                 nautilus.timeout_disconnection_secs bound ({timeout_secs}s)"
             ),
             BoltV3LiveNodeError::DisconnectFailed(error) => write!(
                 f,
                 "bolt-v3 controlled-disconnect surfaced an NT engine-level disconnect \
                  aggregator error: {error}"
             ),
-            BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_seconds } => write!(
+            BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_secs } => write!(
                 f,
                 "bolt-v3 no-submit controlled-start exceeded configured \
-                 live-node timeout bounds ({timeout_seconds}s)"
+                 live-node timeout bounds ({timeout_secs}s)"
             ),
             BoltV3LiveNodeError::NoSubmitStartFailed(error) => {
                 write!(f, "bolt-v3 no-submit controlled-start failed: {error}")
             }
-            BoltV3LiveNodeError::NoSubmitStopTimeout { timeout_seconds } => write!(
+            BoltV3LiveNodeError::NoSubmitStopTimeout { timeout_secs } => write!(
                 f,
                 "bolt-v3 no-submit controlled-stop exceeded configured \
-                 live-node timeout bounds ({timeout_seconds}s)"
+                 live-node timeout bounds ({timeout_secs}s)"
             ),
             BoltV3LiveNodeError::NoSubmitStopFailed(error) => {
                 write!(f, "bolt-v3 no-submit controlled-stop failed: {error}")
@@ -488,11 +488,11 @@ where
         Ok(()) => return Ok(()),
         Err(error) => error,
     };
-    let timeout_seconds = loaded.root.nautilus.timeout_connection_seconds;
-    if timeout_seconds == 0 {
+    let timeout_secs = loaded.root.nautilus.timeout_connection_secs;
+    if timeout_secs == 0 {
         return Err(first_error);
     }
-    tokio::time::sleep(Duration::from_secs(timeout_seconds)).await;
+    tokio::time::sleep(Duration::from_secs(timeout_secs)).await;
     reference_readiness(runtime).map_err(|final_error| {
         if final_error == first_error {
             final_error
@@ -506,12 +506,12 @@ async fn start_bolt_v3_no_submit_readiness(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let timeout_seconds = no_submit_start_timeout_seconds(loaded);
+    let timeout_secs = no_submit_start_timeout_secs(loaded);
     let start = node.start();
-    match tokio::time::timeout(Duration::from_secs(timeout_seconds), start).await {
+    match tokio::time::timeout(Duration::from_secs(timeout_secs), start).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(BoltV3LiveNodeError::NoSubmitStartFailed(error)),
-        Err(_) => Err(BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_seconds }),
+        Err(_) => Err(BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_secs }),
     }
 }
 
@@ -519,31 +519,31 @@ async fn stop_bolt_v3_no_submit_readiness(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let timeout_seconds = no_submit_stop_timeout_seconds(loaded);
+    let timeout_secs = no_submit_stop_timeout_secs(loaded);
     let stop = node.stop();
-    match tokio::time::timeout(Duration::from_secs(timeout_seconds), stop).await {
+    match tokio::time::timeout(Duration::from_secs(timeout_secs), stop).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(BoltV3LiveNodeError::NoSubmitStopFailed(error)),
-        Err(_) => Err(BoltV3LiveNodeError::NoSubmitStopTimeout { timeout_seconds }),
+        Err(_) => Err(BoltV3LiveNodeError::NoSubmitStopTimeout { timeout_secs }),
     }
 }
 
-fn no_submit_start_timeout_seconds(loaded: &LoadedBoltV3Config) -> u64 {
+fn no_submit_start_timeout_secs(loaded: &LoadedBoltV3Config) -> u64 {
     loaded
         .root
         .nautilus
-        .timeout_connection_seconds
-        .saturating_add(loaded.root.nautilus.timeout_reconciliation_seconds)
-        .saturating_add(loaded.root.nautilus.timeout_portfolio_seconds)
+        .timeout_connection_secs
+        .saturating_add(loaded.root.nautilus.timeout_reconciliation_secs)
+        .saturating_add(loaded.root.nautilus.timeout_portfolio_secs)
 }
 
-fn no_submit_stop_timeout_seconds(loaded: &LoadedBoltV3Config) -> u64 {
+fn no_submit_stop_timeout_secs(loaded: &LoadedBoltV3Config) -> u64 {
     loaded
         .root
         .nautilus
-        .timeout_disconnection_seconds
-        .saturating_add(loaded.root.nautilus.delay_post_stop_seconds)
-        .saturating_add(loaded.root.nautilus.timeout_shutdown_seconds)
+        .timeout_disconnection_secs
+        .saturating_add(loaded.root.nautilus.delay_post_stop_secs)
+        .saturating_add(loaded.root.nautilus.timeout_shutdown_secs)
 }
 
 fn classify_live_node_run_and_capture_shutdown(
@@ -709,32 +709,32 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         snapshot_orders: exec.snapshot_orders,
         snapshot_positions: exec.snapshot_positions,
         snapshot_positions_interval_secs: u64_zero_as_none_f64(
-            exec.snapshot_positions_interval_seconds,
+            exec.snapshot_positions_interval_secs,
         ),
         external_clients: exec.external_clients.clone(),
         debug: exec.debug,
         reconciliation: exec.reconciliation,
         reconciliation_lookback_mins,
         // `f64` is lossless for all practical delay values (< 2^53 seconds).
-        reconciliation_startup_delay_secs: exec.reconciliation_startup_delay_seconds as f64,
+        reconciliation_startup_delay_secs: exec.reconciliation_startup_delay_secs as f64,
         reconciliation_instrument_ids: non_empty_strings(&exec.reconciliation_instrument_ids),
         filter_unclaimed_external_orders: exec.filter_unclaimed_external_orders,
         filter_position_reports: exec.filter_position_reports,
         filtered_client_order_ids: non_empty_strings(&exec.filtered_client_order_ids),
         generate_missing_orders: exec.generate_missing_orders,
-        inflight_check_interval_ms: exec.inflight_check_interval_milliseconds,
-        inflight_check_threshold_ms: exec.inflight_check_threshold_milliseconds,
+        inflight_check_interval_ms: exec.inflight_check_interval_ms,
+        inflight_check_threshold_ms: exec.inflight_check_threshold_ms,
         inflight_check_retries: exec.inflight_check_retries,
-        open_check_interval_secs: u64_zero_as_none_f64(exec.open_check_interval_seconds),
+        open_check_interval_secs: u64_zero_as_none_f64(exec.open_check_interval_secs),
         open_check_lookback_mins: u32_zero_as_none(exec.open_check_lookback_mins),
-        open_check_threshold_ms: exec.open_check_threshold_milliseconds,
+        open_check_threshold_ms: exec.open_check_threshold_ms,
         open_check_missing_retries: exec.open_check_missing_retries,
         open_check_open_only: exec.open_check_open_only,
         max_single_order_queries_per_cycle: exec.max_single_order_queries_per_cycle,
-        single_order_query_delay_ms: exec.single_order_query_delay_milliseconds,
-        position_check_interval_secs: u64_zero_as_none_f64(exec.position_check_interval_seconds),
+        single_order_query_delay_ms: exec.single_order_query_delay_ms,
+        position_check_interval_secs: u64_zero_as_none_f64(exec.position_check_interval_secs),
         position_check_lookback_mins: exec.position_check_lookback_mins,
-        position_check_threshold_ms: exec.position_check_threshold_milliseconds,
+        position_check_threshold_ms: exec.position_check_threshold_ms,
         position_check_retries: exec.position_check_retries,
         purge_closed_orders_interval_mins: u32_zero_as_none(exec.purge_closed_orders_interval_mins),
         purge_closed_orders_buffer_mins: u32_zero_as_none(exec.purge_closed_orders_buffer_mins),
@@ -751,7 +751,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
             exec.purge_account_events_lookback_mins,
         ),
         purge_from_database: exec.purge_from_database,
-        own_books_audit_interval_secs: u64_zero_as_none_f64(exec.own_books_audit_interval_seconds),
+        own_books_audit_interval_secs: u64_zero_as_none_f64(exec.own_books_audit_interval_secs),
         graceful_shutdown_on_error: exec.graceful_shutdown_on_error,
         qsize: exec.qsize,
         allow_overfills: exec.allow_overfills,
@@ -784,12 +784,12 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         save_state: nautilus.save_state,
         logging,
         instance_id: None,
-        timeout_connection: Duration::from_secs(nautilus.timeout_connection_seconds),
-        timeout_reconciliation: Duration::from_secs(nautilus.timeout_reconciliation_seconds),
-        timeout_portfolio: Duration::from_secs(nautilus.timeout_portfolio_seconds),
-        timeout_disconnection: Duration::from_secs(nautilus.timeout_disconnection_seconds),
-        delay_post_stop: Duration::from_secs(nautilus.delay_post_stop_seconds),
-        timeout_shutdown: Duration::from_secs(nautilus.timeout_shutdown_seconds),
+        timeout_connection: Duration::from_secs(nautilus.timeout_connection_secs),
+        timeout_reconciliation: Duration::from_secs(nautilus.timeout_reconciliation_secs),
+        timeout_portfolio: Duration::from_secs(nautilus.timeout_portfolio_secs),
+        timeout_disconnection: Duration::from_secs(nautilus.timeout_disconnection_secs),
+        delay_post_stop: Duration::from_secs(nautilus.delay_post_stop_secs),
+        timeout_shutdown: Duration::from_secs(nautilus.timeout_shutdown_secs),
         cache: None,
         msgbus: None,
         portfolio: None,
@@ -834,7 +834,7 @@ pub fn wire_bolt_v3_runtime_capture(
             .root
             .persistence
             .streaming
-            .flush_interval_milliseconds,
+            .flush_interval_ms,
         None,
     )
 }
@@ -846,7 +846,7 @@ pub fn wire_bolt_v3_runtime_capture(
 /// `NautilusKernel::connect_exec_clients`) on every NT data and
 /// execution client that the bolt-v3 client-registration boundary added
 /// to `node`, bounded by the bolt-v3
-/// `nautilus.timeout_connection_seconds` value from `loaded`.
+/// `nautilus.timeout_connection_secs` value from `loaded`.
 ///
 /// This boundary is **opt-in**: `build_bolt_v3_live_node` and its
 /// `_with` / `_with_summary` siblings deliberately do not invoke it.
@@ -860,7 +860,7 @@ pub fn wire_bolt_v3_runtime_capture(
 ///
 /// This boundary is **bounded**: the dispatched engine-level connect
 /// futures are wrapped in `tokio::time::timeout` driven by
-/// `nautilus.timeout_connection_seconds`. If the bound elapses before
+/// `nautilus.timeout_connection_secs`. If the bound elapses before
 /// both engines finish dispatching connect to their registered clients
 /// the function returns [`BoltV3LiveNodeError::ConnectTimeout`] and
 /// the `LiveNode` is left in whatever partially-connected state NT
@@ -901,8 +901,8 @@ pub async fn connect_bolt_v3_clients(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let timeout_seconds = loaded.root.nautilus.timeout_connection_seconds;
-    let bound = Duration::from_secs(timeout_seconds);
+    let timeout_secs = loaded.root.nautilus.timeout_connection_secs;
+    let bound = Duration::from_secs(timeout_secs);
     let connect = async {
         let kernel = node.kernel_mut();
         kernel.connect_data_clients().await;
@@ -912,7 +912,7 @@ pub async fn connect_bolt_v3_clients(
     match tokio::time::timeout(bound, connect).await {
         Ok(true) => Ok(()),
         Ok(false) => Err(BoltV3LiveNodeError::ConnectIncomplete),
-        Err(_) => Err(BoltV3LiveNodeError::ConnectTimeout { timeout_seconds }),
+        Err(_) => Err(BoltV3LiveNodeError::ConnectTimeout { timeout_secs }),
     }
 }
 
@@ -922,7 +922,7 @@ pub async fn connect_bolt_v3_clients(
 /// (`NautilusKernel::disconnect_clients`) on every NT data and
 /// execution client previously added through the bolt-v3
 /// client-registration boundary, bounded by the bolt-v3
-/// `nautilus.timeout_disconnection_seconds` value from `loaded`.
+/// `nautilus.timeout_disconnection_secs` value from `loaded`.
 ///
 /// Recovery counterpart to [`connect_bolt_v3_clients`]: after a
 /// `ConnectTimeout` or `ConnectIncomplete` the caller is expected to
@@ -952,13 +952,13 @@ pub async fn disconnect_bolt_v3_clients(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let timeout_seconds = loaded.root.nautilus.timeout_disconnection_seconds;
-    let bound = Duration::from_secs(timeout_seconds);
+    let timeout_secs = loaded.root.nautilus.timeout_disconnection_secs;
+    let bound = Duration::from_secs(timeout_secs);
     let disconnect = async { node.kernel_mut().disconnect_clients().await };
     match tokio::time::timeout(bound, disconnect).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(BoltV3LiveNodeError::DisconnectFailed(error)),
-        Err(_) => Err(BoltV3LiveNodeError::DisconnectTimeout { timeout_seconds }),
+        Err(_) => Err(BoltV3LiveNodeError::DisconnectTimeout { timeout_secs }),
     }
 }
 

@@ -256,16 +256,16 @@ impl Phase8StrategyInputSafetyAudit {
                 ),
             Phase8CanaryBlockReason::InvalidMarketSelectionOutcome,
         );
-        let source_bound_candidate_market_start_timestamps_milliseconds =
+        let source_bound_candidate_market_start_timestamps_ms =
             phase8_source_bound_candidate_market_start_timestamps(&raw, market_selection_outcome)?;
-        let candidate_market_start_timestamps_milliseconds = match market_selection_outcome {
+        let candidate_market_start_timestamps_ms = match market_selection_outcome {
             PHASE8_MARKET_SELECTION_OUTCOME_NEXT => {
-                source_bound_candidate_market_start_timestamps_milliseconds
+                source_bound_candidate_market_start_timestamps_ms
                     .as_deref()
                     .unwrap_or(&[])
             }
             _ => raw
-                .candidate_market_start_timestamps_milliseconds
+                .candidate_market_start_timestamps_ms
                 .as_deref()
                 .unwrap_or(&[]),
         };
@@ -273,19 +273,19 @@ impl Phase8StrategyInputSafetyAudit {
             !market_selection_outcome.is_empty()
                 && !phase8_market_selection_outcome_matches_window(
                     market_selection_outcome,
-                    raw.market_selection_timestamp_milliseconds,
-                    raw.polymarket_market_start_timestamp_milliseconds,
-                    raw.polymarket_market_end_timestamp_milliseconds,
-                    candidate_market_start_timestamps_milliseconds,
+                    raw.market_selection_timestamp_ms,
+                    raw.polymarket_market_start_timestamp_ms,
+                    raw.polymarket_market_end_timestamp_ms,
+                    candidate_market_start_timestamps_ms,
                 ),
             Phase8CanaryBlockReason::InvalidMarketSelectionBinding,
         );
         audit.block_if(
             raw.selected_market_observed_timestamp == u64::MIN
-                || raw.market_selection_timestamp_milliseconds == u64::MIN
-                || raw.polymarket_market_start_timestamp_milliseconds == u64::MIN
-                || raw.polymarket_market_end_timestamp_milliseconds
-                    <= raw.polymarket_market_start_timestamp_milliseconds,
+                || raw.market_selection_timestamp_ms == u64::MIN
+                || raw.polymarket_market_start_timestamp_ms == u64::MIN
+                || raw.polymarket_market_end_timestamp_ms
+                    <= raw.polymarket_market_start_timestamp_ms,
             Phase8CanaryBlockReason::InvalidSelectedMarketWindow,
         );
         Ok(audit)
@@ -346,20 +346,20 @@ fn phase8_source_bound_candidate_market_start_timestamps(
     {
         return Ok(None);
     }
-    if let Some(reported_candidates) = raw.candidate_market_start_timestamps_milliseconds.as_ref()
-        && reported_candidates != &source.candidate_market_start_timestamps_milliseconds
+    if let Some(reported_candidates) = raw.candidate_market_start_timestamps_ms.as_ref()
+        && reported_candidates != &source.candidate_market_start_timestamps_ms
     {
         return Ok(None);
     }
 
-    Ok(Some(source.candidate_market_start_timestamps_milliseconds))
+    Ok(Some(source.candidate_market_start_timestamps_ms))
 }
 
 fn phase8_market_selection_source_matches_strategy(
     raw: &Phase8StrategyInputEvidenceFile,
     source: &Phase8MarketSelectionSourceEvidenceFile,
 ) -> bool {
-    source.market_selection_timestamp_milliseconds == raw.market_selection_timestamp_milliseconds
+    source.market_selection_timestamp_ms == raw.market_selection_timestamp_ms
         && source.market_selection_outcome.trim() == raw.market_selection_outcome.trim()
         && source.polymarket_condition_id.trim() == raw.polymarket_condition_id.trim()
         && source.polymarket_market_slug.trim() == raw.polymarket_market_slug.trim()
@@ -367,10 +367,10 @@ fn phase8_market_selection_source_matches_strategy(
         && source.up_instrument_id.trim() == raw.up_instrument_id.trim()
         && source.down_instrument_id.trim() == raw.down_instrument_id.trim()
         && source.selected_market_observed_timestamp == raw.selected_market_observed_timestamp
-        && source.polymarket_market_start_timestamp_milliseconds
-            == raw.polymarket_market_start_timestamp_milliseconds
-        && source.polymarket_market_end_timestamp_milliseconds
-            == raw.polymarket_market_end_timestamp_milliseconds
+        && source.polymarket_market_start_timestamp_ms
+            == raw.polymarket_market_start_timestamp_ms
+        && source.polymarket_market_end_timestamp_ms
+            == raw.polymarket_market_end_timestamp_ms
 }
 
 fn phase8_market_selection_outcome_is_live_entry_candidate(outcome: &str) -> bool {
@@ -380,38 +380,38 @@ fn phase8_market_selection_outcome_is_live_entry_candidate(outcome: &str) -> boo
 
 fn phase8_market_selection_outcome_matches_window(
     outcome: &str,
-    market_selection_timestamp_milliseconds: u64,
-    market_start_timestamp_milliseconds: u64,
-    market_end_timestamp_milliseconds: u64,
-    candidate_market_start_timestamps_milliseconds: &[u64],
+    market_selection_timestamp_ms: u64,
+    market_start_timestamp_ms: u64,
+    market_end_timestamp_ms: u64,
+    candidate_market_start_timestamps_ms: &[u64],
 ) -> bool {
     match outcome {
         PHASE8_MARKET_SELECTION_OUTCOME_CURRENT => {
-            market_start_timestamp_milliseconds <= market_selection_timestamp_milliseconds
-                && market_selection_timestamp_milliseconds < market_end_timestamp_milliseconds
+            market_start_timestamp_ms <= market_selection_timestamp_ms
+                && market_selection_timestamp_ms < market_end_timestamp_ms
         }
         PHASE8_MARKET_SELECTION_OUTCOME_NEXT => phase8_market_selection_start_is_nearest_next(
-            market_selection_timestamp_milliseconds,
-            market_start_timestamp_milliseconds,
-            candidate_market_start_timestamps_milliseconds,
+            market_selection_timestamp_ms,
+            market_start_timestamp_ms,
+            candidate_market_start_timestamps_ms,
         ),
         _ => true,
     }
 }
 
 fn phase8_market_selection_start_is_nearest_next(
-    market_selection_timestamp_milliseconds: u64,
-    market_start_timestamp_milliseconds: u64,
-    candidate_market_start_timestamps_milliseconds: &[u64],
+    market_selection_timestamp_ms: u64,
+    market_start_timestamp_ms: u64,
+    candidate_market_start_timestamps_ms: &[u64],
 ) -> bool {
-    candidate_market_start_timestamps_milliseconds
+    candidate_market_start_timestamps_ms
         .iter()
         .copied()
-        .filter(|candidate_start_timestamp_milliseconds| {
-            *candidate_start_timestamp_milliseconds > market_selection_timestamp_milliseconds
+        .filter(|candidate_start_timestamp_ms| {
+            *candidate_start_timestamp_ms > market_selection_timestamp_ms
         })
         .min()
-        == Some(market_start_timestamp_milliseconds)
+        == Some(market_start_timestamp_ms)
 }
 
 #[derive(Debug, Deserialize)]
@@ -429,8 +429,8 @@ struct Phase8StrategyInputEvidenceFile {
     pricing_kurtosis: String,
     theta_decay_factor: String,
     theta_scaled_min_edge_bps: String,
-    market_selection_timestamp_milliseconds: u64,
-    candidate_market_start_timestamps_milliseconds: Option<Vec<u64>>,
+    market_selection_timestamp_ms: u64,
+    candidate_market_start_timestamps_ms: Option<Vec<u64>>,
     market_selection_source_path: Option<String>,
     market_selection_source_sha256: Option<String>,
     market_selection_outcome: String,
@@ -440,8 +440,8 @@ struct Phase8StrategyInputEvidenceFile {
     up_instrument_id: String,
     down_instrument_id: String,
     selected_market_observed_timestamp: u64,
-    polymarket_market_start_timestamp_milliseconds: u64,
-    polymarket_market_end_timestamp_milliseconds: u64,
+    polymarket_market_start_timestamp_ms: u64,
+    polymarket_market_end_timestamp_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -449,8 +449,8 @@ struct Phase8StrategyInputEvidenceFile {
 struct Phase8MarketSelectionSourceEvidenceFile {
     record_kind: String,
     source: String,
-    market_selection_timestamp_milliseconds: u64,
-    candidate_market_start_timestamps_milliseconds: Vec<u64>,
+    market_selection_timestamp_ms: u64,
+    candidate_market_start_timestamps_ms: Vec<u64>,
     market_selection_outcome: String,
     polymarket_condition_id: String,
     polymarket_market_slug: String,
@@ -458,8 +458,8 @@ struct Phase8MarketSelectionSourceEvidenceFile {
     up_instrument_id: String,
     down_instrument_id: String,
     selected_market_observed_timestamp: u64,
-    polymarket_market_start_timestamp_milliseconds: u64,
-    polymarket_market_end_timestamp_milliseconds: u64,
+    polymarket_market_start_timestamp_ms: u64,
+    polymarket_market_end_timestamp_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1248,8 +1248,8 @@ pub struct Phase8OperatorApprovalEnvelope {
     pub abort_plan_path: String,
     pub abort_plan_sha256: String,
     pub operator_approval_id: String,
-    pub approval_not_before_unix_seconds: i64,
-    pub approval_not_after_unix_seconds: i64,
+    pub approval_not_before_unix_secs: i64,
+    pub approval_not_after_unix_secs: i64,
     pub approval_nonce_path: String,
     pub approval_nonce_sha256: String,
     pub approval_consumption_path: String,
@@ -1277,10 +1277,10 @@ impl Phase8OperatorApprovalEnvelope {
             abort_plan_path: required_env("BOLT_V3_PHASE8_ABORT_PLAN_PATH")?,
             abort_plan_sha256: required_env("BOLT_V3_PHASE8_ABORT_PLAN_SHA256")?,
             operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,
-            approval_not_before_unix_seconds: required_i64_env(
+            approval_not_before_unix_secs: required_i64_env(
                 "BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS",
             )?,
-            approval_not_after_unix_seconds: required_i64_env(
+            approval_not_after_unix_secs: required_i64_env(
                 "BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS",
             )?,
             approval_nonce_path: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_PATH")?,
@@ -1333,16 +1333,16 @@ impl Phase8OperatorApprovalEnvelope {
         current_root_toml_sha256: &str,
         live_canary_approval_id: &str,
         loaded: &LoadedBoltV3Config,
-        current_unix_seconds: i64,
+        current_unix_secs: i64,
     ) -> Result<()> {
         self.validate_approved_evidence_against(
             current_head_sha,
             current_root_toml_sha256,
             live_canary_approval_id,
             loaded,
-            current_unix_seconds,
+            current_unix_secs,
         )?;
-        self.consume_approval_after_live_runner_entry_validation(current_unix_seconds)
+        self.consume_approval_after_live_runner_entry_validation(current_unix_secs)
     }
 
     pub fn validate_approved_evidence_against(
@@ -1351,7 +1351,7 @@ impl Phase8OperatorApprovalEnvelope {
         current_root_toml_sha256: &str,
         live_canary_approval_id: &str,
         loaded: &LoadedBoltV3Config,
-        current_unix_seconds: i64,
+        current_unix_secs: i64,
     ) -> Result<()> {
         self.validate_against(
             current_head_sha,
@@ -1359,7 +1359,7 @@ impl Phase8OperatorApprovalEnvelope {
             live_canary_approval_id,
         )?;
         self.validate_approval_not_consumed()?;
-        self.validate_approval_window(current_unix_seconds)?;
+        self.validate_approval_window(current_unix_secs)?;
         self.validate_financial_envelope_against(loaded)?;
         self.validate_pre_run_state_against(loaded)?;
         self.validate_abort_plan_against(loaded)?;
@@ -1368,12 +1368,12 @@ impl Phase8OperatorApprovalEnvelope {
 
     pub fn consume_approval_after_live_runner_entry_validation(
         &self,
-        current_unix_seconds: i64,
+        current_unix_secs: i64,
     ) -> Result<()> {
         self.validate_approval_not_consumed()?;
-        self.validate_approval_window(current_unix_seconds)?;
+        self.validate_approval_window(current_unix_secs)?;
         self.validate_approval_nonce()?;
-        self.write_approval_consumption_evidence(current_unix_seconds)
+        self.write_approval_consumption_evidence(current_unix_secs)
     }
 
     fn validate_financial_envelope_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
@@ -1437,16 +1437,16 @@ impl Phase8OperatorApprovalEnvelope {
         Ok(self.read_financial_envelope()?.price_to_beat_source)
     }
 
-    fn validate_approval_window(&self, current_unix_seconds: i64) -> Result<()> {
-        if self.approval_not_after_unix_seconds <= self.approval_not_before_unix_seconds {
+    fn validate_approval_window(&self, current_unix_secs: i64) -> Result<()> {
+        if self.approval_not_after_unix_secs <= self.approval_not_before_unix_secs {
             return Err(anyhow!(
                 "phase8 operator approval not_after must be greater than not_before"
             ));
         }
-        if current_unix_seconds < self.approval_not_before_unix_seconds {
+        if current_unix_secs < self.approval_not_before_unix_secs {
             return Err(anyhow!("phase8 operator approval is not yet valid"));
         }
-        if current_unix_seconds > self.approval_not_after_unix_seconds {
+        if current_unix_secs > self.approval_not_after_unix_secs {
             return Err(anyhow!("phase8 operator approval is expired"));
         }
         Ok(())
@@ -1475,7 +1475,7 @@ impl Phase8OperatorApprovalEnvelope {
         Ok(())
     }
 
-    fn write_approval_consumption_evidence(&self, current_unix_seconds: i64) -> Result<()> {
+    fn write_approval_consumption_evidence(&self, current_unix_secs: i64) -> Result<()> {
         let path = Path::new(&self.approval_consumption_path);
         if let Some(parent) = path
             .parent()
@@ -1500,10 +1500,10 @@ impl Phase8OperatorApprovalEnvelope {
             abort_plan_sha256: &self.abort_plan_sha256,
             approval_id_hash: sha256_text(&self.operator_approval_id),
             approval_nonce_sha256: &self.approval_nonce_sha256,
-            approval_not_before_unix_seconds: self.approval_not_before_unix_seconds,
-            approval_not_after_unix_seconds: self.approval_not_after_unix_seconds,
+            approval_not_before_unix_secs: self.approval_not_before_unix_secs,
+            approval_not_after_unix_secs: self.approval_not_after_unix_secs,
             canary_evidence_path_hash: sha256_text(&self.canary_evidence_path),
-            consumed_unix_seconds: current_unix_seconds,
+            consumed_unix_secs: current_unix_secs,
         };
         let bytes = serde_json::to_vec_pretty(&evidence).map_err(|source| {
             anyhow!("failed to serialize phase8 approval consumption evidence: {source}")
@@ -1619,10 +1619,10 @@ struct Phase8FinancialEnvelopeEvidenceFile {
     target_kind: String,
     rotating_market_family: String,
     underlying_asset: String,
-    cadence_seconds: i64,
+    cadence_secs: i64,
     market_selection_rule: String,
-    retry_interval_seconds: i64,
-    blocked_after_seconds: i64,
+    retry_interval_secs: i64,
+    blocked_after_secs: i64,
     price_to_beat_source: String,
     edge_threshold_basis_points: i64,
     order_notional_target: String,
@@ -1707,15 +1707,15 @@ impl Phase8FinancialEnvelopeEvidenceFile {
                 stringify!(rotating_market_family),
             )?,
             underlying_asset: required_toml_string(target, stringify!(underlying_asset))?,
-            cadence_seconds: required_toml_integer(target, stringify!(cadence_seconds))?,
+            cadence_secs: required_toml_integer(target, stringify!(cadence_secs))?,
             market_selection_rule: required_toml_string(target, stringify!(market_selection_rule))?,
-            retry_interval_seconds: required_toml_integer(
+            retry_interval_secs: required_toml_integer(
                 target,
-                stringify!(retry_interval_seconds),
+                stringify!(retry_interval_secs),
             )?,
-            blocked_after_seconds: required_toml_integer(
+            blocked_after_secs: required_toml_integer(
                 target,
-                stringify!(blocked_after_seconds),
+                stringify!(blocked_after_secs),
             )?,
             price_to_beat_source: required_toml_string(
                 runtime_parameters,
@@ -1788,22 +1788,22 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         if self.underlying_asset != loaded.underlying_asset {
             return Err(financial_envelope_mismatch(stringify!(underlying_asset)));
         }
-        if self.cadence_seconds != loaded.cadence_seconds {
-            return Err(financial_envelope_mismatch(stringify!(cadence_seconds)));
+        if self.cadence_secs != loaded.cadence_secs {
+            return Err(financial_envelope_mismatch(stringify!(cadence_secs)));
         }
         if self.market_selection_rule != loaded.market_selection_rule {
             return Err(financial_envelope_mismatch(stringify!(
                 market_selection_rule
             )));
         }
-        if self.retry_interval_seconds != loaded.retry_interval_seconds {
+        if self.retry_interval_secs != loaded.retry_interval_secs {
             return Err(financial_envelope_mismatch(stringify!(
-                retry_interval_seconds
+                retry_interval_secs
             )));
         }
-        if self.blocked_after_seconds != loaded.blocked_after_seconds {
+        if self.blocked_after_secs != loaded.blocked_after_secs {
             return Err(financial_envelope_mismatch(stringify!(
-                blocked_after_seconds
+                blocked_after_secs
             )));
         }
         if self.price_to_beat_source != loaded.price_to_beat_source {
@@ -2141,10 +2141,10 @@ struct Phase8ApprovalConsumptionEvidence<'a> {
     abort_plan_sha256: &'a str,
     approval_id_hash: String,
     approval_nonce_sha256: &'a str,
-    approval_not_before_unix_seconds: i64,
-    approval_not_after_unix_seconds: i64,
+    approval_not_before_unix_secs: i64,
+    approval_not_after_unix_secs: i64,
     canary_evidence_path_hash: String,
-    consumed_unix_seconds: i64,
+    consumed_unix_secs: i64,
 }
 
 fn required_env(name: &str) -> Result<String> {

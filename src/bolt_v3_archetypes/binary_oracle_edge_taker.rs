@@ -297,8 +297,8 @@ pub fn raw_taker_config(
     )?;
     let period_duration_secs = i64_to_u64(
         &strategy.config.strategy_instance_id,
-        "target.cadence_seconds",
-        target.cadence_seconds,
+        "target.cadence_secs",
+        target.cadence_secs,
     )?;
 
     let strategy_instance_id = strategy.config.strategy_instance_id.as_str();

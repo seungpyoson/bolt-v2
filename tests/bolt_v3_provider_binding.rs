@@ -84,8 +84,8 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     ResolvedBoltV3Secrets { venues }
 }
 
-fn fixed_clock(now_unix_seconds: i64) -> BoltV3UpdownNowFn {
-    Arc::new(move || now_unix_seconds)
+fn fixed_clock(now_unix_secs: i64) -> BoltV3UpdownNowFn {
+    Arc::new(move || now_unix_secs)
 }
 
 #[test]
@@ -95,7 +95,7 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
     let resolved = fixture_resolved_secrets();
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
 
-    // Fixed `now_unix_seconds = 601` puts the planner inside the
+    // Fixed `now_unix_secs = 601` puts the planner inside the
     // BTC/5m window [600, 900): current=600 and next=900. The provider
     // binding's filter must surface those slugs in `[current, next]`
     // order on every `market_slugs()` call.
@@ -141,7 +141,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
     // Build three strategies whose declaration sequence is deliberately
     // NON-MONOTONIC across every likely accidental sort key
     // (strategy_instance_id, configured_target_id, underlying_asset,
-    // cadence_seconds, cadence_slug_token). Any accidental `sort_by`
+    // cadence_secs, cadence_slug_token). Any accidental `sort_by`
     // inside the binding layer would re-order at least one index and
     // trip a per-index slug assertion below.
     let mut second = loaded.strategies[0].clone();
@@ -159,7 +159,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
             "underlying_asset",
             toml::Value::String("LTC".to_string()),
         );
-        set_target_field(first, "cadence_seconds", toml::Value::Integer(900));
+        set_target_field(first, "cadence_secs", toml::Value::Integer(900));
     }
     second.config.strategy_instance_id = "alpha_strategy_main".to_string();
     set_target_field(
@@ -172,7 +172,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
         "underlying_asset",
         toml::Value::String("XRP".to_string()),
     );
-    set_target_field(&mut second, "cadence_seconds", toml::Value::Integer(300));
+    set_target_field(&mut second, "cadence_secs", toml::Value::Integer(300));
 
     third.config.strategy_instance_id = "mike_strategy_main".to_string();
     set_target_field(
@@ -185,7 +185,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
         "underlying_asset",
         toml::Value::String("BTC".to_string()),
     );
-    set_target_field(&mut third, "cadence_seconds", toml::Value::Integer(3600));
+    set_target_field(&mut third, "cadence_secs", toml::Value::Integer(3600));
 
     loaded.strategies.push(second);
     loaded.strategies.push(third);

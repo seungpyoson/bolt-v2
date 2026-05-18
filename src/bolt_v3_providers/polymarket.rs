@@ -84,8 +84,8 @@ pub struct PolymarketDataConfig {
     pub base_url_ws: String,
     pub base_url_gamma: String,
     pub base_url_data_api: String,
-    pub http_timeout_seconds: u64,
-    pub ws_timeout_seconds: u64,
+    pub http_timeout_secs: u64,
+    pub ws_timeout_secs: u64,
     pub subscribe_new_markets: bool,
     pub update_instruments_interval_minutes: u64,
     pub websocket_max_subscriptions_per_connection: u64,
@@ -106,11 +106,11 @@ pub struct PolymarketExecutionConfig {
     pub base_url_http: String,
     pub base_url_ws: String,
     pub base_url_data_api: String,
-    pub http_timeout_seconds: u64,
+    pub http_timeout_secs: u64,
     pub max_retries: u64,
-    pub retry_delay_initial_milliseconds: u64,
-    pub retry_delay_max_milliseconds: u64,
-    pub ack_timeout_seconds: u64,
+    pub retry_delay_initial_ms: u64,
+    pub retry_delay_max_ms: u64,
+    pub ack_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -264,8 +264,8 @@ fn check_evm_address_syntax(value: &str) -> Result<(), &'static str> {
 fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
     let mut errors = Vec::new();
     let positive_fields: &[(&str, u64)] = &[
-        ("http_timeout_seconds", data.http_timeout_seconds),
-        ("ws_timeout_seconds", data.ws_timeout_seconds),
+        ("http_timeout_secs", data.http_timeout_secs),
+        ("ws_timeout_secs", data.ws_timeout_secs),
         (
             "update_instruments_interval_minutes",
             data.update_instruments_interval_minutes,
@@ -304,17 +304,17 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
 fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -> Vec<String> {
     let mut errors = Vec::new();
     let positive_fields: &[(&str, u64)] = &[
-        ("http_timeout_seconds", execution.http_timeout_seconds),
+        ("http_timeout_secs", execution.http_timeout_secs),
         ("max_retries", execution.max_retries),
         (
-            "retry_delay_initial_milliseconds",
-            execution.retry_delay_initial_milliseconds,
+            "retry_delay_initial_ms",
+            execution.retry_delay_initial_ms,
         ),
         (
-            "retry_delay_max_milliseconds",
-            execution.retry_delay_max_milliseconds,
+            "retry_delay_max_ms",
+            execution.retry_delay_max_ms,
         ),
-        ("ack_timeout_seconds", execution.ack_timeout_seconds),
+        ("ack_timeout_secs", execution.ack_timeout_secs),
     ];
     for (field, value) in positive_fields {
         if *value == 0 {
@@ -323,10 +323,10 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
             ));
         }
     }
-    if execution.retry_delay_initial_milliseconds > execution.retry_delay_max_milliseconds {
+    if execution.retry_delay_initial_ms > execution.retry_delay_max_ms {
         errors.push(format!(
-            "venues.{key}.execution.retry_delay_initial_milliseconds ({}) must be <= retry_delay_max_milliseconds ({})",
-            execution.retry_delay_initial_milliseconds, execution.retry_delay_max_milliseconds
+            "venues.{key}.execution.retry_delay_initial_ms ({}) must be <= retry_delay_max_ms ({})",
+            execution.retry_delay_initial_ms, execution.retry_delay_max_ms
         ));
     }
     errors
@@ -481,7 +481,7 @@ pub fn build_fee_provider(
         secrets.credential,
         secrets.address,
         Some(cfg.base_url_http),
-        cfg.http_timeout_seconds,
+        cfg.http_timeout_secs,
     )
     .map_err(|error| BoltV3AdapterMappingError::ValidationInvariant {
         venue_key: venue_key.to_string(),
@@ -528,8 +528,8 @@ fn map_data(
         base_url_ws: Some(cfg.base_url_ws),
         base_url_gamma: Some(cfg.base_url_gamma),
         base_url_data_api: Some(cfg.base_url_data_api),
-        http_timeout_secs: cfg.http_timeout_seconds,
-        ws_timeout_secs: cfg.ws_timeout_seconds,
+        http_timeout_secs: cfg.http_timeout_secs,
+        ws_timeout_secs: cfg.ws_timeout_secs,
         ws_max_subscriptions,
         update_instruments_interval_mins: cfg.update_instruments_interval_minutes,
         subscribe_new_markets: cfg.subscribe_new_markets,
@@ -559,7 +559,7 @@ fn build_market_slug_filter(
 ) -> Arc<dyn InstrumentFilter> {
     let asset = target.underlying_asset.clone();
     let token = target.cadence_slug_token.clone();
-    let cadence = target.cadence_seconds;
+    let cadence = target.cadence_secs;
     Arc::new(MarketSlugFilter::new(move || {
         let now = (clock)();
         match updown_period_pair(cadence, now) {
@@ -569,7 +569,7 @@ fn build_market_slug_filter(
             ],
             Err(error) => {
                 log::warn!(
-                    "bolt-v3 provider binding: skipping updown filter cycle (cadence={cadence}, now_unix_seconds={now}): {error}"
+                    "bolt-v3 provider binding: skipping updown filter cycle (cadence={cadence}, now_unix_secs={now}): {error}"
                 );
                 Vec::new()
             }
@@ -612,11 +612,11 @@ fn map_execution(
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),
         base_url_data_api: Some(cfg.base_url_data_api),
-        http_timeout_secs: cfg.http_timeout_seconds,
+        http_timeout_secs: cfg.http_timeout_secs,
         max_retries,
-        retry_delay_initial_ms: cfg.retry_delay_initial_milliseconds,
-        retry_delay_max_ms: cfg.retry_delay_max_milliseconds,
-        ack_timeout_secs: cfg.ack_timeout_seconds,
+        retry_delay_initial_ms: cfg.retry_delay_initial_ms,
+        retry_delay_max_ms: cfg.retry_delay_max_ms,
+        ack_timeout_secs: cfg.ack_timeout_secs,
         transport_backend: Default::default(),
     })
 }

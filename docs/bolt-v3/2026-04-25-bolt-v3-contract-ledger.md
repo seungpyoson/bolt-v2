@@ -224,3 +224,20 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
   - `src/bolt_v3_live_node.rs::run_bolt_v3_live_node`
 - implementation status:
   - implemented for the bolt-v3 run wrapper; submit-time cap consumption remains a separate live-submit blocker
+
+## 17. Bolt-v3 production readiness levels
+
+- invariant:
+  - Production-grade live trading readiness is separate from Issue #360
+    tiny-canary readiness and requires explicit staged-live and production-live
+    evidence gates before broad readiness claims.
+- canonical owner:
+  - `docs/bolt-v3/2026-05-18-production-readiness-contract.md`
+- dependent references:
+  - `specs/001-thin-live-canary-path/contracts/live-canary-gates.md`
+  - `specs/002-phase7-no-submit-readiness/contracts/no-submit-readiness.md`
+  - `docs/bolt-v3/2026-04-28-source-grounded-status-map.md` rows 34-48
+- implementation status:
+  - contract defined; staged-live and production-live evidence packages,
+    runbooks, monitoring proof, deploy provenance, and unresolved status-map
+    blockers remain required before production readiness can be claimed

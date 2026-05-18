@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, Callable
 
 
 SCRIPT_PATH = Path(__file__).with_name("verify_runtime_capture_yaml.py")
@@ -19,6 +21,319 @@ SPEC.loader.exec_module(VERIFIER)
 
 
 class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
+    PINNED_REV = "a" * 40
+
+    def setUp(self) -> None:
+        self._patched_attrs: list[tuple[str, Any]] = []
+
+    def tearDown(self) -> None:
+        while self._patched_attrs:
+            name, value = self._patched_attrs.pop()
+            setattr(VERIFIER, name, value)
+
+    def patch_verifier_attr(self, name: str, value: Any) -> None:
+        self._patched_attrs.append((name, getattr(VERIFIER, name)))
+        setattr(VERIFIER, name, value)
+
+    def write_fixture(
+        self, mutate: Callable[[dict[str, Any]], None] | None = None
+    ) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        runtime_capture_dir = root / "docs" / "bolt-v3" / "research" / "runtime-capture"
+        naming_dir = root / "docs" / "bolt-v3" / "research" / "naming"
+        src_dir = root / "src"
+        tests_dir = root / "tests"
+        nt_dir = root / "nt"
+        for directory in (runtime_capture_dir, naming_dir, src_dir, tests_dir, nt_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+
+        fixture: dict[str, Any] = {
+            "surfaces": {
+                "surfaces": [
+                    {
+                        "nt_api": "subscribe_quotes",
+                        "nt_path": "crates/common/src/msgbus/api.rs:310",
+                        "message_type": "QuoteTick",
+                        "topic_pattern": "data.quotes.*.*",
+                        "api_kind": "passive_pubsub",
+                        "bolt_status": "captured_now",
+                        "source_subscribe_fn": "subscribe_quotes",
+                        "bolt_pattern_helper": "quotes_pattern",
+                        "capture_stream": "quotes",
+                        "storage_format": "Feather",
+                        "suggested_capture_storage": "feather",
+                    },
+                    {
+                        "nt_api": "subscribe_any",
+                        "nt_path": "crates/common/src/msgbus/api.rs:201",
+                        "message_type": "TradingStateChanged",
+                        "storage_message_type": "TradingStateChanged",
+                        "topic_pattern": "events.risk",
+                        "api_kind": "passive_pubsub",
+                        "bolt_status": "captured_now",
+                        "source_subscribe_fn": "subscribe_any",
+                        "bolt_pattern_helper": "trading_state_changed_events_pattern",
+                        "capture_stream": "risk_trading_state_changed",
+                        "storage_format": "JSONL",
+                        "suggested_capture_storage": "jsonl",
+                    },
+                    {
+                        "nt_api": "subscribe_book_snapshots",
+                        "nt_path": "crates/common/src/msgbus/api.rs:298",
+                        "message_type": "OrderBook",
+                        "api_kind": "passive_pubsub",
+                        "bolt_status": "safe_missing_passive_stream",
+                        "publisher_evidence": (
+                            "crates/data/src/engine/book.rs:170 emitted book snapshots"
+                        ),
+                        "subscriber_evidence": (
+                            "crates/common/src/msgbus/api.rs:298 -> subscribe_book_snapshots"
+                        ),
+                        "reason": "Passive stream documented.",
+                        "suggested_capture_storage": "boundary_wrapper",
+                    },
+                ]
+            },
+            "feas": {
+                "types": [
+                    {
+                        "message_type": "QuoteTick",
+                        "nt_path": "crates/model/src/data/quote.rs:41-66",
+                        "recommended_storage": "feather",
+                    },
+                    {
+                        "message_type": "OrderBookDeltas",
+                        "nt_path": "crates/model/src/data/deltas.rs:36-58",
+                        "recommended_storage": "unwrap_to_orderbookdelta",
+                    },
+                    {
+                        "message_type": "TradingStateChanged",
+                        "nt_path": "crates/common/src/messages/system/trading.rs:27-45",
+                        "recommended_storage": "jsonl",
+                    },
+                ]
+            },
+            "current_capture": {
+                "captured_streams": [
+                    {
+                        "stream": "quotes",
+                        "storage_format": "Feather",
+                        "test_coverage": ["captures_quote_ticks"],
+                    },
+                    {
+                        "stream": "risk_trading_state_changed",
+                        "storage_format": "JSONL",
+                        "test_coverage": ["captures_trading_state_changed"],
+                    },
+                ]
+            },
+            "naming_audit": {"nautilus_trader_revision": self.PINNED_REV},
+            "runtime_contracts_text": f"current value: `{self.PINNED_REV}`\n",
+            "cargo_text": (
+                "[dependencies]\n"
+                f'nautilus-common = {{ git = "https://github.com/nautechsystems/'
+                f'nautilus_trader.git", rev = "{self.PINNED_REV}" }}\n'
+            ),
+            "src_text": """
+                const RISK_DIR: &str = stringify!(risk);
+                const TRADING_STATE_CHANGED_FILE: &str = "trading_state_changed.jsonl";
+
+                fn quotes_pattern() {}
+                fn trading_state_changed_events_pattern() {}
+
+                fn wire_nt_runtime_capture() {
+                    subscribe_quotes(quotes_pattern(), handler, None);
+                    subscribe_any(trading_state_changed_events_pattern(), any_handler, None);
+                    let _path = spool_root_path
+                        .join(RISK_DIR)
+                        .join(TRADING_STATE_CHANGED_FILE);
+                }
+            """,
+            "test_text": """
+                fn captures_quote_ticks() {}
+                fn captures_trading_state_changed() {}
+            """,
+            "nt_api_text": (
+                "pub fn subscribe_quotes("
+                "pattern: Pattern, handler: Handler, priority: Option<u8>) {}\n"
+                "pub fn subscribe_any("
+                "pattern: Pattern, handler: Handler, priority: Option<u8>) {}\n"
+                "pub fn subscribe_book_snapshots("
+                "pattern: Pattern, handler: Handler, priority: Option<u8>) {}\n"
+            ),
+        }
+        if mutate is not None:
+            mutate(fixture)
+
+        surfaces_path = runtime_capture_dir / "nt-msgbus-surfaces.yaml"
+        feas_path = runtime_capture_dir / "storage-feasibility.yaml"
+        current_capture_path = runtime_capture_dir / "bolt-current-capture.yaml"
+        naming_audit_path = naming_dir / "nt-owned-name-audit.yaml"
+        runtime_contracts_path = (
+            root / "docs" / "bolt-v3" / "2026-04-25-bolt-v3-runtime-contracts.md"
+        )
+        src_path = src_dir / "nt_runtime_capture.rs"
+        test_path = tests_dir / "nt_runtime_capture.rs"
+        nt_api_path = nt_dir / "api.rs"
+
+        surfaces_path.write_text(VERIFIER.yaml.safe_dump(fixture["surfaces"]), encoding="utf-8")
+        feas_path.write_text(VERIFIER.yaml.safe_dump(fixture["feas"]), encoding="utf-8")
+        current_capture_path.write_text(
+            VERIFIER.yaml.safe_dump(fixture["current_capture"]), encoding="utf-8"
+        )
+        naming_audit_path.write_text(
+            VERIFIER.yaml.safe_dump(fixture["naming_audit"]), encoding="utf-8"
+        )
+        runtime_contracts_path.write_text(
+            fixture["runtime_contracts_text"], encoding="utf-8"
+        )
+        (root / "Cargo.toml").write_text(fixture["cargo_text"], encoding="utf-8")
+        src_path.write_text(fixture["src_text"], encoding="utf-8")
+        test_path.write_text(fixture["test_text"], encoding="utf-8")
+        nt_api_path.write_text(fixture["nt_api_text"], encoding="utf-8")
+
+        self.patch_verifier_attr("REPO_ROOT", root)
+        self.patch_verifier_attr("SURFACES_PATH", surfaces_path)
+        self.patch_verifier_attr("FEAS_PATH", feas_path)
+        self.patch_verifier_attr("CURRENT_CAPTURE_PATH", current_capture_path)
+        self.patch_verifier_attr("NAMING_AUDIT_PATH", naming_audit_path)
+        self.patch_verifier_attr("RUNTIME_CONTRACTS_PATH", runtime_contracts_path)
+        self.patch_verifier_attr("SRC_PATH", src_path)
+        self.patch_verifier_attr("TEST_PATH", test_path)
+        self.patch_verifier_attr(
+            "find_pinned_nt_api_path",
+            lambda findings, nautilus_revision: nt_api_path,
+        )
+
+    def assert_collects(
+        self, expected_check_id: str, mutate: Callable[[dict[str, Any]], None]
+    ) -> None:
+        self.write_fixture(mutate)
+        failures = VERIFIER.collect_failures()
+        self.assertIn(expected_check_id, [check_id for check_id, _ in failures], failures)
+
+    def test_collect_failures_accepts_consistent_fixture(self) -> None:
+        self.write_fixture()
+
+        self.assertEqual([], VERIFIER.collect_failures())
+
+    def test_collect_failures_rejects_stale_runtime_capture_references(self) -> None:
+        self.assert_collects(
+            "1.stale_ref",
+            lambda fixture: fixture.__setitem__(
+                "src_text", fixture["src_text"] + "\nnormalized_sink\n"
+            ),
+        )
+
+    def test_collect_failures_rejects_storage_rows_without_nt_line_refs(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["feas"]["types"][0]["nt_path"] = "crates/model/src/data/quote.rs"
+
+        self.assert_collects("2.nt_path_line_ref", mutate)
+
+    def test_collect_failures_rejects_captured_rows_without_source_linkage(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            del fixture["surfaces"]["surfaces"][0]["source_subscribe_fn"]
+
+        self.assert_collects("3.captured_now_missing_source_subscribe_fn", mutate)
+
+    def test_collect_failures_rejects_safe_missing_rows_without_evidence(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            row = fixture["surfaces"]["surfaces"][2]
+            del row["publisher_evidence"]
+            del row["subscriber_evidence"]
+            row["nt_path"] = "crates/common/src/msgbus/api"
+
+        self.assert_collects("4.safe_missing_no_publisher_evidence", mutate)
+        self.assert_collects("4.safe_missing_no_subscriber_evidence", mutate)
+
+    def test_collect_failures_rejects_missing_risk_jsonl_capture_path(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] = fixture["src_text"].replace(
+                ".join(RISK_DIR)",
+                '.join("other")',
+            )
+
+        self.assert_collects("5.risk_jsonl_path_missing_in_src", mutate)
+
+    def test_collect_failures_rejects_order_book_deltas_feather_storage(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["feas"]["types"][1]["recommended_storage"] = "feather"
+
+        self.assert_collects("6.deltas_storage_feather", mutate)
+
+    def test_collect_failures_rejects_unbounded_storage_values(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["feas"]["types"][0]["recommended_storage"] = "parquet"
+
+        self.assert_collects("7.storage_not_allowed", mutate)
+
+    def test_collect_failures_rejects_unbounded_api_kind_values(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"][0]["api_kind"] = "active_pubsub"
+
+        self.assert_collects("8.api_kind_not_allowed", mutate)
+
+    def test_collect_failures_rejects_missing_pinned_subscribe_api_rows(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["nt_api_text"] += (
+                "\npub fn subscribe_book_depth10(pattern: Pattern, handler: Handler, "
+                "priority: Option<u8>) {}\n"
+            )
+
+        self.assert_collects("9.pinned_subscribe_api_missing", mutate)
+
+    def test_collect_failures_rejects_storage_recommendation_mismatches(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"][0]["suggested_capture_storage"] = "jsonl"
+
+        self.assert_collects("10.surface_storage_mismatch", mutate)
+
+    def test_collect_failures_rejects_source_subscribe_rows_missing_from_yaml(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] += """
+                fn trades_pattern() {}
+                fn extra_subscription() {
+                    subscribe_trades(trades_pattern(), handler, None);
+                }
+            """
+
+        self.assert_collects("11.source_subscribe_not_captured_now", mutate)
+
+    def test_collect_failures_rejects_current_capture_storage_mismatches(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["current_capture"]["captured_streams"][0]["storage_format"] = "JSONL"
+
+        self.assert_collects("12.current_capture_storage_mismatch", mutate)
+
+    def test_collect_failures_rejects_documented_pin_drift(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["naming_audit"]["nautilus_trader_revision"] = "0" * 40
+
+        self.assert_collects("13.pin_revision_mismatch", mutate)
+
+    def test_collect_failures_rejects_stale_current_capture_streams(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["current_capture"]["captured_streams"].append(
+                {
+                    "stream": "orphan_stream",
+                    "storage_format": "JSONL",
+                    "test_coverage": ["missing_orphan_stream_test"],
+                }
+            )
+
+        self.assert_collects("14.current_capture_stale_stream", mutate)
+
+    def test_collect_failures_rejects_current_capture_rows_with_missing_tests(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["current_capture"]["captured_streams"][0]["test_coverage"] = [
+                "missing_quotes_test"
+            ]
+
+        self.assert_collects("14.current_capture_missing_test", mutate)
+
     def test_accepts_const_owned_risk_jsonl_path(self) -> None:
         source = """
         const RISK_DIR: &str = stringify!(risk);

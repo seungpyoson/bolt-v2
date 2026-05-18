@@ -37,7 +37,7 @@ As maintainer, I can distinguish what #344 implements now from evidence that rem
 
 ## Requirements
 
-- **FR-001**: Add `docs/ci/paths-ignore-behavior.md` with rows for docs-only `AGENTS.md`, workflow change, Rust source, managed rust-verification TOML, `Cargo.lock`, mixed docs+source, and ignored config directories.
+- **FR-001**: Add `docs/ci/paths-ignore-behavior.md` with rows for docs-only `AGENTS.md`, workflow change, Rust source, managed rust-verification TOML, `Cargo.lock`, mixed docs+source, ignored Claude agent directories, and ignored config directories.
 - **FR-002**: Add a pass-stub workflow that can emit the same required-check job names `build`, `clippy`, `test`, and `gate` for ignored-safe PRs.
 - **FR-003**: Pass-stub eligibility MUST be determined from actual changed files, not only trigger path filters.
 - **FR-004**: Changed-file collection or classification failure MUST fail closed. A successful non-docs-only classification MUST leave full CI as the owner of the real required signals instead of failing the pass-stub.
@@ -58,7 +58,8 @@ As maintainer, I can distinguish what #344 implements now from evidence that rem
 ## Edge Cases
 
 - Mixed ignored-safe and source files are not docs-only.
-- `.claude/rust-verification.toml` remains build-affecting and must not be ignored.
+- `ci/rust-verification.toml` remains build-affecting and must not be ignored.
+- `.claude/rust-verification.toml` is a forbidden ignored build path if reintroduced.
 - `docs/**` and `specs/**/*.md` remain build inputs in this repo and must not be broad-ignored.
 - If branch protection requires CI contexts, pass-stub must not replace full CI for source changes.
 - Branch deletion requires separate explicit approval and is not performed here.

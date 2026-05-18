@@ -183,8 +183,8 @@ ci-lint-workflow:
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
     just_target='{{target}}'
     managed_build_profile='release'
-    toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
-    toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('.claude/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
+    toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('ci/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
+    toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('ci/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
     if ! python3 scripts/test_verify_ci_workflow_hygiene.py; then
         failed=1
     fi
@@ -216,12 +216,12 @@ ci-lint-workflow:
     done
 
     if [ "$toml_target" != "$just_target" ]; then
-        echo "ERROR: justfile target ($just_target) does not match .claude/rust-verification.toml build target ($toml_target)"
+        echo "ERROR: justfile target ($just_target) does not match ci/rust-verification.toml build target ($toml_target)"
         failed=1
     fi
 
     if [ "$toml_profile" != "$managed_build_profile" ]; then
-        echo "ERROR: managed-build profile ($managed_build_profile) does not match .claude/rust-verification.toml build profile ($toml_profile)"
+        echo "ERROR: managed-build profile ($managed_build_profile) does not match ci/rust-verification.toml build profile ($toml_profile)"
         failed=1
     fi
 

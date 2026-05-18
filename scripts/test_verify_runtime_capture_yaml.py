@@ -258,6 +258,36 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assert_collects("3.captured_now_missing_source_subscribe_fn", mutate)
 
+    def test_collect_failures_rejects_captured_nt_api_source_mismatches(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"][0]["source_subscribe_fn"] = "subscribe_any"
+
+        self.assert_collects("3.captured_now_nt_api_mismatch", mutate)
+
+    def test_collect_failures_rejects_captured_rows_without_pattern_helper(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            del fixture["surfaces"]["surfaces"][0]["bolt_pattern_helper"]
+
+        self.assert_collects("3.captured_now_missing_pattern_helper", mutate)
+
+    def test_collect_failures_rejects_captured_rows_without_capture_stream(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            del fixture["surfaces"]["surfaces"][0]["capture_stream"]
+
+        self.assert_collects("3.captured_now_missing_capture_stream", mutate)
+
+    def test_collect_failures_rejects_captured_rows_without_storage_format(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            del fixture["surfaces"]["surfaces"][0]["storage_format"]
+
+        self.assert_collects("3.captured_now_missing_storage_format", mutate)
+
+    def test_collect_failures_rejects_missing_pattern_helper_definition(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"][0]["bolt_pattern_helper"] = "missing_pattern"
+
+        self.assert_collects("3.captured_now_pattern_missing_in_src", mutate)
+
     def test_collect_failures_accepts_pattern_helper_with_spaced_definition(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             fixture["src_text"] = fixture["src_text"].replace(
@@ -313,9 +343,31 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assert_collects("6.deltas_storage_feather", mutate)
 
+    def test_collect_failures_rejects_missing_order_book_deltas_row(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["feas"]["types"] = [
+                row
+                for row in fixture["feas"]["types"]
+                if row.get("message_type") != "OrderBookDeltas"
+            ]
+
+        self.assert_collects("6.deltas_row_missing", mutate)
+
     def test_collect_failures_rejects_unbounded_storage_values(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             fixture["feas"]["types"][0]["recommended_storage"] = "parquet"
+
+        self.assert_collects("7.storage_not_allowed", mutate)
+
+    def test_collect_failures_rejects_missing_storage_values(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            del fixture["feas"]["types"][0]["recommended_storage"]
+
+        self.assert_collects("7.storage_missing", mutate)
+
+    def test_collect_failures_rejects_unbounded_surface_storage_values(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"][0]["suggested_capture_storage"] = "sqlite"
 
         self.assert_collects("7.storage_not_allowed", mutate)
 
@@ -348,11 +400,33 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assertIn("9.pinned_nt_api_missing", failure_ids)
 
+    def test_collect_failures_rejects_extra_passive_api_missing_from_pinned_nt(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["nt_api_text"] = fixture["nt_api_text"].replace(
+                "pub fn subscribe_any("
+                "pattern: Pattern, handler: Handler, priority: Option<u8>) {}\n",
+                "",
+            )
+
+        self.assert_collects("9.extra_passive_api_not_in_pinned_nt", mutate)
+
     def test_collect_failures_rejects_storage_recommendation_mismatches(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             fixture["surfaces"]["surfaces"][0]["suggested_capture_storage"] = "jsonl"
 
         self.assert_collects("10.surface_storage_mismatch", mutate)
+
+    def test_collect_failures_rejects_captured_rows_without_storage_recommendation(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            del fixture["surfaces"]["surfaces"][0]["suggested_capture_storage"]
+
+        self.assert_collects("10.captured_now_storage_missing", mutate)
+
+    def test_collect_failures_rejects_surface_storage_without_feasibility_row(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"][0]["message_type"] = "MissingType"
+
+        self.assert_collects("10.surface_storage_missing_feasibility", mutate)
 
     def test_collect_failures_rejects_source_subscribe_rows_missing_from_yaml(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
@@ -385,6 +459,17 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assert_collects("11.source_subscribe_no_pattern_helper", mutate)
 
+    def test_collect_failures_rejects_unparseable_source_subscribe_calls(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] += """
+                fn trades_pattern() {}
+                fn broken_subscription() {
+                    subscribe_trades(trades_pattern(), handler, None;
+                }
+            """
+
+        self.assert_collects("11.source_subscribe_parse_failed", mutate)
+
     def test_collect_failures_rejects_captured_surface_missing_source_call(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             row = fixture["surfaces"]["surfaces"][0]
@@ -406,15 +491,89 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assertEqual([], VERIFIER.collect_failures())
 
+    def test_collect_failures_ignores_source_subscribe_calls_inside_nested_comments(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] += """
+                /*
+                    outer comment start
+                    /* nested comment */
+                    subscribe_trades(trades_pattern(), handler, None);
+                */
+            """
+
+        self.write_fixture(mutate)
+
+        self.assertEqual([], VERIFIER.collect_failures())
+
+    def test_collect_failures_ignores_lifetimes_when_scanning_source_calls(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] += """
+                fn lifetime_doc<'a>(value: &'a str) -> &'a str {
+                    value
+                }
+            """
+
+        self.write_fixture(mutate)
+
+        self.assertEqual([], VERIFIER.collect_failures())
+
+    def test_collect_failures_detects_source_subscribe_calls_after_lifetimes(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] += """
+                fn trades_pattern() {}
+                fn lifetime_subscription<'a>(value: &'a str) -> &'a str {
+                    subscribe_trades(trades_pattern(), handler, None);
+                    value
+                }
+            """
+
+        self.assert_collects("11.source_subscribe_not_captured_now", mutate)
+
+    def test_collect_failures_ignores_subscribe_function_definitions(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["src_text"] += """
+                pub fn subscribe_trades(pattern: Pattern, handler: Handler) {
+                    let _ = (pattern, handler);
+                }
+            """
+
+        self.write_fixture(mutate)
+
+        self.assertEqual([], VERIFIER.collect_failures())
+
     def test_collect_failures_rejects_current_capture_storage_mismatches(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             fixture["current_capture"]["captured_streams"][0]["storage_format"] = "JSONL"
 
         self.assert_collects("12.current_capture_storage_mismatch", mutate)
 
+    def test_collect_failures_rejects_missing_current_capture_streams(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"][0]["capture_stream"] = "missing_quotes"
+
+        self.assert_collects("12.current_capture_stream_missing", mutate)
+
+    def test_collect_failures_rejects_suggested_storage_format_mismatches(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"][0]["suggested_capture_storage"] = "jsonl"
+
+        self.assert_collects("12.suggested_storage_format_mismatch", mutate)
+
     def test_collect_failures_rejects_documented_pin_drift(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             fixture["naming_audit"]["nautilus_trader_revision"] = "0" * 40
+
+        self.assert_collects("13.pin_revision_mismatch", mutate)
+
+    def test_collect_failures_rejects_multiple_cargo_pins(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["cargo_text"] = (
+                "[dependencies]\n"
+                f'nautilus-common = {{ git = "https://github.com/nautechsystems/'
+                f'nautilus_trader.git", rev = "{self.PINNED_REV}" }}\n'
+                'nautilus-model = { git = "https://github.com/nautechsystems/'
+                f'nautilus_trader.git", rev = "{"b" * 40}" }}\n'
+            )
 
         self.assert_collects("13.pin_revision_mismatch", mutate)
 
@@ -510,6 +669,28 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
             .join("risk")
             .join(TRADING_STATE_CHANGED_FILE);
         """
+
+        self.assertFalse(VERIFIER.has_risk_jsonl_path(source))
+
+    def test_rejects_commented_risk_jsonl_path(self) -> None:
+        source = """
+        const RISK_DIR: &str = stringify!(risk);
+        const TRADING_STATE_CHANGED_FILE: &str = "trading_state_changed.jsonl";
+
+        // let path = spool_root_path
+        //     .join(RISK_DIR)
+        //     .join(TRADING_STATE_CHANGED_FILE);
+        """
+
+        self.assertFalse(VERIFIER.has_risk_jsonl_path(source))
+
+    def test_rejects_string_embedded_risk_jsonl_path(self) -> None:
+        source = r'''
+        const RISK_DIR: &str = stringify!(risk);
+        const TRADING_STATE_CHANGED_FILE: &str = "trading_state_changed.jsonl";
+
+        let doc = ".join(RISK_DIR).join(TRADING_STATE_CHANGED_FILE)";
+        '''
 
         self.assertFalse(VERIFIER.has_risk_jsonl_path(source))
 

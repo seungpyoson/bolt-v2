@@ -168,10 +168,14 @@ def read(path: Path) -> str:
 
 
 def has_risk_jsonl_path(src_text: str) -> bool:
+    path_text = strip_rust_comments_and_strings(
+        src_text,
+        preserve_string_literals={"risk", RISK_JSONL_FILENAME},
+    )
     return (
-        RISK_DIR_CONST_RE.search(src_text) is not None
-        and RISK_JSONL_FILENAME in src_text
-        and RISK_JSONL_PATH_RE.search(src_text) is not None
+        RISK_DIR_CONST_RE.search(path_text) is not None
+        and RISK_JSONL_FILENAME in path_text
+        and RISK_JSONL_PATH_RE.search(path_text) is not None
     )
 
 
@@ -233,7 +237,9 @@ def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
     return next(iter(revs))
 
 
-def strip_rust_comments_and_strings(text: str) -> str:
+def strip_rust_comments_and_strings(
+    text: str, preserve_string_literals: set[str] | None = None
+) -> str:
     result: list[str] = []
     i = 0
     while i < len(text):
@@ -245,11 +251,20 @@ def strip_rust_comments_and_strings(text: str) -> str:
             i = end + 1
             continue
         if text.startswith("/*", i):
-            end = text.find("*/", i + 2)
-            if end == -1:
-                break
-            result.append("\n" * text[i : end + 2].count("\n"))
-            i = end + 2
+            start = i
+            i += 2
+            depth = 1
+            while i < len(text) and depth > 0:
+                if text.startswith("/*", i):
+                    depth += 1
+                    i += 2
+                    continue
+                if text.startswith("*/", i):
+                    depth -= 1
+                    i += 2
+                    continue
+                i += 1
+            result.append("\n" * text[start:i].count("\n"))
             continue
         raw_match = RAW_STRING_START_RE.match(text, i)
         if raw_match is not None:
@@ -259,34 +274,45 @@ def strip_rust_comments_and_strings(text: str) -> str:
                 result.append("\n" * text[i:].count("\n"))
                 break
             raw_literal = text[i : end + len(end_marker)]
-            result.append('""')
+            literal_value = text[raw_match.end() : end]
+            if preserve_string_literals and literal_value in preserve_string_literals:
+                result.append(f'"{literal_value}"')
+            else:
+                result.append('""')
             result.append("\n" * raw_literal.count("\n"))
             i = end + len(end_marker)
             continue
         char = text[i]
         if char == '"':
-            result.append('""')
             i += 1
+            literal_chars: list[str] = []
             while i < len(text):
                 if text[i] == "\\":
+                    literal_chars.append(text[i])
+                    if i + 1 < len(text):
+                        literal_chars.append(text[i + 1])
                     i += 2
                     continue
                 if text[i] == '"':
                     i += 1
                     break
+                literal_chars.append(text[i])
                 i += 1
+            literal_value = "".join(literal_chars)
+            if preserve_string_literals and literal_value in preserve_string_literals:
+                result.append(f'"{literal_value}"')
+            else:
+                result.append('""')
             continue
         if char == "'":
-            result.append("''")
-            i += 1
-            while i < len(text):
-                if text[i] == "\\":
-                    i += 2
-                    continue
-                if text[i] == "'":
-                    i += 1
-                    break
+            char_end = rust_char_literal_end(text, i)
+            if char_end is None:
+                result.append(char)
                 i += 1
+                continue
+            result.append("''")
+            result.append("\n" * text[i:char_end].count("\n"))
+            i = char_end
             continue
         result.append(char)
         i += 1
@@ -328,12 +354,30 @@ def find_pinned_nt_api_path(
     return matches[0]
 
 
+def rust_char_literal_end(text: str, start: int) -> int | None:
+    if start + 1 >= len(text):
+        return None
+    if text[start + 1] == "\\":
+        idx = start + 2
+        while idx < len(text):
+            if text[idx] == "'":
+                return idx + 1
+            idx += 1
+        return None
+    if start + 2 < len(text) and text[start + 2] == "'":
+        return start + 3
+    return None
+
+
 def source_subscribe_calls(
     src_text: str, findings: list[tuple[str, str]]
 ) -> set[tuple[str, str]]:
     src_text = strip_rust_comments_and_strings(src_text)
     calls: set[tuple[str, str]] = set()
     for match in SUBSCRIBE_CALL_RE.finditer(src_text):
+        prefix = src_text[max(0, match.start() - 16) : match.start()]
+        if re.search(r"\bfn\s+$", prefix):
+            continue
         fn_name = match.group(1)
         open_idx = src_text.find("(", match.start())
         if open_idx == -1:

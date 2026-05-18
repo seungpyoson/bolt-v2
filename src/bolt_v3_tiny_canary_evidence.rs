@@ -367,10 +367,8 @@ fn phase8_market_selection_source_matches_strategy(
         && source.up_instrument_id.trim() == raw.up_instrument_id.trim()
         && source.down_instrument_id.trim() == raw.down_instrument_id.trim()
         && source.selected_market_observed_timestamp == raw.selected_market_observed_timestamp
-        && source.polymarket_market_start_timestamp_ms
-            == raw.polymarket_market_start_timestamp_ms
-        && source.polymarket_market_end_timestamp_ms
-            == raw.polymarket_market_end_timestamp_ms
+        && source.polymarket_market_start_timestamp_ms == raw.polymarket_market_start_timestamp_ms
+        && source.polymarket_market_end_timestamp_ms == raw.polymarket_market_end_timestamp_ms
 }
 
 fn phase8_market_selection_outcome_is_live_entry_candidate(outcome: &str) -> bool {
@@ -1709,14 +1707,8 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             underlying_asset: required_toml_string(target, stringify!(underlying_asset))?,
             cadence_secs: required_toml_integer(target, stringify!(cadence_secs))?,
             market_selection_rule: required_toml_string(target, stringify!(market_selection_rule))?,
-            retry_interval_secs: required_toml_integer(
-                target,
-                stringify!(retry_interval_secs),
-            )?,
-            blocked_after_secs: required_toml_integer(
-                target,
-                stringify!(blocked_after_secs),
-            )?,
+            retry_interval_secs: required_toml_integer(target, stringify!(retry_interval_secs))?,
+            blocked_after_secs: required_toml_integer(target, stringify!(blocked_after_secs))?,
             price_to_beat_source: required_toml_string(
                 runtime_parameters,
                 stringify!(price_to_beat_source),
@@ -1797,14 +1789,10 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             )));
         }
         if self.retry_interval_secs != loaded.retry_interval_secs {
-            return Err(financial_envelope_mismatch(stringify!(
-                retry_interval_secs
-            )));
+            return Err(financial_envelope_mismatch(stringify!(retry_interval_secs)));
         }
         if self.blocked_after_secs != loaded.blocked_after_secs {
-            return Err(financial_envelope_mismatch(stringify!(
-                blocked_after_secs
-            )));
+            return Err(financial_envelope_mismatch(stringify!(blocked_after_secs)));
         }
         if self.price_to_beat_source != loaded.price_to_beat_source {
             return Err(financial_envelope_mismatch(stringify!(

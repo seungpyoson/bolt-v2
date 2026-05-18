@@ -409,10 +409,7 @@ fn wires_runtime_capture_from_bolt_v3_persistence_config() {
                 decision_evidence: original_root.persistence.decision_evidence.clone(),
                 streaming: StreamingBlock {
                     catalog_fs_protocol: original_root.persistence.streaming.catalog_fs_protocol,
-                    flush_interval_ms: original_root
-                        .persistence
-                        .streaming
-                        .flush_interval_ms,
+                    flush_interval_ms: original_root.persistence.streaming.flush_interval_ms,
                     replace_existing: original_root.persistence.streaming.replace_existing,
                     rotation_kind: original_root.persistence.streaming.rotation_kind,
                 },

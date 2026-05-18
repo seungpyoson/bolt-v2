@@ -175,7 +175,9 @@ fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
     ];
     for (field, value) in url_fields {
         if value.trim().is_empty() {
-            errors.push(format!("clients.{key}.data.{field} must be a non-empty URL"));
+            errors.push(format!(
+                "clients.{key}.data.{field} must be a non-empty URL"
+            ));
         }
     }
     // The bolt-v3 schema deliberately rejects `0` rather than treating

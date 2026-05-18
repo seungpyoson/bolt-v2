@@ -444,12 +444,13 @@ pub fn updown_period_pair(
         return Err(BoltV3MarketIdentityError::NegativeNowUnixSeconds { now_unix_secs });
     }
     let current = (now_unix_secs / cadence_secs) * cadence_secs;
-    let next = current.checked_add(cadence_secs).ok_or(
-        BoltV3MarketIdentityError::PeriodPairOverflow {
-            now_unix_secs,
-            cadence_secs,
-        },
-    )?;
+    let next =
+        current
+            .checked_add(cadence_secs)
+            .ok_or(BoltV3MarketIdentityError::PeriodPairOverflow {
+                now_unix_secs,
+                cadence_secs,
+            })?;
     Ok((current, next))
 }
 
@@ -472,8 +473,7 @@ pub fn candidates_for_target(
     target_plan: &UpdownTargetPlan,
     now_unix_secs: i64,
 ) -> Result<UpdownSlugCandidates, BoltV3MarketIdentityError> {
-    let (current_start, next_start) =
-        updown_period_pair(target_plan.cadence_secs, now_unix_secs)?;
+    let (current_start, next_start) = updown_period_pair(target_plan.cadence_secs, now_unix_secs)?;
     let current_market_slug = updown_market_slug(
         &target_plan.underlying_asset,
         &target_plan.cadence_slug_token,

@@ -1097,9 +1097,8 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
             result_paths.assert_belongs_to_runtime_capture(&runtime_capture.spool_root)?;
             let pre_run_snapshot = result_paths.snapshot_before_run()?;
             let live_runner_entry_unix_secs = phase8_current_unix_secs()?;
-            envelope.consume_approval_after_live_runner_entry_validation(
-                live_runner_entry_unix_secs,
-            )?;
+            envelope
+                .consume_approval_after_live_runner_entry_validation(live_runner_entry_unix_secs)?;
             run_bolt_v3_live_node(&mut node, &loaded)
                 .await
                 .map_err(anyhow::Error::from)?;

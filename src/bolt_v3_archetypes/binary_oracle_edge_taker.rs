@@ -576,13 +576,7 @@ fn validate_parameter_bounds(
 }
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
-    let expected = (
-        OrderType::Limit,
-        TimeInForce::Fok,
-        false,
-        false,
-        false,
-    );
+    let expected = (OrderType::Limit, TimeInForce::Fok, false, false, false);
     let actual = (
         entry.order_type,
         entry.time_in_force,
@@ -601,13 +595,7 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
 }
 
 fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {
-    let expected = (
-        OrderType::Market,
-        TimeInForce::Ioc,
-        false,
-        false,
-        false,
-    );
+    let expected = (OrderType::Market, TimeInForce::Ioc, false, false, false);
     let actual = (
         exit.order_type,
         exit.time_in_force,

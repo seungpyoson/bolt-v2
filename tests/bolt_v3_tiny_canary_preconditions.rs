@@ -2217,10 +2217,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         .target
         .as_table_mut()
         .expect("strategy target should be a TOML table");
-    target.insert(
-        "retry_interval_secs".to_string(),
-        toml::Value::Integer(6),
-    );
+    target.insert("retry_interval_secs".to_string(), toml::Value::Integer(6));
     let mismatched_retry_error = envelope
         .validate_and_consume_against(
             "expected-head",
@@ -2231,9 +2228,9 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         )
         .expect_err("target retry window mismatch against loaded TOML should fail closed");
     assert!(
-        mismatched_retry_error.to_string().contains(
-            "phase8 financial envelope `retry_interval_secs` does not match loaded TOML"
-        ),
+        mismatched_retry_error
+            .to_string()
+            .contains("phase8 financial envelope `retry_interval_secs` does not match loaded TOML"),
         "error should mention mismatched retry window: {mismatched_retry_error}"
     );
     assert!(
@@ -2247,10 +2244,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         .target
         .as_table_mut()
         .expect("strategy target should be a TOML table");
-    target.insert(
-        "blocked_after_secs".to_string(),
-        toml::Value::Integer(61),
-    );
+    target.insert("blocked_after_secs".to_string(), toml::Value::Integer(61));
     let mismatched_block_error = envelope
         .validate_and_consume_against(
             "expected-head",
@@ -2261,9 +2255,9 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         )
         .expect_err("target blocked window mismatch against loaded TOML should fail closed");
     assert!(
-        mismatched_block_error.to_string().contains(
-            "phase8 financial envelope `blocked_after_secs` does not match loaded TOML"
-        ),
+        mismatched_block_error
+            .to_string()
+            .contains("phase8 financial envelope `blocked_after_secs` does not match loaded TOML"),
         "error should mention mismatched blocked window: {mismatched_block_error}"
     );
     assert!(

@@ -306,14 +306,8 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
     let positive_fields: &[(&str, u64)] = &[
         ("http_timeout_secs", execution.http_timeout_secs),
         ("max_retries", execution.max_retries),
-        (
-            "retry_delay_initial_ms",
-            execution.retry_delay_initial_ms,
-        ),
-        (
-            "retry_delay_max_ms",
-            execution.retry_delay_max_ms,
-        ),
+        ("retry_delay_initial_ms", execution.retry_delay_initial_ms),
+        ("retry_delay_max_ms", execution.retry_delay_max_ms),
         ("ack_timeout_secs", execution.ack_timeout_secs),
     ];
     for (field, value) in positive_fields {

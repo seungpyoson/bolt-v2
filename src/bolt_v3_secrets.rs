@@ -216,7 +216,8 @@ where
             None => continue,
         }
 
-        let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str()) else {
+        let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str())
+        else {
             return Err(BoltV3SecretError {
                 venue_key: client_key.clone(),
                 field: "venue".to_string(),

@@ -1,5 +1,5 @@
 //! Per-provider binding root for bolt-v3 client config block shapes
-//! and per-venue startup-validation policy.
+//! and per-client startup-validation policy.
 //!
 //! Core config in `crate::bolt_v3_config` owns the root and strategy
 //! envelopes plus NT venue identifiers. Concrete NT venue literals and
@@ -21,7 +21,7 @@ pub mod polymarket;
 use std::{any::Any, fmt, sync::Arc};
 
 use crate::{
-    bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig},
+    bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3MarketClockFn},
     bolt_v3_config::{BoltV3RootConfig, ClientBlock},
     bolt_v3_market_families::updown::MarketIdentityPlan,
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
@@ -35,7 +35,7 @@ pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
     }
 }
 
-pub type ResolvedVenueSecrets = Arc<dyn ProviderResolvedSecrets>;
+pub type ResolvedClientSecrets = Arc<dyn ProviderResolvedSecrets>;
 
 pub trait SsmSecretResolver {
     fn resolve_secret(&mut self, region: &str, ssm_path: &str) -> Result<String, String>;
@@ -52,18 +52,18 @@ where
 }
 
 pub struct ProviderSecretResolveContext<'a> {
-    pub venue_key: &'a str,
+    pub client_key: &'a str,
     pub region: &'a str,
-    pub venue: &'a ClientBlock,
+    pub client: &'a ClientBlock,
 }
 
 pub struct ProviderAdapterMapContext<'a> {
     pub root: &'a BoltV3RootConfig,
-    pub venue_key: &'a str,
-    pub venue: &'a ClientBlock,
+    pub client_key: &'a str,
+    pub client: &'a ClientBlock,
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub plan: &'a MarketIdentityPlan,
-    pub clock: BoltV3UpdownNowFn,
+    pub clock: BoltV3MarketClockFn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,10 +80,10 @@ impl ProviderCredentialedBlock {
         }
     }
 
-    fn is_present(self, venue: &ClientBlock) -> bool {
+    fn is_present(self, client: &ClientBlock) -> bool {
         match self {
-            Self::Data => venue.data.is_some(),
-            Self::Execution => venue.execution.is_some(),
+            Self::Data => client.data.is_some(),
+            Self::Execution => client.execution.is_some(),
         }
     }
 }
@@ -96,7 +96,7 @@ pub struct ProviderSecretRequirement {
 
 pub struct ProviderBinding {
     pub key: &'static str,
-    pub validate_venue: fn(&str, &ClientBlock) -> Vec<String>,
+    pub validate_client: fn(&str, &ClientBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
     pub required_secret_blocks: &'static [ProviderSecretRequirement],
     pub secret_field_names: &'static [&'static str],
@@ -105,17 +105,17 @@ pub struct ProviderBinding {
     pub resolve_secrets: for<'a> fn(
         ProviderSecretResolveContext<'a>,
         &mut dyn SsmSecretResolver,
-    ) -> Result<ResolvedVenueSecrets, BoltV3SecretError>,
+    ) -> Result<ResolvedClientSecrets, BoltV3SecretError>,
     pub map_adapters: for<'a> fn(
         ProviderAdapterMapContext<'a>,
     )
-        -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError>,
+        -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError>,
 }
 
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
-        validate_venue: polymarket::validate_venue,
+        validate_client: polymarket::validate_client,
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
         required_secret_blocks: polymarket::REQUIRED_SECRET_BLOCKS,
         secret_field_names: polymarket::SECRET_FIELD_NAMES,
@@ -126,7 +126,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: binance::KEY,
-        validate_venue: binance::validate_venue,
+        validate_client: binance::validate_client,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
         required_secret_blocks: binance::REQUIRED_SECRET_BLOCKS,
         secret_field_names: binance::SECRET_FIELD_NAMES,
@@ -160,7 +160,7 @@ pub fn credential_log_modules() -> impl Iterator<Item = &'static str> {
 /// Family-agnostic surface read by core startup validation. Routes
 /// each venue block to its per-provider validator based on provider
 /// key. Returns the full error list for the venue block.
-pub fn validate_venue_block(key: &str, client: &ClientBlock) -> Vec<String> {
+pub fn validate_client_block(key: &str, client: &ClientBlock) -> Vec<String> {
     match binding_for_provider_key(client.venue.as_str()) {
         Some(binding) => {
             let mut errors = validate_required_secret_blocks(
@@ -169,7 +169,7 @@ pub fn validate_venue_block(key: &str, client: &ClientBlock) -> Vec<String> {
                 client,
                 binding.required_secret_blocks,
             );
-            errors.extend((binding.validate_venue)(key, client));
+            errors.extend((binding.validate_client)(key, client));
             errors
         }
         None => vec![format!(
@@ -182,15 +182,15 @@ pub fn validate_venue_block(key: &str, client: &ClientBlock) -> Vec<String> {
 fn validate_required_secret_blocks(
     key: &str,
     provider_key: &str,
-    venue: &ClientBlock,
+    client: &ClientBlock,
     requirements: &[ProviderSecretRequirement],
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    if venue.secrets.is_some() {
+    if client.secrets.is_some() {
         return errors;
     }
     for requirement in requirements {
-        if requirement.block.is_present(venue) {
+        if requirement.block.is_present(client) {
             errors.push(format!(
                 "clients.{key} (provider={provider_key}) declares [{}] but is missing the required [secrets] block; \
                  the bolt-v3 secret contract requires SSM credential resolution for every {}",

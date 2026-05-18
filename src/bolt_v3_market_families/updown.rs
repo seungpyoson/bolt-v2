@@ -224,20 +224,22 @@ pub struct MarketIdentityPlan {
     pub updown_targets: Vec<UpdownTargetPlan>,
 }
 
-pub struct MarketIdentityVenueTargetRef<'a> {
+pub struct MarketIdentityExecutionClientTargetRef<'a> {
     pub family_key: &'static str,
     pub configured_target_id: &'a str,
-    pub venue_config_key: &'a str,
+    pub execution_client_id: &'a str,
 }
 
 impl MarketIdentityPlan {
-    pub fn venue_target_refs(&self) -> impl Iterator<Item = MarketIdentityVenueTargetRef<'_>> {
+    pub fn execution_client_target_refs(
+        &self,
+    ) -> impl Iterator<Item = MarketIdentityExecutionClientTargetRef<'_>> {
         self.updown_targets
             .iter()
-            .map(|target| MarketIdentityVenueTargetRef {
+            .map(|target| MarketIdentityExecutionClientTargetRef {
                 family_key: KEY,
                 configured_target_id: target.configured_target_id.as_str(),
-                venue_config_key: target.venue_config_key.as_str(),
+                execution_client_id: target.execution_client_id.as_str(),
             })
     }
 }
@@ -250,7 +252,7 @@ impl MarketIdentityPlan {
 pub struct UpdownTargetPlan {
     pub strategy_instance_id: String,
     pub configured_target_id: String,
-    pub venue_config_key: String,
+    pub execution_client_id: String,
     pub underlying_asset: String,
     pub cadence_secs: i64,
     pub cadence_slug_token: String,
@@ -380,7 +382,7 @@ fn plan_strategy_updown_target(
     strategy: &LoadedStrategy,
 ) -> Result<Option<UpdownTargetPlan>, BoltV3MarketIdentityError> {
     let strategy_instance_id = strategy.config.strategy_instance_id.clone();
-    let venue_config_key = strategy.config.execution_client_id.to_string();
+    let execution_client_id = strategy.config.execution_client_id.to_string();
     let target: TargetBlock =
         deserialize_target_block(&strategy.config.target).map_err(|message| {
             BoltV3MarketIdentityError::TargetParseFailed {
@@ -417,7 +419,7 @@ fn plan_strategy_updown_target(
     Ok(Some(UpdownTargetPlan {
         strategy_instance_id,
         configured_target_id,
-        venue_config_key,
+        execution_client_id,
         underlying_asset: target.underlying_asset.clone(),
         cadence_secs: target.cadence_secs,
         cadence_slug_token: token.to_string(),

@@ -27,7 +27,7 @@
 //! execution bounds, EVM funder-address syntax, provider secret-path
 //! ownership) is owned by the per-provider binding modules under
 //! `crate::bolt_v3_providers`; `validate_clients_block` dispatches each
-//! client block through `crate::bolt_v3_providers::validate_venue_block`.
+//! client block through `crate::bolt_v3_providers::validate_client_block`.
 //! Only the genuinely provider-neutral SSM parameter-path utility
 //! (`validate_ssm_parameter_path`) stays in this module and is exposed
 //! `pub(crate)` so the per-provider secret validators can call it the
@@ -406,7 +406,7 @@ fn validate_clients_block(clients: &BTreeMap<String, ClientBlock>) -> Vec<String
         }
     }
     for (key, client) in clients {
-        errors.extend(crate::bolt_v3_providers::validate_venue_block(key, client));
+        errors.extend(crate::bolt_v3_providers::validate_client_block(key, client));
     }
     errors
 }

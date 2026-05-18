@@ -94,6 +94,13 @@ fn startup_check_reports_success_facts_without_connecting() {
         "success fixture should not emit skipped facts: {report:#?}"
     );
 
+    let rendered = report_text(&report);
+    assert!(rendered.contains("resolved secrets for client `polymarket_main`"));
+    assert!(rendered.contains("mapped adapter configs for client `polymarket_main`"));
+    assert!(rendered.contains("registered NT clients for client `polymarket_main`"));
+    assert!(!rendered.contains("for venue `"));
+    assert!(!rendered.contains("Venue("));
+
     let polymarket = report
         .facts
         .iter()
@@ -132,7 +139,7 @@ fn startup_check_reports_empty_venue_stages_as_satisfied_root_facts() {
         strategies: Vec::new(),
     };
     let resolver = |_region: &str, _path: &str| -> Result<String, &'static str> {
-        Err("resolver must not be called when no venues are configured")
+        Err("resolver must not be called when no clients are configured")
     };
 
     let report = run_bolt_v3_startup_check_with(&empty_loaded, |_| false, resolver);
@@ -172,9 +179,9 @@ fn startup_check_reports_forbidden_env_failure_and_skips_downstream() {
     assert!(
         report.facts.iter().any(|fact| {
             fact.stage == BoltV3StartupCheckStage::ForbiddenCredentialEnv
-                && fact.subject == BoltV3StartupCheckSubject::Venue("polymarket_main".to_string())
+                && fact.subject == BoltV3StartupCheckSubject::Client("polymarket_main".to_string())
         }),
-        "forbidden env failures should be venue-keyed: {report:#?}"
+        "forbidden env failures should be client-keyed: {report:#?}"
     );
     assert!(
         report
@@ -184,8 +191,8 @@ fn startup_check_reports_forbidden_env_failure_and_skips_downstream() {
                 fact.stage == BoltV3StartupCheckStage::ForbiddenCredentialEnv
                     && fact.status == BoltV3StartupCheckStatus::Failed
             })
-            .all(|fact| matches!(fact.subject, BoltV3StartupCheckSubject::Venue(_))),
-        "all forbidden env failures should be venue-keyed: {report:#?}"
+            .all(|fact| matches!(fact.subject, BoltV3StartupCheckSubject::Client(_))),
+        "all forbidden env failures should be client-keyed: {report:#?}"
     );
     assert_eq!(
         skipped_stages(&report),
@@ -264,9 +271,9 @@ fn startup_check_reports_adapter_mapping_failure_and_redacts_resolved_secrets() 
     assert!(
         report.facts.iter().any(|fact| {
             fact.stage == BoltV3StartupCheckStage::AdapterMapping
-                && fact.subject == BoltV3StartupCheckSubject::Venue("polymarket_main".to_string())
+                && fact.subject == BoltV3StartupCheckSubject::Client("polymarket_main".to_string())
         }),
-        "adapter mapping failures must be venue-keyed: {report:#?}"
+        "adapter mapping failures must be client-keyed: {report:#?}"
     );
     assert_eq!(
         skipped_stages(&report),

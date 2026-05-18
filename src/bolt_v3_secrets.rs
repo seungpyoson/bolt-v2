@@ -1,10 +1,10 @@
 //! Forbidden credential environment-variable checks and SSM secret
-//! resolution for bolt-v3 venues.
+//! resolution for bolt-v3 clients.
 //!
 //! Per docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md Section 3, every
-//! configured venue with a [secrets] block must fail live validation and
+//! configured client with a [secrets] block must fail live validation and
 //! startup if any canonical credential environment variables for that venue
-//! kind are present. The blocklist is owned by the venue-kind handler in
+//! kind are present. The blocklist is owned by the provider handler in
 //! bolt code and must be checked before any NautilusTrader client
 //! constructor is called.
 //!
@@ -12,7 +12,7 @@
 //! configured `[secrets]` block from Amazon Web Services Systems Manager
 //! using `[aws].region` as the resolver region. Resolved values are held
 //! behind provider-owned handles whose Debug output redacts every secret field; the
-//! resolved error type carries venue key, secret-config field, and SSM
+//! resolved error type carries client key, secret-config field, and SSM
 //! path context, but never the resolved secret value itself.
 
 use std::collections::BTreeMap;
@@ -22,14 +22,14 @@ use nautilus_model::identifiers::Venue;
 use crate::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
     bolt_v3_providers::{
-        self, ProviderSecretResolveContext, ResolvedVenueSecrets, SsmSecretResolver,
+        self, ProviderSecretResolveContext, ResolvedClientSecrets, SsmSecretResolver,
     },
     secrets::SsmResolverSession,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForbiddenEnvVarFinding {
-    pub venue_key: String,
+    pub client_key: String,
     pub venue: Venue,
     pub env_var: &'static str,
 }
@@ -40,7 +40,7 @@ impl std::fmt::Display for ForbiddenEnvVarFinding {
             f,
             "clients.{key} (venue={venue}) declares [secrets] but the forbidden credential environment variable `{var}` is set; \
              the bolt-v3 secret contract requires SSM resolution and forbids env-var fallbacks for this venue",
-            key = self.venue_key,
+            key = self.client_key,
             venue = self.venue.as_str(),
             var = self.env_var,
         )
@@ -94,7 +94,7 @@ where
         for env_var in blocklist {
             if env_is_set(env_var) {
                 findings.push(ForbiddenEnvVarFinding {
-                    venue_key: key.clone(),
+                    client_key: key.clone(),
                     venue: client.venue,
                     env_var,
                 });
@@ -109,11 +109,11 @@ where
     }
 }
 
-pub type ResolvedBoltV3VenueSecrets = ResolvedVenueSecrets;
+pub type ResolvedBoltV3ClientSecrets = ResolvedClientSecrets;
 
 #[derive(Clone)]
 pub struct ResolvedBoltV3Secrets {
-    pub clients: BTreeMap<String, ResolvedBoltV3VenueSecrets>,
+    pub clients: BTreeMap<String, ResolvedBoltV3ClientSecrets>,
 }
 
 impl ResolvedBoltV3Secrets {
@@ -147,7 +147,7 @@ impl std::fmt::Debug for ResolvedBoltV3Secrets {
 
 #[derive(Debug)]
 pub struct BoltV3SecretError {
-    pub venue_key: String,
+    pub client_key: String,
     pub field: String,
     pub ssm_path: String,
     pub source: String,
@@ -159,7 +159,7 @@ impl std::fmt::Display for BoltV3SecretError {
             write!(
                 f,
                 "clients.{venue}.secrets.{field}: {source}",
-                venue = self.venue_key,
+                venue = self.client_key,
                 field = self.field,
                 source = self.source,
             )
@@ -167,7 +167,7 @@ impl std::fmt::Display for BoltV3SecretError {
             write!(
                 f,
                 "clients.{venue}.secrets.{field} (path={path}): {source}",
-                venue = self.venue_key,
+                venue = self.client_key,
                 field = self.field,
                 path = self.ssm_path,
                 source = self.source,
@@ -179,7 +179,7 @@ impl std::fmt::Display for BoltV3SecretError {
 impl std::error::Error for BoltV3SecretError {}
 
 /// Resolve every configured bolt-v3 venue `[secrets]` block from Amazon Web
-/// Services Systems Manager using `[aws].region` and the explicit per-venue
+/// Services Systems Manager using `[aws].region` and the explicit per-client
 /// SSM paths in the parsed root config. Production startup must use this
 /// function; tests should call [`resolve_bolt_v3_secrets_with`] with an
 /// injected resolver instead.
@@ -198,7 +198,7 @@ pub fn resolve_bolt_v3_secrets(
 
 /// Test-friendly variant of [`resolve_bolt_v3_secrets`] which lets the caller
 /// inject the SSM resolver. The closure is invoked with `(region, ssm_path)`
-/// pairs derived from `[aws].region` and the per-venue secret-config paths.
+/// pairs derived from `[aws].region` and the per-client secret-config paths.
 pub fn resolve_bolt_v3_secrets_with<F, E>(
     loaded: &LoadedBoltV3Config,
     mut resolver: F,
@@ -219,7 +219,7 @@ where
         let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str())
         else {
             return Err(BoltV3SecretError {
-                venue_key: client_key.clone(),
+                client_key: client_key.clone(),
                 field: "venue".to_string(),
                 ssm_path: String::new(),
                 source: format!(
@@ -230,9 +230,9 @@ where
         };
         let resolved = (binding.resolve_secrets)(
             ProviderSecretResolveContext {
-                venue_key: client_key,
+                client_key,
                 region,
-                venue: client,
+                client,
             },
             &mut resolver,
         )?;
@@ -243,7 +243,7 @@ where
 }
 
 pub fn resolve_field(
-    venue_key: &str,
+    client_key: &str,
     field: &'static str,
     region: &str,
     ssm_path: &str,
@@ -252,7 +252,7 @@ pub fn resolve_field(
     resolver
         .resolve_secret(region, ssm_path)
         .map_err(|error| BoltV3SecretError {
-            venue_key: venue_key.to_string(),
+            client_key: client_key.to_string(),
             field: field.to_string(),
             ssm_path: ssm_path.to_string(),
             source: error,
@@ -339,7 +339,7 @@ mod tests {
             check_no_forbidden_credential_env_vars_with(&root, |var| var == "POLYMARKET_PK")
                 .expect_err("POLYMARKET_PK should trip the polymarket blocklist");
         assert_eq!(error.findings.len(), 1);
-        assert_eq!(error.findings[0].venue_key, "polymarket_main");
+        assert_eq!(error.findings[0].client_key, "polymarket_main");
         assert_eq!(error.findings[0].venue.as_str(), polymarket::KEY);
         assert_eq!(error.findings[0].env_var, "POLYMARKET_PK");
     }
@@ -351,7 +351,7 @@ mod tests {
             check_no_forbidden_credential_env_vars_with(&root, |var| var == "BINANCE_API_SECRET")
                 .expect_err("BINANCE_API_SECRET should trip the binance blocklist");
         assert_eq!(error.findings.len(), 1);
-        assert_eq!(error.findings[0].venue_key, "binance_reference");
+        assert_eq!(error.findings[0].client_key, "binance_reference");
         assert_eq!(error.findings[0].venue.as_str(), binance::KEY);
         assert_eq!(error.findings[0].env_var, "BINANCE_API_SECRET");
     }

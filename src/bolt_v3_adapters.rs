@@ -28,7 +28,7 @@ use crate::{
 /// `load_all` cycle on every refresh, so it must be `Send + Sync` and
 /// own all state it captures. Tests inject a fixed-time closure;
 /// future live wiring will inject one backed by an NT runtime clock.
-pub type BoltV3UpdownNowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
+pub type BoltV3MarketClockFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 
 /// Provider-owned NT data-client factory and config for one configured
 /// Bolt-v3 venue data block.
@@ -47,7 +47,7 @@ pub struct BoltV3ExecutionClientAdapterConfig {
 /// Mapped provider-owned adapter assemblies for one configured Bolt-v3
 /// venue. Sub-configs are present iff the corresponding
 /// `[clients.<id>.<block>]` section is present in the validated config.
-pub struct BoltV3VenueAdapterConfig {
+pub struct BoltV3ClientAdapterConfig {
     pub data: Option<BoltV3DataClientAdapterConfig>,
     pub execution: Option<BoltV3ExecutionClientAdapterConfig>,
 }
@@ -67,7 +67,7 @@ impl BoltV3ExecutionClientAdapterConfig {
 /// Mapped NT-native adapter configs keyed by the bolt-v3 client
 /// identifier (the TOML `[clients.<id>]` table key).
 pub struct BoltV3AdapterConfigs {
-    pub venues: BTreeMap<String, BoltV3VenueAdapterConfig>,
+    pub clients: BTreeMap<String, BoltV3ClientAdapterConfig>,
 }
 
 impl fmt::Debug for BoltV3DataClientAdapterConfig {
@@ -88,9 +88,9 @@ impl fmt::Debug for BoltV3ExecutionClientAdapterConfig {
     }
 }
 
-impl fmt::Debug for BoltV3VenueAdapterConfig {
+impl fmt::Debug for BoltV3ClientAdapterConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BoltV3VenueAdapterConfig")
+        f.debug_struct("BoltV3ClientAdapterConfig")
             .field("data", &self.data)
             .field("execution", &self.execution)
             .finish()
@@ -100,7 +100,7 @@ impl fmt::Debug for BoltV3VenueAdapterConfig {
 impl fmt::Debug for BoltV3AdapterConfigs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BoltV3AdapterConfigs")
-            .field("venues", &self.venues)
+            .field("clients", &self.clients)
             .finish()
     }
 }
@@ -111,7 +111,7 @@ pub enum BoltV3AdapterMappingError {
     /// Indicates an internal-consistency bug between the resolver output
     /// and the mapper inputs.
     SecretKindMismatch {
-        venue_key: String,
+        client_key: String,
         expected_provider_key: &'static str,
     },
     /// A venue requires resolved secrets but none were found in the
@@ -120,7 +120,7 @@ pub enum BoltV3AdapterMappingError {
     /// resolved-secrets value was constructed inconsistently with the
     /// loaded config.
     MissingResolvedSecrets {
-        venue_key: String,
+        client_key: String,
         expected_provider_key: &'static str,
     },
     /// A `[data]` or `[execution]` block existed but failed to
@@ -129,7 +129,7 @@ pub enum BoltV3AdapterMappingError {
     /// this branch means the inputs were mutated between validation and
     /// mapping.
     SchemaParse {
-        venue_key: String,
+        client_key: String,
         block: &'static str,
         message: String,
     },
@@ -137,7 +137,7 @@ pub enum BoltV3AdapterMappingError {
     /// type on this target (e.g. `u64 -> usize` overflow on a 32-bit
     /// build). No silent truncation: the mapper refuses to default.
     NumericRange {
-        venue_key: String,
+        client_key: String,
         field: &'static str,
         message: String,
     },
@@ -146,7 +146,7 @@ pub enum BoltV3AdapterMappingError {
     /// mapper boundary prevents programmatic callers from bypassing
     /// root validation and reaching a hidden NT runtime behavior.
     ValidationInvariant {
-        venue_key: String,
+        client_key: String,
         field: &'static str,
         message: String,
     },
@@ -156,46 +156,46 @@ impl std::fmt::Display for BoltV3AdapterMappingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BoltV3AdapterMappingError::SecretKindMismatch {
-                venue_key,
+                client_key,
                 expected_provider_key,
             } => write!(
                 f,
-                "clients.{venue_key}: resolved secret provider does not match configured client provider \
+                "clients.{client_key}: resolved secret provider does not match configured client provider \
                  (expected {kind})",
                 kind = expected_provider_key,
             ),
             BoltV3AdapterMappingError::MissingResolvedSecrets {
-                venue_key,
+                client_key,
                 expected_provider_key,
             } => write!(
                 f,
-                "clients.{venue_key} (provider={kind}) requires resolved SSM secrets but none were \
+                "clients.{client_key} (provider={kind}) requires resolved SSM secrets but none were \
                  supplied to the adapter mapper",
                 kind = expected_provider_key,
             ),
             BoltV3AdapterMappingError::SchemaParse {
-                venue_key,
+                client_key,
                 block,
                 message,
             } => write!(
                 f,
-                "clients.{venue_key}.{block}: failed to deserialize into NT-native config: {message}",
+                "clients.{client_key}.{block}: failed to deserialize into NT-native config: {message}",
             ),
             BoltV3AdapterMappingError::NumericRange {
-                venue_key,
+                client_key,
                 field,
                 message,
             } => write!(
                 f,
-                "clients.{venue_key}.{field}: bolt-v3 value does not fit the NT-native field type: {message}",
+                "clients.{client_key}.{field}: bolt-v3 value does not fit the NT-native field type: {message}",
             ),
             BoltV3AdapterMappingError::ValidationInvariant {
-                venue_key,
+                client_key,
                 field,
                 message,
             } => write!(
                 f,
-                "clients.{venue_key}: bolt-v3 validation invariant failed for {field}: {message}",
+                "clients.{client_key}: bolt-v3 validation invariant failed for {field}: {message}",
             ),
         }
     }
@@ -204,7 +204,7 @@ impl std::fmt::Display for BoltV3AdapterMappingError {
 impl std::error::Error for BoltV3AdapterMappingError {}
 
 /// Map a validated [`LoadedBoltV3Config`] plus resolved SSM secrets into
-/// NT-native adapter config values, one per configured venue. The mapper
+/// NT-native adapter config values, one per configured client. The mapper
 /// never re-resolves SSM and never registers clients; callers receive
 /// owned config structs and may pass them to NT factories at a later
 /// stage.
@@ -229,7 +229,7 @@ pub fn map_bolt_v3_adapters(
     // observe any wall-clock dependency on the no-identity entry point.
     // Treat this constant as a sentinel for the no-filter path; do not
     // reuse it from any call site that supplies a non-empty plan.
-    let zero_clock: BoltV3UpdownNowFn = Arc::new(|| 0_i64);
+    let zero_clock: BoltV3MarketClockFn = Arc::new(|| 0_i64);
     map_bolt_v3_adapters_with_market_identity(loaded, resolved, &empty_plan, zero_clock)
 }
 
@@ -242,7 +242,7 @@ pub fn map_bolt_v3_adapters_with_market_identity(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     plan: &MarketIdentityPlan,
-    clock: BoltV3UpdownNowFn,
+    clock: BoltV3MarketClockFn,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
     map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
         loaded,
@@ -257,15 +257,15 @@ fn map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     plan: &MarketIdentityPlan,
-    clock: BoltV3UpdownNowFn,
+    clock: BoltV3MarketClockFn,
     binding_for_provider_key: impl Fn(&str) -> Option<&'static bolt_v3_providers::ProviderBinding>,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
-    validate_market_identity_target_venues(loaded, plan)?;
-    let mut venues = BTreeMap::new();
+    validate_market_identity_target_clients(loaded, plan)?;
+    let mut clients = BTreeMap::new();
     for (client_key, client) in &loaded.root.clients {
         let Some(binding) = binding_for_provider_key(client.venue.as_str()) else {
             return Err(BoltV3AdapterMappingError::ValidationInvariant {
-                venue_key: client_key.clone(),
+                client_key: client_key.clone(),
                 field: "venue",
                 message: format!(
                     "venue `{}` is not supported by this build",
@@ -276,42 +276,42 @@ fn map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
         validate_provider_market_family_support(client_key, binding, plan)?;
         let mapped = (binding.map_adapters)(ProviderAdapterMapContext {
             root: &loaded.root,
-            venue_key: client_key,
-            venue: client,
+            client_key,
+            client,
             resolved,
             plan,
             clock: clock.clone(),
         })?;
-        venues.insert(client_key.clone(), mapped);
+        clients.insert(client_key.clone(), mapped);
     }
-    Ok(BoltV3AdapterConfigs { venues })
+    Ok(BoltV3AdapterConfigs { clients })
 }
 
 fn validate_provider_market_family_support(
-    venue_key: &str,
+    client_key: &str,
     binding: &bolt_v3_providers::ProviderBinding,
     plan: &MarketIdentityPlan,
 ) -> Result<(), BoltV3AdapterMappingError> {
-    // Only venues referenced by a market-identity target need family
+    // Only clients referenced by a market-identity target need family
     // support. A provider with an empty `supported_market_families`
-    // remains valid for data-only/reference venues that no strategy
+    // remains valid for data-only/reference clients that no strategy
     // target routes through.
     for target in plan
-        .venue_target_refs()
-        .filter(|target| target.venue_config_key == venue_key)
+        .execution_client_target_refs()
+        .filter(|target| target.execution_client_id == client_key)
     {
         if !binding
             .supported_market_families
             .contains(&target.family_key)
         {
             return Err(BoltV3AdapterMappingError::ValidationInvariant {
-                venue_key: target.venue_config_key.to_string(),
+                client_key: target.execution_client_id.to_string(),
                 field: "strategy.execution_client_id",
                 message: format!(
                     "configured target `{}` uses market family `{}` on client `{}`, but provider `{}` does not support that market family",
                     target.configured_target_id,
                     target.family_key,
-                    target.venue_config_key,
+                    target.execution_client_id,
                     binding.key,
                 ),
             });
@@ -320,18 +320,18 @@ fn validate_provider_market_family_support(
     Ok(())
 }
 
-fn validate_market_identity_target_venues(
+fn validate_market_identity_target_clients(
     loaded: &LoadedBoltV3Config,
     plan: &MarketIdentityPlan,
 ) -> Result<(), BoltV3AdapterMappingError> {
-    for target in plan.venue_target_refs() {
-        if !loaded.root.clients.contains_key(target.venue_config_key) {
+    for target in plan.execution_client_target_refs() {
+        if !loaded.root.clients.contains_key(target.execution_client_id) {
             return Err(BoltV3AdapterMappingError::ValidationInvariant {
-                venue_key: target.venue_config_key.to_string(),
+                client_key: target.execution_client_id.to_string(),
                 field: "strategy.execution_client_id",
                 message: format!(
                     "configured target `{}` references unknown client `{}`",
-                    target.configured_target_id, target.venue_config_key,
+                    target.configured_target_id, target.execution_client_id,
                 ),
             });
         }
@@ -361,12 +361,12 @@ mod tests {
     use crate::bolt_v3_market_families::updown::{self, UpdownTargetPlan};
     use crate::bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderBinding, ProviderResolvedSecrets,
-        ProviderSecretResolveContext, ResolvedVenueSecrets, SsmSecretResolver,
+        ProviderSecretResolveContext, ResolvedClientSecrets, SsmSecretResolver,
         binance::{self, ResolvedBoltV3BinanceSecrets},
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     };
     use crate::bolt_v3_secrets::{
-        BoltV3SecretError, ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets,
+        BoltV3SecretError, ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets,
     };
 
     const FAKE_UPDOWN_PROVIDER_KEY: &str = "FAKE_UPDOWN_PROVIDER";
@@ -394,21 +394,21 @@ mod tests {
     fn resolve_fake_provider_secrets(
         _context: ProviderSecretResolveContext<'_>,
         _resolver: &mut dyn SsmSecretResolver,
-    ) -> Result<ResolvedVenueSecrets, BoltV3SecretError> {
+    ) -> Result<ResolvedClientSecrets, BoltV3SecretError> {
         Ok(Arc::new(FakeProviderSecrets))
     }
 
     fn map_fake_provider_adapters(
         context: ProviderAdapterMapContext<'_>,
-    ) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
-        assert_eq!(context.venue.venue.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
-        assert_eq!(context.venue_key, "polymarket_main");
+    ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
+        assert_eq!(context.client.venue.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
+        assert_eq!(context.client_key, "polymarket_main");
         assert_eq!(context.plan.updown_targets.len(), 1);
         assert_eq!(
-            context.plan.updown_targets[0].venue_config_key,
-            context.venue_key
+            context.plan.updown_targets[0].execution_client_id,
+            context.client_key
         );
-        Ok(BoltV3VenueAdapterConfig {
+        Ok(BoltV3ClientAdapterConfig {
             data: None,
             execution: None,
         })
@@ -416,11 +416,11 @@ mod tests {
 
     fn map_fake_no_target_provider_adapters(
         context: ProviderAdapterMapContext<'_>,
-    ) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
-        assert_eq!(context.venue.venue.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
-        assert_eq!(context.venue_key, "polymarket_main");
+    ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
+        assert_eq!(context.client.venue.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
+        assert_eq!(context.client_key, "polymarket_main");
         assert!(context.plan.updown_targets.is_empty());
-        Ok(BoltV3VenueAdapterConfig {
+        Ok(BoltV3ClientAdapterConfig {
             data: None,
             execution: None,
         })
@@ -428,7 +428,7 @@ mod tests {
 
     static FAKE_UPDOWN_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
-        validate_venue: validate_fake_provider_venue,
+        validate_client: validate_fake_provider_venue,
         supported_market_families: &[updown::KEY],
         required_secret_blocks: &[],
         secret_field_names: &[],
@@ -440,7 +440,7 @@ mod tests {
 
     static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
-        validate_venue: validate_fake_provider_venue,
+        validate_client: validate_fake_provider_venue,
         supported_market_families: &[],
         required_secret_blocks: &[],
         secret_field_names: &[],
@@ -452,7 +452,7 @@ mod tests {
 
     static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
-        validate_venue: validate_fake_provider_venue,
+        validate_client: validate_fake_provider_venue,
         supported_market_families: &[],
         required_secret_blocks: &[],
         secret_field_names: &[],
@@ -489,7 +489,7 @@ mod tests {
     }
 
     fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
-        let mut clients: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
+        let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
         clients.insert(
             "polymarket_main".to_string(),
             Arc::new(fixture_polymarket_secrets()),
@@ -513,12 +513,12 @@ mod tests {
         loaded
             .root
             .clients
-            .retain(|venue_key, _venue| venue_key == "polymarket_main");
+            .retain(|client_key, _venue| client_key == "polymarket_main");
         let plan = MarketIdentityPlan {
             updown_targets: vec![UpdownTargetPlan {
                 strategy_instance_id: "fake-strategy".to_string(),
                 configured_target_id: "fake-updown".to_string(),
-                venue_config_key: "polymarket_main".to_string(),
+                execution_client_id: "polymarket_main".to_string(),
                 underlying_asset: "BTC".to_string(),
                 cadence_secs: 300,
                 cadence_slug_token: "5m".to_string(),
@@ -545,7 +545,7 @@ mod tests {
         .expect("core mapping should route through the injected fake provider binding");
 
         let fake = configs
-            .venues
+            .clients
             .get("polymarket_main")
             .expect("fake provider client should map");
         assert!(fake.data.is_none());
@@ -564,12 +564,12 @@ mod tests {
         loaded
             .root
             .clients
-            .retain(|venue_key, _venue| venue_key == "polymarket_main");
+            .retain(|client_key, _venue| client_key == "polymarket_main");
         let plan = MarketIdentityPlan {
             updown_targets: vec![UpdownTargetPlan {
                 strategy_instance_id: "fake-strategy".to_string(),
                 configured_target_id: "fake-updown".to_string(),
-                venue_config_key: "polymarket_main".to_string(),
+                execution_client_id: "polymarket_main".to_string(),
                 underlying_asset: "BTC".to_string(),
                 cadence_secs: 300,
                 cadence_slug_token: "5m".to_string(),
@@ -597,17 +597,17 @@ mod tests {
 
         match error {
             BoltV3AdapterMappingError::ValidationInvariant {
-                venue_key,
+                client_key,
                 field,
                 message,
             } => {
-                assert_eq!(venue_key, "polymarket_main");
+                assert_eq!(client_key, "polymarket_main");
                 assert_eq!(field, "strategy.execution_client_id");
                 assert!(message.contains("does not support that market family"));
                 let rendered = format!(
                     "{}",
                     BoltV3AdapterMappingError::ValidationInvariant {
-                        venue_key,
+                        client_key,
                         field,
                         message,
                     }
@@ -616,7 +616,7 @@ mod tests {
                 assert!(rendered.contains("strategy.execution_client_id"));
                 assert!(!rendered.contains("venues."));
                 assert!(!rendered.contains("provider venue"));
-                assert!(!rendered.contains("strategy.target.venue_config_key"));
+                assert!(!rendered.contains("strategy.target."));
             }
             other => panic!("expected ValidationInvariant, got {other}"),
         }
@@ -634,7 +634,7 @@ mod tests {
         loaded
             .root
             .clients
-            .retain(|venue_key, _venue| venue_key == "polymarket_main");
+            .retain(|client_key, _venue| client_key == "polymarket_main");
         let plan = MarketIdentityPlan {
             updown_targets: Vec::new(),
         };
@@ -656,9 +656,9 @@ mod tests {
                 }
             },
         )
-        .expect("family support check applies only to venues referenced by plan targets");
+        .expect("family support check applies only to clients referenced by plan targets");
 
-        assert!(configs.venues.contains_key("polymarket_main"));
+        assert!(configs.clients.contains_key("polymarket_main"));
     }
 
     #[test]
@@ -669,7 +669,7 @@ mod tests {
         let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
 
         let polymarket = configs
-            .venues
+            .clients
             .get("polymarket_main")
             .expect("polymarket_main must be present");
 
@@ -750,7 +750,7 @@ mod tests {
         let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
 
         let binance = configs
-            .venues
+            .clients
             .get("binance_reference")
             .expect("binance_reference must be present");
         let data = binance
@@ -788,7 +788,7 @@ mod tests {
         // Provide the binance_reference secret entry so map iteration
         // reaches `polymarket_main` (which is alphabetically later in
         // the BTreeMap) and trips on the missing polymarket secrets.
-        let mut clients: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
+        let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
         clients.insert(
             "binance_reference".to_string(),
             Arc::new(fixture_binance_secrets()),
@@ -804,10 +804,10 @@ mod tests {
         assert!(!rendered.contains("venues."));
         match error {
             BoltV3AdapterMappingError::MissingResolvedSecrets {
-                venue_key,
+                client_key,
                 expected_provider_key,
             } => {
-                assert_eq!(venue_key, "polymarket_main");
+                assert_eq!(client_key, "polymarket_main");
                 assert_eq!(expected_provider_key, polymarket::KEY);
             }
             other => panic!("expected MissingResolvedSecrets, got {other}"),
@@ -821,7 +821,7 @@ mod tests {
         // fails when it reaches `binance_reference` with no entry. This
         // pairs with the polymarket case so neither alphabetical
         // position can hide an unmapped resolved-secrets gap.
-        let mut clients: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
+        let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
         clients.insert(
             "polymarket_main".to_string(),
             Arc::new(fixture_polymarket_secrets()),
@@ -837,10 +837,10 @@ mod tests {
         assert!(!rendered.contains("venues."));
         match error {
             BoltV3AdapterMappingError::MissingResolvedSecrets {
-                venue_key,
+                client_key,
                 expected_provider_key,
             } => {
-                assert_eq!(venue_key, "binance_reference");
+                assert_eq!(client_key, "binance_reference");
                 assert_eq!(expected_provider_key, binance::KEY);
             }
             other => panic!("expected MissingResolvedSecrets, got {other}"),
@@ -850,7 +850,7 @@ mod tests {
     #[test]
     fn mismatched_resolved_secret_kind_is_a_mapping_error() {
         let loaded = fixture_loaded_config();
-        let mut clients: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
+        let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
         clients.insert(
             "polymarket_main".to_string(),
             Arc::new(fixture_binance_secrets()),
@@ -869,10 +869,10 @@ mod tests {
         assert!(!rendered.contains("venues."));
         match error {
             BoltV3AdapterMappingError::SecretKindMismatch {
-                venue_key,
+                client_key,
                 expected_provider_key,
             } => {
-                assert_eq!(venue_key, "polymarket_main");
+                assert_eq!(client_key, "polymarket_main");
                 assert_eq!(expected_provider_key, polymarket::KEY);
             }
             other => panic!("expected SecretKindMismatch, got {other}"),

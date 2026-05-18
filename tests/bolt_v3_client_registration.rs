@@ -7,7 +7,7 @@
 //!      adapter mapping both succeed; missing or mismatched secrets
 //!      surface as the matching `BoltV3LiveNodeError` variant *before*
 //!      registration.
-//!   3. Registered NT client kinds match the configured venue blocks
+//!   3. Registered NT client kinds match the configured client blocks
 //!      (verified via `data_engine.registered_clients()` and
 //!      `exec_engine.client_ids()` after `LiveNodeBuilder::build`).
 //!   4. The registration module source itself does not introduce any
@@ -35,9 +35,9 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
             .expect("v3 LiveNode should build through the registration boundary");
 
     // The summary records bolt-v3's intent at the registration boundary.
-    assert_eq!(summary.venues.len(), 2, "two configured venues");
+    assert_eq!(summary.clients.len(), 2, "two configured clients");
     let polymarket = summary
-        .venues
+        .clients
         .get("polymarket_main")
         .expect("polymarket_main must appear in summary");
     assert!(
@@ -49,7 +49,7 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
         "fixture polymarket_main has an [execution] block"
     );
     let binance = summary
-        .venues
+        .clients
         .get("binance_reference")
         .expect("binance_reference must appear in summary");
     assert!(binance.data, "fixture binance_reference has a [data] block");
@@ -165,8 +165,8 @@ fn registration_module_remains_a_no_trade_boundary() {
 }
 
 #[test]
-fn empty_venues_root_config_registers_zero_clients() {
-    // Build a synthetic root config with zero venues so registration
+fn empty_clients_root_config_registers_zero_clients() {
+    // Build a synthetic root config with zero clients so registration
     // must succeed but produce an empty summary, and the resulting
     // node must expose no registered NT clients.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
@@ -181,14 +181,14 @@ fn empty_venues_root_config_registers_zero_clients() {
         strategies: Vec::new(),
     };
 
-    // No venues means no SSM paths are touched; the resolver is never
+    // No clients means no SSM paths are touched; the resolver is never
     // called, so the closure body cannot be reached.
     let resolver = |_region: &str, _path: &str| -> Result<String, &'static str> {
-        Err("resolver must not be called when no venues are configured")
+        Err("resolver must not be called when no clients are configured")
     };
     let (node, summary) = build_bolt_v3_live_node_with_summary(&empty_loaded, |_| false, resolver)
         .expect("empty venue set should still build a clean LiveNode");
-    assert!(summary.venues.is_empty());
+    assert!(summary.clients.is_empty());
     assert!(node.registered_data_client_ids().is_empty());
     assert!(node.registered_exec_client_ids().is_empty());
 }

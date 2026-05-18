@@ -68,7 +68,7 @@ defensive_forbidden:
 
 path_scoped_forbidden:
   - from: venue_name
-    to: venue_kind
+    to: venue
     include_globs:
       - docs/bolt-v3/[0-9]*-bolt-v3-*.md
       - docs/bolt-v3/research/runtime-capture/*.yaml
@@ -76,13 +76,49 @@ path_scoped_forbidden:
       - contracts/**/*.toml
       - tests/**/*.toml
       - tests/fixtures/**/*.toml
-    reason: "Bolt-v3 uses venue_kind for the TOML adapter family; venue_name remains valid in older non-v3 source surfaces"
+    reason: "Bolt-v3 client config stores the NT Venue identifier in `venue`; venue_name remains valid in older non-v3 source surfaces"
+  - from: venue_config_key
+    to: execution_client_id
+    include_globs:
+      - docs/bolt-v3/[0-9]*-bolt-v3-*.md
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Bolt-v3 strategy routing uses NT ClientId vocabulary; execution_client_id is the configured execution client reference"
+  - from: venue_key
+    to: client_key
+    include_globs:
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Bolt-v3 `[clients.<id>]` table keys are client keys; venue remains reserved for the NT Venue identifier"
+  - from: BoltV3VenueAdapterConfig
+    to: BoltV3ClientAdapterConfig
+    include_globs:
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Adapter mapping groups data/execution factories by configured client, not by NT Venue"
+  - from: BoltV3RegisteredVenue
+    to: BoltV3RegisteredClient
+    include_globs:
+      - src/bolt_v3_*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Registration summaries describe NT client registration for configured clients"
+  - from: ResolvedVenueSecrets
+    to: ResolvedClientSecrets
+    include_globs:
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Resolved SSM secret handles are keyed by configured client"
+  - from: venue_kind
+    to: venue
+    include_globs:
+      - docs/bolt-v3/[0-9]*-bolt-v3-*.md
+    reason: "Bolt-v3 client blocks store the NT Venue identifier in `venue`; operator-facing contracts should not call that value a kind"
 
 accepted_non_nt_names:
-  - name: venue_kind
-    owner: bolt_derived
-    nt_evidence: "nautilus_model::identifiers::Venue is the NT venue identity; Bolt `venue_kind` is the TOML adapter-family key and is intentionally not named like NT Venue"
-    reason: "Configured venue adapter family from TOML kind, not NT Venue identity"
   - name: decision_trace_id
     owner: bolt_derived
     reason: "Bolt lifecycle correlation key, not an NT UUID field"

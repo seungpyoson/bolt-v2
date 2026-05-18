@@ -1350,7 +1350,7 @@ fn rejects_forbidden_polymarket_env_vars_before_client_build() {
         match error {
             BoltV3LiveNodeError::ForbiddenEnv(report) => {
                 assert_eq!(report.findings.len(), 1, "{report}");
-                assert_eq!(report.findings[0].venue_key, "polymarket_main");
+                assert_eq!(report.findings[0].client_key, "polymarket_main");
                 assert_eq!(report.findings[0].env_var, forbidden);
             }
             other => panic!("expected ForbiddenEnv error, got {other:?}"),

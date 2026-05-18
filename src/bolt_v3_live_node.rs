@@ -7,9 +7,9 @@
 //! - validates the forbidden credential env-var blocklist before
 //!   constructing any NautilusTrader client
 //! - resolves SSM secrets via the bolt-v3 secret resolver
-//! - maps the validated bolt-v3 venue blocks into provider-owned
+//! - maps the validated bolt-v3 client blocks into provider-owned
 //!   NT-native adapter configs
-//! - registers the per-venue NT data and execution client factories on a
+//! - registers the per-client NT data and execution client factories on a
 //!   `nautilus_live::builder::LiveNodeBuilder` via the
 //!   [`crate::bolt_v3_client_registration`] boundary
 //! - calls `LiveNodeBuilder::build`, which is **not** purely passive:
@@ -173,8 +173,8 @@ pub enum BoltV3LiveNodeError {
     /// `SsmResolverSession::new()` failed before any venue secret was
     /// read. The wrapped `SecretError` is the upstream Tokio /
     /// AWS-SDK-config setup failure. Distinct from
-    /// [`SecretResolution`] (which carries a per-venue `BoltV3SecretError`
-    /// with venue key, secret-config field name, and SSM path) because
+    /// [`SecretResolution`] (which carries a per-client `BoltV3SecretError`
+    /// with client key, secret-config field name, and SSM path) because
     /// session setup happens before any venue path is consulted, so an
     /// operator message that names a venue or SSM path would be wrong.
     SecretResolverSetup(crate::secrets::SecretError),
@@ -1266,7 +1266,7 @@ mod tests {
     #[test]
     fn secret_resolver_setup_variant_renders_clean_message_without_empty_venue_path() {
         // Per #255-2: before this fix, session-construction failure was
-        // mapped into `BoltV3SecretError` with empty `venue_key` and
+        // mapped into `BoltV3SecretError` with empty `client_key` and
         // `ssm_path`, rendering as a confusing
         // `venues..secrets.ssm_resolver_session ...`. The dedicated
         // `BoltV3LiveNodeError::SecretResolverSetup(SecretError)` variant

@@ -58,7 +58,7 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 ## 5. Secret source and env fallback
 
 - invariant:
-  - SSM-only secret source and per-venue-kind environment-variable blocklist
+  - SSM-only secret source and per-provider environment-variable blocklist
 - canonical owner:
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 3
 - dependent references:

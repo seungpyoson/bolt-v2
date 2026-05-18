@@ -17,7 +17,7 @@ reason = "The Polymarket provider binding owns the pinned NT data config debounc
 path = "src/bolt_v3_adapters.rs"
 kind = "number"
 literal = "0_i64"
-context = "let zero_clock: BoltV3UpdownNowFn = Arc::new(|| 0_i64);"
+context = "let zero_clock: BoltV3MarketClockFn = Arc::new(|| 0_i64);"
 classification = "no_identity_clock_sentinel"
 reason = "The no-identity adapter entry point supplies an empty market-identity plan, so this deterministic clock closure is never invoked and is documented as a sentinel for that no-filter path."
 
@@ -528,18 +528,18 @@ reason = "This message renders the root-level secret-resolution fact when no cli
 [[allowed]]
 path = "src/bolt_v3_readiness.rs"
 kind = "string"
-literal = "\"no venue adapter configs mapped\""
-context = "\"no venue adapter configs mapped\","
+literal = "\"no client adapter configs mapped\""
+context = "\"no client adapter configs mapped\","
 classification = "startup_readiness_diagnostic_template"
-reason = "This message renders the root-level adapter-mapping fact when no venues produce adapter configs; it is diagnostic output, not an operator runtime value."
+reason = "This message renders the root-level adapter-mapping fact when no clients produce adapter configs; it is diagnostic output, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_readiness.rs"
 kind = "string"
-literal = "\"mapped adapter configs for venue `{venue_key}`: data={} execution={}\""
-context = "\"mapped adapter configs for venue `{venue_key}`: data={} execution={}\","
+literal = "\"mapped adapter configs for client `{client_key}`: data={} execution={}\""
+context = "\"mapped adapter configs for client `{client_key}`: data={} execution={}\","
 classification = "startup_readiness_diagnostic_template"
-reason = "This template renders the adapter-mapping fact with venue key and data/execution presence booleans; it is diagnostic output, not an operator runtime value."
+reason = "This template renders the adapter-mapping fact with client key and data/execution presence booleans; it is diagnostic output, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_readiness.rs"
@@ -560,18 +560,18 @@ reason = "This message renders the final no-connect LiveNode build fact for the 
 [[allowed]]
 path = "src/bolt_v3_readiness.rs"
 kind = "string"
-literal = "\"no NT clients registered because no venues are configured\""
-context = "\"no NT clients registered because no venues are configured\","
+literal = "\"no NT clients registered because no clients are configured\""
+context = "\"no NT clients registered because no clients are configured\","
 classification = "startup_readiness_diagnostic_template"
-reason = "This message renders the root-level client-registration fact when no venues exist; it is diagnostic output, not an operator runtime value."
+reason = "This message renders the root-level client-registration fact when no clients exist; it is diagnostic output, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_readiness.rs"
 kind = "string"
-literal = "\"registered NT clients for venue `{venue_key}`: data={} execution={}\""
-context = "\"registered NT clients for venue `{venue_key}`: data={} execution={}\","
+literal = "\"registered NT clients for client `{client_key}`: data={} execution={}\""
+context = "\"registered NT clients for client `{client_key}`: data={} execution={}\","
 classification = "startup_readiness_diagnostic_template"
-reason = "This template renders the client-registration fact with venue key and registered client presence booleans; it is diagnostic output, not an operator runtime value."
+reason = "This template renders the client-registration fact with client key and registered client presence booleans; it is diagnostic output, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"

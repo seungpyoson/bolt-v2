@@ -1,5 +1,5 @@
 //! Per-provider binding for `BINANCE` client config block shapes and
-//! per-venue startup validation.
+//! per-client startup validation.
 //!
 //! Owns the concrete shape of `[clients.<name>.data]` and
 //! `[clients.<name>.secrets]` for any client whose `venue = "BINANCE"`
@@ -9,16 +9,16 @@
 //! serde rules live here so provider-specific schema evolution does
 //! not reach back into the envelope module.
 //!
-//! This module also owns the per-venue startup-validation policy for
-//! Binance venues: the no-execution rule for the current bolt-v3
+//! This module also owns the per-client startup-validation policy for
+//! Binance clients: the no-execution rule for the current bolt-v3
 //! scope, typed deserialization of each present block, cross-block
 //! presence rule ([secrets] is only allowed alongside [data]),
 //! Binance data bounds, and Binance secret-path ownership. The
 //! cross-provider rule that [data] requires [secrets] is declared by
 //! [`REQUIRED_SECRET_BLOCKS`] and enforced centrally in
-//! `bolt_v3_providers::validate_venue_block`. Core startup validation in
+//! `bolt_v3_providers::validate_client_block`. Core startup validation in
 //! `crate::bolt_v3_validate` dispatches into
-//! `bolt_v3_providers::validate_venue_block`, which routes Binance
+//! `bolt_v3_providers::validate_client_block`, which routes Binance
 //! venues here. The neutral SSM-path utility
 //! (`crate::bolt_v3_validate::validate_ssm_parameter_path`) stays in
 //! core and is called from this module the same way the archetype
@@ -37,12 +37,12 @@ use serde::Deserialize;
 
 use crate::{
     bolt_v3_adapters::{
-        BoltV3AdapterMappingError, BoltV3DataClientAdapterConfig, BoltV3VenueAdapterConfig,
+        BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3DataClientAdapterConfig,
     },
     bolt_v3_config::ClientBlock,
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
-        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedVenueSecrets,
+        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedClientSecrets,
         SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
@@ -139,21 +139,21 @@ impl ProviderResolvedSecrets for ResolvedBoltV3BinanceSecrets {
     }
 }
 
-pub fn validate_venue(key: &str, venue: &ClientBlock) -> Vec<String> {
+pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
     let mut errors = Vec::new();
-    if venue.execution.is_some() {
+    if client.execution.is_some() {
         errors.push(format!(
             "clients.{key} (provider=BINANCE) is not allowed to declare an [execution] block in the current bolt-v3 scope"
         ));
     }
-    if let Some(data) = &venue.data {
+    if let Some(data) = &client.data {
         match data.clone().try_into::<BinanceDataConfig>() {
             Ok(parsed) => errors.extend(validate_data_bounds(key, &parsed)),
             Err(message) => errors.push(format!("clients.{key}.data: {message}")),
         }
     }
-    if let Some(secrets) = &venue.secrets {
-        if venue.data.is_none() {
+    if let Some(secrets) = &client.secrets {
+        if client.data.is_none() {
             errors.push(format!(
                 "clients.{key} (provider=BINANCE) declares [secrets] but no [data] block is configured; \
                  Binance [secrets] are only allowed alongside the data adapter that consumes them"
@@ -210,13 +210,13 @@ fn validate_secret_paths(key: &str, secrets: &BinanceSecretsConfig) -> Vec<Strin
 pub fn resolve_secrets(
     context: ProviderSecretResolveContext<'_>,
     resolver: &mut dyn SsmSecretResolver,
-) -> Result<ResolvedVenueSecrets, BoltV3SecretError> {
+) -> Result<ResolvedClientSecrets, BoltV3SecretError> {
     let secrets_value = context
-        .venue
+        .client
         .secrets
         .as_ref()
         .ok_or_else(|| BoltV3SecretError {
-            venue_key: context.venue_key.to_string(),
+            client_key: context.client_key.to_string(),
             field: "secrets".to_string(),
             ssm_path: String::new(),
             source: "missing [secrets] block".to_string(),
@@ -226,26 +226,26 @@ pub fn resolve_secrets(
             .clone()
             .try_into()
             .map_err(|error: toml::de::Error| BoltV3SecretError {
-                venue_key: context.venue_key.to_string(),
+                client_key: context.client_key.to_string(),
                 field: KEY.to_string(),
                 ssm_path: String::new(),
                 source: format!("invalid binance secrets schema: {error}"),
             })?;
     let api_secret = resolve_field(
-        context.venue_key,
+        context.client_key,
         "api_secret_ssm_path",
         context.region,
         &secrets.api_secret_ssm_path,
         resolver,
     )?;
     validate_binance_api_secret_shape(&api_secret).map_err(|_| BoltV3SecretError {
-        venue_key: context.venue_key.to_string(),
+        client_key: context.client_key.to_string(),
         field: "api_secret_ssm_path".to_string(),
         ssm_path: secrets.api_secret_ssm_path.clone(),
         source: "resolved binance api_secret is not valid Ed25519 PKCS8 base64 key material accepted by the NautilusTrader binance adapter".to_string(),
     })?;
     let api_key = resolve_field(
-        context.venue_key,
+        context.client_key,
         "api_key_ssm_path",
         context.region,
         &secrets.api_key_ssm_path,
@@ -259,31 +259,31 @@ pub fn resolve_secrets(
 
 pub fn map_adapters(
     context: ProviderAdapterMapContext<'_>,
-) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
-    let data = match &context.venue.data {
+) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
+    let data = match &context.client.data {
         Some(value) => {
-            let secrets = secrets_for(context.venue_key, context.resolved)?;
+            let secrets = secrets_for(context.client_key, context.resolved)?;
             Some(BoltV3DataClientAdapterConfig {
                 factory: Box::new(BinanceDataClientFactory::new()),
-                config: Box::new(map_data(context.venue_key, value, secrets)?),
+                config: Box::new(map_data(context.client_key, value, secrets)?),
             })
         }
         None => None,
     };
-    Ok(BoltV3VenueAdapterConfig {
+    Ok(BoltV3ClientAdapterConfig {
         data,
         execution: None,
     })
 }
 
 fn map_data(
-    venue_key: &str,
+    client_key: &str,
     value: &toml::Value,
     secrets: &ResolvedBoltV3BinanceSecrets,
 ) -> Result<BinanceDataClientConfig, BoltV3AdapterMappingError> {
     let cfg: BinanceDataConfig = value.clone().try_into().map_err(|error: toml::de::Error| {
         BoltV3AdapterMappingError::SchemaParse {
-            venue_key: venue_key.to_string(),
+            client_key: client_key.to_string(),
             block: "data",
             message: error.to_string(),
         }
@@ -302,18 +302,18 @@ fn map_data(
 }
 
 fn secrets_for<'a>(
-    venue_key: &str,
+    client_key: &str,
     resolved: &'a crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
 ) -> Result<&'a ResolvedBoltV3BinanceSecrets, BoltV3AdapterMappingError> {
-    match resolved.clients.get(venue_key) {
+    match resolved.clients.get(client_key) {
         Some(inner) => inner.as_any().downcast_ref().ok_or_else(|| {
             BoltV3AdapterMappingError::SecretKindMismatch {
-                venue_key: venue_key.to_string(),
+                client_key: client_key.to_string(),
                 expected_provider_key: KEY,
             }
         }),
         None => Err(BoltV3AdapterMappingError::MissingResolvedSecrets {
-            venue_key: venue_key.to_string(),
+            client_key: client_key.to_string(),
             expected_provider_key: KEY,
         }),
     }

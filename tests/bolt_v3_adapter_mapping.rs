@@ -10,7 +10,7 @@ use bolt_v2::{
         binance::ResolvedBoltV3BinanceSecrets,
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     },
-    bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
+    bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
 };
 use nautilus_binance::common::enums::{
     BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
@@ -38,7 +38,7 @@ fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
 }
 
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
-    let mut clients: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
+    let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
     clients.insert(
         "polymarket_main".to_string(),
         Arc::new(fixture_polymarket_secrets()),
@@ -59,7 +59,7 @@ fn polymarket_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
 
     let polymarket = configs
-        .venues
+        .clients
         .get("polymarket_main")
         .expect("polymarket_main must be present in mapper output");
 
@@ -161,9 +161,9 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
         .expect_err("mapper must not forward subscribe_new_markets=true to NT");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
-            venue_key, field, ..
+            client_key, field, ..
         } => {
-            assert_eq!(venue_key, "polymarket_main");
+            assert_eq!(client_key, "polymarket_main");
             assert_eq!(field, "data.subscribe_new_markets");
         }
         other => panic!("expected ValidationInvariant, got {other}"),
@@ -179,7 +179,7 @@ fn binance_data_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
 
     let binance = configs
-        .venues
+        .clients
         .get("binance_reference")
         .expect("binance_reference must be present in mapper output");
     let data = binance
@@ -373,10 +373,10 @@ ack_timeout_secs = 5
     assert!(!rendered.contains("venues."));
     match error {
         BoltV3AdapterMappingError::MissingResolvedSecrets {
-            venue_key,
+            client_key,
             expected_provider_key,
         } => {
-            assert_eq!(venue_key, "polymarket_main");
+            assert_eq!(client_key, "polymarket_main");
             assert_eq!(expected_provider_key, polymarket::KEY);
         }
         other => panic!("expected MissingResolvedSecrets, got {other}"),

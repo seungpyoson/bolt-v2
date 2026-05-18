@@ -76,7 +76,7 @@ The strategy file does not own:
 ## 4. Root File: Candidate Schema
 
 This is a structural example, not a default configuration.
-Values such as paths, SSM parameter names, account identifiers, wallet addresses, and venue keys must be operator-owned TOML values in a real deploy.
+Values such as paths, SSM parameter names, account identifiers, wallet addresses, and client keys must be operator-owned TOML values in a real deploy.
 
 ```toml
 schema_version = 1
@@ -755,10 +755,10 @@ Live-result proof JSON files:
 
 ### `[clients.<identifier>]`
 
-#### Venue key
+#### Client key
 
 - type: keyed identifier
-- required: yes for every configured venue
+- required: yes for every configured client
 - examples:
   - `polymarket_main`
   - `binance_reference`
@@ -846,7 +846,7 @@ Presence of `[execution]` means an execution client is configured.
 #### `account_id`
 
 - type: string
-- required: yes for execution-capable venues
+- required: yes for execution-capable clients
 
 Meaning:
 
@@ -977,7 +977,7 @@ strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
-venue = "polymarket_main"
+execution_client_id = "polymarket_main"
 
 [target]
 configured_target_id = "btc_updown_5m"
@@ -990,7 +990,7 @@ retry_interval_secs = 5
 blocked_after_secs = 60
 
 [reference_data.primary]
-venue = "binance_reference"
+data_client_id = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
 
 [parameters.entry_order]
@@ -1538,7 +1538,7 @@ strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
-venue = "polymarket_main"
+execution_client_id = "polymarket_main"
 
 [target]
 configured_target_id = "btc_updown_5m"
@@ -1551,7 +1551,7 @@ retry_interval_secs = 5
 blocked_after_secs = 60
 
 [reference_data.primary]
-venue = "binance_reference"
+data_client_id = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
 
 [parameters.entry_order]

@@ -47,7 +47,7 @@ use nautilus_live::{
 };
 use nautilus_model::{
     enums::BarIntervalType,
-    identifiers::{ClientId, StrategyId, TraderId},
+    identifiers::{ClientId, StrategyId},
 };
 use ustr::Ustr;
 
@@ -661,7 +661,7 @@ fn make_bolt_v3_live_node_builder_from_config(
 }
 
 pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
-    let trader_id = TraderId::from(loaded.root.trader_id.as_str());
+    let trader_id = loaded.root.trader_id;
     let environment = loaded.root.runtime.mode;
     let mut module_level: AHashMap<Ustr, LevelFilter> = AHashMap::new();
     for module_path in bolt_v3_providers::credential_log_modules() {
@@ -833,11 +833,7 @@ pub fn wire_bolt_v3_runtime_capture(
         node,
         stop_handle,
         &loaded.root.persistence.catalog_directory,
-        loaded
-            .root
-            .persistence
-            .streaming
-            .flush_interval_ms,
+        loaded.root.persistence.streaming.flush_interval_ms,
         None,
     )
 }
@@ -969,6 +965,7 @@ pub async fn disconnect_bolt_v3_clients(
 mod tests {
     use super::*;
     use crate::bolt_v3_config::BoltV3RootConfig;
+    use nautilus_model::identifiers::TraderId;
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
         let root_text = include_str!("../tests/fixtures/bolt_v3/root.toml");

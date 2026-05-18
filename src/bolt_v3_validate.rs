@@ -42,8 +42,8 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
-    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy, NautilusBlock,
-    PersistenceBlock, RiskBlock, ClientBlock,
+    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, ClientBlock, LoadedStrategy, NautilusBlock,
+    PersistenceBlock, RiskBlock,
 };
 
 #[derive(Debug)]
@@ -89,9 +89,6 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
             "root schema_version={} is unsupported by this build (only {} is currently supported)",
             root.schema_version, SUPPORTED_ROOT_SCHEMA_VERSION
         ));
-    }
-    if root.trader_id.trim().is_empty() {
-        errors.push("trader_id must be a non-empty string".to_string());
     }
     if root.strategy_files.is_empty() {
         errors.push("strategy_files must list at least one strategy file".to_string());
@@ -364,10 +361,8 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
         ));
     }
     if block.streaming.flush_interval_ms == 0 {
-        errors.push(
-            "persistence.streaming.flush_interval_ms must be a positive integer"
-                .to_string(),
-        );
+        errors
+            .push("persistence.streaming.flush_interval_ms must be a positive integer".to_string());
     }
     errors
 }

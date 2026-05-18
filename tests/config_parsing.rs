@@ -55,6 +55,35 @@ fn bolt_v3_config_uses_clients_section_with_nt_venue_identifier() {
 }
 
 #[test]
+fn bolt_v3_root_trader_id_uses_nt_typed_identifier() {
+    // `BoltV3RootConfig.trader_id` is typed as `nautilus_model::identifiers::TraderId`
+    // so the NT identifier macro rejects empty strings at parse time instead of
+    // leaving that as a bolt-side runtime check.
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use nautilus_model::identifiers::TraderId;
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
+
+    let trader_id: TraderId = loaded.root.trader_id;
+    assert_eq!(trader_id, TraderId::from("BOLT-001"));
+}
+
+#[test]
+fn bolt_v3_root_trader_id_rejects_empty_string_at_parse_time() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+
+    let mutated = replace_in_fixture_root("trader_id = \"BOLT-001\"", "trader_id = \"\"");
+    let err = toml::from_str::<BoltV3RootConfig>(&mutated)
+        .expect_err("empty trader_id should be rejected by NT TraderId serde");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("empty") || rendered.contains("invalid"),
+        "rejection should explain the empty trader_id, got: {rendered}"
+    );
+}
+
+#[test]
 fn bolt_v3_strategy_oms_type_uses_nt_canonical_enum() {
     // FINDING-1: `strategy.oms_type` is typed as `nautilus_model::enums::OmsType`
     // (not a bolt shadow enum). NT's enum_strum_serde! macro makes deserialize
@@ -135,15 +164,14 @@ fn bolt_v3_runtime_mode_rejects_backtest_and_sandbox_variants() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     for variant in ["Backtest", "Sandbox"] {
-        let mutated = replace_in_fixture_root(
-            "mode = \"Live\"",
-            &format!("mode = \"{variant}\""),
-        );
+        let mutated = replace_in_fixture_root("mode = \"Live\"", &format!("mode = \"{variant}\""));
         let root: BoltV3RootConfig =
             toml::from_str(&mutated).expect("non-Live Environment variant should parse via NT");
         let messages = validate_root_only(&root);
         assert!(
-            messages.iter().any(|m| m.contains("runtime.mode") && m.contains("Live")),
+            messages
+                .iter()
+                .any(|m| m.contains("runtime.mode") && m.contains("Live")),
             "expected runtime.mode rejection citing Live variant for `{variant}`, got: {messages:#?}"
         );
     }
@@ -178,18 +206,13 @@ fn bolt_v3_logging_levels_accept_nt_warning_uppercase_spelling() {
     use bolt_v2::bolt_v3_config::BoltV3RootConfig;
     use nautilus_common::enums::LogLevel;
 
-    let warning_root = replace_in_fixture_root(
-        "stdout_level = \"INFO\"",
-        "stdout_level = \"WARNING\"",
-    );
+    let warning_root =
+        replace_in_fixture_root("stdout_level = \"INFO\"", "stdout_level = \"WARNING\"");
     let root: BoltV3RootConfig =
         toml::from_str(&warning_root).expect("NT WARNING level should parse");
     assert_eq!(root.logging.stdout_level, LogLevel::Warning);
 
-    let warn_root = replace_in_fixture_root(
-        "stdout_level = \"INFO\"",
-        "stdout_level = \"WARN\"",
-    );
+    let warn_root = replace_in_fixture_root("stdout_level = \"INFO\"", "stdout_level = \"WARN\"");
     let err = toml::from_str::<BoltV3RootConfig>(&warn_root)
         .expect_err("legacy WARN spelling should be rejected by NT LogLevel");
     let rendered = err.to_string();
@@ -962,7 +985,10 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     let loaded = load_bolt_v3_config(&root_path).expect("minimal v3 config should load");
 
     assert_eq!(loaded.root.schema_version, 1);
-    assert_eq!(loaded.root.trader_id, "BOLT-001");
+    assert_eq!(
+        loaded.root.trader_id,
+        nautilus_model::identifiers::TraderId::from("BOLT-001")
+    );
     assert_eq!(loaded.root.runtime.mode, Environment::Live);
     assert_eq!(
         loaded.root.clients["polymarket_main"].venue.as_str(),
@@ -1799,24 +1825,25 @@ fn rejects_invalid_nt_risk_rate_limit_strings() {
             toml::from_str(&mutated).expect("invalid NT rate limit fixture should parse");
         let messages = validate_root_only(&root);
         assert!(
-            messages
-                .iter()
-                .any(|m| m
-                    .contains("risk.nautilus.max_order_submit_rate is not a valid Nautilus rate limit")),
+            messages.iter().any(|m| m.contains(
+                "risk.nautilus.max_order_submit_rate is not a valid Nautilus rate limit"
+            )),
             "expected submit-rate validation message for `{submit_rate}`, got: {messages:#?}"
         );
         // Only the first case mutates modify_rate; the remaining cases keep it
         // valid so submit-rate parsing branches are isolated.
         if modify_rate == "100/00:00:00" {
             assert!(
-                messages.iter().any(|m| m
-                    .contains("risk.nautilus.max_order_modify_rate is not a valid Nautilus rate limit")),
+                messages.iter().any(|m| m.contains(
+                    "risk.nautilus.max_order_modify_rate is not a valid Nautilus rate limit"
+                )),
                 "expected modify-rate validation message for `{modify_rate}`, got: {messages:#?}"
             );
         } else {
             assert!(
-                !messages.iter().any(|m| m
-                    .contains("risk.nautilus.max_order_modify_rate is not a valid Nautilus rate limit")),
+                !messages.iter().any(|m| m.contains(
+                    "risk.nautilus.max_order_modify_rate is not a valid Nautilus rate limit"
+                )),
                 "valid modify_rate `{modify_rate}` must not produce a modify-rate error: {messages:#?}"
             );
         }
@@ -1841,10 +1868,8 @@ fn rejects_invalid_nt_risk_max_notional_map_entries() {
         "expected invalid instrument-id validation error, got: {messages:#?}"
     );
     assert!(
-        messages
-            .iter()
-            .any(|m| m
-                .contains("risk.nautilus.max_notional_per_order[`BAD`] is not a valid decimal string")),
+        messages.iter().any(|m| m
+            .contains("risk.nautilus.max_notional_per_order[`BAD`] is not a valid decimal string")),
         "expected invalid notional validation error, got: {messages:#?}"
     );
 }

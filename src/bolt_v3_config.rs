@@ -15,7 +15,7 @@ use std::{
 use nautilus_common::enums::{Environment, LogLevel};
 use nautilus_model::{
     enums::OmsType,
-    identifiers::{ClientId, Venue},
+    identifiers::{ClientId, TraderId, Venue},
 };
 use serde::Deserialize;
 
@@ -25,7 +25,7 @@ use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validat
 #[serde(deny_unknown_fields)]
 pub struct BoltV3RootConfig {
     pub schema_version: u32,
-    pub trader_id: String,
+    pub trader_id: TraderId,
     pub strategy_files: Vec<String>,
     pub runtime: RuntimeBlock,
     pub nautilus: NautilusBlock,
@@ -402,7 +402,7 @@ mod tests {
     fn parses_minimal_root_block() {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
         assert_eq!(root.schema_version, 1);
-        assert_eq!(root.trader_id, "BOLT-001");
+        assert_eq!(root.trader_id, TraderId::from("BOLT-001"));
         assert_eq!(root.runtime.mode, Environment::Live);
         assert!(root.clients.contains_key("polymarket_main"));
         assert!(root.clients.contains_key("binance_reference"));

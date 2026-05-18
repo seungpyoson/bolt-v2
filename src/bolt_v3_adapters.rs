@@ -169,7 +169,7 @@ impl std::fmt::Display for BoltV3AdapterMappingError {
                 expected_provider_key,
             } => write!(
                 f,
-                "clients.{venue_key} (kind={kind}) requires resolved SSM secrets but none were \
+                "clients.{venue_key} (provider={kind}) requires resolved SSM secrets but none were \
                  supplied to the adapter mapper",
                 kind = expected_provider_key,
             ),
@@ -797,6 +797,11 @@ mod tests {
 
         let error = map_bolt_v3_adapters(&loaded, &resolved)
             .expect_err("missing resolved secrets must surface as a mapper error");
+        let rendered = error.to_string();
+        assert!(rendered.contains("(provider=POLYMARKET)"));
+        assert!(!rendered.contains("(kind="));
+        assert!(!rendered.contains("(venue="));
+        assert!(!rendered.contains("venues."));
         match error {
             BoltV3AdapterMappingError::MissingResolvedSecrets {
                 venue_key,
@@ -825,6 +830,11 @@ mod tests {
 
         let error = map_bolt_v3_adapters(&loaded, &resolved)
             .expect_err("missing binance resolved secrets must surface as a mapper error");
+        let rendered = error.to_string();
+        assert!(rendered.contains("(provider=BINANCE)"));
+        assert!(!rendered.contains("(kind="));
+        assert!(!rendered.contains("(venue="));
+        assert!(!rendered.contains("venues."));
         match error {
             BoltV3AdapterMappingError::MissingResolvedSecrets {
                 venue_key,

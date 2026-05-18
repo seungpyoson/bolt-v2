@@ -366,6 +366,11 @@ ack_timeout_secs = 5
     };
     let error = map_bolt_v3_adapters(&loaded, &empty_resolved)
         .expect_err("mapper must not synthesize defaults for missing resolved secrets");
+    let rendered = error.to_string();
+    assert!(rendered.contains("(provider=POLYMARKET)"));
+    assert!(!rendered.contains("(kind="));
+    assert!(!rendered.contains("(venue="));
+    assert!(!rendered.contains("venues."));
     match error {
         BoltV3AdapterMappingError::MissingResolvedSecrets {
             venue_key,

@@ -110,6 +110,77 @@ fn bolt_v3_strategy_oms_type_rejects_non_netting_variants() {
 }
 
 #[test]
+fn bolt_v3_archetype_order_params_use_nt_canonical_enums() {
+    // FINDING-1: archetype `[parameters.*_order]` rows are typed with NT's
+    // canonical `OrderType` and `TimeInForce` (not bolt shadow enums).
+    // NT serde is case-insensitive, so the fixture's `order_type = "limit"`
+    // and `time_in_force = "fok"` continue to parse unchanged.
+    use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock;
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use nautilus_model::enums::{OrderType, TimeInForce};
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
+    let strategy = &loaded.strategies[0].config;
+    let parameters: ParametersBlock = strategy
+        .parameters
+        .clone()
+        .try_into()
+        .expect("fixture parameters block should deserialize as binary_oracle_edge_taker");
+
+    let entry_order_type: OrderType = parameters.entry_order.order_type;
+    let entry_tif: TimeInForce = parameters.entry_order.time_in_force;
+    assert_eq!(entry_order_type, OrderType::Limit);
+    assert_eq!(entry_tif, TimeInForce::Fok);
+
+    let exit_order_type: OrderType = parameters.exit_order.order_type;
+    let exit_tif: TimeInForce = parameters.exit_order.time_in_force;
+    assert_eq!(exit_order_type, OrderType::Market);
+    assert_eq!(exit_tif, TimeInForce::Ioc);
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_unsupported_nt_order_type_variants() {
+    // FINDING-1: NT's OrderType has 9 variants; binary_oracle_edge_taker only
+    // permits (Limit, Fok) on entry and (Market, Ioc) on exit. A
+    // `[parameters.entry_order]` row with `order_type = "stop_market"` must
+    // parse via NT serde and then be rejected by the archetype validator.
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+
+    let mutated_strategy = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace(
+        "[parameters.entry_order]\norder_type = \"limit\"",
+        "[parameters.entry_order]\norder_type = \"stop_market\"",
+    );
+    let strategy: BoltV3StrategyConfig = toml::from_str(&mutated_strategy)
+        .expect("stop_market order_type should parse via NT OrderType");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("entry_order") && m.contains("binary_oracle_edge_taker")),
+        "expected entry_order rejection citing binary_oracle_edge_taker, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn parses_runtime_config_with_optional_streaming_section() {
     let toml = r#"
         [node]
@@ -791,11 +862,10 @@ disable_after_ms = 5000"#,
 
 #[test]
 fn parses_minimal_bolt_v3_root_and_strategy_config() {
-    use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::{
-        ArchetypeOrderType, ArchetypeTimeInForce, ParametersBlock,
-    };
+    use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock;
     use bolt_v2::bolt_v3_config::{RuntimeMode, load_bolt_v3_config};
     use bolt_v2::bolt_v3_market_families::updown::{TargetBlock, TargetKind};
+    use nautilus_model::enums::{OrderType, TimeInForce};
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("minimal v3 config should load");
@@ -832,16 +902,10 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
         .clone()
         .try_into()
         .expect("fixture parameters block should deserialize as binary_oracle_edge_taker");
-    assert_eq!(parameters.entry_order.order_type, ArchetypeOrderType::Limit);
-    assert_eq!(
-        parameters.entry_order.time_in_force,
-        ArchetypeTimeInForce::Fok
-    );
-    assert_eq!(parameters.exit_order.order_type, ArchetypeOrderType::Market);
-    assert_eq!(
-        parameters.exit_order.time_in_force,
-        ArchetypeTimeInForce::Ioc
-    );
+    assert_eq!(parameters.entry_order.order_type, OrderType::Limit);
+    assert_eq!(parameters.entry_order.time_in_force, TimeInForce::Fok);
+    assert_eq!(parameters.exit_order.order_type, OrderType::Market);
+    assert_eq!(parameters.exit_order.time_in_force, TimeInForce::Ioc);
     assert!(strategy.reference_data.contains_key("primary"));
     assert_eq!(
         strategy.reference_data["primary"].data_client_id,

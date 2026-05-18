@@ -37,7 +37,10 @@ use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::Deserialize;
 use toml::{Value, map::Map};
 
-use nautilus_model::identifiers::StrategyId;
+use nautilus_model::{
+    enums::{OrderType, TimeInForce},
+    identifiers::StrategyId,
+};
 
 use crate::{
     bolt_v3_archetypes::ArchetypeValidationBinding,
@@ -104,26 +107,11 @@ pub struct RuntimeParametersBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct OrderParams {
-    pub order_type: ArchetypeOrderType,
-    pub time_in_force: ArchetypeTimeInForce,
+    pub order_type: OrderType,
+    pub time_in_force: TimeInForce,
     pub is_post_only: bool,
     pub is_reduce_only: bool,
     pub is_quote_quantity: bool,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ArchetypeOrderType {
-    Limit,
-    Market,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ArchetypeTimeInForce {
-    Gtc,
-    Fok,
-    Ioc,
 }
 
 pub fn validate_strategy(
@@ -588,8 +576,8 @@ fn validate_parameter_bounds(
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
     let expected = (
-        ArchetypeOrderType::Limit,
-        ArchetypeTimeInForce::Fok,
+        OrderType::Limit,
+        TimeInForce::Fok,
         false,
         false,
         false,
@@ -613,8 +601,8 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
 
 fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {
     let expected = (
-        ArchetypeOrderType::Market,
-        ArchetypeTimeInForce::Ioc,
+        OrderType::Market,
+        TimeInForce::Ioc,
         false,
         false,
         false,

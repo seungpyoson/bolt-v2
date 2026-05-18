@@ -40,8 +40,8 @@ The root file owns:
 - entity-level risk settings
 - logging configuration
 - persistence paths
-- keyed venue definitions
-- venue secret references
+- keyed client definitions
+- client secret references
 - explicit strategy file list
 
 The root file does not own:
@@ -67,8 +67,8 @@ The strategy file owns:
 
 The strategy file does not own:
 
-- venue client construction
-- venue credentials
+- client construction
+- client credentials
 - process-wide logging settings
 - process-wide state paths
 - process-wide Nautilus runtime settings
@@ -1364,7 +1364,7 @@ Live validation behavior, fatal-vs-warning classification, and the full failure-
 ## 9. Canonical Example: Minimal Live-Trading Pair
 
 This example is structural.
-It is not live-valid until the operator supplies real paths, SSM parameters, account identifiers, wallet addresses, a writable catalog directory, and venue credentials.
+It is not live-valid until the operator supplies real paths, SSM parameters, account identifiers, wallet addresses, a writable catalog directory, and client credentials.
 
 ### Root
 

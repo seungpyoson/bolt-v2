@@ -307,7 +307,7 @@ fn secrets_for<'a>(
 ) -> Result<&'a ResolvedBoltV3BinanceSecrets, BoltV3AdapterMappingError> {
     match resolved.clients.get(client_key) {
         Some(inner) => inner.as_any().downcast_ref().ok_or_else(|| {
-            BoltV3AdapterMappingError::SecretKindMismatch {
+            BoltV3AdapterMappingError::SecretProviderMismatch {
                 client_key: client_key.to_string(),
                 expected_provider_key: KEY,
             }

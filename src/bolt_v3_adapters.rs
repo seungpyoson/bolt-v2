@@ -110,7 +110,7 @@ pub enum BoltV3AdapterMappingError {
     /// The configured client provider and the resolved secret provider disagree.
     /// Indicates an internal-consistency bug between the resolver output
     /// and the mapper inputs.
-    SecretKindMismatch {
+    SecretProviderMismatch {
         client_key: String,
         expected_provider_key: &'static str,
     },
@@ -155,23 +155,23 @@ pub enum BoltV3AdapterMappingError {
 impl std::fmt::Display for BoltV3AdapterMappingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BoltV3AdapterMappingError::SecretKindMismatch {
+            BoltV3AdapterMappingError::SecretProviderMismatch {
                 client_key,
                 expected_provider_key,
             } => write!(
                 f,
                 "clients.{client_key}: resolved secret provider does not match configured client provider \
-                 (expected {kind})",
-                kind = expected_provider_key,
+                 (expected {provider})",
+                provider = expected_provider_key,
             ),
             BoltV3AdapterMappingError::MissingResolvedSecrets {
                 client_key,
                 expected_provider_key,
             } => write!(
                 f,
-                "clients.{client_key} (provider={kind}) requires resolved SSM secrets but none were \
+                "clients.{client_key} (provider={provider}) requires resolved SSM secrets but none were \
                  supplied to the adapter mapper",
-                kind = expected_provider_key,
+                provider = expected_provider_key,
             ),
             BoltV3AdapterMappingError::SchemaParse {
                 client_key,
@@ -845,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn mismatched_resolved_secret_kind_is_a_mapping_error() {
+    fn mismatched_resolved_secret_provider_is_a_mapping_error() {
         let loaded = fixture_loaded_config();
         let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
         clients.insert(
@@ -859,19 +859,18 @@ mod tests {
         let resolved = ResolvedBoltV3Secrets { clients };
 
         let error = map_bolt_v3_adapters(&loaded, &resolved)
-            .expect_err("mismatched resolved secret kind must surface as a mapper error");
+            .expect_err("mismatched resolved secret provider must surface as a mapper error");
         let rendered = error.to_string();
         assert!(rendered.contains("configured client provider"));
-        assert!(!rendered.contains("validated venue kind"));
         match error {
-            BoltV3AdapterMappingError::SecretKindMismatch {
+            BoltV3AdapterMappingError::SecretProviderMismatch {
                 client_key,
                 expected_provider_key,
             } => {
                 assert_eq!(client_key, "polymarket_main");
                 assert_eq!(expected_provider_key, polymarket::KEY);
             }
-            other => panic!("expected SecretKindMismatch, got {other}"),
+            other => panic!("expected SecretProviderMismatch, got {other}"),
         }
     }
 
@@ -882,7 +881,6 @@ mod tests {
         let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map");
         let debug = format!("{configs:?}");
 
-        assert!(debug.contains("BinanceDataClientConfig"));
         assert!(debug.contains("BinanceDataClientConfig"));
         for raw_secret in [
             fixture_binance_secrets().api_key.as_str(),

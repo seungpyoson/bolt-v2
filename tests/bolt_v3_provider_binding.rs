@@ -428,7 +428,7 @@ fn provider_binding_rejects_updown_target_bound_to_unknown_client() {
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
     loaded.strategies[0].config.execution_client_id =
-        nautilus_model::identifiers::ClientId::from("venue_does_not_exist");
+        nautilus_model::identifiers::ClientId::from("client_does_not_exist");
 
     let resolved = fixture_resolved_secrets();
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
@@ -442,7 +442,7 @@ fn provider_binding_rejects_updown_target_bound_to_unknown_client() {
             field,
             message,
         } => {
-            assert_eq!(client_key, "venue_does_not_exist");
+            assert_eq!(client_key, "client_does_not_exist");
             assert_eq!(field, "strategy.execution_client_id");
             assert!(
                 message.contains("unknown client"),

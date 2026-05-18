@@ -219,7 +219,7 @@ kind = "string"
 literal = "\", \""
 context = "keys.join(\", \")"
 classification = "diagnostic_separator"
-reason = "This separator is used only to format duplicate venue-kind validation diagnostics, not as an operator runtime value."
+reason = "This separator is used only to format duplicate NT Venue validation diagnostics, not as an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"

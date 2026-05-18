@@ -76,6 +76,9 @@ path_scoped_forbidden:
       - contracts/**/*.toml
       - tests/**/*.toml
       - tests/fixtures/**/*.toml
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
     reason: "Bolt-v3 client config stores the NT Venue identifier in `venue`; venue_name remains valid in older non-v3 source surfaces"
   - from: venue_config_key
     to: execution_client_id
@@ -116,6 +119,9 @@ path_scoped_forbidden:
     to: venue
     include_globs:
       - docs/bolt-v3/[0-9]*-bolt-v3-*.md
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
     reason: "Bolt-v3 client blocks store the NT Venue identifier in `venue`; operator-facing contracts should not call that value a kind"
   - from: "venues."
     to: "clients."
@@ -125,6 +131,7 @@ path_scoped_forbidden:
       - src/bolt_v3_*/**/*.rs
       - config/**/*.toml
       - contracts/**/*.toml
+      - tests/bolt_v3_*.rs
       - tests/**/*.toml
       - tests/fixtures/**/*.toml
     reason: "Bolt-v3 config paths use `[clients.<id>]`; legacy `[venues.<id>]` table/path residues must fail source-fence"
@@ -136,7 +143,7 @@ accepted_non_nt_names:
   - name: configured_target_id
     owner: bolt_derived
     reason: "Bolt strategy target identity, not an NT instrument/order/position id"
-  - name: market_selection_timestamp_milliseconds
+  - name: market_selection_timestamp_ms
     owner: bolt_derived
     reason: "Bolt market-selection attempt timestamp derived from NT node clock"
   - name: selected_market_observed_timestamp
@@ -144,12 +151,12 @@ accepted_non_nt_names:
     reason: "Bolt observation timestamp for selected-market facts"
   - name: price_to_beat_observed_timestamp
     owner: venue_product_owned
-    reason: "Timestamp for the Polymarket Gamma supplement, not an NT ts_event"
-  - name: polymarket_market_start_timestamp_milliseconds
+    reason: "Timestamp for the Chainlink Data Streams benchmark observation, not an NT ts_event"
+  - name: polymarket_market_start_timestamp_ms
     owner: bolt_derived_from_nt_instrument
     nt_evidence: "Sourced from NT BinaryOption.activation_ns; converted to Unix milliseconds for the market-selection contract"
     reason: "Polymarket lifecycle field keeps the venue/product prefix because the emitted value is a unit-converted contract timestamp, not raw NT activation_ns"
-  - name: polymarket_market_end_timestamp_milliseconds
+  - name: polymarket_market_end_timestamp_ms
     owner: bolt_derived_from_nt_instrument
     nt_evidence: "Sourced from NT BinaryOption.expiration_ns; converted to Unix milliseconds for the market-selection contract"
     reason: "Polymarket lifecycle field keeps the venue/product prefix because the emitted value is a unit-converted contract timestamp, not raw NT expiration_ns"

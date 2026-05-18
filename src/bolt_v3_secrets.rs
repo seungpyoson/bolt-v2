@@ -3,8 +3,8 @@
 //!
 //! Per docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md Section 3, every
 //! configured client with a [secrets] block must fail live validation and
-//! startup if any canonical credential environment variables for that venue
-//! kind are present. The blocklist is owned by the provider handler in
+//! startup if any canonical credential environment variables for that provider
+//! are present. The blocklist is owned by the provider handler in
 //! bolt code and must be checked before any NautilusTrader client
 //! constructor is called.
 //!
@@ -17,8 +17,6 @@
 
 use std::collections::BTreeMap;
 
-use nautilus_model::identifiers::Venue;
-
 use crate::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
     bolt_v3_providers::{
@@ -30,7 +28,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForbiddenEnvVarFinding {
     pub client_key: String,
-    pub venue: Venue,
+    pub provider_key: String,
     pub env_var: &'static str,
 }
 
@@ -38,10 +36,10 @@ impl std::fmt::Display for ForbiddenEnvVarFinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "clients.{key} (venue={venue}) declares [secrets] but the forbidden credential environment variable `{var}` is set; \
-             the bolt-v3 secret contract requires SSM resolution and forbids env-var fallbacks for this venue",
+            "clients.{key} (provider={provider}) declares [secrets] but the forbidden credential environment variable `{var}` is set; \
+             the bolt-v3 secret contract requires SSM resolution and forbids env-var fallbacks for this provider",
             key = self.client_key,
-            venue = self.venue.as_str(),
+            provider = self.provider_key,
             var = self.env_var,
         )
     }
@@ -95,7 +93,7 @@ where
             if env_is_set(env_var) {
                 findings.push(ForbiddenEnvVarFinding {
                     client_key: key.clone(),
-                    venue: client.venue,
+                    provider_key: client.venue.as_str().to_string(),
                     env_var,
                 });
             }
@@ -340,7 +338,7 @@ mod tests {
                 .expect_err("POLYMARKET_PK should trip the polymarket blocklist");
         assert_eq!(error.findings.len(), 1);
         assert_eq!(error.findings[0].client_key, "polymarket_main");
-        assert_eq!(error.findings[0].venue.as_str(), polymarket::KEY);
+        assert_eq!(error.findings[0].provider_key, polymarket::KEY);
         assert_eq!(error.findings[0].env_var, "POLYMARKET_PK");
     }
 
@@ -352,7 +350,7 @@ mod tests {
                 .expect_err("BINANCE_API_SECRET should trip the binance blocklist");
         assert_eq!(error.findings.len(), 1);
         assert_eq!(error.findings[0].client_key, "binance_reference");
-        assert_eq!(error.findings[0].venue.as_str(), binance::KEY);
+        assert_eq!(error.findings[0].provider_key, binance::KEY);
         assert_eq!(error.findings[0].env_var, "BINANCE_API_SECRET");
     }
 

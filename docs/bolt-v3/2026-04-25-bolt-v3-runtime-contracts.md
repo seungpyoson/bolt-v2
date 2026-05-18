@@ -177,7 +177,7 @@ Current implementation behavior:
 Future synchronization behavior:
 
 - keyed execution clients own instrument loading and instrument refresh
-- whenever a keyed execution venue loads or refreshes instruments, bolt synchronizes `default_max_notional_per_order` onto the currently loaded instrument set for that venue
+- whenever a keyed execution client loads or refreshes instruments, bolt synchronizes `default_max_notional_per_order` onto the currently loaded instrument set for that client
 - this synchronization is tied to venue instrument loading, not to strategy target-rotation callbacks
 - when the loaded instrument set changes, old cap entries for instruments no longer present in the current loaded set are removed
 
@@ -561,7 +561,7 @@ Boundary:
 If an archetype requires reference data:
 
 - the strategy file must declare it explicitly
-- the root file must declare the keyed data venue explicitly
+- the root file must declare the keyed data client explicitly
 - the strategy subscribes directly through NautilusTrader data clients
 
 There is no bolt-owned reference actor.
@@ -573,7 +573,7 @@ For the current `binary_oracle_edge_taker`:
 
 Reference-data resolution rule for validation:
 
-- `resolvable` means that after NautilusTrader venue/instrument loading completes, the declared `instrument_id` exists in the NautilusTrader instrument cache for the referenced keyed venue
+- `resolvable` means that after NautilusTrader venue/instrument loading completes, the declared `instrument_id` exists in the NautilusTrader instrument cache for the referenced keyed client
 - `resolvable` does not require receiving a live quote before `just check` completes
 
 ### 7.1 Current `binary_oracle_edge_taker` pricing inputs

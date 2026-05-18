@@ -206,8 +206,8 @@ fn validate_required_secret_blocks(
 mod tests {
     use super::*;
 
-    fn venue_from_toml(text: &str) -> ClientBlock {
-        toml::from_str(text).expect("test venue should parse")
+    fn client_from_toml(text: &str) -> ClientBlock {
+        toml::from_str(text).expect("test client should parse")
     }
 
     #[test]
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn provider_required_secrets_rejects_credentialed_block_without_secrets() {
-        let venue = venue_from_toml(
+        let client = client_from_toml(
             r#"
             venue = "FAKE"
 
@@ -241,7 +241,8 @@ mod tests {
             consumer: "fake data adapter",
         };
 
-        let errors = validate_required_secret_blocks("fake_venue", "FAKE", &venue, &[requirement]);
+        let errors =
+            validate_required_secret_blocks("fake_client", "FAKE", &client, &[requirement]);
 
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("declares [data] but is missing the required [secrets] block"));
@@ -250,7 +251,7 @@ mod tests {
 
     #[test]
     fn provider_required_secrets_ignores_absent_credentialed_block() {
-        let venue = venue_from_toml(
+        let client = client_from_toml(
             r#"
             venue = "FAKE"
             "#,
@@ -260,7 +261,8 @@ mod tests {
             consumer: "fake execution adapter",
         };
 
-        let errors = validate_required_secret_blocks("fake_venue", "FAKE", &venue, &[requirement]);
+        let errors =
+            validate_required_secret_blocks("fake_client", "FAKE", &client, &[requirement]);
 
         assert!(errors.is_empty());
     }

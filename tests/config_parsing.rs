@@ -84,6 +84,62 @@ fn bolt_v3_root_trader_id_rejects_empty_string_at_parse_time() {
 }
 
 #[test]
+fn bolt_v3_polymarket_account_id_uses_nt_typed_identifier() {
+    // `PolymarketExecutionConfig.account_id` is typed as
+    // `nautilus_model::identifiers::AccountId` so NT's identifier macro
+    // rejects empty / invalid strings at parse time and the bolt
+    // execution-config binding holds the same typed value the NT
+    // PolymarketExecClientConfig expects, eliminating the
+    // `AccountId::from(_.as_str())` round-trip.
+    use bolt_v2::bolt_v3_providers::polymarket::PolymarketExecutionConfig;
+    use nautilus_model::identifiers::AccountId;
+
+    let exec_toml = r#"
+account_id = "POLYMARKET-001"
+signature_type = "poly_proxy"
+funder_address = "0x1111111111111111111111111111111111111111"
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+ack_timeout_secs = 5
+"#;
+    let parsed: PolymarketExecutionConfig =
+        toml::from_str(exec_toml).expect("polymarket execution block should parse");
+    let account_id: AccountId = parsed.account_id;
+    assert_eq!(account_id, AccountId::from("POLYMARKET-001"));
+}
+
+#[test]
+fn bolt_v3_polymarket_account_id_rejects_empty_string_at_parse_time() {
+    use bolt_v2::bolt_v3_providers::polymarket::PolymarketExecutionConfig;
+
+    let exec_toml = r#"
+account_id = ""
+signature_type = "poly_proxy"
+funder_address = "0x1111111111111111111111111111111111111111"
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+ack_timeout_secs = 5
+"#;
+    let err = toml::from_str::<PolymarketExecutionConfig>(exec_toml)
+        .expect_err("empty account_id should be rejected by NT AccountId serde");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("empty") || rendered.contains("invalid"),
+        "rejection should explain the empty account_id, got: {rendered}"
+    );
+}
+
+#[test]
 fn bolt_v3_strategy_oms_type_uses_nt_canonical_enum() {
     // FINDING-1: `strategy.oms_type` is typed as `nautilus_model::enums::OmsType`
     // (not a bolt shadow enum). NT's enum_strum_serde! macro makes deserialize

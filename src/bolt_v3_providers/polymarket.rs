@@ -26,7 +26,7 @@
 
 use std::{any::Any, sync::Arc};
 
-use nautilus_model::identifiers::{AccountId, TraderId};
+use nautilus_model::identifiers::AccountId;
 use nautilus_polymarket::{
     common::credential::Secrets as PolymarketSecrets,
     common::enums::SignatureType as NtPolymarketSignatureType,
@@ -91,10 +91,29 @@ pub struct PolymarketDataConfig {
     pub websocket_max_subscriptions_per_connection: u64,
 }
 
+/// NT's `impl_serialization_for_identifier!` macro deserializes typed
+/// identifiers through `&str: Deserialize`, which only the borrowed
+/// (zero-copy) visitor path supports. `toml::Value::try_into` — used
+/// by the adapter mapping to parse each `[clients.<id>.execution]`
+/// block from an already-owned `toml::Value` tree — drives the owned
+/// String visitor, so NT's typed serde rejects it with "expected a
+/// borrowed string". This helper deserializes through `String` first
+/// (works for both borrowed and owned source) and then routes through
+/// `AccountId::new_checked` for typed validation, preserving NT's
+/// parse-time rejection of empty / invalid identifiers.
+fn deserialize_account_id<'de, D>(deserializer: D) -> Result<AccountId, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: String = String::deserialize(deserializer)?;
+    AccountId::new_checked(value.as_str()).map_err(serde::de::Error::custom)
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PolymarketExecutionConfig {
-    pub account_id: String,
+    #[serde(deserialize_with = "deserialize_account_id")]
+    pub account_id: AccountId,
     pub signature_type: PolymarketSignatureType,
     /// Public funder address. Required when `signature_type` is
     /// `poly_proxy` or `poly_gnosis_safe` (the proxy/safe routes the
@@ -188,11 +207,6 @@ pub fn validate_venue(key: &str, venue: &ClientBlock) -> Vec<String> {
     if let Some(execution) = &venue.execution {
         match execution.clone().try_into::<PolymarketExecutionConfig>() {
             Ok(parsed) => {
-                if parsed.account_id.trim().is_empty() {
-                    errors.push(format!(
-                        "clients.{key}.execution.account_id must be a non-empty string"
-                    ));
-                }
                 errors.extend(validate_funder_address(key, &parsed));
                 errors.extend(validate_execution_bounds(key, &parsed));
             }
@@ -595,8 +609,8 @@ fn map_execution(
             ),
         })?;
     Ok(PolymarketExecClientConfig {
-        trader_id: TraderId::from(root.trader_id.as_str()),
-        account_id: AccountId::from(cfg.account_id.as_str()),
+        trader_id: root.trader_id,
+        account_id: cfg.account_id,
         private_key: Some(secrets.private_key.clone()),
         api_key: Some(secrets.api_key.clone()),
         api_secret: Some(secrets.api_secret.clone()),

@@ -481,7 +481,7 @@ reason = "This label names the Polymarket execution config field being validated
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"retry_delay_initial_ms\""
-context = "\"retry_delay_initial_ms\","
+context = "(\"retry_delay_initial_ms\", execution.retry_delay_initial_ms),"
 classification = "validation_field_label"
 reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
 
@@ -489,7 +489,7 @@ reason = "This label names the Polymarket execution config field being validated
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"retry_delay_max_ms\""
-context = "\"retry_delay_max_ms\","
+context = "(\"retry_delay_max_ms\", execution.retry_delay_max_ms),"
 classification = "validation_field_label"
 reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
 

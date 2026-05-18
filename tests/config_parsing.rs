@@ -1359,7 +1359,7 @@ fn rejects_forbidden_polymarket_env_vars_before_client_build() {
 }
 
 #[test]
-fn rejects_polymarket_execution_venue_missing_secrets_block() {
+fn rejects_polymarket_execution_client_missing_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let toml_text = r#"
@@ -1487,16 +1487,19 @@ ack_timeout_secs = 5
     let root: BoltV3RootConfig =
         toml::from_str(toml_text).expect("polymarket-execution-only TOML should parse");
     let messages = validate_root_only(&root);
+    let rendered = messages.join("\n");
     assert!(
         messages.iter().any(|m| m.contains("polymarket_main")
             && m.contains("[execution]")
             && m.contains("required [secrets] block")),
-        "expected missing-secrets failure for polymarket execution venue, got: {messages:#?}"
+        "expected missing-secrets failure for polymarket execution client, got: {messages:#?}"
     );
+    assert!(rendered.contains("Polymarket execution client"));
+    assert!(!rendered.contains("Polymarket execution venue"));
 }
 
 #[test]
-fn rejects_binance_reference_data_venue_missing_secrets_block() {
+fn rejects_binance_reference_data_client_missing_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let toml_text = r#"
@@ -1618,12 +1621,15 @@ instrument_status_poll_secs = 3600
     let root: BoltV3RootConfig =
         toml::from_str(toml_text).expect("binance-data-only TOML should parse");
     let messages = validate_root_only(&root);
+    let rendered = messages.join("\n");
     assert!(
         messages.iter().any(|m| m.contains("binance_reference")
             && m.contains("[data]")
             && m.contains("required [secrets] block")),
-        "expected missing-secrets failure for binance reference-data venue, got: {messages:#?}"
+        "expected missing-secrets failure for binance reference-data client, got: {messages:#?}"
     );
+    assert!(rendered.contains("Binance reference-data client"));
+    assert!(!rendered.contains("Binance reference-data venue"));
 }
 
 #[test]

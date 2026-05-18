@@ -53,7 +53,7 @@ pub const KEY: &str = "BINANCE";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Data,
-    consumer: "Binance reference-data venue",
+    consumer: "Binance reference-data client",
 }];
 pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_path", "api_secret_ssm_path"];
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_binance::common::credential"];

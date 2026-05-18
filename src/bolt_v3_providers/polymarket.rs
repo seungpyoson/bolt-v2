@@ -60,7 +60,7 @@ pub const KEY: &str = "POLYMARKET";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,
-    consumer: "Polymarket execution venue",
+    consumer: "Polymarket execution client",
 }];
 pub const SECRET_FIELD_NAMES: &[&str] = &[
     "private_key_ssm_path",

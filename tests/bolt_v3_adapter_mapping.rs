@@ -218,7 +218,7 @@ fn binance_data_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
 fn missing_or_invalid_root_config_remains_caught_by_validation_not_mapper_defaults() {
     use bolt_v2::bolt_v3_validate::validate_root_only;
 
-    // Missing [secrets] for polymarket execution venue: the existing
+    // Missing [secrets] for polymarket execution client: the existing
     // validator must catch this *before* the mapper ever runs. The
     // mapper itself must not silently fall back to defaults.
     let toml_text = r#"

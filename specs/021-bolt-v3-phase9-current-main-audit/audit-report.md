@@ -4,7 +4,7 @@ Status: PR #331 P9 exact-head audit artifact. Not live-readiness certification.
 
 ## Decision
 
-Recommendation: blocked with exact blockers. P9 source-review closure remains pending until this artifact sync is committed, pushed, exact-head CI is green, and six external reviewers return no unresolved blockers.
+Live-readiness recommendation: blocked with exact blockers. P9 source-review closure remains pending until this artifact sync is committed, pushed, exact-head CI is green, and six external reviewers return no unresolved blockers.
 
 Current source-review state:
 

@@ -32,7 +32,7 @@
 - `provider`: Claude, DeepSeek, GLM, or another available reviewer
 - `job_id`: reviewer job id or failure id
 - `source_transmission`: approval-token evidence for direct API reviewers
-- `status`: `approve`, `approve-with-findings`, `request-changes`, `failed`, or `blocked`
+- `status`: `approve`, `approve-with-findings`, `request-changes`, `needs-info`, `failed`, or `blocked`
 - `findings`: list of findings with accept/disprove/defer decision
 - `blocking`: whether implementation may proceed
 
@@ -45,8 +45,8 @@ findings.
 AuditFinding {
   id: "P9-BLOCKER-001",
   severity: "blocker",
-  category: "Phase readiness",
-  evidence: ["specs/001-thin-live-canary-path/tasks.md:87-106"],
+  category: "No-submit live evidence",
+  evidence: ["specs/001-thin-live-canary-path/tasks.md T038"],
   status: "open"
 }
 

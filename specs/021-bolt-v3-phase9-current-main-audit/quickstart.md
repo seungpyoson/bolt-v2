@@ -37,7 +37,7 @@ Expected:
 
 ```bash
 ls -l config/live.local{.example,}.toml config/root.example.toml config/strategies/binary_oracle.example.toml
-sed -n '84,108p' specs/001-thin-live-canary-path/tasks.md
+rg -n "T038|T046" specs/001-thin-live-canary-path/tasks.md
 ```
 
 Expected:

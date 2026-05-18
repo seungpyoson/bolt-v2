@@ -24,6 +24,7 @@ Scope:
 - `specs/021-bolt-v3-phase9-current-main-audit/external-review-phase9-relay-prompts.md`
 - `docs/bolt-v3/2026-04-28-source-grounded-status-map.md`
 - `docs/bolt-v3/2026-05-18-production-readiness-contract.md`
+- `specs/001-thin-live-canary-path/tasks.md`
 - `config/root.example.toml`
 - `config/strategies/binary_oracle.example.toml`
 

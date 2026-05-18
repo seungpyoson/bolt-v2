@@ -53,29 +53,29 @@
 
 **Purpose**: Prove PR #331 exact head before any ready claim.
 
-- [x] T024 Run stale-reference scan over P9 artifacts.
-- [x] T025 Run debt-marker scan over P9 artifacts.
-- [x] T026 Run `git diff --check`.
-- [ ] T027 Commit P9 artifact sync after T022 and T024-T026 pass.
-- [ ] T028 Push PR #331 branch.
-- [ ] T029 Verify GitHub checks on pushed exact head.
+- [x] T023 Run stale-reference scan over P9 artifacts.
+- [x] T024 Run debt-marker scan over P9 artifacts.
+- [x] T025 Run `git diff --check`.
+- [ ] T026 Commit P9 artifact sync after T022 and T023-T025 pass.
+- [ ] T027 Push PR #331 branch.
+- [ ] T028 Verify GitHub checks on pushed exact head.
 
 ## Phase 6: P9 External Review
 
 **Purpose**: Review only the pushed exact head after CI is green.
 
-- [ ] T030 [P9] Obtain six-reviewer adversarial review on pushed exact head, then fix or disprove findings.
-- [ ] T031 Record P9 closure evidence in PR #331 after six-reviewer gate has no unresolved blockers.
+- [ ] T029 [P9] Obtain six-reviewer adversarial review on pushed exact head, then fix or disprove findings.
+- [ ] T030 Record P9 closure evidence in PR #331 after six-reviewer gate has no unresolved blockers.
 
-The committed task list is not the final evidence ledger for T027-T031. Flipping those boxes after execution would create a new unreviewed head. Final completion evidence belongs in the PR #331 closure comment.
+The committed task list is not the final evidence ledger for T026-T030. Flipping those boxes after execution would create a new unreviewed head. Final completion evidence belongs in the PR #331 closure comment.
 
 ## Phase 7: PR #392 Boundary
 
 **Purpose**: Keep downstream work out of PR #331.
 
-- [ ] T032 Confirm PR #392 still states or implies PR #331 must land first.
-- [ ] T033 Do not implement PR #392 scope inside PR #331.
-- [ ] T034 Record final PR #331 handoff: head SHA, checks, packet status P0-P9, residual blockers, and PR #392 next step.
+- [ ] T031 Confirm PR #392 still states or implies PR #331 must land first.
+- [ ] T032 Do not implement PR #392 scope inside PR #331.
+- [ ] T033 Record final PR #331 handoff: head SHA, checks, packet status P0-P9, residual blockers, and PR #392 next step.
 
 ## Dependencies & Execution Order
 

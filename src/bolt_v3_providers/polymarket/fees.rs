@@ -182,13 +182,13 @@ mod tests {
         let root: BoltV3RootConfig =
             toml::from_str(include_str!("../../../tests/fixtures/bolt_v3/root.toml"))
                 .expect("bolt-v3 root fixture should parse");
-        let seconds = root.venues["polymarket_main"]
+        let seconds = root.clients["polymarket_main"]
             .execution
             .clone()
             .expect("fixture should define polymarket execution")
             .try_into::<crate::bolt_v3_providers::polymarket::PolymarketExecutionConfig>()
             .expect("fixture polymarket execution should parse")
-            .fee_cache_ttl_seconds;
+            .fee_cache_ttl_secs;
         Duration::from_secs(seconds)
     }
 

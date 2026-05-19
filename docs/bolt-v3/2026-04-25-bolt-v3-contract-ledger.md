@@ -32,7 +32,7 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 - canonical owner:
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 5.3
 - dependent references:
-  - `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` Section 5 `[venues.<identifier>.data]`
+  - `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` Section 5 `[clients.<identifier>.data]`
 
 ## 3. Root risk authority
 
@@ -58,11 +58,11 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 ## 5. Secret source and env fallback
 
 - invariant:
-  - SSM-only secret source and per-venue-kind environment-variable blocklist
+  - SSM-only secret source and per-provider environment-variable blocklist
 - canonical owner:
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 3
 - dependent references:
-  - `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` Section 5 `[venues.<identifier>.secrets]`
+  - `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` Section 5 `[clients.<identifier>.secrets]`
   - `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md` D1, D5, R17, R18
 - implementation status:
   - contract accepted; env-blocking tests required

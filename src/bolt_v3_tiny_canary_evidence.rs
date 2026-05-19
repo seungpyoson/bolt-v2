@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     io::{BufReader, Read, Write},
     path::{Path, PathBuf},
 };
@@ -10,31 +10,29 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    bolt_v3_config::{LoadedBoltV3Config, resolve_root_relative_path},
+    bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
 };
 
-const TINY_CANARY_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+const PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION: u32 = 1;
 const SUBMIT_ADMISSION_STATUS_ACCEPTED: &str = "accepted";
 const SUBMIT_ADMISSION_STATUS_REJECTED: &str = "rejected";
 const NT_ADAPTER_SUBMIT_PROVEN_REASON: &str = "nt_adapter_submit_proven";
 const BLOCKED_BEFORE_LIVE_ORDER_REASON: &str = "blocked_before_live_order";
 const BLOCKED_BEFORE_SUBMIT_REASON: &str = "blocked_before_submit";
-const TINY_CANARY_REQUIRED_LIVE_ORDER_CAP: u32 = 1;
-const TINY_CANARY_SHA256_BUFFER_BYTES: usize = 8 * 1024;
-const TINY_CANARY_APPROVAL_CONSUMPTION_SCHEMA_VERSION: u32 = 1;
-const TINY_CANARY_APPROVAL_CONSUMPTION_RECORD_KIND: &str =
-    "tiny_canary_operator_approval_consumption";
-const TINY_CANARY_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
-const TINY_CANARY_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
-const TINY_CANARY_MARKET_SELECTION_SOURCE_RECORD_KIND: &str = "market_selection_result";
-const TINY_CANARY_MARKET_SELECTION_SOURCE: &str = "nt_runtime_selection_snapshot";
-pub const TINY_CANARY_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID: &str =
-    "tiny-canary-blocked-before-live-runner";
+const PHASE8_REQUIRED_LIVE_ORDER_CAP: u32 = 1;
+const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;
+const PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION: u32 = 1;
+const PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND: &str = "phase8_operator_approval_consumption";
+const PHASE8_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
+const PHASE8_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
+const PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND: &str = "market_selection_result";
+const PHASE8_MARKET_SELECTION_SOURCE: &str = "nt_runtime_selection_snapshot";
+pub const PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID: &str = "phase8-blocked-before-live-runner";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TinyCanaryPreflightStatus {
+pub enum Phase8CanaryPreflightStatus {
     Missing,
     AcceptedByGate,
     RejectedByGate,
@@ -42,20 +40,20 @@ pub enum TinyCanaryPreflightStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TinyCanaryStrategyInputAuditStatus {
+pub enum Phase8StrategyInputAuditStatus {
     Approved,
     Blocked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TinyCanaryBlockReason {
+pub enum Phase8CanaryBlockReason {
     MissingNoSubmitReadinessReport,
     LiveCanaryGateRejected,
     StrategyInputSafetyAuditBlocked,
     LiveOrderCountCapNotOne,
     NonPositiveRealizedVolatility,
-    NonPositiveTimeToExpiry,
+    NonPositiveTimeToMarketEnd,
     NonPositiveSpotPrice,
     NonPositivePriceToBeatValue,
     NonPositiveExpectedEdgeBasisPoints,
@@ -78,14 +76,14 @@ pub enum TinyCanaryBlockReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TinyCanaryStrategyInputSafetyAudit {
-    status: TinyCanaryStrategyInputAuditStatus,
-    block_reasons: Vec<TinyCanaryBlockReason>,
+pub struct Phase8StrategyInputSafetyAudit {
+    status: Phase8StrategyInputAuditStatus,
+    block_reasons: Vec<Phase8CanaryBlockReason>,
 }
 
-pub struct TinyCanaryStrategyInputSafetyInputs<'a> {
+pub struct Phase8StrategyInputSafetyInputs<'a> {
     pub realized_volatility: Decimal,
-    pub seconds_to_expiry: u64,
+    pub seconds_to_market_end: u64,
     pub spot_price: Decimal,
     pub price_to_beat_value: Decimal,
     pub expected_edge_basis_points: Decimal,
@@ -99,67 +97,67 @@ pub struct TinyCanaryStrategyInputSafetyInputs<'a> {
     pub theta_decay_factor: Decimal,
 }
 
-impl TinyCanaryStrategyInputSafetyAudit {
+impl Phase8StrategyInputSafetyAudit {
     pub fn approved() -> Self {
         Self {
-            status: TinyCanaryStrategyInputAuditStatus::Approved,
+            status: Phase8StrategyInputAuditStatus::Approved,
             block_reasons: Vec::new(),
         }
     }
 
-    pub fn blocked(block_reasons: Vec<TinyCanaryBlockReason>) -> Self {
+    pub fn blocked(block_reasons: Vec<Phase8CanaryBlockReason>) -> Self {
         Self {
-            status: TinyCanaryStrategyInputAuditStatus::Blocked,
+            status: Phase8StrategyInputAuditStatus::Blocked,
             block_reasons,
         }
     }
 
-    pub fn from_strategy_inputs(inputs: TinyCanaryStrategyInputSafetyInputs<'_>) -> Self {
+    pub fn from_strategy_inputs(inputs: Phase8StrategyInputSafetyInputs<'_>) -> Self {
         let mut block_reasons = Vec::new();
         if inputs.realized_volatility <= Decimal::ZERO {
-            block_reasons.push(TinyCanaryBlockReason::NonPositiveRealizedVolatility);
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveRealizedVolatility);
         }
-        if inputs.seconds_to_expiry == 0 {
-            block_reasons.push(TinyCanaryBlockReason::NonPositiveTimeToExpiry);
+        if inputs.seconds_to_market_end == 0 {
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveTimeToMarketEnd);
         }
         if inputs.spot_price <= Decimal::ZERO {
-            block_reasons.push(TinyCanaryBlockReason::NonPositiveSpotPrice);
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveSpotPrice);
         }
         if inputs.price_to_beat_value <= Decimal::ZERO {
-            block_reasons.push(TinyCanaryBlockReason::NonPositivePriceToBeatValue);
+            block_reasons.push(Phase8CanaryBlockReason::NonPositivePriceToBeatValue);
         }
         if inputs.expected_edge_basis_points <= Decimal::ZERO {
-            block_reasons.push(TinyCanaryBlockReason::NonPositiveExpectedEdgeBasisPoints);
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveExpectedEdgeBasisPoints);
         }
         if inputs.worst_case_edge_basis_points <= Decimal::ZERO {
-            block_reasons.push(TinyCanaryBlockReason::NonPositiveWorstCaseEdgeBasisPoints);
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveWorstCaseEdgeBasisPoints);
         }
         if inputs.expected_edge_basis_points != inputs.worst_case_edge_basis_points {
-            block_reasons.push(TinyCanaryBlockReason::EdgeBasisPointsMismatch);
+            block_reasons.push(Phase8CanaryBlockReason::EdgeBasisPointsMismatch);
         }
         if inputs.theta_scaled_min_edge_bps <= Decimal::ZERO {
-            block_reasons.push(TinyCanaryBlockReason::NonPositiveThetaScaledMinEdgeBps);
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveThetaScaledMinEdgeBps);
         }
         if inputs.fee_rate_basis_points < Decimal::ZERO {
-            block_reasons.push(TinyCanaryBlockReason::NegativeFeeRateBasisPoints);
+            block_reasons.push(Phase8CanaryBlockReason::NegativeFeeRateBasisPoints);
         }
         let price_to_beat_source = inputs.price_to_beat_source.trim();
         let expected_price_to_beat_source = inputs.expected_price_to_beat_source.trim();
         if price_to_beat_source.is_empty() {
-            block_reasons.push(TinyCanaryBlockReason::MissingPriceToBeatSource);
+            block_reasons.push(Phase8CanaryBlockReason::MissingPriceToBeatSource);
         } else if expected_price_to_beat_source.is_empty()
             || price_to_beat_source != expected_price_to_beat_source
         {
-            block_reasons.push(TinyCanaryBlockReason::UnsupportedPriceToBeatSource);
+            block_reasons.push(Phase8CanaryBlockReason::UnsupportedPriceToBeatSource);
         }
         if inputs.reference_quote_ts_event == 0 {
-            block_reasons.push(TinyCanaryBlockReason::MissingReferenceQuoteTsEvent);
+            block_reasons.push(Phase8CanaryBlockReason::MissingReferenceQuoteTsEvent);
         }
         if inputs.pricing_kurtosis <= Decimal::new(-6, 0) {
-            block_reasons.push(TinyCanaryBlockReason::InvalidPricingKurtosis);
+            block_reasons.push(Phase8CanaryBlockReason::InvalidPricingKurtosis);
         }
         if inputs.theta_decay_factor < Decimal::ZERO {
-            block_reasons.push(TinyCanaryBlockReason::NegativeThetaDecayFactor);
+            block_reasons.push(Phase8CanaryBlockReason::NegativeThetaDecayFactor);
         }
         if block_reasons.is_empty() {
             Self::approved()
@@ -177,66 +175,58 @@ impl TinyCanaryStrategyInputSafetyAudit {
         let expected_sha256 = expected_sha256.as_ref().trim();
         if expected_sha256.is_empty() {
             return Err(anyhow!(
-                "required tiny canary strategy input evidence sha256 is empty"
+                "required phase8 strategy input evidence sha256 is empty"
             ));
         }
-        let raw: TinyCanaryStrategyInputEvidenceFile =
-            TinyCanaryOperatorApprovalEnvelope::read_json_file_with_expected_sha256(
+        let raw: Phase8StrategyInputEvidenceFile =
+            Phase8OperatorApprovalEnvelope::read_json_file_with_expected_sha256(
                 path,
                 expected_sha256,
-                "tiny canary strategy input evidence",
-                "tiny canary strategy input evidence sha256 does not match current evidence",
+                "phase8 strategy input evidence",
+                "phase8 strategy input evidence sha256 does not match current evidence",
             )?;
         let realized_volatility =
             Decimal::from_str_exact(raw.realized_volatility.trim()).map_err(|source| {
-                anyhow!("failed to parse tiny canary strategy input realized_volatility: {source}")
+                anyhow!("failed to parse phase8 strategy input realized_volatility: {source}")
             })?;
         let spot_price = Decimal::from_str_exact(raw.spot_price.trim()).map_err(|source| {
-            anyhow!("failed to parse tiny canary strategy input spot_price: {source}")
+            anyhow!("failed to parse phase8 strategy input spot_price: {source}")
         })?;
         let price_to_beat_value =
             Decimal::from_str_exact(raw.price_to_beat_value.trim()).map_err(|source| {
-                anyhow!("failed to parse tiny canary strategy input price_to_beat_value: {source}")
+                anyhow!("failed to parse phase8 strategy input price_to_beat_value: {source}")
             })?;
-        let expected_edge_basis_points = Decimal::from_str_exact(
-            raw.expected_edge_basis_points.trim(),
-        )
-        .map_err(|source| {
-            anyhow!(
-                "failed to parse tiny canary strategy input expected_edge_basis_points: {source}"
-            )
-        })?;
-        let worst_case_edge_basis_points = Decimal::from_str_exact(
-            raw.worst_case_edge_basis_points.trim(),
-        )
-        .map_err(|source| {
-            anyhow!(
-                "failed to parse tiny canary strategy input worst_case_edge_basis_points: {source}"
-            )
-        })?;
+        let expected_edge_basis_points =
+            Decimal::from_str_exact(raw.expected_edge_basis_points.trim()).map_err(|source| {
+                anyhow!(
+                    "failed to parse phase8 strategy input expected_edge_basis_points: {source}"
+                )
+            })?;
+        let worst_case_edge_basis_points =
+            Decimal::from_str_exact(raw.worst_case_edge_basis_points.trim()).map_err(|source| {
+                anyhow!(
+                    "failed to parse phase8 strategy input worst_case_edge_basis_points: {source}"
+                )
+            })?;
         let fee_rate_basis_points = Decimal::from_str_exact(raw.fee_rate_basis_points.trim())
             .map_err(|source| {
-                anyhow!(
-                    "failed to parse tiny canary strategy input fee_rate_basis_points: {source}"
-                )
+                anyhow!("failed to parse phase8 strategy input fee_rate_basis_points: {source}")
             })?;
         let pricing_kurtosis =
             Decimal::from_str_exact(raw.pricing_kurtosis.trim()).map_err(|source| {
-                anyhow!("failed to parse tiny canary strategy input pricing_kurtosis: {source}")
+                anyhow!("failed to parse phase8 strategy input pricing_kurtosis: {source}")
             })?;
         let theta_decay_factor =
             Decimal::from_str_exact(raw.theta_decay_factor.trim()).map_err(|source| {
-                anyhow!("failed to parse tiny canary strategy input theta_decay_factor: {source}")
+                anyhow!("failed to parse phase8 strategy input theta_decay_factor: {source}")
             })?;
         let theta_scaled_min_edge_bps =
             Decimal::from_str_exact(raw.theta_scaled_min_edge_bps.trim()).map_err(|source| {
-                anyhow!(
-                    "failed to parse tiny canary strategy input theta_scaled_min_edge_bps: {source}"
-                )
+                anyhow!("failed to parse phase8 strategy input theta_scaled_min_edge_bps: {source}")
             })?;
-        let mut audit = Self::from_strategy_inputs(TinyCanaryStrategyInputSafetyInputs {
+        let mut audit = Self::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
             realized_volatility,
-            seconds_to_expiry: raw.seconds_to_expiry,
+            seconds_to_market_end: raw.seconds_to_market_end,
             spot_price,
             price_to_beat_value,
             expected_edge_basis_points,
@@ -257,74 +247,71 @@ impl TinyCanaryStrategyInputSafetyAudit {
                 || raw.polymarket_question_id.trim().is_empty()
                 || raw.up_instrument_id.trim().is_empty()
                 || raw.down_instrument_id.trim().is_empty(),
-            TinyCanaryBlockReason::MissingSelectedMarketIdentity,
+            Phase8CanaryBlockReason::MissingSelectedMarketIdentity,
         );
         audit.block_if(
             !market_selection_outcome.is_empty()
-                && !tiny_canary_market_selection_outcome_is_live_entry_candidate(
+                && !phase8_market_selection_outcome_is_live_entry_candidate(
                     market_selection_outcome,
                 ),
-            TinyCanaryBlockReason::InvalidMarketSelectionOutcome,
+            Phase8CanaryBlockReason::InvalidMarketSelectionOutcome,
         );
-        let source_bound_candidate_market_start_timestamps_milliseconds =
-            tiny_canary_source_bound_candidate_market_start_timestamps(
-                &raw,
-                market_selection_outcome,
-            )?;
-        let candidate_market_start_timestamps_milliseconds = match market_selection_outcome {
-            TINY_CANARY_MARKET_SELECTION_OUTCOME_NEXT => {
-                source_bound_candidate_market_start_timestamps_milliseconds
+        let source_bound_candidate_market_start_timestamps_ms =
+            phase8_source_bound_candidate_market_start_timestamps(&raw, market_selection_outcome)?;
+        let candidate_market_start_timestamps_ms = match market_selection_outcome {
+            PHASE8_MARKET_SELECTION_OUTCOME_NEXT => {
+                source_bound_candidate_market_start_timestamps_ms
                     .as_deref()
                     .unwrap_or(&[])
             }
             _ => raw
-                .candidate_market_start_timestamps_milliseconds
+                .candidate_market_start_timestamps_ms
                 .as_deref()
                 .unwrap_or(&[]),
         };
         audit.block_if(
             !market_selection_outcome.is_empty()
-                && !tiny_canary_market_selection_outcome_matches_window(
+                && !phase8_market_selection_outcome_matches_window(
                     market_selection_outcome,
-                    raw.market_selection_timestamp_milliseconds,
-                    raw.polymarket_market_start_timestamp_milliseconds,
-                    raw.polymarket_market_end_timestamp_milliseconds,
-                    candidate_market_start_timestamps_milliseconds,
+                    raw.market_selection_timestamp_ms,
+                    raw.polymarket_market_start_timestamp_ms,
+                    raw.polymarket_market_end_timestamp_ms,
+                    candidate_market_start_timestamps_ms,
                 ),
-            TinyCanaryBlockReason::InvalidMarketSelectionBinding,
+            Phase8CanaryBlockReason::InvalidMarketSelectionBinding,
         );
         audit.block_if(
-            raw.selected_market_observed_timestamp == u64::MIN
-                || raw.market_selection_timestamp_milliseconds == u64::MIN
-                || raw.polymarket_market_start_timestamp_milliseconds == u64::MIN
-                || raw.polymarket_market_end_timestamp_milliseconds
-                    <= raw.polymarket_market_start_timestamp_milliseconds,
-            TinyCanaryBlockReason::InvalidSelectedMarketWindow,
+            raw.selected_market_observed_timestamp_ms == u64::MIN
+                || raw.market_selection_timestamp_ms == u64::MIN
+                || raw.polymarket_market_start_timestamp_ms == u64::MIN
+                || raw.polymarket_market_end_timestamp_ms
+                    <= raw.polymarket_market_start_timestamp_ms,
+            Phase8CanaryBlockReason::InvalidSelectedMarketWindow,
         );
         Ok(audit)
     }
 
     pub fn is_approved(&self) -> bool {
-        self.status == TinyCanaryStrategyInputAuditStatus::Approved
+        self.status == Phase8StrategyInputAuditStatus::Approved
     }
 
-    pub fn block_reasons(&self) -> &[TinyCanaryBlockReason] {
+    pub fn block_reasons(&self) -> &[Phase8CanaryBlockReason] {
         &self.block_reasons
     }
 
-    fn block_if(&mut self, condition: bool, reason: TinyCanaryBlockReason) {
+    fn block_if(&mut self, condition: bool, reason: Phase8CanaryBlockReason) {
         if condition {
-            self.status = TinyCanaryStrategyInputAuditStatus::Blocked;
+            self.status = Phase8StrategyInputAuditStatus::Blocked;
             self.block_reasons.push(reason);
         }
     }
 }
 
-fn tiny_canary_source_bound_candidate_market_start_timestamps(
-    raw: &TinyCanaryStrategyInputEvidenceFile,
+fn phase8_source_bound_candidate_market_start_timestamps(
+    raw: &Phase8StrategyInputEvidenceFile,
     market_selection_outcome: &str,
 ) -> Result<Option<Vec<u64>>> {
-    if market_selection_outcome != TINY_CANARY_MARKET_SELECTION_OUTCOME_NEXT {
+    if market_selection_outcome != PHASE8_MARKET_SELECTION_OUTCOME_NEXT {
         return Ok(None);
     }
     let Some(source_path) = raw
@@ -339,101 +326,97 @@ fn tiny_canary_source_bound_candidate_market_start_timestamps(
         .market_selection_source_sha256
         .as_deref()
         .map(str::trim)
-        .filter(|source_sha256| tiny_canary_is_sha256_hex(source_sha256))
+        .filter(|source_sha256| phase8_is_sha256_hex(source_sha256))
     else {
         return Ok(None);
     };
 
-    tiny_canary_reject_parent_dir(source_path, "market selection source evidence")?;
-    let source: TinyCanaryMarketSelectionSourceEvidenceFile =
-        TinyCanaryOperatorApprovalEnvelope::read_json_file_with_expected_sha256(
+    phase8_reject_parent_dir(source_path, "market selection source evidence")?;
+    let source: Phase8MarketSelectionSourceEvidenceFile =
+        Phase8OperatorApprovalEnvelope::read_json_file_with_expected_sha256(
             source_path,
             source_sha256,
-            "tiny canary market selection source evidence",
-            "tiny canary market selection source evidence sha256 does not match current evidence",
+            "phase8 market selection source evidence",
+            "phase8 market selection source evidence sha256 does not match current evidence",
         )?;
 
-    if source.record_kind.trim() != TINY_CANARY_MARKET_SELECTION_SOURCE_RECORD_KIND
-        || source.source.trim() != TINY_CANARY_MARKET_SELECTION_SOURCE
-        || !tiny_canary_market_selection_source_matches_strategy(raw, &source)
+    if source.record_kind.trim() != PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND
+        || source.source.trim() != PHASE8_MARKET_SELECTION_SOURCE
+        || !phase8_market_selection_source_matches_strategy(raw, &source)
     {
         return Ok(None);
     }
-    if let Some(reported_candidates) = raw.candidate_market_start_timestamps_milliseconds.as_ref()
-        && reported_candidates != &source.candidate_market_start_timestamps_milliseconds
+    if let Some(reported_candidates) = raw.candidate_market_start_timestamps_ms.as_ref()
+        && reported_candidates != &source.candidate_market_start_timestamps_ms
     {
         return Ok(None);
     }
 
-    Ok(Some(source.candidate_market_start_timestamps_milliseconds))
+    Ok(Some(source.candidate_market_start_timestamps_ms))
 }
 
-fn tiny_canary_market_selection_source_matches_strategy(
-    raw: &TinyCanaryStrategyInputEvidenceFile,
-    source: &TinyCanaryMarketSelectionSourceEvidenceFile,
+fn phase8_market_selection_source_matches_strategy(
+    raw: &Phase8StrategyInputEvidenceFile,
+    source: &Phase8MarketSelectionSourceEvidenceFile,
 ) -> bool {
-    source.market_selection_timestamp_milliseconds == raw.market_selection_timestamp_milliseconds
+    source.market_selection_timestamp_ms == raw.market_selection_timestamp_ms
         && source.market_selection_outcome.trim() == raw.market_selection_outcome.trim()
         && source.polymarket_condition_id.trim() == raw.polymarket_condition_id.trim()
         && source.polymarket_market_slug.trim() == raw.polymarket_market_slug.trim()
         && source.polymarket_question_id.trim() == raw.polymarket_question_id.trim()
         && source.up_instrument_id.trim() == raw.up_instrument_id.trim()
         && source.down_instrument_id.trim() == raw.down_instrument_id.trim()
-        && source.selected_market_observed_timestamp == raw.selected_market_observed_timestamp
-        && source.polymarket_market_start_timestamp_milliseconds
-            == raw.polymarket_market_start_timestamp_milliseconds
-        && source.polymarket_market_end_timestamp_milliseconds
-            == raw.polymarket_market_end_timestamp_milliseconds
+        && source.selected_market_observed_timestamp_ms == raw.selected_market_observed_timestamp_ms
+        && source.polymarket_market_start_timestamp_ms == raw.polymarket_market_start_timestamp_ms
+        && source.polymarket_market_end_timestamp_ms == raw.polymarket_market_end_timestamp_ms
 }
 
-fn tiny_canary_market_selection_outcome_is_live_entry_candidate(outcome: &str) -> bool {
-    outcome == TINY_CANARY_MARKET_SELECTION_OUTCOME_CURRENT
-        || outcome == TINY_CANARY_MARKET_SELECTION_OUTCOME_NEXT
+fn phase8_market_selection_outcome_is_live_entry_candidate(outcome: &str) -> bool {
+    outcome == PHASE8_MARKET_SELECTION_OUTCOME_CURRENT
+        || outcome == PHASE8_MARKET_SELECTION_OUTCOME_NEXT
 }
 
-fn tiny_canary_market_selection_outcome_matches_window(
+fn phase8_market_selection_outcome_matches_window(
     outcome: &str,
-    market_selection_timestamp_milliseconds: u64,
-    market_start_timestamp_milliseconds: u64,
-    market_end_timestamp_milliseconds: u64,
-    candidate_market_start_timestamps_milliseconds: &[u64],
+    market_selection_timestamp_ms: u64,
+    market_start_timestamp_ms: u64,
+    market_end_timestamp_ms: u64,
+    candidate_market_start_timestamps_ms: &[u64],
 ) -> bool {
     match outcome {
-        TINY_CANARY_MARKET_SELECTION_OUTCOME_CURRENT => {
-            market_start_timestamp_milliseconds <= market_selection_timestamp_milliseconds
-                && market_selection_timestamp_milliseconds < market_end_timestamp_milliseconds
+        PHASE8_MARKET_SELECTION_OUTCOME_CURRENT => {
+            market_start_timestamp_ms <= market_selection_timestamp_ms
+                && market_selection_timestamp_ms < market_end_timestamp_ms
         }
-        TINY_CANARY_MARKET_SELECTION_OUTCOME_NEXT => {
-            tiny_canary_market_selection_start_is_nearest_next(
-                market_selection_timestamp_milliseconds,
-                market_start_timestamp_milliseconds,
-                candidate_market_start_timestamps_milliseconds,
-            )
-        }
-        _ => true,
+        PHASE8_MARKET_SELECTION_OUTCOME_NEXT => phase8_market_selection_start_is_nearest_next(
+            market_selection_timestamp_ms,
+            market_start_timestamp_ms,
+            candidate_market_start_timestamps_ms,
+        ),
+        _ => false,
     }
 }
 
-fn tiny_canary_market_selection_start_is_nearest_next(
-    market_selection_timestamp_milliseconds: u64,
-    market_start_timestamp_milliseconds: u64,
-    candidate_market_start_timestamps_milliseconds: &[u64],
+fn phase8_market_selection_start_is_nearest_next(
+    market_selection_timestamp_ms: u64,
+    market_start_timestamp_ms: u64,
+    candidate_market_start_timestamps_ms: &[u64],
 ) -> bool {
-    candidate_market_start_timestamps_milliseconds
+    candidate_market_start_timestamps_ms
         .iter()
         .copied()
-        .filter(|candidate_start_timestamp_milliseconds| {
-            *candidate_start_timestamp_milliseconds > market_selection_timestamp_milliseconds
+        .filter(|candidate_start_timestamp_ms| {
+            *candidate_start_timestamp_ms > market_selection_timestamp_ms
         })
         .min()
-        == Some(market_start_timestamp_milliseconds)
+        == Some(market_start_timestamp_ms)
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TinyCanaryStrategyInputEvidenceFile {
+struct Phase8StrategyInputEvidenceFile {
     realized_volatility: String,
-    seconds_to_expiry: u64,
+    seconds_to_market_end: u64,
     spot_price: String,
     price_to_beat_value: String,
     expected_edge_basis_points: String,
@@ -444,8 +427,8 @@ struct TinyCanaryStrategyInputEvidenceFile {
     pricing_kurtosis: String,
     theta_decay_factor: String,
     theta_scaled_min_edge_bps: String,
-    market_selection_timestamp_milliseconds: u64,
-    candidate_market_start_timestamps_milliseconds: Option<Vec<u64>>,
+    market_selection_timestamp_ms: u64,
+    candidate_market_start_timestamps_ms: Option<Vec<u64>>,
     market_selection_source_path: Option<String>,
     market_selection_source_sha256: Option<String>,
     market_selection_outcome: String,
@@ -454,84 +437,83 @@ struct TinyCanaryStrategyInputEvidenceFile {
     polymarket_question_id: String,
     up_instrument_id: String,
     down_instrument_id: String,
-    selected_market_observed_timestamp: u64,
-    polymarket_market_start_timestamp_milliseconds: u64,
-    polymarket_market_end_timestamp_milliseconds: u64,
+    selected_market_observed_timestamp_ms: u64,
+    polymarket_market_start_timestamp_ms: u64,
+    polymarket_market_end_timestamp_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TinyCanaryMarketSelectionSourceEvidenceFile {
+struct Phase8MarketSelectionSourceEvidenceFile {
     record_kind: String,
     source: String,
-    market_selection_timestamp_milliseconds: u64,
-    candidate_market_start_timestamps_milliseconds: Vec<u64>,
+    market_selection_timestamp_ms: u64,
+    candidate_market_start_timestamps_ms: Vec<u64>,
     market_selection_outcome: String,
     polymarket_condition_id: String,
     polymarket_market_slug: String,
     polymarket_question_id: String,
     up_instrument_id: String,
     down_instrument_id: String,
-    selected_market_observed_timestamp: u64,
-    polymarket_market_start_timestamp_milliseconds: u64,
-    polymarket_market_end_timestamp_milliseconds: u64,
+    selected_market_observed_timestamp_ms: u64,
+    polymarket_market_start_timestamp_ms: u64,
+    polymarket_market_end_timestamp_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TinyCanaryPreflight {
+pub struct Phase8CanaryPreflight {
     pub head_sha: String,
     pub root_config_sha256: String,
-    pub no_submit_report_status: TinyCanaryPreflightStatus,
-    pub strategy_input_audit_status: TinyCanaryStrategyInputAuditStatus,
+    pub no_submit_report_status: Phase8CanaryPreflightStatus,
+    pub strategy_input_audit_status: Phase8StrategyInputAuditStatus,
     pub max_live_order_count: Option<u32>,
     pub max_notional_per_order: Option<String>,
-    pub block_reasons: Vec<TinyCanaryBlockReason>,
+    pub block_reasons: Vec<Phase8CanaryBlockReason>,
 }
 
-impl TinyCanaryPreflight {
+impl Phase8CanaryPreflight {
     pub fn can_enter_live_runner(&self) -> bool {
         self.block_reasons.is_empty()
-            && self.no_submit_report_status == TinyCanaryPreflightStatus::AcceptedByGate
-            && self.strategy_input_audit_status == TinyCanaryStrategyInputAuditStatus::Approved
-            && self.max_live_order_count == Some(TINY_CANARY_REQUIRED_LIVE_ORDER_CAP)
+            && self.no_submit_report_status == Phase8CanaryPreflightStatus::AcceptedByGate
+            && self.strategy_input_audit_status == Phase8StrategyInputAuditStatus::Approved
+            && self.max_live_order_count == Some(PHASE8_REQUIRED_LIVE_ORDER_CAP)
     }
 }
 
-pub async fn evaluate_tiny_canary_preflight(
+pub async fn evaluate_phase8_canary_preflight(
     loaded: &LoadedBoltV3Config,
     head_sha: &str,
-    strategy_audit: TinyCanaryStrategyInputSafetyAudit,
-) -> TinyCanaryPreflight {
+    strategy_audit: Phase8StrategyInputSafetyAudit,
+) -> Phase8CanaryPreflight {
     let live_canary = loaded.root.live_canary.as_ref();
     let mut block_reasons = strategy_audit.block_reasons.clone();
-    let root_config_sha256 =
-        match TinyCanaryOperatorApprovalEnvelope::sha256_file(&loaded.root_path) {
-            Ok(hash) => hash,
-            Err(_) => {
-                block_reasons.push(TinyCanaryBlockReason::RootConfigHashUnavailable);
-                String::new()
-            }
-        };
+    let root_config_sha256 = match Phase8OperatorApprovalEnvelope::sha256_file(&loaded.root_path) {
+        Ok(hash) => hash,
+        Err(_) => {
+            block_reasons.push(Phase8CanaryBlockReason::RootConfigHashUnavailable);
+            String::new()
+        }
+    };
 
     let no_submit_report_status = match check_bolt_v3_live_canary_gate(loaded).await {
-        Ok(_) => TinyCanaryPreflightStatus::AcceptedByGate,
+        Ok(_) => Phase8CanaryPreflightStatus::AcceptedByGate,
         Err(BoltV3LiveCanaryGateError::ReadinessReportRead { .. }) => {
-            block_reasons.push(TinyCanaryBlockReason::MissingNoSubmitReadinessReport);
-            TinyCanaryPreflightStatus::Missing
+            block_reasons.push(Phase8CanaryBlockReason::MissingNoSubmitReadinessReport);
+            Phase8CanaryPreflightStatus::Missing
         }
         Err(_) => {
-            block_reasons.push(TinyCanaryBlockReason::LiveCanaryGateRejected);
-            TinyCanaryPreflightStatus::RejectedByGate
+            block_reasons.push(Phase8CanaryBlockReason::LiveCanaryGateRejected);
+            Phase8CanaryPreflightStatus::RejectedByGate
         }
     };
     if !matches!(
         live_canary,
-        Some(block) if block.max_live_order_count == TINY_CANARY_REQUIRED_LIVE_ORDER_CAP
+        Some(block) if block.max_live_order_count == PHASE8_REQUIRED_LIVE_ORDER_CAP
     ) {
-        block_reasons.push(TinyCanaryBlockReason::LiveOrderCountCapNotOne);
+        block_reasons.push(Phase8CanaryBlockReason::LiveOrderCountCapNotOne);
     }
 
-    TinyCanaryPreflight {
+    Phase8CanaryPreflight {
         head_sha: head_sha.trim().to_string(),
         root_config_sha256,
         no_submit_report_status,
@@ -543,102 +525,102 @@ pub async fn evaluate_tiny_canary_preflight(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TinyCanaryEvidenceRef {
+pub struct Phase8EvidenceRef {
     pub path_hash: String,
     pub record_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TinyCanarySubmitAdmissionRef {
+pub struct Phase8SubmitAdmissionRef {
     pub status: String,
     pub admitted_order_count: u32,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TinyCanaryRuntimeCaptureRef {
+pub struct Phase8RuntimeCaptureRef {
     pub spool_root_hash: String,
     pub run_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TinyCanaryNtLifecycleRef {
+pub struct Phase8NtLifecycleRef {
     pub kind: String,
     pub event_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TinyCanaryOutcome {
+pub enum Phase8CanaryOutcome {
     DryNoSubmitProof,
     BlockedBeforeSubmit,
     LiveCanaryProof,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TinyCanaryLiveOrderRef {
+pub struct Phase8LiveOrderRef {
     pub strategy_instance_id_hash: String,
     pub client_order_id_hash: String,
     pub venue_order_id_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TinyCanaryLiveCanaryResultRefs {
-    pub nt_submit_event_ref: TinyCanaryEvidenceRef,
-    pub venue_order_state_ref: TinyCanaryEvidenceRef,
-    pub strategy_cancel_ref: Option<TinyCanaryEvidenceRef>,
-    pub restart_reconciliation_ref: TinyCanaryEvidenceRef,
-    pub post_run_hygiene_ref: TinyCanaryEvidenceRef,
+pub struct Phase8LiveCanaryResultRefs {
+    pub nt_submit_event_ref: Phase8EvidenceRef,
+    pub venue_order_state_ref: Phase8EvidenceRef,
+    pub strategy_cancel_ref: Option<Phase8EvidenceRef>,
+    pub restart_reconciliation_ref: Phase8EvidenceRef,
+    pub post_run_hygiene_ref: Phase8EvidenceRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TinyCanaryEvidence {
+pub struct Phase8CanaryEvidence {
     pub schema_version: u32,
     pub head_sha: String,
     pub root_config_sha256: String,
     pub ssm_manifest_sha256: String,
-    pub ssm_manifest_ref: TinyCanaryEvidenceRef,
-    pub strategy_input_evidence_ref: TinyCanaryEvidenceRef,
+    pub ssm_manifest_ref: Phase8EvidenceRef,
+    pub strategy_input_evidence_ref: Phase8EvidenceRef,
     #[serde(skip)]
     approved_strategy_instance_id_hash: String,
     pub approval_id_hash: String,
     pub max_live_order_count: u32,
     pub max_notional_per_order: String,
-    pub decision_evidence_ref: Option<TinyCanaryEvidenceRef>,
-    pub submit_admission_ref: TinyCanarySubmitAdmissionRef,
-    pub live_order_ref: Option<TinyCanaryLiveOrderRef>,
-    pub nt_submit_event_ref: Option<TinyCanaryEvidenceRef>,
-    pub venue_order_state_ref: Option<TinyCanaryEvidenceRef>,
-    pub strategy_cancel_ref: Option<TinyCanaryEvidenceRef>,
-    pub restart_reconciliation_ref: Option<TinyCanaryEvidenceRef>,
-    pub post_run_hygiene_ref: Option<TinyCanaryEvidenceRef>,
-    pub runtime_capture_ref: TinyCanaryRuntimeCaptureRef,
-    pub nt_lifecycle_refs: Vec<TinyCanaryNtLifecycleRef>,
-    pub outcome: TinyCanaryOutcome,
-    pub block_reasons: Vec<TinyCanaryBlockReason>,
+    pub decision_evidence_ref: Option<Phase8EvidenceRef>,
+    pub submit_admission_ref: Phase8SubmitAdmissionRef,
+    pub live_order_ref: Option<Phase8LiveOrderRef>,
+    pub nt_submit_event_ref: Option<Phase8EvidenceRef>,
+    pub venue_order_state_ref: Option<Phase8EvidenceRef>,
+    pub strategy_cancel_ref: Option<Phase8EvidenceRef>,
+    pub restart_reconciliation_ref: Option<Phase8EvidenceRef>,
+    pub post_run_hygiene_ref: Option<Phase8EvidenceRef>,
+    pub runtime_capture_ref: Phase8RuntimeCaptureRef,
+    pub nt_lifecycle_refs: Vec<Phase8NtLifecycleRef>,
+    pub outcome: Phase8CanaryOutcome,
+    pub block_reasons: Vec<Phase8CanaryBlockReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TinyCanaryEvidenceInput {
+pub struct Phase8CanaryEvidenceInput {
     pub head_sha: String,
     pub root_config_sha256: String,
     pub ssm_manifest_sha256: String,
-    pub ssm_manifest_ref: TinyCanaryEvidenceRef,
-    pub strategy_input_evidence_ref: TinyCanaryEvidenceRef,
+    pub ssm_manifest_ref: Phase8EvidenceRef,
+    pub strategy_input_evidence_ref: Phase8EvidenceRef,
     pub approved_strategy_instance_id_hash: String,
     pub approval_id: String,
     pub max_live_order_count: u32,
     pub max_notional_per_order: Decimal,
-    pub runtime_capture_ref: TinyCanaryRuntimeCaptureRef,
+    pub runtime_capture_ref: Phase8RuntimeCaptureRef,
 }
 
-impl TinyCanaryEvidence {
+impl Phase8CanaryEvidence {
     pub fn dry_no_submit_proof(
-        input: TinyCanaryEvidenceInput,
-        decision_evidence_ref: TinyCanaryEvidenceRef,
+        input: Phase8CanaryEvidenceInput,
+        decision_evidence_ref: Phase8EvidenceRef,
     ) -> Self {
         Self {
-            schema_version: TINY_CANARY_EVIDENCE_SCHEMA_VERSION,
+            schema_version: PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION,
             head_sha: input.head_sha,
             root_config_sha256: input.root_config_sha256,
             ssm_manifest_sha256: input.ssm_manifest_sha256,
@@ -649,7 +631,7 @@ impl TinyCanaryEvidence {
             max_live_order_count: input.max_live_order_count,
             max_notional_per_order: input.max_notional_per_order.to_string(),
             decision_evidence_ref: Some(decision_evidence_ref),
-            submit_admission_ref: TinyCanarySubmitAdmissionRef {
+            submit_admission_ref: Phase8SubmitAdmissionRef {
                 status: SUBMIT_ADMISSION_STATUS_REJECTED.to_string(),
                 admitted_order_count: 0,
                 reason: BLOCKED_BEFORE_LIVE_ORDER_REASON.to_string(),
@@ -662,17 +644,17 @@ impl TinyCanaryEvidence {
             post_run_hygiene_ref: None,
             runtime_capture_ref: input.runtime_capture_ref,
             nt_lifecycle_refs: Vec::new(),
-            outcome: TinyCanaryOutcome::DryNoSubmitProof,
-            block_reasons: vec![TinyCanaryBlockReason::BlockedBeforeLiveOrder],
+            outcome: Phase8CanaryOutcome::DryNoSubmitProof,
+            block_reasons: vec![Phase8CanaryBlockReason::BlockedBeforeLiveOrder],
         }
     }
 
     pub fn blocked_before_submit(
-        input: TinyCanaryEvidenceInput,
-        block_reasons: Vec<TinyCanaryBlockReason>,
+        input: Phase8CanaryEvidenceInput,
+        block_reasons: Vec<Phase8CanaryBlockReason>,
     ) -> Self {
         Self {
-            schema_version: TINY_CANARY_EVIDENCE_SCHEMA_VERSION,
+            schema_version: PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION,
             head_sha: input.head_sha,
             root_config_sha256: input.root_config_sha256,
             ssm_manifest_sha256: input.ssm_manifest_sha256,
@@ -683,7 +665,7 @@ impl TinyCanaryEvidence {
             max_live_order_count: input.max_live_order_count,
             max_notional_per_order: input.max_notional_per_order.to_string(),
             decision_evidence_ref: None,
-            submit_admission_ref: TinyCanarySubmitAdmissionRef {
+            submit_admission_ref: Phase8SubmitAdmissionRef {
                 status: SUBMIT_ADMISSION_STATUS_REJECTED.to_string(),
                 admitted_order_count: 0,
                 reason: BLOCKED_BEFORE_SUBMIT_REASON.to_string(),
@@ -696,58 +678,52 @@ impl TinyCanaryEvidence {
             post_run_hygiene_ref: None,
             runtime_capture_ref: input.runtime_capture_ref,
             nt_lifecycle_refs: Vec::new(),
-            outcome: TinyCanaryOutcome::BlockedBeforeSubmit,
+            outcome: Phase8CanaryOutcome::BlockedBeforeSubmit,
             block_reasons,
         }
     }
 
     pub fn live_canary_proof(
-        input: TinyCanaryEvidenceInput,
-        decision_evidence_ref: TinyCanaryEvidenceRef,
-        live_order_ref: TinyCanaryLiveOrderRef,
-        result_refs: TinyCanaryLiveCanaryResultRefs,
+        input: Phase8CanaryEvidenceInput,
+        decision_evidence_ref: Phase8EvidenceRef,
+        live_order_ref: Phase8LiveOrderRef,
+        result_refs: Phase8LiveCanaryResultRefs,
         admitted_order_count: u32,
     ) -> Result<Self> {
-        if admitted_order_count != TINY_CANARY_REQUIRED_LIVE_ORDER_CAP {
+        if admitted_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP {
             return Err(anyhow!(
-                "tiny canary live canary proof admitted_order_count expected {TINY_CANARY_REQUIRED_LIVE_ORDER_CAP} got {admitted_order_count}"
+                "phase8 live canary proof admitted_order_count expected {PHASE8_REQUIRED_LIVE_ORDER_CAP} got {admitted_order_count}"
             ));
         }
-        validate_tiny_canary_input(&input)?;
-        validate_tiny_canary_evidence_ref(
-            stringify!(decision_evidence_ref),
-            &decision_evidence_ref,
-        )?;
-        validate_tiny_canary_live_order_ref(&live_order_ref)?;
+        validate_phase8_canary_input(&input)?;
+        validate_phase8_evidence_ref(stringify!(decision_evidence_ref), &decision_evidence_ref)?;
+        validate_phase8_live_order_ref(&live_order_ref)?;
         if live_order_ref.strategy_instance_id_hash != input.approved_strategy_instance_id_hash {
             return Err(anyhow!(
-                "tiny canary live canary proof live_order_ref.strategy_instance_id_hash does not match approved financial envelope"
+                "phase8 live canary proof live_order_ref.strategy_instance_id_hash does not match approved financial envelope"
             ));
         }
-        validate_tiny_canary_evidence_ref(
+        validate_phase8_evidence_ref(
             stringify!(nt_submit_event_ref),
             &result_refs.nt_submit_event_ref,
         )?;
-        validate_tiny_canary_evidence_ref(
+        validate_phase8_evidence_ref(
             stringify!(venue_order_state_ref),
             &result_refs.venue_order_state_ref,
         )?;
         if let Some(strategy_cancel_ref) = &result_refs.strategy_cancel_ref {
-            validate_tiny_canary_evidence_ref(
-                stringify!(strategy_cancel_ref),
-                strategy_cancel_ref,
-            )?;
+            validate_phase8_evidence_ref(stringify!(strategy_cancel_ref), strategy_cancel_ref)?;
         }
-        validate_tiny_canary_evidence_ref(
+        validate_phase8_evidence_ref(
             stringify!(restart_reconciliation_ref),
             &result_refs.restart_reconciliation_ref,
         )?;
-        validate_tiny_canary_evidence_ref(
+        validate_phase8_evidence_ref(
             stringify!(post_run_hygiene_ref),
             &result_refs.post_run_hygiene_ref,
         )?;
         Ok(Self {
-            schema_version: TINY_CANARY_EVIDENCE_SCHEMA_VERSION,
+            schema_version: PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION,
             head_sha: input.head_sha,
             root_config_sha256: input.root_config_sha256,
             ssm_manifest_sha256: input.ssm_manifest_sha256,
@@ -758,7 +734,7 @@ impl TinyCanaryEvidence {
             max_live_order_count: input.max_live_order_count,
             max_notional_per_order: input.max_notional_per_order.to_string(),
             decision_evidence_ref: Some(decision_evidence_ref),
-            submit_admission_ref: TinyCanarySubmitAdmissionRef {
+            submit_admission_ref: Phase8SubmitAdmissionRef {
                 status: SUBMIT_ADMISSION_STATUS_ACCEPTED.to_string(),
                 admitted_order_count,
                 reason: NT_ADAPTER_SUBMIT_PROVEN_REASON.to_string(),
@@ -771,7 +747,7 @@ impl TinyCanaryEvidence {
             post_run_hygiene_ref: Some(result_refs.post_run_hygiene_ref),
             runtime_capture_ref: input.runtime_capture_ref,
             nt_lifecycle_refs: Vec::new(),
-            outcome: TinyCanaryOutcome::LiveCanaryProof,
+            outcome: Phase8CanaryOutcome::LiveCanaryProof,
             block_reasons: Vec::new(),
         })
     }
@@ -785,39 +761,38 @@ impl TinyCanaryEvidence {
         {
             fs::create_dir_all(parent).map_err(|source| {
                 anyhow!(
-                    "failed to create tiny canary canary evidence directory `{}`: {source}",
+                    "failed to create phase8 canary evidence directory `{}`: {source}",
                     parent.display()
                 )
             })?;
         }
-        let bytes = serde_json::to_vec_pretty(self).map_err(|source| {
-            anyhow!("failed to serialize tiny canary canary evidence: {source}")
-        })?;
+        let bytes = serde_json::to_vec_pretty(self)
+            .map_err(|source| anyhow!("failed to serialize phase8 canary evidence: {source}"))?;
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(path)
             .map_err(|source| match source.kind() {
                 std::io::ErrorKind::AlreadyExists => anyhow!(
-                    "tiny canary canary evidence `{}` already exists; refusing to overwrite",
+                    "phase8 canary evidence `{}` already exists; refusing to overwrite",
                     path.display()
                 ),
                 _ => anyhow!(
-                    "failed to create tiny canary canary evidence `{}`: {source}",
+                    "failed to create phase8 canary evidence `{}`: {source}",
                     path.display()
                 ),
             })?;
         if let Err(source) = file.write_all(&bytes) {
             let _ = fs::remove_file(path);
             return Err(anyhow!(
-                "failed to write tiny canary canary evidence `{}`: {source}",
+                "failed to write phase8 canary evidence `{}`: {source}",
                 path.display()
             ));
         }
         if let Err(source) = file.sync_all() {
             let _ = fs::remove_file(path);
             return Err(anyhow!(
-                "failed to sync tiny canary canary evidence `{}`: {source}",
+                "failed to sync phase8 canary evidence `{}`: {source}",
                 path.display()
             ));
         }
@@ -825,32 +800,32 @@ impl TinyCanaryEvidence {
     }
 
     fn validate_before_write(&self) -> Result<()> {
-        validate_tiny_canary_identity_fields(
+        validate_phase8_canary_identity_fields(
             self.schema_version,
             &self.head_sha,
             &self.approval_id_hash,
         )?;
-        validate_tiny_canary_sha256_field(
+        validate_phase8_sha256_field(
             stringify!(approved_strategy_instance_id_hash),
             &self.approved_strategy_instance_id_hash,
         )?;
-        validate_tiny_canary_cap_values(self.max_live_order_count, &self.max_notional_per_order)?;
-        validate_tiny_canary_evidence_hashes(
+        validate_phase8_canary_cap_values(self.max_live_order_count, &self.max_notional_per_order)?;
+        validate_phase8_evidence_hashes(
             &self.root_config_sha256,
             &self.ssm_manifest_sha256,
             &self.ssm_manifest_ref,
             &self.strategy_input_evidence_ref,
             &self.runtime_capture_ref,
         )?;
-        validate_tiny_canary_nt_lifecycle_refs(&self.nt_lifecycle_refs)?;
+        validate_phase8_nt_lifecycle_refs(&self.nt_lifecycle_refs)?;
         match self.outcome {
-            TinyCanaryOutcome::DryNoSubmitProof => {
-                validate_tiny_canary_live_refs_absent(self)?;
-                validate_tiny_canary_block_reasons_exact(
+            Phase8CanaryOutcome::DryNoSubmitProof => {
+                validate_phase8_live_refs_absent(self)?;
+                validate_phase8_block_reasons_exact(
                     &self.block_reasons,
-                    TinyCanaryBlockReason::BlockedBeforeLiveOrder,
+                    Phase8CanaryBlockReason::BlockedBeforeLiveOrder,
                 )?;
-                validate_tiny_canary_submit_admission_ref(
+                validate_phase8_submit_admission_ref(
                     &self.submit_admission_ref,
                     SUBMIT_ADMISSION_STATUS_REJECTED,
                     u32::MIN,
@@ -859,142 +834,136 @@ impl TinyCanaryEvidence {
                 let decision_evidence_ref =
                     self.decision_evidence_ref.as_ref().ok_or_else(|| {
                         anyhow!(
-                            "tiny canary canary evidence {} must be present for dry proof",
+                            "phase8 canary evidence {} must be present for dry proof",
                             stringify!(decision_evidence_ref)
                         )
                     })?;
-                validate_tiny_canary_evidence_ref(
+                validate_phase8_evidence_ref(
                     stringify!(decision_evidence_ref),
                     decision_evidence_ref,
                 )
             }
-            TinyCanaryOutcome::BlockedBeforeSubmit => {
-                validate_tiny_canary_optional_absent(
+            Phase8CanaryOutcome::BlockedBeforeSubmit => {
+                validate_phase8_optional_absent(
                     stringify!(decision_evidence_ref),
                     self.decision_evidence_ref.is_some(),
                 )?;
-                validate_tiny_canary_live_refs_absent(self)?;
-                validate_tiny_canary_block_reasons_present(&self.block_reasons)?;
-                validate_tiny_canary_submit_admission_ref(
+                validate_phase8_live_refs_absent(self)?;
+                validate_phase8_block_reasons_present(&self.block_reasons)?;
+                validate_phase8_submit_admission_ref(
                     &self.submit_admission_ref,
                     SUBMIT_ADMISSION_STATUS_REJECTED,
                     u32::MIN,
                     BLOCKED_BEFORE_SUBMIT_REASON,
                 )
             }
-            TinyCanaryOutcome::LiveCanaryProof => {
-                validate_tiny_canary_block_reasons_absent(&self.block_reasons)?;
-                validate_tiny_canary_submit_admission_ref(
+            Phase8CanaryOutcome::LiveCanaryProof => {
+                validate_phase8_block_reasons_absent(&self.block_reasons)?;
+                validate_phase8_submit_admission_ref(
                     &self.submit_admission_ref,
                     SUBMIT_ADMISSION_STATUS_ACCEPTED,
-                    TINY_CANARY_REQUIRED_LIVE_ORDER_CAP,
+                    PHASE8_REQUIRED_LIVE_ORDER_CAP,
                     NT_ADAPTER_SUBMIT_PROVEN_REASON,
                 )?;
                 let decision_evidence_ref =
                     self.decision_evidence_ref.as_ref().ok_or_else(|| {
                         anyhow!(
-                            "tiny canary canary evidence {} must be present for live proof",
+                            "phase8 canary evidence {} must be present for live proof",
                             stringify!(decision_evidence_ref)
                         )
                     })?;
                 let live_order_ref = self.live_order_ref.as_ref().ok_or_else(|| {
                     anyhow!(
-                        "tiny canary canary evidence {} must be present for live proof",
+                        "phase8 canary evidence {} must be present for live proof",
                         stringify!(live_order_ref)
                     )
                 })?;
                 let nt_submit_event_ref = self.nt_submit_event_ref.as_ref().ok_or_else(|| {
                     anyhow!(
-                        "tiny canary canary evidence {} must be present for live proof",
+                        "phase8 canary evidence {} must be present for live proof",
                         stringify!(nt_submit_event_ref)
                     )
                 })?;
                 let venue_order_state_ref =
                     self.venue_order_state_ref.as_ref().ok_or_else(|| {
                         anyhow!(
-                            "tiny canary canary evidence {} must be present for live proof",
+                            "phase8 canary evidence {} must be present for live proof",
                             stringify!(venue_order_state_ref)
                         )
                     })?;
                 let restart_reconciliation_ref =
                     self.restart_reconciliation_ref.as_ref().ok_or_else(|| {
                         anyhow!(
-                            "tiny canary canary evidence {} must be present for live proof",
+                            "phase8 canary evidence {} must be present for live proof",
                             stringify!(restart_reconciliation_ref)
                         )
                     })?;
                 let post_run_hygiene_ref = self.post_run_hygiene_ref.as_ref().ok_or_else(|| {
                     anyhow!(
-                        "tiny canary canary evidence {} must be present for live proof",
+                        "phase8 canary evidence {} must be present for live proof",
                         stringify!(post_run_hygiene_ref)
                     )
                 })?;
-                validate_tiny_canary_evidence_ref(
+                validate_phase8_evidence_ref(
                     stringify!(decision_evidence_ref),
                     decision_evidence_ref,
                 )?;
-                validate_tiny_canary_live_order_ref(live_order_ref)?;
+                validate_phase8_live_order_ref(live_order_ref)?;
                 if live_order_ref.strategy_instance_id_hash
                     != self.approved_strategy_instance_id_hash
                 {
                     return Err(anyhow!(
-                        "tiny canary live canary proof live_order_ref.strategy_instance_id_hash does not match approved financial envelope"
+                        "phase8 live canary proof live_order_ref.strategy_instance_id_hash does not match approved financial envelope"
                     ));
                 }
-                validate_tiny_canary_evidence_ref(
-                    stringify!(nt_submit_event_ref),
-                    nt_submit_event_ref,
-                )?;
-                validate_tiny_canary_evidence_ref(
+                validate_phase8_evidence_ref(stringify!(nt_submit_event_ref), nt_submit_event_ref)?;
+                validate_phase8_evidence_ref(
                     stringify!(venue_order_state_ref),
                     venue_order_state_ref,
                 )?;
                 if let Some(strategy_cancel_ref) = &self.strategy_cancel_ref {
-                    validate_tiny_canary_evidence_ref(
+                    validate_phase8_evidence_ref(
                         stringify!(strategy_cancel_ref),
                         strategy_cancel_ref,
                     )?;
                 }
-                validate_tiny_canary_evidence_ref(
+                validate_phase8_evidence_ref(
                     stringify!(restart_reconciliation_ref),
                     restart_reconciliation_ref,
                 )?;
-                validate_tiny_canary_evidence_ref(
-                    stringify!(post_run_hygiene_ref),
-                    post_run_hygiene_ref,
-                )
+                validate_phase8_evidence_ref(stringify!(post_run_hygiene_ref), post_run_hygiene_ref)
             }
         }
     }
 }
 
-fn validate_tiny_canary_identity_fields(
+fn validate_phase8_canary_identity_fields(
     schema_version: u32,
     head_sha: &str,
     approval_id_hash: &str,
 ) -> Result<()> {
-    if schema_version != TINY_CANARY_EVIDENCE_SCHEMA_VERSION {
+    if schema_version != PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION {
         return Err(anyhow!(
-            "tiny canary canary evidence {} expected {TINY_CANARY_EVIDENCE_SCHEMA_VERSION} got {schema_version}",
+            "phase8 canary evidence {} expected {PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION} got {schema_version}",
             stringify!(schema_version)
         ));
     }
     if head_sha.trim().is_empty() {
         return Err(anyhow!(
-            "tiny canary canary evidence {} must not be empty",
+            "phase8 canary evidence {} must not be empty",
             stringify!(head_sha)
         ));
     }
-    validate_tiny_canary_sha256_field(stringify!(approval_id_hash), approval_id_hash)
+    validate_phase8_sha256_field(stringify!(approval_id_hash), approval_id_hash)
 }
 
-fn validate_tiny_canary_cap_values(
+fn validate_phase8_canary_cap_values(
     max_live_order_count: u32,
     max_notional_per_order: &str,
 ) -> Result<()> {
-    if max_live_order_count != TINY_CANARY_REQUIRED_LIVE_ORDER_CAP {
+    if max_live_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP {
         return Err(anyhow!(
-            "tiny canary canary evidence {} expected {TINY_CANARY_REQUIRED_LIVE_ORDER_CAP} got {max_live_order_count}",
+            "phase8 canary evidence {} expected {PHASE8_REQUIRED_LIVE_ORDER_CAP} got {max_live_order_count}",
             stringify!(max_live_order_count)
         ));
     }
@@ -1002,52 +971,48 @@ fn validate_tiny_canary_cap_values(
         .parse::<Decimal>()
         .map_err(|source| {
             anyhow!(
-                "tiny canary canary evidence {} must be a decimal: {source}",
+                "phase8 canary evidence {} must be a decimal: {source}",
                 stringify!(max_notional_per_order)
             )
         })?;
     if max_notional_per_order <= Decimal::ZERO {
         return Err(anyhow!(
-            "tiny canary canary evidence {} must be positive",
+            "phase8 canary evidence {} must be positive",
             stringify!(max_notional_per_order)
         ));
     }
     Ok(())
 }
 
-fn validate_tiny_canary_block_reasons_exact(
-    block_reasons: &[TinyCanaryBlockReason],
-    expected: TinyCanaryBlockReason,
+fn validate_phase8_block_reasons_exact(
+    block_reasons: &[Phase8CanaryBlockReason],
+    expected: Phase8CanaryBlockReason,
 ) -> Result<()> {
     if block_reasons == [expected] {
         Ok(())
     } else {
         Err(anyhow!(
-            "tiny canary canary evidence {} does not match expected outcome reason",
+            "phase8 canary evidence {} does not match expected outcome reason",
             stringify!(block_reasons)
         ))
     }
 }
 
-fn validate_tiny_canary_block_reasons_absent(
-    block_reasons: &[TinyCanaryBlockReason],
-) -> Result<()> {
+fn validate_phase8_block_reasons_absent(block_reasons: &[Phase8CanaryBlockReason]) -> Result<()> {
     if block_reasons.is_empty() {
         Ok(())
     } else {
         Err(anyhow!(
-            "tiny canary canary evidence {} must be empty for live proof",
+            "phase8 canary evidence {} must be empty for live proof",
             stringify!(block_reasons)
         ))
     }
 }
 
-fn validate_tiny_canary_block_reasons_present(
-    block_reasons: &[TinyCanaryBlockReason],
-) -> Result<()> {
+fn validate_phase8_block_reasons_present(block_reasons: &[Phase8CanaryBlockReason]) -> Result<()> {
     if block_reasons.is_empty() {
         Err(anyhow!(
-            "tiny canary canary evidence {} must not be empty for blocked proof",
+            "phase8 canary evidence {} must not be empty for blocked proof",
             stringify!(block_reasons)
         ))
     } else {
@@ -1055,52 +1020,52 @@ fn validate_tiny_canary_block_reasons_present(
     }
 }
 
-fn validate_tiny_canary_live_refs_absent(evidence: &TinyCanaryEvidence) -> Result<()> {
-    validate_tiny_canary_optional_absent(
+fn validate_phase8_live_refs_absent(evidence: &Phase8CanaryEvidence) -> Result<()> {
+    validate_phase8_optional_absent(
         stringify!(live_order_ref),
         evidence.live_order_ref.is_some(),
     )?;
-    validate_tiny_canary_optional_absent(
+    validate_phase8_optional_absent(
         stringify!(nt_submit_event_ref),
         evidence.nt_submit_event_ref.is_some(),
     )?;
-    validate_tiny_canary_optional_absent(
+    validate_phase8_optional_absent(
         stringify!(venue_order_state_ref),
         evidence.venue_order_state_ref.is_some(),
     )?;
-    validate_tiny_canary_optional_absent(
+    validate_phase8_optional_absent(
         stringify!(strategy_cancel_ref),
         evidence.strategy_cancel_ref.is_some(),
     )?;
-    validate_tiny_canary_optional_absent(
+    validate_phase8_optional_absent(
         stringify!(restart_reconciliation_ref),
         evidence.restart_reconciliation_ref.is_some(),
     )?;
-    validate_tiny_canary_optional_absent(
+    validate_phase8_optional_absent(
         stringify!(post_run_hygiene_ref),
         evidence.post_run_hygiene_ref.is_some(),
     )
 }
 
-fn validate_tiny_canary_optional_absent(field: &'static str, present: bool) -> Result<()> {
+fn validate_phase8_optional_absent(field: &'static str, present: bool) -> Result<()> {
     if present {
         Err(anyhow!(
-            "tiny canary canary evidence {field} must be absent for non-live proof"
+            "phase8 canary evidence {field} must be absent for non-live proof"
         ))
     } else {
         Ok(())
     }
 }
 
-fn validate_tiny_canary_submit_admission_ref(
-    submit_admission_ref: &TinyCanarySubmitAdmissionRef,
+fn validate_phase8_submit_admission_ref(
+    submit_admission_ref: &Phase8SubmitAdmissionRef,
     expected_status: &str,
     expected_admitted_order_count: u32,
     expected_reason: &str,
 ) -> Result<()> {
     if submit_admission_ref.status != expected_status {
         return Err(anyhow!(
-            "tiny canary canary evidence {}.{} expected `{}` got `{}`",
+            "phase8 canary evidence {}.{} expected `{}` got `{}`",
             stringify!(submit_admission_ref),
             stringify!(status),
             expected_status,
@@ -1109,7 +1074,7 @@ fn validate_tiny_canary_submit_admission_ref(
     }
     if submit_admission_ref.admitted_order_count != expected_admitted_order_count {
         return Err(anyhow!(
-            "tiny canary canary evidence {}.{} expected {} got {}",
+            "phase8 canary evidence {}.{} expected {} got {}",
             stringify!(submit_admission_ref),
             stringify!(admitted_order_count),
             expected_admitted_order_count,
@@ -1118,7 +1083,7 @@ fn validate_tiny_canary_submit_admission_ref(
     }
     if submit_admission_ref.reason != expected_reason {
         return Err(anyhow!(
-            "tiny canary canary evidence {}.{} expected `{}` got `{}`",
+            "phase8 canary evidence {}.{} expected `{}` got `{}`",
             stringify!(submit_admission_ref),
             stringify!(reason),
             expected_reason,
@@ -1128,102 +1093,92 @@ fn validate_tiny_canary_submit_admission_ref(
     Ok(())
 }
 
-fn validate_tiny_canary_input(input: &TinyCanaryEvidenceInput) -> Result<()> {
-    validate_tiny_canary_evidence_hashes(
+fn validate_phase8_canary_input(input: &Phase8CanaryEvidenceInput) -> Result<()> {
+    validate_phase8_evidence_hashes(
         &input.root_config_sha256,
         &input.ssm_manifest_sha256,
         &input.ssm_manifest_ref,
         &input.strategy_input_evidence_ref,
         &input.runtime_capture_ref,
     )?;
-    validate_tiny_canary_sha256_field(
+    validate_phase8_sha256_field(
         stringify!(approved_strategy_instance_id_hash),
         &input.approved_strategy_instance_id_hash,
     )?;
-    if input.max_live_order_count != TINY_CANARY_REQUIRED_LIVE_ORDER_CAP {
+    if input.max_live_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP {
         return Err(anyhow!(
-            "tiny canary live canary proof {} expected {TINY_CANARY_REQUIRED_LIVE_ORDER_CAP} got {}",
+            "phase8 live canary proof {} expected {PHASE8_REQUIRED_LIVE_ORDER_CAP} got {}",
             stringify!(max_live_order_count),
             input.max_live_order_count
         ));
     }
     if input.max_notional_per_order <= Decimal::ZERO {
         return Err(anyhow!(
-            "tiny canary live canary proof {} must be positive",
+            "phase8 live canary proof {} must be positive",
             stringify!(max_notional_per_order)
         ));
     }
     Ok(())
 }
 
-fn validate_tiny_canary_evidence_hashes(
+fn validate_phase8_evidence_hashes(
     root_config_sha256: &str,
     ssm_manifest_sha256: &str,
-    ssm_manifest_ref: &TinyCanaryEvidenceRef,
-    strategy_input_evidence_ref: &TinyCanaryEvidenceRef,
-    runtime_capture_ref: &TinyCanaryRuntimeCaptureRef,
+    ssm_manifest_ref: &Phase8EvidenceRef,
+    strategy_input_evidence_ref: &Phase8EvidenceRef,
+    runtime_capture_ref: &Phase8RuntimeCaptureRef,
 ) -> Result<()> {
-    validate_tiny_canary_sha256_field(stringify!(root_config_sha256), root_config_sha256)?;
-    validate_tiny_canary_sha256_field(stringify!(ssm_manifest_sha256), ssm_manifest_sha256)?;
-    validate_tiny_canary_evidence_ref(stringify!(ssm_manifest_ref), ssm_manifest_ref)?;
-    validate_tiny_canary_evidence_ref(
+    validate_phase8_sha256_field(stringify!(root_config_sha256), root_config_sha256)?;
+    validate_phase8_sha256_field(stringify!(ssm_manifest_sha256), ssm_manifest_sha256)?;
+    validate_phase8_evidence_ref(stringify!(ssm_manifest_ref), ssm_manifest_ref)?;
+    validate_phase8_evidence_ref(
         stringify!(strategy_input_evidence_ref),
         strategy_input_evidence_ref,
     )?;
-    validate_tiny_canary_nested_sha256_field(
+    validate_phase8_nested_sha256_field(
         stringify!(runtime_capture_ref),
         stringify!(spool_root_hash),
         &runtime_capture_ref.spool_root_hash,
     )?;
-    validate_tiny_canary_required_text_field(
+    validate_phase8_required_text_field(
         stringify!(runtime_capture_ref.run_id),
         &runtime_capture_ref.run_id,
     )
 }
 
-fn validate_tiny_canary_evidence_ref(
+fn validate_phase8_evidence_ref(
     label: &'static str,
-    evidence_ref: &TinyCanaryEvidenceRef,
+    evidence_ref: &Phase8EvidenceRef,
 ) -> Result<()> {
-    validate_tiny_canary_nested_sha256_field(
-        label,
-        stringify!(path_hash),
-        &evidence_ref.path_hash,
-    )?;
-    validate_tiny_canary_nested_sha256_field(
-        label,
-        stringify!(record_hash),
-        &evidence_ref.record_hash,
-    )
+    validate_phase8_nested_sha256_field(label, stringify!(path_hash), &evidence_ref.path_hash)?;
+    validate_phase8_nested_sha256_field(label, stringify!(record_hash), &evidence_ref.record_hash)
 }
 
-fn validate_tiny_canary_live_order_ref(live_order_ref: &TinyCanaryLiveOrderRef) -> Result<()> {
-    validate_tiny_canary_nested_sha256_field(
+fn validate_phase8_live_order_ref(live_order_ref: &Phase8LiveOrderRef) -> Result<()> {
+    validate_phase8_nested_sha256_field(
         stringify!(live_order_ref),
         stringify!(strategy_instance_id_hash),
         &live_order_ref.strategy_instance_id_hash,
     )?;
-    validate_tiny_canary_nested_sha256_field(
+    validate_phase8_nested_sha256_field(
         stringify!(live_order_ref),
         stringify!(client_order_id_hash),
         &live_order_ref.client_order_id_hash,
     )?;
-    validate_tiny_canary_nested_sha256_field(
+    validate_phase8_nested_sha256_field(
         stringify!(live_order_ref),
         stringify!(venue_order_id_hash),
         &live_order_ref.venue_order_id_hash,
     )
 }
 
-fn validate_tiny_canary_nt_lifecycle_refs(
-    nt_lifecycle_refs: &[TinyCanaryNtLifecycleRef],
-) -> Result<()> {
+fn validate_phase8_nt_lifecycle_refs(nt_lifecycle_refs: &[Phase8NtLifecycleRef]) -> Result<()> {
     for nt_lifecycle_ref in nt_lifecycle_refs {
-        validate_tiny_canary_required_text_field(
+        validate_phase8_required_text_field(
             stringify!(nt_lifecycle_refs.kind),
             &nt_lifecycle_ref.kind,
         )?;
-        validate_tiny_canary_sha256_field(
+        validate_phase8_sha256_field(
             stringify!(nt_lifecycle_refs.event_hash),
             &nt_lifecycle_ref.event_hash,
         )?;
@@ -1231,52 +1186,52 @@ fn validate_tiny_canary_nt_lifecycle_refs(
     Ok(())
 }
 
-fn validate_tiny_canary_required_text_field(field: &str, value: &str) -> Result<()> {
+fn validate_phase8_required_text_field(field: &str, value: &str) -> Result<()> {
     if value.trim().is_empty() {
         Err(anyhow!(
-            "tiny canary live canary proof {field} must not be empty"
+            "phase8 live canary proof {field} must not be empty"
         ))
     } else {
         Ok(())
     }
 }
 
-fn validate_tiny_canary_nested_sha256_field(parent: &str, child: &str, value: &str) -> Result<()> {
+fn validate_phase8_nested_sha256_field(parent: &str, child: &str, value: &str) -> Result<()> {
     let mut field = String::from(parent);
     field.push('.');
     field.push_str(child);
-    validate_tiny_canary_sha256_field(&field, value)
+    validate_phase8_sha256_field(&field, value)
 }
 
-fn validate_tiny_canary_sha256_field(field: &str, value: &str) -> Result<()> {
-    if tiny_canary_is_sha256_hex(value) {
+fn validate_phase8_sha256_field(field: &str, value: &str) -> Result<()> {
+    if phase8_is_sha256_hex(value) {
         Ok(())
     } else {
         Err(anyhow!(
-            "tiny canary live canary proof {field} must be a sha256 hash"
+            "phase8 live canary proof {field} must be a sha256 hash"
         ))
     }
 }
 
-fn tiny_canary_is_sha256_hex(value: &str) -> bool {
+fn phase8_is_sha256_hex(value: &str) -> bool {
     let digest = Sha256::digest([]);
     value.len() == digest.len() + digest.len() && value.chars().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn tiny_canary_reject_parent_dir(path: &str, label: &str) -> Result<()> {
+fn phase8_reject_parent_dir(path: &str, label: &str) -> Result<()> {
     if Path::new(path)
         .components()
         .any(|component| matches!(component, std::path::Component::ParentDir))
     {
         return Err(anyhow!(
-            "tiny canary {label} path must not contain parent directory traversal"
+            "phase8 {label} path must not contain parent directory traversal"
         ));
     }
     Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TinyCanaryOperatorApprovalEnvelope {
+pub struct Phase8OperatorApprovalEnvelope {
     pub head_sha: String,
     pub root_toml_path: String,
     pub root_toml_sha256: String,
@@ -1291,110 +1246,45 @@ pub struct TinyCanaryOperatorApprovalEnvelope {
     pub abort_plan_path: String,
     pub abort_plan_sha256: String,
     pub operator_approval_id: String,
-    pub approval_not_before_unix_seconds: i64,
-    pub approval_not_after_unix_seconds: i64,
+    pub approval_not_before_unix_secs: i64,
+    pub approval_not_after_unix_secs: i64,
     pub approval_nonce_path: String,
     pub approval_nonce_sha256: String,
     pub approval_consumption_path: String,
     pub canary_evidence_path: String,
 }
 
-impl TinyCanaryOperatorApprovalEnvelope {
-    pub fn from_config(loaded: &LoadedBoltV3Config) -> Result<Self> {
-        let live_canary = loaded
-            .root
-            .live_canary
-            .as_ref()
-            .ok_or_else(|| anyhow!("tiny canary operator approval requires `[live_canary]`"))?;
-        let operator_evidence = live_canary.operator_evidence.as_ref().ok_or_else(|| {
-            anyhow!("tiny canary operator approval requires `[live_canary.operator_evidence]`")
-        })?;
-        let approval_envelope_path = required_operator_path(
-            &loaded.root_path,
-            &operator_evidence.approval_envelope_path,
-            "[live_canary.operator_evidence].approval_envelope_path",
-        )?;
-        let approval_envelope_file = read_operator_approval_envelope_file(&approval_envelope_path)?;
+impl Phase8OperatorApprovalEnvelope {
+    pub fn from_env() -> Result<Self> {
         Ok(Self {
-            head_sha: required_config_value(
-                &approval_envelope_file.head_sha,
-                "[operator_approval_envelope].head_sha",
+            head_sha: required_env("BOLT_V3_PHASE8_HEAD_SHA")?,
+            root_toml_path: required_env("BOLT_V3_PHASE8_ROOT_TOML_PATH")?,
+            root_toml_sha256: required_env("BOLT_V3_PHASE8_ROOT_TOML_SHA256")?,
+            ssm_manifest_path: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_PATH")?,
+            ssm_manifest_sha256: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_SHA256")?,
+            strategy_input_evidence_path: required_env(
+                "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH",
             )?,
-            root_toml_path: loaded.root_path.to_string_lossy().to_string(),
-            root_toml_sha256: required_config_value(
-                &approval_envelope_file.root_toml_sha256,
-                "[operator_approval_envelope].root_toml_sha256",
+            strategy_input_evidence_sha256: required_env(
+                "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256",
             )?,
-            ssm_manifest_path: required_operator_path(
-                &loaded.root_path,
-                &operator_evidence.ssm_manifest_path,
-                "[live_canary.operator_evidence].ssm_manifest_path",
+            financial_envelope_path: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH")?,
+            financial_envelope_sha256: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256")?,
+            pre_run_state_path: required_env("BOLT_V3_PHASE8_PRE_RUN_STATE_PATH")?,
+            pre_run_state_sha256: required_env("BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256")?,
+            abort_plan_path: required_env("BOLT_V3_PHASE8_ABORT_PLAN_PATH")?,
+            abort_plan_sha256: required_env("BOLT_V3_PHASE8_ABORT_PLAN_SHA256")?,
+            operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,
+            approval_not_before_unix_secs: required_i64_env(
+                "BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS",
             )?,
-            ssm_manifest_sha256: required_config_value(
-                &operator_evidence.ssm_manifest_sha256,
-                "[live_canary.operator_evidence].ssm_manifest_sha256",
+            approval_not_after_unix_secs: required_i64_env(
+                "BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS",
             )?,
-            strategy_input_evidence_path: required_operator_path(
-                &loaded.root_path,
-                &operator_evidence.strategy_input_evidence_path,
-                "[live_canary.operator_evidence].strategy_input_evidence_path",
-            )?,
-            strategy_input_evidence_sha256: required_config_value(
-                &operator_evidence.strategy_input_evidence_sha256,
-                "[live_canary.operator_evidence].strategy_input_evidence_sha256",
-            )?,
-            financial_envelope_path: required_operator_path(
-                &loaded.root_path,
-                &operator_evidence.financial_envelope_path,
-                "[live_canary.operator_evidence].financial_envelope_path",
-            )?,
-            financial_envelope_sha256: required_config_value(
-                &operator_evidence.financial_envelope_sha256,
-                "[live_canary.operator_evidence].financial_envelope_sha256",
-            )?,
-            pre_run_state_path: required_operator_path(
-                &loaded.root_path,
-                &operator_evidence.pre_run_state_path,
-                "[live_canary.operator_evidence].pre_run_state_path",
-            )?,
-            pre_run_state_sha256: required_config_value(
-                &operator_evidence.pre_run_state_sha256,
-                "[live_canary.operator_evidence].pre_run_state_sha256",
-            )?,
-            abort_plan_path: required_operator_path(
-                &loaded.root_path,
-                &operator_evidence.abort_plan_path,
-                "[live_canary.operator_evidence].abort_plan_path",
-            )?,
-            abort_plan_sha256: required_config_value(
-                &operator_evidence.abort_plan_sha256,
-                "[live_canary.operator_evidence].abort_plan_sha256",
-            )?,
-            operator_approval_id: required_config_value(
-                &live_canary.approval_id,
-                "[live_canary].approval_id",
-            )?,
-            approval_not_before_unix_seconds: operator_evidence.approval_not_before_unix_seconds,
-            approval_not_after_unix_seconds: operator_evidence.approval_not_after_unix_seconds,
-            approval_nonce_path: required_operator_path(
-                &loaded.root_path,
-                &operator_evidence.approval_nonce_path,
-                "[live_canary.operator_evidence].approval_nonce_path",
-            )?,
-            approval_nonce_sha256: required_config_value(
-                &operator_evidence.approval_nonce_sha256,
-                "[live_canary.operator_evidence].approval_nonce_sha256",
-            )?,
-            approval_consumption_path: required_operator_path(
-                &loaded.root_path,
-                &operator_evidence.approval_consumption_path,
-                "[live_canary.operator_evidence].approval_consumption_path",
-            )?,
-            canary_evidence_path: required_operator_path(
-                &loaded.root_path,
-                &operator_evidence.canary_evidence_path,
-                "[live_canary.operator_evidence].canary_evidence_path",
-            )?,
+            approval_nonce_path: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_PATH")?,
+            approval_nonce_sha256: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256")?,
+            approval_consumption_path: required_env("BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH")?,
+            canary_evidence_path: required_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,
         })
     }
 
@@ -1406,30 +1296,30 @@ impl TinyCanaryOperatorApprovalEnvelope {
     ) -> Result<()> {
         if self.head_sha != current_head_sha {
             return Err(anyhow!(
-                "tiny canary operator approval head_sha does not match current head"
+                "phase8 operator approval head_sha does not match current head"
             ));
         }
         if self.root_toml_sha256 != current_root_toml_sha256 {
             return Err(anyhow!(
-                "tiny canary operator approval root_toml_sha256 does not match current root TOML"
+                "phase8 operator approval root_toml_sha256 does not match current root TOML"
             ));
         }
         let current_ssm_manifest_sha256 = Self::sha256_file(&self.ssm_manifest_path)?;
         if self.ssm_manifest_sha256 != current_ssm_manifest_sha256 {
             return Err(anyhow!(
-                "tiny canary operator approval ssm_manifest_sha256 does not match current SSM manifest"
+                "phase8 operator approval ssm_manifest_sha256 does not match current SSM manifest"
             ));
         }
         let current_strategy_input_evidence_sha256 =
             Self::sha256_file(&self.strategy_input_evidence_path)?;
         if self.strategy_input_evidence_sha256 != current_strategy_input_evidence_sha256 {
             return Err(anyhow!(
-                "tiny canary operator approval strategy_input_evidence_sha256 does not match current strategy input evidence"
+                "phase8 operator approval strategy_input_evidence_sha256 does not match current strategy input evidence"
             ));
         }
         if self.operator_approval_id != live_canary_approval_id {
             return Err(anyhow!(
-                "tiny canary operator approval id does not match `[live_canary]`"
+                "phase8 operator approval id does not match `[live_canary]`"
             ));
         }
         Ok(())
@@ -1441,16 +1331,16 @@ impl TinyCanaryOperatorApprovalEnvelope {
         current_root_toml_sha256: &str,
         live_canary_approval_id: &str,
         loaded: &LoadedBoltV3Config,
-        current_unix_seconds: i64,
+        current_unix_secs: i64,
     ) -> Result<()> {
         self.validate_approved_evidence_against(
             current_head_sha,
             current_root_toml_sha256,
             live_canary_approval_id,
             loaded,
-            current_unix_seconds,
+            current_unix_secs,
         )?;
-        self.consume_approval_after_live_runner_entry_validation(current_unix_seconds)
+        self.consume_approval_after_live_runner_entry_validation(current_unix_secs)
     }
 
     pub fn validate_approved_evidence_against(
@@ -1459,7 +1349,7 @@ impl TinyCanaryOperatorApprovalEnvelope {
         current_root_toml_sha256: &str,
         live_canary_approval_id: &str,
         loaded: &LoadedBoltV3Config,
-        current_unix_seconds: i64,
+        current_unix_secs: i64,
     ) -> Result<()> {
         self.validate_against(
             current_head_sha,
@@ -1467,7 +1357,7 @@ impl TinyCanaryOperatorApprovalEnvelope {
             live_canary_approval_id,
         )?;
         self.validate_approval_not_consumed()?;
-        self.validate_approval_window(current_unix_seconds)?;
+        self.validate_approval_window(current_unix_secs)?;
         self.validate_financial_envelope_against(loaded)?;
         self.validate_pre_run_state_against(loaded)?;
         self.validate_abort_plan_against(loaded)?;
@@ -1476,17 +1366,17 @@ impl TinyCanaryOperatorApprovalEnvelope {
 
     pub fn consume_approval_after_live_runner_entry_validation(
         &self,
-        current_unix_seconds: i64,
+        current_unix_secs: i64,
     ) -> Result<()> {
         self.validate_approval_not_consumed()?;
-        self.validate_approval_window(current_unix_seconds)?;
+        self.validate_approval_window(current_unix_secs)?;
         self.validate_approval_nonce()?;
-        self.write_approval_consumption_evidence(current_unix_seconds)
+        self.write_approval_consumption_evidence(current_unix_secs)
     }
 
     fn validate_financial_envelope_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
         let approved = self.read_financial_envelope()?;
-        let loaded = TinyCanaryFinancialEnvelopeEvidenceFile::from_loaded_for_strategy(
+        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(
             loaded,
             &approved.strategy_instance_id,
         )?;
@@ -1495,15 +1385,14 @@ impl TinyCanaryOperatorApprovalEnvelope {
 
     fn validate_pre_run_state_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
         let path = Path::new(&self.pre_run_state_path);
-        let approved: TinyCanaryPreRunStateEvidenceFile =
-            Self::read_json_file_with_expected_sha256(
-                path,
-                &self.pre_run_state_sha256,
-                "tiny canary pre-run state evidence",
-                "tiny canary operator approval pre_run_state_sha256 does not match current pre-run state evidence",
-            )?;
+        let approved: Phase8PreRunStateEvidenceFile = Self::read_json_file_with_expected_sha256(
+            path,
+            &self.pre_run_state_sha256,
+            "phase8 pre-run state evidence",
+            "phase8 operator approval pre_run_state_sha256 does not match current pre-run state evidence",
+        )?;
         let approved_financial = self.read_financial_envelope()?;
-        let loaded = TinyCanaryFinancialEnvelopeEvidenceFile::from_loaded_for_strategy(
+        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(
             loaded,
             &approved_financial.strategy_instance_id,
         )?;
@@ -1512,27 +1401,27 @@ impl TinyCanaryOperatorApprovalEnvelope {
 
     fn validate_abort_plan_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
         let path = Path::new(&self.abort_plan_path);
-        let approved: TinyCanaryAbortPlanEvidenceFile = Self::read_json_file_with_expected_sha256(
+        let approved: Phase8AbortPlanEvidenceFile = Self::read_json_file_with_expected_sha256(
             path,
             &self.abort_plan_sha256,
-            "tiny canary abort plan evidence",
-            "tiny canary operator approval abort_plan_sha256 does not match current abort plan evidence",
+            "phase8 abort plan evidence",
+            "phase8 operator approval abort_plan_sha256 does not match current abort plan evidence",
         )?;
         let approved_financial = self.read_financial_envelope()?;
-        let loaded = TinyCanaryFinancialEnvelopeEvidenceFile::from_loaded_for_strategy(
+        let loaded = Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(
             loaded,
             &approved_financial.strategy_instance_id,
         )?;
         approved.validate_matches_loaded(&loaded)
     }
 
-    fn read_financial_envelope(&self) -> Result<TinyCanaryFinancialEnvelopeEvidenceFile> {
+    fn read_financial_envelope(&self) -> Result<Phase8FinancialEnvelopeEvidenceFile> {
         let path = Path::new(&self.financial_envelope_path);
         Self::read_json_file_with_expected_sha256(
             path,
             &self.financial_envelope_sha256,
-            "tiny canary financial envelope",
-            "tiny canary operator approval financial_envelope_sha256 does not match current financial envelope",
+            "phase8 financial envelope",
+            "phase8 operator approval financial_envelope_sha256 does not match current financial envelope",
         )
     }
 
@@ -1546,17 +1435,17 @@ impl TinyCanaryOperatorApprovalEnvelope {
         Ok(self.read_financial_envelope()?.price_to_beat_source)
     }
 
-    fn validate_approval_window(&self, current_unix_seconds: i64) -> Result<()> {
-        if self.approval_not_after_unix_seconds <= self.approval_not_before_unix_seconds {
+    fn validate_approval_window(&self, current_unix_secs: i64) -> Result<()> {
+        if self.approval_not_after_unix_secs <= self.approval_not_before_unix_secs {
             return Err(anyhow!(
-                "tiny canary operator approval not_after must be greater than not_before"
+                "phase8 operator approval not_after must be greater than not_before"
             ));
         }
-        if current_unix_seconds < self.approval_not_before_unix_seconds {
-            return Err(anyhow!("tiny canary operator approval is not yet valid"));
+        if current_unix_secs < self.approval_not_before_unix_secs {
+            return Err(anyhow!("phase8 operator approval is not yet valid"));
         }
-        if current_unix_seconds > self.approval_not_after_unix_seconds {
-            return Err(anyhow!("tiny canary operator approval is expired"));
+        if current_unix_secs > self.approval_not_after_unix_secs {
+            return Err(anyhow!("phase8 operator approval is expired"));
         }
         Ok(())
     }
@@ -1565,7 +1454,7 @@ impl TinyCanaryOperatorApprovalEnvelope {
         let path = Path::new(&self.approval_consumption_path);
         if path.try_exists().map_err(|source| {
             anyhow!(
-                "failed to inspect tiny canary operator approval consumption `{}`: {source}",
+                "failed to inspect phase8 operator approval consumption `{}`: {source}",
                 path.display()
             )
         })? {
@@ -1578,13 +1467,13 @@ impl TinyCanaryOperatorApprovalEnvelope {
         let current_nonce_sha256 = Self::sha256_file(&self.approval_nonce_path)?;
         if self.approval_nonce_sha256 != current_nonce_sha256 {
             return Err(anyhow!(
-                "tiny canary operator approval nonce sha256 does not match current nonce evidence"
+                "phase8 operator approval nonce sha256 does not match current nonce evidence"
             ));
         }
         Ok(())
     }
 
-    fn write_approval_consumption_evidence(&self, current_unix_seconds: i64) -> Result<()> {
+    fn write_approval_consumption_evidence(&self, current_unix_secs: i64) -> Result<()> {
         let path = Path::new(&self.approval_consumption_path);
         if let Some(parent) = path
             .parent()
@@ -1592,14 +1481,14 @@ impl TinyCanaryOperatorApprovalEnvelope {
         {
             fs::create_dir_all(parent).map_err(|source| {
                 anyhow!(
-                    "failed to create tiny canary approval consumption evidence directory `{}`: {source}",
+                    "failed to create phase8 approval consumption evidence directory `{}`: {source}",
                     parent.display()
                 )
             })?;
         }
-        let evidence = TinyCanaryApprovalConsumptionEvidence {
-            schema_version: TINY_CANARY_APPROVAL_CONSUMPTION_SCHEMA_VERSION,
-            record_kind: TINY_CANARY_APPROVAL_CONSUMPTION_RECORD_KIND,
+        let evidence = Phase8ApprovalConsumptionEvidence {
+            schema_version: PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION,
+            record_kind: PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND,
             head_sha: &self.head_sha,
             root_toml_sha256: &self.root_toml_sha256,
             ssm_manifest_sha256: &self.ssm_manifest_sha256,
@@ -1609,13 +1498,13 @@ impl TinyCanaryOperatorApprovalEnvelope {
             abort_plan_sha256: &self.abort_plan_sha256,
             approval_id_hash: sha256_text(&self.operator_approval_id),
             approval_nonce_sha256: &self.approval_nonce_sha256,
-            approval_not_before_unix_seconds: self.approval_not_before_unix_seconds,
-            approval_not_after_unix_seconds: self.approval_not_after_unix_seconds,
+            approval_not_before_unix_secs: self.approval_not_before_unix_secs,
+            approval_not_after_unix_secs: self.approval_not_after_unix_secs,
             canary_evidence_path_hash: sha256_text(&self.canary_evidence_path),
-            consumed_unix_seconds: current_unix_seconds,
+            consumed_unix_secs: current_unix_secs,
         };
         let bytes = serde_json::to_vec_pretty(&evidence).map_err(|source| {
-            anyhow!("failed to serialize tiny canary approval consumption evidence: {source}")
+            anyhow!("failed to serialize phase8 approval consumption evidence: {source}")
         })?;
         let mut file = fs::OpenOptions::new()
             .write(true)
@@ -1624,21 +1513,21 @@ impl TinyCanaryOperatorApprovalEnvelope {
             .map_err(|source| match source.kind() {
                 std::io::ErrorKind::AlreadyExists => self.approval_already_consumed_error(),
                 _ => anyhow!(
-                    "failed to create tiny canary operator approval consumption `{}`: {source}",
+                    "failed to create phase8 operator approval consumption `{}`: {source}",
                     path.display()
                 ),
             })?;
         if let Err(source) = file.write_all(&bytes) {
             let _ = fs::remove_file(path);
             return Err(anyhow!(
-                "failed to write tiny canary operator approval consumption `{}`: {source}",
+                "failed to write phase8 operator approval consumption `{}`: {source}",
                 path.display()
             ));
         }
         if let Err(source) = file.sync_all() {
             let _ = fs::remove_file(path);
             return Err(anyhow!(
-                "failed to sync tiny canary operator approval consumption `{}`: {source}",
+                "failed to sync phase8 operator approval consumption `{}`: {source}",
                 path.display()
             ));
         }
@@ -1647,7 +1536,7 @@ impl TinyCanaryOperatorApprovalEnvelope {
 
     fn approval_already_consumed_error(&self) -> anyhow::Error {
         anyhow!(
-            "tiny canary operator approval consumption `{}` already consumed; refusing to replay",
+            "phase8 operator approval consumption `{}` already consumed; refusing to replay",
             self.approval_consumption_path
         )
     }
@@ -1656,17 +1545,17 @@ impl TinyCanaryOperatorApprovalEnvelope {
         let path = path.as_ref();
         let file = fs::File::open(path).map_err(|source| {
             anyhow!(
-                "failed to open tiny canary sha256 input `{}`: {source}",
+                "failed to open phase8 sha256 input `{}`: {source}",
                 path.display()
             )
         })?;
         let mut reader = BufReader::new(file);
         let mut digest = Sha256::new();
-        let mut buffer = [0; TINY_CANARY_SHA256_BUFFER_BYTES];
+        let mut buffer = [0; PHASE8_SHA256_BUFFER_BYTES];
         loop {
             let length = reader.read(&mut buffer).map_err(|source| {
                 anyhow!(
-                    "failed to read tiny canary sha256 input `{}`: {source}",
+                    "failed to read phase8 sha256 input `{}`: {source}",
                     path.display()
                 )
             })?;
@@ -1719,19 +1608,19 @@ impl TinyCanaryOperatorApprovalEnvelope {
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct TinyCanaryFinancialEnvelopeEvidenceFile {
+struct Phase8FinancialEnvelopeEvidenceFile {
     max_live_order_count: u32,
     max_notional_per_order: String,
     strategy_instance_id: String,
-    strategy_venue: String,
+    execution_client_id: String,
     configured_target_id: String,
     target_kind: String,
     rotating_market_family: String,
     underlying_asset: String,
-    cadence_seconds: i64,
+    cadence_secs: i64,
     market_selection_rule: String,
-    retry_interval_seconds: i64,
-    blocked_after_seconds: i64,
+    retry_interval_secs: i64,
+    blocked_after_secs: i64,
     price_to_beat_source: String,
     edge_threshold_basis_points: i64,
     order_notional_target: String,
@@ -1749,18 +1638,19 @@ struct TinyCanaryFinancialEnvelopeEvidenceFile {
     exit_is_quote_quantity: bool,
 }
 
-impl TinyCanaryFinancialEnvelopeEvidenceFile {
+impl Phase8FinancialEnvelopeEvidenceFile {
     fn from_loaded_for_strategy(
         loaded: &LoadedBoltV3Config,
         strategy_instance_id: &str,
     ) -> Result<Self> {
-        let live_canary =
-            loaded.root.live_canary.as_ref().ok_or_else(|| {
-                anyhow!("tiny canary financial envelope requires `[live_canary]`")
-            })?;
+        let live_canary = loaded
+            .root
+            .live_canary
+            .as_ref()
+            .ok_or_else(|| anyhow!("phase8 financial envelope requires `[live_canary]`"))?;
         if strategy_instance_id.trim().is_empty() {
             return Err(anyhow!(
-                "tiny canary financial envelope requires non-empty strategy_instance_id"
+                "phase8 financial envelope requires non-empty strategy_instance_id"
             ));
         }
         let mut matching_strategies = loaded.strategies.iter().filter(|strategy| {
@@ -1768,46 +1658,46 @@ impl TinyCanaryFinancialEnvelopeEvidenceFile {
         });
         let strategy = matching_strategies.next().ok_or_else(|| {
             anyhow!(
-                "tiny canary financial envelope strategy_instance_id does not match a loaded strategy"
+                "phase8 financial envelope strategy_instance_id does not match a loaded strategy"
             )
         })?;
         if matching_strategies.next().is_some() {
             return Err(anyhow!(
-                "tiny canary financial envelope strategy_instance_id matches multiple loaded strategies"
+                "phase8 financial envelope strategy_instance_id matches multiple loaded strategies"
             ));
         }
         let strategy = &strategy.config;
         let target = strategy.target.as_table().ok_or_else(|| {
-            anyhow!("tiny canary financial envelope strategy target must be a TOML table")
+            anyhow!("phase8 financial envelope strategy target must be a TOML table")
         })?;
         let parameters = strategy.parameters.as_table().ok_or_else(|| {
-            anyhow!("tiny canary financial envelope strategy parameters must be a TOML table")
+            anyhow!("phase8 financial envelope strategy parameters must be a TOML table")
         })?;
         let runtime_parameters = parameters
             .get(stringify!(runtime))
             .and_then(toml::Value::as_table)
             .ok_or_else(|| {
                 anyhow!(
-                    "tiny canary financial envelope strategy runtime parameters must be a TOML table"
+                    "phase8 financial envelope strategy runtime parameters must be a TOML table"
                 )
             })?;
         let entry_order = parameters
             .get(stringify!(entry_order))
             .and_then(toml::Value::as_table)
             .ok_or_else(|| {
-                anyhow!("tiny canary financial envelope strategy entry order must be a TOML table")
+                anyhow!("phase8 financial envelope strategy entry order must be a TOML table")
             })?;
         let exit_order = parameters
             .get(stringify!(exit_order))
             .and_then(toml::Value::as_table)
             .ok_or_else(|| {
-                anyhow!("tiny canary financial envelope strategy exit order must be a TOML table")
+                anyhow!("phase8 financial envelope strategy exit order must be a TOML table")
             })?;
         Ok(Self {
             max_live_order_count: live_canary.max_live_order_count,
             max_notional_per_order: live_canary.max_notional_per_order.clone(),
             strategy_instance_id: strategy.strategy_instance_id.clone(),
-            strategy_venue: strategy.venue.clone(),
+            execution_client_id: strategy.execution_client_id.to_string(),
             configured_target_id: required_toml_string(target, stringify!(configured_target_id))?,
             target_kind: required_toml_string(target, stringify!(kind))?,
             rotating_market_family: required_toml_string(
@@ -1815,16 +1705,10 @@ impl TinyCanaryFinancialEnvelopeEvidenceFile {
                 stringify!(rotating_market_family),
             )?,
             underlying_asset: required_toml_string(target, stringify!(underlying_asset))?,
-            cadence_seconds: required_toml_integer(target, stringify!(cadence_seconds))?,
+            cadence_secs: required_toml_integer(target, stringify!(cadence_secs))?,
             market_selection_rule: required_toml_string(target, stringify!(market_selection_rule))?,
-            retry_interval_seconds: required_toml_integer(
-                target,
-                stringify!(retry_interval_seconds),
-            )?,
-            blocked_after_seconds: required_toml_integer(
-                target,
-                stringify!(blocked_after_seconds),
-            )?,
+            retry_interval_secs: required_toml_integer(target, stringify!(retry_interval_secs))?,
+            blocked_after_secs: required_toml_integer(target, stringify!(blocked_after_secs))?,
             price_to_beat_source: required_toml_string(
                 runtime_parameters,
                 stringify!(price_to_beat_source),
@@ -1877,8 +1761,8 @@ impl TinyCanaryFinancialEnvelopeEvidenceFile {
                 strategy_instance_id
             )));
         }
-        if self.strategy_venue != loaded.strategy_venue {
-            return Err(financial_envelope_mismatch(stringify!(strategy_venue)));
+        if self.execution_client_id != loaded.execution_client_id {
+            return Err(financial_envelope_mismatch(stringify!(execution_client_id)));
         }
         if self.configured_target_id != loaded.configured_target_id {
             return Err(financial_envelope_mismatch(stringify!(
@@ -1896,23 +1780,19 @@ impl TinyCanaryFinancialEnvelopeEvidenceFile {
         if self.underlying_asset != loaded.underlying_asset {
             return Err(financial_envelope_mismatch(stringify!(underlying_asset)));
         }
-        if self.cadence_seconds != loaded.cadence_seconds {
-            return Err(financial_envelope_mismatch(stringify!(cadence_seconds)));
+        if self.cadence_secs != loaded.cadence_secs {
+            return Err(financial_envelope_mismatch(stringify!(cadence_secs)));
         }
         if self.market_selection_rule != loaded.market_selection_rule {
             return Err(financial_envelope_mismatch(stringify!(
                 market_selection_rule
             )));
         }
-        if self.retry_interval_seconds != loaded.retry_interval_seconds {
-            return Err(financial_envelope_mismatch(stringify!(
-                retry_interval_seconds
-            )));
+        if self.retry_interval_secs != loaded.retry_interval_secs {
+            return Err(financial_envelope_mismatch(stringify!(retry_interval_secs)));
         }
-        if self.blocked_after_seconds != loaded.blocked_after_seconds {
-            return Err(financial_envelope_mismatch(stringify!(
-                blocked_after_seconds
-            )));
+        if self.blocked_after_secs != loaded.blocked_after_secs {
+            return Err(financial_envelope_mismatch(stringify!(blocked_after_secs)));
         }
         if self.price_to_beat_source != loaded.price_to_beat_source {
             return Err(financial_envelope_mismatch(stringify!(
@@ -1978,13 +1858,13 @@ impl TinyCanaryFinancialEnvelopeEvidenceFile {
 }
 
 fn financial_envelope_mismatch(field: &'static str) -> anyhow::Error {
-    anyhow!("tiny canary financial envelope `{field}` does not match loaded TOML")
+    anyhow!("phase8 financial envelope `{field}` does not match loaded TOML")
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct TinyCanaryPreRunStateEvidenceFile {
-    strategy_venue: String,
+struct Phase8PreRunStateEvidenceFile {
+    execution_client_id: String,
     configured_target_id: String,
     host_clock_skew_within_bound: bool,
     host_clock_skew_evidence_hash: String,
@@ -2011,13 +1891,10 @@ struct TinyCanaryPreRunStateEvidenceFile {
     release_manifest_evidence_hash: String,
 }
 
-impl TinyCanaryPreRunStateEvidenceFile {
-    fn validate_matches_loaded(
-        &self,
-        loaded: &TinyCanaryFinancialEnvelopeEvidenceFile,
-    ) -> Result<()> {
-        if self.strategy_venue != loaded.strategy_venue {
-            return Err(pre_run_state_mismatch(stringify!(strategy_venue)));
+impl Phase8PreRunStateEvidenceFile {
+    fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
+        if self.execution_client_id != loaded.execution_client_id {
+            return Err(pre_run_state_mismatch(stringify!(execution_client_id)));
         }
         if self.configured_target_id != loaded.configured_target_id {
             return Err(pre_run_state_mismatch(stringify!(configured_target_id)));
@@ -2134,7 +2011,7 @@ fn require_pre_run_string(field: &'static str, value: &str) -> Result<()> {
 }
 
 fn require_pre_run_sha256(field: &'static str, value: &str) -> Result<()> {
-    if tiny_canary_is_sha256_hex(value) {
+    if phase8_is_sha256_hex(value) {
         Ok(())
     } else {
         Err(pre_run_state_blocked(field))
@@ -2142,17 +2019,17 @@ fn require_pre_run_sha256(field: &'static str, value: &str) -> Result<()> {
 }
 
 fn pre_run_state_mismatch(field: &'static str) -> anyhow::Error {
-    anyhow!("tiny canary pre-run state `{field}` does not match loaded TOML")
+    anyhow!("phase8 pre-run state `{field}` does not match loaded TOML")
 }
 
 fn pre_run_state_blocked(field: &'static str) -> anyhow::Error {
-    anyhow!("tiny canary pre-run state `{field}` is not satisfied")
+    anyhow!("phase8 pre-run state `{field}` is not satisfied")
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct TinyCanaryAbortPlanEvidenceFile {
-    strategy_venue: String,
+struct Phase8AbortPlanEvidenceFile {
+    execution_client_id: String,
     configured_target_id: String,
     cancel_if_open_defined: bool,
     nt_accepted_venue_pending_abort_defined: bool,
@@ -2161,13 +2038,10 @@ struct TinyCanaryAbortPlanEvidenceFile {
     panic_gate_trip_abort_defined: bool,
 }
 
-impl TinyCanaryAbortPlanEvidenceFile {
-    fn validate_matches_loaded(
-        &self,
-        loaded: &TinyCanaryFinancialEnvelopeEvidenceFile,
-    ) -> Result<()> {
-        if self.strategy_venue != loaded.strategy_venue {
-            return Err(abort_plan_mismatch(stringify!(strategy_venue)));
+impl Phase8AbortPlanEvidenceFile {
+    fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
+        if self.execution_client_id != loaded.execution_client_id {
+            return Err(abort_plan_mismatch(stringify!(execution_client_id)));
         }
         if self.configured_target_id != loaded.configured_target_id {
             return Err(abort_plan_mismatch(stringify!(configured_target_id)));
@@ -2204,11 +2078,11 @@ fn require_abort_plan_path(field: &'static str, defined: bool) -> Result<()> {
 }
 
 fn abort_plan_mismatch(field: &'static str) -> anyhow::Error {
-    anyhow!("tiny canary abort plan `{field}` does not match loaded TOML")
+    anyhow!("phase8 abort plan `{field}` does not match loaded TOML")
 }
 
 fn abort_plan_blocked(field: &'static str) -> anyhow::Error {
-    anyhow!("tiny canary abort plan `{field}` is not defined")
+    anyhow!("phase8 abort plan `{field}` is not defined")
 }
 
 fn required_toml_string(
@@ -2219,9 +2093,7 @@ fn required_toml_string(
         .get(field)
         .and_then(toml::Value::as_str)
         .map(ToString::to_string)
-        .ok_or_else(|| {
-            anyhow!("tiny canary financial envelope loaded TOML field `{field}` is missing")
-        })
+        .ok_or_else(|| anyhow!("phase8 financial envelope loaded TOML field `{field}` is missing"))
 }
 
 fn required_toml_integer(
@@ -2231,9 +2103,7 @@ fn required_toml_integer(
     table
         .get(field)
         .and_then(toml::Value::as_integer)
-        .ok_or_else(|| {
-            anyhow!("tiny canary financial envelope loaded TOML field `{field}` is missing")
-        })
+        .ok_or_else(|| anyhow!("phase8 financial envelope loaded TOML field `{field}` is missing"))
 }
 
 fn required_toml_bool(
@@ -2243,13 +2113,11 @@ fn required_toml_bool(
     table
         .get(field)
         .and_then(toml::Value::as_bool)
-        .ok_or_else(|| {
-            anyhow!("tiny canary financial envelope loaded TOML field `{field}` is missing")
-        })
+        .ok_or_else(|| anyhow!("phase8 financial envelope loaded TOML field `{field}` is missing"))
 }
 
 #[derive(Serialize)]
-struct TinyCanaryApprovalConsumptionEvidence<'a> {
+struct Phase8ApprovalConsumptionEvidence<'a> {
     schema_version: u32,
     record_kind: &'static str,
     head_sha: &'a str,
@@ -2261,51 +2129,37 @@ struct TinyCanaryApprovalConsumptionEvidence<'a> {
     abort_plan_sha256: &'a str,
     approval_id_hash: String,
     approval_nonce_sha256: &'a str,
-    approval_not_before_unix_seconds: i64,
-    approval_not_after_unix_seconds: i64,
+    approval_not_before_unix_secs: i64,
+    approval_not_after_unix_secs: i64,
     canary_evidence_path_hash: String,
-    consumed_unix_seconds: i64,
+    consumed_unix_secs: i64,
 }
 
-#[derive(Debug, Deserialize)]
-struct TinyCanaryOperatorApprovalEnvelopeFile {
-    head_sha: String,
-    root_toml_sha256: String,
-}
-
-fn read_operator_approval_envelope_file(
-    path: &str,
-) -> Result<TinyCanaryOperatorApprovalEnvelopeFile> {
-    let bytes = fs::read(path).map_err(|source| {
-        anyhow!("failed to read tiny canary operator approval envelope `{path}`: {source}")
-    })?;
-    serde_json::from_slice(&bytes).map_err(|source| {
-        anyhow!("failed to parse tiny canary operator approval envelope `{path}`: {source}")
-    })
-}
-
-fn required_config_value(value: &str, field: &str) -> Result<String> {
+fn required_env(name: &str) -> Result<String> {
+    let value = env::var(name).map_err(|_| anyhow!("missing required phase8 env `{name}`"))?;
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err(anyhow!(
-            "required tiny canary config field `{field}` is empty"
-        ));
+        return Err(anyhow!("required phase8 env `{name}` is empty"));
     }
     Ok(trimmed.to_string())
 }
 
-fn required_operator_path(root_path: &Path, value: &str, field: &str) -> Result<String> {
-    let trimmed = required_config_value(value, field)?;
-    Ok(resolve_root_relative_path(root_path, trimmed)
-        .to_string_lossy()
-        .to_string())
+fn required_i64_env(name: &str) -> Result<i64> {
+    let value = required_env(name)?;
+    value
+        .parse::<i64>()
+        .map_err(|source| anyhow!("failed to parse phase8 env `{name}` as i64: {source}"))
+}
+
+pub fn phase8_required_env(name: &str) -> Result<String> {
+    required_env(name)
 }
 
 fn sha256_text(value: &str) -> String {
     sha256_bytes(value.as_bytes())
 }
 
-pub fn tiny_canary_sha256_text(value: &str) -> String {
+pub fn phase8_sha256_text(value: &str) -> String {
     sha256_text(value)
 }
 

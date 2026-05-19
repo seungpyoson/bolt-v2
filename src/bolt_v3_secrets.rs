@@ -1,10 +1,10 @@
 //! Forbidden credential environment-variable checks and SSM secret
-//! resolution for bolt-v3 venues.
+//! resolution for bolt-v3 clients.
 //!
 //! Per docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md Section 3, every
-//! configured venue with a [secrets] block must fail live validation and
-//! startup if any canonical credential environment variables for that venue
-//! kind are present. The blocklist is owned by the venue-kind handler in
+//! configured client with a [secrets] block must fail live validation and
+//! startup if any canonical credential environment variables for that provider
+//! are present. The blocklist is owned by the provider handler in
 //! bolt code and must be checked before any NautilusTrader client
 //! constructor is called.
 //!
@@ -12,23 +12,23 @@
 //! configured `[secrets]` block from Amazon Web Services Systems Manager
 //! using `[aws].region` as the resolver region. Resolved values are held
 //! behind provider-owned handles whose Debug output redacts every secret field; the
-//! resolved error type carries venue key, secret-config field, and SSM
+//! resolved error type carries client key, secret-config field, and SSM
 //! path context, but never the resolved secret value itself.
 
 use std::collections::BTreeMap;
 
 use crate::{
-    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, ProviderKey},
+    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
     bolt_v3_providers::{
-        self, ProviderSecretResolveContext, ResolvedVenueSecrets, SsmSecretResolver,
+        self, ProviderSecretResolveContext, ResolvedClientSecrets, SsmSecretResolver,
     },
     secrets::SsmResolverSession,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForbiddenEnvVarFinding {
-    pub venue_key: String,
-    pub provider_key: ProviderKey,
+    pub client_key: String,
+    pub provider_key: String,
     pub env_var: &'static str,
 }
 
@@ -36,10 +36,10 @@ impl std::fmt::Display for ForbiddenEnvVarFinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "venues.{key} (kind={kind}) declares [secrets] but the forbidden credential environment variable `{var}` is set; \
-             the bolt-v3 secret contract requires SSM resolution and forbids env-var fallbacks for this venue kind",
-            key = self.venue_key,
-            kind = self.provider_key.as_str(),
+            "clients.{key} (provider={provider}) declares [secrets] but the forbidden credential environment variable `{var}` is set; \
+             the bolt-v3 secret contract requires SSM resolution and forbids env-var fallbacks for this provider",
+            key = self.client_key,
+            provider = self.provider_key,
             var = self.env_var,
         )
     }
@@ -81,19 +81,19 @@ where
     F: FnMut(&str) -> bool,
 {
     let mut findings = Vec::new();
-    for (key, venue) in &config.venues {
-        if venue.secrets.is_none() {
+    for (key, client) in &config.clients {
+        if client.secrets.is_none() {
             continue;
         }
-        let blocklist = match bolt_v3_providers::binding_for_provider_key(venue.kind.as_str()) {
+        let blocklist = match bolt_v3_providers::binding_for_provider_key(client.venue.as_str()) {
             Some(binding) => binding.forbidden_env_vars,
             None => &[],
         };
         for env_var in blocklist {
             if env_is_set(env_var) {
                 findings.push(ForbiddenEnvVarFinding {
-                    venue_key: key.clone(),
-                    provider_key: venue.kind.clone(),
+                    client_key: key.clone(),
+                    provider_key: client.venue.as_str().to_string(),
                     env_var,
                 });
             }
@@ -107,23 +107,23 @@ where
     }
 }
 
-pub type ResolvedBoltV3VenueSecrets = ResolvedVenueSecrets;
+pub type ResolvedBoltV3ClientSecrets = ResolvedClientSecrets;
 
 #[derive(Clone)]
 pub struct ResolvedBoltV3Secrets {
-    pub venues: BTreeMap<String, ResolvedBoltV3VenueSecrets>,
+    pub clients: BTreeMap<String, ResolvedBoltV3ClientSecrets>,
 }
 
 impl ResolvedBoltV3Secrets {
-    pub fn get_as<T: 'static>(&self, venue_key: &str) -> Option<&T> {
-        self.venues
-            .get(venue_key)
+    pub fn get_as<T: 'static>(&self, client_key: &str) -> Option<&T> {
+        self.clients
+            .get(client_key)
             .and_then(|secrets| secrets.as_any().downcast_ref())
     }
 
     pub fn redaction_values(&self) -> Vec<String> {
         let mut values = self
-            .venues
+            .clients
             .values()
             .flat_map(|secrets| secrets.redaction_values())
             .filter(|value| !value.is_empty())
@@ -138,14 +138,14 @@ impl ResolvedBoltV3Secrets {
 impl std::fmt::Debug for ResolvedBoltV3Secrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResolvedBoltV3Secrets")
-            .field("venues", &self.venues)
+            .field("clients", &self.clients)
             .finish()
     }
 }
 
 #[derive(Debug)]
 pub struct BoltV3SecretError {
-    pub venue_key: String,
+    pub client_key: String,
     pub field: String,
     pub ssm_path: String,
     pub source: String,
@@ -156,16 +156,16 @@ impl std::fmt::Display for BoltV3SecretError {
         if self.ssm_path.is_empty() {
             write!(
                 f,
-                "venues.{venue}.secrets.{field}: {source}",
-                venue = self.venue_key,
+                "clients.{client_key}.secrets.{field}: {source}",
+                client_key = self.client_key,
                 field = self.field,
                 source = self.source,
             )
         } else {
             write!(
                 f,
-                "venues.{venue}.secrets.{field} (path={path}): {source}",
-                venue = self.venue_key,
+                "clients.{client_key}.secrets.{field} (path={path}): {source}",
+                client_key = self.client_key,
                 field = self.field,
                 path = self.ssm_path,
                 source = self.source,
@@ -176,8 +176,8 @@ impl std::fmt::Display for BoltV3SecretError {
 
 impl std::error::Error for BoltV3SecretError {}
 
-/// Resolve every configured bolt-v3 venue `[secrets]` block from Amazon Web
-/// Services Systems Manager using `[aws].region` and the explicit per-venue
+/// Resolve every configured bolt-v3 client `[secrets]` block from Amazon Web
+/// Services Systems Manager using `[aws].region` and the explicit per-client
 /// SSM paths in the parsed root config. Production startup must use this
 /// function; tests should call [`resolve_bolt_v3_secrets_with`] with an
 /// injected resolver instead.
@@ -196,7 +196,7 @@ pub fn resolve_bolt_v3_secrets(
 
 /// Test-friendly variant of [`resolve_bolt_v3_secrets`] which lets the caller
 /// inject the SSM resolver. The closure is invoked with `(region, ssm_path)`
-/// pairs derived from `[aws].region` and the per-venue secret-config paths.
+/// pairs derived from `[aws].region` and the per-client secret-config paths.
 pub fn resolve_bolt_v3_secrets_with<F, E>(
     loaded: &LoadedBoltV3Config,
     mut resolver: F,
@@ -206,41 +206,42 @@ where
     E: std::fmt::Display,
 {
     let region = loaded.root.aws.region.as_str();
-    let mut venues = BTreeMap::new();
+    let mut clients = BTreeMap::new();
 
-    for (venue_key, venue) in &loaded.root.venues {
-        match venue.secrets.as_ref() {
+    for (client_key, client) in &loaded.root.clients {
+        match client.secrets.as_ref() {
             Some(_) => {}
             None => continue,
         }
 
-        let Some(binding) = bolt_v3_providers::binding_for_provider_key(venue.kind.as_str()) else {
+        let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str())
+        else {
             return Err(BoltV3SecretError {
-                venue_key: venue_key.clone(),
-                field: "kind".to_string(),
+                client_key: client_key.clone(),
+                field: "venue".to_string(),
                 ssm_path: String::new(),
                 source: format!(
-                    "provider key `{}` is not supported by this build",
-                    venue.kind.as_str()
+                    "venue `{}` is not supported by this build",
+                    client.venue.as_str()
                 ),
             });
         };
         let resolved = (binding.resolve_secrets)(
             ProviderSecretResolveContext {
-                venue_key,
+                client_key,
                 region,
-                venue,
+                client,
             },
             &mut resolver,
         )?;
-        venues.insert(venue_key.clone(), resolved);
+        clients.insert(client_key.clone(), resolved);
     }
 
-    Ok(ResolvedBoltV3Secrets { venues })
+    Ok(ResolvedBoltV3Secrets { clients })
 }
 
 pub fn resolve_field(
-    venue_key: &str,
+    client_key: &str,
     field: &'static str,
     region: &str,
     ssm_path: &str,
@@ -249,14 +250,14 @@ pub fn resolve_field(
     let value = resolver
         .resolve_secret(region, ssm_path)
         .map_err(|error| BoltV3SecretError {
-            venue_key: venue_key.to_string(),
+            client_key: client_key.to_string(),
             field: field.to_string(),
             ssm_path: ssm_path.to_string(),
             source: error,
         })?;
     if value.trim().is_empty() {
         return Err(BoltV3SecretError {
-            venue_key: venue_key.to_string(),
+            client_key: client_key.to_string(),
             field: field.to_string(),
             ssm_path: ssm_path.to_string(),
             source: "resolved SSM value is empty or whitespace-only".to_string(),
@@ -264,7 +265,7 @@ pub fn resolve_field(
     }
     if value.trim() != value {
         return Err(BoltV3SecretError {
-            venue_key: venue_key.to_string(),
+            client_key: client_key.to_string(),
             field: field.to_string(),
             ssm_path: ssm_path.to_string(),
             source: "resolved SSM value has leading or trailing whitespace".to_string(),
@@ -272,7 +273,7 @@ pub fn resolve_field(
     }
     if value.chars().any(char::is_whitespace) {
         return Err(BoltV3SecretError {
-            venue_key: venue_key.to_string(),
+            client_key: client_key.to_string(),
             field: field.to_string(),
             ssm_path: ssm_path.to_string(),
             source: "resolved SSM value contains embedded whitespace".to_string(),
@@ -359,26 +360,26 @@ mod tests {
     }
 
     #[test]
-    fn flags_set_polymarket_var_for_configured_polymarket_venue() {
+    fn flags_set_polymarket_var_for_configured_polymarket_client() {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
         let error =
             check_no_forbidden_credential_env_vars_with(&root, |var| var == "POLYMARKET_PK")
                 .expect_err("POLYMARKET_PK should trip the polymarket blocklist");
         assert_eq!(error.findings.len(), 1);
-        assert_eq!(error.findings[0].venue_key, "polymarket_main");
-        assert_eq!(error.findings[0].provider_key.as_str(), polymarket::KEY);
+        assert_eq!(error.findings[0].client_key, "polymarket_main");
+        assert_eq!(error.findings[0].provider_key, polymarket::KEY);
         assert_eq!(error.findings[0].env_var, "POLYMARKET_PK");
     }
 
     #[test]
-    fn flags_set_binance_var_for_configured_binance_venue() {
+    fn flags_set_binance_var_for_configured_binance_client() {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
         let error =
             check_no_forbidden_credential_env_vars_with(&root, |var| var == "BINANCE_API_SECRET")
                 .expect_err("BINANCE_API_SECRET should trip the binance blocklist");
         assert_eq!(error.findings.len(), 1);
-        assert_eq!(error.findings[0].venue_key, "binance_reference");
-        assert_eq!(error.findings[0].provider_key.as_str(), binance::KEY);
+        assert_eq!(error.findings[0].client_key, "binance_reference");
+        assert_eq!(error.findings[0].provider_key, binance::KEY);
         assert_eq!(error.findings[0].env_var, "BINANCE_API_SECRET");
     }
 
@@ -390,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_configured_bolt_v3_venue_secrets_from_ssm_paths() {
+    fn resolves_configured_bolt_v3_client_secrets_from_ssm_paths() {
         let loaded = fixture_loaded_config();
         let mut calls = Vec::new();
 
@@ -400,7 +401,7 @@ mod tests {
         })
         .expect("fixture secrets should resolve");
 
-        assert_eq!(resolved.venues.len(), 2);
+        assert_eq!(resolved.clients.len(), 2);
         assert!(
             calls.iter().all(|(region, _)| region == "eu-west-1"),
             "all SSM calls must use [aws].region from the fixture root.toml: {calls:#?}"
@@ -447,7 +448,7 @@ mod tests {
         })
         .expect_err("empty resolved SSM secret value must fail before NT env fallback");
 
-        assert_eq!(error.venue_key, "polymarket_main");
+        assert_eq!(error.client_key, "polymarket_main");
         assert_eq!(error.field, "api_key_ssm_path");
         assert_eq!(error.ssm_path, "/bolt/polymarket_main/api_key");
         assert_eq!(
@@ -469,7 +470,7 @@ mod tests {
         })
         .expect_err("invalid resolved Polymarket private key must fail before NT client build");
 
-        assert_eq!(error.venue_key, "polymarket_main");
+        assert_eq!(error.client_key, "polymarket_main");
         assert_eq!(error.field, "private_key_ssm_path");
         assert_eq!(error.ssm_path, "/bolt/polymarket_main/private_key");
         assert!(
@@ -568,7 +569,7 @@ mod tests {
         })
         .expect_err("SSM secret values must be exact and must not be trimmed in code");
 
-        assert_eq!(error.venue_key, "polymarket_main");
+        assert_eq!(error.client_key, "polymarket_main");
         assert_eq!(error.field, "api_secret_ssm_path");
         assert_eq!(error.ssm_path, "/bolt/polymarket_main/api_secret");
         assert_eq!(
@@ -590,7 +591,7 @@ mod tests {
         })
         .expect_err("SSM secret values must be exact and must not be normalized in code");
 
-        assert_eq!(error.venue_key, "polymarket_main");
+        assert_eq!(error.client_key, "polymarket_main");
         assert_eq!(error.field, "api_key_ssm_path");
         assert_eq!(error.ssm_path, "/bolt/polymarket_main/api_key");
         assert_eq!(
@@ -626,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn ssm_failure_reports_bolt_v3_venue_field_and_path() {
+    fn ssm_failure_reports_bolt_v3_client_field_and_path() {
         let loaded = fixture_loaded_config();
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
@@ -640,7 +641,7 @@ mod tests {
         let message = error.to_string();
 
         assert!(
-            message.contains("venues.binance_reference.secrets.api_secret_ssm_path"),
+            message.contains("clients.binance_reference.secrets.api_secret_ssm_path"),
             "expected field context in error: {message}"
         );
         assert!(

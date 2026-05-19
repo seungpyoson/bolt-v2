@@ -16,24 +16,24 @@ market_exit_reduce_only = true
 log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
-venue = "polymarket_main"
+execution_client_id = "polymarket_main"
 
 [target]
 configured_target_id = "btc_updown_5m"
 kind = "rotating_market"
 rotating_market_family = "updown"
 underlying_asset = "BTC"
-cadence_seconds = 300
-cadence_slug_token = "5m"
+cadence_secs = 300
 market_selection_rule = "active_or_next"
-retry_interval_seconds = 5
-blocked_after_seconds = 60
+retry_interval_secs = 5
+blocked_after_secs = 60
 
-[reference_data.spot]
-venue = "binance_reference"
+[reference_data.primary]
+data_client_id = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
 
 [parameters.runtime]
+reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-001"
 warmup_tick_count = 20
 reentry_cooldown_secs = 30
 book_impact_cap_bps = 50
@@ -43,9 +43,10 @@ vol_window_secs = 600
 vol_gap_reset_secs = 60
 vol_min_observations = 5
 vol_bridge_valid_secs = 30
+price_to_beat_source = "chainlink_data_streams.report_at_boundary"
 pricing_kurtosis = 3.0
 theta_decay_factor = 1.0
-forced_flat_stale_reference_ms = 10000
+forced_flat_stale_chainlink_ms = 10000
 forced_flat_thin_book_min_liquidity = 5.0
 lead_agreement_min_corr = 0.8
 lead_jitter_max_ms = 250
@@ -70,7 +71,5 @@ is_quote_quantity = false
 
 [parameters]
 edge_threshold_basis_points = 100
-# Example strategy sizing only. Root live-canary caps still bound any approved
-# live run through submit admission.
 order_notional_target = "5.00"
 maximum_position_notional = "10.00"

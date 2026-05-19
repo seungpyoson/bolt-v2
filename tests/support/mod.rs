@@ -255,7 +255,7 @@ impl MockDataClientConfig {
         }
     }
 
-    pub fn with_connect_delay_milliseconds(mut self, milliseconds: u64) -> Self {
+    pub fn with_connect_delay_ms(mut self, milliseconds: u64) -> Self {
         self.connect_delay = Duration::from_millis(milliseconds);
         self
     }
@@ -275,7 +275,7 @@ impl MockDataClientConfig {
     /// milliseconds inside `DataClient::disconnect` before flipping
     /// its `connected` flag. Used to drive the bolt-v3
     /// controlled-disconnect timeout path without touching real I/O.
-    pub fn with_disconnect_delay_milliseconds(mut self, milliseconds: u64) -> Self {
+    pub fn with_disconnect_delay_ms(mut self, milliseconds: u64) -> Self {
         self.disconnect_delay = Duration::from_millis(milliseconds);
         self
     }

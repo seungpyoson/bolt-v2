@@ -304,7 +304,7 @@ fn binary_oracle_runtime_mapping_uses_configured_reference_data_role_key() {
     let reference_data = loaded.strategies[strategy_index]
         .config
         .reference_data
-        .remove("spot")
+        .remove("primary")
         .expect("fixture should include reference data role");
     loaded.strategies[strategy_index]
         .config
@@ -364,26 +364,38 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
 }
 
 #[test]
-fn binary_oracle_runtime_rejects_strategy_venue_that_cannot_load_target_family() {
+fn binary_oracle_runtime_rejects_execution_client_id_without_execution_block() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let temp = support::TempCaseDir::new("bolt-v3-decision-evidence-binance-target-family");
+    let temp = support::TempCaseDir::new("bolt-v3-decision-evidence-data-only-exec-client");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    let mut polymarket_data_only = loaded
+        .root
+        .clients
+        .get("polymarket_main")
+        .expect("fixture should include polymarket_main")
+        .clone();
+    polymarket_data_only.execution = None;
+    polymarket_data_only.secrets = None;
+    loaded
+        .root
+        .clients
+        .insert("polymarket_data_only".to_string(), polymarket_data_only);
     let strategy = loaded
         .strategies
         .iter_mut()
         .find(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
         .expect("fixture should include initial binary oracle strategy");
-    strategy.config.venue = "binance_reference".to_string();
+    strategy.config.execution_client_id = "polymarket_data_only".into();
 
     let error =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
-            .expect_err("Binance venue must not load the configured target family");
+            .expect_err("data-only client must not be used for execution");
 
     let message = error.to_string();
-    assert!(message.contains("binance_reference"), "{message}");
+    assert!(message.contains("polymarket_data_only"), "{message}");
     assert!(
-        message.contains("does not support that market family"),
+        message.contains("is required by the existing taker fee-provider boundary"),
         "{message}"
     );
 }

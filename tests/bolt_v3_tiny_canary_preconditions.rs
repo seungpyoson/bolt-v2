@@ -2,56 +2,67 @@ mod support;
 
 use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_no_submit_readiness_schema::{
+        APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
+        CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, LIVE_NODE_BUILD_STAGE,
+        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
+        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
+        STATUS_KEY, STATUS_SATISFIED,
+    },
     bolt_v3_tiny_canary_evidence::{
-        TinyCanaryBlockReason, TinyCanaryEvidence, TinyCanaryEvidenceRef,
-        TinyCanaryLiveCanaryResultRefs, TinyCanaryLiveOrderRef, TinyCanaryNtLifecycleRef,
-        TinyCanaryOperatorApprovalEnvelope, TinyCanaryOutcome, TinyCanaryPreflightStatus,
-        TinyCanaryStrategyInputSafetyAudit, TinyCanaryStrategyInputSafetyInputs,
-        evaluate_tiny_canary_preflight, tiny_canary_sha256_text,
+        Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryOutcome,
+        Phase8CanaryPreflightStatus, Phase8EvidenceRef, Phase8LiveCanaryResultRefs,
+        Phase8LiveOrderRef, Phase8NtLifecycleRef, Phase8OperatorApprovalEnvelope,
+        Phase8StrategyInputSafetyAudit, Phase8StrategyInputSafetyInputs,
+        evaluate_phase8_canary_preflight,
     },
 };
 use rust_decimal::Decimal;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
-const TINY_CANARY_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
+const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
 
-fn tiny_canary_required_operator_artifact_terms() -> [&'static str; 24] {
+fn phase8_required_operator_artifact_terms() -> [&'static str; 27] {
     [
-        "approval_envelope_path",
-        "ssm_manifest_path",
-        "ssm_manifest_sha256",
-        "strategy_input_evidence_path",
-        "strategy_input_evidence_sha256",
-        "financial_envelope_path",
-        "financial_envelope_sha256",
-        "pre_run_state_path",
-        "pre_run_state_sha256",
-        "abort_plan_path",
-        "abort_plan_sha256",
-        "canary_evidence_path",
-        "approval_not_before_unix_seconds",
-        "approval_not_after_unix_seconds",
-        "approval_nonce_path",
-        "approval_nonce_sha256",
-        "approval_consumption_path",
-        "decision_evidence_path",
-        "client_order_id_hash",
-        "venue_order_id_hash",
-        "nt_submit_event_path",
-        "venue_order_state_path",
-        "restart_reconciliation_path",
-        "post_run_hygiene_path",
+        "BOLT_V3_PHASE8_HEAD_SHA",
+        "BOLT_V3_PHASE8_ROOT_TOML_PATH",
+        "BOLT_V3_PHASE8_ROOT_TOML_SHA256",
+        "BOLT_V3_PHASE8_SSM_MANIFEST_PATH",
+        "BOLT_V3_PHASE8_SSM_MANIFEST_SHA256",
+        "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH",
+        "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256",
+        "BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH",
+        "BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256",
+        "BOLT_V3_PHASE8_PRE_RUN_STATE_PATH",
+        "BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256",
+        "BOLT_V3_PHASE8_ABORT_PLAN_PATH",
+        "BOLT_V3_PHASE8_ABORT_PLAN_SHA256",
+        "BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID",
+        "BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS",
+        "BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS",
+        "BOLT_V3_PHASE8_APPROVAL_NONCE_PATH",
+        "BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256",
+        "BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH",
+        "BOLT_V3_PHASE8_EVIDENCE_PATH",
+        "BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH",
+        "BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH",
+        "BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH",
+        "BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH",
+        "BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH",
+        "BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH",
+        "BOLT_V3_PHASE8_POST_RUN_HYGIENE_PATH",
     ]
 }
 
 fn strategy_audit_from_evidence_file(
     path: impl AsRef<std::path::Path>,
     expected_sha256: impl AsRef<str>,
-) -> anyhow::Result<TinyCanaryStrategyInputSafetyAudit> {
-    TinyCanaryStrategyInputSafetyAudit::from_evidence_file(
+) -> anyhow::Result<Phase8StrategyInputSafetyAudit> {
+    Phase8StrategyInputSafetyAudit::from_evidence_file(
         path,
         expected_sha256,
-        TINY_CANARY_TEST_PRICE_TO_BEAT_SOURCE,
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
     )
 }
 
@@ -59,10 +70,10 @@ fn strategy_audit_from_evidence_file(
 fn tiny_canary_quickstart_names_required_operator_artifacts() {
     let quickstart = include_str!("../specs/001-thin-live-canary-path/quickstart.md");
 
-    for term in tiny_canary_required_operator_artifact_terms() {
+    for term in phase8_required_operator_artifact_terms() {
         assert!(
             quickstart.contains(term),
-            "tiny canary quickstart must name required operator artifact `{term}`"
+            "phase8 quickstart must name required operator artifact `{term}`"
         );
     }
 }
@@ -71,10 +82,10 @@ fn tiny_canary_quickstart_names_required_operator_artifacts() {
 fn tiny_canary_schema_doc_names_required_operator_artifacts() {
     let schema_doc = include_str!("../docs/bolt-v3/2026-04-25-bolt-v3-schema.md");
 
-    for term in tiny_canary_required_operator_artifact_terms() {
+    for term in phase8_required_operator_artifact_terms() {
         assert!(
             schema_doc.contains(term),
-            "tiny canary schema doc must name required operator artifact `{term}`"
+            "phase8 schema doc must name required operator artifact `{term}`"
         );
     }
 }
@@ -84,28 +95,31 @@ fn tiny_canary_quickstart_names_conditional_strategy_cancel_artifact() {
     let quickstart = include_str!("../specs/001-thin-live-canary-path/quickstart.md");
 
     assert!(
-        quickstart.contains("strategy_cancel_path"),
-        "tiny canary quickstart must name conditional strategy cancel artifact"
+        quickstart.contains("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH"),
+        "phase8 quickstart must name conditional strategy cancel artifact"
     );
 }
 
 #[tokio::test]
 async fn preflight_blocks_missing_phase7_report_before_build() {
     let loaded = loaded_with_live_canary("reports/missing-no-submit-readiness.json");
-    let audit = TinyCanaryStrategyInputSafetyAudit::approved();
+    let audit = Phase8StrategyInputSafetyAudit::approved();
 
-    let report =
-        evaluate_tiny_canary_preflight(&loaded, "7f2d981f584a0378842d9a76fffd9cd03fce2ce5", audit)
-            .await;
+    let report = evaluate_phase8_canary_preflight(
+        &loaded,
+        "7f2d981f584a0378842d9a76fffd9cd03fce2ce5",
+        audit,
+    )
+    .await;
 
     assert_eq!(
         report.no_submit_report_status,
-        TinyCanaryPreflightStatus::Missing
+        Phase8CanaryPreflightStatus::Missing
     );
     assert!(
         report
             .block_reasons
-            .contains(&TinyCanaryBlockReason::MissingNoSubmitReadinessReport)
+            .contains(&Phase8CanaryBlockReason::MissingNoSubmitReadinessReport)
     );
     assert!(!report.can_enter_live_runner());
 }
@@ -117,23 +131,23 @@ async fn preflight_blocks_strategy_input_safety_audit_before_build() {
     write_satisfied_no_submit_readiness_report(&report_path);
     let loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
 
-    let report = evaluate_tiny_canary_preflight(
+    let report = evaluate_phase8_canary_preflight(
         &loaded,
         "7f2d981f584a0378842d9a76fffd9cd03fce2ce5",
-        TinyCanaryStrategyInputSafetyAudit::blocked(vec![
-            TinyCanaryBlockReason::StrategyInputSafetyAuditBlocked,
+        Phase8StrategyInputSafetyAudit::blocked(vec![
+            Phase8CanaryBlockReason::StrategyInputSafetyAuditBlocked,
         ]),
     )
     .await;
 
     assert_eq!(
         report.no_submit_report_status,
-        TinyCanaryPreflightStatus::AcceptedByGate
+        Phase8CanaryPreflightStatus::AcceptedByGate
     );
     assert!(
         report
             .block_reasons
-            .contains(&TinyCanaryBlockReason::StrategyInputSafetyAuditBlocked)
+            .contains(&Phase8CanaryBlockReason::StrategyInputSafetyAuditBlocked)
     );
     assert!(!report.can_enter_live_runner());
 }
@@ -151,17 +165,17 @@ async fn preflight_blocks_live_order_count_above_one_before_build() {
         .expect("live canary should exist")
         .max_live_order_count = 2;
 
-    let report = evaluate_tiny_canary_preflight(
+    let report = evaluate_phase8_canary_preflight(
         &loaded,
         "7f2d981f584a0378842d9a76fffd9cd03fce2ce5",
-        TinyCanaryStrategyInputSafetyAudit::approved(),
+        Phase8StrategyInputSafetyAudit::approved(),
     )
     .await;
 
     assert!(
         report
             .block_reasons
-            .contains(&TinyCanaryBlockReason::LiveOrderCountCapNotOne)
+            .contains(&Phase8CanaryBlockReason::LiveOrderCountCapNotOne)
     );
     assert_eq!(report.max_live_order_count, Some(2));
     assert!(!report.can_enter_live_runner());
@@ -175,17 +189,17 @@ async fn preflight_blocks_missing_live_canary_with_explicit_block_reason() {
     let mut loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
     loaded.root.live_canary = None;
 
-    let report = evaluate_tiny_canary_preflight(
+    let report = evaluate_phase8_canary_preflight(
         &loaded,
         "7f2d981f584a0378842d9a76fffd9cd03fce2ce5",
-        TinyCanaryStrategyInputSafetyAudit::approved(),
+        Phase8StrategyInputSafetyAudit::approved(),
     )
     .await;
 
     assert!(
         report
             .block_reasons
-            .contains(&TinyCanaryBlockReason::LiveOrderCountCapNotOne)
+            .contains(&Phase8CanaryBlockReason::LiveOrderCountCapNotOne)
     );
     assert!(!report.block_reasons.is_empty());
     assert_eq!(report.max_live_order_count, None);
@@ -194,56 +208,54 @@ async fn preflight_blocks_missing_live_canary_with_explicit_block_reason() {
 
 #[test]
 fn strategy_audit_blocks_non_positive_realized_volatility() {
-    let audit = TinyCanaryStrategyInputSafetyAudit::from_strategy_inputs(
-        TinyCanaryStrategyInputSafetyInputs {
+    let audit =
+        Phase8StrategyInputSafetyAudit::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
             realized_volatility: Decimal::ZERO,
-            seconds_to_expiry: 300,
+            seconds_to_market_end: 300,
             spot_price: Decimal::new(100_000, 0),
             price_to_beat_value: Decimal::new(100_000, 0),
             expected_edge_basis_points: Decimal::new(125, 1),
             worst_case_edge_basis_points: Decimal::new(125, 1),
             theta_scaled_min_edge_bps: Decimal::new(125, 1),
             fee_rate_basis_points: Decimal::ZERO,
-            price_to_beat_source: TINY_CANARY_TEST_PRICE_TO_BEAT_SOURCE,
-            expected_price_to_beat_source: TINY_CANARY_TEST_PRICE_TO_BEAT_SOURCE,
+            price_to_beat_source: PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+            expected_price_to_beat_source: PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
             reference_quote_ts_event: 1_234_567_890,
             pricing_kurtosis: Decimal::ZERO,
             theta_decay_factor: Decimal::ZERO,
-        },
-    );
+        });
 
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::NonPositiveRealizedVolatility)
+            .contains(&Phase8CanaryBlockReason::NonPositiveRealizedVolatility)
     );
     assert!(!audit.is_approved());
 }
 
 #[test]
-fn strategy_audit_blocks_zero_time_to_expiry() {
-    let audit = TinyCanaryStrategyInputSafetyAudit::from_strategy_inputs(
-        TinyCanaryStrategyInputSafetyInputs {
+fn strategy_audit_blocks_zero_time_to_market_end() {
+    let audit =
+        Phase8StrategyInputSafetyAudit::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
             realized_volatility: Decimal::new(25, 1),
-            seconds_to_expiry: 0,
+            seconds_to_market_end: 0,
             spot_price: Decimal::new(100_000, 0),
             price_to_beat_value: Decimal::new(100_000, 0),
             expected_edge_basis_points: Decimal::new(125, 1),
             worst_case_edge_basis_points: Decimal::new(125, 1),
             theta_scaled_min_edge_bps: Decimal::new(125, 1),
             fee_rate_basis_points: Decimal::ZERO,
-            price_to_beat_source: TINY_CANARY_TEST_PRICE_TO_BEAT_SOURCE,
-            expected_price_to_beat_source: TINY_CANARY_TEST_PRICE_TO_BEAT_SOURCE,
+            price_to_beat_source: PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+            expected_price_to_beat_source: PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
             reference_quote_ts_event: 1_234_567_890,
             pricing_kurtosis: Decimal::ZERO,
             theta_decay_factor: Decimal::ZERO,
-        },
-    );
+        });
 
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::NonPositiveTimeToExpiry)
+            .contains(&Phase8CanaryBlockReason::NonPositiveTimeToMarketEnd)
     );
     assert!(!audit.is_approved());
 }
@@ -254,13 +266,13 @@ fn strategy_audit_binds_price_to_beat_source_to_approved_source() {
     let evidence_path = temp.path().join("strategy-input.json");
     std::fs::write(
         &evidence_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"operator_configured_source","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"operator_configured_source","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let evidence_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&evidence_path)
+    let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
         .expect("strategy evidence should hash");
 
-    let approved = TinyCanaryStrategyInputSafetyAudit::from_evidence_file(
+    let approved = Phase8StrategyInputSafetyAudit::from_evidence_file(
         &evidence_path,
         &evidence_hash,
         "operator_configured_source",
@@ -268,29 +280,100 @@ fn strategy_audit_binds_price_to_beat_source_to_approved_source() {
     .expect("matching configured price source should audit");
     assert!(approved.is_approved());
 
-    let blocked = TinyCanaryStrategyInputSafetyAudit::from_evidence_file(
+    let blocked = Phase8StrategyInputSafetyAudit::from_evidence_file(
         &evidence_path,
         &evidence_hash,
-        TINY_CANARY_TEST_PRICE_TO_BEAT_SOURCE,
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
     )
     .expect("mismatched configured price source should still produce an audit");
     assert!(
         blocked
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::UnsupportedPriceToBeatSource)
+            .contains(&Phase8CanaryBlockReason::UnsupportedPriceToBeatSource)
     );
+}
+
+#[test]
+fn strategy_audit_uses_market_end_field_name_for_time_remaining() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("strategy-input.json");
+    let current_evidence = r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#;
+    std::fs::write(&evidence_path, current_evidence).expect("strategy input evidence should write");
+    let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
+        .expect("strategy evidence should hash");
+
+    let approved = strategy_audit_from_evidence_file(&evidence_path, &evidence_hash)
+        .expect("seconds_to_market_end evidence should parse");
+    assert!(approved.is_approved());
+
+    let legacy_time_field = ["seconds_to", "_expiry"].concat();
+    let legacy_evidence = current_evidence.replace("seconds_to_market_end", &legacy_time_field);
+    std::fs::write(&evidence_path, legacy_evidence)
+        .expect("legacy strategy input evidence should write");
+    let legacy_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
+        .expect("legacy strategy evidence should hash");
+    let error = strategy_audit_from_evidence_file(&evidence_path, &legacy_hash)
+        .expect_err("legacy time-remaining field should be rejected as stale evidence vocabulary");
+    assert!(
+        error.to_string().contains("unknown field") || error.to_string().contains("missing field"),
+        "stale field rejection should mention serde field mismatch: {error}"
+    );
+}
+
+#[test]
+fn strategy_audit_uses_unit_suffixed_selected_market_observation_timestamp() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("strategy-input.json");
+    let current_evidence = r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#;
+    std::fs::write(&evidence_path, current_evidence).expect("strategy input evidence should write");
+    let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
+        .expect("strategy evidence should hash");
+
+    let approved = strategy_audit_from_evidence_file(&evidence_path, &evidence_hash)
+        .expect("unit-suffixed selected market timestamp evidence should parse");
+    assert!(approved.is_approved());
+
+    let legacy_timestamp_field = ["selected_market", "_observed", "_timestamp\":"].concat();
+    let legacy_evidence = current_evidence.replace(
+        "selected_market_observed_timestamp_ms\":",
+        &legacy_timestamp_field,
+    );
+    std::fs::write(&evidence_path, legacy_evidence)
+        .expect("legacy strategy input evidence should write");
+    let legacy_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
+        .expect("legacy strategy evidence should hash");
+    let error = strategy_audit_from_evidence_file(&evidence_path, &legacy_hash)
+        .expect_err("legacy selected market timestamp field should be rejected");
+    assert!(
+        error.to_string().contains("unknown field") || error.to_string().contains("missing field"),
+        "stale field rejection should mention serde field mismatch: {error}"
+    );
+}
+
+#[test]
+fn phase8_operator_artifacts_use_execution_client_id_field() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
+    write_phase8_financial_envelope(&financial_envelope_path, "0.25");
+    let envelope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&financial_envelope_path).expect("financial envelope should read"),
+    )
+    .expect("financial envelope should parse");
+    assert_eq!(envelope["execution_client_id"], "polymarket_main");
+    let legacy_execution_field = ["strategy", "_venue"].concat();
+    assert!(envelope.get(&legacy_execution_field).is_none());
 }
 
 #[test]
 fn strategy_audit_blocks_non_positive_spot_or_price_to_beat_evidence() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -300,15 +383,15 @@ fn strategy_audit_blocks_non_positive_spot_or_price_to_beat_evidence() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::NonPositiveSpotPrice)
+            .contains(&Phase8CanaryBlockReason::NonPositiveSpotPrice)
     );
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -318,20 +401,20 @@ fn strategy_audit_blocks_non_positive_spot_or_price_to_beat_evidence() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::NonPositivePriceToBeatValue)
+            .contains(&Phase8CanaryBlockReason::NonPositivePriceToBeatValue)
     );
 }
 
 #[test]
 fn strategy_audit_blocks_invalid_edge_or_fee_metrics() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"0","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"0","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -341,15 +424,15 @@ fn strategy_audit_blocks_invalid_edge_or_fee_metrics() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::NonPositiveWorstCaseEdgeBasisPoints)
+            .contains(&Phase8CanaryBlockReason::NonPositiveWorstCaseEdgeBasisPoints)
     );
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"0","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"0","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -359,15 +442,15 @@ fn strategy_audit_blocks_invalid_edge_or_fee_metrics() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::NonPositiveExpectedEdgeBasisPoints)
+            .contains(&Phase8CanaryBlockReason::NonPositiveExpectedEdgeBasisPoints)
     );
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"11.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"11.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -377,15 +460,15 @@ fn strategy_audit_blocks_invalid_edge_or_fee_metrics() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::EdgeBasisPointsMismatch)
+            .contains(&Phase8CanaryBlockReason::EdgeBasisPointsMismatch)
     );
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"-0.1","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"-0.1","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -395,20 +478,20 @@ fn strategy_audit_blocks_invalid_edge_or_fee_metrics() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::NegativeFeeRateBasisPoints)
+            .contains(&Phase8CanaryBlockReason::NegativeFeeRateBasisPoints)
     );
 }
 
 #[test]
 fn strategy_audit_blocks_non_positive_theta_scaled_min_edge() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"-1","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"-1","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -418,20 +501,20 @@ fn strategy_audit_blocks_non_positive_theta_scaled_min_edge() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::NonPositiveThetaScaledMinEdgeBps)
+            .contains(&Phase8CanaryBlockReason::NonPositiveThetaScaledMinEdgeBps)
     );
 }
 
 #[test]
 fn strategy_audit_blocks_missing_source_or_reference_timestamp() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -441,15 +524,15 @@ fn strategy_audit_blocks_missing_source_or_reference_timestamp() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::MissingPriceToBeatSource)
+            .contains(&Phase8CanaryBlockReason::MissingPriceToBeatSource)
     );
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"manual","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"manual","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -459,15 +542,15 @@ fn strategy_audit_blocks_missing_source_or_reference_timestamp() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::UnsupportedPriceToBeatSource)
+            .contains(&Phase8CanaryBlockReason::UnsupportedPriceToBeatSource)
     );
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":0,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":0,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -477,20 +560,20 @@ fn strategy_audit_blocks_missing_source_or_reference_timestamp() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::MissingReferenceQuoteTsEvent)
+            .contains(&Phase8CanaryBlockReason::MissingReferenceQuoteTsEvent)
     );
 }
 
 #[test]
 fn strategy_audit_blocks_invalid_kurtosis_or_theta_inputs() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"-6","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"-6","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -500,15 +583,15 @@ fn strategy_audit_blocks_invalid_kurtosis_or_theta_inputs() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::InvalidPricingKurtosis)
+            .contains(&Phase8CanaryBlockReason::InvalidPricingKurtosis)
     );
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"-0.1","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"-0.1","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -518,20 +601,20 @@ fn strategy_audit_blocks_invalid_kurtosis_or_theta_inputs() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::NegativeThetaDecayFactor)
+            .contains(&Phase8CanaryBlockReason::NegativeThetaDecayFactor)
     );
 }
 
 #[test]
 fn strategy_audit_blocks_missing_selected_market_identity_or_window() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -541,15 +624,15 @@ fn strategy_audit_blocks_missing_selected_market_identity_or_window() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::MissingSelectedMarketIdentity)
+            .contains(&Phase8CanaryBlockReason::MissingSelectedMarketIdentity)
     );
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234567000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234567000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -559,20 +642,20 @@ fn strategy_audit_blocks_missing_selected_market_identity_or_window() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::InvalidSelectedMarketWindow)
+            .contains(&Phase8CanaryBlockReason::InvalidSelectedMarketWindow)
     );
 }
 
 #[test]
 fn strategy_audit_blocks_missing_market_selection_timestamp() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":0,"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":0,"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -582,20 +665,20 @@ fn strategy_audit_blocks_missing_market_selection_timestamp() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::InvalidSelectedMarketWindow)
+            .contains(&Phase8CanaryBlockReason::InvalidSelectedMarketWindow)
     );
 }
 
 #[test]
 fn strategy_audit_requires_nearest_next_market_selection() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"candidate_market_start_timestamps_milliseconds":[1234667000,1234767000],"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234767000,"polymarket_market_end_timestamp_milliseconds":1235067000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"candidate_market_start_timestamps_ms":[1234667000,1234767000],"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234767000,"polymarket_market_end_timestamp_ms":1235067000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -605,7 +688,7 @@ fn strategy_audit_requires_nearest_next_market_selection() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::InvalidMarketSelectionBinding)
+            .contains(&Phase8CanaryBlockReason::InvalidMarketSelectionBinding)
     );
 
     let market_selection_source_path = temp.path().join("market-selection-source.json");
@@ -614,29 +697,29 @@ fn strategy_audit_requires_nearest_next_market_selection() {
         serde_json::to_vec(&serde_json::json!({
             "record_kind": "market_selection_result",
             "source": "nt_runtime_selection_snapshot",
-            "market_selection_timestamp_milliseconds": 1234567890_u64,
-            "candidate_market_start_timestamps_milliseconds": [1234667000_u64, 1234767000_u64],
+            "market_selection_timestamp_ms": 1234567890_u64,
+            "candidate_market_start_timestamps_ms": [1234667000_u64, 1234767000_u64],
             "market_selection_outcome": "next",
             "polymarket_condition_id": "condition-1",
             "polymarket_market_slug": "btc-updown-5m",
             "polymarket_question_id": "question-1",
             "up_instrument_id": "condition-1-UP.POLYMARKET",
             "down_instrument_id": "condition-1-DOWN.POLYMARKET",
-            "selected_market_observed_timestamp": 1234567890_u64,
-            "polymarket_market_start_timestamp_milliseconds": 1234667000_u64,
-            "polymarket_market_end_timestamp_milliseconds": 1234967000_u64
+            "selected_market_observed_timestamp_ms": 1234567890_u64,
+            "polymarket_market_start_timestamp_ms": 1234667000_u64,
+            "polymarket_market_end_timestamp_ms": 1234967000_u64
         }))
         .expect("market selection source evidence should serialize"),
     )
     .expect("market selection source evidence should write");
     let market_selection_source_hash =
-        TinyCanaryOperatorApprovalEnvelope::sha256_file(&market_selection_source_path)
+        Phase8OperatorApprovalEnvelope::sha256_file(&market_selection_source_path)
             .expect("market selection source evidence hash should compute");
     std::fs::write(
         &strategy_input_path,
         serde_json::to_vec(&serde_json::json!({
             "realized_volatility": "2.5",
-            "seconds_to_expiry": 300_u64,
+            "seconds_to_market_end": 300_u64,
             "spot_price": "100000.0",
             "price_to_beat_value": "100000.0",
             "expected_edge_basis_points": "12.5",
@@ -647,8 +730,8 @@ fn strategy_audit_requires_nearest_next_market_selection() {
             "pricing_kurtosis": "0",
             "theta_decay_factor": "0",
             "theta_scaled_min_edge_bps": "12.5",
-            "market_selection_timestamp_milliseconds": 1234567890_u64,
-            "candidate_market_start_timestamps_milliseconds": [1234667000_u64, 1234767000_u64],
+            "market_selection_timestamp_ms": 1234567890_u64,
+            "candidate_market_start_timestamps_ms": [1234667000_u64, 1234767000_u64],
             "market_selection_source_path": market_selection_source_path.to_string_lossy(),
             "market_selection_source_sha256": market_selection_source_hash,
             "market_selection_outcome": "next",
@@ -657,14 +740,14 @@ fn strategy_audit_requires_nearest_next_market_selection() {
             "polymarket_question_id": "question-1",
             "up_instrument_id": "condition-1-UP.POLYMARKET",
             "down_instrument_id": "condition-1-DOWN.POLYMARKET",
-            "selected_market_observed_timestamp": 1234567890_u64,
-            "polymarket_market_start_timestamp_milliseconds": 1234667000_u64,
-            "polymarket_market_end_timestamp_milliseconds": 1234967000_u64
+            "selected_market_observed_timestamp_ms": 1234567890_u64,
+            "polymarket_market_start_timestamp_ms": 1234667000_u64,
+            "polymarket_market_end_timestamp_ms": 1234967000_u64
         }))
         .expect("strategy input evidence should serialize"),
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -676,13 +759,13 @@ fn strategy_audit_requires_nearest_next_market_selection() {
 #[test]
 fn strategy_audit_rejects_next_market_without_source_bound_candidates() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"candidate_market_start_timestamps_milliseconds":[1234767000],"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234767000,"polymarket_market_end_timestamp_milliseconds":1235067000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"candidate_market_start_timestamps_ms":[1234767000],"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234767000,"polymarket_market_end_timestamp_ms":1235067000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -692,7 +775,7 @@ fn strategy_audit_rejects_next_market_without_source_bound_candidates() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::InvalidMarketSelectionBinding)
+            .contains(&Phase8CanaryBlockReason::InvalidMarketSelectionBinding)
     );
 }
 
@@ -705,30 +788,30 @@ fn strategy_audit_rejects_next_market_candidate_list_truncated_from_source() {
         serde_json::to_vec(&serde_json::json!({
             "record_kind": "market_selection_result",
             "source": "nt_runtime_selection_snapshot",
-            "market_selection_timestamp_milliseconds": 1234567890_u64,
-            "candidate_market_start_timestamps_milliseconds": [1234667000_u64, 1234767000_u64],
+            "market_selection_timestamp_ms": 1234567890_u64,
+            "candidate_market_start_timestamps_ms": [1234667000_u64, 1234767000_u64],
             "market_selection_outcome": "next",
             "polymarket_condition_id": "condition-1",
             "polymarket_market_slug": "btc-updown-5m",
             "polymarket_question_id": "question-1",
             "up_instrument_id": "condition-1-UP.POLYMARKET",
             "down_instrument_id": "condition-1-DOWN.POLYMARKET",
-            "selected_market_observed_timestamp": 1234567890_u64,
-            "polymarket_market_start_timestamp_milliseconds": 1234767000_u64,
-            "polymarket_market_end_timestamp_milliseconds": 1235067000_u64
+            "selected_market_observed_timestamp_ms": 1234567890_u64,
+            "polymarket_market_start_timestamp_ms": 1234767000_u64,
+            "polymarket_market_end_timestamp_ms": 1235067000_u64
         }))
         .expect("market selection source evidence should serialize"),
     )
     .expect("market selection source evidence should write");
     let market_selection_source_hash =
-        TinyCanaryOperatorApprovalEnvelope::sha256_file(&market_selection_source_path)
+        Phase8OperatorApprovalEnvelope::sha256_file(&market_selection_source_path)
             .expect("market selection source evidence hash should compute");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
         serde_json::to_vec(&serde_json::json!({
             "realized_volatility": "2.5",
-            "seconds_to_expiry": 300_u64,
+            "seconds_to_market_end": 300_u64,
             "spot_price": "100000.0",
             "price_to_beat_value": "100000.0",
             "expected_edge_basis_points": "12.5",
@@ -739,8 +822,8 @@ fn strategy_audit_rejects_next_market_candidate_list_truncated_from_source() {
             "pricing_kurtosis": "0",
             "theta_decay_factor": "0",
             "theta_scaled_min_edge_bps": "12.5",
-            "market_selection_timestamp_milliseconds": 1234567890_u64,
-            "candidate_market_start_timestamps_milliseconds": [1234767000_u64],
+            "market_selection_timestamp_ms": 1234567890_u64,
+            "candidate_market_start_timestamps_ms": [1234767000_u64],
             "market_selection_source_path": market_selection_source_path.to_string_lossy(),
             "market_selection_source_sha256": market_selection_source_hash,
             "market_selection_outcome": "next",
@@ -749,14 +832,14 @@ fn strategy_audit_rejects_next_market_candidate_list_truncated_from_source() {
             "polymarket_question_id": "question-1",
             "up_instrument_id": "condition-1-UP.POLYMARKET",
             "down_instrument_id": "condition-1-DOWN.POLYMARKET",
-            "selected_market_observed_timestamp": 1234567890_u64,
-            "polymarket_market_start_timestamp_milliseconds": 1234767000_u64,
-            "polymarket_market_end_timestamp_milliseconds": 1235067000_u64
+            "selected_market_observed_timestamp_ms": 1234567890_u64,
+            "polymarket_market_start_timestamp_ms": 1234767000_u64,
+            "polymarket_market_end_timestamp_ms": 1235067000_u64
         }))
         .expect("strategy input evidence should serialize"),
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -766,20 +849,20 @@ fn strategy_audit_rejects_next_market_candidate_list_truncated_from_source() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::InvalidMarketSelectionBinding)
+            .contains(&Phase8CanaryBlockReason::InvalidMarketSelectionBinding)
     );
 }
 
 #[test]
 fn strategy_audit_blocks_invalid_market_selection_outcome() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"failed","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"failed","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -789,20 +872,25 @@ fn strategy_audit_blocks_invalid_market_selection_outcome() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::InvalidMarketSelectionOutcome)
+            .contains(&Phase8CanaryBlockReason::InvalidMarketSelectionOutcome)
+    );
+    assert!(
+        audit
+            .block_reasons()
+            .contains(&Phase8CanaryBlockReason::InvalidMarketSelectionBinding)
     );
 }
 
 #[test]
 fn strategy_audit_blocks_market_selection_window_mismatch() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1235000000,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1235000000,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -812,15 +900,15 @@ fn strategy_audit_blocks_market_selection_window_mismatch() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::InvalidMarketSelectionBinding)
+            .contains(&Phase8CanaryBlockReason::InvalidMarketSelectionBinding)
     );
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
@@ -830,7 +918,7 @@ fn strategy_audit_blocks_market_selection_window_mismatch() {
     assert!(
         audit
             .block_reasons()
-            .contains(&TinyCanaryBlockReason::InvalidMarketSelectionBinding)
+            .contains(&Phase8CanaryBlockReason::InvalidMarketSelectionBinding)
     );
 }
 
@@ -840,10 +928,10 @@ fn strategy_audit_rejects_unknown_input_evidence_fields() {
     let evidence_path = temp.path().join("strategy-input-evidence.json");
     std::fs::write(
         &evidence_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000,"unreviewed_override":"accepted"}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000,"unreviewed_override":"accepted"}"#,
     )
     .expect("strategy input evidence should write");
-    let evidence_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&evidence_path)
+    let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
         .expect("strategy input evidence hash should compute");
 
     let error = strategy_audit_from_evidence_file(&evidence_path, &evidence_hash)
@@ -861,10 +949,10 @@ fn strategy_audit_verifies_input_evidence_hash_before_approving() {
     let evidence_path = temp.path().join("strategy-input-evidence.json");
     std::fs::write(
         &evidence_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let evidence_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&evidence_path)
+    let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
         .expect("strategy input evidence hash should compute");
 
     let audit = strategy_audit_from_evidence_file(&evidence_path, &evidence_hash)
@@ -879,7 +967,7 @@ fn strategy_audit_rejects_input_evidence_hash_mismatch() {
     let evidence_path = temp.path().join("strategy-input-evidence.json");
     std::fs::write(
         &evidence_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
 
@@ -894,9 +982,9 @@ fn strategy_audit_rejects_input_evidence_hash_mismatch() {
 
 #[test]
 fn dry_canary_evidence_serializes_join_keys_without_raw_approval_id() {
-    let evidence = TinyCanaryEvidence::dry_no_submit_proof(
+    let evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
-        TinyCanaryEvidenceRef {
+        Phase8EvidenceRef {
             path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 .to_string(),
             record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
@@ -931,10 +1019,10 @@ fn dry_canary_evidence_serializes_join_keys_without_raw_approval_id() {
 #[test]
 fn dry_canary_evidence_writer_creates_redacted_json_file() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let evidence_path = temp.path().join("tiny-canary-canary-evidence.json");
-    let evidence = TinyCanaryEvidence::dry_no_submit_proof(
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
-        TinyCanaryEvidenceRef {
+        Phase8EvidenceRef {
             path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 .to_string(),
             record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
@@ -958,10 +1046,10 @@ fn dry_canary_evidence_writer_creates_redacted_json_file() {
 #[test]
 fn dry_canary_evidence_writer_rejects_malformed_ref_hashes() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let evidence_path = temp.path().join("tiny-canary-canary-evidence.json");
-    let evidence = TinyCanaryEvidence::dry_no_submit_proof(
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
-        TinyCanaryEvidenceRef {
+        Phase8EvidenceRef {
             path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 .to_string(),
             record_hash: "not-a-sha256".to_string(),
@@ -987,8 +1075,8 @@ fn dry_canary_evidence_writer_rejects_malformed_ref_hashes() {
 #[test]
 fn dry_canary_evidence_writer_rejects_live_order_ref() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let evidence_path = temp.path().join("tiny-canary-canary-evidence.json");
-    let mut evidence = TinyCanaryEvidence::dry_no_submit_proof(
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let mut evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
     );
@@ -1011,8 +1099,8 @@ fn dry_canary_evidence_writer_rejects_live_order_ref() {
 #[test]
 fn dry_canary_evidence_writer_rejects_missing_block_reason() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let evidence_path = temp.path().join("tiny-canary-canary-evidence.json");
-    let mut evidence = TinyCanaryEvidence::dry_no_submit_proof(
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let mut evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
     );
@@ -1035,10 +1123,10 @@ fn dry_canary_evidence_writer_rejects_missing_block_reason() {
 #[test]
 fn dry_canary_evidence_writer_rejects_existing_json_file() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let evidence_path = temp.path().join("tiny-canary-canary-evidence.json");
-    let evidence = TinyCanaryEvidence::dry_no_submit_proof(
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
-        TinyCanaryEvidenceRef {
+        Phase8EvidenceRef {
             path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 .to_string(),
             record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
@@ -1051,9 +1139,9 @@ fn dry_canary_evidence_writer_rejects_existing_json_file() {
         .expect("evidence should write");
     let original = std::fs::read_to_string(&evidence_path).expect("evidence should read");
 
-    let replacement = TinyCanaryEvidence::blocked_before_submit(
+    let replacement = Phase8CanaryEvidence::blocked_before_submit(
         evidence_input(),
-        vec![TinyCanaryBlockReason::RootConfigHashUnavailable],
+        vec![Phase8CanaryBlockReason::RootConfigHashUnavailable],
     );
     let error = replacement
         .write_json_file(&evidence_path)
@@ -1070,17 +1158,17 @@ fn dry_canary_evidence_writer_rejects_existing_json_file() {
 
 #[test]
 fn decision_evidence_unavailable_blocks_before_submit_admission() {
-    let evidence = TinyCanaryEvidence::blocked_before_submit(
+    let evidence = Phase8CanaryEvidence::blocked_before_submit(
         evidence_input(),
-        vec![TinyCanaryBlockReason::DecisionEvidenceUnavailable],
+        vec![Phase8CanaryBlockReason::DecisionEvidenceUnavailable],
     );
 
-    assert_eq!(evidence.outcome, TinyCanaryOutcome::BlockedBeforeSubmit);
+    assert_eq!(evidence.outcome, Phase8CanaryOutcome::BlockedBeforeSubmit);
     assert_eq!(evidence.submit_admission_ref.admitted_order_count, 0);
     assert!(
         evidence
             .block_reasons
-            .contains(&TinyCanaryBlockReason::DecisionEvidenceUnavailable)
+            .contains(&Phase8CanaryBlockReason::DecisionEvidenceUnavailable)
     );
     assert!(evidence.decision_evidence_ref.is_none());
     assert!(evidence.nt_lifecycle_refs.is_empty());
@@ -1089,15 +1177,15 @@ fn decision_evidence_unavailable_blocks_before_submit_admission() {
 #[test]
 fn blocked_before_submit_preserves_all_preflight_block_reasons() {
     let block_reasons = vec![
-        TinyCanaryBlockReason::DecisionEvidenceUnavailable,
-        TinyCanaryBlockReason::RootConfigHashUnavailable,
-        TinyCanaryBlockReason::LiveCanaryGateRejected,
+        Phase8CanaryBlockReason::DecisionEvidenceUnavailable,
+        Phase8CanaryBlockReason::RootConfigHashUnavailable,
+        Phase8CanaryBlockReason::LiveCanaryGateRejected,
     ];
 
     let evidence =
-        TinyCanaryEvidence::blocked_before_submit(evidence_input(), block_reasons.clone());
+        Phase8CanaryEvidence::blocked_before_submit(evidence_input(), block_reasons.clone());
 
-    assert_eq!(evidence.outcome, TinyCanaryOutcome::BlockedBeforeSubmit);
+    assert_eq!(evidence.outcome, Phase8CanaryOutcome::BlockedBeforeSubmit);
     assert_eq!(evidence.block_reasons, block_reasons);
     assert!(evidence.decision_evidence_ref.is_none());
 }
@@ -1105,10 +1193,10 @@ fn blocked_before_submit_preserves_all_preflight_block_reasons() {
 #[test]
 fn blocked_canary_evidence_writer_rejects_inconsistent_submit_admission() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let evidence_path = temp.path().join("tiny-canary-canary-evidence.json");
-    let mut evidence = TinyCanaryEvidence::blocked_before_submit(
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let mut evidence = Phase8CanaryEvidence::blocked_before_submit(
         evidence_input(),
-        vec![TinyCanaryBlockReason::DecisionEvidenceUnavailable],
+        vec![Phase8CanaryBlockReason::DecisionEvidenceUnavailable],
     );
     evidence.submit_admission_ref.admitted_order_count = 1;
 
@@ -1131,10 +1219,10 @@ fn blocked_canary_evidence_writer_rejects_inconsistent_submit_admission() {
 #[test]
 fn blocked_canary_evidence_writer_rejects_decision_evidence_ref() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let evidence_path = temp.path().join("tiny-canary-canary-evidence.json");
-    let mut evidence = TinyCanaryEvidence::blocked_before_submit(
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let mut evidence = Phase8CanaryEvidence::blocked_before_submit(
         evidence_input(),
-        vec![TinyCanaryBlockReason::DecisionEvidenceUnavailable],
+        vec![Phase8CanaryBlockReason::DecisionEvidenceUnavailable],
     );
     evidence.decision_evidence_ref = Some(valid_evidence_ref("cccc", "dddd"));
 
@@ -1154,15 +1242,15 @@ fn blocked_canary_evidence_writer_rejects_decision_evidence_ref() {
 
 #[test]
 fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids() {
-    let evidence = TinyCanaryEvidence::live_canary_proof(
+    let evidence = Phase8CanaryEvidence::live_canary_proof(
         evidence_input(),
-        TinyCanaryEvidenceRef {
+        Phase8EvidenceRef {
             path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 .to_string(),
             record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
                 .to_string(),
         },
-        TinyCanaryLiveOrderRef {
+        Phase8LiveOrderRef {
             strategy_instance_id_hash:
                 "1212121212121212121212121212121212121212121212121212121212121212".to_string(),
             client_order_id_hash:
@@ -1170,32 +1258,32 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
             venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
                 .to_string(),
         },
-        TinyCanaryLiveCanaryResultRefs {
-            nt_submit_event_ref: TinyCanaryEvidenceRef {
+        Phase8LiveCanaryResultRefs {
+            nt_submit_event_ref: Phase8EvidenceRef {
                 path_hash: "1111111111111111111111111111111111111111111111111111111111111111"
                     .to_string(),
                 record_hash: "2222222222222222222222222222222222222222222222222222222222222222"
                     .to_string(),
             },
-            venue_order_state_ref: TinyCanaryEvidenceRef {
+            venue_order_state_ref: Phase8EvidenceRef {
                 path_hash: "3333333333333333333333333333333333333333333333333333333333333333"
                     .to_string(),
                 record_hash: "4444444444444444444444444444444444444444444444444444444444444444"
                     .to_string(),
             },
-            strategy_cancel_ref: Some(TinyCanaryEvidenceRef {
+            strategy_cancel_ref: Some(Phase8EvidenceRef {
                 path_hash: "5555555555555555555555555555555555555555555555555555555555555555"
                     .to_string(),
                 record_hash: "6666666666666666666666666666666666666666666666666666666666666666"
                     .to_string(),
             }),
-            restart_reconciliation_ref: TinyCanaryEvidenceRef {
+            restart_reconciliation_ref: Phase8EvidenceRef {
                 path_hash: "7777777777777777777777777777777777777777777777777777777777777777"
                     .to_string(),
                 record_hash: "8888888888888888888888888888888888888888888888888888888888888888"
                     .to_string(),
             },
-            post_run_hygiene_ref: TinyCanaryEvidenceRef {
+            post_run_hygiene_ref: Phase8EvidenceRef {
                 path_hash: "9999999999999999999999999999999999999999999999999999999999999999"
                     .to_string(),
                 record_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -1206,7 +1294,7 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
     )
     .expect("one admitted order should produce live canary proof");
 
-    assert_eq!(evidence.outcome, TinyCanaryOutcome::LiveCanaryProof);
+    assert_eq!(evidence.outcome, Phase8CanaryOutcome::LiveCanaryProof);
     assert_eq!(evidence.submit_admission_ref.admitted_order_count, 1);
     assert!(evidence.block_reasons.is_empty());
     assert!(evidence.live_order_ref.is_some());
@@ -1226,8 +1314,8 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
 #[test]
 fn live_canary_evidence_writer_rejects_block_reasons() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let evidence_path = temp.path().join("tiny-canary-canary-evidence.json");
-    let mut evidence = TinyCanaryEvidence::live_canary_proof(
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let mut evidence = Phase8CanaryEvidence::live_canary_proof(
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
         valid_live_order_ref(),
@@ -1237,7 +1325,7 @@ fn live_canary_evidence_writer_rejects_block_reasons() {
     .expect("valid live canary evidence should construct");
     evidence
         .block_reasons
-        .push(TinyCanaryBlockReason::DecisionEvidenceUnavailable);
+        .push(Phase8CanaryBlockReason::DecisionEvidenceUnavailable);
 
     let error = evidence
         .write_json_file(&evidence_path)
@@ -1256,8 +1344,8 @@ fn live_canary_evidence_writer_rejects_block_reasons() {
 #[test]
 fn live_canary_evidence_writer_rejects_mutated_strategy_hash() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let evidence_path = temp.path().join("tiny-canary-canary-evidence.json");
-    let mut evidence = TinyCanaryEvidence::live_canary_proof(
+    let evidence_path = temp.path().join("phase8-canary-evidence.json");
+    let mut evidence = Phase8CanaryEvidence::live_canary_proof(
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
         valid_live_order_ref(),
@@ -1288,15 +1376,15 @@ fn live_canary_evidence_writer_rejects_mutated_strategy_hash() {
 
 #[test]
 fn live_canary_evidence_rejects_unconsumed_submit_admission_count() {
-    let error = TinyCanaryEvidence::live_canary_proof(
+    let error = Phase8CanaryEvidence::live_canary_proof(
         evidence_input(),
-        TinyCanaryEvidenceRef {
+        Phase8EvidenceRef {
             path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 .to_string(),
             record_hash: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
                 .to_string(),
         },
-        TinyCanaryLiveOrderRef {
+        Phase8LiveOrderRef {
             strategy_instance_id_hash:
                 "1212121212121212121212121212121212121212121212121212121212121212".to_string(),
             client_order_id_hash:
@@ -1304,32 +1392,32 @@ fn live_canary_evidence_rejects_unconsumed_submit_admission_count() {
             venue_order_id_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
                 .to_string(),
         },
-        TinyCanaryLiveCanaryResultRefs {
-            nt_submit_event_ref: TinyCanaryEvidenceRef {
+        Phase8LiveCanaryResultRefs {
+            nt_submit_event_ref: Phase8EvidenceRef {
                 path_hash: "1111111111111111111111111111111111111111111111111111111111111111"
                     .to_string(),
                 record_hash: "2222222222222222222222222222222222222222222222222222222222222222"
                     .to_string(),
             },
-            venue_order_state_ref: TinyCanaryEvidenceRef {
+            venue_order_state_ref: Phase8EvidenceRef {
                 path_hash: "3333333333333333333333333333333333333333333333333333333333333333"
                     .to_string(),
                 record_hash: "4444444444444444444444444444444444444444444444444444444444444444"
                     .to_string(),
             },
-            strategy_cancel_ref: Some(TinyCanaryEvidenceRef {
+            strategy_cancel_ref: Some(Phase8EvidenceRef {
                 path_hash: "5555555555555555555555555555555555555555555555555555555555555555"
                     .to_string(),
                 record_hash: "6666666666666666666666666666666666666666666666666666666666666666"
                     .to_string(),
             }),
-            restart_reconciliation_ref: TinyCanaryEvidenceRef {
+            restart_reconciliation_ref: Phase8EvidenceRef {
                 path_hash: "7777777777777777777777777777777777777777777777777777777777777777"
                     .to_string(),
                 record_hash: "8888888888888888888888888888888888888888888888888888888888888888"
                     .to_string(),
             },
-            post_run_hygiene_ref: TinyCanaryEvidenceRef {
+            post_run_hygiene_ref: Phase8EvidenceRef {
                 path_hash: "9999999999999999999999999999999999999999999999999999999999999999"
                     .to_string(),
                 record_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -1348,9 +1436,9 @@ fn live_canary_evidence_rejects_unconsumed_submit_admission_count() {
 
 #[test]
 fn live_canary_evidence_rejects_malformed_result_refs() {
-    let error = TinyCanaryEvidence::live_canary_proof(
+    let error = Phase8CanaryEvidence::live_canary_proof(
         evidence_input(),
-        TinyCanaryEvidenceRef {
+        Phase8EvidenceRef {
             path_hash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                 .to_string(),
             record_hash: "not-a-sha256".to_string(),
@@ -1368,10 +1456,10 @@ fn live_canary_evidence_rejects_malformed_result_refs() {
         "error should mention malformed decision evidence record hash: {error}"
     );
 
-    let error = TinyCanaryEvidence::live_canary_proof(
+    let error = Phase8CanaryEvidence::live_canary_proof(
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
-        TinyCanaryLiveOrderRef {
+        Phase8LiveOrderRef {
             strategy_instance_id_hash:
                 "1212121212121212121212121212121212121212121212121212121212121212".to_string(),
             client_order_id_hash: String::new(),
@@ -1397,7 +1485,7 @@ fn live_canary_evidence_rejects_order_from_unapproved_strategy() {
     live_order_ref.strategy_instance_id_hash =
         "3434343434343434343434343434343434343434343434343434343434343434".to_string();
 
-    let error = TinyCanaryEvidence::live_canary_proof(
+    let error = Phase8CanaryEvidence::live_canary_proof(
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
         live_order_ref,
@@ -1416,7 +1504,7 @@ fn live_canary_evidence_rejects_order_from_unapproved_strategy() {
 fn live_canary_evidence_rejects_malformed_identity_hashes() {
     let mut input = evidence_input();
     input.root_config_sha256 = "not-a-sha256".to_string();
-    let error = TinyCanaryEvidence::live_canary_proof(
+    let error = Phase8CanaryEvidence::live_canary_proof(
         input,
         valid_evidence_ref("cccc", "dddd"),
         valid_live_order_ref(),
@@ -1432,7 +1520,7 @@ fn live_canary_evidence_rejects_malformed_identity_hashes() {
 
     let mut input = evidence_input();
     input.runtime_capture_ref.spool_root_hash = String::new();
-    let error = TinyCanaryEvidence::live_canary_proof(
+    let error = Phase8CanaryEvidence::live_canary_proof(
         input,
         valid_evidence_ref("cccc", "dddd"),
         valid_live_order_ref(),
@@ -1453,7 +1541,7 @@ fn live_canary_evidence_rejects_malformed_identity_hashes() {
 fn live_canary_evidence_rejects_invalid_cap_values() {
     let mut input = evidence_input();
     input.max_live_order_count = 2;
-    let error = TinyCanaryEvidence::live_canary_proof(
+    let error = Phase8CanaryEvidence::live_canary_proof(
         input,
         valid_evidence_ref("cccc", "dddd"),
         valid_live_order_ref(),
@@ -1469,7 +1557,7 @@ fn live_canary_evidence_rejects_invalid_cap_values() {
 
     let mut input = evidence_input();
     input.max_notional_per_order = Decimal::ZERO;
-    let error = TinyCanaryEvidence::live_canary_proof(
+    let error = Phase8CanaryEvidence::live_canary_proof(
         input,
         valid_evidence_ref("cccc", "dddd"),
         valid_live_order_ref(),
@@ -1488,12 +1576,12 @@ fn live_canary_evidence_rejects_invalid_cap_values() {
 fn canary_evidence_writer_rejects_mutated_cap_values() {
     let temp = tempfile::tempdir().expect("tempdir should create");
 
-    let mut order_count_evidence = TinyCanaryEvidence::dry_no_submit_proof(
+    let mut order_count_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
     );
     order_count_evidence.max_live_order_count = 2;
-    let order_count_path = temp.path().join("tiny-canary-canary-order-count.json");
+    let order_count_path = temp.path().join("phase8-canary-order-count.json");
     let error = order_count_evidence
         .write_json_file(&order_count_path)
         .expect_err("mutated live order cap must not be written");
@@ -1507,12 +1595,12 @@ fn canary_evidence_writer_rejects_mutated_cap_values() {
         "mutated order cap evidence must not create evidence file"
     );
 
-    let mut notional_evidence = TinyCanaryEvidence::dry_no_submit_proof(
+    let mut notional_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
     );
     notional_evidence.max_notional_per_order = Decimal::ZERO.to_string();
-    let notional_path = temp.path().join("tiny-canary-canary-notional.json");
+    let notional_path = temp.path().join("phase8-canary-notional.json");
     let error = notional_evidence
         .write_json_file(&notional_path)
         .expect_err("mutated non-positive notional cap must not be written");
@@ -1531,12 +1619,12 @@ fn canary_evidence_writer_rejects_mutated_cap_values() {
 fn canary_evidence_writer_rejects_mutated_identity_fields() {
     let temp = tempfile::tempdir().expect("tempdir should create");
 
-    let mut schema_evidence = TinyCanaryEvidence::dry_no_submit_proof(
+    let mut schema_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
     );
     schema_evidence.schema_version = 0;
-    let schema_path = temp.path().join("tiny-canary-canary-schema.json");
+    let schema_path = temp.path().join("phase8-canary-schema.json");
     let error = schema_evidence
         .write_json_file(&schema_path)
         .expect_err("mutated schema version must not be written");
@@ -1550,12 +1638,12 @@ fn canary_evidence_writer_rejects_mutated_identity_fields() {
         "mutated schema evidence must not create evidence file"
     );
 
-    let mut head_evidence = TinyCanaryEvidence::dry_no_submit_proof(
+    let mut head_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
     );
     head_evidence.head_sha.clear();
-    let head_path = temp.path().join("tiny-canary-canary-head.json");
+    let head_path = temp.path().join("phase8-canary-head.json");
     let error = head_evidence
         .write_json_file(&head_path)
         .expect_err("empty head sha must not be written");
@@ -1569,12 +1657,12 @@ fn canary_evidence_writer_rejects_mutated_identity_fields() {
         "empty head evidence must not create evidence file"
     );
 
-    let mut approval_evidence = TinyCanaryEvidence::dry_no_submit_proof(
+    let mut approval_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
     );
     approval_evidence.approval_id_hash = "operator-approved-canary-001".to_string();
-    let approval_path = temp.path().join("tiny-canary-canary-approval.json");
+    let approval_path = temp.path().join("phase8-canary-approval.json");
     let error = approval_evidence
         .write_json_file(&approval_path)
         .expect_err("raw approval id must not be written as approval hash");
@@ -1593,12 +1681,12 @@ fn canary_evidence_writer_rejects_mutated_identity_fields() {
 fn canary_evidence_writer_rejects_invalid_runtime_metadata() {
     let temp = tempfile::tempdir().expect("tempdir should create");
 
-    let mut run_id_evidence = TinyCanaryEvidence::dry_no_submit_proof(
+    let mut run_id_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
     );
     run_id_evidence.runtime_capture_ref.run_id.clear();
-    let run_id_path = temp.path().join("tiny-canary-canary-run-id.json");
+    let run_id_path = temp.path().join("phase8-canary-run-id.json");
     let error = run_id_evidence
         .write_json_file(&run_id_path)
         .expect_err("empty runtime capture run id must not be written");
@@ -1612,17 +1700,17 @@ fn canary_evidence_writer_rejects_invalid_runtime_metadata() {
         "empty runtime capture run id must not create evidence file"
     );
 
-    let mut lifecycle_evidence = TinyCanaryEvidence::dry_no_submit_proof(
+    let mut lifecycle_evidence = Phase8CanaryEvidence::dry_no_submit_proof(
         evidence_input(),
         valid_evidence_ref("cccc", "dddd"),
     );
     lifecycle_evidence
         .nt_lifecycle_refs
-        .push(TinyCanaryNtLifecycleRef {
+        .push(Phase8NtLifecycleRef {
             kind: String::new(),
             event_hash: "not-a-sha256".to_string(),
         });
-    let lifecycle_path = temp.path().join("tiny-canary-canary-lifecycle.json");
+    let lifecycle_path = temp.path().join("phase8-canary-lifecycle.json");
     let error = lifecycle_evidence
         .write_json_file(&lifecycle_path)
         .expect_err("invalid NT lifecycle ref must not be written");
@@ -1639,27 +1727,27 @@ fn canary_evidence_writer_rejects_invalid_runtime_metadata() {
 
 #[test]
 fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
-    let envelope = TinyCanaryOperatorApprovalEnvelope {
+    let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
-        ssm_manifest_path: "tiny-canary-ssm-manifest.json".to_string(),
+        ssm_manifest_path: "phase8-ssm-manifest.json".to_string(),
         ssm_manifest_sha256: "expected-ssm-hash".to_string(),
-        strategy_input_evidence_path: "tiny-canary-strategy-input-evidence.json".to_string(),
+        strategy_input_evidence_path: "phase8-strategy-input-evidence.json".to_string(),
         strategy_input_evidence_sha256: "expected-strategy-input-hash".to_string(),
-        financial_envelope_path: "tiny-canary-financial-envelope.json".to_string(),
+        financial_envelope_path: "phase8-financial-envelope.json".to_string(),
         financial_envelope_sha256: "expected-financial-envelope-hash".to_string(),
-        pre_run_state_path: "tiny-canary-pre-run-state.json".to_string(),
+        pre_run_state_path: "phase8-pre-run-state.json".to_string(),
         pre_run_state_sha256: "expected-pre-run-state-hash".to_string(),
-        abort_plan_path: "tiny-canary-abort-plan.json".to_string(),
+        abort_plan_path: "phase8-abort-plan.json".to_string(),
         abort_plan_sha256: "expected-abort-plan-hash".to_string(),
         operator_approval_id: "operator-approved-canary-001".to_string(),
-        approval_not_before_unix_seconds: 1_000,
-        approval_not_after_unix_seconds: 2_000,
-        approval_nonce_path: "tiny-canary-approval-nonce.json".to_string(),
+        approval_not_before_unix_secs: 1_000,
+        approval_not_after_unix_secs: 2_000,
+        approval_nonce_path: "phase8-approval-nonce.json".to_string(),
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
-        approval_consumption_path: "tiny-canary-approval-consumed.json".to_string(),
-        canary_evidence_path: "tiny-canary-canary-evidence.json".to_string(),
+        approval_consumption_path: "phase8-approval-consumed.json".to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
     };
 
     let error = envelope
@@ -1673,53 +1761,53 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
     assert!(
         error
             .to_string()
-            .contains("tiny canary operator approval head_sha does not match current head")
+            .contains("phase8 operator approval head_sha does not match current head")
     );
 }
 
 #[test]
 fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let manifest_path = temp.path().join("tiny-canary-ssm-manifest.json");
+    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
     std::fs::write(
         &manifest_path,
         r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
     )
     .expect("manifest should write");
-    let manifest_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&manifest_path)
+    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
         .expect("manifest hash should compute");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
-    let approval_nonce_path = temp.path().join("tiny-canary-approval-nonce.json");
+    let approval_nonce_path = temp.path().join("phase8-approval-nonce.json");
     std::fs::write(
         &approval_nonce_path,
-        r#"{"record_kind":"tiny_canary_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+        r#"{"record_kind":"phase8_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
     )
     .expect("approval nonce should write");
-    let approval_nonce_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
+    let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
-    let financial_envelope_path = temp.path().join("tiny-canary-financial-envelope.json");
-    write_tiny_canary_financial_envelope(&financial_envelope_path, "0.25");
+    let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
+    write_phase8_financial_envelope(&financial_envelope_path, "0.25");
     let financial_envelope_hash =
-        TinyCanaryOperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
+        Phase8OperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
             .expect("financial envelope hash should compute");
-    let pre_run_state_path = temp.path().join("tiny-canary-pre-run-state.json");
-    write_tiny_canary_pre_run_state(&pre_run_state_path, false);
-    let pre_run_state_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+    let pre_run_state_path = temp.path().join("phase8-pre-run-state.json");
+    write_phase8_pre_run_state(&pre_run_state_path, false);
+    let pre_run_state_hash = Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
         .expect("pre-run state hash should compute");
-    let abort_plan_path = temp.path().join("tiny-canary-abort-plan.json");
-    write_tiny_canary_abort_plan(&abort_plan_path, false);
-    let abort_plan_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&abort_plan_path)
+    let abort_plan_path = temp.path().join("phase8-abort-plan.json");
+    write_phase8_abort_plan(&abort_plan_path, false);
+    let abort_plan_hash = Phase8OperatorApprovalEnvelope::sha256_file(&abort_plan_path)
         .expect("abort plan hash should compute");
-    let approval_consumption_path = temp.path().join("tiny-canary-approval-consumed.json");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
     let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
-    let envelope = TinyCanaryOperatorApprovalEnvelope {
+    let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
@@ -1734,12 +1822,12 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         abort_plan_path: abort_plan_path.to_string_lossy().to_string(),
         abort_plan_sha256: abort_plan_hash,
         operator_approval_id: "operator-approved-canary-001".to_string(),
-        approval_not_before_unix_seconds: 1_000,
-        approval_not_after_unix_seconds: 2_000,
+        approval_not_before_unix_secs: 1_000,
+        approval_not_after_unix_secs: 2_000,
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "tiny-canary-canary-evidence.json".to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
     };
 
     let too_early_error = envelope
@@ -1781,10 +1869,10 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         "nonce mismatch must not create consumption evidence"
     );
 
-    let zero_window_consumption_path = temp.path().join("tiny-canary-zero-window-consumed.json");
+    let zero_window_consumption_path = temp.path().join("phase8-zero-window-consumed.json");
     let mut zero_window_envelope = envelope.clone();
-    zero_window_envelope.approval_not_before_unix_seconds = 1_500;
-    zero_window_envelope.approval_not_after_unix_seconds = 1_500;
+    zero_window_envelope.approval_not_before_unix_secs = 1_500;
+    zero_window_envelope.approval_not_after_unix_secs = 1_500;
     zero_window_envelope.approval_consumption_path =
         zero_window_consumption_path.to_string_lossy().to_string();
     let zero_window_error = zero_window_envelope
@@ -1807,9 +1895,8 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         "zero-length approval window must not create consumption evidence"
     );
 
-    let expired_with_drift_consumption_path = temp
-        .path()
-        .join("tiny-canary-expired-with-drift-consumed.json");
+    let expired_with_drift_consumption_path =
+        temp.path().join("phase8-expired-with-drift-consumed.json");
     let mut expired_with_drift_envelope = envelope.clone();
     expired_with_drift_envelope.financial_envelope_sha256 =
         "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
@@ -1857,11 +1944,11 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         serde_json::from_str(&consumption_json).expect("consumption should parse as json");
     assert_eq!(
         consumption["record_kind"],
-        "tiny_canary_operator_approval_consumption"
+        "phase8_operator_approval_consumption"
     );
-    assert_eq!(consumption["approval_not_before_unix_seconds"], 1_000);
-    assert_eq!(consumption["approval_not_after_unix_seconds"], 2_000);
-    assert_eq!(consumption["consumed_unix_seconds"], 1_500);
+    assert_eq!(consumption["approval_not_before_unix_secs"], 1_000);
+    assert_eq!(consumption["approval_not_after_unix_secs"], 2_000);
+    assert_eq!(consumption["consumed_unix_secs"], 1_500);
 
     let expired_after_consumption_error = envelope
         .validate_and_consume_against(
@@ -1898,23 +1985,23 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
 #[test]
 fn operator_approval_envelope_verifies_ssm_manifest_hash() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let manifest_path = temp.path().join("tiny-canary-ssm-manifest.json");
+    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
     std::fs::write(
         &manifest_path,
         r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
     )
     .expect("manifest should write");
-    let manifest_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&manifest_path)
+    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
         .expect("manifest hash should compute");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
-    let mut envelope = TinyCanaryOperatorApprovalEnvelope {
+    let mut envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
@@ -1922,19 +2009,19 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
         strategy_input_evidence_sha256: strategy_input_hash,
-        financial_envelope_path: "tiny-canary-financial-envelope.json".to_string(),
+        financial_envelope_path: "phase8-financial-envelope.json".to_string(),
         financial_envelope_sha256: "expected-financial-envelope-hash".to_string(),
-        pre_run_state_path: "tiny-canary-pre-run-state.json".to_string(),
+        pre_run_state_path: "phase8-pre-run-state.json".to_string(),
         pre_run_state_sha256: "expected-pre-run-state-hash".to_string(),
-        abort_plan_path: "tiny-canary-abort-plan.json".to_string(),
+        abort_plan_path: "phase8-abort-plan.json".to_string(),
         abort_plan_sha256: "expected-abort-plan-hash".to_string(),
         operator_approval_id: "operator-approved-canary-001".to_string(),
-        approval_not_before_unix_seconds: 1_000,
-        approval_not_after_unix_seconds: 2_000,
-        approval_nonce_path: "tiny-canary-approval-nonce.json".to_string(),
+        approval_not_before_unix_secs: 1_000,
+        approval_not_after_unix_secs: 2_000,
+        approval_nonce_path: "phase8-approval-nonce.json".to_string(),
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
-        approval_consumption_path: "tiny-canary-approval-consumed.json".to_string(),
-        canary_evidence_path: "tiny-canary-canary-evidence.json".to_string(),
+        approval_consumption_path: "phase8-approval-consumed.json".to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
     };
 
     envelope
@@ -1963,23 +2050,23 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
 #[test]
 fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let manifest_path = temp.path().join("tiny-canary-ssm-manifest.json");
+    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
     std::fs::write(
         &manifest_path,
         r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
     )
     .expect("manifest should write");
-    let manifest_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&manifest_path)
+    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
         .expect("manifest hash should compute");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
-    let mut envelope = TinyCanaryOperatorApprovalEnvelope {
+    let mut envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
@@ -1987,19 +2074,19 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
         strategy_input_evidence_sha256: strategy_input_hash,
-        financial_envelope_path: "tiny-canary-financial-envelope.json".to_string(),
+        financial_envelope_path: "phase8-financial-envelope.json".to_string(),
         financial_envelope_sha256: "expected-financial-envelope-hash".to_string(),
-        pre_run_state_path: "tiny-canary-pre-run-state.json".to_string(),
+        pre_run_state_path: "phase8-pre-run-state.json".to_string(),
         pre_run_state_sha256: "expected-pre-run-state-hash".to_string(),
-        abort_plan_path: "tiny-canary-abort-plan.json".to_string(),
+        abort_plan_path: "phase8-abort-plan.json".to_string(),
         abort_plan_sha256: "expected-abort-plan-hash".to_string(),
         operator_approval_id: "operator-approved-canary-001".to_string(),
-        approval_not_before_unix_seconds: 1_000,
-        approval_not_after_unix_seconds: 2_000,
-        approval_nonce_path: "tiny-canary-approval-nonce.json".to_string(),
+        approval_not_before_unix_secs: 1_000,
+        approval_not_after_unix_secs: 2_000,
+        approval_nonce_path: "phase8-approval-nonce.json".to_string(),
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
-        approval_consumption_path: "tiny-canary-approval-consumed.json".to_string(),
-        canary_evidence_path: "tiny-canary-canary-evidence.json".to_string(),
+        approval_consumption_path: "phase8-approval-consumed.json".to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
     };
 
     envelope
@@ -2028,39 +2115,39 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
 #[test]
 fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let manifest_path = temp.path().join("tiny-canary-ssm-manifest.json");
+    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
     std::fs::write(
         &manifest_path,
         r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
     )
     .expect("manifest should write");
-    let manifest_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&manifest_path)
+    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
         .expect("manifest hash should compute");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
-    let financial_envelope_path = temp.path().join("tiny-canary-financial-envelope.json");
+    let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
     std::fs::write(
         &financial_envelope_path,
         serde_json::to_vec(&serde_json::json!({
             "max_live_order_count": 1,
             "max_notional_per_order": "5.00",
             "strategy_instance_id": "bitcoin_updown_main",
-            "strategy_venue": "polymarket_main",
+            "execution_client_id": "polymarket_main",
             "configured_target_id": "btc_updown_5m",
             "target_kind": "rotating_market",
             "rotating_market_family": "updown",
             "underlying_asset": "BTC",
-            "cadence_seconds": 300,
+            "cadence_secs": 300,
             "market_selection_rule": "active_or_next",
-            "retry_interval_seconds": 5,
-            "blocked_after_seconds": 60,
-            "price_to_beat_source": TINY_CANARY_TEST_PRICE_TO_BEAT_SOURCE,
+            "retry_interval_secs": 5,
+            "blocked_after_secs": 60,
+            "price_to_beat_source": PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
             "edge_threshold_basis_points": 100,
             "order_notional_target": "5.00",
             "maximum_position_notional": "10.00",
@@ -2080,25 +2167,25 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     )
     .expect("financial envelope should write");
     let financial_envelope_hash =
-        TinyCanaryOperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
+        Phase8OperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
             .expect("financial envelope hash should compute");
-    let pre_run_state_path = temp.path().join("tiny-canary-pre-run-state.json");
-    write_tiny_canary_pre_run_state(&pre_run_state_path, false);
-    let pre_run_state_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+    let pre_run_state_path = temp.path().join("phase8-pre-run-state.json");
+    write_phase8_pre_run_state(&pre_run_state_path, false);
+    let pre_run_state_hash = Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
         .expect("pre-run state hash should compute");
-    let abort_plan_path = temp.path().join("tiny-canary-abort-plan.json");
-    write_tiny_canary_abort_plan(&abort_plan_path, false);
-    let abort_plan_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&abort_plan_path)
+    let abort_plan_path = temp.path().join("phase8-abort-plan.json");
+    write_phase8_abort_plan(&abort_plan_path, false);
+    let abort_plan_hash = Phase8OperatorApprovalEnvelope::sha256_file(&abort_plan_path)
         .expect("abort plan hash should compute");
-    let approval_nonce_path = temp.path().join("tiny-canary-approval-nonce.json");
+    let approval_nonce_path = temp.path().join("phase8-approval-nonce.json");
     std::fs::write(
         &approval_nonce_path,
-        r#"{"record_kind":"tiny_canary_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+        r#"{"record_kind":"phase8_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
     )
     .expect("approval nonce should write");
-    let approval_nonce_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
+    let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
-    let approval_consumption_path = temp.path().join("tiny-canary-approval-consumed.json");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
     let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
     loaded
         .root
@@ -2106,7 +2193,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         .as_mut()
         .expect("live canary should exist")
         .max_notional_per_order = "5.00".to_string();
-    let envelope = TinyCanaryOperatorApprovalEnvelope {
+    let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
@@ -2121,12 +2208,12 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         abort_plan_path: abort_plan_path.to_string_lossy().to_string(),
         abort_plan_sha256: abort_plan_hash,
         operator_approval_id: "operator-approved-canary-001".to_string(),
-        approval_not_before_unix_seconds: 1_000,
-        approval_not_after_unix_seconds: 2_000,
+        approval_not_before_unix_secs: 1_000,
+        approval_not_after_unix_secs: 2_000,
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "tiny-canary-canary-evidence.json".to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
     };
 
     let mut wrong_hash_envelope = envelope.clone();
@@ -2150,6 +2237,55 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     assert!(
         !approval_consumption_path.exists(),
         "financial mismatch must not create consumption evidence"
+    );
+
+    let stale_field_financial_envelope_path = temp
+        .path()
+        .join("phase8-financial-envelope-stale-field.json");
+    write_phase8_financial_envelope(&stale_field_financial_envelope_path, "5.00");
+    let mut stale_field_financial_envelope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&stale_field_financial_envelope_path)
+            .expect("stale-field financial envelope should read"),
+    )
+    .expect("stale-field financial envelope should parse");
+    let legacy_execution_field = ["strategy", "_venue"].concat();
+    stale_field_financial_envelope
+        .as_object_mut()
+        .expect("financial envelope should be an object")
+        .insert(
+            legacy_execution_field,
+            serde_json::Value::String("polymarket_main".to_string()),
+        );
+    std::fs::write(
+        &stale_field_financial_envelope_path,
+        serde_json::to_vec(&stale_field_financial_envelope)
+            .expect("stale-field financial envelope should serialize"),
+    )
+    .expect("stale-field financial envelope should write");
+    let stale_field_financial_envelope_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&stale_field_financial_envelope_path)
+            .expect("stale-field financial envelope hash should compute");
+    let mut stale_field_envelope = envelope.clone();
+    stale_field_envelope.financial_envelope_path = stale_field_financial_envelope_path
+        .to_string_lossy()
+        .to_string();
+    stale_field_envelope.financial_envelope_sha256 = stale_field_financial_envelope_hash;
+    let stale_field_error = stale_field_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            1_500,
+        )
+        .expect_err("stale financial envelope execution field should fail closed");
+    assert!(
+        stale_field_error.to_string().contains("unknown field"),
+        "error should mention unknown stale financial field: {stale_field_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "stale financial envelope field must not create consumption evidence"
     );
 
     let mut mismatched_loaded = loaded.clone();
@@ -2198,9 +2334,9 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         )
         .expect_err("book impact cap mismatch against loaded TOML should fail closed");
     assert!(
-        mismatched_impact_error.to_string().contains(
-            "tiny canary financial envelope `book_impact_cap_bps` does not match loaded TOML"
-        ),
+        mismatched_impact_error
+            .to_string()
+            .contains("phase8 financial envelope `book_impact_cap_bps` does not match loaded TOML"),
         "error should mention mismatched book impact cap: {mismatched_impact_error}"
     );
     assert!(
@@ -2214,10 +2350,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         .target
         .as_table_mut()
         .expect("strategy target should be a TOML table");
-    target.insert(
-        "retry_interval_seconds".to_string(),
-        toml::Value::Integer(6),
-    );
+    target.insert("retry_interval_secs".to_string(), toml::Value::Integer(6));
     let mismatched_retry_error = envelope
         .validate_and_consume_against(
             "expected-head",
@@ -2228,9 +2361,9 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         )
         .expect_err("target retry window mismatch against loaded TOML should fail closed");
     assert!(
-        mismatched_retry_error.to_string().contains(
-            "tiny canary financial envelope `retry_interval_seconds` does not match loaded TOML"
-        ),
+        mismatched_retry_error
+            .to_string()
+            .contains("phase8 financial envelope `retry_interval_secs` does not match loaded TOML"),
         "error should mention mismatched retry window: {mismatched_retry_error}"
     );
     assert!(
@@ -2244,10 +2377,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         .target
         .as_table_mut()
         .expect("strategy target should be a TOML table");
-    target.insert(
-        "blocked_after_seconds".to_string(),
-        toml::Value::Integer(61),
-    );
+    target.insert("blocked_after_secs".to_string(), toml::Value::Integer(61));
     let mismatched_block_error = envelope
         .validate_and_consume_against(
             "expected-head",
@@ -2258,9 +2388,9 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         )
         .expect_err("target blocked window mismatch against loaded TOML should fail closed");
     assert!(
-        mismatched_block_error.to_string().contains(
-            "tiny canary financial envelope `blocked_after_seconds` does not match loaded TOML"
-        ),
+        mismatched_block_error
+            .to_string()
+            .contains("phase8 financial envelope `blocked_after_secs` does not match loaded TOML"),
         "error should mention mismatched blocked window: {mismatched_block_error}"
     );
     assert!(
@@ -2291,7 +2421,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         .expect_err("price source mismatch against loaded TOML should fail closed");
     assert!(
         mismatched_price_source_error.to_string().contains(
-            "tiny canary financial envelope `price_to_beat_source` does not match loaded TOML"
+            "phase8 financial envelope `price_to_beat_source` does not match loaded TOML"
         ),
         "error should mention mismatched price source: {mismatched_price_source_error}"
     );
@@ -2321,7 +2451,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         .expect_err("edge threshold mismatch against loaded TOML should fail closed");
     assert!(
         mismatched_edge_error.to_string().contains(
-            "tiny canary financial envelope `edge_threshold_basis_points` does not match loaded TOML"
+            "phase8 financial envelope `edge_threshold_basis_points` does not match loaded TOML"
         ),
         "error should mention mismatched edge threshold: {mismatched_edge_error}"
     );
@@ -2352,9 +2482,9 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         )
         .expect_err("entry order mismatch against loaded TOML should fail closed");
     assert!(
-        mismatched_entry_order_error.to_string().contains(
-            "tiny canary financial envelope `entry_time_in_force` does not match loaded TOML"
-        ),
+        mismatched_entry_order_error
+            .to_string()
+            .contains("phase8 financial envelope `entry_time_in_force` does not match loaded TOML"),
         "error should mention mismatched entry order field: {mismatched_entry_order_error}"
     );
     assert!(
@@ -2381,9 +2511,9 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         )
         .expect_err("exit order mismatch against loaded TOML should fail closed");
     assert!(
-        mismatched_exit_order_error.to_string().contains(
-            "tiny canary financial envelope `exit_is_reduce_only` does not match loaded TOML"
-        ),
+        mismatched_exit_order_error
+            .to_string()
+            .contains("phase8 financial envelope `exit_is_reduce_only` does not match loaded TOML"),
         "error should mention mismatched exit order field: {mismatched_exit_order_error}"
     );
     assert!(
@@ -2397,7 +2527,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     multi_strategy_loaded.strategies.push(secondary_strategy);
     let multi_strategy_consumption_path = temp
         .path()
-        .join("tiny-canary-approval-consumed-multi-strategy.json");
+        .join("phase8-approval-consumed-multi-strategy.json");
     let mut multi_strategy_envelope = envelope.clone();
     multi_strategy_envelope.approval_consumption_path = multi_strategy_consumption_path
         .to_string_lossy()
@@ -2438,46 +2568,46 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
 #[test]
 fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearances() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let manifest_path = temp.path().join("tiny-canary-ssm-manifest.json");
+    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
     std::fs::write(
         &manifest_path,
         r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
     )
     .expect("manifest should write");
-    let manifest_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&manifest_path)
+    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
         .expect("manifest hash should compute");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
-    let financial_envelope_path = temp.path().join("tiny-canary-financial-envelope.json");
-    write_tiny_canary_financial_envelope(&financial_envelope_path, "0.25");
+    let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
+    write_phase8_financial_envelope(&financial_envelope_path, "0.25");
     let financial_envelope_hash =
-        TinyCanaryOperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
+        Phase8OperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
             .expect("financial envelope hash should compute");
-    let pre_run_state_path = temp.path().join("tiny-canary-pre-run-state.json");
-    write_tiny_canary_pre_run_state(&pre_run_state_path, false);
-    let pre_run_state_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+    let pre_run_state_path = temp.path().join("phase8-pre-run-state.json");
+    write_phase8_pre_run_state(&pre_run_state_path, false);
+    let pre_run_state_hash = Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
         .expect("pre-run state hash should compute");
-    let abort_plan_path = temp.path().join("tiny-canary-abort-plan.json");
-    write_tiny_canary_abort_plan(&abort_plan_path, false);
-    let abort_plan_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&abort_plan_path)
+    let abort_plan_path = temp.path().join("phase8-abort-plan.json");
+    write_phase8_abort_plan(&abort_plan_path, false);
+    let abort_plan_hash = Phase8OperatorApprovalEnvelope::sha256_file(&abort_plan_path)
         .expect("abort plan hash should compute");
-    let approval_nonce_path = temp.path().join("tiny-canary-approval-nonce.json");
+    let approval_nonce_path = temp.path().join("phase8-approval-nonce.json");
     std::fs::write(
         &approval_nonce_path,
-        r#"{"record_kind":"tiny_canary_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+        r#"{"record_kind":"phase8_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
     )
     .expect("approval nonce should write");
-    let approval_nonce_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
+    let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
-    let approval_consumption_path = temp.path().join("tiny-canary-approval-consumed.json");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
     let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
-    let envelope = TinyCanaryOperatorApprovalEnvelope {
+    let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
@@ -2492,12 +2622,12 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
         abort_plan_path: abort_plan_path.to_string_lossy().to_string(),
         abort_plan_sha256: abort_plan_hash,
         operator_approval_id: "operator-approved-canary-001".to_string(),
-        approval_not_before_unix_seconds: 1_000,
-        approval_not_after_unix_seconds: 2_000,
+        approval_not_before_unix_secs: 1_000,
+        approval_not_after_unix_secs: 2_000,
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "tiny-canary-canary-evidence.json".to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
     };
 
     let mut wrong_hash_envelope = envelope.clone();
@@ -2523,9 +2653,9 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
         "pre-run state mismatch must not create consumption evidence"
     );
 
-    write_tiny_canary_pre_run_state(&pre_run_state_path, true);
+    write_phase8_pre_run_state(&pre_run_state_path, true);
     let blocked_pre_run_state_hash =
-        TinyCanaryOperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+        Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
             .expect("pre-run state hash should compute");
     let mut blocked_envelope = envelope.clone();
     blocked_envelope.pre_run_state_sha256 = blocked_pre_run_state_hash;
@@ -2549,10 +2679,9 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
         "unsafe pre-run state must not create consumption evidence"
     );
 
-    write_tiny_canary_pre_run_state_with_clob_fee_behavior(&pre_run_state_path, false, false);
-    let blocked_clob_fee_hash =
-        TinyCanaryOperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
-            .expect("pre-run state hash should compute");
+    write_phase8_pre_run_state_with_clob_fee_behavior(&pre_run_state_path, false, false);
+    let blocked_clob_fee_hash = Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+        .expect("pre-run state hash should compute");
     let mut blocked_clob_fee_envelope = envelope.clone();
     blocked_clob_fee_envelope.pre_run_state_sha256 = blocked_clob_fee_hash;
     let blocked_clob_fee_error = blocked_clob_fee_envelope
@@ -2575,7 +2704,7 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
         "unverified CLOB V2 fee behavior must not create consumption evidence"
     );
 
-    write_tiny_canary_pre_run_state(&pre_run_state_path, false);
+    write_phase8_pre_run_state(&pre_run_state_path, false);
     envelope
         .validate_and_consume_against(
             "expected-head",
@@ -2594,30 +2723,30 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
 #[test]
 fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let manifest_path = temp.path().join("tiny-canary-ssm-manifest.json");
+    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
     std::fs::write(
         &manifest_path,
         r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
     )
     .expect("manifest should write");
-    let manifest_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&manifest_path)
+    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
         .expect("manifest hash should compute");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
-    let financial_envelope_path = temp.path().join("tiny-canary-financial-envelope.json");
-    write_tiny_canary_financial_envelope(&financial_envelope_path, "0.25");
+    let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
+    write_phase8_financial_envelope(&financial_envelope_path, "0.25");
     let financial_envelope_hash =
-        TinyCanaryOperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
+        Phase8OperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
             .expect("financial envelope hash should compute");
-    let pre_run_state_path = temp.path().join("tiny-canary-pre-run-state.json");
+    let pre_run_state_path = temp.path().join("phase8-pre-run-state.json");
     let pre_run_json = serde_json::json!({
-        "strategy_venue": "polymarket_main",
+        "execution_client_id": "polymarket_main",
         "configured_target_id": "btc_updown_5m",
         "host_clock_skew_within_bound": true,
         "conflicting_open_orders_absent": true,
@@ -2638,23 +2767,23 @@ fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
         serde_json::to_vec(&pre_run_json).expect("pre-run state should serialize"),
     )
     .expect("pre-run state should write");
-    let pre_run_state_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+    let pre_run_state_hash = Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
         .expect("pre-run state hash should compute");
-    let abort_plan_path = temp.path().join("tiny-canary-abort-plan.json");
-    write_tiny_canary_abort_plan(&abort_plan_path, false);
-    let abort_plan_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&abort_plan_path)
+    let abort_plan_path = temp.path().join("phase8-abort-plan.json");
+    write_phase8_abort_plan(&abort_plan_path, false);
+    let abort_plan_hash = Phase8OperatorApprovalEnvelope::sha256_file(&abort_plan_path)
         .expect("abort plan hash should compute");
-    let approval_nonce_path = temp.path().join("tiny-canary-approval-nonce.json");
+    let approval_nonce_path = temp.path().join("phase8-approval-nonce.json");
     std::fs::write(
         &approval_nonce_path,
-        r#"{"record_kind":"tiny_canary_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+        r#"{"record_kind":"phase8_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
     )
     .expect("approval nonce should write");
-    let approval_nonce_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
+    let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
-    let approval_consumption_path = temp.path().join("tiny-canary-approval-consumed.json");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
     let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
-    let envelope = TinyCanaryOperatorApprovalEnvelope {
+    let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
@@ -2669,12 +2798,12 @@ fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
         abort_plan_path: abort_plan_path.to_string_lossy().to_string(),
         abort_plan_sha256: abort_plan_hash,
         operator_approval_id: "operator-approved-canary-001".to_string(),
-        approval_not_before_unix_seconds: 1_000,
-        approval_not_after_unix_seconds: 2_000,
+        approval_not_before_unix_secs: 1_000,
+        approval_not_after_unix_secs: 2_000,
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "tiny-canary-canary-evidence.json".to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
     };
 
     let error = envelope
@@ -2699,46 +2828,46 @@ fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
 #[test]
 fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let manifest_path = temp.path().join("tiny-canary-ssm-manifest.json");
+    let manifest_path = temp.path().join("phase8-ssm-manifest.json");
     std::fs::write(
         &manifest_path,
         r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
     )
     .expect("manifest should write");
-    let manifest_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&manifest_path)
+    let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
         .expect("manifest hash should compute");
-    let strategy_input_path = temp.path().join("tiny-canary-strategy-input-evidence.json");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_expiry":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_milliseconds":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp":1234567890,"polymarket_market_start_timestamp_milliseconds":1234567000,"polymarket_market_end_timestamp_milliseconds":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
-    let strategy_input_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
-    let financial_envelope_path = temp.path().join("tiny-canary-financial-envelope.json");
-    write_tiny_canary_financial_envelope(&financial_envelope_path, "0.25");
+    let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
+    write_phase8_financial_envelope(&financial_envelope_path, "0.25");
     let financial_envelope_hash =
-        TinyCanaryOperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
+        Phase8OperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
             .expect("financial envelope hash should compute");
-    let pre_run_state_path = temp.path().join("tiny-canary-pre-run-state.json");
-    write_tiny_canary_pre_run_state(&pre_run_state_path, false);
-    let pre_run_state_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+    let pre_run_state_path = temp.path().join("phase8-pre-run-state.json");
+    write_phase8_pre_run_state(&pre_run_state_path, false);
+    let pre_run_state_hash = Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
         .expect("pre-run state hash should compute");
-    let abort_plan_path = temp.path().join("tiny-canary-abort-plan.json");
-    write_tiny_canary_abort_plan(&abort_plan_path, false);
-    let abort_plan_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&abort_plan_path)
+    let abort_plan_path = temp.path().join("phase8-abort-plan.json");
+    write_phase8_abort_plan(&abort_plan_path, false);
+    let abort_plan_hash = Phase8OperatorApprovalEnvelope::sha256_file(&abort_plan_path)
         .expect("abort plan hash should compute");
-    let approval_nonce_path = temp.path().join("tiny-canary-approval-nonce.json");
+    let approval_nonce_path = temp.path().join("phase8-approval-nonce.json");
     std::fs::write(
         &approval_nonce_path,
-        r#"{"record_kind":"tiny_canary_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+        r#"{"record_kind":"phase8_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
     )
     .expect("approval nonce should write");
-    let approval_nonce_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
+    let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
-    let approval_consumption_path = temp.path().join("tiny-canary-approval-consumed.json");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
     let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
-    let envelope = TinyCanaryOperatorApprovalEnvelope {
+    let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
@@ -2753,12 +2882,12 @@ fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
         abort_plan_path: abort_plan_path.to_string_lossy().to_string(),
         abort_plan_sha256: abort_plan_hash,
         operator_approval_id: "operator-approved-canary-001".to_string(),
-        approval_not_before_unix_seconds: 1_000,
-        approval_not_after_unix_seconds: 2_000,
+        approval_not_before_unix_secs: 1_000,
+        approval_not_after_unix_secs: 2_000,
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "tiny-canary-canary-evidence.json".to_string(),
+        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
     };
 
     let mut wrong_hash_envelope = envelope.clone();
@@ -2782,8 +2911,8 @@ fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
         "abort plan mismatch must not create consumption evidence"
     );
 
-    write_tiny_canary_abort_plan(&abort_plan_path, true);
-    let blocked_abort_plan_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&abort_plan_path)
+    write_phase8_abort_plan(&abort_plan_path, true);
+    let blocked_abort_plan_hash = Phase8OperatorApprovalEnvelope::sha256_file(&abort_plan_path)
         .expect("abort plan hash should compute");
     let mut blocked_envelope = envelope.clone();
     blocked_envelope.abort_plan_sha256 = blocked_abort_plan_hash;
@@ -2807,7 +2936,7 @@ fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
         "unsafe abort plan must not create consumption evidence"
     );
 
-    write_tiny_canary_abort_plan(&abort_plan_path, false);
+    write_phase8_abort_plan(&abort_plan_path, false);
     envelope
         .validate_and_consume_against(
             "expected-head",
@@ -2830,31 +2959,20 @@ fn loaded_with_live_canary(report_path: &str) -> LoadedBoltV3Config {
         approval_id: "operator-approved-canary-001".to_string(),
         no_submit_readiness_report_path: report_path.to_string(),
         max_no_submit_readiness_report_bytes: 4096,
+        operator_evidence: None,
         max_live_order_count: 1,
         max_notional_per_order: "0.25".to_string(),
-        operator_evidence: None,
     });
     loaded
 }
 
 fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
-    use bolt_v2::bolt_v3_no_submit_readiness_schema::{
-        CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE,
-        EXECUTABLE_IDENTITY_KEY, LIVE_NODE_BUILD_STAGE, NO_SUBMIT_READINESS_SCHEMA_VERSION,
-        OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY,
-        SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
-    };
-
-    let loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
-        .expect("fixture v3 config should load");
-    let executable_identity = TinyCanaryOperatorApprovalEnvelope::sha256_file(
-        std::env::current_exe().expect("current test executable path should resolve"),
-    )
-    .expect("current test executable should hash");
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let json = serde_json::json!({
         SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
-        "approval_id_hash": tiny_canary_sha256_text("operator-approved-canary-001"),
-        EXECUTABLE_IDENTITY_KEY: executable_identity,
+        APPROVAL_ID_HASH_KEY: sha256_hex("operator-approved-canary-001".as_bytes()),
+        EXECUTABLE_IDENTITY_KEY: current_executable_identity(),
         CONFIG_BUNDLE_CHECKSUM_KEY: loaded.config_bundle_checksum,
         STAGES_KEY: [
             {STAGE_KEY: OPERATOR_APPROVAL_STAGE, STATUS_KEY: STATUS_SATISFIED},
@@ -2864,8 +2982,7 @@ fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
             {STAGE_KEY: REFERENCE_READINESS_STAGE, STATUS_KEY: STATUS_SATISFIED},
             {STAGE_KEY: CONTROLLED_DISCONNECT_STAGE, STATUS_KEY: STATUS_SATISFIED},
             {STAGE_KEY: REPORT_WRITE_STAGE, STATUS_KEY: STATUS_SATISFIED}
-        ],
-        "redactions": []
+        ]
     });
     std::fs::create_dir_all(path.parent().expect("report parent should exist"))
         .expect("report parent should create");
@@ -2876,21 +2993,30 @@ fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
     .expect("report should write");
 }
 
-fn write_tiny_canary_financial_envelope(path: &std::path::Path, max_notional_per_order: &str) {
+fn current_executable_identity() -> String {
+    let path = std::env::current_exe().expect("current test executable path should resolve");
+    sha256_hex(&std::fs::read(path).expect("current test executable should be readable"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_order: &str) {
     let json = serde_json::json!({
         "max_live_order_count": 1,
         "max_notional_per_order": max_notional_per_order,
         "strategy_instance_id": "bitcoin_updown_main",
-        "strategy_venue": "polymarket_main",
+        "execution_client_id": "polymarket_main",
         "configured_target_id": "btc_updown_5m",
         "target_kind": "rotating_market",
         "rotating_market_family": "updown",
         "underlying_asset": "BTC",
-        "cadence_seconds": 300,
+        "cadence_secs": 300,
         "market_selection_rule": "active_or_next",
-        "retry_interval_seconds": 5,
-        "blocked_after_seconds": 60,
-        "price_to_beat_source": TINY_CANARY_TEST_PRICE_TO_BEAT_SOURCE,
+        "retry_interval_secs": 5,
+        "blocked_after_secs": 60,
+        "price_to_beat_source": PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
         "edge_threshold_basis_points": 100,
         "order_notional_target": "5.00",
         "maximum_position_notional": "10.00",
@@ -2913,18 +3039,18 @@ fn write_tiny_canary_financial_envelope(path: &std::path::Path, max_notional_per
     .expect("financial envelope should write");
 }
 
-fn write_tiny_canary_pre_run_state(path: &std::path::Path, has_preexisting_position: bool) {
-    write_tiny_canary_pre_run_state_with_clob_fee_behavior(path, has_preexisting_position, true);
+fn write_phase8_pre_run_state(path: &std::path::Path, has_preexisting_position: bool) {
+    write_phase8_pre_run_state_with_clob_fee_behavior(path, has_preexisting_position, true);
 }
 
-fn write_tiny_canary_pre_run_state_with_clob_fee_behavior(
+fn write_phase8_pre_run_state_with_clob_fee_behavior(
     path: &std::path::Path,
     has_preexisting_position: bool,
     clob_v2_fee_behavior_verified: bool,
 ) {
     let evidence_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let json = serde_json::json!({
-        "strategy_venue": "polymarket_main",
+        "execution_client_id": "polymarket_main",
         "configured_target_id": "btc_updown_5m",
         "host_clock_skew_within_bound": true,
         "host_clock_skew_evidence_hash": evidence_hash,
@@ -2957,9 +3083,9 @@ fn write_tiny_canary_pre_run_state_with_clob_fee_behavior(
     .expect("pre-run state should write");
 }
 
-fn write_tiny_canary_abort_plan(path: &std::path::Path, panic_policy_missing: bool) {
+fn write_phase8_abort_plan(path: &std::path::Path, panic_policy_missing: bool) {
     let json = serde_json::json!({
-        "strategy_venue": "polymarket_main",
+        "execution_client_id": "polymarket_main",
         "configured_target_id": "btc_updown_5m",
         "cancel_if_open_defined": true,
         "nt_accepted_venue_pending_abort_defined": true,
@@ -2974,23 +3100,23 @@ fn write_tiny_canary_abort_plan(path: &std::path::Path, panic_policy_missing: bo
     .expect("abort plan should write");
 }
 
-fn runtime_capture_ref() -> bolt_v2::bolt_v3_tiny_canary_evidence::TinyCanaryRuntimeCaptureRef {
-    bolt_v2::bolt_v3_tiny_canary_evidence::TinyCanaryRuntimeCaptureRef {
+fn runtime_capture_ref() -> bolt_v2::bolt_v3_tiny_canary_evidence::Phase8RuntimeCaptureRef {
+    bolt_v2::bolt_v3_tiny_canary_evidence::Phase8RuntimeCaptureRef {
         spool_root_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
             .to_string(),
-        run_id: "tiny-canary-dry-run".to_string(),
+        run_id: "phase8-dry-run".to_string(),
     }
 }
 
-fn valid_evidence_ref(path_prefix: &str, record_prefix: &str) -> TinyCanaryEvidenceRef {
-    TinyCanaryEvidenceRef {
+fn valid_evidence_ref(path_prefix: &str, record_prefix: &str) -> Phase8EvidenceRef {
+    Phase8EvidenceRef {
         path_hash: path_prefix.repeat(16),
         record_hash: record_prefix.repeat(16),
     }
 }
 
-fn valid_live_order_ref() -> TinyCanaryLiveOrderRef {
-    TinyCanaryLiveOrderRef {
+fn valid_live_order_ref() -> Phase8LiveOrderRef {
+    Phase8LiveOrderRef {
         strategy_instance_id_hash:
             "1212121212121212121212121212121212121212121212121212121212121212".to_string(),
         client_order_id_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
@@ -3000,8 +3126,8 @@ fn valid_live_order_ref() -> TinyCanaryLiveOrderRef {
     }
 }
 
-fn valid_live_canary_result_refs() -> TinyCanaryLiveCanaryResultRefs {
-    TinyCanaryLiveCanaryResultRefs {
+fn valid_live_canary_result_refs() -> Phase8LiveCanaryResultRefs {
+    Phase8LiveCanaryResultRefs {
         nt_submit_event_ref: valid_evidence_ref("1111", "2222"),
         venue_order_state_ref: valid_evidence_ref("3333", "4444"),
         strategy_cancel_ref: Some(valid_evidence_ref("5555", "6666")),
@@ -3010,20 +3136,20 @@ fn valid_live_canary_result_refs() -> TinyCanaryLiveCanaryResultRefs {
     }
 }
 
-fn evidence_input() -> bolt_v2::bolt_v3_tiny_canary_evidence::TinyCanaryEvidenceInput {
-    bolt_v2::bolt_v3_tiny_canary_evidence::TinyCanaryEvidenceInput {
+fn evidence_input() -> bolt_v2::bolt_v3_tiny_canary_evidence::Phase8CanaryEvidenceInput {
+    bolt_v2::bolt_v3_tiny_canary_evidence::Phase8CanaryEvidenceInput {
         head_sha: "7f2d981f584a0378842d9a76fffd9cd03fce2ce5".to_string(),
         root_config_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .to_string(),
         ssm_manifest_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             .to_string(),
-        ssm_manifest_ref: TinyCanaryEvidenceRef {
+        ssm_manifest_ref: Phase8EvidenceRef {
             path_hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
                 .to_string(),
             record_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 .to_string(),
         },
-        strategy_input_evidence_ref: TinyCanaryEvidenceRef {
+        strategy_input_evidence_ref: Phase8EvidenceRef {
             path_hash: "9999999999999999999999999999999999999999999999999999999999999999"
                 .to_string(),
             record_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

@@ -268,7 +268,7 @@ fn no_submit_readiness_satisfies_reference_when_required_instruments_are_cached(
         .strategies
         .iter()
         .flat_map(|strategy| strategy.config.reference_data.values())
-        .map(|reference| reference.instrument_id.as_str())
+        .map(|reference| reference.instrument_id.to_string())
         .collect::<Vec<_>>();
     assert!(
         !cached_instrument_ids.is_empty(),

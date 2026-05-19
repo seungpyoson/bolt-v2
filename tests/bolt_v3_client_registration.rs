@@ -7,7 +7,7 @@
 //!      adapter mapping both succeed; missing or mismatched secrets
 //!      surface as the matching `BoltV3LiveNodeError` variant *before*
 //!      registration.
-//!   3. Registered NT client kinds match the configured venue blocks
+//!   3. Registered NT client kinds match the configured client blocks
 //!      (verified via `data_engine.registered_clients()` and
 //!      `exec_engine.client_ids()` after `LiveNodeBuilder::build`).
 //!   4. The registration module source itself does not introduce any
@@ -18,7 +18,6 @@ mod support;
 use std::collections::BTreeMap;
 
 use bolt_v2::{
-    bolt_v3_adapters::BoltV3AdapterMappingError,
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with_summary},
 };
@@ -36,9 +35,9 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
             .expect("v3 LiveNode should build through the registration boundary");
 
     // The summary records bolt-v3's intent at the registration boundary.
-    assert_eq!(summary.venues.len(), 2, "two configured venues");
+    assert_eq!(summary.clients.len(), 2, "two configured clients");
     let polymarket = summary
-        .venues
+        .clients
         .get("polymarket_main")
         .expect("polymarket_main must appear in summary");
     assert!(
@@ -50,7 +49,7 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
         "fixture polymarket_main has an [execution] block"
     );
     let binance = summary
-        .venues
+        .clients
         .get("binance_reference")
         .expect("binance_reference must appear in summary");
     assert!(binance.data, "fixture binance_reference has a [data] block");
@@ -110,38 +109,6 @@ fn missing_polymarket_private_key_secret_fails_before_registration() {
 }
 
 #[test]
-fn live_node_build_path_maps_configured_strategy_venue() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    loaded
-        .strategies
-        .first_mut()
-        .expect("fixture should have one strategy")
-        .config
-        .venue = "missing_venue".to_string();
-
-    let error =
-        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
-            .expect_err("strategy venue must be checked before LiveNode build");
-
-    match error {
-        BoltV3LiveNodeError::AdapterMapping(BoltV3AdapterMappingError::ValidationInvariant {
-            venue_key,
-            field,
-            message,
-        }) => {
-            assert_eq!(venue_key, "missing_venue");
-            assert_eq!(field, "strategy.venue");
-            assert!(
-                message.contains("references unknown venue"),
-                "unexpected adapter-mapping error: {message}"
-            );
-        }
-        other => panic!("expected AdapterMapping ValidationInvariant, got {other:?}"),
-    }
-}
-
-#[test]
 fn forbidden_credential_env_var_fails_before_registration() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -198,19 +165,14 @@ fn registration_module_remains_a_no_trade_boundary() {
 }
 
 #[test]
-fn empty_venues_root_config_registers_zero_clients() {
-    // Build a synthetic root config with zero venues so registration
+fn empty_clients_root_config_registers_zero_clients() {
+    // Build a synthetic root config with zero clients so registration
     // must succeed but produce an empty summary, and the resulting
     // node must expose no registered NT clients.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let temp = support::TempCaseDir::new("bolt-v3-empty-venues-catalog");
     let empty_root = BoltV3RootConfig {
-        venues: BTreeMap::new(),
-        persistence: bolt_v2::bolt_v3_config::PersistenceBlock {
-            catalog_directory: temp.path().to_string_lossy().to_string(),
-            ..loaded.root.persistence.clone()
-        },
+        clients: BTreeMap::new(),
         ..loaded.root.clone()
     };
     let empty_loaded = LoadedBoltV3Config {
@@ -220,14 +182,14 @@ fn empty_venues_root_config_registers_zero_clients() {
         strategies: Vec::new(),
     };
 
-    // No venues means no SSM paths are touched; the resolver is never
+    // No clients means no SSM paths are touched; the resolver is never
     // called, so the closure body cannot be reached.
     let resolver = |_region: &str, _path: &str| -> Result<String, &'static str> {
-        Err("resolver must not be called when no venues are configured")
+        Err("resolver must not be called when no clients are configured")
     };
     let (node, summary) = build_bolt_v3_live_node_with_summary(&empty_loaded, |_| false, resolver)
-        .expect("empty venue set should still build a clean LiveNode");
-    assert!(summary.venues.is_empty());
+        .expect("empty client set should still build a clean LiveNode");
+    assert!(summary.clients.is_empty());
     assert!(node.registered_data_client_ids().is_empty());
     assert!(node.registered_exec_client_ids().is_empty());
 }

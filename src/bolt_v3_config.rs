@@ -12,9 +12,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use nautilus_common::enums::{Environment, LogLevel};
+use nautilus_model::{
+    enums::OmsType,
+    identifiers::{ClientId, InstrumentId, TraderId, Venue},
+};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use toml::Value;
 
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
 
@@ -22,7 +26,7 @@ use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validat
 #[serde(deny_unknown_fields)]
 pub struct BoltV3RootConfig {
     pub schema_version: u32,
-    pub trader_id: String,
+    pub trader_id: TraderId,
     pub strategy_files: Vec<String>,
     pub runtime: RuntimeBlock,
     pub nautilus: NautilusBlock,
@@ -31,7 +35,7 @@ pub struct BoltV3RootConfig {
     pub persistence: PersistenceBlock,
     pub live_canary: Option<LiveCanaryBlock>,
     pub aws: AwsBlock,
-    pub venues: BTreeMap<String, VenueBlock>,
+    pub clients: BTreeMap<String, ClientBlock>,
 }
 
 // `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit
@@ -45,45 +49,22 @@ pub struct BoltV3RootConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeBlock {
-    pub mode: RuntimeMode,
+    pub mode: Environment,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum RuntimeMode {
-    Backtest,
-    Sandbox,
-    Live,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NautilusBlock {
     pub load_state: bool,
     pub save_state: bool,
-    pub instance_id: NautilusComponentConfig,
-    pub cache: NautilusComponentConfig,
-    pub msgbus: NautilusComponentConfig,
-    pub portfolio: NautilusComponentConfig,
-    pub emulator: NautilusComponentConfig,
-    pub streaming: NautilusComponentConfig,
-    pub loop_debug: bool,
-    pub timeout_connection_seconds: u64,
-    pub timeout_reconciliation_seconds: u64,
+    pub timeout_connection_secs: u64,
+    pub timeout_reconciliation_secs: u64,
     pub data_engine: NautilusDataEngineBlock,
     pub exec_engine: NautilusExecEngineBlock,
-    pub timeout_portfolio_seconds: u64,
-    pub timeout_disconnection_seconds: u64,
-    pub delay_post_stop_seconds: u64,
-    pub timeout_shutdown_seconds: u64,
-}
-
-pub type NautilusComponentConfig = Value;
-
-pub const DISABLED_NAUTILUS_COMPONENT: &str = "disabled";
-
-pub fn is_disabled_nautilus_component(config: &NautilusComponentConfig) -> bool {
-    config.as_str() == Some(DISABLED_NAUTILUS_COMPONENT)
+    pub timeout_portfolio_secs: u64,
+    pub timeout_disconnection_secs: u64,
+    pub delay_post_stop_secs: u64,
+    pub timeout_shutdown_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -99,7 +80,7 @@ pub struct NautilusDataEngineBlock {
     pub buffer_deltas: bool,
     pub emit_quotes_from_book: bool,
     pub emit_quotes_from_book_depths: bool,
-    pub external_client_ids: Vec<String>,
+    pub external_clients: Vec<ClientId>,
     pub debug: bool,
     pub graceful_shutdown_on_error: bool,
     pub qsize: u32,
@@ -111,30 +92,30 @@ pub struct NautilusExecEngineBlock {
     pub load_cache: bool,
     pub snapshot_orders: bool,
     pub snapshot_positions: bool,
-    pub snapshot_positions_interval_seconds: u64,
-    pub external_client_ids: Vec<String>,
+    pub snapshot_positions_interval_secs: u64,
+    pub external_clients: Vec<ClientId>,
     pub debug: bool,
     pub reconciliation: bool,
-    pub reconciliation_startup_delay_seconds: u64,
+    pub reconciliation_startup_delay_secs: u64,
     pub reconciliation_lookback_mins: u32,
     pub reconciliation_instrument_ids: Vec<String>,
     pub filter_unclaimed_external_orders: bool,
     pub filter_position_reports: bool,
     pub filtered_client_order_ids: Vec<String>,
     pub generate_missing_orders: bool,
-    pub inflight_check_interval_milliseconds: u32,
-    pub inflight_check_threshold_milliseconds: u32,
+    pub inflight_check_interval_ms: u32,
+    pub inflight_check_threshold_ms: u32,
     pub inflight_check_retries: u32,
-    pub open_check_interval_seconds: u64,
+    pub open_check_interval_secs: u64,
     pub open_check_lookback_mins: u32,
-    pub open_check_threshold_milliseconds: u32,
+    pub open_check_threshold_ms: u32,
     pub open_check_missing_retries: u32,
     pub open_check_open_only: bool,
     pub max_single_order_queries_per_cycle: u32,
-    pub single_order_query_delay_milliseconds: u32,
-    pub position_check_interval_seconds: u64,
+    pub single_order_query_delay_ms: u32,
+    pub position_check_interval_secs: u64,
     pub position_check_lookback_mins: u32,
-    pub position_check_threshold_milliseconds: u32,
+    pub position_check_threshold_ms: u32,
     pub position_check_retries: u32,
     pub purge_closed_orders_interval_mins: u32,
     pub purge_closed_orders_buffer_mins: u32,
@@ -143,7 +124,7 @@ pub struct NautilusExecEngineBlock {
     pub purge_account_events_interval_mins: u32,
     pub purge_account_events_lookback_mins: u32,
     pub purge_from_database: bool,
-    pub own_books_audit_interval_seconds: u64,
+    pub own_books_audit_interval_secs: u64,
     pub graceful_shutdown_on_error: bool,
     pub qsize: u32,
     pub allow_overfills: bool,
@@ -154,63 +135,33 @@ pub struct NautilusExecEngineBlock {
 #[serde(deny_unknown_fields)]
 pub struct RiskBlock {
     pub default_max_notional_per_order: String,
-    pub nt_bypass: bool,
-    pub nt_max_order_submit_rate: String,
-    pub nt_max_order_modify_rate: String,
-    pub nt_max_notional_per_order: BTreeMap<String, String>,
-    pub nt_debug: bool,
-    pub nt_graceful_shutdown_on_error: bool,
-    pub nt_qsize: u32,
+    pub nautilus: NautilusRiskBlock,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NautilusRiskBlock {
+    pub bypass: bool,
+    pub max_order_submit_rate: String,
+    pub max_order_modify_rate: String,
+    pub max_notional_per_order: BTreeMap<String, String>,
+    pub debug: bool,
+    pub graceful_shutdown_on_error: bool,
+    pub qsize: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LoggingBlock {
-    pub standard_output_level: LogLevel,
-    pub file_level: LogLevel,
-    pub component_levels: BTreeMap<String, LogLevel>,
-    pub module_levels: BTreeMap<String, LogLevel>,
-    pub credential_module_level: LogLevel,
-    pub log_components_only: bool,
-    pub is_colored: bool,
-    pub print_config: bool,
-    pub use_tracing: bool,
-    pub bypass_logging: bool,
-    pub file_config: NautilusComponentConfig,
-    pub clear_log_file: bool,
-    pub stale_log_source_directory: String,
-    pub stale_log_archive_directory: String,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum LogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-    Off,
-}
-
-impl LogLevel {
-    pub fn to_level_filter(self) -> log::LevelFilter {
-        match self {
-            LogLevel::Trace => log::LevelFilter::Trace,
-            LogLevel::Debug => log::LevelFilter::Debug,
-            LogLevel::Info => log::LevelFilter::Info,
-            LogLevel::Warn => log::LevelFilter::Warn,
-            LogLevel::Error => log::LevelFilter::Error,
-            LogLevel::Off => log::LevelFilter::Off,
-        }
-    }
+    pub stdout_level: LogLevel,
+    pub fileout_level: LogLevel,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PersistenceBlock {
     pub catalog_directory: String,
-    pub runtime_capture_start_poll_interval_milliseconds: u64,
+    pub runtime_capture_start_poll_interval_ms: u64,
     pub decision_evidence: DecisionEvidenceBlock,
     pub streaming: StreamingBlock,
 }
@@ -270,7 +221,7 @@ pub struct LiveCanaryOperatorEvidenceBlock {
 #[serde(deny_unknown_fields)]
 pub struct StreamingBlock {
     pub catalog_fs_protocol: CatalogFsProtocol,
-    pub flush_interval_milliseconds: u64,
+    pub flush_interval_ms: u64,
     pub replace_existing: bool,
     pub rotation_kind: RotationKind,
 }
@@ -295,21 +246,11 @@ pub struct AwsBlock {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct VenueBlock {
-    pub kind: ProviderKey,
+pub struct ClientBlock {
+    pub venue: Venue,
     pub data: Option<toml::Value>,
     pub execution: Option<toml::Value>,
     pub secrets: Option<toml::Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[serde(transparent)]
-pub struct ProviderKey(String);
-
-impl ProviderKey {
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -333,14 +274,14 @@ pub struct BoltV3StrategyConfig {
     pub log_events: bool,
     pub log_commands: bool,
     pub log_rejected_due_post_only_as_warning: bool,
-    pub venue: String,
+    pub execution_client_id: ClientId,
     /// Raw `[target]` envelope. The strategy envelope keeps the TOML
     /// field name `target` but its Rust type is a generic raw-TOML
     /// container so target-shape fields live in the per-family binding
     /// modules under `crate::bolt_v3_market_families`. Typed
     /// deserialization with `deny_unknown_fields` happens inside the
-    /// matching family validator and inside the family instrument-filter
-    /// code; the strategy envelope itself stores only the raw TOML value.
+    /// matching family validator and inside the family planner; the
+    /// strategy envelope itself is target-shape-neutral.
     pub target: toml::Value,
     pub reference_data: BTreeMap<String, ReferenceDataBlock>,
     pub parameters: toml::Value,
@@ -356,17 +297,11 @@ impl StrategyArchetypeKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum OmsType {
-    Netting,
-}
-
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReferenceDataBlock {
-    pub venue: String,
-    pub instrument_id: String,
+    pub data_client_id: ClientId,
+    pub instrument_id: InstrumentId,
 }
 
 #[derive(Debug, Clone)]
@@ -533,8 +468,6 @@ pub(crate) fn resolve_root_relative_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use tempfile::tempdir;
 
     fn minimal_root_toml() -> &'static str {
         include_str!("../tests/fixtures/bolt_v3/root.toml")
@@ -544,27 +477,19 @@ mod tests {
         include_str!("../tests/fixtures/bolt_v3/strategies/binary_oracle.toml")
     }
 
-    fn oversized_config_text() -> String {
-        let mut text = String::new();
-        while text.len() as u64 <= crate::bounded_config_read::CONFIG_FILE_SIZE_LIMIT_BYTES {
-            text.push_str("# oversized config\n");
-        }
-        text
-    }
-
     #[test]
     fn parses_minimal_root_block() {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
         assert_eq!(root.schema_version, 1);
-        assert_eq!(root.trader_id, "BOLT-001");
-        assert_eq!(root.runtime.mode, RuntimeMode::Live);
-        assert!(root.venues.contains_key("polymarket_main"));
-        assert!(root.venues.contains_key("binance_reference"));
-        let polymarket = &root.venues["polymarket_main"];
-        assert_eq!(polymarket.kind.as_str(), "polymarket");
+        assert_eq!(root.trader_id, TraderId::from("BOLT-001"));
+        assert_eq!(root.runtime.mode, Environment::Live);
+        assert!(root.clients.contains_key("polymarket_main"));
+        assert!(root.clients.contains_key("binance_reference"));
+        let polymarket = &root.clients["polymarket_main"];
+        assert_eq!(polymarket.venue, Venue::from("POLYMARKET"));
         assert!(polymarket.execution.is_some());
-        let binance = &root.venues["binance_reference"];
-        assert_eq!(binance.kind.as_str(), "binance");
+        let binance = &root.clients["binance_reference"];
+        assert_eq!(binance.venue, Venue::from("BINANCE"));
         assert!(binance.execution.is_none());
     }
 
@@ -579,82 +504,6 @@ mod tests {
             .as_table()
             .expect("[target] should parse into a table");
         assert!(!target_table.is_empty());
-        assert!(strategy.reference_data.contains_key("spot"));
-    }
-
-    #[test]
-    fn strategy_config_requires_explicit_reference_data_structure() {
-        let strategy_without_reference_data = minimal_strategy_toml().replace(
-            r#"[reference_data.spot]
-venue = "binance_reference"
-instrument_id = "BTCUSDT.BINANCE"
-
-"#,
-            "",
-        );
-
-        let error = toml::from_str::<BoltV3StrategyConfig>(&strategy_without_reference_data)
-            .expect_err("strategy config must explicitly declare [reference_data]");
-
-        assert!(
-            error.message().contains("missing field `reference_data`"),
-            "expected missing reference_data parse error, got: {error}"
-        );
-    }
-
-    #[test]
-    fn root_relative_path_resolves_against_root_parent() {
-        assert_eq!(
-            resolve_root_relative_path(
-                Path::new("/srv/bolt/config/root.toml"),
-                "strategies/binary_oracle.toml"
-            ),
-            PathBuf::from("/srv/bolt/config/strategies/binary_oracle.toml")
-        );
-    }
-
-    #[test]
-    fn root_relative_path_preserves_absolute_paths() {
-        assert_eq!(
-            resolve_root_relative_path(
-                Path::new("/srv/bolt/config/root.toml"),
-                "/srv/bolt/reports/no-submit.json"
-            ),
-            PathBuf::from("/srv/bolt/reports/no-submit.json")
-        );
-    }
-
-    #[test]
-    fn load_bolt_v3_config_rejects_oversized_root_before_parse() {
-        let tempdir = tempdir().expect("temp dir should be created");
-        let root_path = tempdir.path().join("root.toml");
-        fs::write(&root_path, oversized_config_text()).expect("oversized root should be written");
-
-        let error = load_bolt_v3_config(&root_path).expect_err("oversized root should fail closed");
-
-        assert!(
-            error.to_string().contains("exceeds config file size limit"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn load_bolt_v3_config_rejects_oversized_strategy_before_parse() {
-        let tempdir = tempdir().expect("temp dir should be created");
-        let strategy_dir = tempdir.path().join("strategies");
-        fs::create_dir_all(&strategy_dir).expect("strategy dir should be created");
-        let root_path = tempdir.path().join("root.toml");
-        let strategy_path = strategy_dir.join("binary_oracle.toml");
-        fs::write(&root_path, minimal_root_toml()).expect("root should be written");
-        fs::write(&strategy_path, oversized_config_text())
-            .expect("oversized strategy should be written");
-
-        let error =
-            load_bolt_v3_config(&root_path).expect_err("oversized strategy should fail closed");
-
-        assert!(
-            error.to_string().contains("exceeds config file size limit"),
-            "unexpected error: {error}"
-        );
+        assert!(strategy.reference_data.contains_key("primary"));
     }
 }

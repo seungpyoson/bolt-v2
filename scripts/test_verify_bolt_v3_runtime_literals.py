@@ -226,7 +226,7 @@ def test_context_shape_bypasses_emit() -> None:
             let _ = value.contains("custom_runtime_key");
             let _ = keys.join("custom_runtime_key");
             let _ = ("custom_runtime_key", data.base_url_http.as_str());
-            if cadence_seconds % 60 != 0 {}
+            if cadence_secs % 60 != 0 {}
             return Err("custom_runtime_key");
         }
         """,

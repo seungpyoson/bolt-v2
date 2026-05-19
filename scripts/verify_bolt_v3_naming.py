@@ -25,7 +25,9 @@ CANONICAL_DOCS = [
     REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-contract-ledger.md",
 ]
 SCAN_GLOBS = [
-    "docs/bolt-v3/2026-04-25-bolt-v3-*.md",
+    "docs/bolt-v3/*.md",
+    "docs/bolt-v3/research/**/*.toml",
+    "docs/bolt-v3/research/**/*.yaml",
     "docs/bolt-v3/research/runtime-capture/*.yaml",
     "src/**/*.rs",
     "tests/**/*.rs",
@@ -39,11 +41,10 @@ SCAN_GLOBS = [
 EXCLUDED_RELATIVE_PATHS = {
     "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
 }
-WORD_RE_TEMPLATE = r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])"
-
-
 def word_re(term: str) -> re.Pattern[str]:
-    return re.compile(WORD_RE_TEMPLATE.format(re.escape(term)))
+    prefix = r"(?<![A-Za-z0-9_])" if term[:1].isalnum() or term[:1] == "_" else ""
+    suffix = r"(?![A-Za-z0-9_])" if term[-1:].isalnum() or term[-1:] == "_" else ""
+    return re.compile(f"{prefix}{re.escape(term)}{suffix}")
 
 
 def load_audit() -> dict:
@@ -67,7 +68,30 @@ def scan_paths() -> list[Path]:
 
 def matches_any(path: Path, patterns: list[str]) -> bool:
     rel = str(path.relative_to(REPO_ROOT))
-    return any(fnmatch.fnmatch(rel, pattern) for pattern in patterns)
+    return any(glob_pattern_re(pattern).match(rel) for pattern in patterns)
+
+
+def glob_pattern_re(pattern: str) -> re.Pattern[str]:
+    pieces: list[str] = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            pieces.append("(?:.*/)?")
+            i += 3
+            continue
+        if pattern.startswith("**", i):
+            pieces.append(".*")
+            i += 2
+            continue
+        char = pattern[i]
+        if char == "*":
+            pieces.append("[^/]*")
+        elif char == "?":
+            pieces.append("[^/]")
+        else:
+            pieces.append(re.escape(char))
+        i += 1
+    return re.compile(f"^{''.join(pieces)}$")
 
 
 def main() -> int:

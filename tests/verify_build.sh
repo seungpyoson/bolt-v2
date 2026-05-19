@@ -20,7 +20,7 @@ trap 'chmod -R u+w "$tmpdir" 2>/dev/null || true; rm -rf "$tmpdir"' EXIT
 
 echo "=== Verifying bolt-v3 root secret config completeness ==="
 managed_cargo run --release --bin bolt-v2 -- secrets check --config tests/fixtures/bolt_v3/root.toml \
-  | grep "venues.polymarket_main: required secret fields present"
+  | grep "clients.polymarket_main: required secret fields present"
 
 echo "=== Verifying exec_tester purge gate ==="
 if rg -ni -g '!tests/verify_build.sh' "exec_tester|nautilus-testkit|nautilus_testkit::testers" -- \

@@ -6,6 +6,8 @@
 
 pub mod updown;
 
+use std::{any::Any, fmt, sync::Arc};
+
 use serde::Deserialize;
 
 use crate::{
@@ -79,6 +81,73 @@ pub struct TargetRuntimeFields {
     pub blocked_after_seconds: u64,
 }
 
+pub trait MarketIdentityTarget: fmt::Debug + Send + Sync + Any {
+    fn family_key(&self) -> &'static str;
+    fn configured_target_id(&self) -> &str;
+    fn execution_client_id(&self) -> &str;
+    fn as_any(&self) -> &dyn Any;
+}
+
+#[derive(Debug, Clone)]
+pub struct MarketIdentityPlan {
+    targets: Vec<Arc<dyn MarketIdentityTarget>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketIdentityPlanError {
+    message: String,
+}
+
+impl MarketIdentityPlanError {
+    fn new(message: String) -> Self {
+        Self { message }
+    }
+}
+
+impl std::fmt::Display for MarketIdentityPlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for MarketIdentityPlanError {}
+
+pub struct MarketIdentityExecutionClientTargetRef<'a> {
+    pub family_key: &'static str,
+    pub configured_target_id: &'a str,
+    pub execution_client_id: &'a str,
+}
+
+impl MarketIdentityPlan {
+    pub fn empty() -> Self {
+        Self {
+            targets: Vec::new(),
+        }
+    }
+
+    pub fn push_target<T>(&mut self, target: T)
+    where
+        T: MarketIdentityTarget + 'static,
+    {
+        self.targets.push(Arc::new(target));
+    }
+
+    pub fn targets(&self) -> impl Iterator<Item = &dyn MarketIdentityTarget> {
+        self.targets.iter().map(Arc::as_ref)
+    }
+
+    pub fn execution_client_target_refs(
+        &self,
+    ) -> impl Iterator<Item = MarketIdentityExecutionClientTargetRef<'_>> {
+        self.targets()
+            .map(|target| MarketIdentityExecutionClientTargetRef {
+                family_key: target.family_key(),
+                configured_target_id: target.configured_target_id(),
+                execution_client_id: target.execution_client_id(),
+            })
+    }
+}
+
 const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[MarketFamilyValidationBinding {
     key: updown::KEY,
     validate_target: updown::validate_target_block,
@@ -89,6 +158,13 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[MarketFamilyVali
 
 pub fn validation_bindings() -> &'static [MarketFamilyValidationBinding] {
     VALIDATION_BINDINGS
+}
+
+pub fn market_identity_plan_from_config(
+    loaded: &LoadedBoltV3Config,
+) -> Result<MarketIdentityPlan, MarketIdentityPlanError> {
+    updown::plan_market_identity(loaded)
+        .map_err(|error| MarketIdentityPlanError::new(error.to_string()))
 }
 
 pub fn instrument_filters_from_config(
@@ -673,11 +749,10 @@ mod tests {
             kind = "rotating_market"
             rotating_market_family = "updown"
             underlying_asset = "BTC"
-            cadence_seconds = -1
-            cadence_slug_token = "1m"
+            cadence_secs = -1
             market_selection_rule = "active_or_next"
-            retry_interval_seconds = 1
-            blocked_after_seconds = 1
+            retry_interval_secs = 1
+            blocked_after_secs = 1
         }
         .into();
 
@@ -686,12 +761,12 @@ mod tests {
             matches!(
                 e,
                 InstrumentFilterError::TargetValidationFailure { message, .. }
-                    if message.contains("target.cadence_seconds")
+                    if message.contains("target.cadence_secs")
             )
         });
         assert!(
             cadence_failure.is_some(),
-            "expected TargetValidationFailure for cadence_seconds: {errors:#?}"
+            "expected TargetValidationFailure for cadence_secs: {errors:#?}"
         );
     }
 

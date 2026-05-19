@@ -120,10 +120,10 @@ market_exit_reduce_only = true
 log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
-venue = "fixture-venue"
+execution_client_id = "fixture-venue"
 
 [reference_data.reference]
-venue = "fixture-reference"
+data_client_id = "fixture-reference"
 instrument_id = "FIXTURE.REFERENCE"
 
 [target]

@@ -2,11 +2,10 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_tiny_canary_evidence::{
-        TINY_CANARY_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID, TinyCanaryEvidence, TinyCanaryEvidenceInput,
-        TinyCanaryEvidenceRef, TinyCanaryLiveCanaryResultRefs, TinyCanaryLiveOrderRef,
-        TinyCanaryOperatorApprovalEnvelope, TinyCanaryRuntimeCaptureRef,
-        TinyCanaryStrategyInputSafetyAudit, evaluate_tiny_canary_preflight,
-        tiny_canary_sha256_text,
+        PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
+        Phase8EvidenceRef, Phase8LiveCanaryResultRefs, Phase8LiveOrderRef,
+        Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef, Phase8StrategyInputSafetyAudit,
+        evaluate_phase8_canary_preflight, phase8_required_env, phase8_sha256_text,
     },
     nt_runtime_capture::spool_root_for_instance,
 };
@@ -18,22 +17,22 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn tiny_canary_operator_harness_is_ignored_and_uses_production_runner_shape() {
+fn phase8_operator_harness_is_ignored_and_uses_production_runner_shape() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
 
     assert!(source.contains("#[ignore]"));
-    assert!(source.contains("TinyCanaryOperatorApprovalEnvelope::from_config"));
+    assert!(source.contains("Phase8OperatorApprovalEnvelope::from_env"));
     assert!(source.contains("validate_approved_evidence_against"));
     assert!(source.contains("consume_approval_after_live_runner_entry_validation"));
-    assert!(source.contains("evaluate_tiny_canary_preflight"));
+    assert!(source.contains("evaluate_phase8_canary_preflight"));
     assert!(source.contains("write_json_file"));
     assert!(source.contains("build_bolt_v3_live_node"));
     assert!(source.contains("run_bolt_v3_live_node"));
     assert!(source.contains("tokio::task::LocalSet"));
     assert!(!source.contains(&format!(
         "{}{}{}",
-        "BOLT_V3_TINY_CANARY_", "CURRENT_HEAD", "_SHA"
+        "BOLT_V3_PHASE8_", "CURRENT_HEAD", "_SHA"
     )));
     assert!(!source.contains(&format!("{}{}", "LiveNode", "::run")));
     assert!(!source.contains(&format!("{}{}", ".submit", "_order(")));
@@ -42,33 +41,33 @@ fn tiny_canary_operator_harness_is_ignored_and_uses_production_runner_shape() {
 }
 
 #[test]
-fn tiny_canary_operator_harness_does_not_block_before_production_runner() {
+fn phase8_operator_harness_does_not_block_before_production_runner() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
 
     assert!(!source.contains(&format!("{}{}", "LiveProof", "CaptureUnavailable")));
     assert!(!source.contains(&format!(
         "{}{}",
-        "tiny_canary_live_runner_requires_", "post_run_evidence_capture"
+        "phase8_live_runner_requires_", "post_run_evidence_capture"
     )));
 }
 
 #[test]
-fn tiny_canary_operator_harness_derives_strategy_audit_from_evidence_file() {
+fn phase8_operator_harness_derives_strategy_audit_from_evidence_file() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
 
     assert!(source.contains("envelope.approved_price_to_beat_source()?"));
-    assert!(source.contains("TinyCanaryStrategyInputSafetyAudit::from_evidence_file"));
+    assert!(source.contains("Phase8StrategyInputSafetyAudit::from_evidence_file"));
     let harness_start = source
-        .rfind("async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner")
+        .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
         .expect("operator harness start should exist");
     let harness = &source[harness_start..];
     let source_index = harness
         .find("let approved_price_to_beat_source = envelope.approved_price_to_beat_source()?")
         .expect("operator harness should derive approved price source");
     let audit_index = harness
-        .find("let strategy_audit = TinyCanaryStrategyInputSafetyAudit::from_evidence_file")
+        .find("let strategy_audit = Phase8StrategyInputSafetyAudit::from_evidence_file")
         .expect("operator harness should parse strategy input evidence");
     let validation_index = harness
         .find("envelope.validate_approved_evidence_against")
@@ -81,25 +80,25 @@ fn tiny_canary_operator_harness_derives_strategy_audit_from_evidence_file() {
     assert!(validation_index < consumption_index);
     assert!(!source.contains(&format!(
         "{}{}",
-        "TinyCanaryStrategyInputSafetyAudit::", "approved()"
+        "Phase8StrategyInputSafetyAudit::", "approved()"
     )));
 }
 
 #[test]
-fn tiny_canary_operator_harness_prevalidates_success_evidence_before_runner() {
+fn phase8_operator_harness_prevalidates_success_evidence_before_runner() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
     let start = source
-        .rfind("async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner")
+        .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
         .expect("operator harness start should exist");
     let end = source[start..]
-        .find("\nfn tiny_canary_current_checkout_head_sha")
+        .find("\nfn phase8_current_checkout_head_sha")
         .map(|offset| start + offset)
         .expect("operator harness end should exist");
     let harness = &source[start..end];
 
     let input_index = harness
-        .find("let evidence_input = tiny_canary_operator_evidence_input")
+        .find("let evidence_input = phase8_operator_evidence_input")
         .expect("success evidence input should be prepared before live runner");
     let snapshot_index = harness
         .find("snapshot_before_run")
@@ -113,23 +112,23 @@ fn tiny_canary_operator_harness_prevalidates_success_evidence_before_runner() {
 }
 
 #[test]
-fn tiny_canary_operator_harness_consumes_approval_after_entry_validation() {
+fn phase8_operator_harness_consumes_approval_after_entry_validation() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
     let start = source
-        .rfind("async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner")
+        .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
         .expect("operator harness start should exist");
     let end = source[start..]
-        .find("\nfn tiny_canary_current_checkout_head_sha")
+        .find("\nfn phase8_current_checkout_head_sha")
         .map(|offset| start + offset)
         .expect("operator harness end should exist");
     let harness = &source[start..end];
 
     let preflight_index = harness
-        .find("let preflight = evaluate_tiny_canary_preflight")
+        .find("let preflight = evaluate_phase8_canary_preflight")
         .expect("operator harness should evaluate preflight");
     let result_paths_index = harness
-        .find("let result_paths = TinyCanaryOperatorLiveResultPaths::from_config(&loaded)?")
+        .find("let result_paths = Phase8OperatorLiveResultPaths::from_env()?")
         .expect("operator harness should load live result paths");
     let path_binding_index = harness
         .find("result_paths.assert_belongs_to_runtime_capture")
@@ -152,7 +151,7 @@ fn tiny_canary_operator_harness_consumes_approval_after_entry_validation() {
 }
 
 #[test]
-fn tiny_canary_operator_harness_binds_live_proof_to_runtime_admission_and_spool() {
+fn phase8_operator_harness_binds_live_proof_to_runtime_admission_and_spool() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
 
@@ -161,23 +160,25 @@ fn tiny_canary_operator_harness_binds_live_proof_to_runtime_admission_and_spool(
     assert!(source.contains("assert_belongs_to_runtime_capture"));
     assert!(source.contains("to_refs_after_operator_post_run_proofs"));
     assert!(source.contains("assert_changed_after_run"));
-    assert!(source.contains("tiny_canary_read_operator_evidence_proof"));
-    assert!(source.contains("TinyCanaryOperatorLiveResultPaths::from_config"));
+    assert!(source.contains("phase8_read_operator_evidence_proof"));
+    assert!(!source.contains(&format!("{}{}{}", "BOLT_V3_PHASE8_", "RUNTIME_RUN", "_ID")));
     assert!(!source.contains(&format!(
         "{}{}{}",
-        "TinyCanaryOperatorLiveResultPaths", "::from_", "env"
+        "strategy_cancel_path: phase8_required_env(\"",
+        "BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH",
+        "\")?"
     )));
 }
 
 #[test]
-fn tiny_canary_operator_harness_waits_for_post_run_proofs_after_runner() {
+fn phase8_operator_harness_waits_for_post_run_proofs_after_runner() {
     let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
         .expect("operator harness source should be readable");
     let start = source
-        .rfind("async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner")
+        .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
         .expect("operator harness start should exist");
     let end = source[start..]
-        .find("\nfn tiny_canary_current_checkout_head_sha")
+        .find("\nfn phase8_current_checkout_head_sha")
         .map(|offset| start + offset)
         .expect("operator harness end should exist");
     let harness = &source[start..end];
@@ -197,7 +198,7 @@ fn tiny_canary_operator_harness_waits_for_post_run_proofs_after_runner() {
 #[test]
 fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let run_id = "tiny-canary-live-run-001";
+    let run_id = "phase8-live-run-001";
     let client_order_id_hash = "c".repeat(64);
     let venue_order_id_hash = "d".repeat(64);
     let scanned_hash = "e".repeat(64);
@@ -207,7 +208,7 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
     let venue_state_path = temp.path().join("venue-state.json");
     let restart_path = temp.path().join("restart.json");
     let post_hygiene_path = temp.path().join("post-hygiene.json");
-    let paths = TinyCanaryOperatorLiveResultPaths {
+    let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
         client_order_id_hash: client_order_id_hash.clone(),
         venue_order_id_hash: venue_order_id_hash.clone(),
@@ -226,7 +227,7 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
         serde_json::json!({
             "record_kind": "restart_reconciliation",
             "source_run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "venue_order_outcome": "filled",
@@ -246,7 +247,7 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
         serde_json::json!({
             "record_kind": "decision_evidence",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash
         }),
     );
@@ -255,7 +256,7 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
         serde_json::json!({
             "record_kind": "nt_submit_event",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash
         }),
     );
@@ -264,7 +265,7 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
         serde_json::json!({
             "record_kind": "venue_order_state",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash
         }),
@@ -274,7 +275,7 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
         serde_json::json!({
             "record_kind": "post_run_hygiene",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "raw_secret_residue_absent": true,
@@ -287,7 +288,7 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
         .to_refs(
             &snapshot,
             run_id,
-            &tiny_canary_sha256_text("bitcoin_updown_main"),
+            &phase8_sha256_text("bitcoin_updown_main"),
         )
         .expect_err("stale restart reconciliation evidence must fail");
 
@@ -302,7 +303,7 @@ fn live_result_paths_reject_restart_reconciliation_outside_runtime_capture() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let spool_root = temp.path().join("runtime-spool");
     let outside_root = temp.path().join("operator-written");
-    let paths = TinyCanaryOperatorLiveResultPaths {
+    let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: spool_root
             .join("decision.json")
             .to_string_lossy()
@@ -343,7 +344,7 @@ fn live_result_paths_reject_decision_evidence_outside_runtime_capture() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let spool_root = temp.path().join("runtime-spool");
     let outside_root = temp.path().join("operator-written");
-    let paths = TinyCanaryOperatorLiveResultPaths {
+    let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: outside_root
             .join("decision.json")
             .to_string_lossy()
@@ -382,7 +383,7 @@ fn live_result_paths_reject_decision_evidence_outside_runtime_capture() {
 #[test]
 fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let run_id = "tiny-canary-live-run-001";
+    let run_id = "phase8-live-run-001";
     let client_order_id_hash = "c".repeat(64);
     let venue_order_id_hash = "d".repeat(64);
     let scanned_hash = "e".repeat(64);
@@ -392,7 +393,7 @@ fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
     let venue_state_path = temp.path().join("venue-state.json");
     let restart_path = temp.path().join("restart.json");
     let post_hygiene_path = temp.path().join("post-hygiene.json");
-    let paths = TinyCanaryOperatorLiveResultPaths {
+    let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
         client_order_id_hash: client_order_id_hash.clone(),
         venue_order_id_hash: venue_order_id_hash.clone(),
@@ -420,7 +421,7 @@ fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
         serde_json::json!({
             "record_kind": "decision_evidence",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash
         }),
     );
@@ -429,7 +430,7 @@ fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
         serde_json::json!({
             "record_kind": "nt_submit_event",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash
         }),
     );
@@ -438,7 +439,7 @@ fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
         serde_json::json!({
             "record_kind": "venue_order_state",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "venue_order_outcome": "accepted",
@@ -450,7 +451,7 @@ fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
         serde_json::json!({
             "record_kind": "restart_reconciliation",
             "source_run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "venue_order_outcome": "filled",
@@ -462,7 +463,7 @@ fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
         serde_json::json!({
             "record_kind": "post_run_hygiene",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "raw_secret_residue_absent": true,
@@ -475,7 +476,7 @@ fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
         .to_refs(
             &snapshot,
             run_id,
-            &tiny_canary_sha256_text("bitcoin_updown_main"),
+            &phase8_sha256_text("bitcoin_updown_main"),
         )
         .expect_err("open venue order must require strategy cancel evidence");
 
@@ -488,7 +489,7 @@ fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
 #[test]
 fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let run_id = "tiny-canary-live-run-001";
+    let run_id = "phase8-live-run-001";
     let client_order_id_hash = "c".repeat(64);
     let venue_order_id_hash = "d".repeat(64);
     let scanned_hash = "e".repeat(64);
@@ -499,7 +500,7 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
     let cancel_path = temp.path().join("cancel.json");
     let restart_path = temp.path().join("restart.json");
     let post_hygiene_path = temp.path().join("post-hygiene.json");
-    let paths = TinyCanaryOperatorLiveResultPaths {
+    let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
         client_order_id_hash: client_order_id_hash.clone(),
         venue_order_id_hash: venue_order_id_hash.clone(),
@@ -528,7 +529,7 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
         serde_json::json!({
             "record_kind": "decision_evidence",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash
         }),
     );
@@ -537,7 +538,7 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
         serde_json::json!({
             "record_kind": "nt_submit_event",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash
         }),
     );
@@ -546,7 +547,7 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
         serde_json::json!({
             "record_kind": "venue_order_state",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "venue_order_outcome": "filled",
@@ -558,7 +559,7 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
         serde_json::json!({
             "record_kind": "strategy_cancel",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash
         }),
@@ -568,7 +569,7 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
         serde_json::json!({
             "record_kind": "restart_reconciliation",
             "source_run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "venue_order_outcome": "filled",
@@ -580,7 +581,7 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
         serde_json::json!({
             "record_kind": "post_run_hygiene",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "raw_secret_residue_absent": true,
@@ -593,7 +594,7 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
         .to_refs(
             &snapshot,
             run_id,
-            &tiny_canary_sha256_text("bitcoin_updown_main"),
+            &phase8_sha256_text("bitcoin_updown_main"),
         )
         .expect_err("terminal venue outcome must not be marked open");
 
@@ -606,7 +607,7 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
 #[test]
 fn live_result_paths_reject_open_restart_reconciliation() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let run_id = "tiny-canary-live-run-001";
+    let run_id = "phase8-live-run-001";
     let client_order_id_hash = "c".repeat(64);
     let venue_order_id_hash = "d".repeat(64);
     let scanned_hash = "e".repeat(64);
@@ -616,7 +617,7 @@ fn live_result_paths_reject_open_restart_reconciliation() {
     let venue_state_path = temp.path().join("venue-state.json");
     let restart_path = temp.path().join("restart.json");
     let post_hygiene_path = temp.path().join("post-hygiene.json");
-    let paths = TinyCanaryOperatorLiveResultPaths {
+    let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
         client_order_id_hash: client_order_id_hash.clone(),
         venue_order_id_hash: venue_order_id_hash.clone(),
@@ -644,7 +645,7 @@ fn live_result_paths_reject_open_restart_reconciliation() {
         serde_json::json!({
             "record_kind": "decision_evidence",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash
         }),
     );
@@ -653,7 +654,7 @@ fn live_result_paths_reject_open_restart_reconciliation() {
         serde_json::json!({
             "record_kind": "nt_submit_event",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash
         }),
     );
@@ -662,7 +663,7 @@ fn live_result_paths_reject_open_restart_reconciliation() {
         serde_json::json!({
             "record_kind": "venue_order_state",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "venue_order_outcome": "filled",
@@ -674,7 +675,7 @@ fn live_result_paths_reject_open_restart_reconciliation() {
         serde_json::json!({
             "record_kind": "restart_reconciliation",
             "source_run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "venue_order_outcome": "filled",
@@ -686,7 +687,7 @@ fn live_result_paths_reject_open_restart_reconciliation() {
         serde_json::json!({
             "record_kind": "post_run_hygiene",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "raw_secret_residue_absent": true,
@@ -699,7 +700,7 @@ fn live_result_paths_reject_open_restart_reconciliation() {
         .to_refs(
             &snapshot,
             run_id,
-            &tiny_canary_sha256_text("bitcoin_updown_main"),
+            &phase8_sha256_text("bitcoin_updown_main"),
         )
         .expect_err("open restart reconciliation evidence must fail");
 
@@ -724,9 +725,9 @@ fn write_json_proof(path: &Path, value: serde_json::Value) {
 #[test]
 fn live_result_paths_reject_unapproved_post_run_hygiene_strategy_hash() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let run_id = "tiny-canary-live-run-001";
-    let approved_strategy_hash = tiny_canary_sha256_text("bitcoin_updown_main");
-    let unapproved_strategy_hash = tiny_canary_sha256_text("bitcoin_updown_secondary");
+    let run_id = "phase8-live-run-001";
+    let approved_strategy_hash = phase8_sha256_text("bitcoin_updown_main");
+    let unapproved_strategy_hash = phase8_sha256_text("bitcoin_updown_secondary");
     let client_order_id_hash = "c".repeat(64);
     let venue_order_id_hash = "d".repeat(64);
     let scanned_hash = "e".repeat(64);
@@ -736,7 +737,7 @@ fn live_result_paths_reject_unapproved_post_run_hygiene_strategy_hash() {
     let venue_state_path = temp.path().join("venue-state.json");
     let restart_path = temp.path().join("restart.json");
     let post_hygiene_path = temp.path().join("post-hygiene.json");
-    let paths = TinyCanaryOperatorLiveResultPaths {
+    let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
         client_order_id_hash: client_order_id_hash.clone(),
         venue_order_id_hash: venue_order_id_hash.clone(),
@@ -828,9 +829,9 @@ fn live_result_paths_reject_unapproved_post_run_hygiene_strategy_hash() {
 #[test]
 fn live_result_paths_reject_unapproved_strategy_hash() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let run_id = "tiny-canary-live-run-001";
-    let approved_strategy_hash = tiny_canary_sha256_text("bitcoin_updown_main");
-    let unapproved_strategy_hash = tiny_canary_sha256_text("bitcoin_updown_secondary");
+    let run_id = "phase8-live-run-001";
+    let approved_strategy_hash = phase8_sha256_text("bitcoin_updown_main");
+    let unapproved_strategy_hash = phase8_sha256_text("bitcoin_updown_secondary");
     let client_order_id_hash = "c".repeat(64);
     let venue_order_id_hash = "d".repeat(64);
     let scanned_hash = "e".repeat(64);
@@ -840,7 +841,7 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
     let venue_state_path = temp.path().join("venue-state.json");
     let restart_path = temp.path().join("restart.json");
     let post_hygiene_path = temp.path().join("post-hygiene.json");
-    let paths = TinyCanaryOperatorLiveResultPaths {
+    let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
         client_order_id_hash: client_order_id_hash.clone(),
         venue_order_id_hash: venue_order_id_hash.clone(),
@@ -868,7 +869,7 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "decision_evidence",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "strategy_instance_id_hash": unapproved_strategy_hash,
             "client_order_id_hash": client_order_id_hash
         }),
@@ -878,7 +879,7 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "nt_submit_event",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "strategy_instance_id_hash": unapproved_strategy_hash,
             "client_order_id_hash": client_order_id_hash
         }),
@@ -888,7 +889,7 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "venue_order_state",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "strategy_instance_id_hash": unapproved_strategy_hash,
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
@@ -901,7 +902,7 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "restart_reconciliation",
             "source_run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "strategy_instance_id_hash": unapproved_strategy_hash,
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
@@ -914,7 +915,7 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "post_run_hygiene",
             "run_id": run_id,
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
             "raw_secret_residue_absent": true,
@@ -934,7 +935,7 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
 }
 
 #[test]
-fn tiny_canary_post_run_hygiene_proof_requires_secret_scan_and_retention() {
+fn phase8_post_run_hygiene_proof_requires_secret_scan_and_retention() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let proof_path = temp.path().join("post-run-hygiene.json");
     let client_hash = "a".repeat(64);
@@ -946,18 +947,18 @@ fn tiny_canary_post_run_hygiene_proof_requires_secret_scan_and_retention() {
         &proof_path,
         serde_json::to_vec(&serde_json::json!({
             "record_kind": "post_run_hygiene",
-            "run_id": "tiny-canary-run-001",
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "run_id": "phase8-run-001",
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_hash,
             "venue_order_id_hash": venue_hash
         }))
         .expect("proof should serialize"),
     )
     .expect("proof should write");
-    let missing_scan_error = tiny_canary_assert_post_run_hygiene_proof(
+    let missing_scan_error = phase8_assert_post_run_hygiene_proof(
         proof_path.to_str().expect("proof path should be utf8"),
-        "tiny-canary-run-001",
-        &tiny_canary_sha256_text("bitcoin_updown_main"),
+        "phase8-run-001",
+        &phase8_sha256_text("bitcoin_updown_main"),
         &client_hash,
         &venue_hash,
     )
@@ -973,8 +974,8 @@ fn tiny_canary_post_run_hygiene_proof_requires_secret_scan_and_retention() {
         &proof_path,
         serde_json::to_vec(&serde_json::json!({
             "record_kind": "post_run_hygiene",
-            "run_id": "tiny-canary-run-001",
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "run_id": "phase8-run-001",
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_hash,
             "venue_order_id_hash": venue_hash,
             "raw_secret_residue_absent": false,
@@ -984,10 +985,10 @@ fn tiny_canary_post_run_hygiene_proof_requires_secret_scan_and_retention() {
         .expect("proof should serialize"),
     )
     .expect("proof should write");
-    let residue_error = tiny_canary_assert_post_run_hygiene_proof(
+    let residue_error = phase8_assert_post_run_hygiene_proof(
         proof_path.to_str().expect("proof path should be utf8"),
-        "tiny-canary-run-001",
-        &tiny_canary_sha256_text("bitcoin_updown_main"),
+        "phase8-run-001",
+        &phase8_sha256_text("bitcoin_updown_main"),
         &client_hash,
         &venue_hash,
     )
@@ -1003,8 +1004,8 @@ fn tiny_canary_post_run_hygiene_proof_requires_secret_scan_and_retention() {
         &proof_path,
         serde_json::to_vec(&serde_json::json!({
             "record_kind": "post_run_hygiene",
-            "run_id": "tiny-canary-run-001",
-            "strategy_instance_id_hash": tiny_canary_sha256_text("bitcoin_updown_main"),
+            "run_id": "phase8-run-001",
+            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "client_order_id_hash": client_hash,
             "venue_order_id_hash": venue_hash,
             "raw_secret_residue_absent": true,
@@ -1014,10 +1015,10 @@ fn tiny_canary_post_run_hygiene_proof_requires_secret_scan_and_retention() {
         .expect("proof should serialize"),
     )
     .expect("proof should write");
-    tiny_canary_assert_post_run_hygiene_proof(
+    phase8_assert_post_run_hygiene_proof(
         proof_path.to_str().expect("proof path should be utf8"),
-        "tiny-canary-run-001",
-        &tiny_canary_sha256_text("bitcoin_updown_main"),
+        "phase8-run-001",
+        &phase8_sha256_text("bitcoin_updown_main"),
         &client_hash,
         &venue_hash,
     )
@@ -1025,27 +1026,31 @@ fn tiny_canary_post_run_hygiene_proof_requires_secret_scan_and_retention() {
 }
 
 #[test]
-fn tiny_canary_operator_head_is_resolved_from_checkout() -> anyhow::Result<()> {
-    let head = tiny_canary_current_checkout_head_sha()?;
+fn phase8_operator_head_is_resolved_from_checkout() -> anyhow::Result<()> {
+    let head = phase8_current_checkout_head_sha()?;
 
     assert_eq!(head.len(), 40);
     assert!(head.chars().all(|byte| byte.is_ascii_hexdigit()));
     Ok(())
 }
 
+// `#[rustfmt::skip]` pins the source layout of this async fn because the
+// self-reflective sibling tests (`phase8_operator_harness_derives_strategy_audit_from_evidence_file`,
+// `phase8_operator_harness_consumes_approval_after_entry_validation`) scan this fn's source bytes
+// for specific substrings (e.g. `envelope.consume_approval_after_live_runner_entry_validation`).
+// Future `cargo fmt` runs would otherwise reflow multi-line method chains and break those scans.
+#[rustfmt::skip]
 #[tokio::test(flavor = "current_thread")]
 #[ignore]
-async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner()
--> anyhow::Result<()> {
-    let root_toml_path = env::var("BOLT_V3_ROOT_TOML")
-        .map_err(|_| anyhow::anyhow!("BOLT_V3_ROOT_TOML must point to root TOML"))?;
-    let loaded = load_bolt_v3_config(std::path::Path::new(&root_toml_path))?;
-    let envelope = TinyCanaryOperatorApprovalEnvelope::from_config(&loaded)?;
-    let root_hash = TinyCanaryOperatorApprovalEnvelope::sha256_file(&envelope.root_toml_path)?;
-    let current_head = tiny_canary_current_checkout_head_sha()?;
-    let current_unix_seconds = tiny_canary_current_unix_seconds()?;
+async fn phase8_operator_harness_requires_exact_approval_before_live_runner() -> anyhow::Result<()>
+{
+    let envelope = Phase8OperatorApprovalEnvelope::from_env()?;
+    let loaded = load_bolt_v3_config(std::path::Path::new(&envelope.root_toml_path))?;
+    let root_hash = Phase8OperatorApprovalEnvelope::sha256_file(&envelope.root_toml_path)?;
+    let current_head = phase8_current_checkout_head_sha()?;
+    let current_unix_secs = phase8_current_unix_secs()?;
     let approved_price_to_beat_source = envelope.approved_price_to_beat_source()?;
-    let strategy_audit = TinyCanaryStrategyInputSafetyAudit::from_evidence_file(
+    let strategy_audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
         &envelope.strategy_input_evidence_path,
         &envelope.strategy_input_evidence_sha256,
         &approved_price_to_beat_source,
@@ -1060,16 +1065,16 @@ async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner
             .map(|block| block.approval_id.as_str())
             .unwrap_or_default(),
         &loaded,
-        current_unix_seconds,
+        current_unix_secs,
     )?;
-    let preflight = evaluate_tiny_canary_preflight(&loaded, &current_head, strategy_audit).await;
+    let preflight = evaluate_phase8_canary_preflight(&loaded, &current_head, strategy_audit).await;
     if !preflight.can_enter_live_runner() {
-        let blocked_runtime_capture_ref = TinyCanaryRuntimeCaptureRef {
-            spool_root_hash: tiny_canary_sha256_text(&loaded.root.persistence.catalog_directory),
-            run_id: TINY_CANARY_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID.to_string(),
+        let blocked_runtime_capture_ref = Phase8RuntimeCaptureRef {
+            spool_root_hash: phase8_sha256_text(&loaded.root.persistence.catalog_directory),
+            run_id: PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID.to_string(),
         };
-        let evidence = TinyCanaryEvidence::blocked_before_submit(
-            tiny_canary_operator_evidence_input(
+        let evidence = Phase8CanaryEvidence::blocked_before_submit(
+            phase8_operator_evidence_input(
                 &envelope,
                 &loaded,
                 &root_hash,
@@ -1078,17 +1083,16 @@ async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner
             preflight.block_reasons,
         );
         evidence.write_json_file(&envelope.canary_evidence_path)?;
-        anyhow::bail!("tiny canary canary preflight blocked before live runner");
+        anyhow::bail!("phase8 canary preflight blocked before live runner");
     }
-    let result_paths = TinyCanaryOperatorLiveResultPaths::from_config(&loaded)?;
+    let result_paths = Phase8OperatorLiveResultPaths::from_env()?;
 
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
             let mut node = build_bolt_v3_live_node(&loaded)?;
-            let runtime_capture =
-                tiny_canary_operator_runtime_capture(&loaded, &node.instance_id());
-            let evidence_input = tiny_canary_operator_evidence_input(
+            let runtime_capture = phase8_operator_runtime_capture(&loaded, &node.instance_id());
+            let evidence_input = phase8_operator_evidence_input(
                 &envelope,
                 &loaded,
                 &root_hash,
@@ -1098,9 +1102,9 @@ async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner
                 evidence_input.approved_strategy_instance_id_hash.clone();
             result_paths.assert_belongs_to_runtime_capture(&runtime_capture.spool_root)?;
             let pre_run_snapshot = result_paths.snapshot_before_run()?;
-            let live_runner_entry_unix_seconds = tiny_canary_current_unix_seconds()?;
+            let live_runner_entry_unix_secs = phase8_current_unix_secs()?;
             envelope.consume_approval_after_live_runner_entry_validation(
-                live_runner_entry_unix_seconds,
+                live_runner_entry_unix_secs,
             )?;
             run_bolt_v3_live_node(&mut node, &loaded)
                 .await
@@ -1114,7 +1118,7 @@ async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner
                     &approved_strategy_instance_id_hash,
                 )
                 .await?;
-            let evidence = TinyCanaryEvidence::live_canary_proof(
+            let evidence = Phase8CanaryEvidence::live_canary_proof(
                 evidence_input,
                 decision_evidence_ref,
                 live_order_ref,
@@ -1128,7 +1132,7 @@ async fn tiny_canary_operator_harness_requires_exact_approval_before_live_runner
     Ok(())
 }
 
-fn tiny_canary_current_checkout_head_sha() -> anyhow::Result<String> {
+fn phase8_current_checkout_head_sha() -> anyhow::Result<String> {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -1148,7 +1152,7 @@ fn tiny_canary_current_checkout_head_sha() -> anyhow::Result<String> {
     Ok(head.to_string())
 }
 
-fn tiny_canary_current_unix_seconds() -> anyhow::Result<i64> {
+fn phase8_current_unix_secs() -> anyhow::Result<i64> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|source| anyhow::anyhow!("system time is before UNIX_EPOCH: {source}"))?;
@@ -1156,26 +1160,27 @@ fn tiny_canary_current_unix_seconds() -> anyhow::Result<i64> {
         .map_err(|source| anyhow::anyhow!("current unix seconds exceeds i64: {source}"))
 }
 
-fn tiny_canary_operator_evidence_input(
-    envelope: &TinyCanaryOperatorApprovalEnvelope,
+fn phase8_operator_evidence_input(
+    envelope: &Phase8OperatorApprovalEnvelope,
     loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
     root_hash: &str,
-    runtime_capture_ref: TinyCanaryRuntimeCaptureRef,
-) -> anyhow::Result<TinyCanaryEvidenceInput> {
-    let block =
-        loaded.root.live_canary.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("tiny canary operator evidence requires `[live_canary]`")
-        })?;
-    Ok(TinyCanaryEvidenceInput {
+    runtime_capture_ref: Phase8RuntimeCaptureRef,
+) -> anyhow::Result<Phase8CanaryEvidenceInput> {
+    let block = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("phase8 operator evidence requires `[live_canary]`"))?;
+    Ok(Phase8CanaryEvidenceInput {
         head_sha: envelope.head_sha.clone(),
         root_config_sha256: root_hash.to_string(),
         ssm_manifest_sha256: envelope.ssm_manifest_sha256.clone(),
-        ssm_manifest_ref: TinyCanaryEvidenceRef {
-            path_hash: tiny_canary_sha256_text(&envelope.ssm_manifest_path),
+        ssm_manifest_ref: Phase8EvidenceRef {
+            path_hash: phase8_sha256_text(&envelope.ssm_manifest_path),
             record_hash: envelope.ssm_manifest_sha256.clone(),
         },
-        strategy_input_evidence_ref: TinyCanaryEvidenceRef {
-            path_hash: tiny_canary_sha256_text(&envelope.strategy_input_evidence_path),
+        strategy_input_evidence_ref: Phase8EvidenceRef {
+            path_hash: phase8_sha256_text(&envelope.strategy_input_evidence_path),
             record_hash: envelope.strategy_input_evidence_sha256.clone(),
         },
         approved_strategy_instance_id_hash: envelope.approved_strategy_instance_id_hash()?,
@@ -1186,27 +1191,44 @@ fn tiny_canary_operator_evidence_input(
     })
 }
 
-struct TinyCanaryOperatorRuntimeCapture {
-    reference: TinyCanaryRuntimeCaptureRef,
+struct Phase8OperatorRuntimeCapture {
+    reference: Phase8RuntimeCaptureRef,
     spool_root: String,
 }
 
-fn tiny_canary_operator_runtime_capture(
+fn phase8_operator_runtime_capture(
     loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
     instance_id: &str,
-) -> TinyCanaryOperatorRuntimeCapture {
+) -> Phase8OperatorRuntimeCapture {
     let spool_root =
         spool_root_for_instance(&loaded.root.persistence.catalog_directory, instance_id);
-    TinyCanaryOperatorRuntimeCapture {
-        reference: TinyCanaryRuntimeCaptureRef {
-            spool_root_hash: tiny_canary_sha256_text(&spool_root),
+    Phase8OperatorRuntimeCapture {
+        reference: Phase8RuntimeCaptureRef {
+            spool_root_hash: phase8_sha256_text(&spool_root),
             run_id: instance_id.to_string(),
         },
         spool_root,
     }
 }
 
-struct TinyCanaryOperatorLiveResultPaths {
+fn phase8_optional_env(name: &str) -> anyhow::Result<Option<String>> {
+    match env::var(name) {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(anyhow::anyhow!(
+            "failed to read phase8 env `{name}`: {error}"
+        )),
+    }
+}
+
+struct Phase8OperatorLiveResultPaths {
     decision_evidence_path: String,
     client_order_id_hash: String,
     venue_order_id_hash: String,
@@ -1217,7 +1239,7 @@ struct TinyCanaryOperatorLiveResultPaths {
     post_run_hygiene_path: String,
 }
 
-struct TinyCanaryOperatorLiveResultSnapshot {
+struct Phase8OperatorLiveResultSnapshot {
     decision_evidence_sha256: Option<String>,
     nt_submit_event_sha256: Option<String>,
     venue_order_state_sha256: Option<String>,
@@ -1227,7 +1249,7 @@ struct TinyCanaryOperatorLiveResultSnapshot {
 }
 
 #[derive(Deserialize)]
-struct TinyCanaryOperatorEvidenceProof {
+struct Phase8OperatorEvidenceProof {
     record_kind: String,
     run_id: Option<String>,
     source_run_id: Option<String>,
@@ -1240,7 +1262,7 @@ struct TinyCanaryOperatorEvidenceProof {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TinyCanaryPostRunHygieneProof {
+struct Phase8PostRunHygieneProof {
     #[serde(rename = "record_kind")]
     _record_kind: String,
     #[serde(rename = "run_id")]
@@ -1256,88 +1278,53 @@ struct TinyCanaryPostRunHygieneProof {
     retention_purge_path_hash: String,
 }
 
-impl TinyCanaryOperatorLiveResultPaths {
-    fn from_config(loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config) -> anyhow::Result<Self> {
-        let operator_evidence = loaded
-            .root
-            .live_canary
-            .as_ref()
-            .and_then(|block| block.operator_evidence.as_ref())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "tiny canary operator result paths require `[live_canary.operator_evidence]`"
-                )
-            })?;
+impl Phase8OperatorLiveResultPaths {
+    fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
-            decision_evidence_path: required_operator_path(
-                &loaded.root_path,
-                &operator_evidence.decision_evidence_path,
-                "[live_canary.operator_evidence].decision_evidence_path",
+            decision_evidence_path: phase8_required_env("BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH")?,
+            client_order_id_hash: phase8_required_sha256_env(
+                "BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH",
             )?,
-            client_order_id_hash: required_operator_sha256(
-                &operator_evidence.client_order_id_hash,
-                "[live_canary.operator_evidence].client_order_id_hash",
+            venue_order_id_hash: phase8_required_sha256_env("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH")?,
+            nt_submit_event_path: phase8_required_env("BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH")?,
+            venue_order_state_path: phase8_required_env("BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH")?,
+            strategy_cancel_path: phase8_optional_env("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH")?,
+            restart_reconciliation_path: phase8_required_env(
+                "BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH",
             )?,
-            venue_order_id_hash: required_operator_sha256(
-                &operator_evidence.venue_order_id_hash,
-                "[live_canary.operator_evidence].venue_order_id_hash",
-            )?,
-            nt_submit_event_path: required_operator_path(
-                &loaded.root_path,
-                &operator_evidence.nt_submit_event_path,
-                "[live_canary.operator_evidence].nt_submit_event_path",
-            )?,
-            venue_order_state_path: required_operator_path(
-                &loaded.root_path,
-                &operator_evidence.venue_order_state_path,
-                "[live_canary.operator_evidence].venue_order_state_path",
-            )?,
-            strategy_cancel_path: optional_operator_path(
-                &loaded.root_path,
-                operator_evidence.strategy_cancel_path.as_deref(),
-            ),
-            restart_reconciliation_path: required_operator_path(
-                &loaded.root_path,
-                &operator_evidence.restart_reconciliation_path,
-                "[live_canary.operator_evidence].restart_reconciliation_path",
-            )?,
-            post_run_hygiene_path: required_operator_path(
-                &loaded.root_path,
-                &operator_evidence.post_run_hygiene_path,
-                "[live_canary.operator_evidence].post_run_hygiene_path",
-            )?,
+            post_run_hygiene_path: phase8_required_env("BOLT_V3_PHASE8_POST_RUN_HYGIENE_PATH")?,
         })
     }
 
     fn assert_belongs_to_runtime_capture(&self, spool_root: &str) -> anyhow::Result<()> {
-        tiny_canary_assert_path_starts_with(
+        phase8_assert_path_starts_with(
             &self.decision_evidence_path,
             spool_root,
             "decision evidence",
         )?;
-        tiny_canary_assert_path_starts_with(
+        phase8_assert_path_starts_with(
             &self.nt_submit_event_path,
             spool_root,
             "nt submit event evidence",
         )?;
-        tiny_canary_assert_path_starts_with(
+        phase8_assert_path_starts_with(
             &self.venue_order_state_path,
             spool_root,
             "venue order state evidence",
         )?;
         if let Some(strategy_cancel_path) = &self.strategy_cancel_path {
-            tiny_canary_assert_path_starts_with(
+            phase8_assert_path_starts_with(
                 strategy_cancel_path,
                 spool_root,
                 "strategy cancel evidence",
             )?;
         }
-        tiny_canary_assert_path_starts_with(
+        phase8_assert_path_starts_with(
             &self.restart_reconciliation_path,
             spool_root,
             "restart reconciliation evidence",
         )?;
-        tiny_canary_assert_path_starts_with(
+        phase8_assert_path_starts_with(
             &self.post_run_hygiene_path,
             spool_root,
             "post-run hygiene evidence",
@@ -1345,60 +1332,54 @@ impl TinyCanaryOperatorLiveResultPaths {
         Ok(())
     }
 
-    fn snapshot_before_run(&self) -> anyhow::Result<TinyCanaryOperatorLiveResultSnapshot> {
-        Ok(TinyCanaryOperatorLiveResultSnapshot {
-            decision_evidence_sha256: tiny_canary_optional_sha256_file(
-                &self.decision_evidence_path,
-            )?,
-            nt_submit_event_sha256: tiny_canary_optional_sha256_file(&self.nt_submit_event_path)?,
-            venue_order_state_sha256: tiny_canary_optional_sha256_file(
-                &self.venue_order_state_path,
-            )?,
+    fn snapshot_before_run(&self) -> anyhow::Result<Phase8OperatorLiveResultSnapshot> {
+        Ok(Phase8OperatorLiveResultSnapshot {
+            decision_evidence_sha256: phase8_optional_sha256_file(&self.decision_evidence_path)?,
+            nt_submit_event_sha256: phase8_optional_sha256_file(&self.nt_submit_event_path)?,
+            venue_order_state_sha256: phase8_optional_sha256_file(&self.venue_order_state_path)?,
             strategy_cancel_sha256: match &self.strategy_cancel_path {
-                Some(strategy_cancel_path) => {
-                    tiny_canary_optional_sha256_file(strategy_cancel_path)?
-                }
+                Some(strategy_cancel_path) => phase8_optional_sha256_file(strategy_cancel_path)?,
                 None => None,
             },
-            restart_reconciliation_sha256: tiny_canary_optional_sha256_file(
+            restart_reconciliation_sha256: phase8_optional_sha256_file(
                 &self.restart_reconciliation_path,
             )?,
-            post_run_hygiene_sha256: tiny_canary_optional_sha256_file(&self.post_run_hygiene_path)?,
+            post_run_hygiene_sha256: phase8_optional_sha256_file(&self.post_run_hygiene_path)?,
         })
     }
 
     fn assert_changed_after_run(
         &self,
-        snapshot: &TinyCanaryOperatorLiveResultSnapshot,
+        snapshot: &Phase8OperatorLiveResultSnapshot,
     ) -> anyhow::Result<()> {
-        tiny_canary_assert_changed_after_run(
+        phase8_assert_changed_after_run(
             &self.decision_evidence_path,
             &snapshot.decision_evidence_sha256,
             "decision evidence",
         )?;
-        tiny_canary_assert_changed_after_run(
+        phase8_assert_changed_after_run(
             &self.nt_submit_event_path,
             &snapshot.nt_submit_event_sha256,
             "nt submit event evidence",
         )?;
-        tiny_canary_assert_changed_after_run(
+        phase8_assert_changed_after_run(
             &self.venue_order_state_path,
             &snapshot.venue_order_state_sha256,
             "venue order state evidence",
         )?;
         if let Some(strategy_cancel_path) = &self.strategy_cancel_path {
-            tiny_canary_assert_changed_after_run(
+            phase8_assert_changed_after_run(
                 strategy_cancel_path,
                 &snapshot.strategy_cancel_sha256,
                 "strategy cancel evidence",
             )?;
         }
-        tiny_canary_assert_changed_after_run(
+        phase8_assert_changed_after_run(
             &self.restart_reconciliation_path,
             &snapshot.restart_reconciliation_sha256,
             "restart reconciliation evidence",
         )?;
-        tiny_canary_assert_changed_after_run(
+        phase8_assert_changed_after_run(
             &self.post_run_hygiene_path,
             &snapshot.post_run_hygiene_sha256,
             "post-run hygiene evidence",
@@ -1408,61 +1389,57 @@ impl TinyCanaryOperatorLiveResultPaths {
 
     fn to_refs(
         &self,
-        snapshot: &TinyCanaryOperatorLiveResultSnapshot,
+        snapshot: &Phase8OperatorLiveResultSnapshot,
         run_id: &str,
         expected_strategy_instance_id_hash: &str,
     ) -> anyhow::Result<(
-        TinyCanaryEvidenceRef,
-        TinyCanaryLiveOrderRef,
-        TinyCanaryLiveCanaryResultRefs,
+        Phase8EvidenceRef,
+        Phase8LiveOrderRef,
+        Phase8LiveCanaryResultRefs,
     )> {
         self.assert_changed_after_run(snapshot)?;
         self.assert_proof_content(run_id, expected_strategy_instance_id_hash)?;
         Ok((
-            tiny_canary_operator_evidence_ref(&self.decision_evidence_path)?,
-            TinyCanaryLiveOrderRef {
+            phase8_operator_evidence_ref(&self.decision_evidence_path)?,
+            Phase8LiveOrderRef {
                 strategy_instance_id_hash: expected_strategy_instance_id_hash.to_string(),
                 client_order_id_hash: self.client_order_id_hash.clone(),
                 venue_order_id_hash: self.venue_order_id_hash.clone(),
             },
-            TinyCanaryLiveCanaryResultRefs {
-                nt_submit_event_ref: tiny_canary_operator_evidence_ref(&self.nt_submit_event_path)?,
-                venue_order_state_ref: tiny_canary_operator_evidence_ref(
-                    &self.venue_order_state_path,
-                )?,
+            Phase8LiveCanaryResultRefs {
+                nt_submit_event_ref: phase8_operator_evidence_ref(&self.nt_submit_event_path)?,
+                venue_order_state_ref: phase8_operator_evidence_ref(&self.venue_order_state_path)?,
                 strategy_cancel_ref: self
                     .strategy_cancel_path
                     .as_deref()
-                    .map(tiny_canary_operator_evidence_ref)
+                    .map(phase8_operator_evidence_ref)
                     .transpose()?,
-                restart_reconciliation_ref: tiny_canary_operator_evidence_ref(
+                restart_reconciliation_ref: phase8_operator_evidence_ref(
                     &self.restart_reconciliation_path,
                 )?,
-                post_run_hygiene_ref: tiny_canary_operator_evidence_ref(
-                    &self.post_run_hygiene_path,
-                )?,
+                post_run_hygiene_ref: phase8_operator_evidence_ref(&self.post_run_hygiene_path)?,
             },
         ))
     }
 
     async fn to_refs_after_operator_post_run_proofs(
         &self,
-        snapshot: &TinyCanaryOperatorLiveResultSnapshot,
+        snapshot: &Phase8OperatorLiveResultSnapshot,
         run_id: &str,
         loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
         expected_strategy_instance_id_hash: &str,
     ) -> anyhow::Result<(
-        TinyCanaryEvidenceRef,
-        TinyCanaryLiveOrderRef,
-        TinyCanaryLiveCanaryResultRefs,
+        Phase8EvidenceRef,
+        Phase8LiveOrderRef,
+        Phase8LiveCanaryResultRefs,
     )> {
-        let wait_seconds = loaded
+        let wait_secs = loaded
             .root
             .nautilus
-            .timeout_reconciliation_seconds
-            .saturating_add(loaded.root.nautilus.timeout_shutdown_seconds);
-        let poll_interval = Duration::from_secs(loaded.root.nautilus.timeout_shutdown_seconds);
-        let deadline = Instant::now() + Duration::from_secs(wait_seconds);
+            .timeout_reconciliation_secs
+            .saturating_add(loaded.root.nautilus.timeout_shutdown_secs);
+        let poll_interval = Duration::from_secs(loaded.root.nautilus.timeout_shutdown_secs);
+        let deadline = Instant::now() + Duration::from_secs(wait_secs);
         let mut observed_errors = Vec::new();
 
         loop {
@@ -1472,7 +1449,7 @@ impl TinyCanaryOperatorLiveResultPaths {
                     observed_errors.push(error.to_string());
                     if Instant::now() >= deadline {
                         anyhow::bail!(
-                            "tiny canary post-run operator evidence did not become ready within nautilus.timeout_reconciliation_seconds + nautilus.timeout_shutdown_seconds; observed errors: {}",
+                            "phase8 post-run operator evidence did not become ready within nautilus.timeout_reconciliation_secs + nautilus.timeout_shutdown_secs; observed errors: {}",
                             observed_errors.join(" | ")
                         );
                     }
@@ -1488,7 +1465,7 @@ impl TinyCanaryOperatorLiveResultPaths {
         run_id: &str,
         expected_strategy_instance_id_hash: &str,
     ) -> anyhow::Result<()> {
-        tiny_canary_assert_operator_evidence_proof(
+        phase8_assert_operator_evidence_proof(
             &self.decision_evidence_path,
             "decision_evidence",
             Some(run_id),
@@ -1497,7 +1474,7 @@ impl TinyCanaryOperatorLiveResultPaths {
             Some(&self.client_order_id_hash),
             None,
         )?;
-        tiny_canary_assert_operator_evidence_proof(
+        phase8_assert_operator_evidence_proof(
             &self.nt_submit_event_path,
             "nt_submit_event",
             Some(run_id),
@@ -1506,7 +1483,7 @@ impl TinyCanaryOperatorLiveResultPaths {
             Some(&self.client_order_id_hash),
             None,
         )?;
-        tiny_canary_assert_operator_evidence_proof(
+        phase8_assert_operator_evidence_proof(
             &self.venue_order_state_path,
             "venue_order_state",
             Some(run_id),
@@ -1515,12 +1492,12 @@ impl TinyCanaryOperatorLiveResultPaths {
             Some(&self.client_order_id_hash),
             Some(&self.venue_order_id_hash),
         )?;
-        tiny_canary_assert_venue_order_state_proof(
+        phase8_assert_venue_order_state_proof(
             &self.venue_order_state_path,
             self.strategy_cancel_path.is_some(),
         )?;
         if let Some(strategy_cancel_path) = &self.strategy_cancel_path {
-            tiny_canary_assert_operator_evidence_proof(
+            phase8_assert_operator_evidence_proof(
                 strategy_cancel_path,
                 "strategy_cancel",
                 Some(run_id),
@@ -1530,7 +1507,7 @@ impl TinyCanaryOperatorLiveResultPaths {
                 Some(&self.venue_order_id_hash),
             )?;
         }
-        tiny_canary_assert_operator_evidence_proof(
+        phase8_assert_operator_evidence_proof(
             &self.restart_reconciliation_path,
             "restart_reconciliation",
             None,
@@ -1539,8 +1516,8 @@ impl TinyCanaryOperatorLiveResultPaths {
             Some(&self.client_order_id_hash),
             Some(&self.venue_order_id_hash),
         )?;
-        tiny_canary_assert_restart_reconciliation_proof(&self.restart_reconciliation_path)?;
-        tiny_canary_assert_post_run_hygiene_proof(
+        phase8_assert_restart_reconciliation_proof(&self.restart_reconciliation_path)?;
+        phase8_assert_post_run_hygiene_proof(
             &self.post_run_hygiene_path,
             run_id,
             expected_strategy_instance_id_hash,
@@ -1550,196 +1527,155 @@ impl TinyCanaryOperatorLiveResultPaths {
     }
 }
 
-fn tiny_canary_assert_venue_order_state_proof(
+fn phase8_assert_venue_order_state_proof(
     path: &str,
     strategy_cancel_present: bool,
 ) -> anyhow::Result<()> {
-    let proof = tiny_canary_read_operator_evidence_proof(path, "venue_order_state")?;
+    let proof = phase8_read_operator_evidence_proof(path, "venue_order_state")?;
     let outcome = proof.venue_order_outcome.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("tiny canary venue_order_state proof venue_order_outcome is missing")
+        anyhow::anyhow!("phase8 venue_order_state proof venue_order_outcome is missing")
     })?;
     match outcome {
         "accepted" | "filled" | "rejected" => {}
         _ => {
             return Err(anyhow::anyhow!(
-                "tiny canary venue_order_state proof venue_order_outcome must be accepted, filled, or rejected"
+                "phase8 venue_order_state proof venue_order_outcome must be accepted, filled, or rejected"
             ));
         }
     }
     let order_remains_open = proof.order_remains_open.ok_or_else(|| {
-        anyhow::anyhow!("tiny canary venue_order_state proof order_remains_open is missing")
+        anyhow::anyhow!("phase8 venue_order_state proof order_remains_open is missing")
     })?;
     if matches!(outcome, "filled" | "rejected") && order_remains_open {
         return Err(anyhow::anyhow!(
-            "tiny canary venue_order_state proof order_remains_open must be false for terminal outcome"
+            "phase8 venue_order_state proof order_remains_open must be false for terminal outcome"
         ));
     }
     if order_remains_open && !strategy_cancel_present {
         return Err(anyhow::anyhow!(
-            "tiny canary venue_order_state proof requires strategy cancel evidence when order remains open"
+            "phase8 venue_order_state proof requires strategy cancel evidence when order remains open"
         ));
     }
     Ok(())
 }
 
-fn tiny_canary_assert_restart_reconciliation_proof(path: &str) -> anyhow::Result<()> {
-    let proof = tiny_canary_read_operator_evidence_proof(path, "restart_reconciliation")?;
+fn phase8_assert_restart_reconciliation_proof(path: &str) -> anyhow::Result<()> {
+    let proof = phase8_read_operator_evidence_proof(path, "restart_reconciliation")?;
     let outcome = proof.venue_order_outcome.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("tiny canary restart reconciliation proof venue_order_outcome is missing")
+        anyhow::anyhow!("phase8 restart reconciliation proof venue_order_outcome is missing")
     })?;
     match outcome {
         "filled" | "rejected" => {}
         _ => {
             return Err(anyhow::anyhow!(
-                "tiny canary restart reconciliation proof venue_order_outcome must be terminal"
+                "phase8 restart reconciliation proof venue_order_outcome must be terminal"
             ));
         }
     }
     let order_remains_open = proof.order_remains_open.ok_or_else(|| {
-        anyhow::anyhow!("tiny canary restart reconciliation proof order_remains_open is missing")
+        anyhow::anyhow!("phase8 restart reconciliation proof order_remains_open is missing")
     })?;
     if order_remains_open {
         return Err(anyhow::anyhow!(
-            "tiny canary restart reconciliation proof order_remains_open must be false"
+            "phase8 restart reconciliation proof order_remains_open must be false"
         ));
     }
     Ok(())
 }
 
-fn tiny_canary_operator_evidence_ref(path: &str) -> anyhow::Result<TinyCanaryEvidenceRef> {
-    Ok(TinyCanaryEvidenceRef {
-        path_hash: tiny_canary_sha256_text(path),
-        record_hash: TinyCanaryOperatorApprovalEnvelope::sha256_file(path)?,
+fn phase8_operator_evidence_ref(path: &str) -> anyhow::Result<Phase8EvidenceRef> {
+    Ok(Phase8EvidenceRef {
+        path_hash: phase8_sha256_text(path),
+        record_hash: Phase8OperatorApprovalEnvelope::sha256_file(path)?,
     })
 }
 
-fn required_operator_field(value: &str, field: &str) -> anyhow::Result<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
+fn phase8_required_sha256_env(name: &str) -> anyhow::Result<String> {
+    let value = phase8_required_env(name)?;
+    if !phase8_is_sha256_hex(&value) {
         return Err(anyhow::anyhow!(
-            "required tiny canary config field `{field}` is empty"
-        ));
-    }
-    Ok(trimmed.to_string())
-}
-
-fn required_operator_sha256(value: &str, field: &str) -> anyhow::Result<String> {
-    let value = required_operator_field(value, field)?;
-    if !tiny_canary_is_sha256_hex(&value) {
-        return Err(anyhow::anyhow!(
-            "required tiny canary config field `{field}` must be a sha256 hex digest"
+            "required phase8 env `{name}` must be a sha256 hex digest"
         ));
     }
     Ok(value)
 }
 
-fn required_operator_path(root_path: &Path, value: &str, field: &str) -> anyhow::Result<String> {
-    let value = required_operator_field(value, field)?;
-    Ok(resolve_operator_path(root_path, &value))
-}
-
-fn optional_operator_path(root_path: &Path, value: Option<&str>) -> Option<String> {
-    value.and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(resolve_operator_path(root_path, trimmed))
-        }
-    })
-}
-
-fn resolve_operator_path(root_path: &Path, configured_path: &str) -> String {
-    let configured_path = Path::new(configured_path);
-    let resolved = if configured_path.is_absolute() {
-        configured_path.to_path_buf()
-    } else {
-        root_path
-            .parent()
-            .map(|parent| parent.join(configured_path))
-            .unwrap_or_else(|| configured_path.to_path_buf())
-    };
-    resolved.to_string_lossy().to_string()
-}
-
-fn tiny_canary_is_sha256_hex(value: &str) -> bool {
+fn phase8_is_sha256_hex(value: &str) -> bool {
     value.len() == 64 && value.chars().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn tiny_canary_assert_path_starts_with(path: &str, base: &str, label: &str) -> anyhow::Result<()> {
-    tiny_canary_reject_parent_dir(path, label)?;
-    tiny_canary_reject_parent_dir(base, "runtime capture spool root")?;
+fn phase8_assert_path_starts_with(path: &str, base: &str, label: &str) -> anyhow::Result<()> {
+    phase8_reject_parent_dir(path, label)?;
+    phase8_reject_parent_dir(base, "runtime capture spool root")?;
     if !Path::new(path).starts_with(Path::new(base)) {
         return Err(anyhow::anyhow!(
-            "tiny canary {label} path must be under runtime capture spool root"
+            "phase8 {label} path must be under runtime capture spool root"
         ));
     }
     Ok(())
 }
 
-fn tiny_canary_reject_parent_dir(path: &str, label: &str) -> anyhow::Result<()> {
+fn phase8_reject_parent_dir(path: &str, label: &str) -> anyhow::Result<()> {
     if Path::new(path)
         .components()
         .any(|component| matches!(component, std::path::Component::ParentDir))
     {
         return Err(anyhow::anyhow!(
-            "tiny canary {label} path must not contain parent directory traversal"
+            "phase8 {label} path must not contain parent directory traversal"
         ));
     }
     Ok(())
 }
 
-fn tiny_canary_optional_sha256_file(path: &str) -> anyhow::Result<Option<String>> {
+fn phase8_optional_sha256_file(path: &str) -> anyhow::Result<Option<String>> {
     if Path::new(path).exists() {
-        Ok(Some(TinyCanaryOperatorApprovalEnvelope::sha256_file(path)?))
+        Ok(Some(Phase8OperatorApprovalEnvelope::sha256_file(path)?))
     } else {
         Ok(None)
     }
 }
 
-fn tiny_canary_assert_changed_after_run(
+fn phase8_assert_changed_after_run(
     path: &str,
     before_sha256: &Option<String>,
     label: &str,
 ) -> anyhow::Result<()> {
-    let after_sha256 = TinyCanaryOperatorApprovalEnvelope::sha256_file(path)?;
+    let after_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(path)?;
     if before_sha256.as_ref() == Some(&after_sha256) {
         return Err(anyhow::anyhow!(
-            "tiny canary {label} did not change during live canary run"
+            "phase8 {label} did not change during live canary run"
         ));
     }
     Ok(())
 }
 
-fn tiny_canary_read_operator_evidence_proof(
+fn phase8_read_operator_evidence_proof(
     path: &str,
     label: &str,
-) -> anyhow::Result<TinyCanaryOperatorEvidenceProof> {
+) -> anyhow::Result<Phase8OperatorEvidenceProof> {
     let file = std::fs::File::open(path)
-        .map_err(|source| anyhow::anyhow!("failed to open tiny canary {label} proof: {source}"))?;
+        .map_err(|source| anyhow::anyhow!("failed to open phase8 {label} proof: {source}"))?;
     serde_json::from_reader(file)
-        .map_err(|source| anyhow::anyhow!("failed to parse tiny canary {label} proof: {source}"))
+        .map_err(|source| anyhow::anyhow!("failed to parse phase8 {label} proof: {source}"))
 }
 
-fn tiny_canary_read_post_run_hygiene_proof(
-    path: &str,
-) -> anyhow::Result<TinyCanaryPostRunHygieneProof> {
+fn phase8_read_post_run_hygiene_proof(path: &str) -> anyhow::Result<Phase8PostRunHygieneProof> {
     let file = std::fs::File::open(path).map_err(|source| {
-        anyhow::anyhow!("failed to open tiny canary post_run_hygiene proof: {source}")
+        anyhow::anyhow!("failed to open phase8 post_run_hygiene proof: {source}")
     })?;
     serde_json::from_reader(file).map_err(|source| {
-        anyhow::anyhow!("failed to parse tiny canary post_run_hygiene proof: {source}")
+        anyhow::anyhow!("failed to parse phase8 post_run_hygiene proof: {source}")
     })
 }
 
-fn tiny_canary_assert_post_run_hygiene_proof(
+fn phase8_assert_post_run_hygiene_proof(
     path: &str,
     expected_run_id: &str,
     expected_strategy_instance_id_hash: &str,
     expected_client_order_id_hash: &str,
     expected_venue_order_id_hash: &str,
 ) -> anyhow::Result<()> {
-    tiny_canary_assert_operator_evidence_proof(
+    phase8_assert_operator_evidence_proof(
         path,
         "post_run_hygiene",
         Some(expected_run_id),
@@ -1748,35 +1684,35 @@ fn tiny_canary_assert_post_run_hygiene_proof(
         Some(expected_client_order_id_hash),
         Some(expected_venue_order_id_hash),
     )?;
-    let proof = tiny_canary_read_post_run_hygiene_proof(path)?;
+    let proof = phase8_read_post_run_hygiene_proof(path)?;
     if !proof.raw_secret_residue_absent {
         return Err(anyhow::anyhow!(
-            "tiny canary post_run_hygiene proof raw_secret_residue_absent must be true"
+            "phase8 post_run_hygiene proof raw_secret_residue_absent must be true"
         ));
     }
     if proof.scanned_artifact_hashes.is_empty() {
         return Err(anyhow::anyhow!(
-            "tiny canary post_run_hygiene proof scanned_artifact_hashes must not be empty"
+            "phase8 post_run_hygiene proof scanned_artifact_hashes must not be empty"
         ));
     }
     if proof
         .scanned_artifact_hashes
         .iter()
-        .any(|hash| !tiny_canary_is_sha256_hex(hash))
+        .any(|hash| !phase8_is_sha256_hex(hash))
     {
         return Err(anyhow::anyhow!(
-            "tiny canary post_run_hygiene proof scanned_artifact_hashes must contain sha256 hashes"
+            "phase8 post_run_hygiene proof scanned_artifact_hashes must contain sha256 hashes"
         ));
     }
-    if !tiny_canary_is_sha256_hex(&proof.retention_purge_path_hash) {
+    if !phase8_is_sha256_hex(&proof.retention_purge_path_hash) {
         return Err(anyhow::anyhow!(
-            "tiny canary post_run_hygiene proof retention_purge_path_hash must be a sha256 hash"
+            "phase8 post_run_hygiene proof retention_purge_path_hash must be a sha256 hash"
         ));
     }
     Ok(())
 }
 
-fn tiny_canary_assert_operator_evidence_proof(
+fn phase8_assert_operator_evidence_proof(
     path: &str,
     expected_kind: &str,
     expected_run_id: Option<&str>,
@@ -1785,45 +1721,45 @@ fn tiny_canary_assert_operator_evidence_proof(
     expected_client_order_id_hash: Option<&str>,
     expected_venue_order_id_hash: Option<&str>,
 ) -> anyhow::Result<()> {
-    let proof = tiny_canary_read_operator_evidence_proof(path, expected_kind)?;
+    let proof = phase8_read_operator_evidence_proof(path, expected_kind)?;
     if proof.record_kind != expected_kind {
         return Err(anyhow::anyhow!(
-            "tiny canary {expected_kind} proof has unexpected record_kind"
+            "phase8 {expected_kind} proof has unexpected record_kind"
         ));
     }
     if let Some(expected_run_id) = expected_run_id
         && proof.run_id.as_deref() != Some(expected_run_id)
     {
         return Err(anyhow::anyhow!(
-            "tiny canary {expected_kind} proof run_id does not match live canary run"
+            "phase8 {expected_kind} proof run_id does not match live canary run"
         ));
     }
     if let Some(expected_source_run_id) = expected_source_run_id
         && proof.source_run_id.as_deref() != Some(expected_source_run_id)
     {
         return Err(anyhow::anyhow!(
-            "tiny canary {expected_kind} proof source_run_id does not match live canary run"
+            "phase8 {expected_kind} proof source_run_id does not match live canary run"
         ));
     }
     if let Some(expected_strategy_instance_id_hash) = expected_strategy_instance_id_hash
         && proof.strategy_instance_id_hash.as_deref() != Some(expected_strategy_instance_id_hash)
     {
         return Err(anyhow::anyhow!(
-            "tiny canary {expected_kind} proof strategy_instance_id_hash does not match approved financial envelope"
+            "phase8 {expected_kind} proof strategy_instance_id_hash does not match approved financial envelope"
         ));
     }
     if let Some(expected_client_order_id_hash) = expected_client_order_id_hash
         && proof.client_order_id_hash.as_deref() != Some(expected_client_order_id_hash)
     {
         return Err(anyhow::anyhow!(
-            "tiny canary {expected_kind} proof client_order_id_hash does not match"
+            "phase8 {expected_kind} proof client_order_id_hash does not match"
         ));
     }
     if let Some(expected_venue_order_id_hash) = expected_venue_order_id_hash
         && proof.venue_order_id_hash.as_deref() != Some(expected_venue_order_id_hash)
     {
         return Err(anyhow::anyhow!(
-            "tiny canary {expected_kind} proof venue_order_id_hash does not match"
+            "phase8 {expected_kind} proof venue_order_id_hash does not match"
         ));
     }
     Ok(())

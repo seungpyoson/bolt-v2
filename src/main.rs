@@ -59,10 +59,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Run { config } => {
             let loaded = load_bolt_v3_config(&config)?;
-            bolt_v2::log_sweep::sweep_logs_in(
-                std::path::Path::new(&loaded.root.logging.stale_log_source_directory),
-                std::path::Path::new(&loaded.root.logging.stale_log_archive_directory),
-            );
             let mut node = build_bolt_v3_live_node(&loaded)?;
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -82,17 +78,17 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
         SecretsCommand::Check { config } => {
             let loaded = load_bolt_v3_config(&config)?;
             check_no_forbidden_credential_env_vars(&loaded.root)?;
-            for (venue_key, venue) in &loaded.root.venues {
-                if venue.secrets.is_some() {
+            for (client_key, client) in &loaded.root.clients {
+                if client.secrets.is_some() {
                     let binding =
-                        binding_for_provider_key(venue.kind.as_str()).ok_or_else(|| {
+                        binding_for_provider_key(client.venue.as_str()).ok_or_else(|| {
                             format!(
-                                "venues.{venue_key}.kind `{}` is not supported by this build",
-                                venue.kind.as_str()
+                                "clients.{client_key}.venue `{}` is not supported by this build",
+                                client.venue.as_str()
                             )
                         })?;
                     println!(
-                        "venues.{venue_key}: required secret fields present ({})",
+                        "clients.{client_key}: required secret fields present ({})",
                         binding.secret_field_names.join(", ")
                     );
                 }
@@ -104,8 +100,8 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
             check_no_forbidden_credential_env_vars(&loaded.root)?;
             let ssm_resolver_session = SsmResolverSession::new()?;
             let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
-            for venue_key in resolved.venues.keys() {
-                println!("venues.{venue_key}: secrets resolved successfully");
+            for client_key in resolved.clients.keys() {
+                println!("clients.{client_key}: secrets resolved successfully");
             }
             Ok(())
         }

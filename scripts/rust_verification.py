@@ -465,40 +465,105 @@ def basename_token(token: str) -> str:
 
 
 def python_script_name(tokens: list[str], start: int) -> str | None:
-    index = start
-    while index < len(tokens):
-        token = tokens[index]
+    for token in tokens[start:]:
         if token in ("-c", "-m"):
             return None
+        name = basename_token(token)
+        if name.endswith(".py"):
+            return name
+    return None
+
+
+def shell_command(tokens: list[str]) -> str | None:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-c" and index + 1 < len(tokens):
+            return tokens[index + 1]
+        index += 1
+    return None
+
+
+def env_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
         if token == "--":
+            return index + 1
+        if token in ("-i", "--ignore-environment", "-0", "--null"):
             index += 1
+            continue
+        if token in ("-u", "--unset", "--chdir") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token == "-S" and index + 1 < len(tokens):
+            return index
+        if token.startswith("--unset=") or token.startswith("--chdir="):
+            index += 1
+            continue
+        if "=" in token and not token.startswith("-"):
+            index += 1
+            continue
+        return index
+    return index
+
+
+def sudo_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in ("-u", "-g", "-h", "-p", "-C", "-T") and index + 1 < len(tokens):
+            index += 2
             continue
         if token.startswith("-"):
             index += 1
             continue
-        return basename_token(token)
-    return None
+        return index
+    return index
+
+
+def nice_command_index(tokens: list[str]) -> int:
+    index = 1
+    if index < len(tokens) and tokens[index] == "-n" and index + 1 < len(tokens):
+        return index + 2
+    if index < len(tokens) and re.fullmatch(r"-?\d+", tokens[index]):
+        return index + 1
+    return index
+
+
+def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
+    if not tokens or depth > 4:
+        return set()
+    executable = basename_token(tokens[0])
+    names = {executable}
+    if executable == "env":
+        index = env_command_index(tokens)
+        if index < len(tokens) and tokens[index] == "-S" and index + 1 < len(tokens):
+            names.update(process_names_from_tokens(command_tokens(tokens[index + 1]), depth=depth + 1))
+        else:
+            names.update(process_names_from_tokens(tokens[index:], depth=depth + 1))
+    elif executable in ("sudo", "doas"):
+        names.update(process_names_from_tokens(tokens[sudo_command_index(tokens) :], depth=depth + 1))
+    elif executable == "nice":
+        names.update(process_names_from_tokens(tokens[nice_command_index(tokens) :], depth=depth + 1))
+    elif executable == "rustup" and len(tokens) >= 4 and tokens[1] == "run":
+        names.update(process_names_from_tokens(tokens[3:], depth=depth + 1))
+    elif executable in ("bash", "dash", "fish", "sh", "zsh"):
+        command = shell_command(tokens)
+        if command is not None:
+            names.update(process_names_from_tokens(command_tokens(command), depth=depth + 1))
+    elif executable.startswith("python"):
+        script_name = python_script_name(tokens, 1)
+        if script_name is not None:
+            names.add(script_name)
+    return names
 
 
 def command_process_names(command: str) -> set[str]:
     tokens = command_tokens(command)
-    if not tokens:
-        return set()
-    index = 0
-    executable = basename_token(tokens[index])
-    if executable == "env":
-        index += 1
-        while index < len(tokens) and "=" in tokens[index] and not tokens[index].startswith("-"):
-            index += 1
-        if index >= len(tokens):
-            return {"env"}
-        executable = basename_token(tokens[index])
-    names = {executable}
-    if executable.startswith("python"):
-        script_name = python_script_name(tokens, index + 1)
-        if script_name is not None:
-            names.add(script_name)
-    return names
+    return process_names_from_tokens(tokens)
 
 
 def matching_process_pattern(command: str, patterns: list[str]) -> str | None:

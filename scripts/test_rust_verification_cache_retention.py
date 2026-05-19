@@ -851,6 +851,58 @@ printf '123 grep cargo {repo}/notes.txt\\n'
             raise AssertionError("argument-only cargo mention blocked candidate deletion")
 
 
+def assert_cache_prune_refuses_wrapped_active_processes_by_cwd() -> None:
+    commands = [
+        "sudo cargo build",
+        "nice cargo build",
+        "env -i cargo build",
+        "rustup run stable cargo build",
+        "bash -c 'cargo test'",
+        "python3 -W ignore scripts/rust_verification.py cargo --repo . -- test",
+    ]
+    for command in commands:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            write_policy_with_cache(repo, active_process_patterns=["cargo", "rust_verification.py"])
+
+            root_base = tmp_path / "rust-root"
+            target = root_base / "bolt-v2" / "target"
+            debug_file = target / "debug" / "old.bin"
+            debug_file.parent.mkdir(parents=True)
+            debug_file.write_bytes(b"abc")
+            old_time = time.time() - (15 * 24 * 60 * 60)
+            os.utime(debug_file, (old_time, old_time))
+            os.utime(debug_file.parent, (old_time, old_time))
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            write_executable(
+                bin_dir / "ps",
+                f"""#!/usr/bin/env bash
+printf '123 {command}\\n'
+""",
+            )
+            proc_dir = tmp_path / "proc" / "123"
+            proc_dir.mkdir(parents=True)
+            (proc_dir / "cwd").symlink_to(repo)
+
+            env = os.environ.copy()
+            env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "proc")
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+            result = run_owner(["cache-prune", "--repo", str(repo), "--apply", "--json"], env=env)
+            if result.returncode != 2:
+                raise AssertionError((command, result.returncode, result.stdout, result.stderr))
+            payload = json.loads(result.stdout)
+            if payload["refused"] is not True or payload["refusal_code"] != "active_process":
+                raise AssertionError((command, payload))
+            if not debug_file.exists():
+                raise AssertionError(f"wrapped active process {command!r} did not protect cache")
+
+
 def assert_cache_prune_apply_waits_for_managed_cargo_lock() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -1478,6 +1530,7 @@ def main() -> int:
     assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd()
     assert_cache_prune_apply_ignores_visible_unrelated_process_by_cwd()
     assert_cache_prune_ignores_pattern_mentions_in_arguments()
+    assert_cache_prune_refuses_wrapped_active_processes_by_cwd()
     assert_cache_prune_apply_waits_for_managed_cargo_lock()
     assert_cache_prune_apply_waits_for_managed_run_lock()
     assert_cache_prune_apply_checks_active_process_before_scan()

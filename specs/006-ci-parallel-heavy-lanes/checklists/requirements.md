@@ -24,7 +24,7 @@
 
 ## Requirement Consistency
 
-- [x] CHK013 Does the spec keep #342 source-fence before full test? [Consistency, Spec FR-011]
+- [x] CHK013 ~~Does the spec keep #342 source-fence before full test?~~ [Consistency, Spec FR-011] **Superseded by #400** (PR #401): the spec no longer requires source-fence to run before test; gate.needs is the active enforcement.
 - [x] CHK014 Does the spec avoid #195, #205, #344, #340, and generic #203 work while still preserving #332 requirements? [Consistency, Spec FR-016]
 - [x] CHK015 Does the spec preserve the single aggregate gate instead of requiring each matrix child as a separate required status? [Consistency, Spec FR-009..FR-010]
 - [x] CHK016 Does the cache-key decision stay bounded and avoid per-shard cold-cache duplication? [Consistency, Research]

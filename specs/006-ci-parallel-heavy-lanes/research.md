@@ -40,11 +40,11 @@
 
 ## Decision: Intentionally duplicate #342 source-fence filters inside full nextest
 
-**Rationale**: #332 allows duplicate execution if it is explicitly documented and covered by one required aggregate gate. Excluding source-fence filters from full nextest would require a filter expression that precisely excludes only the canonical source-fence tests without accidentally removing neighboring integration-test coverage. The safer root choice for this slice is to keep full nextest broad, keep `test` behind `source-fence`, keep both required by `gate`, and document the intentional duplication.
+**Rationale**: #332 allows duplicate execution if it is explicitly documented and covered by one required aggregate gate. Excluding source-fence filters from full nextest would require a filter expression that precisely excludes only the canonical source-fence tests without accidentally removing neighboring integration-test coverage. The safer root choice for this slice is to keep full nextest broad, ~~keep `test` behind `source-fence`~~ (**Superseded by #400** (PR #401): the lanes now run in parallel; gate.needs is the sole merge enforcer), keep both required by `gate`, and document the intentional duplication.
 
 **Alternatives considered**:
 - Exclude the canonical filters from full nextest now: rejected because the marginal speedup is small relative to the risk of an imprecise filter removing non-source-fence coverage.
-- Remove `source-fence` dependency from `test`: rejected because #342 exists to fail deterministic source-fence drift before full nextest.
+- Remove `source-fence` dependency from `test`: rejected because #342 exists to fail deterministic source-fence drift before full nextest. **Adopted by #400** (PR #401): once warm-cache `test-archive` cost fell to ~46s, the parallel-lane wall-clock gain outweighed the fail-fast saving; gate.needs is now the sole merge enforcer.
 
 ## Decision: Use bounded shared nextest cache with shard-1 save
 

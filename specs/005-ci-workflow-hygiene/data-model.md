@@ -13,7 +13,7 @@ Validation rules:
 - Missing required jobs fail closed.
 - Missing gate needs or gate result checks fail closed.
 - `build` must remain detector-output-gated.
-- `test` must remain after `source-fence`.
+- ~~`test` must remain after `source-fence`.~~ **Superseded by #400** (PR #401): the sharded test lane (`test-archive` -> `test-shards` -> `test`) no longer depends on `source-fence`; the lanes run in parallel and `gate.needs` + `needs.source-fence.result == "success"` enforce merge gating.
 
 ## WorkflowHygieneVerifier
 

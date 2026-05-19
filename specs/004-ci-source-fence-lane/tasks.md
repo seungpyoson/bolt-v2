@@ -24,7 +24,7 @@
 
 - [x] T009 [US1] Add `source-fence` recipe in `justfile` running all six verifier scripts and both canonical cargo test filters
 - [x] T010 [US1] Add top-level `source-fence` job in `.github/workflows/ci.yml`
-- [x] T011 [US1] Make `test` depend on `source-fence` in `.github/workflows/ci.yml`
+- [x] T011 [US1] ~~Make `test` depend on `source-fence` in `.github/workflows/ci.yml`~~ **Superseded by #400** (PR #401): the dep was removed; the lanes run in parallel and the active negative invariant is `test-archive must not need source-fence`.
 - [x] T012 [US3] Add `source-fence` to `gate.needs` and require `needs.source-fence.result == "success"`
 - [x] T013 [US1] Document temporary duplicate source-fence test execution until #332 resolves ownership
 

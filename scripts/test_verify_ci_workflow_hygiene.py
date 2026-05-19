@@ -123,6 +123,8 @@ jobs:
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-
       - run: just clippy
 
   check-aarch64:
@@ -160,6 +162,8 @@ jobs:
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-
       - if: needs.detector.outputs.build_required != 'true'
         run: just check-aarch64
 
@@ -184,11 +188,13 @@ jobs:
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-
       - run: just source-fence
 
   test-archive:
     name: nextest archive
-    needs: [detector, source-fence]
+    needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     env:
@@ -307,6 +313,8 @@ jobs:
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-
       - name: Install zig
         run: |
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
@@ -1322,7 +1330,7 @@ def main() -> int:
         "clippy must use isolated managed target cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n",
+            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n",
             "",
         ),
     )
@@ -1487,6 +1495,105 @@ def main() -> int:
             "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
         ),
     )
+    # #400: every managed-target cache must declare a restore-keys prefix fallback.
+    assert_error(
+        "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - run: just clippy",
+        ),
+    )
+    assert_error(
+        "check-aarch64 managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-\n      - if: needs.detector.outputs.build_required != 'true'",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - if: needs.detector.outputs.build_required != 'true'",
+        ),
+    )
+    assert_error(
+        "source-fence managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: just source-fence",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - run: just source-fence",
+        ),
+    )
+    assert_error(
+        "build managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-\n      - name: Install zig",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - name: Install zig",
+        ),
+    )
+    # #400 parser tightness: the inline-scalar form of restore-keys is a valid
+    # YAML alternative to the block-scalar (`|`) form. The verifier must accept
+    # both. Uses clippy's block-scalar declaration as the conversion source.
+    assert_clean(
+        workflow=replace_once(
+            BASE_WORKFLOW,
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+        ),
+    )
+    # #400 parser tightness: a restore-keys block-scalar declaring an unrelated
+    # cache family prefix must fail the per-job prefix check.
+    assert_error(
+        "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: |\n            nextest-archive-v1-\n      - run: just clippy",
+        ),
+    )
+    # #400 parser tightness: an empty block-scalar body (no prefix line under
+    # `restore-keys: |`) must not be treated as a satisfied restore-keys.
+    assert_error(
+        "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: |\n      - run: just clippy",
+        ),
+    )
+    # #400 parser tightness: YAML 1.2 §8.1.1 allows a block-scalar header to
+    # carry an explicit indentation indicator (e.g., `|2`, `|-3`, `>+1`) in
+    # addition to the bare/chomping forms. Currently the verifier only
+    # recognises six fixed forms (`|`, `>`, `|-`, `>-`, `|+`, `>+`); any
+    # block-scalar header containing an explicit indentation digit is
+    # silently skipped by the body-scan and the prefix check spuriously
+    # fails on an otherwise-valid restore-keys declaration. The fixture
+    # below switches clippy's `|` marker to `|2` (content indent 12 = 10 + 2
+    # relative to the `restore-keys:` line at indent 10, matching the YAML
+    # 1.2 spec).
+    assert_clean(
+        workflow=replace_once(
+            BASE_WORKFLOW,
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: |2\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+        ),
+    )
+    # #400 parser tightness: the body-scan that locates the `restore-keys:`
+    # marker line uses an unscoped substring match (`"restore-keys:" in
+    # text`) and walks the entire step block from the top. A step-level
+    # `name:` carrying the literal substring `restore-keys:` (which survives
+    # `strip_comment` because the substring is inside a double-quoted
+    # scalar) appears before the real `restore-keys:` input line, so the
+    # body-scan anchors on the wrong line; with `marker_indent` set to the
+    # step-level indent (8), the next line (`with:` at indent 8) ends the
+    # sub-scan immediately, the real block-scalar body (indent 12) is never
+    # consulted, and the prefix check spuriously fails. After the fix, the
+    # body-scan must anchor on the actual `restore-keys:` input line (the
+    # one whose `block_input_items` entry produced the block-scalar marker).
+    assert_clean(
+        workflow=replace_once(
+            BASE_WORKFLOW,
+            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "      - uses: actions/cache@example\n        name: \"Cache with restore-keys: probe\"\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+        ),
+    )
     assert_error(
         "test-archive build must be skipped on archive cache hit",
         replace_once(
@@ -1523,16 +1630,16 @@ def main() -> int:
         "test-archive needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
-            "  test-archive:\n    name: nextest archive\n    needs: source-fence",
+            "  test-archive:\n    name: nextest archive\n    needs: detector",
+            "  test-archive:\n    name: nextest archive\n    needs: fmt-check",
         ),
     )
     assert_error(
-        "test-archive needs source-fence",
+        "test-archive must not need source-fence",
         replace_once(
             BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
             "  test-archive:\n    name: nextest archive\n    needs: detector",
+            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
         ),
     )
     assert_error(

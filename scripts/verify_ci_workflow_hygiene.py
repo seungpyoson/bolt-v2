@@ -237,6 +237,13 @@ CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
 SHARED_REGISTRY_CACHE_KEY = "cargo-registry-git-v1"
 SHARED_REGISTRY_SAVE_IF = "${{ github.job == 'test-archive' }}"
 REGISTRY_CACHE_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
+# Jobs that opt into the managed-target actions/cache. Each value is the
+# job-specific key prefix segment between `managed-target-v1-${runner.os}-
+# ${runner.arch}-` and the hashFiles suffix. Adding a new job that uses
+# `steps.setup.outputs.managed_target_dir` requires (a) registering its
+# expected prefix here so `managed_target_cache_errors` enforces key isolation
+# AND a matching `restore-keys` prefix fallback (#400), and (b) updating the
+# self-test fixture in `scripts/test_verify_ci_workflow_hygiene.py`.
 MANAGED_TARGET_CACHE_KEYS = {
     "clippy": "clippy-host",
     "check-aarch64": "check-aarch64-dev",
@@ -689,6 +696,54 @@ def block_uses_managed_target_cache(block: list[str]) -> bool:
     )
 
 
+def block_key_value_has_prefix(block: list[str], prefix: str) -> bool:
+    for name, value in block_input_items(block):
+        if name == "key" and prefix in value:
+            return True
+    return False
+
+
+def block_declares_restore_keys_prefix(block: list[str], prefix: str) -> bool:
+    # Locate the `with:` line to determine the input indent. The marker for
+    # `restore-keys:` is anchored at that exact indent so earlier lines whose
+    # values happen to contain the substring `restore-keys:` (e.g., a quoted
+    # step-level `name:`) cannot impersonate the input.
+    input_indent: int | None = None
+    for line in block:
+        match = re.match(r"^(\s*)with:\s*$", strip_comment(line).rstrip())
+        if match is not None:
+            input_indent = len(match.group(1)) + 2
+            break
+    if input_indent is None:
+        return False
+    marker_re = re.compile(rf"^\s{{{input_indent}}}restore-keys:\s*(.*)$")
+    for marker_idx, line in enumerate(block):
+        match = marker_re.match(strip_comment(line))
+        if not match:
+            continue
+        value = match.group(1).strip()
+        # Inline-scalar form: `restore-keys: managed-target-v1-...-clippy-host-`.
+        # Anything not starting with a block-scalar indicator is treated as an
+        # inline value and matched directly.
+        if not value.startswith(("|", ">")):
+            return prefix in value
+        # Block-scalar form: `restore-keys: |` (plus YAML 1.2 chomping or
+        # explicit-indentation indicators like `|2`, `>+1`, `|-3`). Body lines
+        # are indented strictly more than the marker line; the scan stops at
+        # the first line whose indent is equal-or-lesser.
+        for child in block[marker_idx + 1:]:
+            child_text = strip_comment(child)
+            if not child_text.strip():
+                continue
+            child_indent = len(child) - len(child.lstrip(" "))
+            if child_indent <= input_indent:
+                break
+            if prefix in child_text:
+                return True
+        return False
+    return False
+
+
 def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
     expected_key = MANAGED_TARGET_CACHE_KEYS[job]
     target_blocks = [
@@ -699,8 +754,26 @@ def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
     if not target_blocks:
         return [f"{job} must use isolated managed target cache"]
 
-    if not any(f"managed-target-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{expected_key}-" in uncommented_text(block) for block in target_blocks):
+    expected_prefix = (
+        f"managed-target-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{expected_key}-"
+    )
+    # The exact `key:` value must carry the job-specific prefix. Checking the
+    # whole block's text would also match a prefix that only appears in
+    # `restore-keys:`, masking key/restore-keys drift.
+    if not any(block_key_value_has_prefix(block, expected_prefix) for block in target_blocks):
         return [f"{job} managed target cache key must isolate {expected_key}"]
+
+    # #400: each managed-target cache MUST declare a restore-keys prefix fallback
+    # matching the job's key prefix. Without it, any change to CI orchestration
+    # files included in hashFiles (justfile, ci/rust-verification.toml,
+    # scripts/rust_verification.py) misses the exact key and pays the full
+    # ~22m aarch64 release cross-compile instead of an incremental rebuild.
+    if not any(
+        block_declares_restore_keys_prefix(block, expected_prefix) for block in target_blocks
+    ):
+        return [
+            f"{job} managed target cache must declare restore-keys prefix {expected_prefix}"
+        ]
     return []
 
 
@@ -1358,8 +1431,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
         test_archive_needs = extract_needs(jobs["test-archive"])
         if "detector" not in test_archive_needs:
             errors.append("test-archive needs detector")
-        if "source-fence" not in test_archive_needs:
-            errors.append("test-archive needs source-fence")
+        # #400: source-fence and test-archive run in parallel. The aggregate
+        # `gate` job is the sole merge enforcer for both lanes; reintroducing a
+        # serial dep would re-create the fail-fast cost #400 eliminated.
+        if "source-fence" in test_archive_needs:
+            errors.append("test-archive must not need source-fence")
     if "test-shards" in jobs and "test-archive" not in extract_needs(jobs["test-shards"]):
         errors.append("test-shards needs test-archive")
 

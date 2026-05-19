@@ -17,8 +17,9 @@
 
 ## GateInvariant
 
-- **Fields**: `gate.needs`, `needs.source-fence.result` check, `test.needs`, linter error messages.
+- **Fields**: `gate.needs`, `needs.source-fence.result` check, ~~`test.needs`~~, linter error messages.
 - **Validation**: only `success` passes for `source-fence`; failed, cancelled, timed-out, skipped, missing, or stale same-workflow source-fence evidence cannot satisfy gate.
+- **Superseded by #400** (PR #401): the `test.needs` field is no longer carried by the invariant. After #332 sharded `test`, the carry-forward dep was `test-archive needs: [detector, source-fence]`; #400 removed it and the verifier now asserts `test-archive must not need source-fence`. The merge invariant for `source-fence` is wholly enforced by `gate.needs` plus the `needs.source-fence.result == "success"` check.
 
 ## TemporaryDuplicateOwnershipNote
 

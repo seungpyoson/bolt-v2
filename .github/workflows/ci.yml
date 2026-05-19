@@ -175,6 +175,8 @@ jobs:
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-
 
       - name: clippy
         run: just clippy
@@ -224,6 +226,8 @@ jobs:
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-
 
       - name: check-aarch64
         if: needs.detector.outputs.build_required != 'true'
@@ -263,6 +267,8 @@ jobs:
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-
 
       - name: source-fence
         env:
@@ -273,9 +279,14 @@ jobs:
   # #342 owns these canonical source-fence filters. #332 intentionally keeps
   # full nextest duplicate coverage under the same aggregate gate rather than
   # adding brittle filter expressions that could hide neighboring tests.
+  # #400 decoupled this from source-fence so the two lanes run in parallel.
+  # Merge enforcement: `gate.needs` requires `source-fence` and the aggregate
+  # `test` lane (which transitively requires `test-archive` and `test-shards`)
+  # to succeed; see the result checks for `source-fence` and `test` in the
+  # `gate` job below.
   test-archive:
     name: nextest archive
-    needs: [detector, source-fence]
+    needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     env:
@@ -425,6 +436,8 @@ jobs:
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:

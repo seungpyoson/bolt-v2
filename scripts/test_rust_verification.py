@@ -176,9 +176,25 @@ def assert_system_python_contract() -> None:
         raise AssertionError(result.stdout)
 
 
+def assert_oversized_policy_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        policy = repo / "ci" / "rust-verification.toml"
+        policy.write_text("schema_version = 1\n" + ("# padding\n" * 140_000), encoding="utf-8")
+
+        result = run_owner(["validate-policy", "--repo", str(repo)], env=os.environ.copy())
+        if result.returncode != 2:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        if "exceeds maximum size" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
 def main() -> int:
     assert_repo_local_owner_contract()
     assert_system_python_contract()
+    assert_oversized_policy_fails_closed()
     print("OK: Rust verification owner self-tests passed.")
     return 0
 

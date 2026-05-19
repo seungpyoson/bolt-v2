@@ -22,6 +22,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback.
 
 
 POLICY_RELATIVE_PATH = pathlib.Path("ci/rust-verification.toml")
+MAX_POLICY_BYTES = 1024 * 1024
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SCRUB_ENV_KEYS = (
     "BOLT_RUST_VERIFICATION_ROOT",
@@ -38,49 +39,60 @@ class PolicyError(RuntimeError):
     pass
 
 
+def check_policy_size(path: pathlib.Path) -> None:
+    size = path.stat().st_size
+    if size > MAX_POLICY_BYTES:
+        raise PolicyError(f"{POLICY_RELATIVE_PATH} exceeds maximum size of {MAX_POLICY_BYTES} bytes")
+
+
 def parse_minimal_toml(path: pathlib.Path) -> dict[str, Any]:
+    check_policy_size(path)
     data: dict[str, Any] = {}
     current: dict[str, Any] = data
-    for lineno, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            current = data
-            for part in line[1:-1].split("."):
-                if not part or not SAFE_IDENTIFIER_RE.match(part):
-                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unsupported table name")
-                child = current.setdefault(part, {})
-                if not isinstance(child, dict):
-                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: table conflicts with scalar")
-                current = child
-            continue
-        key, sep, value_text = line.partition("=")
-        if not sep:
-            raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: expected key = value")
-        key = key.strip()
-        if not SAFE_IDENTIFIER_RE.match(key):
-            raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unsupported key")
-        value_text = value_text.strip()
-        if value_text.startswith('"') and value_text.endswith('"'):
-            try:
-                value: Any = json.loads(value_text)
-            except json.JSONDecodeError as exc:
-                raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: invalid string") from exc
-        elif value_text.isdigit():
-            value = int(value_text)
-        else:
-            raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unsupported value")
-        current[key] = value
+    with path.open("r", encoding="utf-8") as handle:
+        lines = enumerate(handle, start=1)
+        for lineno, raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                current = data
+                for part in line[1:-1].split("."):
+                    if not part or not SAFE_IDENTIFIER_RE.match(part):
+                        raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unsupported table name")
+                    child = current.setdefault(part, {})
+                    if not isinstance(child, dict):
+                        raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: table conflicts with scalar")
+                    current = child
+                continue
+            key, sep, value_text = line.partition("=")
+            if not sep:
+                raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: expected key = value")
+            key = key.strip()
+            if not SAFE_IDENTIFIER_RE.match(key):
+                raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unsupported key")
+            value_text = value_text.strip()
+            if value_text.startswith('"') and value_text.endswith('"'):
+                try:
+                    value: Any = json.loads(value_text)
+                except json.JSONDecodeError as exc:
+                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: invalid string") from exc
+            elif value_text.isdigit():
+                value = int(value_text)
+            else:
+                raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unsupported value")
+            current[key] = value
     return data
 
 
 def load_toml(path: pathlib.Path) -> dict[str, Any]:
     if _toml is None:
         return parse_minimal_toml(path)
+    check_policy_size(path)
     try:
-        return _toml.load(path.open("rb"))
-    except Exception as exc:
+        with path.open("rb") as handle:
+            return _toml.load(handle)
+    except _toml.TOMLDecodeError as exc:
         raise PolicyError(f"{POLICY_RELATIVE_PATH} is invalid TOML: {exc}") from exc
 
 

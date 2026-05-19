@@ -376,7 +376,7 @@ mod tests {
         config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
     };
 
-    use crate::bolt_v3_config::BoltV3RootConfig;
+    use crate::bolt_v3_config::load_bolt_v3_config;
     use crate::bolt_v3_market_families::updown::{self, UpdownTargetPlan};
     use crate::bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderBinding, ProviderResolvedSecrets,
@@ -480,14 +480,8 @@ mod tests {
     };
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
-        let root_text = include_str!("../tests/fixtures/bolt_v3/root.toml");
-        let root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
-        LoadedBoltV3Config {
-            root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
-            config_bundle_checksum: String::new(),
-            root,
-            strategies: Vec::new(),
-        }
+        load_bolt_v3_config(&PathBuf::from("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config bundle should load")
     }
 
     fn fixture_polymarket_secrets() -> ResolvedBoltV3PolymarketSecrets {

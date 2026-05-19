@@ -23,7 +23,9 @@ use nautilus_core::datetime::NANOSECONDS_IN_SECOND;
 
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_market_families::{MarketIdentityPlan, updown::plan_market_identity},
+    bolt_v3_market_families::{
+        MarketIdentityPlan, MarketIdentityPlanError, market_identity_plan_from_config,
+    },
     bolt_v3_providers::{self, ProviderAdapterMapContext},
     bolt_v3_secrets::ResolvedBoltV3Secrets,
 };
@@ -113,7 +115,7 @@ impl fmt::Debug for BoltV3AdapterConfigs {
 
 #[derive(Debug)]
 pub enum BoltV3AdapterMappingError {
-    MarketIdentity(crate::bolt_v3_market_families::updown::BoltV3MarketIdentityError),
+    MarketIdentity(MarketIdentityPlanError),
     /// The configured client provider and the resolved secret provider disagree.
     /// Indicates an internal-consistency bug between the resolver output
     /// and the mapper inputs.
@@ -237,7 +239,8 @@ pub fn map_bolt_v3_adapters(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
-    let plan = plan_market_identity(loaded).map_err(BoltV3AdapterMappingError::MarketIdentity)?;
+    let plan = market_identity_plan_from_config(loaded)
+        .map_err(BoltV3AdapterMappingError::MarketIdentity)?;
     map_bolt_v3_adapters_with_market_identity(loaded, resolved, &plan, nt_market_clock())
 }
 

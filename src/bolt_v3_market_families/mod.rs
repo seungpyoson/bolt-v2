@@ -93,6 +93,25 @@ pub struct MarketIdentityPlan {
     targets: Vec<Arc<dyn MarketIdentityTarget>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketIdentityPlanError {
+    message: String,
+}
+
+impl MarketIdentityPlanError {
+    fn new(message: String) -> Self {
+        Self { message }
+    }
+}
+
+impl std::fmt::Display for MarketIdentityPlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for MarketIdentityPlanError {}
+
 pub struct MarketIdentityExecutionClientTargetRef<'a> {
     pub family_key: &'static str,
     pub configured_target_id: &'a str,
@@ -139,6 +158,13 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[MarketFamilyVali
 
 pub fn validation_bindings() -> &'static [MarketFamilyValidationBinding] {
     VALIDATION_BINDINGS
+}
+
+pub fn market_identity_plan_from_config(
+    loaded: &LoadedBoltV3Config,
+) -> Result<MarketIdentityPlan, MarketIdentityPlanError> {
+    updown::plan_market_identity(loaded)
+        .map_err(|error| MarketIdentityPlanError::new(error.to_string()))
 }
 
 pub fn instrument_filters_from_config(

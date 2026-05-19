@@ -1333,8 +1333,6 @@ def verify_workflow(workflow_text: str) -> list[str]:
         test_archive_needs = extract_needs(jobs["test-archive"])
         if "detector" not in test_archive_needs:
             errors.append("test-archive needs detector")
-        if "source-fence" not in test_archive_needs:
-            errors.append("test-archive needs source-fence")
     if "test-shards" in jobs and "test-archive" not in extract_needs(jobs["test-shards"]):
         errors.append("test-shards needs test-archive")
 

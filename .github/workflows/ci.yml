@@ -279,9 +279,11 @@ jobs:
   # #342 owns these canonical source-fence filters. #332 intentionally keeps
   # full nextest duplicate coverage under the same aggregate gate rather than
   # adding brittle filter expressions that could hide neighboring tests.
+  # #400 decoupled this from source-fence so the two lanes run in parallel; the
+  # aggregate `gate` job still requires both lanes succeed before merge.
   test-archive:
     name: nextest archive
-    needs: [detector, source-fence]
+    needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     env:

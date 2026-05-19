@@ -188,7 +188,7 @@ jobs:
 
   test-archive:
     name: nextest archive
-    needs: [detector, source-fence]
+    needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     env:
@@ -1234,16 +1234,8 @@ def main() -> int:
         "test-archive needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
-            "  test-archive:\n    name: nextest archive\n    needs: source-fence",
-        ),
-    )
-    assert_error(
-        "test-archive needs source-fence",
-        replace_once(
-            BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
             "  test-archive:\n    name: nextest archive\n    needs: detector",
+            "  test-archive:\n    name: nextest archive\n    needs: fmt-check",
         ),
     )
     assert_error(

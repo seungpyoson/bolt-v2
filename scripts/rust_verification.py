@@ -10,6 +10,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -452,6 +453,59 @@ def path_is_or_inside(path: pathlib.Path, parent: pathlib.Path) -> bool:
     return True
 
 
+def command_tokens(command: str) -> list[str]:
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return command.split()
+
+
+def basename_token(token: str) -> str:
+    return pathlib.Path(token).name
+
+
+def python_script_name(tokens: list[str], start: int) -> str | None:
+    index = start
+    while index < len(tokens):
+        token = tokens[index]
+        if token in ("-c", "-m"):
+            return None
+        if token == "--":
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return basename_token(token)
+    return None
+
+
+def command_process_names(command: str) -> set[str]:
+    tokens = command_tokens(command)
+    if not tokens:
+        return set()
+    index = 0
+    executable = basename_token(tokens[index])
+    if executable == "env":
+        index += 1
+        while index < len(tokens) and "=" in tokens[index] and not tokens[index].startswith("-"):
+            index += 1
+        if index >= len(tokens):
+            return {"env"}
+        executable = basename_token(tokens[index])
+    names = {executable}
+    if executable.startswith("python"):
+        script_name = python_script_name(tokens, index + 1)
+        if script_name is not None:
+            names.add(script_name)
+    return names
+
+
+def matching_process_pattern(command: str, patterns: list[str]) -> str | None:
+    names = command_process_names(command)
+    return next((pattern for pattern in patterns if basename_token(pattern) in names), None)
+
+
 def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: dict[str, Any]) -> list[dict[str, Any]]:
     patterns = active_process_patterns(policy)
     if not patterns:
@@ -476,7 +530,7 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
         pid_text, _, command = stripped.partition(" ")
         if not pid_text.isdigit() or int(pid_text) == current_pid:
             continue
-        matched_pattern = next((pattern for pattern in patterns if pattern in command), None)
+        matched_pattern = matching_process_pattern(command, patterns)
         if matched_pattern is None:
             continue
         pid = int(pid_text)
@@ -733,6 +787,9 @@ def cmd_describe(args: argparse.Namespace) -> int:
 
 
 def cmd_cache_status(args: argparse.Namespace) -> int:
+    if not args.json:
+        print("--json is required for cache-status", file=sys.stderr)
+        return 2
     repo = repo_path(args.repo)
     try:
         print(json.dumps(cache_status_payload(repo), sort_keys=True))
@@ -743,6 +800,9 @@ def cmd_cache_status(args: argparse.Namespace) -> int:
 
 
 def cmd_cache_prune(args: argparse.Namespace) -> int:
+    if not args.json:
+        print("--json is required for cache-prune", file=sys.stderr)
+        return 2
     repo = repo_path(args.repo)
     dry_run = not args.apply
     try:
@@ -818,7 +878,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     cache_status = subparsers.add_parser("cache-status")
     cache_status.add_argument("--repo", required=True)
-    cache_status.add_argument("--json", action="store_true")
+    cache_status.add_argument("--json", action="store_true", required=True, help="required; emit JSON output")
     cache_status.set_defaults(func=cmd_cache_status)
 
     cache_prune = subparsers.add_parser("cache-prune")
@@ -826,7 +886,7 @@ def build_parser() -> argparse.ArgumentParser:
     cache_prune_mode = cache_prune.add_mutually_exclusive_group()
     cache_prune_mode.add_argument("--dry-run", action="store_true")
     cache_prune_mode.add_argument("--apply", action="store_true")
-    cache_prune.add_argument("--json", action="store_true")
+    cache_prune.add_argument("--json", action="store_true", required=True, help="required; emit JSON output")
     cache_prune.set_defaults(func=cmd_cache_prune)
 
     cleanup = subparsers.add_parser("cleanup")

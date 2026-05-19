@@ -180,6 +180,25 @@ def assert_cache_status_reports_managed_target_tree() -> None:
                 raise AssertionError(payload)
 
 
+def assert_cache_commands_require_json_flag() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo)
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
+
+        status = run_owner(["cache-status", "--repo", str(repo)], env=env)
+        if status.returncode == 0 or "--json" not in status.stderr:
+            raise AssertionError((status.returncode, status.stdout, status.stderr))
+
+        prune = run_owner(["cache-prune", "--repo", str(repo), "--dry-run"], env=env)
+        if prune.returncode == 0 or "--json" not in prune.stderr:
+            raise AssertionError((prune.returncode, prune.stdout, prune.stderr))
+
+
 def assert_cache_policy_syntax_works_without_external_toml() -> None:
     system_python = pathlib.Path("/usr/bin/python3")
     if not system_python.exists():
@@ -791,6 +810,47 @@ printf '123 cargo test\\n'
             raise AssertionError("visible unrelated cargo process blocked candidate deletion")
 
 
+def assert_cache_prune_ignores_pattern_mentions_in_arguments() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, active_process_patterns=["cargo"])
+
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        debug_file = target / "debug" / "old.bin"
+        debug_file.parent.mkdir(parents=True)
+        debug_file.write_bytes(b"abc")
+        old_time = time.time() - (15 * 24 * 60 * 60)
+        os.utime(debug_file, (old_time, old_time))
+        os.utime(debug_file.parent, (old_time, old_time))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            f"""#!/usr/bin/env bash
+printf '123 grep cargo {repo}/notes.txt\\n'
+""",
+        )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "missing-proc")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+        result = run_owner(["cache-prune", "--repo", str(repo), "--apply", "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        removed = {entry["relative_path"] for entry in payload["removed"]}
+        if removed != {"debug"}:
+            raise AssertionError(payload)
+        if debug_file.parent.exists():
+            raise AssertionError("argument-only cargo mention blocked candidate deletion")
+
+
 def assert_cache_prune_apply_waits_for_managed_cargo_lock() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -1399,6 +1459,7 @@ def assert_repo_policy_declares_cache_retention() -> None:
 
 def main() -> int:
     assert_cache_status_reports_managed_target_tree()
+    assert_cache_commands_require_json_flag()
     assert_cache_policy_syntax_works_without_external_toml()
     assert_cache_status_uses_allocated_disk_bytes_for_sparse_files()
     assert_cache_status_uses_single_scan_for_subtree_bytes()
@@ -1416,6 +1477,7 @@ def main() -> int:
     assert_cache_prune_active_process_scan_uses_portable_ps_columns()
     assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd()
     assert_cache_prune_apply_ignores_visible_unrelated_process_by_cwd()
+    assert_cache_prune_ignores_pattern_mentions_in_arguments()
     assert_cache_prune_apply_waits_for_managed_cargo_lock()
     assert_cache_prune_apply_waits_for_managed_run_lock()
     assert_cache_prune_apply_checks_active_process_before_scan()

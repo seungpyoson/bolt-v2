@@ -488,24 +488,6 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
                         strategy.execution_client_id
                     ));
                 }
-                // Polymarket per-target market-slug filters are attached
-                // during data-client mapping and bind by `client_key` in
-                // `bolt_v3_providers::polymarket::build_market_slug_filters_for_client`.
-                // If a strategy routes execution to a Polymarket client
-                // whose `client_key` carries no [data] block, those
-                // filters silently fall to zero and the configured target
-                // market restriction is lost. Fail closed by requiring a
-                // co-located [data] block on the same `clients.<id>`.
-                if client.venue.as_str() == crate::bolt_v3_providers::polymarket::KEY
-                    && client.data.is_none()
-                {
-                    errors.push(format!(
-                        "{context}: strategy execution_client_id `{}` must reference a data-capable client \
-                         (the referenced client has no [data] block; a Polymarket execution client_key must \
-                          co-locate the [data] adapter so per-target market-slug filters bind to this client_key)",
-                        strategy.execution_client_id
-                    ));
-                }
             }
         }
 

@@ -215,6 +215,22 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
         }
     }
     if let Some(execution) = &client.execution {
+        // Polymarket per-target market-slug filters are attached during
+        // data-client mapping by `build_market_slug_filters_for_client`
+        // and bind by `client_key`. A Polymarket client_key that carries
+        // [execution] but no [data] block cannot receive those filters,
+        // so any strategy routing execution through this client_key
+        // would silently lose its configured target market restriction.
+        // Fail closed by requiring the [data] adapter to be co-located
+        // on the same `clients.<id>` as the [execution] adapter.
+        if client.data.is_none() {
+            errors.push(format!(
+                "clients.{key} (provider=POLYMARKET) declares [execution] but no [data] block is configured; \
+                 Polymarket per-target market-slug filters are attached during data-client mapping and bind by \
+                 client_key, so the [data] adapter must be co-located on the same `clients.<id>` as the \
+                 [execution] adapter to keep configured target market filters bound to this client_key"
+            ));
+        }
         match execution.clone().try_into::<PolymarketExecutionConfig>() {
             Ok(parsed) => {
                 errors.extend(validate_funder(key, &parsed));

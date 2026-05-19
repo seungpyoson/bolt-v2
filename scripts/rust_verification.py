@@ -195,7 +195,19 @@ def cmd_validate_policy(args: argparse.Namespace) -> int:
     except (OSError, PolicyError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    print(json.dumps({"status": "ok", "policy": str(policy_path(repo)), "project_id": policy["project_id"]}, sort_keys=True))
+    build = policy["commands"]["build"]
+    print(
+        json.dumps(
+            {
+                "build_profile": build["profile"],
+                "build_target": build["target"],
+                "policy": str(policy_path(repo)),
+                "project_id": policy["project_id"],
+                "status": "ok",
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

@@ -179,8 +179,9 @@ ci-lint-workflow:
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
     just_target='{{target}}'
     managed_build_profile='release'
-    toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('ci/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
-    toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('ci/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
+    policy_json="$(python3 "{{rust_verification_owner}}" validate-policy --repo "{{repo_root}}")"
+    toml_target="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_target"])')"
+    toml_profile="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_profile"])')"
     if ! python3 scripts/test_verify_ci_workflow_hygiene.py; then
         failed=1
     fi

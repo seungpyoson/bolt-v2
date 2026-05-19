@@ -27,7 +27,7 @@ RUNTIME_SURFACE_PATTERNS = (
     "tests/*.sh",
 )
 RUNTIME_SURFACE_EXCLUDES = (
-    "scripts/test_*.py",
+    "scripts/test_rust_verification_decoupling.py",
 )
 REQUIRED_RUNTIME_SURFACES = (
     ".github/workflows/ci-docs-pass-stub.yml",

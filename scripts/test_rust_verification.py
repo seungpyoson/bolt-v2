@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import json
 import pathlib
 import subprocess
 import sys
@@ -145,6 +146,16 @@ printf 'args=%s\\n' "$*" >> {just_log}
         result = run_owner(["validate-policy", "--repo", str(repo)], env=env)
         if result.returncode != 0:
             raise AssertionError(result.stderr)
+        payload = json.loads(result.stdout)
+        expected_payload = {
+            "build_profile": "release",
+            "build_target": "aarch64-unknown-linux-gnu",
+            "policy": str(repo / "ci" / "rust-verification.toml"),
+            "project_id": "bolt-v2",
+            "status": "ok",
+        }
+        if payload != expected_payload:
+            raise AssertionError(payload)
 
 
 def assert_system_python_contract() -> None:

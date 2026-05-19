@@ -5,9 +5,7 @@
 //! stay outside this core boundary.
 
 use crate::bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey};
-use crate::bolt_v3_decision_evidence::{
-    BoltV3DecisionEvidenceWriter, JsonlBoltV3DecisionEvidenceWriter,
-};
+use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter;
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_live::node::LiveNode;
@@ -17,6 +15,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy)]
 pub struct StrategyRuntimeBinding {
     pub key: &'static str,
+    pub strategy_kind: fn() -> &'static str,
     pub register: for<'a> fn(
         &mut LiveNode,
         StrategyRegistrationContext<'a>,
@@ -27,6 +26,7 @@ pub struct StrategyRuntimeBinding {
 pub struct StrategyRegistrationContext<'a> {
     pub loaded: &'a LoadedBoltV3Config,
     pub strategy: &'a LoadedStrategy,
+    pub strategy_kind: &'static str,
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
@@ -39,9 +39,17 @@ pub struct BoltV3RegisteredStrategy {
     pub registered_strategy_id: String,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BoltV3StrategyRegistrationSummary {
     pub registered: Vec<BoltV3RegisteredStrategy>,
+}
+
+impl BoltV3StrategyRegistrationSummary {
+    fn empty() -> Self {
+        Self {
+            registered: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -91,19 +99,12 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
-    let mut summary = BoltV3StrategyRegistrationSummary::default();
+    let mut summary = BoltV3StrategyRegistrationSummary::empty();
     if loaded.strategies.is_empty() {
         return Ok(summary);
     }
-
-    let decision_evidence = Arc::new(
-        JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
-            BoltV3StrategyRegistrationError::Evidence {
-                message: error.to_string(),
-            }
-        })?,
-    );
 
     for strategy in &loaded.strategies {
         let binding = bindings
@@ -117,6 +118,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
             StrategyRegistrationContext {
                 loaded,
                 strategy,
+                strategy_kind: (binding.strategy_kind)(),
                 resolved,
                 decision_evidence: decision_evidence.clone(),
                 submit_admission: submit_admission.clone(),

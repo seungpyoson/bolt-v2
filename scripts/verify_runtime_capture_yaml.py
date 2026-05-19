@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 try:
@@ -147,10 +148,21 @@ SUB_EVIDENCE_KEYWORDS = (
 )
 LINE_REF_RE = re.compile(r":\d+(?:-\d+)?\b")
 PATTERN_HELPER_RE = re.compile(r"\b([a-z][a-z0-9_]*_pattern)\(\)")
+PATTERN_HELPER_DEF_RE_TEMPLATE = r"\bfn\s+{}\s*\("
+RAW_STRING_START_RE = re.compile(r"(?:b|c)?r(#{0,255})\"")
 SUBSCRIBE_CALL_RE = re.compile(r"\b(subscribe_[a-z0-9_]+)\s*\(", re.MULTILINE)
-SUBSCRIBE_FN_RE = re.compile(r"^pub fn (subscribe_[a-z0-9_]+)\b", re.MULTILINE)
+SUBSCRIBE_FN_RE = re.compile(
+    r"^pub\s+(?:async\s+)?fn\s+(subscribe_[a-z0-9_]+)\b", re.MULTILINE
+)
 TEST_FN_RE_TEMPLATE = r"\b(?:async\s+)?fn\s+{}\s*\("
-RISK_JSONL_PATH_FRAGMENT = 'join("risk")'
+RISK_DIR_CONST_RE = re.compile(
+    r'const\s+RISK_DIR:\s*&str\s*=\s*(?:stringify!\(risk\)|"risk")\s*;'
+)
+RISK_JSONL_PATH_RE = re.compile(
+    r'\.join\(\s*(?:RISK_DIR|"risk")\s*\)\s*'
+    r'\.join\(\s*(?:TRADING_STATE_CHANGED_FILE|"trading_state_changed\.jsonl")\s*\)',
+    re.DOTALL,
+)
 RISK_JSONL_FILENAME = "trading_state_changed.jsonl"
 
 
@@ -158,17 +170,40 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def has_risk_jsonl_path(src_text: str) -> bool:
+    path_text = strip_rust_comments_and_strings(
+        src_text,
+        preserve_string_literals={"risk", RISK_JSONL_FILENAME},
+    )
+    return (
+        RISK_DIR_CONST_RE.search(path_text) is not None
+        and RISK_JSONL_FILENAME in path_text
+        and RISK_JSONL_PATH_RE.search(path_text) is not None
+    )
+
+
+def has_pattern_helper_definition(src_text: str, helper: str) -> bool:
+    definition_text = strip_rust_comments_and_strings(src_text)
+    return (
+        re.search(
+            PATTERN_HELPER_DEF_RE_TEMPLATE.format(re.escape(helper)), definition_text
+        )
+        is not None
+    )
+
+
 def load_yaml(path: Path):
     return yaml.safe_load(read(path))
 
 
 def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
-    cargo_text = read(REPO_ROOT / "Cargo.toml")
-    dependency_rows = re.findall(
-        r'^\s*(nautilus-[\w-]+)\s*=\s*\{([^\n]*)\}',
-        cargo_text,
-        re.MULTILINE,
-    )
+    cargo_doc = tomllib.loads(read(REPO_ROOT / "Cargo.toml"))
+    dependencies = cargo_doc.get("dependencies", {})
+    dependency_rows = [
+        (crate, spec)
+        for crate, spec in dependencies.items()
+        if isinstance(crate, str) and crate.startswith("nautilus-")
+    ]
     if not dependency_rows:
         findings.append(
             (
@@ -179,8 +214,20 @@ def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
         return None
 
     revs: set[str] = set()
-    for crate, body in dependency_rows:
-        if "nautechsystems/nautilus_trader.git" not in body:
+    for crate, spec in dependency_rows:
+        if not isinstance(spec, dict):
+            findings.append(
+                (
+                    "13.pin_revision_mismatch",
+                    f"Cargo.toml dependency {crate} must use an inline table",
+                )
+            )
+            continue
+        git_source = spec.get("git")
+        if (
+            not isinstance(git_source, str)
+            or "nautechsystems/nautilus_trader.git" not in git_source
+        ):
             findings.append(
                 (
                     "13.pin_revision_mismatch",
@@ -188,8 +235,8 @@ def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
                 )
             )
             continue
-        match = re.search(r'\brev\s*=\s*"([0-9a-f]{40})"', body)
-        if not match:
+        revision = spec.get("rev")
+        if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
             findings.append(
                 (
                     "13.pin_revision_missing",
@@ -197,7 +244,7 @@ def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
                 )
             )
             continue
-        revs.add(match.group(1))
+        revs.add(revision)
     if len(revs) != 1:
         findings.append(
             (
@@ -209,7 +256,9 @@ def cargo_nautilus_revision(findings: list[tuple[str, str]]) -> str | None:
     return next(iter(revs))
 
 
-def strip_rust_comments_and_strings(text: str) -> str:
+def strip_rust_comments_and_strings(
+    text: str, preserve_string_literals: set[str] | None = None
+) -> str:
     result: list[str] = []
     i = 0
     while i < len(text):
@@ -221,36 +270,68 @@ def strip_rust_comments_and_strings(text: str) -> str:
             i = end + 1
             continue
         if text.startswith("/*", i):
-            end = text.find("*/", i + 2)
+            start = i
+            i += 2
+            depth = 1
+            while i < len(text) and depth > 0:
+                if text.startswith("/*", i):
+                    depth += 1
+                    i += 2
+                    continue
+                if text.startswith("*/", i):
+                    depth -= 1
+                    i += 2
+                    continue
+                i += 1
+            result.append("\n" * text[start:i].count("\n"))
+            continue
+        raw_match = RAW_STRING_START_RE.match(text, i)
+        if raw_match is not None:
+            end_marker = '"' + raw_match.group(1)
+            end = text.find(end_marker, raw_match.end())
             if end == -1:
+                result.append("\n" * text[i:].count("\n"))
                 break
-            result.append("\n" * text[i : end + 2].count("\n"))
-            i = end + 2
+            raw_literal = text[i : end + len(end_marker)]
+            literal_value = text[raw_match.end() : end]
+            if preserve_string_literals and literal_value in preserve_string_literals:
+                result.append(f'"{literal_value}"')
+            else:
+                result.append('""')
+            result.append("\n" * raw_literal.count("\n"))
+            i = end + len(end_marker)
             continue
         char = text[i]
         if char == '"':
-            result.append('""')
             i += 1
+            literal_chars: list[str] = []
             while i < len(text):
                 if text[i] == "\\":
+                    literal_chars.append(text[i])
+                    if i + 1 < len(text):
+                        literal_chars.append(text[i + 1])
                     i += 2
                     continue
                 if text[i] == '"':
                     i += 1
                     break
+                literal_chars.append(text[i])
                 i += 1
+            literal_value = "".join(literal_chars)
+            if preserve_string_literals and literal_value in preserve_string_literals:
+                result.append(f'"{literal_value}"')
+            else:
+                result.append('""')
             continue
         if char == "'":
-            result.append("''")
-            i += 1
-            while i < len(text):
-                if text[i] == "\\":
-                    i += 2
-                    continue
-                if text[i] == "'":
-                    i += 1
-                    break
+            char_end = rust_char_literal_end(text, i)
+            if char_end is None:
+                result.append(char)
                 i += 1
+                continue
+            result.append("''")
+            result.append("\n" * text[i:char_end].count("\n"))
+            i = char_end
             continue
         result.append(char)
         i += 1
@@ -292,12 +373,31 @@ def find_pinned_nt_api_path(
     return matches[0]
 
 
+def rust_char_literal_end(text: str, start: int) -> int | None:
+    if start + 1 >= len(text):
+        return None
+    if text[start + 1] == "\\":
+        idx = start + 2
+        while idx < len(text):
+            if text[idx] == "'":
+                return idx + 1
+            idx += 1
+        return None
+    if start + 2 < len(text) and text[start + 2] == "'":
+        return start + 3
+    return None
+
+
 def source_subscribe_calls(
     src_text: str, findings: list[tuple[str, str]]
 ) -> set[tuple[str, str]]:
     src_text = strip_rust_comments_and_strings(src_text)
     calls: set[tuple[str, str]] = set()
     for match in SUBSCRIBE_CALL_RE.finditer(src_text):
+        line_start = src_text.rfind("\n", 0, match.start()) + 1
+        prefix = src_text[line_start : match.start()]
+        if re.search(r"\bfn\s+$", prefix):
+            continue
         fn_name = match.group(1)
         open_idx = src_text.find("(", match.start())
         if open_idx == -1:
@@ -317,7 +417,8 @@ def source_subscribe_calls(
             findings.append(
                 (
                     "11.source_subscribe_parse_failed",
-                    f"could not find closing parenthesis for {fn_name} call near byte {match.start()}",
+                    f"could not find closing parenthesis for {fn_name} call "
+                    f"near byte {match.start()}",
                 )
             )
             continue
@@ -340,7 +441,8 @@ def source_subscribe_calls(
                 (
                     "11.source_subscribe_no_pattern_helper",
                     f"src/nt_runtime_capture.rs calls {fn_name} with "
-                    f"{len(helpers)} *_pattern() helpers in the first argument; expected exactly one",
+                    f"{len(helpers)} *_pattern() helpers in the first argument; "
+                    f"expected exactly one",
                 )
             )
             continue
@@ -358,6 +460,7 @@ def collect_failures() -> list[tuple[str, str]]:
     naming_audit_doc = load_yaml(NAMING_AUDIT_PATH) or {}
     src_text = read(SRC_PATH)
     test_text = read(TEST_PATH)
+    test_definition_text = strip_rust_comments_and_strings(test_text)
     surfaces_text = read(SURFACES_PATH)
     feas_text = read(FEAS_PATH)
     runtime_contracts_text = read(RUNTIME_CONTRACTS_PATH)
@@ -452,7 +555,7 @@ def collect_failures() -> list[tuple[str, str]]:
                     f"(captured_now) lacks storage_format",
                 )
             )
-        if helper and f"fn {helper}()" not in src_text:
+        if helper and not has_pattern_helper_definition(src_text, helper):
             findings.append(
                 (
                     "3.captured_now_pattern_missing_in_src",
@@ -526,16 +629,13 @@ def collect_failures() -> list[tuple[str, str]]:
                         f"expected captured_now",
                     )
                 )
-    if (
-        RISK_JSONL_FILENAME not in src_text
-        or RISK_JSONL_PATH_FRAGMENT not in src_text
-    ):
+    if not has_risk_jsonl_path(src_text):
         findings.append(
             (
                 "5.risk_jsonl_path_missing_in_src",
                 f"src/nt_runtime_capture.rs does not write to risk/"
-                f"{RISK_JSONL_FILENAME} (expected join(\"risk\") "
-                f"+ join(\"{RISK_JSONL_FILENAME}\"))",
+                f"{RISK_JSONL_FILENAME} (expected risk dir const or literal "
+                f"+ trading-state file const or literal)",
             )
         )
 
@@ -822,7 +922,8 @@ def collect_failures() -> list[tuple[str, str]]:
     for stream, row in current_by_stream.items():
         for test_name in row.get("test_coverage") or []:
             if not re.search(
-                TEST_FN_RE_TEMPLATE.format(re.escape(str(test_name))), test_text
+                TEST_FN_RE_TEMPLATE.format(re.escape(str(test_name))),
+                test_definition_text,
             ):
                 findings.append(
                     (

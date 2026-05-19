@@ -125,6 +125,7 @@ fn startup_check_reports_empty_venue_stages_as_satisfied_root_facts() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let empty_loaded = LoadedBoltV3Config {
         root_path: loaded.root_path.clone(),
+        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         root: BoltV3RootConfig {
             venues: BTreeMap::new(),
             ..loaded.root
@@ -250,8 +251,11 @@ fn startup_check_reports_adapter_mapping_failure_and_redacts_resolved_secrets() 
         .as_table_mut()
         .expect("fixture data block should be a TOML table")
         .insert(
-            "subscribe_new_markets".to_string(),
-            toml::Value::Boolean(true),
+            "new_market_filter".to_string(),
+            toml::toml! {
+                keyword = " "
+            }
+            .into(),
         );
 
     let report = run_bolt_v3_startup_check_with(&loaded, |_| false, support::fake_bolt_v3_resolver);

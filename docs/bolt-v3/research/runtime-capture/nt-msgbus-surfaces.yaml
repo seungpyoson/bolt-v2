@@ -45,13 +45,10 @@ surfaces:
     message_type: Bar
     topic_pattern: "data.bars.{bar_type}"
     api_kind: passive_pubsub
-    bolt_status: captured_now
-    source_subscribe_fn: subscribe_bars
-    bolt_pattern_helper: bars_pattern
-    capture_stream: bars
-    storage_format: Feather
-    reason: "Subscribed via bars_pattern() -> data.bars.*; bars excluded from per-instrument FeatherWriter grouping by per_instrument_stream_types()"
-    suggested_capture_storage: feather
+    bolt_status: safe_missing_passive_stream
+    publisher_evidence: "Bars are emitted through publish_bar/router_bars on data.bars.*; Bolt does not subscribe to this stream."
+    reason: "Bar aggregation is not part of the current class-directory stream contract; Phase 9 removed the flat-spool bars path."
+    suggested_capture_storage: none
 
   - nt_api: subscribe_book_deltas
     nt_path: crates/common/src/msgbus/api.rs:273
@@ -373,7 +370,7 @@ surfaces:
     topic_pattern: "data.bars.*"
     api_kind: publish_helper
     bolt_status: not_runtime_capture_surface
-    reason: "Broadcast helper via router_bars.fill_matching_handlers; symmetric with subscribe_bars."
+    reason: "Broadcast helper via router_bars.fill_matching_handlers; Bolt does not capture bars in the current class-directory stream contract."
     suggested_capture_storage: none
 
   - nt_api: publish_deltas
@@ -569,7 +566,7 @@ surfaces:
     topic_pattern: "<endpoint name>"
     api_kind: command_endpoint
     bolt_status: not_safe_to_subscribe_directly_command_or_endpoint
-    reason: "Typed point-to-point. Use subscribe_bars for capture."
+    reason: "Typed point-to-point. Bolt does not capture bars in the current class-directory stream contract."
     suggested_capture_storage: none
 
   - nt_api: register_order_event_endpoint
@@ -746,10 +743,11 @@ surfaces:
 # ============================================================
 summary:
   total_subscribe_apis: 25
-  captured_now: 15
+  captured_now: 14
   captured_now_includes:
     - 'subscribe_any("events.risk") -> TradingStateChanged'  # added in Bolt; JSONL capture risk/trading_state_changed.jsonl
   safe_missing_passive_stream:
+    - subscribe_bars                    # Bar aggregation stream -- not part of the current class-directory stream contract
     - subscribe_book_snapshots          # OrderBook periodic snapshots -- publisher: data/src/engine/book.rs:170; requires Bolt boundary wrapper (no serde/Arrow on OrderBook)
     - subscribe_greeks                  # GreeksData -- publisher: common/src/greeks.rs:634 (synthetic, not venue feed); not Polymarket-relevant
     - subscribe_option_greeks           # OptionGreeks -- publisher: data/src/engine/mod.rs:891; not Polymarket-relevant

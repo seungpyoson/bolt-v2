@@ -6,6 +6,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+const JSONL_RECORD_SEPARATOR: &[u8] = b"\n";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawWsMessage {
     pub stream_type: String,
@@ -52,7 +54,7 @@ impl JsonlAppender {
             .as_mut()
             .expect("JsonlAppender writer must exist after ensure_path");
         serde_json::to_writer(&mut *writer, row)?;
-        writer.write_all(b"\n")?;
+        writer.write_all(JSONL_RECORD_SEPARATOR)?;
         Ok(())
     }
 
@@ -92,6 +94,6 @@ pub fn append_jsonl<T: Serialize>(path: &Path, row: &T) -> anyhow::Result<()> {
 
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     serde_json::to_writer(&mut file, row)?;
-    file.write_all(b"\n")?;
+    file.write_all(JSONL_RECORD_SEPARATOR)?;
     Ok(())
 }

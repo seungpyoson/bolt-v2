@@ -1,6 +1,6 @@
 # Phase 7 Requirements Checklist
 
-**Purpose**: Unit tests for Phase 7 requirements writing, not implementation behavior.
+**Purpose**: Unit tests for Phase 7 requirements writing, not implementation behavior; unchecked boxes below are prompts for spec review, not evidence that implementation work is incomplete.
 **Created**: 2026-05-14
 **Feature**: [spec.md](../spec.md)
 
@@ -16,7 +16,7 @@
 - [ ] CHK005 Are missing, malformed, oversized, or unsatisfied reports covered by requirements? [Coverage, Spec Edge Cases]
 - [ ] CHK006 Are SSM resolver failures and invalid secret material covered by requirements? [Coverage, Spec FR-005, FR-007]
 - [ ] CHK007 Are venue auth, geo block, wrong market, wrong instrument, stale data, and missing reference readiness covered? [Coverage, Spec Edge Cases]
-- [ ] CHK008 Is approval mismatch required to fail before any secret or venue side effect? [Clarity, Spec FR-008]
+- [ ] CHK008 Is missing or whitespace configured approval required to fail before any secret or venue side effect? [Clarity, Spec FR-008]
 
 ## NT Boundary
 
@@ -27,7 +27,7 @@
 ## SSM-only Secrets
 
 - [ ] CHK012 Is AWS SSM through Rust SDK the only allowed secret source? [Security, Spec FR-007]
-- [ ] CHK013 Is environment fallback excluded while allowing operator approval id as a non-secret gate? [Consistency, Spec FR-008, FR-011]
+- [ ] CHK013 Is environment fallback excluded while keeping operator approval id in TOML config? [Consistency, Spec FR-008, FR-011]
 - [ ] CHK014 Are secret redaction requirements measurable? [Measurability, Spec SC-004]
 
 ## No Live-capital Gate

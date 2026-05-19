@@ -29,6 +29,19 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'GEMINI.md'
+      - 'REASONIX.md'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.claude/**'
+      - '.codex/**'
+      - '.gemini/**'
+      - '.opencode/**'
+      - '.pi/**'
+      - '.specify/**'
   push:
     branches: [main]
     tags: ["v*"]
@@ -602,11 +615,11 @@ BASE_NEXTEST_CONFIG = """
 live-node = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'binary(=bolt_v2) & (test(~bolt_v3_client_registration::tests::) | test(~bolt_v3_live_node::tests::) | test(~platform::runtime::tests::))'
+filter = 'binary(=bolt_v2) & (test(~bolt_v3_client_registration::tests::) | test(~bolt_v3_live_node::tests::))'
 test-group = 'live-node'
 
 [[profile.default.overrides]]
-filter = 'binary(=bolt_v3_adapter_mapping) | binary(=bolt_v3_client_registration) | binary(=bolt_v3_controlled_connect) | binary(=bolt_v3_credential_log_suppression) | binary(=bolt_v3_live_canary_gate) | binary(=bolt_v3_readiness) | binary(=bolt_v3_strategy_registration) | binary(=bolt_v3_submit_admission) | binary(=bolt_v3_tiny_canary_operator) | binary(=config_parsing) | binary(=eth_chainlink_taker_runtime) | binary(=lake_batch) | binary(=live_node_run) | binary(=nt_runtime_capture) | binary(=platform_runtime) | binary(=polymarket_bootstrap) | binary(=venue_contract)'
+filter = 'binary(=bolt_v3_adapter_mapping) | binary(=bolt_v3_client_registration) | binary(=bolt_v3_controlled_connect) | binary(=bolt_v3_credential_log_suppression) | binary(=bolt_v3_live_canary_gate) | binary(=bolt_v3_readiness) | binary(=bolt_v3_strategy_registration) | binary(=bolt_v3_submit_admission) | binary(=bolt_v3_tiny_canary_operator) | binary(=config_parsing) | binary(=lake_batch) | binary(=nt_runtime_capture) | binary(=venue_contract)'
 test-group = 'live-node'
 """
 
@@ -771,9 +784,9 @@ def assert_nextest_live_node_group_required() -> None:
         nextest_config=BASE_NEXTEST_CONFIG.replace("test-group = 'live-node'", "test-group = 'other'"),
     )
     assert_error(
-        "missing test(~platform::runtime::tests::)",
+        "missing test(~bolt_v3_live_node::tests::)",
         nextest_config=BASE_NEXTEST_CONFIG.replace(
-            " | test(~platform::runtime::tests::)",
+            " | test(~bolt_v3_live_node::tests::)",
             "",
         ),
     )
@@ -1321,6 +1334,54 @@ def main() -> int:
     )
     for job in ("fmt-check", "deny", "clippy", "source-fence", "test-archive", "test-shards", "test"):
         assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))
+    assert_error(
+        "fmt-check must run just fmt-check",
+        replace_once(BASE_WORKFLOW, "- run: just fmt-check", "- run: echo skip fmt-check"),
+    )
+    assert_error(
+        "deny must run just deny",
+        replace_once(BASE_WORKFLOW, "- run: just deny", "- run: echo skip deny"),
+    )
+    assert_error(
+        "clippy must run just clippy",
+        replace_once(BASE_WORKFLOW, "- run: just clippy", "- run: echo skip clippy"),
+    )
+    assert_error(
+        "build must run just build",
+        replace_once(BASE_WORKFLOW, "- run: just build", "- run: echo skip build"),
+    )
+    assert_error(
+        "pull_request paths-ignore must match baseline",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - '.specify/**'\n",
+            "      - '.specify/**'\n      - 'docs/**'\n",
+        ),
+    )
+    assert_error(
+        "pull_request paths-ignore must match baseline",
+        replace_once(BASE_WORKFLOW, "      - '.claude/**'\n", ""),
+    )
+    assert_error(
+        "pull_request paths-ignore must match baseline",
+        replace_once(BASE_WORKFLOW, "      - '.specify/**'\n", ""),
+    )
+    assert_error(
+        "pull_request paths-ignore must match baseline",
+        replace_once(
+            BASE_WORKFLOW,
+            "    branches: [main]\n    paths-ignore:\n",
+            "    branches: [main]\n    # paths-ignore:\n",
+        ),
+    )
+    assert_error(
+        "on.push must have no paths-ignore",
+        replace_once(
+            BASE_WORKFLOW,
+            '  push:\n    branches: [main]\n    tags: ["v*"]\n',
+            '  push:\n    branches: [main]\n    tags: ["v*"]\n    paths-ignore:\n      - \'docs/**\'\n',
+        ),
+    )
     assert_error(
         "build needs detector",
         replace_once(

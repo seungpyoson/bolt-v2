@@ -16,15 +16,18 @@ use std::{
 };
 
 use rust_decimal::Decimal;
-use serde_json::Value;
+use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
 use crate::{
-    bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config},
+    bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, resolve_root_relative_path},
     bolt_v3_no_submit_readiness_schema::{
-        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE, NAME_KEY,
-        OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE,
-        SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
+        APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
+        CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, LIVE_NODE_BUILD_STAGE,
+        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
+        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
+        STATUS_KEY, STATUS_SATISFIED,
     },
 };
 
@@ -118,10 +121,169 @@ pub enum BoltV3LiveCanaryGateError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    ReadinessReportSchemaVersionMismatch {
+        path: PathBuf,
+        expected: &'static str,
+        actual: Option<String>,
+    },
+    CurrentExecutablePath {
+        source: std::io::Error,
+    },
+    ExecutableIdentityRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     UnsatisfiedNoSubmitReadinessReport {
         path: PathBuf,
-        reasons: Vec<String>,
+        failures: Vec<NoSubmitReadinessReportFailure>,
     },
+}
+
+/// Typed per-report-shape failures aggregated under
+/// [`BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport`].
+///
+/// The validator collects every failure mode it observes before
+/// returning, so a single rejection carries the complete operator
+/// triage picture rather than only the first failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoSubmitReadinessReportFailure {
+    LinkageFieldMissing {
+        field: &'static str,
+    },
+    LinkageFieldNotString {
+        field: &'static str,
+        kind: NoSubmitReadinessReportFieldKind,
+    },
+    LinkageFieldEmpty {
+        field: &'static str,
+    },
+    ApprovalIdHashMismatch {
+        expected: String,
+        actual: String,
+    },
+    ExecutableIdentityMismatch {
+        expected: String,
+        actual: String,
+    },
+    ConfigBundleChecksumMismatch {
+        expected: String,
+        actual: String,
+    },
+    StagesMissing,
+    StagesNotArray {
+        kind: NoSubmitReadinessReportStagesNotArrayKind,
+    },
+    StagesEmpty,
+    StageEntryMissingStageKey,
+    StageStatusMissing {
+        stage: String,
+    },
+    StageStatusNotSatisfied {
+        stage: String,
+        status: String,
+    },
+    RequiredStageMissingOrUnsatisfied {
+        stage: String,
+    },
+}
+
+impl std::fmt::Display for NoSubmitReadinessReportFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoSubmitReadinessReportFailure::LinkageFieldMissing { field } => {
+                write!(f, "linkage field `{field}` is missing")
+            }
+            NoSubmitReadinessReportFailure::LinkageFieldNotString { field, kind } => {
+                write!(f, "linkage field `{field}` is not a string (got {kind})")
+            }
+            NoSubmitReadinessReportFailure::LinkageFieldEmpty { field } => {
+                write!(f, "linkage field `{field}` is empty")
+            }
+            NoSubmitReadinessReportFailure::ApprovalIdHashMismatch { .. } => {
+                write!(
+                    f,
+                    "linkage field `{APPROVAL_ID_HASH_KEY}` does not match loaded config"
+                )
+            }
+            NoSubmitReadinessReportFailure::ExecutableIdentityMismatch { .. } => {
+                write!(
+                    f,
+                    "linkage field `{EXECUTABLE_IDENTITY_KEY}` does not match current executable"
+                )
+            }
+            NoSubmitReadinessReportFailure::ConfigBundleChecksumMismatch { .. } => {
+                write!(
+                    f,
+                    "linkage field `{CONFIG_BUNDLE_CHECKSUM_KEY}` does not match loaded config bundle"
+                )
+            }
+            NoSubmitReadinessReportFailure::StagesMissing => {
+                write!(f, "stages array is missing")
+            }
+            NoSubmitReadinessReportFailure::StagesNotArray { kind } => {
+                write!(f, "stages field is not an array (got {kind})")
+            }
+            NoSubmitReadinessReportFailure::StagesEmpty => {
+                write!(f, "stages array is empty")
+            }
+            NoSubmitReadinessReportFailure::StageEntryMissingStageKey => {
+                write!(f, "stage entry is missing `{STAGE_KEY}`")
+            }
+            NoSubmitReadinessReportFailure::StageStatusMissing { stage } => {
+                write!(f, "stage `{stage}` status is missing")
+            }
+            NoSubmitReadinessReportFailure::StageStatusNotSatisfied { stage, status } => {
+                write!(f, "stage `{stage}` status is `{status}`")
+            }
+            NoSubmitReadinessReportFailure::RequiredStageMissingOrUnsatisfied { stage } => {
+                write!(f, "required stage `{stage}` is missing or unsatisfied")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoSubmitReadinessReportFieldKind {
+    Null,
+    Bool,
+    Number,
+    String,
+    Array,
+    Object,
+}
+
+impl std::fmt::Display for NoSubmitReadinessReportFieldKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoSubmitReadinessReportFieldKind::Null => write!(f, "null"),
+            NoSubmitReadinessReportFieldKind::Bool => write!(f, "bool"),
+            NoSubmitReadinessReportFieldKind::Number => write!(f, "number"),
+            NoSubmitReadinessReportFieldKind::String => write!(f, "string"),
+            NoSubmitReadinessReportFieldKind::Array => write!(f, "array"),
+            NoSubmitReadinessReportFieldKind::Object => write!(f, "object"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoSubmitReadinessReportStagesNotArrayKind {
+    Null,
+    Bool,
+    Number,
+    String,
+    Object,
+}
+
+impl std::fmt::Display for NoSubmitReadinessReportStagesNotArrayKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoSubmitReadinessReportStagesNotArrayKind::Null => write!(f, "null"),
+            NoSubmitReadinessReportStagesNotArrayKind::Bool => write!(f, "bool"),
+            NoSubmitReadinessReportStagesNotArrayKind::Number => write!(f, "number"),
+            NoSubmitReadinessReportStagesNotArrayKind::String => write!(f, "string"),
+            NoSubmitReadinessReportStagesNotArrayKind::Object => write!(f, "object"),
+        }
+    }
 }
 
 impl std::fmt::Display for BoltV3LiveCanaryGateError {
@@ -186,12 +348,41 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                     path.display()
                 )
             }
-            BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { path, reasons } => {
+            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+                path,
+                expected,
+                actual,
+            } => match actual {
+                Some(actual) => write!(
+                    f,
+                    "bolt-v3 no-submit readiness report {} schema_version is `{actual}`, expected `{expected}`",
+                    path.display()
+                ),
+                None => write!(
+                    f,
+                    "bolt-v3 no-submit readiness report {} schema_version is missing or not a string, expected `{expected}`",
+                    path.display()
+                ),
+            },
+            BoltV3LiveCanaryGateError::CurrentExecutablePath { source } => write!(
+                f,
+                "failed to resolve bolt-v3 live canary gate executable path: {source}"
+            ),
+            BoltV3LiveCanaryGateError::ExecutableIdentityRead { path, source } => write!(
+                f,
+                "failed to read bolt-v3 live canary gate executable {}: {source}",
+                path.display()
+            ),
+            BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { path, failures } => {
+                let joined = failures
+                    .iter()
+                    .map(|failure| failure.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
                 write!(
                     f,
-                    "bolt-v3 no-submit readiness report {} is not satisfied: {}",
+                    "bolt-v3 no-submit readiness report {} is not satisfied: {joined}",
                     path.display(),
-                    reasons.join("; ")
                 )
             }
         }
@@ -203,6 +394,8 @@ impl std::error::Error for BoltV3LiveCanaryGateError {
         match self {
             BoltV3LiveCanaryGateError::ReadinessReportRead { source, .. } => Some(source),
             BoltV3LiveCanaryGateError::ReadinessReportParse { source, .. } => Some(source),
+            BoltV3LiveCanaryGateError::CurrentExecutablePath { source } => Some(source),
+            BoltV3LiveCanaryGateError::ExecutableIdentityRead { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -267,12 +460,41 @@ pub async fn check_bolt_v3_live_canary_gate(
             source,
         }
     })?;
-    validate_no_submit_readiness_report(&report).map_err(|reasons| {
-        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport {
+    let Some(report_object) = report.as_object() else {
+        return Err(
+            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+                path: report_path.clone(),
+                expected: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+                actual: None,
+            },
+        );
+    };
+    let observed_schema_version = report_object
+        .get(SCHEMA_VERSION_KEY)
+        .and_then(Value::as_str);
+    if observed_schema_version != Some(NO_SUBMIT_READINESS_SCHEMA_VERSION) {
+        return Err(
+            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+                path: report_path.clone(),
+                expected: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+                actual: observed_schema_version.map(str::to_string),
+            },
+        );
+    }
+    let expected_approval_id_hash = sha256_hex(approval_id.as_bytes());
+    let expected_executable_identity = executable_identity().await?;
+    validate_no_submit_readiness_report(
+        report_object,
+        &expected_approval_id_hash,
+        &expected_executable_identity,
+        &loaded.config_bundle_checksum,
+    )
+    .map_err(
+        |failures| BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport {
             path: report_path.clone(),
-            reasons,
-        }
-    })?;
+            failures,
+        },
+    )?;
 
     Ok(BoltV3LiveCanaryGateReport {
         approval_id: approval_id.to_string(),
@@ -314,14 +536,7 @@ async fn read_report_bytes_with_limit(
 }
 
 fn resolve_report_path(root_path: &Path, block: &LiveCanaryBlock) -> PathBuf {
-    let configured = PathBuf::from(&block.no_submit_readiness_report_path);
-    if configured.is_absolute() {
-        return configured;
-    }
-    root_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(&configured)
+    resolve_root_relative_path(root_path, &block.no_submit_readiness_report_path)
 }
 
 fn parse_positive_decimal(
@@ -346,62 +561,170 @@ fn parse_positive_decimal(
     Ok(decimal)
 }
 
-fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>> {
-    let mut reasons = Vec::new();
-    let report = match report.as_object() {
-        Some(report) => report,
-        None => {
-            reasons.push(format!("expected JSON object, got {report}"));
-            return Err(reasons);
-        }
-    };
+fn validate_no_submit_readiness_report(
+    report: &Map<String, Value>,
+    expected_approval_id_hash: &str,
+    expected_executable_identity: &str,
+    expected_config_bundle_checksum: &str,
+) -> Result<(), Vec<NoSubmitReadinessReportFailure>> {
+    let mut failures = Vec::new();
+    validate_linkage_field(
+        &mut failures,
+        report,
+        APPROVAL_ID_HASH_KEY,
+        expected_approval_id_hash,
+        |expected, actual| NoSubmitReadinessReportFailure::ApprovalIdHashMismatch {
+            expected,
+            actual,
+        },
+    );
+    validate_linkage_field(
+        &mut failures,
+        report,
+        EXECUTABLE_IDENTITY_KEY,
+        expected_executable_identity,
+        |expected, actual| NoSubmitReadinessReportFailure::ExecutableIdentityMismatch {
+            expected,
+            actual,
+        },
+    );
+    validate_linkage_field(
+        &mut failures,
+        report,
+        CONFIG_BUNDLE_CHECKSUM_KEY,
+        expected_config_bundle_checksum,
+        |expected, actual| NoSubmitReadinessReportFailure::ConfigBundleChecksumMismatch {
+            expected,
+            actual,
+        },
+    );
     match report.get(STAGES_KEY) {
-        None => reasons.push("stages array is missing".to_string()),
-        Some(stages_value) => match stages_value.as_array() {
-            None => reasons.push(format!("stages must be an array, got {stages_value}")),
-            Some(stages) if stages.is_empty() => reasons.push("stages array is empty".to_string()),
-            Some(stages) => {
-                let mut present_stage_names = std::collections::BTreeSet::new();
-                let mut satisfied_stage_names = std::collections::BTreeSet::new();
-                for stage in stages {
-                    let name = stage
-                        .get(STAGE_KEY)
-                        .or_else(|| stage.get(NAME_KEY))
-                        .and_then(Value::as_str)
-                        .unwrap_or("<unnamed>");
-                    present_stage_names.insert(name.to_string());
-                    let status = stage.get(STATUS_KEY).and_then(Value::as_str);
-                    if !matches_satisfied_status(status) {
-                        reasons.push(format!(
-                            "stage `{name}` status is `{}`",
-                            status.unwrap_or("<missing>")
-                        ));
-                    } else {
+        None => failures.push(NoSubmitReadinessReportFailure::StagesMissing),
+        Some(serde_json::Value::Null) => {
+            failures.push(NoSubmitReadinessReportFailure::StagesNotArray {
+                kind: NoSubmitReadinessReportStagesNotArrayKind::Null,
+            })
+        }
+        Some(serde_json::Value::Bool(_)) => {
+            failures.push(NoSubmitReadinessReportFailure::StagesNotArray {
+                kind: NoSubmitReadinessReportStagesNotArrayKind::Bool,
+            })
+        }
+        Some(serde_json::Value::Number(_)) => {
+            failures.push(NoSubmitReadinessReportFailure::StagesNotArray {
+                kind: NoSubmitReadinessReportStagesNotArrayKind::Number,
+            })
+        }
+        Some(serde_json::Value::String(_)) => {
+            failures.push(NoSubmitReadinessReportFailure::StagesNotArray {
+                kind: NoSubmitReadinessReportStagesNotArrayKind::String,
+            })
+        }
+        Some(serde_json::Value::Object(_)) => {
+            failures.push(NoSubmitReadinessReportFailure::StagesNotArray {
+                kind: NoSubmitReadinessReportStagesNotArrayKind::Object,
+            })
+        }
+        Some(serde_json::Value::Array(stages)) if stages.is_empty() => {
+            failures.push(NoSubmitReadinessReportFailure::StagesEmpty)
+        }
+        Some(serde_json::Value::Array(stages)) => {
+            let mut present_stage_names = std::collections::BTreeSet::new();
+            let mut satisfied_stage_names = std::collections::BTreeSet::new();
+            for stage in stages {
+                let Some(name) = stage.get(STAGE_KEY).and_then(Value::as_str) else {
+                    failures.push(NoSubmitReadinessReportFailure::StageEntryMissingStageKey);
+                    continue;
+                };
+                present_stage_names.insert(name.to_string());
+                match stage.get(STATUS_KEY).and_then(Value::as_str) {
+                    None => failures.push(NoSubmitReadinessReportFailure::StageStatusMissing {
+                        stage: name.to_string(),
+                    }),
+                    Some(status) if status == STATUS_SATISFIED => {
                         satisfied_stage_names.insert(name.to_string());
                     }
-                }
-                for required_stage in REQUIRED_NO_SUBMIT_READINESS_STAGES {
-                    if !present_stage_names.contains(*required_stage)
-                        && !satisfied_stage_names.contains(*required_stage)
-                    {
-                        reasons.push(format!(
-                            "required stage `{required_stage}` is missing or unsatisfied"
-                        ));
+                    Some(status) => {
+                        failures.push(NoSubmitReadinessReportFailure::StageStatusNotSatisfied {
+                            stage: name.to_string(),
+                            status: status.to_string(),
+                        })
                     }
                 }
             }
-        },
+            for required_stage in REQUIRED_NO_SUBMIT_READINESS_STAGES {
+                if !present_stage_names.contains(*required_stage)
+                    && !satisfied_stage_names.contains(*required_stage)
+                {
+                    failures.push(
+                        NoSubmitReadinessReportFailure::RequiredStageMissingOrUnsatisfied {
+                            stage: (*required_stage).to_string(),
+                        },
+                    );
+                }
+            }
+        }
     }
 
-    if reasons.is_empty() {
+    if failures.is_empty() {
         Ok(())
     } else {
-        Err(reasons)
+        Err(failures)
     }
 }
 
-fn matches_satisfied_status(status: Option<&str>) -> bool {
-    matches!(status, Some(value) if value.eq_ignore_ascii_case(STATUS_SATISFIED))
+fn validate_linkage_field(
+    failures: &mut Vec<NoSubmitReadinessReportFailure>,
+    report: &Map<String, Value>,
+    field: &'static str,
+    expected: &str,
+    mismatch: impl FnOnce(String, String) -> NoSubmitReadinessReportFailure,
+) {
+    let Some(value) = report.get(field) else {
+        failures.push(NoSubmitReadinessReportFailure::LinkageFieldMissing { field });
+        return;
+    };
+    let Some(actual) = value.as_str() else {
+        failures.push(NoSubmitReadinessReportFailure::LinkageFieldNotString {
+            field,
+            kind: report_field_kind(value),
+        });
+        return;
+    };
+    if actual.trim().is_empty() {
+        failures.push(NoSubmitReadinessReportFailure::LinkageFieldEmpty { field });
+        return;
+    }
+    if actual != expected {
+        failures.push(mismatch(expected.to_string(), actual.to_string()));
+    }
+}
+
+fn report_field_kind(value: &Value) -> NoSubmitReadinessReportFieldKind {
+    match value {
+        Value::Null => NoSubmitReadinessReportFieldKind::Null,
+        Value::Bool(_) => NoSubmitReadinessReportFieldKind::Bool,
+        Value::Number(_) => NoSubmitReadinessReportFieldKind::Number,
+        Value::String(_) => NoSubmitReadinessReportFieldKind::String,
+        Value::Array(_) => NoSubmitReadinessReportFieldKind::Array,
+        Value::Object(_) => NoSubmitReadinessReportFieldKind::Object,
+    }
+}
+
+async fn executable_identity() -> Result<String, BoltV3LiveCanaryGateError> {
+    let path = std::env::current_exe()
+        .map_err(|source| BoltV3LiveCanaryGateError::CurrentExecutablePath { source })?;
+    let bytes = tokio::fs::read(&path).await.map_err(|source| {
+        BoltV3LiveCanaryGateError::ExecutableIdentityRead {
+            path: path.clone(),
+            source,
+        }
+    })?;
+    Ok(sha256_hex(&bytes))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }
 
 const REQUIRED_NO_SUBMIT_READINESS_STAGES: &[&str] = &[
@@ -421,18 +744,19 @@ mod tests {
     use crate::{bolt_v3_config::LiveCanaryBlock, bolt_v3_live_canary_gate::resolve_report_path};
 
     #[test]
-    fn relative_report_path_without_root_parent_matches_config_loader_fallback() {
+    fn relative_report_path_without_root_parent_uses_configured_relative_path() {
         let block = LiveCanaryBlock {
             approval_id: "operator-approved-canary-001".to_string(),
             no_submit_readiness_report_path: "reports/no-submit-readiness.json".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
+            operator_evidence: None,
         };
 
         assert_eq!(
             resolve_report_path(Path::new(""), &block),
-            PathBuf::from(".").join("reports/no-submit-readiness.json")
+            PathBuf::from("reports/no-submit-readiness.json")
         );
     }
 }

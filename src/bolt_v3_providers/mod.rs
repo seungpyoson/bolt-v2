@@ -21,10 +21,13 @@ pub mod polymarket;
 use std::{any::Any, fmt, sync::Arc};
 
 use crate::{
-    bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig},
-    bolt_v3_config::{BoltV3RootConfig, VenueBlock},
-    bolt_v3_market_families::updown::MarketIdentityPlan,
+    bolt_v3_adapters::{
+        BoltV3AdapterMappingError, BoltV3InstrumentFilterClockFn, BoltV3VenueAdapterConfig,
+    },
+    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, VenueBlock},
+    bolt_v3_instrument_filters::InstrumentFilterConfig,
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
+    strategies::registry::FeeProvider,
 };
 
 pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
@@ -58,12 +61,13 @@ pub struct ProviderSecretResolveContext<'a> {
 }
 
 pub struct ProviderAdapterMapContext<'a> {
+    pub loaded: &'a LoadedBoltV3Config,
     pub root: &'a BoltV3RootConfig,
     pub venue_key: &'a str,
     pub venue: &'a VenueBlock,
     pub resolved: &'a ResolvedBoltV3Secrets,
-    pub plan: &'a MarketIdentityPlan,
-    pub clock: BoltV3UpdownNowFn,
+    pub instrument_filters: &'a InstrumentFilterConfig,
+    pub clock: Option<BoltV3InstrumentFilterClockFn>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +98,12 @@ pub struct ProviderSecretRequirement {
     pub consumer: &'static str,
 }
 
+pub type BuildFeeProviderFn = fn(
+    &str,
+    &VenueBlock,
+    &ResolvedBoltV3Secrets,
+) -> Result<Arc<dyn FeeProvider>, BoltV3AdapterMappingError>;
+
 pub struct ProviderBinding {
     pub key: &'static str,
     pub validate_venue: fn(&str, &VenueBlock) -> Vec<String>,
@@ -110,41 +120,24 @@ pub struct ProviderBinding {
         ProviderAdapterMapContext<'a>,
     )
         -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError>,
+    pub build_fee_provider: Option<BuildFeeProviderFn>,
 }
 
-const PROVIDER_BINDINGS: &[ProviderBinding] = &[
-    ProviderBinding {
-        key: polymarket::KEY,
-        validate_venue: polymarket::validate_venue,
-        supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
-        required_secret_blocks: polymarket::REQUIRED_SECRET_BLOCKS,
-        secret_field_names: polymarket::SECRET_FIELD_NAMES,
-        credential_log_modules: polymarket::CREDENTIAL_LOG_MODULES,
-        forbidden_env_vars: polymarket::FORBIDDEN_ENV_VARS,
-        resolve_secrets: polymarket::resolve_secrets,
-        map_adapters: polymarket::map_adapters,
-    },
-    ProviderBinding {
-        key: binance::KEY,
-        validate_venue: binance::validate_venue,
-        supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
-        required_secret_blocks: binance::REQUIRED_SECRET_BLOCKS,
-        secret_field_names: binance::SECRET_FIELD_NAMES,
-        credential_log_modules: binance::CREDENTIAL_LOG_MODULES,
-        forbidden_env_vars: binance::FORBIDDEN_ENV_VARS,
-        resolve_secrets: binance::resolve_secrets,
-        map_adapters: binance::map_adapters,
-    },
-];
+const PROVIDER_BINDINGS: &[ProviderBinding] = &[polymarket::BINDING, binance::BINDING];
 
 pub fn provider_bindings() -> &'static [ProviderBinding] {
     PROVIDER_BINDINGS
 }
 
+pub fn binding_for_provider_key_in<'a>(
+    bindings: &'a [ProviderBinding],
+    key: &str,
+) -> Option<&'a ProviderBinding> {
+    bindings.iter().find(|binding| binding.key == key)
+}
+
 pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
-    provider_bindings()
-        .iter()
-        .find(|binding| binding.key == key)
+    binding_for_provider_key_in(provider_bindings(), key)
 }
 
 /// Provider-owned NT adapter modules whose info logs can expose
@@ -160,8 +153,12 @@ pub fn credential_log_modules() -> impl Iterator<Item = &'static str> {
 /// Family-agnostic surface read by core startup validation. Routes
 /// each venue block to its per-provider validator based on provider
 /// key. Returns the full error list for the venue block.
-pub fn validate_venue_block(key: &str, venue: &VenueBlock) -> Vec<String> {
-    match binding_for_provider_key(venue.kind.as_str()) {
+pub fn validate_venue_block_with_bindings(
+    key: &str,
+    venue: &VenueBlock,
+    bindings: &[ProviderBinding],
+) -> Vec<String> {
+    match binding_for_provider_key_in(bindings, venue.kind.as_str()) {
         Some(binding) => {
             let mut errors = validate_required_secret_blocks(
                 key,
@@ -177,6 +174,10 @@ pub fn validate_venue_block(key: &str, venue: &VenueBlock) -> Vec<String> {
             venue.kind.as_str()
         )],
     }
+}
+
+pub fn validate_venue_block(key: &str, venue: &VenueBlock) -> Vec<String> {
+    validate_venue_block_with_bindings(key, venue, provider_bindings())
 }
 
 fn validate_required_secret_blocks(
@@ -206,8 +207,59 @@ fn validate_required_secret_blocks(
 mod tests {
     use super::*;
 
+    fn fake_validate_venue(_key: &str, _venue: &VenueBlock) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn fake_resolve_secrets(
+        _context: ProviderSecretResolveContext<'_>,
+        _resolver: &mut dyn SsmSecretResolver,
+    ) -> Result<ResolvedVenueSecrets, BoltV3SecretError> {
+        unreachable!("provider validation tests do not resolve secrets")
+    }
+
+    fn fake_map_adapters(
+        _context: ProviderAdapterMapContext<'_>,
+    ) -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError> {
+        unreachable!("provider validation tests do not map adapters")
+    }
+
+    const FAKE_PROVIDER_BINDINGS: &[ProviderBinding] = &[ProviderBinding {
+        key: "fixture_provider",
+        validate_venue: fake_validate_venue,
+        supported_market_families: &[],
+        required_secret_blocks: &[],
+        secret_field_names: &[],
+        credential_log_modules: &[],
+        forbidden_env_vars: &[],
+        resolve_secrets: fake_resolve_secrets,
+        map_adapters: fake_map_adapters,
+        build_fee_provider: None,
+    }];
+
     fn venue_from_toml(text: &str) -> VenueBlock {
         toml::from_str(text).expect("test venue should parse")
+    }
+
+    #[test]
+    fn validation_can_use_injected_provider_binding_without_editing_production_registry() {
+        let venue: VenueBlock =
+            toml::from_str(r#"kind = "fixture_provider""#).expect("fixture venue parses");
+
+        let production_errors = validate_venue_block("fixture", &venue);
+        assert!(
+            production_errors
+                .iter()
+                .any(|message| message.contains("not supported by this build")),
+            "production registry should not know the test provider: {production_errors:?}"
+        );
+
+        let injected_errors =
+            validate_venue_block_with_bindings("fixture", &venue, FAKE_PROVIDER_BINDINGS);
+        assert!(
+            injected_errors.is_empty(),
+            "injected provider binding should own validation dispatch: {injected_errors:?}"
+        );
     }
 
     #[test]

@@ -30,6 +30,11 @@ The versions are independent.
 
 Changing one file schema does not automatically imply changing the other.
 
+Both root and strategy TOML files are subject to a pre-parse 1 MiB file-size
+guard (`1_048_576` bytes). Files larger than that fail closed before TOML
+parsing. This is a resource-exhaustion guard for operator-authored config
+files, not a trading-policy parameter.
+
 ## 2. Root File: Ownership
 
 The root file owns:
@@ -92,6 +97,13 @@ mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+instance_id = "disabled"
+cache = "disabled"
+msgbus = "disabled"
+portfolio = "disabled"
+emulator = "disabled"
+streaming = "disabled"
+loop_debug = false
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
 timeout_portfolio_seconds = 10
@@ -170,9 +182,25 @@ nt_qsize = 100000
 [logging]
 standard_output_level = "INFO"
 file_level = "INFO"
+component_levels = {}
+module_levels = {}
+credential_module_level = "WARN"
+log_components_only = false
+is_colored = true
+print_config = false
+use_tracing = false
+bypass_logging = false
+file_config = "disabled"
+clear_log_file = false
+stale_log_source_directory = "/var/lib/bolt"
+stale_log_archive_directory = "/var/log/bolt/nautilus-archive"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+runtime_capture_start_poll_interval_milliseconds = 50
+
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
@@ -186,6 +214,33 @@ no_submit_readiness_report_path = "reports/no-submit-readiness.json"
 max_no_submit_readiness_report_bytes = 4096
 max_live_order_count = 1
 max_notional_per_order = "1.00"
+
+[live_canary.operator_evidence]
+approval_envelope_path = "reports/operator-approval-envelope.json"
+ssm_manifest_path = "reports/ssm-manifest.redacted.json"
+ssm_manifest_sha256 = "<sha256>"
+strategy_input_evidence_path = "reports/strategy-input-evidence.json"
+strategy_input_evidence_sha256 = "<sha256>"
+financial_envelope_path = "reports/financial-envelope.json"
+financial_envelope_sha256 = "<sha256>"
+pre_run_state_path = "reports/pre-run-state.json"
+pre_run_state_sha256 = "<sha256>"
+abort_plan_path = "reports/abort-plan.json"
+abort_plan_sha256 = "<sha256>"
+canary_evidence_path = "reports/tiny-canary-evidence.json"
+approval_not_before_unix_seconds = 1770000000
+approval_not_after_unix_seconds = 1770000300
+approval_nonce_path = "reports/approval-nonce.json"
+approval_nonce_sha256 = "<sha256>"
+approval_consumption_path = "reports/approval-consumed.json"
+decision_evidence_path = "reports/decision-evidence.json"
+client_order_id_hash = "<sha256>"
+venue_order_id_hash = "<sha256>"
+nt_submit_event_path = "reports/runtime/nt-submit-event.json"
+venue_order_state_path = "reports/runtime/venue-order-state.json"
+strategy_cancel_path = "reports/runtime/strategy-cancel.json"
+restart_reconciliation_path = "reports/runtime/restart-reconciliation.json"
+post_run_hygiene_path = "reports/runtime/post-run-hygiene.json"
 
 [aws]
 region = "eu-west-1"
@@ -201,8 +256,11 @@ base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClient
 http_timeout_seconds = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
 ws_timeout_seconds = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
 subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets — forced false in current bolt-v3 scope
+auto_load_missing_instruments = false # NT: PolymarketDataClientConfig.auto_load_missing_instruments — forced false in current bolt-v3 scope
 update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
+auto_load_debounce_milliseconds = 250 # NT: PolymarketDataClientConfig.auto_load_debounce_ms
+transport_backend = "tungstenite" # NT: PolymarketDataClientConfig.transport_backend
 
 [venues.polymarket_main.execution]
 account_id = "POLYMARKET-001" # NT: nautilus_model::identifiers::AccountId
@@ -216,6 +274,8 @@ max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
 retry_delay_initial_milliseconds = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
 retry_delay_max_milliseconds = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
 ack_timeout_seconds = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
+fee_cache_ttl_seconds = 300 # bolt-v3 fee-provider cache TTL
+transport_backend = "tungstenite" # NT: PolymarketExecClientConfig.transport_backend
 
 [venues.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
@@ -232,6 +292,7 @@ environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
 instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
+transport_backend = "tungstenite" # NT: BinanceDataClientConfig.transport_backend
 
 [venues.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"
@@ -278,13 +339,15 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 - type: string enum
 - required: yes
-- current allowed value for live trading:
+- allowed NautilusTrader `Environment` values:
+  - `backtest`
+  - `sandbox`
   - `live`
-- any other value fails validation
+- maps directly to `Environment::Backtest`, `Environment::Sandbox`, or `Environment::Live`
 
 ### `[nautilus]`
 
-The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-level `LiveNodeConfig` surfaces not represented here are intentionally disabled or empty in the Bolt-v3 builder path (`instance_id`, `cache`, `msgbus`, `portfolio`, `emulator`, `streaming`, `loop_debug`, `data_clients`, and `exec_clients`). They are not inherited from `LiveNodeConfig::default()`.
+The fields below map to top-level NautilusTrader `LiveNodeConfig` values. `data_clients` and `exec_clients` are derived from configured venues through the Bolt-v3 provider Adapter registration path, not from root-level NT client maps.
 
 #### `load_state`
 
@@ -297,6 +360,55 @@ The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-le
 - type: boolean
 - required: yes
 - maps to Nautilus live-node state saving
+
+#### `instance_id`
+
+- type: string enum
+- required: yes
+- allowed values: `disabled`
+- maps to `LiveNodeConfig.instance_id = None`
+
+#### `cache`
+
+- type: string enum
+- required: yes
+- allowed values: `disabled`
+- maps to `LiveNodeConfig.cache = None`
+
+#### `msgbus`
+
+- type: string enum
+- required: yes
+- allowed values: `disabled`
+- maps to `LiveNodeConfig.msgbus = None`; the pinned NT Rust live runtime rejects configured message-bus config
+
+#### `portfolio`
+
+- type: string enum
+- required: yes
+- allowed values: `disabled`
+- maps to `LiveNodeConfig.portfolio = None`
+
+#### `emulator`
+
+- type: string enum
+- required: yes
+- allowed values: `disabled`
+- maps to `LiveNodeConfig.emulator = None`; the pinned NT Rust live runtime rejects configured emulator config
+
+#### `streaming`
+
+- type: string enum
+- required: yes
+- allowed values: `disabled`
+- maps to `LiveNodeConfig.streaming = None`; Bolt-v3 capture streaming is configured under `[persistence.streaming]`
+
+#### `loop_debug`
+
+- type: boolean
+- required: yes
+- allowed values: `false`
+- maps to `LiveNodeConfig.loop_debug`; the pinned NT Rust live runtime rejects `true`
 
 #### `timeout_connection_seconds`
 
@@ -452,6 +564,7 @@ This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTra
 - type: decimal string
 - required: yes
 - root-level entity per-order notional cap
+- must be greater than zero
 - enforced by bolt-v3 strategy validation: each strategy file's `parameters.order_notional_target` must be `<=` this value
 - not automatically expanded into NautilusTrader per-instrument maps; `nt_max_notional_per_order` is the explicit NT map when instrument-level caps are intentionally configured
 
@@ -529,11 +642,84 @@ This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTra
   - `ERROR`
   - `OFF`
 
-Bolt-v3 also installs unconditional module-level filters that suppress NT's credential info logs from `nautilus_polymarket::common::credential` and `nautilus_binance::common::credential` to `WARN`, regardless of `standard_output_level` and `file_level`. These two NT modules log credential-derived material at info-level (Polymarket address/funder/api-key prefixes; Binance auto-detected key type), so bolt-v3 forces them lower than the root level rather than letting an `INFO` root level surface those prefixes in stdout or the file writer.
+#### `component_levels`
 
-Bolt-v3 sets every pinned NautilusTrader `LoggerConfig` field explicitly before handing the config to `LiveNodeBuilder::from_config`. TOML owns `stdout_level` and `fileout_level`; bolt-v3 owns the credential module filters; `component_level` is empty, `log_components_only = false`, `is_colored = true`, `print_config = false`, `use_tracing = false`, and `bypass_logging = false`.
+- type: string enum map
+- required: yes
+- maps to NT `LoggerConfig.component_level`
 
-There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 hands the complete `LoggerConfig` to NT through `LiveNodeBuilder::from_config`; the file-writer directory is owned by NT's `init_logging` path which bolt-v3 does not yet wire. `file_config` remains `None` and `clear_log_file` remains `false`; NT's pinned Rust live runtime rejects non-disabled values for those fields. A TOML field for either value would be a no-op or an invalid runtime request, so the schema deliberately omits it.
+#### `module_levels`
+
+- type: string enum map
+- required: yes
+- maps to NT `LoggerConfig.module_level` before credential-module filters are applied
+
+#### `credential_module_level`
+
+- type: string enum
+- required: yes
+- allowed values: `WARN`, `ERROR`, `OFF`
+- maps to credential-log modules supplied by provider bindings
+
+#### `log_components_only`
+
+- type: bool
+- required: yes
+- maps to NT `LoggerConfig.log_components_only`
+
+#### `is_colored`
+
+- type: bool
+- required: yes
+- maps to NT `LoggerConfig.is_colored`
+
+#### `print_config`
+
+- type: bool
+- required: yes
+- maps to NT `LoggerConfig.print_config`
+
+#### `use_tracing`
+
+- type: bool
+- required: yes
+- maps to NT `LoggerConfig.use_tracing`
+
+#### `bypass_logging`
+
+- type: bool
+- required: yes
+- maps to NT `LoggerConfig.bypass_logging`
+
+#### `file_config`
+
+- type: string enum
+- required: yes
+- allowed values: `disabled`
+- maps to `LoggerConfig.file_config = None`; the pinned NT Rust live runtime rejects non-disabled file writer config
+
+#### `clear_log_file`
+
+- type: bool
+- required: yes
+- allowed values: `false`
+- maps to NT `LoggerConfig.clear_log_file`; the pinned NT Rust live runtime rejects `true`
+
+#### `stale_log_source_directory`
+
+- type: absolute path string
+- required: yes
+- source directory for stale NT log sweep before live-node construction
+
+#### `stale_log_archive_directory`
+
+- type: absolute path string
+- required: yes
+- archive directory for stale NT log files moved before live-node construction
+
+Bolt-v3 installs module-level filters for NT credential log modules from provider-owned bindings. `[logging].credential_module_level` owns the filter level and validation requires `WARN` or stricter because those NT modules log credential-derived material at info-level.
+
+Bolt-v3 maps every pinned NautilusTrader `LoggerConfig` field from TOML before handing the config to `LiveNodeBuilder::from_config`. The stale-log sweep directories are separate from NT `LoggerConfig.file_config`; the pinned Rust live runtime rejects non-disabled `file_config` and `clear_log_file = true`, so TOML must explicitly request `file_config = "disabled"` and `clear_log_file = false`.
 
 ### `[persistence]`
 
@@ -544,7 +730,25 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - local Nautilus catalog root for structured decision events and raw NautilusTrader capture
 - persistence behavior and local-evidence requirements are defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 9.6, 9.7, and 10
 
+#### `runtime_capture_start_poll_interval_milliseconds`
+
+- type: positive integer
+- required: yes
+- controls the raw-capture worker poll interval while it is buffering startup messages before the NT runner reports running
+- this is TOML-owned so the capture worker does not own a compiled timing policy
+
 There is no `state_directory` in the current bolt-v3 scope. NT's pinned `LiveNodeBuilder` does not expose a state-directory wiring (load/save state are booleans only), so a TOML key would not flow to NT. A future slice may reintroduce this once a supported path exists.
+
+### `[persistence.decision_evidence]`
+
+This section is required.
+
+#### `order_intents_relative_path`
+
+- type: relative path string
+- required: yes
+- path under `catalog_directory` for bolt-v3 order-intent evidence
+- the path is relative so changing `catalog_directory` moves the local evidence root in one place
 
 ### `[persistence.streaming]`
 
@@ -619,128 +823,159 @@ This section is optional for parse/build-only checks and required before `run_bo
 - must be less than or equal to `risk.default_max_notional_per_order`
 - the run gate does not submit orders; submit-admission code must consume this bound before any live submit
 
-### Phase 8 operator-harness evidence envelope
+### `[live_canary.operator_evidence]`
 
-The `[live_canary]` TOML block is necessary but not sufficient for the one tiny-capital canary operator harness. Before live runner entry, the ignored Phase 8 harness also requires an operator-supplied evidence envelope through these environment fields. Values are evidence paths, sha256s, timestamps, or hashed identifiers; do not put secret values in these fields.
+This section is optional for parse/build-only checks and required by the ignored tiny-canary operator harness before live-capital proof. Runtime values are read from TOML, not from a second env-var contract.
 
-#### Approval and preflight fields
+#### `approval_envelope_path`
 
-- `BOLT_V3_PHASE8_HEAD_SHA`: exact commit SHA approved for the attempt
-- `BOLT_V3_PHASE8_ROOT_TOML_PATH`: approved root TOML path
-- `BOLT_V3_PHASE8_ROOT_TOML_SHA256`: sha256 of the approved root TOML
-- `BOLT_V3_PHASE8_SSM_MANIFEST_PATH`: redacted SSM path manifest evidence
-- `BOLT_V3_PHASE8_SSM_MANIFEST_SHA256`: sha256 of the redacted SSM manifest evidence
-- `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH`: strategy-input safety evidence path
-- `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256`: sha256 of the strategy-input safety evidence
-- When strategy input evidence reports `market_selection_outcome = "next"`, it must also include `market_selection_source_path` and `market_selection_source_sha256` for a `market_selection_result` artifact with `source = "nt_runtime_selection_snapshot"`. The audit derives nearest-next candidates from that source-bound artifact and rejects a self-reported or truncated candidate list.
-- `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH`: financial-envelope evidence path
-- `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256`: sha256 of the financial-envelope evidence
-- `BOLT_V3_PHASE8_PRE_RUN_STATE_PATH`: pre-run host/account/market/funding/runner/egress state evidence path
-- `BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256`: sha256 of the pre-run state evidence
-- The pre-run state evidence JSON must include sha256 bindings for the host clock-skew proof, venue account-state proof, market-state proof, funding/margin proof, single-runner lock proof, egress-identity proof, CLOB V2 signing/collateral/fee proofs, and release-manifest proof.
-- `BOLT_V3_PHASE8_ABORT_PLAN_PATH`: operator abort/panic plan evidence path
-- `BOLT_V3_PHASE8_ABORT_PLAN_SHA256`: sha256 of the abort/panic plan evidence
-- `BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID`: explicit operator approval identifier
-- `BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS`: earliest allowed approval-consumption time
-- `BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS`: latest allowed approval-consumption time; must be greater than `BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS`
-- `BOLT_V3_PHASE8_APPROVAL_NONCE_PATH`: one-shot approval nonce evidence path
-- `BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256`: sha256 of the approval nonce evidence
-- `BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH`: path atomically created when the approval is consumed
-- `BOLT_V3_PHASE8_EVIDENCE_PATH`: redacted canary evidence output path
-- The evidence writer rejects live-order proof serialization if `live_order_ref.strategy_instance_id_hash` no longer matches the approved strategy-instance hash derived from the financial envelope.
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- independent operator approval envelope path containing approved `head_sha` and `root_toml_sha256`
 
-#### Live-result fields
+#### `ssm_manifest_path`
 
-- `BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH`: persisted decision evidence proof path under the NT runtime capture spool
-- `BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH`: client order identifier hash
-- `BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH`: venue order identifier hash
-- `BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH`: NT submit-event evidence path
-- `BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH`: venue accept/fill/reject evidence path
-- `BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH`: optional strategy-driven cancel evidence path when an order remains open
-- `BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH`: restart reconciliation evidence path
-- `BOLT_V3_PHASE8_POST_RUN_HYGIENE_PATH`: post-run raw-secret residue scan and retention/purge evidence path
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- redacted SSM manifest path used for checksum validation
 
-#### Phase 8 artifact JSON schemas
+#### `ssm_manifest_sha256`
 
-All Phase 8 operator JSON artifacts are strict: unknown fields reject before live runner entry. String fields named `*_hash`, `*_sha256`, or `*_id_hash` are lowercase hex sha256 values unless stated otherwise. Decimal values are encoded as strings so operator-approved precision is preserved exactly.
+- type: SHA-256 hex string
+- required: yes when `[live_canary.operator_evidence]` is present
+- checksum of the redacted SSM manifest
 
-`strategy_input_evidence` fields:
+#### `strategy_input_evidence_path`
 
-- `realized_volatility`: decimal string, positive
-- `seconds_to_expiry`: integer seconds, positive
-- `spot_price`: decimal string, positive
-- `price_to_beat_value`: decimal string, positive
-- `expected_edge_basis_points`: decimal string, positive and equal to `worst_case_edge_basis_points`
-- `worst_case_edge_basis_points`: decimal string, positive and equal to `expected_edge_basis_points`
-- `fee_rate_basis_points`: decimal string, zero or positive
-- `price_to_beat_source`: string, must equal the approved `[parameters.runtime].price_to_beat_source`
-- `reference_quote_ts_event`: integer timestamp, non-zero
-- `pricing_kurtosis`: decimal string, greater than `-6`
-- `theta_decay_factor`: decimal string, zero or positive
-- `theta_scaled_min_edge_bps`: decimal string, positive
-- `market_selection_timestamp_milliseconds`: integer milliseconds
-- `candidate_market_start_timestamps_milliseconds`: optional integer-millisecond list, retained for evidence but not trusted for nearest-next approval
-- `market_selection_source_path`: required path when `market_selection_outcome = "next"`
-- `market_selection_source_sha256`: required sha256 when `market_selection_outcome = "next"`
-- `market_selection_outcome`: string enum, `current` or `next`
-- `polymarket_condition_id`, `polymarket_market_slug`, `polymarket_question_id`, `up_instrument_id`, `down_instrument_id`: selected-market identifiers
-- `selected_market_observed_timestamp`: integer timestamp, non-zero
-- `polymarket_market_start_timestamp_milliseconds`, `polymarket_market_end_timestamp_milliseconds`: integer milliseconds, selected start must precede selected end
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- strategy-input evidence path used for checksum validation
 
-`market_selection_result` source artifact fields:
+#### `strategy_input_evidence_sha256`
 
-- `record_kind`: string, `market_selection_result`
-- `source`: string, `nt_runtime_selection_snapshot`
-- `market_selection_timestamp_milliseconds`: integer milliseconds matching strategy-input evidence
-- `candidate_market_start_timestamps_milliseconds`: non-empty integer-millisecond list used for nearest-next approval
-- `market_selection_outcome`: string enum, must match strategy-input evidence
-- `polymarket_condition_id`, `polymarket_market_slug`, `polymarket_question_id`, `up_instrument_id`, `down_instrument_id`: selected-market identifiers matching strategy-input evidence
-- `selected_market_observed_timestamp`: integer timestamp matching strategy-input evidence
-- `polymarket_market_start_timestamp_milliseconds`, `polymarket_market_end_timestamp_milliseconds`: integer milliseconds matching strategy-input evidence
+- type: SHA-256 hex string
+- required: yes when `[live_canary.operator_evidence]` is present
+- checksum of strategy-input evidence
 
-`financial_envelope` fields:
+#### `financial_envelope_path`
 
-- `max_live_order_count`: integer, must equal `1`
-- `max_notional_per_order`: decimal string matching `[live_canary].max_notional_per_order`
-- `strategy_instance_id`, `strategy_venue`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`: strings matching the loaded strategy/TOML
-- `cadence_seconds`, `retry_interval_seconds`, `blocked_after_seconds`: integer seconds matching the loaded target runtime
-- `market_selection_rule`: string matching the loaded target runtime
-- `price_to_beat_source`: string matching `[parameters.runtime].price_to_beat_source`
-- `edge_threshold_basis_points`: integer matching loaded strategy parameters
-- `order_notional_target`, `maximum_position_notional`: decimal strings matching loaded strategy parameters
-- `book_impact_cap_bps`: integer matching `[parameters.runtime].book_impact_cap_bps`
-- `entry_order_type`, `entry_time_in_force`, `exit_order_type`, `exit_time_in_force`: strings matching loaded order parameters
-- `entry_is_post_only`, `entry_is_reduce_only`, `entry_is_quote_quantity`, `exit_is_post_only`, `exit_is_reduce_only`, `exit_is_quote_quantity`: booleans matching loaded order parameters
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- financial envelope evidence path used for checksum validation
 
-`pre_run_state` fields:
+#### `financial_envelope_sha256`
 
-- `strategy_venue`, `configured_target_id`: strings matching the financial envelope
-- `host_clock_skew_within_bound`, `conflicting_open_orders_absent`, `preexisting_position_absent`, `market_state_approved`, `market_window_approved`, `funding_margin_covers_max_notional_plus_fees`, `single_runner_lock_acquired`, `egress_identity_approved`, `clob_v2_adapter_signing_verified`, `clob_v2_collateral_accounting_verified`, `clob_v2_fee_behavior_verified`, `release_manifest_nt_revision_matches_compiled_pin`: booleans, all must be `true`
-- `host_clock_skew_evidence_hash`, `venue_account_state_evidence_hash`, `market_state_evidence_hash`, `funding_margin_evidence_hash`, `single_runner_lock_evidence_hash`, `egress_identity_evidence_hash`, `clob_v2_adapter_signing_evidence_hash`, `clob_v2_collateral_accounting_evidence_hash`, `clob_v2_fee_behavior_evidence_hash`, `release_manifest_evidence_hash`: sha256 bindings to operator-held evidence artifacts
-- `release_manifest_clob_signing_version`: non-empty string for the CLOB V2 signing release proof
+- type: SHA-256 hex string
+- required: yes when `[live_canary.operator_evidence]` is present
+- checksum of financial envelope evidence
 
-`abort_plan` fields:
+#### `pre_run_state_path`
 
-- `strategy_venue`, `configured_target_id`: strings matching the financial envelope
-- `cancel_if_open_defined`, `nt_accepted_venue_pending_abort_defined`, `partial_fill_abort_defined`, `network_partition_during_submit_abort_defined`, `panic_gate_trip_abort_defined`: booleans, all must be `true`
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- pre-run state evidence path used for checksum validation
 
-Live-result proof JSON files:
+#### `pre_run_state_sha256`
 
-- `decision_evidence`, `nt_submit_event`, `venue_order_state`, `strategy_cancel`, and `restart_reconciliation` proofs include `record_kind` set to the matching proof name.
-- `decision_evidence` must include `run_id` and `strategy_instance_id_hash`, and its path must be under the NT runtime capture spool.
-- `nt_submit_event` must include `run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, and `venue_order_id_hash`.
-- `venue_order_state` must include `run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, `venue_order_id_hash`, `venue_order_outcome`, and `order_remains_open`; `venue_order_outcome` is `accepted`, `filled`, or `rejected`, and terminal outcomes require `order_remains_open = false`.
-- `strategy_cancel` is required when `venue_order_state.order_remains_open = true` and includes `run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, and `venue_order_id_hash`.
-- `restart_reconciliation` must include `source_run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, `venue_order_id_hash`, `venue_order_outcome`, and `order_remains_open`; `venue_order_outcome` must be terminal (`filled` or `rejected`), `order_remains_open` must be `false`, and its path must be under the NT runtime capture spool.
+- type: SHA-256 hex string
+- required: yes when `[live_canary.operator_evidence]` is present
+- checksum of pre-run state evidence
 
-`post_run_hygiene` fields:
+#### `abort_plan_path`
 
-- `record_kind`: string, `post_run_hygiene`
-- `run_id`: runtime capture run id
-- `strategy_instance_id_hash`, `client_order_id_hash`, `venue_order_id_hash`: approved live-order hashes
-- `raw_secret_residue_absent`: boolean, must be `true`
-- `scanned_artifact_hashes`: non-empty list of sha256 values for scanned artifacts
-- `retention_purge_path_hash`: sha256 binding for the retention/purge path proof
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- abort plan evidence path used for checksum validation
+
+#### `abort_plan_sha256`
+
+- type: SHA-256 hex string
+- required: yes when `[live_canary.operator_evidence]` is present
+- checksum of abort plan evidence
+
+#### `canary_evidence_path`
+
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- output path for redacted tiny-canary evidence
+
+#### `approval_not_before_unix_seconds`
+
+- type: integer Unix seconds
+- required: yes when `[live_canary.operator_evidence]` is present
+- earliest accepted operator approval time
+
+#### `approval_not_after_unix_seconds`
+
+- type: integer Unix seconds
+- required: yes when `[live_canary.operator_evidence]` is present
+- latest accepted operator approval time
+
+#### `approval_nonce_path`
+
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- approval nonce evidence path used for checksum validation
+
+#### `approval_nonce_sha256`
+
+- type: SHA-256 hex string
+- required: yes when `[live_canary.operator_evidence]` is present
+- checksum of approval nonce evidence
+
+#### `approval_consumption_path`
+
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- output path for one-shot approval consumption evidence
+
+#### `decision_evidence_path`
+
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- decision evidence proof path
+
+#### `client_order_id_hash`
+
+- type: SHA-256 hex string
+- required: yes when `[live_canary.operator_evidence]` is present
+- expected client order id hash for proof joins
+
+#### `venue_order_id_hash`
+
+- type: SHA-256 hex string
+- required: yes when `[live_canary.operator_evidence]` is present
+- expected venue order id hash for proof joins
+
+#### `nt_submit_event_path`
+
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- NT submit event proof path under the runtime capture spool
+
+#### `venue_order_state_path`
+
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- venue order state proof path under the runtime capture spool
+
+#### `strategy_cancel_path`
+
+- type: optional path string
+- required: no
+- strategy cancel proof path under the runtime capture spool
+
+#### `restart_reconciliation_path`
+
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- restart reconciliation proof path under the runtime capture spool
+
+#### `post_run_hygiene_path`
+
+- type: path string
+- required: yes when `[live_canary.operator_evidence]` is present
+- post-run hygiene proof path under the runtime capture spool
 
 ### `[aws]`
 
@@ -820,6 +1055,14 @@ Presence of `[data]` means a data client is configured.
 - the pinned NautilusTrader Polymarket data client calls `ws_client.subscribe_market(vec![])` from inside its `connect()` when this flag is `true`, which is effectively an all-markets subscription and violates the bolt-v3 controlled-connect boundary
 - this flag is forced `false` until the dedicated market-subscription slice owns the controlled-subscribe path
 
+##### `auto_load_missing_instruments`
+
+- type: boolean
+- required: yes
+- must be `false` in the current bolt-v3 scope: validation fails closed if set to `true`
+- the pinned NautilusTrader Polymarket data client can use this flag to trigger ad-hoc instrument loads, which violates the bolt-v3 controlled-loading boundary
+- this flag is forced `false` until a dedicated controlled-loading slice owns the reviewed activation path
+
 ##### `update_instruments_interval_minutes`
 
 - type: positive integer
@@ -831,6 +1074,19 @@ Presence of `[data]` means a data client is configured.
 
 - type: positive integer
 - required: yes
+
+##### `auto_load_debounce_milliseconds`
+
+- type: positive integer
+- required: yes
+
+##### `transport_backend`
+
+- type: string enum
+- required: yes
+- allowed values: `tungstenite`, `sockudo`
+- maps directly to the pinned NautilusTrader WebSocket transport backend field
+- explicit TOML ownership prevents the adapter from silently inheriting the NT default backend
 
 No other Polymarket data-client fields are exposed in the current schema unless they are confirmed on the pinned NautilusTrader Rust adapter surface.
 
@@ -891,6 +1147,14 @@ bolt parses this string enum and maps it to the current pinned Nautilus/Polymark
 - type: positive integer
 - required: yes
 - maps directly to the pinned Polymarket execution-client acknowledgment timeout field
+
+#### `transport_backend`
+
+- type: string enum
+- required: yes
+- allowed values: `tungstenite`, `sockudo`
+- maps directly to the pinned NautilusTrader WebSocket transport backend field
+- explicit TOML ownership prevents the adapter from silently inheriting the NT default backend
 
 #### Additional Polymarket execution fields
 
@@ -967,6 +1231,14 @@ For current Binance reference-data use:
 - maps to Nautilus `BinanceDataClientConfig.instrument_status_poll_secs`
 - bolt-v3 rejects `0` rather than treating it as "polling disabled" so that the cadence stays explicit and NT cannot silently fall back to its own default poll interval
 
+##### `transport_backend`
+
+- type: string enum
+- required: yes
+- allowed values: `tungstenite`, `sockudo`
+- maps directly to the pinned NautilusTrader WebSocket transport backend field
+- explicit TOML ownership prevents the adapter from silently inheriting the NT default backend
+
 ## 6. Strategy File: Candidate Schema
 
 ```toml
@@ -975,6 +1247,19 @@ strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
+use_uuid_client_order_ids = true
+use_hyphens_in_client_order_ids = false
+external_order_claims = []
+manage_contingent_orders = false
+manage_gtd_expiry = false
+manage_stop = false
+market_exit_interval_ms = 100
+market_exit_max_attempts = 100
+market_exit_time_in_force = "gtc"
+market_exit_reduce_only = true
+log_events = true
+log_commands = true
+log_rejected_due_post_only_as_warning = true
 venue = "polymarket_main"
 
 [target]
@@ -983,13 +1268,31 @@ kind = "rotating_market"
 rotating_market_family = "updown"
 underlying_asset = "BTC"
 cadence_seconds = 300
+cadence_slug_token = "5m"
 market_selection_rule = "active_or_next"
 retry_interval_seconds = 5
 blocked_after_seconds = 60
 
-[reference_data.primary]
+[reference_data.spot]
 venue = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
+
+[parameters.runtime]
+warmup_tick_count = 20
+reentry_cooldown_secs = 30
+book_impact_cap_bps = 50
+risk_lambda = 0.5
+exit_hysteresis_bps = 25
+vol_window_secs = 600
+vol_gap_reset_secs = 60
+vol_min_observations = 5
+vol_bridge_valid_secs = 30
+pricing_kurtosis = 3.0
+theta_decay_factor = 1.0
+forced_flat_stale_reference_ms = 10000
+forced_flat_thin_book_min_liquidity = 5.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250
 
 [parameters.entry_order]
 order_type = "limit"
@@ -1054,8 +1357,9 @@ lead_jitter_max_ms = 250
 - current supported value:
   - `binary_oracle_edge_taker`
 
-This string binds to a compile-time Rust match in bolt's assembler.
-There is no dynamic registry framework.
+This string is resolved by the bolt-v3 archetype runtime binding table.
+That binding supplies the NT `StrategyBuilder::kind()` used for strategy
+registration.
 
 Nautilus strategy identity mapping for live trading:
 
@@ -1076,6 +1380,24 @@ Nautilus strategy identity mapping for live trading:
 - current allowed value:
   - `netting`
 - maps directly to Nautilus `StrategyConfig.oms_type`
+
+#### NT `StrategyConfig` fields
+
+The following required fields map directly to the same-named Nautilus `StrategyConfig` fields:
+
+- `use_uuid_client_order_ids`
+- `use_hyphens_in_client_order_ids`
+- `external_order_claims`
+- `manage_contingent_orders`
+- `manage_gtd_expiry`
+- `manage_stop`
+- `market_exit_interval_ms`
+- `market_exit_max_attempts`
+- `market_exit_time_in_force`
+- `market_exit_reduce_only`
+- `log_events`
+- `log_commands`
+- `log_rejected_due_post_only_as_warning`
 
 #### `venue`
 
@@ -1133,7 +1455,6 @@ If `kind = "rotating_market"`:
 
 - type: string
 - required: yes
-- length: 1 to 32 characters
 - must be a configured `updown` asset symbol
 - allowed characters:
   - uppercase ASCII letters
@@ -1146,9 +1467,16 @@ If `kind = "rotating_market"`:
 - type: integer
 - required: yes
 - must be positive
-- must be divisible by `60`
-- each supported value must have an explicit runtime slug-token mapping before it can trade
-- current runtime slug-token mappings are defined in `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 5.3
+
+##### `cadence_slug_token`
+
+- type: string
+- required: yes
+- must be non-empty
+- allowed characters:
+  - lowercase ASCII letters
+  - digits
+- this is the exact slug segment used for the configured `cadence_seconds`
 
 ##### `market_selection_rule`
 
@@ -1181,7 +1509,7 @@ If present:
 
 - each block references a root venue that includes `[data]`
 - each block declares the exact NautilusTrader `instrument_id` the strategy subscribes to
-- for the current `binary_oracle_edge_taker`, the required role name is `primary`
+- for the current `binary_oracle_edge_taker`, exactly one reference-data role must be configured; the role key is operator-owned
 
 Fields:
 
@@ -1207,6 +1535,22 @@ These are archetype-specific order-construction parameters for `binary_oracle_ed
 They are not a bolt-wide executable-order schema.
 
 They must map directly to NautilusTrader-native order semantics used by the archetype.
+
+#### `side`
+
+- type: string enum
+- allowed values for the current archetype:
+  - `buy`
+  - `sell`
+- maps to NautilusTrader `OrderSide`
+
+#### `position_side`
+
+- type: string enum
+- allowed values for the current archetype:
+  - `long`
+  - `short`
+- maps to NautilusTrader `PositionSide`
 
 #### `order_type`
 
@@ -1242,27 +1586,48 @@ Meaning:
 
 - this is the NautilusTrader-native quote/base quantity toggle used by the archetype
 - it is not a bolt-owned translation field
-- for the current `binary_oracle_edge_taker` archetype, the only allowed value is `false`
+- the configured value is passed through to the runtime strategy order factory path
 
-### Current valid order combinations for `binary_oracle_edge_taker`
+### Order construction for `binary_oracle_edge_taker`
 
-To avoid hidden policy, the current archetype supports only these combinations:
+The archetype must not impose a code-owned fixed order combination. These TOML fields are
+projected into the runtime strategy config and then into NautilusTrader's order factory.
 
 - `[parameters.entry_order]`
-  - `order_type = "limit"`
-  - `time_in_force = "fok"`
-  - `is_post_only = false`
-  - `is_reduce_only = false`
-  - `is_quote_quantity = false`
+  - supplies the configured NT order side and position side
+  - creates the configured entry order type and time-in-force
+  - supplies configured post-only, reduce-only, and quote-quantity flags
 
 - `[parameters.exit_order]`
-  - `order_type = "market"`
-  - `time_in_force = "ioc"`
-  - `is_post_only = false`
-  - `is_reduce_only = false`
-  - `is_quote_quantity = false`
+  - supplies the configured NT order side and position side
+  - creates the configured exit order type and time-in-force
+  - supplies configured post-only, reduce-only, and quote-quantity flags
 
-Any other combination fails validation for this archetype.
+Market orders cannot be post-only because NautilusTrader's market-order factory has no
+post-only parameter. That protocol constraint fails closed at runtime strategy construction.
+
+### `[parameters.runtime]`
+
+This block is archetype-specific and required for `binary_oracle_edge_taker`.
+Every field is TOML-owned and maps into the runtime strategy config.
+
+Required fields:
+
+- `warmup_tick_count`: non-negative integer
+- `reentry_cooldown_secs`: non-negative integer
+- `book_impact_cap_bps`: non-negative integer
+- `risk_lambda`: float
+- `exit_hysteresis_bps`: integer
+- `vol_window_secs`: non-negative integer
+- `vol_gap_reset_secs`: non-negative integer
+- `vol_min_observations`: non-negative integer
+- `vol_bridge_valid_secs`: non-negative integer
+- `pricing_kurtosis`: float
+- `theta_decay_factor`: float
+- `forced_flat_stale_reference_ms`: non-negative integer
+- `forced_flat_thin_book_min_liquidity`: float
+- `lead_agreement_min_corr`: float
+- `lead_jitter_max_ms`: non-negative integer
 
 ### `[parameters]`
 
@@ -1335,7 +1700,6 @@ Must fail if:
 - a venue reference points to a missing venue
 - a strategy `venue` points to a data-only venue
 - a reference-data venue points to a venue without `[data]`
-- more than one `[venues.<identifier>]` block declares the same `kind` in the current one-venue-per-kind slice
 - a `[secrets]` block is present without the same venue-kind's consuming adapter block
 - an SSM parameter path is empty or does not start with `/`
 - two listed strategy files declare the same `strategy_instance_id`
@@ -1346,14 +1710,14 @@ Must fail if:
 - Polymarket `funder_address`, when present, is not a `0x`-prefixed 40-hex-character non-zero EVM address
 - `target.kind = "rotating_market"` includes fields not valid for rotating-market targets
 - `target.kind = "instrument"` is selected before instrument targets are added by a future contract slice
-- `target.underlying_asset` is empty, longer than 32 characters, or contains characters outside uppercase ASCII letters, digits, and underscore
-- `target.cadence_seconds` is not positive or is not divisible by `60`
-- `target.cadence_seconds` does not have a runtime-contract-defined slug-token mapping
+- `target.underlying_asset` is empty or contains characters outside uppercase ASCII letters, digits, and underscore
+- `target.cadence_seconds` is not positive
+- `target.cadence_slug_token` is empty or contains characters outside lowercase ASCII letters and digits
 - a field appears under `[venues.<identifier>.data]` or `[venues.<identifier>.execution]` that is not allowed for that venue `kind`
 - archetype-specific parameter sections contain fields not allowed for the declared `strategy_archetype`
 - archetype-specific order parameters contain any combination not explicitly allowed for that archetype
 - `order_notional_target` exceeds `root risk.default_max_notional_per_order`
-- `binary_oracle_edge_taker` is missing `[reference_data.primary]`
+- `binary_oracle_edge_taker` has zero or more than one `[reference_data.<role>]` block
 
 ### Live validation
 
@@ -1380,6 +1744,13 @@ mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+instance_id = "disabled"
+cache = "disabled"
+msgbus = "disabled"
+portfolio = "disabled"
+emulator = "disabled"
+streaming = "disabled"
+loop_debug = false
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
 timeout_portfolio_seconds = 10
@@ -1458,9 +1829,25 @@ nt_qsize = 100000
 [logging]
 standard_output_level = "INFO"
 file_level = "INFO"
+component_levels = {}
+module_levels = {}
+credential_module_level = "WARN"
+log_components_only = false
+is_colored = true
+print_config = false
+use_tracing = false
+bypass_logging = false
+file_config = "disabled"
+clear_log_file = false
+stale_log_source_directory = "/var/lib/bolt"
+stale_log_archive_directory = "/var/log/bolt/nautilus-archive"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+runtime_capture_start_poll_interval_milliseconds = 50
+
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
@@ -1489,8 +1876,11 @@ base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClient
 http_timeout_seconds = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
 ws_timeout_seconds = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
 subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets — forced false in current bolt-v3 scope
+auto_load_missing_instruments = false # NT: PolymarketDataClientConfig.auto_load_missing_instruments — forced false in current bolt-v3 scope
 update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
+auto_load_debounce_milliseconds = 250 # NT: PolymarketDataClientConfig.auto_load_debounce_ms
+transport_backend = "tungstenite" # NT: PolymarketDataClientConfig.transport_backend
 
 [venues.polymarket_main.execution]
 account_id = "POLYMARKET-001" # NT: nautilus_model::identifiers::AccountId
@@ -1504,6 +1894,8 @@ max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
 retry_delay_initial_milliseconds = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
 retry_delay_max_milliseconds = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
 ack_timeout_seconds = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
+fee_cache_ttl_seconds = 300 # bolt-v3 fee-provider cache TTL
+transport_backend = "tungstenite" # NT: PolymarketExecClientConfig.transport_backend
 
 [venues.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
@@ -1520,6 +1912,7 @@ environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
 instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
+transport_backend = "tungstenite" # NT: BinanceDataClientConfig.transport_backend
 
 [venues.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"
@@ -1534,6 +1927,19 @@ strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
+use_uuid_client_order_ids = true
+use_hyphens_in_client_order_ids = false
+external_order_claims = []
+manage_contingent_orders = false
+manage_gtd_expiry = false
+manage_stop = false
+market_exit_interval_ms = 100
+market_exit_max_attempts = 100
+market_exit_time_in_force = "gtc"
+market_exit_reduce_only = true
+log_events = true
+log_commands = true
+log_rejected_due_post_only_as_warning = true
 venue = "polymarket_main"
 
 [target]
@@ -1542,13 +1948,31 @@ kind = "rotating_market"
 rotating_market_family = "updown"
 underlying_asset = "BTC"
 cadence_seconds = 300
+cadence_slug_token = "5m"
 market_selection_rule = "active_or_next"
 retry_interval_seconds = 5
 blocked_after_seconds = 60
 
-[reference_data.primary]
+[reference_data.spot]
 venue = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
+
+[parameters.runtime]
+warmup_tick_count = 20
+reentry_cooldown_secs = 30
+book_impact_cap_bps = 50
+risk_lambda = 0.5
+exit_hysteresis_bps = 25
+vol_window_secs = 600
+vol_gap_reset_secs = 60
+vol_min_observations = 5
+vol_bridge_valid_secs = 30
+pricing_kurtosis = 3.0
+theta_decay_factor = 1.0
+forced_flat_stale_reference_ms = 10000
+forced_flat_thin_book_min_liquidity = 5.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250
 
 [parameters.entry_order]
 order_type = "limit"

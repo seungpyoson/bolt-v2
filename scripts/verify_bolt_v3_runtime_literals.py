@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Verify Bolt-v3 production literals are classified.
 
-This verifier is intentionally narrow. It scans production code in root
-`src/bolt_v3_*.rs` files plus files under `src/bolt_v3_*` module directories,
+This verifier scans every current production Rust source file under `src/`,
 skips `#[cfg(test)] mod tests` regions and diagnostics by rule, then requires
 every remaining candidate runtime literal to be explicitly allowlisted with a
 rationale.
@@ -16,10 +15,16 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from verify_bolt_v3_provider_leaks import (
+    production_text as production_source_text,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AUDIT_PATH = REPO_ROOT / "docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml"
-SCAN_GLOBS = ("src/bolt_v3_*.rs", "src/bolt_v3_*/**/*.rs")
+SCAN_GLOBS = (
+    "src/**/*.rs",
+)
 
 DIAGNOSTIC_WORDS = (
     "already",
@@ -47,8 +52,12 @@ IGNORED_CONTEXT_PATTERNS = [
     r"^\s*#\[serde\(",
     r"\bwrite!?\(",
     r"\bwriteln!\(",
+    r"\beprintln!\(",
+    r"\blog::(debug|error|info|trace|warn)!\(",
     r"\bformat!\(",
     r"\bpanic!\(",
+    r"\banyhow::anyhow!\(",
+    r"\banyhow::bail!\(",
     r"\bexpect\(",
     r"\bdebug_struct\(",
     r"\bdebug_tuple\(",
@@ -65,6 +74,14 @@ IGNORED_CONTEXT_PATTERNS = [
     r"\.len\(\)\s*(==|>)\s*1\b",
 ]
 
+IGNORED_CALL_CONTEXT_PATTERNS = [
+    r"\blog::(debug|error|info|trace|warn)!\s*(\(|\[|\{)",
+    r"\btracing::(debug|error|info|trace|warn)!\s*(\(|\[|\{)",
+]
+
+DIAGNOSTIC_MACRO_PATTERN = re.compile(
+    r"\b(?:log|tracing)::(?:debug|error|info|trace|warn)!\s*(\(|\[|\{)"
+)
 
 @dataclass(frozen=True)
 class Literal:
@@ -73,6 +90,7 @@ class Literal:
     kind: str
     literal: str
     context: str
+    call_context: str
 
     def key(self) -> tuple[str, str, str, str]:
         return (self.path, self.kind, self.literal, self.context)
@@ -100,102 +118,6 @@ def load_allowed() -> set[tuple[str, str, str, str]]:
             )
         allowed.add((row["path"], row["kind"], row["literal"], row["context"]))
     return allowed
-
-
-def test_ranges(text: str) -> list[tuple[int, int]]:
-    """Return byte ranges for file-local `#[cfg(test)] mod tests` blocks.
-
-    This scanner only needs enough Rust awareness to ignore braces inside
-    comments and string/char literals while finding the end of the test module.
-    """
-
-    lines = text.splitlines(keepends=True)
-    starts = []
-    offset = 0
-    for line in lines:
-        starts.append(offset)
-        offset += len(line)
-
-    ranges: list[tuple[int, int]] = []
-    pending_cfg = False
-    for index, line in enumerate(lines):
-        cfg_match = re.search(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]", line)
-        mod_match = re.search(r"(?:pub\s+)?mod\s+tests\s*\{", line)
-        if mod_match and (pending_cfg or cfg_match):
-            start = starts[index]
-            opening = text.find("{", start + mod_match.start())
-            closing = matching_brace(text, opening)
-            ranges.append((start, closing + 1 if closing is not None else len(text)))
-            pending_cfg = False
-            continue
-        if cfg_match:
-            pending_cfg = line[cfg_match.end() :].strip() == ""
-            continue
-        if pending_cfg:
-            stripped = line.strip()
-            if stripped == "" or stripped.startswith("//") or stripped.startswith("#["):
-                continue
-            pending_cfg = False
-    return ranges
-
-
-def matching_brace(text: str, opening: int) -> int | None:
-    depth = 0
-    index = opening
-    block_comment_depth = 0
-
-    while index < len(text):
-        char = text[index]
-        nxt = text[index + 1] if index + 1 < len(text) else ""
-
-        if block_comment_depth:
-            if char == "/" and nxt == "*":
-                block_comment_depth += 1
-                index += 2
-                continue
-            if char == "*" and nxt == "/":
-                block_comment_depth -= 1
-                index += 2
-                continue
-            index += 1
-            continue
-
-        if char == "/" and nxt == "/":
-            newline = text.find("\n", index)
-            if newline == -1:
-                return None
-            index = newline + 1
-            continue
-        if char == "/" and nxt == "*":
-            block_comment_depth = 1
-            index += 2
-            continue
-        raw_end = rust_raw_string_literal_end(text, index)
-        if raw_end is not None:
-            index = raw_end
-            continue
-        if char == "b" and nxt == "'":
-            char_end = rust_char_literal_end(text, index + 1)
-            if char_end is not None:
-                index = char_end
-                continue
-        char_end = rust_char_literal_end(text, index)
-        if char_end is not None:
-            index = char_end
-            continue
-        string_end = rust_string_literal_end(text, index)
-        if string_end is not None:
-            index = string_end
-            continue
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return index
-        index += 1
-
-    return None
 
 
 def rust_char_literal_end(text: str, start: int) -> int | None:
@@ -277,18 +199,91 @@ def rust_string_literal_end(text: str, start: int) -> int | None:
     return len(text)
 
 
-def inside_ranges(position: int, ranges: list[tuple[int, int]]) -> bool:
-    return any(start <= position < end for start, end in ranges)
-
-
 def line_context(text: str, line: int) -> str:
     return text.splitlines()[line - 1].strip()
 
 
+def call_context(text: str, literal_start: int) -> str:
+    for match in reversed(list(DIAGNOSTIC_MACRO_PATTERN.finditer(text, 0, literal_start))):
+        opener_index = match.end(1) - 1
+        if delimiter_is_open_at(text, opener_index, literal_start):
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            return text[line_start:literal_start].strip()
+    return ""
+
+
+def delimiter_is_open_at(text: str, opener_index: int, stop: int) -> bool:
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    openers = set(pairs)
+    closers = {value: key for key, value in pairs.items()}
+    stack: list[str] = []
+    index = opener_index
+    block_comment_depth = 0
+
+    while index < stop:
+        char = text[index]
+        nxt = text[index + 1] if index + 1 < stop else ""
+
+        if block_comment_depth:
+            if char == "/" and nxt == "*":
+                block_comment_depth += 1
+                index += 2
+                continue
+            if char == "*" and nxt == "/":
+                block_comment_depth -= 1
+                index += 2
+                continue
+            index += 1
+            continue
+
+        if char == "/" and nxt == "/":
+            newline = text.find("\n", index, stop)
+            if newline == -1:
+                return bool(stack)
+            index = newline + 1
+            continue
+
+        if char == "/" and nxt == "*":
+            block_comment_depth = 1
+            index += 2
+            continue
+
+        raw_end = rust_raw_string_literal_end(text, index)
+        if raw_end is not None:
+            index = min(raw_end, stop)
+            continue
+
+        if char == "b" and nxt == "'":
+            char_end = rust_char_literal_end(text, index + 1)
+            if char_end is not None:
+                index = min(char_end, stop)
+                continue
+        char_end = rust_char_literal_end(text, index)
+        if char_end is not None:
+            index = min(char_end, stop)
+            continue
+
+        string_end = rust_string_literal_end(text, index)
+        if string_end is not None:
+            index = min(string_end, stop)
+            continue
+
+        if char in openers:
+            stack.append(char)
+        elif char in closers:
+            if not stack or stack[-1] != closers[char]:
+                return False
+            stack.pop()
+            if not stack:
+                return False
+        index += 1
+
+    return bool(stack)
+
+
 def scan_file(path: Path) -> list[Literal]:
-    text = path.read_text(encoding="utf-8")
+    text = production_source_text(path.read_text(encoding="utf-8"))
     rel = str(path.relative_to(REPO_ROOT))
-    ranges = test_ranges(text)
     literals: list[Literal] = []
     index = 0
     line = 1
@@ -300,12 +295,6 @@ def scan_file(path: Path) -> list[Literal]:
     while index < len(text):
         char = text[index]
         nxt = text[index + 1] if index + 1 < len(text) else ""
-
-        if inside_ranges(index, ranges):
-            if char == "\n":
-                line += 1
-            index += 1
-            continue
 
         if block_comment_depth:
             if char == "/" and nxt == "*":
@@ -338,7 +327,9 @@ def scan_file(path: Path) -> list[Literal]:
         if raw_end is not None:
             start = index
             literal = text[start:raw_end]
-            literals.append(Literal(rel, line, "string", literal, current_context()))
+            literals.append(
+                Literal(rel, line, "string", literal, current_context(), call_context(text, start))
+            )
             line += literal.count("\n")
             index = raw_end
             continue
@@ -357,7 +348,17 @@ def scan_file(path: Path) -> list[Literal]:
         if string_end is not None:
             start = index
             literal = text[start:string_end]
-            literals.append(Literal(rel, line - literal.count("\n"), "string", literal, current_context()))
+            literal_line = line
+            literals.append(
+                Literal(
+                    rel,
+                    literal_line,
+                    "string",
+                    literal,
+                    current_context(),
+                    call_context(text, start),
+                )
+            )
             line += literal.count("\n")
             index = string_end
             continue
@@ -366,7 +367,16 @@ def scan_file(path: Path) -> list[Literal]:
         if number_end is not None:
             start = index
             index = number_end
-            literals.append(Literal(rel, line, "number", text[start:index], current_context()))
+            literals.append(
+                Literal(
+                    rel,
+                    line,
+                    "number",
+                    text[start:index],
+                    current_context(),
+                    call_context(text, start),
+                )
+            )
             continue
 
         if char == "\n":
@@ -381,9 +391,23 @@ def is_ident_char(char: str) -> bool:
 
 
 def rust_number_literal_end(text: str, start: int) -> int | None:
-    if start >= len(text) or not text[start].isdigit():
+    if start >= len(text):
         return None
-    if is_ident_char(text[start - 1] if start > 0 else ""):
+    literal_start = start
+    if text[start] == "-":
+        if start + 1 >= len(text) or not text[start + 1].isdigit():
+            return None
+        if not is_unary_minus_context(text, start):
+            return None
+        start += 1
+    elif not text[start].isdigit():
+        return None
+    elif is_ident_char(text[start - 1] if start > 0 else ""):
+        return None
+
+    if literal_start != start and is_ident_char(
+        text[literal_start - 1] if literal_start > 0 else ""
+    ):
         return None
 
     index = start
@@ -425,9 +449,31 @@ def rust_number_literal_end(text: str, start: int) -> int | None:
     return index
 
 
+def is_unary_minus_context(text: str, start: int) -> bool:
+    index = start - 1
+    while index >= 0 and text[index].isspace():
+        index -= 1
+    if index < 0:
+        return True
+
+    char = text[index]
+    if char in "([{,:;=,!<>+-*/%&|^?":
+        return True
+
+    if is_ident_char(char):
+        end = index + 1
+        while index >= 0 and is_ident_char(text[index]):
+            index -= 1
+        return text[index + 1 : end] in {"return", "break", "continue"}
+
+    return False
+
+
 def is_ignored_by_rule(literal: Literal) -> bool:
     context = literal.context
     if any(re.search(pattern, context) for pattern in IGNORED_CONTEXT_PATTERNS):
+        return True
+    if any(re.search(pattern, literal.call_context) for pattern in IGNORED_CALL_CONTEXT_PATTERNS):
         return True
     if literal.kind == "string":
         text = literal.literal.strip('"')

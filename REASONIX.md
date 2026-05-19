@@ -6,16 +6,14 @@ Rust binary for automated trading on Polymarket via NautilusTrader.
 
 - **Language** — Rust 2024 edition, pinned to 1.95.0 (`rust-toolchain.toml`).
 - **Framework** — NautilusTrader (`nautilus_*` crates, git dep) — live trading, exchange clients, data pipelines.
-- **Async** — `tokio` (full features) + `tokio-tungstenite` (WebSocket).
+- **Async** — `tokio` (full features); WebSocket transport is provided by the NautilusTrader provider crates.
 - **CLI** — `clap` derive, subcommands: `run`, `secrets check`, `secrets resolve`.
 - **Config** — TOML via `serde` + custom schema; secrets resolved from AWS SSM at startup.
 - **Data / Persistence** — Apache Arrow + Parquet.
-- **Exchange adapters** — Binance, Bybit, Deribit, Hyperliquid, Kraken, OKX, Polymarket.
-- **Oracles** — Chainlink Data Streams Report (`chainlink-data-streams-report`).
-
+- **Exchange adapters** — Binance and Polymarket via NautilusTrader (`nautilus-binance`, `nautilus-polymarket`). Legacy direct adapters for Bybit, Deribit, Hyperliquid, Kraken, OKX, and Chainlink Data Streams were retired in Phase 9 (see `specs/003-phase9-current-main-audit/tasks.md` T035).
 ## Layout
 
-- `src/` — library crate (`lib.rs`) + four binaries (`bolt-v2`, `render_live_config`, `stream_to_lake`, `raw_capture`).
+- `src/` — library crate (`lib.rs`) + two binaries (`bolt-v2`, `stream_to_lake`). The legacy `render_live_config` and `raw_capture` binaries were retired in Phase 9 (see `specs/003-phase9-current-main-audit/tasks.md` T068).
 - `tests/` — integration tests (`.rs` files in root, not `*_test.rs`); unit tests live in-source under `#[cfg(test)]`.
 - `config/` — live TOML runtime config (secrets excluded per `.gitignore`).
 - `scripts/` — Python verification scripts for Bolt-v3 source fences (runtime literals, provider leaks, core boundary, naming conventions, status-map currency, pure Rust runtime) and CI workflow hygiene.

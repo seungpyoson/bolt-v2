@@ -53,7 +53,21 @@ pub fn validate_strategy_archetype(
     strategy: &BoltV3StrategyConfig,
     default_max_notional_decimal: Option<&Decimal>,
 ) -> Vec<String> {
-    match validation_bindings()
+    validate_strategy_archetype_with_bindings(
+        context,
+        strategy,
+        default_max_notional_decimal,
+        validation_bindings(),
+    )
+}
+
+pub fn validate_strategy_archetype_with_bindings(
+    context: &str,
+    strategy: &BoltV3StrategyConfig,
+    default_max_notional_decimal: Option<&Decimal>,
+    bindings: &[ArchetypeValidationBinding],
+) -> Vec<String> {
+    match bindings
         .iter()
         .find(|binding| binding.key == strategy.strategy_archetype.as_str())
     {
@@ -64,5 +78,80 @@ pub fn validate_strategy_archetype(
             "{context}: strategy_archetype `{}` is not supported by this build",
             strategy.strategy_archetype.as_str()
         )],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_validate_strategy(
+        _context: &str,
+        _strategy: &BoltV3StrategyConfig,
+        _default_max_notional_decimal: Option<&Decimal>,
+    ) -> Vec<String> {
+        Vec::new()
+    }
+
+    const FAKE_ARCHETYPE_BINDINGS: &[ArchetypeValidationBinding] = &[ArchetypeValidationBinding {
+        key: "fixture_archetype",
+        validate_strategy: fake_validate_strategy,
+    }];
+
+    #[test]
+    fn validation_can_use_injected_archetype_binding_without_editing_production_registry() {
+        let strategy: BoltV3StrategyConfig = toml::from_str(
+            r#"
+schema_version = 1
+strategy_instance_id = "fixture-strategy"
+strategy_archetype = "fixture_archetype"
+order_id_tag = "FIXTURE"
+oms_type = "netting"
+use_uuid_client_order_ids = true
+use_hyphens_in_client_order_ids = false
+external_order_claims = []
+manage_contingent_orders = false
+manage_gtd_expiry = false
+manage_stop = false
+market_exit_interval_ms = 100
+market_exit_max_attempts = 100
+market_exit_time_in_force = "gtc"
+market_exit_reduce_only = true
+log_events = true
+log_commands = true
+log_rejected_due_post_only_as_warning = true
+venue = "fixture-venue"
+
+[reference_data.reference]
+venue = "fixture-reference"
+instrument_id = "FIXTURE.REFERENCE"
+
+[target]
+configured_target_id = "fixture-target"
+rotating_market_family = "fixture-family"
+
+[parameters]
+"#,
+        )
+        .expect("fixture strategy parses");
+
+        let production_errors = validate_strategy_archetype("strategy `fixture`", &strategy, None);
+        assert!(
+            production_errors
+                .iter()
+                .any(|message| message.contains("not supported by this build")),
+            "production registry should not know the test archetype: {production_errors:?}"
+        );
+
+        let injected_errors = validate_strategy_archetype_with_bindings(
+            "strategy `fixture`",
+            &strategy,
+            None,
+            FAKE_ARCHETYPE_BINDINGS,
+        );
+        assert!(
+            injected_errors.is_empty(),
+            "injected archetype binding should own strategy dispatch: {injected_errors:?}"
+        );
     }
 }

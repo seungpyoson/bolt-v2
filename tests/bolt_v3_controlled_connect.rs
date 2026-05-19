@@ -74,7 +74,7 @@ fn builder_path_passes_explicit_exec_engine_to_nt_build() {
     let _guard = live_node_test_guard();
 
     let loaded = fixture_loaded_with_timeouts(30, 10);
-    let mut cfg = make_live_node_config(&loaded);
+    let mut cfg = make_live_node_config(&loaded).expect("fixture live-node config should map");
     // Mutate after Bolt's config-load validation so this test proves the
     // production builder passes the exec engine config to NT's own build-time
     // validation, instead of constructing a fresh default engine config.
@@ -587,7 +587,7 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
         .find(".arm(gate_report)")
         .expect("run wrapper must arm submit admission from the live canary gate report");
     let run_index = source
-        .find("let run_future = node.run();")
+        .find("node.run()")
         .expect("run wrapper must own the single NT runner call");
     let capture_index = source
         .find("wire_bolt_v3_runtime_capture(node, node_handle, loaded)")

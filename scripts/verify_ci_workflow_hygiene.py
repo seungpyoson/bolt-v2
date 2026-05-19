@@ -59,12 +59,33 @@ TAG_SKIP_REQUIRED_JOBS = (
 )
 TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-shards", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
+JOB_REQUIRED_JUST_RECIPE = {
+    "fmt-check": "fmt-check",
+    "deny": "deny",
+    "clippy": "clippy",
+    "check-aarch64": "check-aarch64",
+    "source-fence": "source-fence",
+    "build": "build",
+}
+CI_PR_PATHS_IGNORE_BASELINE = (
+    ".claude/**",
+    ".codex/**",
+    ".gemini/**",
+    ".github/ISSUE_TEMPLATE/**",
+    ".opencode/**",
+    ".pi/**",
+    ".specify/**",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    "LICENSE",
+    "REASONIX.md",
+)
 LIVE_NODE_TEST_GROUP = "live-node"
 LIVE_NODE_UNIT_TEST_FILTERS = (
     "binary(=bolt_v2)",
     "test(~bolt_v3_client_registration::tests::)",
     "test(~bolt_v3_live_node::tests::)",
-    "test(~platform::runtime::tests::)",
 )
 LIVE_NODE_NEXTEST_BINARIES = (
     "bolt_v3_adapter_mapping",
@@ -77,12 +98,8 @@ LIVE_NODE_NEXTEST_BINARIES = (
     "bolt_v3_submit_admission",
     "bolt_v3_tiny_canary_operator",
     "config_parsing",
-    "eth_chainlink_taker_runtime",
     "lake_batch",
-    "live_node_run",
     "nt_runtime_capture",
-    "platform_runtime",
-    "polymarket_bootstrap",
     "venue_contract",
 )
 LIVE_NODE_NEXTEST_FILTER = " | ".join(f"binary(={binary})" for binary in LIVE_NODE_NEXTEST_BINARIES)
@@ -300,6 +317,48 @@ def strip_comment(line: str) -> str:
         if char == "#":
             return line[:index].rstrip()
     return line.rstrip()
+
+
+def extract_paths_ignore_for_trigger(
+    workflow_text: str, trigger: str
+) -> tuple[str, ...] | None:
+    """Return the paths-ignore list under `on.<trigger>`, or None if absent.
+
+    Parses the block-style YAML this repo uses; flow-style maps are not supported.
+    """
+
+    lines = [strip_comment(line).rstrip() for line in workflow_text.splitlines()]
+
+    def section_index(start: int, header: str, max_indent: int) -> int | None:
+        i = start
+        while i < len(lines):
+            line = lines[i]
+            if line and len(line) - len(line.lstrip(" ")) <= max_indent and line != header:
+                return None
+            if line == header:
+                return i
+            i += 1
+        return None
+
+    on_idx = section_index(0, "on:", max_indent=-1)
+    if on_idx is None:
+        return None
+    trigger_idx = section_index(on_idx + 1, f"  {trigger}:", max_indent=0)
+    if trigger_idx is None:
+        return None
+    pi_idx = section_index(trigger_idx + 1, "    paths-ignore:", max_indent=2)
+    if pi_idx is None:
+        return None
+
+    items: list[str] = []
+    for i in range(pi_idx + 1, len(lines)):
+        line = lines[i]
+        if line and len(line) - len(line.lstrip(" ")) <= 4:
+            break
+        stripped = line.lstrip()
+        if stripped.startswith("- "):
+            items.append(stripped[2:].strip().strip("'").strip('"'))
+    return tuple(items)
 
 
 def parse_jobs(workflow_text: str) -> dict[str, list[str]]:
@@ -1241,6 +1300,19 @@ def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
     jobs = parse_jobs(workflow_text)
 
+    actual_pr_paths_ignore = extract_paths_ignore_for_trigger(workflow_text, "pull_request")
+    if actual_pr_paths_ignore is None or tuple(sorted(actual_pr_paths_ignore)) != CI_PR_PATHS_IGNORE_BASELINE:
+        errors.append(
+            "on.pull_request paths-ignore must match baseline "
+            f"{CI_PR_PATHS_IGNORE_BASELINE} (got {actual_pr_paths_ignore!r})"
+        )
+    actual_push_paths_ignore = extract_paths_ignore_for_trigger(workflow_text, "push")
+    if actual_push_paths_ignore is not None:
+        errors.append(
+            "on.push must have no paths-ignore (push to main/tags must always run full CI); "
+            f"got {actual_push_paths_ignore!r}"
+        )
+
     errors.extend(verify_pr_concurrency(workflow_text))
 
     if not workflow_permissions_have_actions_read(workflow_text):
@@ -1260,8 +1332,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "source-fence" in jobs and "detector" not in extract_needs(jobs["source-fence"]):
         # FR-005: #342 owns the early-fail source-fence lane, so it remains detector-gated.
         errors.append("source-fence needs detector")
-    if "source-fence" in jobs and not job_runs_command(jobs["source-fence"], "just source-fence"):
-        errors.append("source-fence must run just source-fence")
+
+    for job_name, recipe in JOB_REQUIRED_JUST_RECIPE.items():
+        if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):
+            errors.append(f"{job_name} must run just {recipe}")
 
     if "test-archive" in jobs:
         test_archive_needs = extract_needs(jobs["test-archive"])
@@ -1286,8 +1360,6 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("check-aarch64 must have no job-level if condition")
         if not check_aarch64_has_coverage_owner_step(jobs["check-aarch64"]):
             errors.append("check-aarch64 must document build-lane aarch64 coverage delegation")
-        if "just check-aarch64" not in uncommented_text(jobs["check-aarch64"]):
-            errors.append("check-aarch64 must run just check-aarch64")
         if not check_aarch64_installs_cross_compiler_packages(jobs["check-aarch64"]):
             errors.append("check-aarch64 must install aarch64 cross compiler packages")
         errors.extend(check_aarch64_standalone_guard_errors(jobs["check-aarch64"]))

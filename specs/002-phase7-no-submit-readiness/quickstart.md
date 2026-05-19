@@ -6,7 +6,7 @@ Expected default path after implementation:
 
 ```bash
 cargo test --test bolt_v3_no_submit_readiness -- --nocapture
-cargo test --test bolt_v3_no_submit_readiness_operator -- --nocapture
+cargo test --test bolt_v3_cli bolt_v3_cli_exposes_no_submit_readiness_operator_command -- --nocapture
 cargo test --test bolt_v3_live_canary_gate -- --nocapture
 cargo fmt --check
 git diff --check
@@ -15,7 +15,7 @@ git diff --check
 Expected behavior:
 
 - Local readiness tests use fake secret resolution and mock NT clients.
-- Operator test is ignored by default.
+- Operator no-submit readiness is exposed by the production `bolt-v2 no-submit-readiness --config <path>` command.
 - No SSM, venue, live capital, or soak action occurs.
 - Report fixture is accepted by live-canary gate.
 
@@ -25,32 +25,24 @@ Do not run without explicit operator approval in current thread.
 
 Required proof before approved run:
 
-- Exact head SHA.
 - Approved bolt-v3 root TOML path.
-- Root TOML checksum.
 - `[live_canary]` approval id present.
 - `[live_canary].no_submit_readiness_report_path` present.
-- Operator approval id matches config.
 - Empty or segregated live account approved for read-only startup reconciliation.
 
 Approved command shape:
 
 ```bash
-BOLT_V3_ROOT_TOML='<approved bolt-v3 root toml path>' \
-BOLT_V3_OPERATOR_APPROVAL_ID='<approval id matching [live_canary].approval_id>' \
-BOLT_V3_HEAD_SHA='<exact approved head sha>' \
-cargo test --test bolt_v3_no_submit_readiness_operator \
-  operator_approved_real_no_submit_readiness_writes_redacted_report \
-  -- --ignored --nocapture
+bolt-v2 no-submit-readiness --config '<approved bolt-v3 root toml path>'
 ```
 
 Post-run proof:
 
 - Command exit status.
-- Exact head SHA.
-- Root TOML checksum.
+- Report `executable_identity`.
+- Report `config_bundle_checksum`.
 - Redacted report path.
-- Live-canary gate acceptance of report.
+- Live-canary gate acceptance when `bolt-v2 run --config '<approved bolt-v3 root toml path>'` starts.
 
 Reference-readiness rule: do not treat controlled-connect success as reference readiness. A real report can satisfy the gate only when controlled NT start populates NT cache with every `[reference_data.*]` instrument required by loaded strategies before the bounded timeout, then controlled stop succeeds.
 

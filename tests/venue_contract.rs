@@ -59,7 +59,7 @@ fn write_empty_feather_stream(path: &std::path::Path) {
     writer.finish().unwrap();
 }
 
-fn flatten_spool_to_legacy_layout(instance_root: &std::path::Path) {
+fn flatten_spool_to_flat_layout(instance_root: &std::path::Path) {
     let class_dirs: Vec<_> = std::fs::read_dir(instance_root)
         .unwrap()
         .filter_map(|entry| entry.ok())
@@ -104,14 +104,14 @@ fn flatten_spool_to_legacy_layout(instance_root: &std::path::Path) {
 fn base_polymarket_streams() -> BTreeMap<String, StreamContract> {
     let supported = |policy: Policy| StreamContract {
         capability: Capability::Supported,
-        policy: Some(policy),
+        policy,
         provenance: Provenance::Native,
         reason: None,
         derived_from: None,
     };
     let unsupported = || StreamContract {
         capability: Capability::Unsupported,
-        policy: None,
+        policy: Policy::Disabled,
         provenance: Provenance::Native,
         reason: Some("n/a".to_string()),
         derived_from: None,
@@ -149,6 +149,21 @@ fn loads_polymarket_contract() {
 }
 
 #[test]
+fn rejects_contract_missing_stream_provenance() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("missing-provenance.toml");
+    let fixture = std::fs::read_to_string("contracts/polymarket.toml").unwrap();
+    let mutated = fixture.replacen("provenance = \"native\"\n", "", 1);
+    std::fs::write(&path, mutated).unwrap();
+
+    let err = VenueContract::load_and_validate(&path).unwrap_err();
+    assert!(
+        err.to_string().contains("missing field `provenance`"),
+        "stream provenance must be explicit, got: {err}"
+    );
+}
+
+#[test]
 fn rejects_contract_missing_stream_class() {
     let mut streams = base_polymarket_streams();
     streams.remove("quotes");
@@ -168,7 +183,7 @@ fn rejects_contract_unknown_stream_class() {
         "funding_rates".to_string(),
         StreamContract {
             capability: Capability::Supported,
-            policy: Some(Policy::Required),
+            policy: Policy::Required,
             provenance: Provenance::Native,
             reason: None,
             derived_from: None,
@@ -186,12 +201,12 @@ fn rejects_contract_unknown_stream_class() {
 #[test]
 fn rejects_unsupported_with_required_policy() {
     let mut streams = base_polymarket_streams();
-    streams.get_mut("mark_prices").unwrap().policy = Some(Policy::Required);
+    streams.get_mut("mark_prices").unwrap().policy = Policy::Required;
     let contract = make_contract(streams);
     let err = contract.validate().unwrap_err();
     assert!(
         err.to_string()
-            .contains("unsupported capability cannot have policy"),
+            .contains("unsupported capability must have disabled policy"),
         "unexpected error: {err}"
     );
 }
@@ -261,6 +276,7 @@ fn contract_happy_path_polymarket() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            50,
             None,
         )
         .unwrap();
@@ -319,11 +335,11 @@ fn contract_happy_path_polymarket() {
         catalog_root.as_path(),
         &instance_id,
         &output_root,
-        Some(&contract),
+        &contract,
     )
     .unwrap();
 
-    let cr = report.completeness.unwrap();
+    let cr = report.completeness;
     assert_eq!(cr.outcome, "pass");
     assert_eq!(cr.classes["quotes"].status, "pass");
     assert_eq!(cr.classes["trades"].status, "pass");
@@ -368,6 +384,7 @@ fn contract_fails_when_required_class_absent() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            50,
             None,
         )
         .unwrap();
@@ -402,7 +419,7 @@ fn contract_fails_when_required_class_absent() {
         catalog_root.as_path(),
         &instance_id,
         &output_root,
-        Some(&contract),
+        &contract,
     )
     .unwrap_err();
 
@@ -419,7 +436,7 @@ fn contract_fails_when_required_class_absent() {
         catalog_root.as_path(),
         &instance_id,
         &output_root,
-        Some(&contract),
+        &contract,
     )
     .unwrap_err();
     assert!(
@@ -464,6 +481,7 @@ fn contract_failure_uses_preexisting_empty_output_root() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            50,
             None,
         )
         .unwrap();
@@ -498,7 +516,7 @@ fn contract_failure_uses_preexisting_empty_output_root() {
         catalog_root.as_path(),
         &instance_id,
         &output_root,
-        Some(&contract),
+        &contract,
     )
     .unwrap_err();
 
@@ -515,9 +533,9 @@ fn contract_failure_uses_preexisting_empty_output_root() {
 fn contract_fails_when_disabled_supported_stream_has_data() {
     let _guard = venue_contract_test_lock().lock().unwrap();
     let mut streams = base_polymarket_streams();
-    streams.get_mut("quotes").unwrap().policy = Some(Policy::Disabled);
-    streams.get_mut("trades").unwrap().policy = Some(Policy::Optional);
-    streams.get_mut("order_book_deltas").unwrap().policy = Some(Policy::Optional);
+    streams.get_mut("quotes").unwrap().policy = Policy::Disabled;
+    streams.get_mut("trades").unwrap().policy = Policy::Optional;
+    streams.get_mut("order_book_deltas").unwrap().policy = Policy::Optional;
     let contract = make_contract(streams);
 
     let local = LocalSet::new();
@@ -541,6 +559,7 @@ fn contract_fails_when_disabled_supported_stream_has_data() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            50,
             None,
         )
         .unwrap();
@@ -575,7 +594,7 @@ fn contract_fails_when_disabled_supported_stream_has_data() {
         catalog_root.as_path(),
         &instance_id,
         &output_root,
-        Some(&contract),
+        &contract,
     )
     .unwrap_err();
 
@@ -591,9 +610,9 @@ fn contract_fails_when_disabled_conditional_stream_has_data() {
     let _guard = venue_contract_test_lock().lock().unwrap();
     let mut streams = base_polymarket_streams();
     streams.get_mut("quotes").unwrap().capability = Capability::Conditional;
-    streams.get_mut("quotes").unwrap().policy = Some(Policy::Disabled);
-    streams.get_mut("trades").unwrap().policy = Some(Policy::Optional);
-    streams.get_mut("order_book_deltas").unwrap().policy = Some(Policy::Optional);
+    streams.get_mut("quotes").unwrap().policy = Policy::Disabled;
+    streams.get_mut("trades").unwrap().policy = Policy::Optional;
+    streams.get_mut("order_book_deltas").unwrap().policy = Policy::Optional;
     let contract = make_contract(streams);
 
     let local = LocalSet::new();
@@ -617,6 +636,7 @@ fn contract_fails_when_disabled_conditional_stream_has_data() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            50,
             None,
         )
         .unwrap();
@@ -651,7 +671,7 @@ fn contract_fails_when_disabled_conditional_stream_has_data() {
         catalog_root.as_path(),
         &instance_id,
         &output_root,
-        Some(&contract),
+        &contract,
     )
     .unwrap_err();
 
@@ -666,9 +686,9 @@ fn contract_fails_when_disabled_conditional_stream_has_data() {
 fn contract_allows_optional_class_with_spool_present_but_no_converted_rows() {
     let _guard = venue_contract_test_lock().lock().unwrap();
     let mut streams = base_polymarket_streams();
-    streams.get_mut("quotes").unwrap().policy = Some(Policy::Optional);
-    streams.get_mut("trades").unwrap().policy = Some(Policy::Disabled);
-    streams.get_mut("order_book_deltas").unwrap().policy = Some(Policy::Disabled);
+    streams.get_mut("quotes").unwrap().policy = Policy::Optional;
+    streams.get_mut("trades").unwrap().policy = Policy::Disabled;
+    streams.get_mut("order_book_deltas").unwrap().policy = Policy::Disabled;
     let contract = make_contract(streams);
 
     let source_dir = tempdir().unwrap();
@@ -676,18 +696,19 @@ fn contract_allows_optional_class_with_spool_present_but_no_converted_rows() {
     let output_root = output_dir.path().join("contract-output");
     let catalog_root = source_dir.path().join("catalog");
     let instance_root = catalog_root.join("live").join("instance-optional-empty");
-    std::fs::create_dir_all(&instance_root).unwrap();
-    write_empty_feather_stream(&instance_root.join("quotes_0.feather"));
+    let quotes_root = instance_root.join("quotes");
+    std::fs::create_dir_all(&quotes_root).unwrap();
+    write_empty_feather_stream(&quotes_root.join("quotes_0.feather"));
 
     let report = convert_live_spool_to_parquet(
         catalog_root.as_path(),
         "instance-optional-empty",
         &output_root,
-        Some(&contract),
+        &contract,
     )
     .unwrap();
 
-    let cr = report.completeness.unwrap();
+    let cr = report.completeness;
     assert_eq!(cr.outcome, "pass");
     assert_eq!(
         cr.classes["quotes"].status,
@@ -724,6 +745,7 @@ fn contract_fails_when_unsupported_class_has_data() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            50,
             None,
         )
         .unwrap();
@@ -787,7 +809,7 @@ fn contract_fails_when_unsupported_class_has_data() {
         catalog_root.as_path(),
         &instance_id,
         &output_root,
-        Some(&contract),
+        &contract,
     )
     .unwrap_err();
 
@@ -829,6 +851,7 @@ fn contract_fails_when_unknown_class_has_data() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            50,
             None,
         )
         .unwrap();
@@ -898,7 +921,7 @@ fn contract_fails_when_unknown_class_has_data() {
         catalog_root.as_path(),
         &instance_id,
         &output_root,
-        Some(&contract),
+        &contract,
     )
     .unwrap_err();
 
@@ -937,6 +960,7 @@ fn contract_fails_when_unknown_flat_file_has_data() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            50,
             None,
         )
         .unwrap();
@@ -1008,7 +1032,7 @@ fn contract_fails_when_unknown_flat_file_has_data() {
         catalog_root.as_path(),
         &instance_id,
         &output_root,
-        Some(&contract),
+        &contract,
     )
     .unwrap_err();
 
@@ -1016,10 +1040,13 @@ fn contract_fails_when_unknown_flat_file_has_data() {
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_unknown"), "{msg}");
     let report = assert_failure_report_only(&output_root);
-    assert_eq!(report.classes["bars"].status, "fail_unknown");
+    assert_eq!(
+        report.classes["flat_file:bars_123.feather"].status,
+        "fail_unknown"
+    );
 }
 
-fn assert_contract_ignores_legacy_flat_instruments_file(file_name: &str) {
+fn assert_contract_rejects_flat_instruments_file(file_name: &str) {
     let _guard = venue_contract_test_lock().lock().unwrap();
     let contract =
         VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
@@ -1047,6 +1074,7 @@ fn assert_contract_ignores_legacy_flat_instruments_file(file_name: &str) {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            50,
             None,
         )
         .unwrap();
@@ -1114,28 +1142,30 @@ fn assert_contract_ignores_legacy_flat_instruments_file(file_name: &str) {
         instance_id
     }));
 
-    let report = convert_live_spool_to_parquet(
+    let error = convert_live_spool_to_parquet(
         catalog_root.as_path(),
         &instance_id,
         &output_root,
-        Some(&contract),
+        &contract,
     )
-    .unwrap();
+    .unwrap_err();
 
-    let cr = report.completeness.unwrap();
-    assert_eq!(cr.outcome, "pass");
-    assert_eq!(cr.classes["instruments"].status, "ignored_infrastructure");
-    assert_eq!(cr.classes["instruments"].capability, "infrastructure");
+    let message = error.to_string();
+    assert!(message.contains("contract validation failed"), "{message}");
+    assert!(
+        message.contains("flat spool files are not supported; use class directories"),
+        "{message}"
+    );
 }
 
 #[test]
-fn contract_ignores_legacy_flat_instruments_file() {
-    assert_contract_ignores_legacy_flat_instruments_file("instruments_123.feather");
+fn contract_rejects_flat_instruments_file() {
+    assert_contract_rejects_flat_instruments_file("instruments_123.feather");
 }
 
 #[test]
-fn contract_ignores_bare_legacy_flat_instruments_file() {
-    assert_contract_ignores_legacy_flat_instruments_file("instruments.feather");
+fn contract_rejects_bare_flat_instruments_file() {
+    assert_contract_rejects_flat_instruments_file("instruments.feather");
 }
 
 #[test]
@@ -1166,6 +1196,7 @@ fn contract_ignores_status_directory_infrastructure() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            50,
             None,
         )
         .unwrap();
@@ -1254,11 +1285,11 @@ fn contract_ignores_status_directory_infrastructure() {
         catalog_root.as_path(),
         &instance_id,
         &output_root,
-        Some(&contract),
+        &contract,
     )
     .unwrap();
 
-    let cr = report.completeness.unwrap();
+    let cr = report.completeness;
     assert_eq!(cr.outcome, "pass");
     assert!(
         !cr.classes.contains_key("status"),
@@ -1267,7 +1298,7 @@ fn contract_ignores_status_directory_infrastructure() {
 }
 
 #[test]
-fn contract_fails_when_legacy_flat_status_file_is_present() {
+fn contract_fails_when_flat_status_file_is_present() {
     let _guard = venue_contract_test_lock().lock().unwrap();
     let contract =
         VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
@@ -1294,6 +1325,7 @@ fn contract_fails_when_legacy_flat_status_file_is_present() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            50,
             None,
         )
         .unwrap();
@@ -1365,7 +1397,7 @@ fn contract_fails_when_legacy_flat_status_file_is_present() {
         catalog_root.as_path(),
         &instance_id,
         &output_root,
-        Some(&contract),
+        &contract,
     )
     .unwrap_err();
 
@@ -1373,11 +1405,14 @@ fn contract_fails_when_legacy_flat_status_file_is_present() {
     assert!(msg.contains("contract validation failed"), "{msg}");
     assert!(msg.contains("fail_unknown"), "{msg}");
     let report = assert_failure_report_only(&output_root);
-    assert_eq!(report.classes["status"].status, "fail_unknown");
+    assert_eq!(
+        report.classes["flat_file:status_123.feather"].status,
+        "fail_unknown"
+    );
 }
 
 #[test]
-fn contract_happy_path_accepts_legacy_flat_multiword_classes() {
+fn contract_rejects_flat_multiword_classes() {
     let _guard = venue_contract_test_lock().lock().unwrap();
     let contract =
         VenueContract::load_and_validate(std::path::Path::new("contracts/polymarket.toml"))
@@ -1404,6 +1439,7 @@ fn contract_happy_path_accepts_legacy_flat_multiword_classes() {
             handle.clone(),
             catalog_root.to_str().unwrap(),
             60_000,
+            50,
             None,
         )
         .unwrap();
@@ -1461,79 +1497,20 @@ fn contract_happy_path_accepts_legacy_flat_multiword_classes() {
     }));
 
     let instance_root = catalog_root.join("live").join(&instance_id);
-    flatten_spool_to_legacy_layout(&instance_root);
+    flatten_spool_to_flat_layout(&instance_root);
 
-    let report = convert_live_spool_to_parquet(
+    let error = convert_live_spool_to_parquet(
         catalog_root.as_path(),
         &instance_id,
         &output_root,
-        Some(&contract),
+        &contract,
     )
-    .unwrap();
+    .unwrap_err();
 
-    let cr = report.completeness.unwrap();
-    assert_eq!(cr.outcome, "pass");
-    assert_eq!(cr.classes["order_book_deltas"].status, "pass");
-}
-
-#[test]
-fn no_contract_mode_behaves_as_before() {
-    let _guard = venue_contract_test_lock().lock().unwrap();
-    let local = LocalSet::new();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let source_dir = tempdir().unwrap();
-    let output_dir = tempdir().unwrap();
-    let output_root = output_dir.path().join("contract-output");
-    let catalog_root = source_dir.path().join("catalog");
-    let inst = test_instrument_id();
-
-    let instance_id = runtime.block_on(local.run_until(async {
-        let mut node = fast_test_live_node();
-        let handle = node.handle();
-        let instance_id = node.instance_id().to_string();
-
-        let guards = nt_runtime_capture::wire_nt_runtime_capture(
-            &node,
-            handle.clone(),
-            catalog_root.to_str().unwrap(),
-            60_000,
-            None,
-        )
-        .unwrap();
-
-        let publisher_handle = handle.clone();
-        tokio::task::spawn_local(async move {
-            while !publisher_handle.is_running() {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-
-            let ts = 1_000_000_000u64;
-
-            let quote = QuoteTick::new(
-                inst,
-                Price::from("0.55"),
-                Price::from("0.56"),
-                Quantity::from("100"),
-                Quantity::from("100"),
-                ts.into(),
-                ts.into(),
-            );
-            publish_quote(switchboard::get_quotes_topic(inst), &quote);
-            publisher_handle.stop();
-        });
-
-        node.run().await.unwrap();
-        guards.shutdown().await.unwrap();
-        instance_id
-    }));
-
-    let report =
-        convert_live_spool_to_parquet(catalog_root.as_path(), &instance_id, &output_root, None)
-            .unwrap();
-
-    assert!(report.completeness.is_none());
-    assert!(report.converted_classes.contains(&"quotes"));
+    let message = error.to_string();
+    assert!(message.contains("contract validation failed"), "{message}");
+    assert!(
+        message.contains("flat spool files are not supported; use class directories"),
+        "{message}"
+    );
 }

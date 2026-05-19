@@ -11,6 +11,13 @@ mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+instance_id = "disabled"
+cache = "disabled"
+msgbus = "disabled"
+portfolio = "disabled"
+emulator = "disabled"
+streaming = "disabled"
+loop_debug = false
 timeout_connection_seconds = 30
 timeout_reconciliation_seconds = 60
 timeout_portfolio_seconds = 10
@@ -89,9 +96,22 @@ nt_qsize = 100000
 [logging]
 standard_output_level = "INFO"
 file_level = "INFO"
+component_levels = {}
+module_levels = {}
+credential_module_level = "WARN"
+log_components_only = false
+is_colored = true
+print_config = false
+use_tracing = false
+bypass_logging = false
+file_config = "disabled"
+clear_log_file = false
+stale_log_source_directory = "/var/lib/bolt"
+stale_log_archive_directory = "/var/log/bolt/nautilus-archive"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+runtime_capture_start_poll_interval_milliseconds = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
@@ -116,8 +136,11 @@ base_url_data_api = "https://data-api.polymarket.com"
 http_timeout_seconds = 60
 ws_timeout_seconds = 30
 subscribe_new_markets = false
+auto_load_missing_instruments = false
 update_instruments_interval_minutes = 60
 websocket_max_subscriptions_per_connection = 200
+auto_load_debounce_milliseconds = 250
+transport_backend = "sockudo"
 
 [venues.polymarket_main.execution]
 account_id = "POLYMARKET-001"
@@ -131,6 +154,8 @@ max_retries = 3
 retry_delay_initial_milliseconds = 250
 retry_delay_max_milliseconds = 2000
 ack_timeout_seconds = 5
+fee_cache_ttl_seconds = 300
+transport_backend = "sockudo"
 
 [venues.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
@@ -147,6 +172,7 @@ environment = "mainnet"
 base_url_http = "https://api.binance.com" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream.binance.com:9443/ws" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws
 instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
+transport_backend = "sockudo"
 
 [venues.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"

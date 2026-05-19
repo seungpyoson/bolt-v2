@@ -280,6 +280,9 @@ where
 
 fn adapter_mapping_error_subject(error: &BoltV3AdapterMappingError) -> BoltV3StartupCheckSubject {
     let venue_key = match error {
+        BoltV3AdapterMappingError::InstrumentFilter(_) => {
+            return BoltV3StartupCheckSubject::Root;
+        }
         BoltV3AdapterMappingError::SecretKindMismatch { venue_key, .. }
         | BoltV3AdapterMappingError::MissingResolvedSecrets { venue_key, .. }
         | BoltV3AdapterMappingError::SchemaParse { venue_key, .. }

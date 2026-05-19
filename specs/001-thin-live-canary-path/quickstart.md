@@ -73,28 +73,29 @@ Preconditions:
 - all local gates pass
 - no-submit readiness report accepted
 - submit admission consumes live canary report
-- exact head and root TOML bound through `BOLT_V3_PHASE8_HEAD_SHA`, `BOLT_V3_PHASE8_ROOT_TOML_PATH`, and `BOLT_V3_PHASE8_ROOT_TOML_SHA256`
-- redacted SSM manifest bound through `BOLT_V3_PHASE8_SSM_MANIFEST_PATH` and `BOLT_V3_PHASE8_SSM_MANIFEST_SHA256`
-- strategy input evidence bound through `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH` and `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256`
+- exact head and root TOML hash bound through `approval_envelope_path`
+- redacted SSM manifest bound through `ssm_manifest_path` and `ssm_manifest_sha256`
+- strategy input evidence bound through `strategy_input_evidence_path` and `strategy_input_evidence_sha256`
 - `next` strategy input evidence includes `market_selection_source_path` and `market_selection_source_sha256` for the NT runtime `market_selection_result` source artifact; nearest-next candidates come from that source artifact, not from the strategy evidence file alone
-- financial envelope evidence bound through `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH` and `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256`
-- pre-run state evidence bound through `BOLT_V3_PHASE8_PRE_RUN_STATE_PATH` and `BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256`
+- financial envelope evidence bound through `financial_envelope_path` and `financial_envelope_sha256`
+- pre-run state evidence bound through `pre_run_state_path` and `pre_run_state_sha256`
 - pre-run state evidence carries sha256 hashes for host clock, account state, market state, funding/margin, single-runner lock, egress identity, CLOB V2 signing/collateral/fee behavior, and release-manifest proofs
-- abort plan evidence bound through `BOLT_V3_PHASE8_ABORT_PLAN_PATH` and `BOLT_V3_PHASE8_ABORT_PLAN_SHA256`
-- explicit operator approval id and non-zero time window bound to `BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID`, `BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS`, and `BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS`; `not_after` must be greater than `not_before`
-- approval nonce evidence at `BOLT_V3_PHASE8_APPROVAL_NONCE_PATH` matches `BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256`
-- `BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH` does not exist before the attempt; the harness atomically creates it before live runner entry
-- `BOLT_V3_PHASE8_EVIDENCE_PATH` names the redacted canary evidence output
+- abort plan evidence bound through `abort_plan_path` and `abort_plan_sha256`
+- explicit operator approval id comes from `[live_canary].approval_id`
+- non-zero approval time window configured with `approval_not_before_unix_seconds` and `approval_not_after_unix_seconds`; `not_after` must be greater than `not_before`
+- approval nonce evidence at `approval_nonce_path` matches `approval_nonce_sha256`
+- `approval_consumption_path` does not exist before the attempt; the harness atomically creates it before live runner entry
+- `canary_evidence_path` names the redacted canary evidence output
 - max live order count and notional cap configured in TOML
 
 Expected result:
 - at most one NT-submitted order
-- decision evidence at `BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH`
-- client and venue ids recorded as `BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH` and `BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH`
-- NT submit event captured at `BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH`
-- venue accept, fill, or reject captured at `BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH`
+- decision evidence at `decision_evidence_path`
+- client and venue ids recorded as `client_order_id_hash` and `venue_order_id_hash`
+- NT submit event captured at `nt_submit_event_path`
+- venue accept, fill, or reject captured at `venue_order_state_path`
 - canary evidence writer binds the approved financial-envelope strategy-instance hash to the live-order proof strategy-instance hash
-- strategy-driven cancel if open, with conditional evidence at `BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH`
-- restart reconciliation through NT at `BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH`
-- post-run hygiene proof at `BOLT_V3_PHASE8_POST_RUN_HYGIENE_PATH`
+- strategy-driven cancel if open, with conditional evidence at `strategy_cancel_path`
+- restart reconciliation through NT at `restart_reconciliation_path`
+- post-run hygiene proof at `post_run_hygiene_path`
 - redacted canary evidence artifact

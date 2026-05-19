@@ -663,6 +663,18 @@ def block_uses_managed_target_cache(block: list[str]) -> bool:
     )
 
 
+def block_declares_restore_keys_prefix(block: list[str], prefix: str) -> bool:
+    saw_marker = False
+    for line in block:
+        text = strip_comment(line)
+        if "restore-keys:" in text:
+            saw_marker = True
+            continue
+        if saw_marker and prefix in text:
+            return True
+    return False
+
+
 def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
     expected_key = MANAGED_TARGET_CACHE_KEYS[job]
     target_blocks = [
@@ -673,8 +685,23 @@ def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
     if not target_blocks:
         return [f"{job} must use isolated managed target cache"]
 
-    if not any(f"managed-target-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{expected_key}-" in uncommented_text(block) for block in target_blocks):
+    expected_prefix = (
+        f"managed-target-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{expected_key}-"
+    )
+    if not any(expected_prefix in uncommented_text(block) for block in target_blocks):
         return [f"{job} managed target cache key must isolate {expected_key}"]
+
+    # #400: each managed-target cache MUST declare a restore-keys prefix fallback
+    # matching the job's key prefix. Without it, any change to CI orchestration
+    # files included in hashFiles (justfile, ci/rust-verification.toml,
+    # scripts/rust_verification.py) misses the exact key and pays the full
+    # ~22m aarch64 release cross-compile instead of an incremental rebuild.
+    if not any(
+        block_declares_restore_keys_prefix(block, expected_prefix) for block in target_blocks
+    ):
+        return [
+            f"{job} managed target cache must declare restore-keys prefix {expected_prefix}"
+        ]
     return []
 
 

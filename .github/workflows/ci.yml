@@ -279,8 +279,11 @@ jobs:
   # #342 owns these canonical source-fence filters. #332 intentionally keeps
   # full nextest duplicate coverage under the same aggregate gate rather than
   # adding brittle filter expressions that could hide neighboring tests.
-  # #400 decoupled this from source-fence so the two lanes run in parallel; the
-  # aggregate `gate` job still requires both lanes succeed before merge.
+  # #400 decoupled this from source-fence so the two lanes run in parallel.
+  # Merge enforcement: `gate.needs` requires `source-fence` and the aggregate
+  # `test` lane (which transitively requires `test-archive` and `test-shards`)
+  # to succeed; see the result checks for `source-fence` and `test` in the
+  # `gate` job below.
   test-archive:
     name: nextest archive
     needs: detector

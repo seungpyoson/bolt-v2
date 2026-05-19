@@ -53,7 +53,7 @@ As the maintainer, I can rely on `gate` and `just ci-lint-workflow` to fail clos
 
 - #332 keeps full sharded `just test` as duplicate source-fence coverage. The workflow must document that intentional duplicate ownership instead of silently removing or excluding the filters.
 - `source-fence` must compile the targeted integration tests through normal `cargo test`; that compile cost is accepted, but full `cargo nextest` install and execution are not part of this lane.
-- GitHub Actions job failures do not automatically cancel independent jobs. The workflow must make full `test` depend on `source-fence` so stale source-fence drift does not run after expensive test setup.
+- GitHub Actions job failures do not automatically cancel independent jobs. The workflow must make full `test` depend on `source-fence` so stale source-fence drift does not run after expensive test setup. **Superseded by #400** (PR #401): after warm-cache `test-archive` cost dropped to ~46s, the parallel-lane wall-clock gain outweighs the fail-fast saving. The two lanes now run in parallel and `gate` is the sole merge enforcer.
 - Python verifier dependencies must not depend on unpinned runner image packages.
 - Docs-only or path-filtered PRs are owned by #335/#344. This slice does not change path filters.
 
@@ -62,12 +62,12 @@ As the maintainer, I can rely on `gate` and `just ci-lint-workflow` to fail clos
 ### Functional Requirements
 
 - **FR-001**: The workflow MUST add a top-level CI job named `source-fence`.
-- **FR-002**: `source-fence` MUST run after `detector` and before the full `test` job can start.
+- **FR-002**: `source-fence` MUST run after `detector`. ~~and before the full `test` job can start.~~ **Superseded by #400** (PR #401): `source-fence` and `test-archive` (the new pre-shard test stage from #332) now run in parallel after `detector`; merge enforcement moved entirely to `gate.needs` + `needs.source-fence.result == "success"`.
 - **FR-003**: `source-fence` MUST run exactly the verifier script set named by #342: runtime literals, provider leaks, core boundary, naming, status map current, and pure Rust runtime.
 - **FR-004**: `source-fence` MUST run the canonical structural test filters `bolt_v3_controlled_connect live_node_module_only_runs_nt_after_live_canary_gate` and `bolt_v3_production_entrypoint`.
 - **FR-005**: `source-fence` MUST avoid full `cargo-nextest` installation and full integration test execution.
 - **FR-006**: The aggregate `gate` job MUST include `source-fence` in `needs` and MUST accept only `needs.source-fence.result == "success"`.
-- **FR-007**: The workflow linter MUST fail with actionable output when `source-fence` is missing from jobs, missing from `gate.needs`, missing from the gate result check, missing from `test.needs`, missing cache ownership, or missing managed setup.
+- **FR-007**: The workflow linter MUST fail with actionable output when `source-fence` is missing from jobs, missing from `gate.needs`, missing from the gate result check, ~~missing from `test.needs`,~~ missing cache ownership, or missing managed setup. **Superseded by #400** (PR #401): the `test.needs` clause is dropped; the verifier now also fails when `test-archive` does need `source-fence` (re-introducing the removed serial dep).
 - **FR-008**: The branch MUST explicitly document #332's intentional duplicate execution of source-fence filters in full sharded `test`.
 - **FR-009**: `verify_bolt_v3_pure_rust_runtime.py` MUST enforce the no-PyO3/no-maturin/no-Python-runtime boundary for production Rust code and build metadata while allowing Python CI verifier tooling.
 - **FR-010**: `verify_bolt_v3_status_map_current.py` MUST enforce status-map evidence hygiene, including existing referenced verifier paths and a current row for the pure Rust runtime verifier.

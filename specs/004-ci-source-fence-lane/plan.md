@@ -34,7 +34,7 @@ Implement #342 as a direct follow-up to the now-merged #343 baseline. Add a firs
 
 Detailed decisions are in [research.md](research.md).
 
-- Use job serialization `test needs: [detector, source-fence]` so a stale source fence blocks full test setup.
+- Use job serialization `test needs: [detector, source-fence]` so a stale source fence blocks full test setup. **Superseded by #400** (PR #401): the carried-forward `test-archive needs: [detector, source-fence]` was removed; the two lanes now run in parallel under `gate` enforcement.
 - Use one `just source-fence` recipe as the local/CI source of truth.
 - Add the two missing verifier scripts instead of deleting them from the #342 contract.
 - Keep temporary duplicate execution explicit until #332 changes full nextest ownership.

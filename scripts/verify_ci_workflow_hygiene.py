@@ -1333,6 +1333,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
         test_archive_needs = extract_needs(jobs["test-archive"])
         if "detector" not in test_archive_needs:
             errors.append("test-archive needs detector")
+        # #400: source-fence and test-archive run in parallel. The aggregate
+        # `gate` job is the sole merge enforcer for both lanes; reintroducing a
+        # serial dep would re-create the fail-fast cost #400 eliminated.
+        if "source-fence" in test_archive_needs:
+            errors.append("test-archive must not need source-fence")
     if "test-shards" in jobs and "test-archive" not in extract_needs(jobs["test-shards"]):
         errors.append("test-shards needs test-archive")
 

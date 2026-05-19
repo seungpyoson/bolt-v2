@@ -47,10 +47,10 @@
 
 **Goal**: #342 source-fence filters remain intentionally duplicated in full nextest and required before the sharded `test` lane.
 
-**Independent Test**: Workflow comments and PR body state the duplicate ownership decision; verifier keeps `test needs source-fence` and `gate needs source-fence`.
+**Independent Test**: Workflow comments and PR body state the duplicate ownership decision; verifier keeps ~~`test needs source-fence` and~~ `gate needs source-fence`. **Superseded by #400** (PR #401) for the `test needs source-fence` half: see T022 below.
 
 - [x] T021 [US3] Update `.github/workflows/ci.yml` comments to state source-fence duplicate execution is intentional under #332
-- [x] T022 [US3] Preserve `test.needs: [detector, source-fence]` and existing source-fence gate result checks in verifier and workflow
+- [x] T022 [US3] Preserve `test.needs: [detector, source-fence]` and existing source-fence gate result checks in verifier and workflow. **Superseded by #400** (PR #401): the carried-forward `test-archive needs: [detector, source-fence]` is removed; the verifier now asserts `test-archive must not need source-fence`. The `gate` source-fence result check is unchanged.
 - [x] T023 [US3] Add PR-body evidence note placeholder for source-fence ownership decision
 
 ## User Story 4 - Keep Narrow Lint Ownership (Priority: P2)

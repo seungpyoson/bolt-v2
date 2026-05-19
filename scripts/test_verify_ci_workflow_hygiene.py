@@ -1239,6 +1239,14 @@ def main() -> int:
         ),
     )
     assert_error(
+        "test-archive must not need source-fence",
+        replace_once(
+            BASE_WORKFLOW,
+            "  test-archive:\n    name: nextest archive\n    needs: detector",
+            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
+        ),
+    )
+    assert_error(
         "test-shards needs test-archive",
         replace_once(
             BASE_WORKFLOW,

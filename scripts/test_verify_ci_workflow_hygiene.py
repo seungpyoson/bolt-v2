@@ -778,9 +778,147 @@ def assert_nextest_live_node_group_covers_bolt_v3_builders() -> None:
         )
 
 
+# Pin-consistency fixtures. The base SHA already appears throughout BASE_WORKFLOW
+# and BASE_ADVISORY_WORKFLOW; SHA_ALT is a different valid 40-hex SHA used to
+# exercise drift, and SHA_BASE_UPPER is the base SHA in uppercase to exercise
+# normalization.
+PIN_CONSISTENCY_SHA_BASE = "3771e22aa892e03fd35585fae288baad1755695c"
+PIN_CONSISTENCY_SHA_ALT = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+PIN_CONSISTENCY_SHA_BASE_UPPER = PIN_CONSISTENCY_SHA_BASE.upper()
+
+
+def assert_pin_consistency_cross_file_mismatch_errors() -> None:
+    """Finding 1: two workflows with different valid SHA pins must report drift."""
+    verifier = load_verifier()
+    advisory_alt = BASE_ADVISORY_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_ALT}",
+    )
+    errors = verifier.verify_workflows(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory_alt},
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    drift_errors = [e for e in errors if "taiki-e/install-action pin drift" in e]
+    if len(drift_errors) < 1:
+        raise AssertionError(
+            f"expected at least one pin-drift error, got: {drift_errors!r} (full: {errors!r})"
+        )
+    drift = drift_errors[0]
+    if PIN_CONSISTENCY_SHA_BASE not in drift or PIN_CONSISTENCY_SHA_ALT not in drift:
+        raise AssertionError(
+            f"pin-drift error must list both SHAs, got: {drift!r}"
+        )
+    if "ci.yml" not in drift or "advisory.yml" not in drift:
+        raise AssertionError(
+            f"pin-drift error must list both files, got: {drift!r}"
+        )
+
+
+def assert_pin_consistency_same_sha_no_error() -> None:
+    """Finding 1: identical SHAs across workflows must not error."""
+    verifier = load_verifier()
+    errors = verifier.verify_workflows(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW},
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    drift_errors = [e for e in errors if "pin drift" in e]
+    if drift_errors:
+        raise AssertionError(
+            f"expected no pin-drift errors for identical SHAs, got: {drift_errors!r}"
+        )
+
+
+def assert_pin_consistency_rejects_mutable_tag() -> None:
+    """Finding 2: mutable tags (e.g. @v2) must fail with a 40-hex SHA message."""
+    verifier = load_verifier()
+    mutable_advisory = BASE_ADVISORY_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        "taiki-e/install-action@v2",
+    )
+    errors = verifier.verify_workflows(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": mutable_advisory},
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    matching = [
+        e
+        for e in errors
+        if "taiki-e/install-action" in e
+        and "40-hex SHA" in e
+        and "advisory.yml" in e
+    ]
+    if not matching:
+        raise AssertionError(
+            f"expected mutable-tag rejection mentioning '40-hex SHA' and the file, got: {errors!r}"
+        )
+
+
+def assert_pin_consistency_accepts_uppercase_sha() -> None:
+    """Finding 3: uppercase hex SHAs must be detected AND normalized to lowercase."""
+    verifier = load_verifier()
+    advisory_upper = BASE_ADVISORY_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE_UPPER}",
+    )
+    ci_alt = BASE_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_ALT}",
+    )
+    errors = verifier.verify_workflows(
+        {"ci.yml": ci_alt, "advisory.yml": advisory_upper},
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    drift_errors = [e for e in errors if "taiki-e/install-action pin drift" in e]
+    if not drift_errors:
+        raise AssertionError(
+            f"expected drift error proving uppercase SHA was detected and bucketed, got errors: {errors!r}"
+        )
+    drift = drift_errors[0]
+    if PIN_CONSISTENCY_SHA_BASE_UPPER in drift:
+        raise AssertionError(
+            f"pin-drift error must report normalized lowercase SHA, found uppercase: {drift!r}"
+        )
+    if PIN_CONSISTENCY_SHA_BASE not in drift or PIN_CONSISTENCY_SHA_ALT not in drift:
+        raise AssertionError(
+            f"pin-drift error must list lowercased base SHA and alt SHA, got: {drift!r}"
+        )
+
+
+def assert_pin_consistency_intra_file_mismatch_uses_pin_drift_wording() -> None:
+    """Finding 5: intra-file drift must use 'pin drift:' wording, not 'across workflows'."""
+    verifier = load_verifier()
+    workflow_with_two_pins = BASE_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_ALT}",
+        1,
+    )
+    errors = verifier.verify_workflows(
+        {"ci.yml": workflow_with_two_pins},
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    drift_errors = [e for e in errors if "taiki-e/install-action pin drift:" in e]
+    if not drift_errors:
+        raise AssertionError(
+            f"expected intra-file drift to use 'pin drift:' wording, got: {errors!r}"
+        )
+    if any("across workflows" in e for e in errors):
+        raise AssertionError(
+            f"intra-file drift must not say 'across workflows', got: {errors!r}"
+        )
+
+
 def main() -> int:
     assert_clean()
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
+    assert_pin_consistency_cross_file_mismatch_errors()
+    assert_pin_consistency_same_sha_no_error()
+    assert_pin_consistency_rejects_mutable_tag()
+    assert_pin_consistency_accepts_uppercase_sha()
+    assert_pin_consistency_intra_file_mismatch_uses_pin_drift_wording()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(
         "concurrency group must key pull_request runs by PR number",

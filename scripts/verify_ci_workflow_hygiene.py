@@ -256,8 +256,20 @@ BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner 
 # gate. See tj-actions/changed-files (CVE-2025-30066, March 2025) for why
 # SHA-pinning matters and why hardcoding a specific SHA here adds maintenance
 # burden without real supply-chain value.
-TAIKI_INSTALL_ACTION_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*taiki-e/install-action@[0-9a-f]{40}\s*$")
-TAIKI_INSTALL_ACTION_PIN_RE = re.compile(r"\btaiki-e/install-action@([0-9a-f]{40})\b")
+#
+# Two regexes intentionally:
+#   * TAIKI_INSTALL_ACTION_RE matches well-formed pinned uses: lines and
+#     captures the SHA. Uppercase hex is allowed in the match so the consistency
+#     check can normalize via .lower() rather than silently rejecting valid
+#     uppercase pins.
+#   * TAIKI_INSTALL_ACTION_REF_RE is a broad detector for any line that
+#     references taiki-e/install-action at all (quoted or not, mutable tag or
+#     SHA). The consistency check uses it to surface mutable-tag references as
+#     loud errors instead of silently skipping them.
+TAIKI_INSTALL_ACTION_RE = re.compile(
+    r"^\s*(?:-\s*)?uses:\s*taiki-e/install-action@([0-9a-fA-F]{40})\s*$"
+)
+TAIKI_INSTALL_ACTION_REF_RE = re.compile(r"\buses:\s*['\"]?taiki-e/install-action@")
 CI_INSTALL_ACTION_TOOLS = {
     "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
@@ -1714,25 +1726,37 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
     # Dependabot groups action bumps so all taiki-e/install-action pins move
     # together; this guards against half-bumps in human-authored PRs that
     # leave workflow files referencing inconsistent SHAs. Scan line-by-line
-    # against the same anchored uses: regex the format check uses, after
-    # stripping comments, so commentary or nested data containing the action
-    # ref does not produce false positives.
+    # after stripping comments so commentary containing the action ref does
+    # not produce false positives.
+    #
+    # The broad detector (TAIKI_INSTALL_ACTION_REF_RE) finds every line that
+    # references taiki-e/install-action at all; any such line that does not
+    # match the strict 40-hex form is reported with a precise file:line so
+    # mutable tags (e.g. @v2) and other malformed pins fail loudly instead of
+    # being silently skipped. SHAs are lowercased before bucketing so the
+    # consistency check treats uppercase and lowercase hex as the same pin.
+    errors: list[str] = []
     sha_to_files: dict[str, list[str]] = {}
     for workflow_name, workflow_text in workflows.items():
-        for line in workflow_text.splitlines():
+        for line_index, line in enumerate(workflow_text.splitlines(), start=1):
             clean = strip_comment(line)
-            if not TAIKI_INSTALL_ACTION_RE.match(clean):
+            if not TAIKI_INSTALL_ACTION_REF_RE.search(clean):
                 continue
-            match = TAIKI_INSTALL_ACTION_PIN_RE.search(clean)
-            if match is not None:
-                sha_to_files.setdefault(match.group(1), []).append(workflow_name)
-    if len(sha_to_files) <= 1:
-        return []
-    parts = sorted(
-        f"{sha} in {','.join(sorted(set(files)))}"
-        for sha, files in sha_to_files.items()
-    )
-    return ["taiki-e/install-action SHA mismatch across workflows: " + "; ".join(parts)]
+            match = TAIKI_INSTALL_ACTION_RE.match(clean)
+            if match is None:
+                errors.append(
+                    f"{workflow_name}:{line_index}: taiki-e/install-action ref must be pinned to 40-hex SHA, got: {clean.strip()}"
+                )
+                continue
+            sha = match.group(1).lower()
+            sha_to_files.setdefault(sha, []).append(workflow_name)
+    if len(sha_to_files) > 1:
+        parts = sorted(
+            f"{sha} in {','.join(sorted(set(files)))}"
+            for sha, files in sha_to_files.items()
+        )
+        errors.append("taiki-e/install-action pin drift: " + "; ".join(parts))
+    return errors
 
 
 def main() -> int:

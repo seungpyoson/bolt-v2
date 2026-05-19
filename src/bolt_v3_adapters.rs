@@ -384,9 +384,9 @@ mod tests {
         }
     }
 
-    fn validate_fake_provider_venue(
+    fn validate_fake_provider_client(
         _key: &str,
-        _venue: &crate::bolt_v3_config::ClientBlock,
+        _client: &crate::bolt_v3_config::ClientBlock,
     ) -> Vec<String> {
         Vec::new()
     }
@@ -428,7 +428,7 @@ mod tests {
 
     static FAKE_UPDOWN_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
-        validate_client: validate_fake_provider_venue,
+        validate_client: validate_fake_provider_client,
         supported_market_families: &[updown::KEY],
         required_secret_blocks: &[],
         secret_field_names: &[],
@@ -440,7 +440,7 @@ mod tests {
 
     static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
-        validate_client: validate_fake_provider_venue,
+        validate_client: validate_fake_provider_client,
         supported_market_families: &[],
         required_secret_blocks: &[],
         secret_field_names: &[],
@@ -452,7 +452,7 @@ mod tests {
 
     static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
-        validate_client: validate_fake_provider_venue,
+        validate_client: validate_fake_provider_client,
         supported_market_families: &[],
         required_secret_blocks: &[],
         secret_field_names: &[],
@@ -513,7 +513,7 @@ mod tests {
         loaded
             .root
             .clients
-            .retain(|client_key, _venue| client_key == "polymarket_main");
+            .retain(|client_key, _client| client_key == "polymarket_main");
         let plan = MarketIdentityPlan {
             updown_targets: vec![UpdownTargetPlan {
                 strategy_instance_id: "fake-strategy".to_string(),
@@ -564,7 +564,7 @@ mod tests {
         loaded
             .root
             .clients
-            .retain(|client_key, _venue| client_key == "polymarket_main");
+            .retain(|client_key, _client| client_key == "polymarket_main");
         let plan = MarketIdentityPlan {
             updown_targets: vec![UpdownTargetPlan {
                 strategy_instance_id: "fake-strategy".to_string(),

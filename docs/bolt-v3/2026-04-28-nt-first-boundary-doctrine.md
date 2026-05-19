@@ -115,7 +115,7 @@ Decision to repo-rule mapping:
 - Runtime-bearing field: any NT config field whose value affects runtime
   behavior, including URLs, credentials, account or trader IDs, timeouts,
   retries, limits, polling intervals, subscription flags, provider keys,
-  venue keys, filters, feature flags, booleans that alter subscriptions, or
+  client keys, NT venue identifiers, filters, feature flags, booleans that alter subscriptions, or
   order and risk quantities.
 
 ## Verified Evidence

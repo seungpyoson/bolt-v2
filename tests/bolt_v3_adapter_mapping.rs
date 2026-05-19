@@ -90,6 +90,8 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert_eq!(data.ws_max_subscriptions, 200);
     assert_eq!(data.update_instruments_interval_mins, 60);
     assert!(!data.subscribe_new_markets);
+    assert!(!data.auto_load_missing_instruments);
+    assert_eq!(data.auto_load_debounce_ms, 250);
 
     let exec = polymarket
         .execution
@@ -148,7 +150,7 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
         .root
         .clients
         .get_mut("polymarket_main")
-        .and_then(|venue| venue.data.as_mut())
+        .and_then(|client| client.data.as_mut())
         .and_then(toml::Value::as_table_mut)
         .expect("fixture polymarket data table should exist");
     polymarket_data.insert(

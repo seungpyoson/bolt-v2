@@ -278,7 +278,7 @@ mod tests {
                             update_instruments_interval_mins: 60,
                             subscribe_new_markets: false,
                             auto_load_missing_instruments: false,
-                            auto_load_debounce_ms: 100,
+                            auto_load_debounce_ms: 250,
                             transport_backend: Default::default(),
                             filters: Vec::new(),
                             new_market_filter: None,

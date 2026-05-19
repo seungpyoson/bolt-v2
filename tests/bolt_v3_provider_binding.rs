@@ -260,7 +260,7 @@ fn market_identity_path_still_rejects_subscribe_new_markets_true() {
         .root
         .clients
         .get_mut("polymarket_main")
-        .and_then(|venue| venue.data.as_mut())
+        .and_then(|client| client.data.as_mut())
         .and_then(toml::Value::as_table_mut)
         .expect("fixture polymarket data table should exist");
     polymarket_data.insert(
@@ -384,15 +384,15 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
 }
 
 #[test]
-fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
+fn provider_binding_rejects_updown_target_bound_to_non_polymarket_client() {
     // The binding layer must fail loud if a configured rotating-market
-    // target points at a non-Polymarket venue. Without this guard the
+    // target points at a non-Polymarket client. Without this guard the
     // target would be silently dropped, because filter installation
-    // only runs on the Polymarket branch of the venue iteration.
+    // only runs on the Polymarket branch of the client iteration.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
-    // Mutate the strategy to bind to the Binance reference venue.
+    // Mutate the strategy to bind to the Binance reference client.
     loaded.strategies[0].config.execution_client_id =
         nautilus_model::identifiers::ClientId::from("binance_reference");
 
@@ -401,7 +401,7 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
     let clock = fixed_clock(0);
 
     let error = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
-        .expect_err("non-polymarket venue binding must fail loud at the adapter boundary");
+        .expect_err("non-polymarket client binding must fail loud at the adapter boundary");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
             client_key,

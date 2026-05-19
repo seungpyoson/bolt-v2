@@ -6,20 +6,20 @@
 # with a classification and rationale.
 
 [[allowed]]
-path = "src/bolt_v3_providers/polymarket.rs"
-kind = "number"
-literal = "100"
-context = "auto_load_debounce_ms: 100,"
-classification = "accepted_current_residual"
-reason = "The Polymarket provider binding owns the pinned NT data config debounce residual. This is a current provider-adapter residual, not a new core runtime value."
-
-[[allowed]]
 path = "src/bolt_v3_adapters.rs"
 kind = "number"
 literal = "0_i64"
 context = "let zero_clock: BoltV3MarketClockFn = Arc::new(|| 0_i64);"
 classification = "no_identity_clock_sentinel"
 reason = "The no-identity adapter entry point supplies an empty market-identity plan, so this deterministic clock closure is never invoked and is documented as a sentinel for that no-filter path."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"auto_load_debounce_ms\""
+context = "(\"auto_load_debounce_ms\", data.auto_load_debounce_ms),"
+classification = "provider_data_field_name"
+reason = "This literal names the NT PolymarketDataClientConfig field exposed in `[clients.<id>.data]` validation; the value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"

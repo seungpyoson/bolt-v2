@@ -250,7 +250,7 @@ fn startup_check_reports_adapter_mapping_failure_and_redacts_resolved_secrets() 
         .root
         .clients
         .get_mut("polymarket_main")
-        .expect("fixture polymarket_main venue should exist")
+        .expect("fixture polymarket_main client should exist")
         .data
         .as_mut()
         .expect("fixture polymarket_main data block should exist")

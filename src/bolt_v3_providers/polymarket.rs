@@ -87,6 +87,8 @@ pub struct PolymarketDataConfig {
     pub http_timeout_secs: u64,
     pub ws_timeout_secs: u64,
     pub subscribe_new_markets: bool,
+    pub auto_load_missing_instruments: bool,
+    pub auto_load_debounce_ms: u64,
     pub update_instruments_interval_mins: u64,
     pub ws_max_subscriptions: u64,
 }
@@ -285,6 +287,7 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
             data.update_instruments_interval_mins,
         ),
         ("ws_max_subscriptions", data.ws_max_subscriptions),
+        ("auto_load_debounce_ms", data.auto_load_debounce_ms),
     ];
     for (field, value) in positive_fields {
         if *value == 0 {
@@ -307,6 +310,13 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
              `ws_client.subscribe_market(vec![])` during connect when this flag is true, \
              which violates the bolt-v3 controlled-connect boundary until the \
              market-subscription slice owns it"
+        ));
+    }
+    if data.auto_load_missing_instruments {
+        errors.push(format!(
+            "clients.{key}.data.auto_load_missing_instruments must be false in the current bolt-v3 scope; \
+             missing-instrument auto-load can trigger ad-hoc Gamma loads outside the configured \
+             market-identity plan"
         ));
     }
     errors
@@ -537,8 +547,8 @@ fn map_data(
         ws_max_subscriptions,
         update_instruments_interval_mins: cfg.update_instruments_interval_mins,
         subscribe_new_markets: cfg.subscribe_new_markets,
-        auto_load_missing_instruments: false,
-        auto_load_debounce_ms: 100,
+        auto_load_missing_instruments: cfg.auto_load_missing_instruments,
+        auto_load_debounce_ms: cfg.auto_load_debounce_ms,
         transport_backend: Default::default(),
         filters,
         new_market_filter: None,

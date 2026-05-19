@@ -99,6 +99,41 @@ path_scoped_forbidden:
       - src/bolt_v3_*/**/*.rs
       - tests/bolt_v3_*.rs
     reason: "Bolt-v3 `[clients.<id>]` table keys are client keys; venue remains reserved for the NT Venue identifier"
+  - from: validate_fake_provider_venue
+    to: validate_fake_provider_client
+    include_globs:
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Provider-binding test helpers validate configured client blocks, not venue tables"
+  - from: "|client_key, _venue|"
+    to: "|client_key, _client|"
+    include_globs:
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Ignored closure/helper parameters over `[clients.<id>]` entries must use client vocabulary"
+  - from: "|venue|"
+    to: "|client|"
+    include_globs:
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Closures over `[clients.<id>]` entries must use client vocabulary"
+  - from: "polymarket_main venue"
+    to: "polymarket_main client"
+    include_globs:
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Fixture lookup text names the configured client key, not an NT Venue"
+  - from: "non-polymarket venue"
+    to: "non-polymarket client"
+    include_globs:
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Provider-binding tests route strategy execution_client_id references to configured clients"
   - from: BoltV3VenueAdapterConfig
     to: BoltV3ClientAdapterConfig
     include_globs:

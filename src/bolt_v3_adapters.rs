@@ -13,11 +13,17 @@
 
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
-use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
+use nautilus_common::{
+    clock::Clock,
+    factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
+    live::clock::LiveClock,
+    runner::try_get_time_event_sender,
+};
+use nautilus_core::datetime::NANOSECONDS_IN_SECOND;
 
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_market_families::MarketIdentityPlan,
+    bolt_v3_market_families::{MarketIdentityPlan, updown::plan_market_identity},
     bolt_v3_providers::{self, ProviderAdapterMapContext},
     bolt_v3_secrets::ResolvedBoltV3Secrets,
 };
@@ -107,6 +113,7 @@ impl fmt::Debug for BoltV3AdapterConfigs {
 
 #[derive(Debug)]
 pub enum BoltV3AdapterMappingError {
+    MarketIdentity(crate::bolt_v3_market_families::updown::BoltV3MarketIdentityError),
     /// The configured client provider and the resolved secret provider disagree.
     /// Indicates an internal-consistency bug between the resolver output
     /// and the mapper inputs.
@@ -155,6 +162,9 @@ pub enum BoltV3AdapterMappingError {
 impl std::fmt::Display for BoltV3AdapterMappingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            BoltV3AdapterMappingError::MarketIdentity(error) => {
+                write!(f, "bolt-v3 market identity plan failed: {error}")
+            }
             BoltV3AdapterMappingError::SecretProviderMismatch {
                 client_key,
                 expected_provider_key,
@@ -201,7 +211,18 @@ impl std::fmt::Display for BoltV3AdapterMappingError {
     }
 }
 
-impl std::error::Error for BoltV3AdapterMappingError {}
+impl std::error::Error for BoltV3AdapterMappingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            BoltV3AdapterMappingError::MarketIdentity(error) => Some(error),
+            BoltV3AdapterMappingError::SecretProviderMismatch { .. }
+            | BoltV3AdapterMappingError::MissingResolvedSecrets { .. }
+            | BoltV3AdapterMappingError::SchemaParse { .. }
+            | BoltV3AdapterMappingError::NumericRange { .. }
+            | BoltV3AdapterMappingError::ValidationInvariant { .. } => None,
+        }
+    }
+}
 
 /// Map a validated [`LoadedBoltV3Config`] plus resolved SSM secrets into
 /// NT-native adapter config values, one per configured client. The mapper
@@ -209,26 +230,23 @@ impl std::error::Error for BoltV3AdapterMappingError {}
 /// owned config structs and may pass them to NT factories at a later
 /// stage.
 ///
-/// This entry point intentionally installs no provider filter and
-/// passes an empty plan into the with-identity variant. Callers that
-/// need the rotating-market filter surface MUST use
-/// [`map_bolt_v3_adapters_with_market_identity`] directly with a
-/// derived [`MarketIdentityPlan`] and a real clock — copying the
-/// `Arc::new(|| 0_i64)` sentinel below into a non-empty-plan call site
-/// would produce slugs anchored to unix-second 0 every cycle.
+/// This entry point derives [`MarketIdentityPlan`] from the loaded
+/// strategy TOML and gives provider bindings an NT
+/// [`LiveClock`]-backed timestamp source for filter projection.
 pub fn map_bolt_v3_adapters(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
-    let empty_plan = MarketIdentityPlan::empty();
-    // The clock here is never invoked: with no updown targets, no
-    // provider filter closure is built, so the closure body is never
-    // entered. We wire in a deterministic constant so callers cannot
-    // observe any wall-clock dependency on the no-identity entry point.
-    // Treat this constant as a sentinel for the no-filter path; do not
-    // reuse it from any call site that supplies a non-empty plan.
-    let zero_clock: BoltV3MarketClockFn = Arc::new(|| 0_i64);
-    map_bolt_v3_adapters_with_market_identity(loaded, resolved, &empty_plan, zero_clock)
+    let plan = plan_market_identity(loaded).map_err(BoltV3AdapterMappingError::MarketIdentity)?;
+    map_bolt_v3_adapters_with_market_identity(loaded, resolved, &plan, nt_market_clock())
+}
+
+fn nt_market_clock() -> BoltV3MarketClockFn {
+    let clock = LiveClock::new(try_get_time_event_sender());
+    Arc::new(move || {
+        let now_unix_seconds = clock.timestamp_ns().as_u64() / NANOSECONDS_IN_SECOND;
+        now_unix_seconds.min(i64::MAX as u64) as i64
+    })
 }
 
 /// Map a validated [`LoadedBoltV3Config`] plus resolved SSM secrets into
@@ -695,7 +713,14 @@ mod tests {
         assert_eq!(data.ws_max_subscriptions, 200);
         assert_eq!(data.update_instruments_interval_mins, 60);
         assert!(!data.subscribe_new_markets);
-        assert!(data.filters.is_empty());
+        assert_eq!(data.filters.len(), 1);
+        assert_eq!(
+            data.filters[0]
+                .market_slugs()
+                .expect("production mapper must install an active updown slug filter")
+                .len(),
+            2
+        );
         assert!(data.new_market_filter.is_none());
 
         let exec = polymarket

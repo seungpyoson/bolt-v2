@@ -68,25 +68,30 @@ def scan_paths() -> list[Path]:
 
 def matches_any(path: Path, patterns: list[str]) -> bool:
     rel = str(path.relative_to(REPO_ROOT))
-    return any(
-        fnmatch.fnmatch(rel, expanded)
-        for pattern in patterns
-        for expanded in expand_globstar_zero_depth(pattern)
-    )
+    return any(glob_pattern_re(pattern).match(rel) for pattern in patterns)
 
 
-def expand_globstar_zero_depth(pattern: str) -> list[str]:
-    patterns = {pattern}
-    queue = [pattern]
-    while queue:
-        current = queue.pop()
-        if "**/" not in current:
+def glob_pattern_re(pattern: str) -> re.Pattern[str]:
+    pieces: list[str] = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            pieces.append("(?:.*/)?")
+            i += 3
             continue
-        collapsed = current.replace("**/", "", 1)
-        if collapsed not in patterns:
-            patterns.add(collapsed)
-            queue.append(collapsed)
-    return sorted(patterns)
+        if pattern.startswith("**", i):
+            pieces.append(".*")
+            i += 2
+            continue
+        char = pattern[i]
+        if char == "*":
+            pieces.append("[^/]*")
+        elif char == "?":
+            pieces.append("[^/]")
+        else:
+            pieces.append(re.escape(char))
+        i += 1
+    return re.compile(f"^{''.join(pieces)}$")
 
 
 def main() -> int:

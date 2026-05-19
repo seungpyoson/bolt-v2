@@ -280,6 +280,9 @@ where
 
 fn adapter_mapping_error_subject(error: &BoltV3AdapterMappingError) -> BoltV3StartupCheckSubject {
     let client_key = match error {
+        BoltV3AdapterMappingError::MarketIdentity(_) => {
+            return BoltV3StartupCheckSubject::Root;
+        }
         BoltV3AdapterMappingError::SecretProviderMismatch { client_key, .. }
         | BoltV3AdapterMappingError::MissingResolvedSecrets { client_key, .. }
         | BoltV3AdapterMappingError::SchemaParse { client_key, .. }

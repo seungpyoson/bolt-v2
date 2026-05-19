@@ -133,10 +133,13 @@ def test_matches_any_treats_globstar_as_zero_or_more_directories() -> None:
         root = Path(tmp)
         direct = root / "config" / "root.toml"
         nested = root / "config" / "live" / "root.toml"
+        deeply_nested = root / "config" / "live" / "prod" / "root.toml"
         direct.parent.mkdir(parents=True)
         nested.parent.mkdir(parents=True)
+        deeply_nested.parent.mkdir(parents=True)
         direct.write_text("probe\n", encoding="utf-8")
         nested.write_text("probe\n", encoding="utf-8")
+        deeply_nested.write_text("probe\n", encoding="utf-8")
         try:
             VERIFIER.REPO_ROOT = root
             pattern = ["config/**/*.toml"]
@@ -144,6 +147,8 @@ def test_matches_any_treats_globstar_as_zero_or_more_directories() -> None:
                 raise AssertionError("globstar should match zero nested directories")
             if not VERIFIER.matches_any(nested, pattern):
                 raise AssertionError("globstar should match nested directories")
+            if not VERIFIER.matches_any(deeply_nested, pattern):
+                raise AssertionError("globstar should match deeper nested directories")
         finally:
             VERIFIER.REPO_ROOT = original_root
 

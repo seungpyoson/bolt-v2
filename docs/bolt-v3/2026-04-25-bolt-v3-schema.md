@@ -175,6 +175,10 @@ fileout_level = "INFO"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+runtime_capture_start_poll_interval_ms = 50
+
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
@@ -207,6 +211,7 @@ auto_load_missing_instruments = false # NT: PolymarketDataClientConfig.auto_load
 auto_load_debounce_ms = 250 # NT: PolymarketDataClientConfig.auto_load_debounce_ms
 update_instruments_interval_mins = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 ws_max_subscriptions = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
+transport_backend = "sockudo" # NT: PolymarketDataClientConfig.transport_backend
 
 [clients.polymarket_main.execution]
 account_id = "POLYMARKET-001" # NT: nautilus_model::identifiers::AccountId
@@ -220,6 +225,8 @@ max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
 retry_delay_initial_ms = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
 retry_delay_max_ms = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
 ack_timeout_secs = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
+fee_cache_ttl_secs = 300 # NT: PolymarketExecClientConfig fee cache TTL
+transport_backend = "sockudo" # NT: PolymarketExecClientConfig.transport_backend
 
 [clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
@@ -236,6 +243,7 @@ environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
 instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
+transport_backend = "sockudo" # NT: BinanceDataClientConfig.transport_backend
 
 [clients.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"
@@ -548,6 +556,22 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - local Nautilus catalog root for structured decision events and raw NautilusTrader capture
 - persistence behavior and local-evidence requirements are defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 9.6, 9.7, and 10
 
+#### `runtime_capture_start_poll_interval_ms`
+
+- type: positive integer
+- required: yes
+- local poll interval used while waiting for runtime-capture startup evidence to appear
+- stays in TOML so startup/capture timing is operator-owned and not hardcoded in code
+
+### `[persistence.decision_evidence]`
+
+#### `order_intents_relative_path`
+
+- type: relative path string
+- required: yes
+- local decision-evidence JSONL path under `catalog_directory`
+- must remain relative so a root catalog move changes only one config location
+
 There is no `state_directory` in the current bolt-v3 scope. NT's pinned `LiveNodeBuilder` does not expose a state-directory wiring (load/save state are booleans only), so a TOML key would not flow to NT. A future slice may reintroduce this once a supported path exists.
 
 ### `[persistence.streaming]`
@@ -851,6 +875,14 @@ Presence of `[data]` means a data client is configured.
 - type: positive integer
 - required: yes
 
+##### `transport_backend`
+
+- type: string enum
+- required: yes
+- current allowed value:
+  - `sockudo`
+- maps directly to the pinned NT adapter `transport_backend` field
+
 No other Polymarket data-client fields are exposed in the current schema unless they are confirmed on the pinned NautilusTrader Rust adapter surface.
 
 For current reference-data clients other than Polymarket, each client's `venue` defines its own allowed `[data]` field set.
@@ -919,6 +951,11 @@ The current schema also requires these pinned adapter fields to be explicit:
 - `base_url_ws`
 - `base_url_data_api`
 - `http_timeout_secs`
+- `fee_cache_ttl_secs`
+- `transport_backend`
+
+`fee_cache_ttl_secs` is a positive integer and controls the provider fee cache lifetime.
+`transport_backend` is a string enum with current allowed value `sockudo` and maps directly to the pinned NT adapter field.
 
 ### `[clients.<identifier>.secrets]`
 
@@ -986,6 +1023,14 @@ For current Binance reference-data use:
 - maps to Nautilus `BinanceDataClientConfig.instrument_status_poll_secs`
 - bolt-v3 rejects `0` rather than treating it as "polling disabled" so that the cadence stays explicit and NT cannot silently fall back to its own default poll interval
 
+##### `transport_backend`
+
+- type: string enum
+- required: yes
+- current allowed value:
+  - `sockudo`
+- maps directly to `BinanceDataClientConfig.transport_backend`
+
 ## 6. Strategy File: Candidate Schema
 
 ```toml
@@ -994,6 +1039,19 @@ strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
+use_uuid_client_order_ids = true
+use_hyphens_in_client_order_ids = false
+external_order_claims = []
+manage_contingent_orders = false
+manage_gtd_expiry = false
+manage_stop = false
+market_exit_interval_ms = 100
+market_exit_max_attempts = 100
+market_exit_time_in_force = "gtc"
+market_exit_reduce_only = true
+log_events = true
+log_commands = true
+log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
 
 [target]
@@ -1011,6 +1069,8 @@ data_client_id = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
 
 [parameters.entry_order]
+side = "buy"
+position_side = "long"
 order_type = "limit"
 time_in_force = "fok"
 is_post_only = false
@@ -1018,6 +1078,8 @@ is_reduce_only = false
 is_quote_quantity = false
 
 [parameters.exit_order]
+side = "sell"
+position_side = "long"
 order_type = "market"
 time_in_force = "ioc"
 is_post_only = false
@@ -1095,6 +1157,24 @@ Nautilus strategy identity mapping for live trading:
 - current allowed value:
   - `netting`
 - maps directly to Nautilus `StrategyConfig.oms_type`
+
+#### Other Nautilus `StrategyConfig` fields
+
+These fields map directly to pinned NautilusTrader strategy configuration and are explicit in TOML to avoid NT defaults:
+
+- `use_uuid_client_order_ids`: boolean; required
+- `use_hyphens_in_client_order_ids`: boolean; required
+- `external_order_claims`: array of strings; required
+- `manage_contingent_orders`: boolean; required
+- `manage_gtd_expiry`: boolean; required
+- `manage_stop`: boolean; required
+- `market_exit_interval_ms`: positive integer; required
+- `market_exit_max_attempts`: positive integer; required
+- `market_exit_time_in_force`: string enum; required; current allowed value `gtc`
+- `market_exit_reduce_only`: boolean; required
+- `log_events`: boolean; required
+- `log_commands`: boolean; required
+- `log_rejected_due_post_only_as_warning`: boolean; required
 
 #### `execution_client_id`
 
@@ -1227,6 +1307,23 @@ They are not a bolt-wide executable-order schema.
 
 They must map directly to NautilusTrader-native order semantics used by the archetype.
 
+#### `side`
+
+- type: string enum
+- required
+- current allowed values:
+  - entry order: `buy`
+  - exit order: `sell`
+- maps to the order side used by the archetype
+
+#### `position_side`
+
+- type: string enum
+- required
+- current allowed value:
+  - `long`
+- maps to the position side used by the archetype
+
 #### `order_type`
 
 - type: string enum
@@ -1268,6 +1365,8 @@ Meaning:
 To avoid hidden policy, the current archetype supports only these combinations:
 
 - `[parameters.entry_order]`
+  - `side = "buy"`
+  - `position_side = "long"`
   - `order_type = "limit"`
   - `time_in_force = "fok"`
   - `is_post_only = false`
@@ -1275,6 +1374,8 @@ To avoid hidden policy, the current archetype supports only these combinations:
   - `is_quote_quantity = false`
 
 - `[parameters.exit_order]`
+  - `side = "sell"`
+  - `position_side = "long"`
   - `order_type = "market"`
   - `time_in_force = "ioc"`
   - `is_post_only = false`
@@ -1482,6 +1583,10 @@ fileout_level = "INFO"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+runtime_capture_start_poll_interval_ms = 50
+
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
@@ -1514,6 +1619,7 @@ auto_load_missing_instruments = false # NT: PolymarketDataClientConfig.auto_load
 auto_load_debounce_ms = 250 # NT: PolymarketDataClientConfig.auto_load_debounce_ms
 update_instruments_interval_mins = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 ws_max_subscriptions = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
+transport_backend = "sockudo" # NT: PolymarketDataClientConfig.transport_backend
 
 [clients.polymarket_main.execution]
 account_id = "POLYMARKET-001" # NT: nautilus_model::identifiers::AccountId
@@ -1527,6 +1633,8 @@ max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
 retry_delay_initial_ms = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
 retry_delay_max_ms = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
 ack_timeout_secs = 5 # NT: PolymarketExecClientConfig.ack_timeout_secs
+fee_cache_ttl_secs = 300 # NT: PolymarketExecClientConfig fee cache TTL
+transport_backend = "sockudo" # NT: PolymarketExecClientConfig.transport_backend
 
 [clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
@@ -1543,6 +1651,7 @@ environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
 instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
+transport_backend = "sockudo" # NT: BinanceDataClientConfig.transport_backend
 
 [clients.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"
@@ -1557,6 +1666,19 @@ strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
+use_uuid_client_order_ids = true
+use_hyphens_in_client_order_ids = false
+external_order_claims = []
+manage_contingent_orders = false
+manage_gtd_expiry = false
+manage_stop = false
+market_exit_interval_ms = 100
+market_exit_max_attempts = 100
+market_exit_time_in_force = "gtc"
+market_exit_reduce_only = true
+log_events = true
+log_commands = true
+log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
 
 [target]
@@ -1574,6 +1696,8 @@ data_client_id = "binance_reference"
 instrument_id = "BTCUSDT.BINANCE"
 
 [parameters.entry_order]
+side = "buy"
+position_side = "long"
 order_type = "limit"
 time_in_force = "fok"
 is_post_only = false
@@ -1581,6 +1705,8 @@ is_reduce_only = false
 is_quote_quantity = false
 
 [parameters.exit_order]
+side = "sell"
+position_side = "long"
 order_type = "market"
 time_in_force = "ioc"
 is_post_only = false

@@ -94,6 +94,18 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert!(!data.auto_load_missing_instruments);
     assert_eq!(data.auto_load_debounce_ms, 250);
     assert_eq!(data.transport_backend, TransportBackend::Sockudo);
+    assert_eq!(
+        data.filters.len(),
+        1,
+        "production adapter mapping must install the updown market-slug filter"
+    );
+    assert_eq!(
+        data.filters[0]
+            .market_slugs()
+            .expect("installed updown market-slug filter must return current and next slugs")
+            .len(),
+        2
+    );
 
     let exec = polymarket
         .execution

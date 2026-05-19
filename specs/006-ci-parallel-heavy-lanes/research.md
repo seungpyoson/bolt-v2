@@ -44,7 +44,7 @@
 
 **Alternatives considered**:
 - Exclude the canonical filters from full nextest now: rejected because the marginal speedup is small relative to the risk of an imprecise filter removing non-source-fence coverage.
-- Remove `source-fence` dependency from `test`: rejected because #342 exists to fail deterministic source-fence drift before full nextest.
+- Remove `source-fence` dependency from `test`: rejected because #342 exists to fail deterministic source-fence drift before full nextest. **Adopted by #400** (PR #401): once warm-cache `test-archive` cost fell to ~46s, the parallel-lane wall-clock gain outweighed the fail-fast saving; gate.needs is now the sole merge enforcer.
 
 ## Decision: Use bounded shared nextest cache with shard-1 save
 

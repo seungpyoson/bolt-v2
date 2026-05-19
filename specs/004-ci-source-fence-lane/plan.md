@@ -5,7 +5,7 @@
 
 ## Summary
 
-Implement #342 as a direct follow-up to the now-merged #343 baseline. Add a first-class `source-fence` CI job and `just source-fence` recipe that run the Bolt-v3 verifier script set and canonical structural test binaries before full `test`. Extend `gate` and `just ci-lint-workflow` so the new lane is required and fail-closed. Do not implement #332 sharding, #195 artifact retention, #205 deploy deduplication, #335/#344 path-filter work, or #340 config-path migration.
+Implement #342 as a direct follow-up to the now-merged #343 baseline. Add a first-class `source-fence` CI job and `just source-fence` recipe that run the Bolt-v3 verifier script set and canonical structural test binaries ~~before full `test`~~ (**Superseded by #400** (PR #401): in parallel with full `test`; gate enforces both). Extend `gate` and `just ci-lint-workflow` so the new lane is required and fail-closed. Do not implement #332 sharding, #195 artifact retention, #205 deploy deduplication, #335/#344 path-filter work, or #340 config-path migration.
 
 ## Technical Context
 

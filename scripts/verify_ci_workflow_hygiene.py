@@ -678,37 +678,43 @@ def block_key_value_has_prefix(block: list[str], prefix: str) -> bool:
 
 
 def block_declares_restore_keys_prefix(block: list[str], prefix: str) -> bool:
-    # Handle both YAML forms:
-    #   inline:        restore-keys: managed-target-v1-...-clippy-host-
-    #   block-scalar:  restore-keys: |
-    #                    managed-target-v1-...-clippy-host-
-    # `block_input_items` returns the inline value directly. For the block
-    # scalar form the value is `|` (or `>`); the prefix lives on indented
-    # continuation lines below the marker, which we scan with the marker's
-    # own indent as the boundary so unrelated later inputs cannot satisfy
-    # the check.
-    for name, value in block_input_items(block):
-        if name != "restore-keys":
-            continue
-        if prefix in value:
-            return True
-        if value.strip() not in ("|", ">", "|-", ">-", "|+", ">+"):
-            continue
-        for marker_idx, line in enumerate(block):
-            text = strip_comment(line)
-            if "restore-keys:" not in text:
-                continue
-            marker_indent = len(line) - len(line.lstrip(" "))
-            for child in block[marker_idx + 1:]:
-                child_text = strip_comment(child)
-                if not child_text.strip():
-                    continue
-                child_indent = len(child) - len(child.lstrip(" "))
-                if child_indent <= marker_indent:
-                    break
-                if prefix in child_text:
-                    return True
+    # Locate the `with:` line to determine the input indent. The marker for
+    # `restore-keys:` is anchored at that exact indent so earlier lines whose
+    # values happen to contain the substring `restore-keys:` (e.g., a quoted
+    # step-level `name:`) cannot impersonate the input.
+    input_indent: int | None = None
+    for line in block:
+        match = re.match(r"^(\s*)with:\s*$", strip_comment(line).rstrip())
+        if match is not None:
+            input_indent = len(match.group(1)) + 2
             break
+    if input_indent is None:
+        return False
+    marker_re = re.compile(rf"^\s{{{input_indent}}}restore-keys:\s*(.*)$")
+    for marker_idx, line in enumerate(block):
+        match = marker_re.match(strip_comment(line))
+        if not match:
+            continue
+        value = match.group(1).strip()
+        # Inline-scalar form: `restore-keys: managed-target-v1-...-clippy-host-`.
+        # Anything not starting with a block-scalar indicator is treated as an
+        # inline value and matched directly.
+        if not value.startswith(("|", ">")):
+            return prefix in value
+        # Block-scalar form: `restore-keys: |` (plus YAML 1.2 chomping or
+        # explicit-indentation indicators like `|2`, `>+1`, `|-3`). Body lines
+        # are indented strictly more than the marker line; the scan stops at
+        # the first line whose indent is equal-or-lesser.
+        for child in block[marker_idx + 1:]:
+            child_text = strip_comment(child)
+            if not child_text.strip():
+                continue
+            child_indent = len(child) - len(child.lstrip(" "))
+            if child_indent <= input_indent:
+                break
+            if prefix in child_text:
+                return True
+        return False
     return False
 
 

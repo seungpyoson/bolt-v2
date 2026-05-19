@@ -5,7 +5,7 @@
 
 ## Summary
 
-Implement #332 as a stacked follow-up to #342 and #203. Split the serialized `clippy` lane into top-level host `clippy` and `check-aarch64` jobs, shard the full nextest lane four ways through the existing managed `just test` path, preserve one fail-closed aggregate gate, and extend workflow lint only for the new #332 topology. Source-fence filters remain intentionally duplicated in full nextest for this slice, with `source-fence` still required before `test`; this preserves coverage without adding brittle exclusion filters.
+Implement #332 as a stacked follow-up to #342 and #203. Split the serialized `clippy` lane into top-level host `clippy` and `check-aarch64` jobs, shard the full nextest lane four ways through the existing managed `just test` path, preserve one fail-closed aggregate gate, and extend workflow lint only for the new #332 topology. Source-fence filters remain intentionally duplicated in full nextest for this slice, with ~~`source-fence` still required before `test`~~ (**Superseded by #400** (PR #401): the lanes run in parallel; gate enforces both); this preserves coverage without adding brittle exclusion filters.
 
 ## Technical Context
 

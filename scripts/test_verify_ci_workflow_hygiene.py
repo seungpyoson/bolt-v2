@@ -1269,6 +1269,42 @@ def main() -> int:
             "          restore-keys: |\n      - run: just clippy",
         ),
     )
+    # #400 parser tightness: YAML 1.2 §8.1.1 allows a block-scalar header to
+    # carry an explicit indentation indicator (e.g., `|2`, `|-3`, `>+1`) in
+    # addition to the bare/chomping forms. Currently the verifier only
+    # recognises six fixed forms (`|`, `>`, `|-`, `>-`, `|+`, `>+`); any
+    # block-scalar header containing an explicit indentation digit is
+    # silently skipped by the body-scan and the prefix check spuriously
+    # fails on an otherwise-valid restore-keys declaration. The fixture
+    # below switches clippy's `|` marker to `|2` (content indent 12 = 10 + 2
+    # relative to the `restore-keys:` line at indent 10, matching the YAML
+    # 1.2 spec).
+    assert_clean(
+        workflow=replace_once(
+            BASE_WORKFLOW,
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: |2\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+        ),
+    )
+    # #400 parser tightness: the body-scan that locates the `restore-keys:`
+    # marker line uses an unscoped substring match (`"restore-keys:" in
+    # text`) and walks the entire step block from the top. A step-level
+    # `name:` carrying the literal substring `restore-keys:` (which survives
+    # `strip_comment` because the substring is inside a double-quoted
+    # scalar) appears before the real `restore-keys:` input line, so the
+    # body-scan anchors on the wrong line; with `marker_indent` set to the
+    # step-level indent (8), the next line (`with:` at indent 8) ends the
+    # sub-scan immediately, the real block-scalar body (indent 12) is never
+    # consulted, and the prefix check spuriously fails. After the fix, the
+    # body-scan must anchor on the actual `restore-keys:` input line (the
+    # one whose `block_input_items` entry produced the block-scalar marker).
+    assert_clean(
+        workflow=replace_once(
+            BASE_WORKFLOW,
+            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "      - uses: actions/cache@example\n        name: \"Cache with restore-keys: probe\"\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+        ),
+    )
     assert_error(
         "test-archive build must be skipped on archive cache hit",
         replace_once(

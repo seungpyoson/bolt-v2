@@ -228,47 +228,46 @@ def existing_disk_path(path: pathlib.Path) -> pathlib.Path:
 
 def scan_cache_tree(path: pathlib.Path) -> tuple[int, float, int]:
     try:
-        info = path.lstat()
+        root_info = path.lstat()
     except FileNotFoundError:
         return 0, 0.0, 0
     except OSError:
         return 0, 0.0, 1
-    mode = info.st_mode
-    latest_mtime = float(info.st_mtime)
-    if stat.S_ISREG(mode) or stat.S_ISLNK(mode):
-        blocks = getattr(info, "st_blocks", None)
-        bytes_used = int(blocks) * 512 if blocks is not None else int(info.st_size)
-        return bytes_used, latest_mtime, 0
-    if not stat.S_ISDIR(mode):
-        return 0, latest_mtime, 1
-
     total_bytes = 0
     skipped = 0
-    try:
-        with os.scandir(path) as entries:
-            for entry in entries:
-                child_bytes, child_mtime, child_skipped = scan_cache_tree(path / entry.name)
-                total_bytes += child_bytes
-                skipped += child_skipped
-                latest_mtime = max(latest_mtime, child_mtime)
-    except OSError:
-        skipped += 1
+    latest_mtime = float(root_info.st_mtime)
+    stack = [(path, root_info)]
+    seen_allocated_entries: set[tuple[int, int]] = set()
+    while stack:
+        current_path, info = stack.pop()
+        latest_mtime = max(latest_mtime, float(info.st_mtime))
+        mode = info.st_mode
+        if stat.S_ISREG(mode) or stat.S_ISLNK(mode):
+            inode_key = (int(info.st_dev), int(info.st_ino))
+            if inode_key in seen_allocated_entries:
+                continue
+            seen_allocated_entries.add(inode_key)
+            blocks = getattr(info, "st_blocks", None)
+            total_bytes += int(blocks) * 512 if blocks is not None else int(info.st_size)
+            continue
+        if not stat.S_ISDIR(mode):
+            skipped += 1
+            continue
+        try:
+            with os.scandir(current_path) as entries:
+                for entry in entries:
+                    child_path = current_path / entry.name
+                    try:
+                        child_info = child_path.lstat()
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        skipped += 1
+                        continue
+                    stack.append((child_path, child_info))
+        except OSError:
+            skipped += 1
     return total_bytes, latest_mtime, skipped
-
-
-def disk_usage_bytes(path: pathlib.Path) -> int:
-    if not path.exists():
-        return 0
-    result = subprocess.run(
-        ["du", "-sk", "-P", str(path)],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise OSError(result.stderr.strip() or f"du failed for {path}")
-    return int(result.stdout.split()[0]) * 1024
 
 
 def cache_status_payload(repo: pathlib.Path) -> dict[str, Any]:
@@ -280,12 +279,7 @@ def cache_status_payload(repo: pathlib.Path) -> dict[str, Any]:
     skipped_special_entries = 0
     if target.exists():
         for child in sorted(target.iterdir(), key=lambda item: item.name):
-            _logical_bytes, latest_mtime, skipped = scan_cache_tree(child)
-            try:
-                child_bytes = disk_usage_bytes(child)
-            except OSError:
-                child_bytes = 0
-                skipped = max(skipped, 1)
+            child_bytes, latest_mtime, skipped = scan_cache_tree(child)
             total_bytes += child_bytes
             skipped_special_entries += skipped
             subtrees.append(
@@ -414,12 +408,40 @@ def is_prune_candidate(
     return True, f"older than {prune_after_days} days"
 
 
-def process_cwd(pid: int) -> pathlib.Path | None:
+def process_cwd_from_proc(pid: int) -> pathlib.Path | None:
     base = pathlib.Path(os.environ.get("RUST_VERIFICATION_PROCESS_CWD_BASE", "/proc"))
     try:
         return (base / str(pid) / "cwd").resolve(strict=True)
     except (OSError, RuntimeError):
         return None
+
+
+def process_cwd_from_lsof(pid: int) -> pathlib.Path | None:
+    try:
+        result = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if not line.startswith("n"):
+            continue
+        try:
+            return pathlib.Path(line[1:]).resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+    return None
+
+
+def process_cwd(pid: int) -> pathlib.Path | None:
+    return process_cwd_from_proc(pid) or process_cwd_from_lsof(pid)
 
 
 def path_is_or_inside(path: pathlib.Path, parent: pathlib.Path) -> bool:
@@ -435,7 +457,7 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
     if not patterns:
         return []
     result = subprocess.run(
-        ["ps", "-axo", "pid=,command="],
+        ["ps", "-ax", "-o", "pid=", "-o", "command="],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

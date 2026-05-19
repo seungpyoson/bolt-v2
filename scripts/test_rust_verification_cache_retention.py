@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import pathlib
 import subprocess
@@ -40,6 +41,15 @@ def run_owner(args: list[str], *, env: dict[str, str]) -> subprocess.CompletedPr
         stderr=subprocess.PIPE,
         check=False,
     )
+
+
+def load_owner_module() -> object:
+    spec = importlib.util.spec_from_file_location("rust_verification_under_test", SCRIPT)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load rust_verification.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def write_executable(path: pathlib.Path, body: str) -> None:
@@ -227,6 +237,94 @@ def assert_cache_status_uses_allocated_disk_bytes_for_sparse_files() -> None:
             raise AssertionError(payload)
         if subtrees["debug"]["bytes"] >= sparse_file.lstat().st_size:
             raise AssertionError("cache-status reported logical size, not allocated disk bytes")
+
+
+def assert_cache_status_uses_single_scan_for_subtree_bytes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        debug_file = target / "debug" / "old.bin"
+        debug_file.parent.mkdir(parents=True)
+        debug_file.write_bytes(b"abc")
+        expected_debug_bytes = disk_bytes(debug_file)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "du",
+            """#!/usr/bin/env bash
+exit 1
+""",
+        )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+        result = run_owner(["cache-status", "--repo", str(repo), "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        subtrees = {entry["relative_path"]: entry for entry in payload["subtrees"]}
+        if subtrees["debug"]["bytes"] != expected_debug_bytes:
+            raise AssertionError(payload)
+        if subtrees["debug"]["skipped_special_entries"] != 0:
+            raise AssertionError(payload)
+
+
+def assert_cache_status_counts_hardlinked_files_once() -> None:
+    if not hasattr(os, "link"):
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        debug_file = target / "debug" / "artifact.bin"
+        debug_file.parent.mkdir(parents=True)
+        debug_file.write_bytes(b"x" * 4096)
+        os.link(debug_file, target / "debug" / "artifact-hardlink.bin")
+        expected_debug_bytes = disk_bytes(debug_file)
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+
+        result = run_owner(["cache-status", "--repo", str(repo), "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        subtrees = {entry["relative_path"]: entry for entry in payload["subtrees"]}
+        if subtrees["debug"]["bytes"] != expected_debug_bytes:
+            raise AssertionError(payload)
+
+
+def assert_scan_cache_tree_handles_deep_tree_iteratively() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp) / "root"
+        leaf_parent = root
+        for _index in range(120):
+            leaf_parent = leaf_parent / "d"
+        leaf_parent.mkdir(parents=True)
+        leaf = leaf_parent / "x"
+        leaf.write_bytes(b"x")
+
+        previous_limit = sys.getrecursionlimit()
+        try:
+            sys.setrecursionlimit(100)
+            total_bytes, latest_mtime, skipped = owner.scan_cache_tree(root)
+        finally:
+            sys.setrecursionlimit(previous_limit)
+        if total_bytes != disk_bytes(leaf) or latest_mtime <= 0 or skipped != 0:
+            raise AssertionError((total_bytes, latest_mtime, skipped))
 
 
 def assert_cache_prune_dry_run_lists_stale_candidates_without_deleting() -> None:
@@ -549,6 +647,100 @@ printf '123 cargo test\\n'
             raise AssertionError(payload)
         if not debug_file.exists():
             raise AssertionError("refused apply deleted files")
+
+
+def assert_cache_prune_active_process_scan_uses_portable_ps_columns() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=10**15)
+
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        debug_file = target / "debug" / "old.bin"
+        debug_file.parent.mkdir(parents=True)
+        debug_file.write_bytes(b"abc")
+        old_time = time.time() - (15 * 24 * 60 * 60)
+        os.utime(debug_file, (old_time, old_time))
+        os.utime(debug_file.parent, (old_time, old_time))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        arg_file = tmp_path / "ps-args"
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+actual="$1|$2|$3|$4|$5"
+printf '%s' "$actual" > "$ARG_FILE"
+test "$actual" = '-ax|-o|pid=|-o|command='
+""",
+        )
+
+        env = os.environ.copy()
+        env["ARG_FILE"] = str(arg_file)
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+        result = run_owner(["cache-prune", "--repo", str(repo), "--apply", "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr, arg_file.read_text()))
+        if debug_file.parent.exists():
+            raise AssertionError("portable ps scan did not allow candidate deletion")
+
+
+def assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        unrelated = tmp_path / "unrelated"
+        unrelated.mkdir()
+        write_policy_with_cache(repo, active_process_patterns=["cargo"])
+
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        debug_file = target / "debug" / "old.bin"
+        debug_file.parent.mkdir(parents=True)
+        debug_file.write_bytes(b"abc")
+        old_time = time.time() - (15 * 24 * 60 * 60)
+        os.utime(debug_file, (old_time, old_time))
+        os.utime(debug_file.parent, (old_time, old_time))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+printf '123 cargo test\\n'
+""",
+        )
+        write_executable(
+            bin_dir / "lsof",
+            f"""#!/usr/bin/env bash
+if [ "$1|$2|$3|$4|$5|$6" != '-a|-p|123|-d|cwd|-Fn' ]; then
+  exit 1
+fi
+printf 'p123\\nn{unrelated}\\n'
+""",
+        )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "missing-proc")
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+        result = run_owner(["cache-prune", "--repo", str(repo), "--apply", "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        if payload["dry_run"] is not False or payload["refused"] is not False:
+            raise AssertionError(payload)
+        removed = {entry["relative_path"] for entry in payload["removed"]}
+        if removed != {"debug"}:
+            raise AssertionError(payload)
+        if debug_file.parent.exists():
+            raise AssertionError("lsof-visible unrelated cargo process blocked candidate deletion")
 
 
 def assert_cache_prune_apply_ignores_visible_unrelated_process_by_cwd() -> None:
@@ -1131,6 +1323,8 @@ exit 0
 
 
 def assert_cache_prune_apply_preserves_subtree_when_scan_incomplete() -> None:
+    if not hasattr(os, "mkfifo"):
+        return
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         repo = tmp_path / "repo"
@@ -1142,18 +1336,13 @@ def assert_cache_prune_apply_preserves_subtree_when_scan_incomplete() -> None:
         debug_file = target / "debug" / "old.bin"
         debug_file.parent.mkdir(parents=True)
         debug_file.write_bytes(b"abc")
+        os.mkfifo(debug_file.parent / "pipe")
         old_time = time.time() - (15 * 24 * 60 * 60)
         os.utime(debug_file, (old_time, old_time))
         os.utime(debug_file.parent, (old_time, old_time))
 
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
-        write_executable(
-            bin_dir / "du",
-            """#!/usr/bin/env bash
-exit 1
-""",
-        )
         write_executable(
             bin_dir / "ps",
             """#!/usr/bin/env bash
@@ -1212,6 +1401,9 @@ def main() -> int:
     assert_cache_status_reports_managed_target_tree()
     assert_cache_policy_syntax_works_without_external_toml()
     assert_cache_status_uses_allocated_disk_bytes_for_sparse_files()
+    assert_cache_status_uses_single_scan_for_subtree_bytes()
+    assert_cache_status_counts_hardlinked_files_once()
+    assert_scan_cache_tree_handles_deep_tree_iteratively()
     assert_cache_status_classifies_subtrees_and_skips_special_files()
     assert_cache_status_ignores_broken_top_level_symlink()
     assert_cache_status_skips_permission_denied_top_level_child()
@@ -1221,6 +1413,8 @@ def main() -> int:
     assert_cache_prune_dry_run_preserves_stale_cache_below_thresholds()
     assert_cache_prune_apply_refuses_active_related_process()
     assert_cache_prune_apply_refuses_active_related_process_by_cwd()
+    assert_cache_prune_active_process_scan_uses_portable_ps_columns()
+    assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd()
     assert_cache_prune_apply_ignores_visible_unrelated_process_by_cwd()
     assert_cache_prune_apply_waits_for_managed_cargo_lock()
     assert_cache_prune_apply_waits_for_managed_run_lock()

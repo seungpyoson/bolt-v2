@@ -390,10 +390,14 @@ fn validate_clients_block(clients: &BTreeMap<String, ClientBlock>) -> Vec<String
     // explicitly designed.
     let mut venue_counts: BTreeMap<String, Vec<&str>> = BTreeMap::new();
     for (key, client) in clients {
-        venue_counts
-            .entry(client.venue.as_str().to_string())
-            .or_insert_with(Vec::new)
-            .push(key.as_str());
+        match venue_counts.entry(client.venue.as_str().to_string()) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().push(key.as_str());
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(vec![key.as_str()]);
+            }
+        }
     }
     for (venue, keys) in &venue_counts {
         if keys.len() > 1 {

@@ -9,7 +9,7 @@
 
 ### User Story 1 - Source-Fence Drift Fails Early (Priority: P1)
 
-As the maintainer, I can see deterministic Bolt-v3 source-fence and verifier failures in a dedicated `source-fence` CI lane before the expensive full Rust test lane dominates the run.
+As the maintainer, I can see deterministic Bolt-v3 source-fence and verifier failures in a dedicated `source-fence` CI lane ~~before the expensive full Rust test lane dominates the run~~ in parallel with the full Rust test lane (**post-#400** (PR #401): the lanes were decoupled; source-fence still completes in ~1m wall-clock and surfaces failures earlier than test, but the dep order no longer enforces this).
 
 **Why this priority**: Run `25859831755` proved a stale source-fence assertion was found late inside the monolithic `test` lane. #342 exists to surface that class first.
 

@@ -247,7 +247,7 @@ Interpretation for #342: deterministic source-fence drift surfaced only inside t
 | Child | Live state | Scope owner | Dependencies / blockers | Baseline consumer |
 |---|---|---|---|---|
 | #343 | open | Measurement only: current CI run baseline | None | This document |
-| #342 | open | Fast source-fence / verifier lane before full tests | Must coordinate ownership with #332 and lint with #203 | run `25859831755` late failure |
+| #342 | open | Fast source-fence / verifier lane ~~before~~ in parallel with full tests (**post-#400 (PR #401)**: lanes decoupled; `gate.needs` enforces both) | Must coordinate ownership with #332 and lint with #203 | run `25859831755` late failure |
 | #332 | open | Split clippy/check-aarch64 and shard full tests | Needs #343 baseline; coordinate source-fence ownership with #342 and lint with #203 | run `25855655415` PR critical path |
 | #195 | open | Preserve nextest artifacts across warm reruns | Must adapt to #332 sharding if #332 lands first | warm cache evidence in `25855655415`, `25862551803`, `24623219988`, `24623274722`; cold miss fallback evidence in `25866346320` |
 | #205 | open | Same-SHA main/tag heavy-work dedup | Needs exact green main evidence and artifact/check reuse design | same-SHA main run `24623219988` plus smoke tag `24623274722` |
@@ -277,7 +277,7 @@ Boundary: no workflow topology, runtime, or build behavior changes.
 Required future implementation:
 
 - Add a top-level early structural lane such as `source-fence` or `structural-verifiers`.
-- Run the current Bolt-v3 verifier scripts before full `nextest`: `verify_bolt_v3_runtime_literals.py`, `verify_bolt_v3_provider_leaks.py`, `verify_bolt_v3_core_boundary.py`, `verify_bolt_v3_naming.py`, `verify_bolt_v3_status_map_current.py`, and `verify_bolt_v3_pure_rust_runtime.py`.
+- Run the current Bolt-v3 verifier scripts ~~before~~ in parallel with full `nextest` (**post-#400 (PR #401)**: `source-fence` and `test-archive` decoupled; gate enforces both): `verify_bolt_v3_runtime_literals.py`, `verify_bolt_v3_provider_leaks.py`, `verify_bolt_v3_core_boundary.py`, `verify_bolt_v3_naming.py`, `verify_bolt_v3_status_map_current.py`, and `verify_bolt_v3_pure_rust_runtime.py`.
 - Run canonical source-fence filters, including `bolt_v3_controlled_connect live_node_module_only_runs_nt_after_live_canary_gate` and `bolt_v3_production_entrypoint`.
 - Add the lane to the aggregate `gate`.
 - Fail closed for failed, cancelled, timed-out, unexpectedly skipped, missing, or stale lane results.

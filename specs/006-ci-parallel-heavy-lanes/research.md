@@ -40,7 +40,7 @@
 
 ## Decision: Intentionally duplicate #342 source-fence filters inside full nextest
 
-**Rationale**: #332 allows duplicate execution if it is explicitly documented and covered by one required aggregate gate. Excluding source-fence filters from full nextest would require a filter expression that precisely excludes only the canonical source-fence tests without accidentally removing neighboring integration-test coverage. The safer root choice for this slice is to keep full nextest broad, keep `test` behind `source-fence`, keep both required by `gate`, and document the intentional duplication.
+**Rationale**: #332 allows duplicate execution if it is explicitly documented and covered by one required aggregate gate. Excluding source-fence filters from full nextest would require a filter expression that precisely excludes only the canonical source-fence tests without accidentally removing neighboring integration-test coverage. The safer root choice for this slice is to keep full nextest broad, ~~keep `test` behind `source-fence`~~ (**Superseded by #400** (PR #401): the lanes now run in parallel; gate.needs is the sole merge enforcer), keep both required by `gate`, and document the intentional duplication.
 
 **Alternatives considered**:
 - Exclude the canonical filters from full nextest now: rejected because the marginal speedup is small relative to the risk of an imprecise filter removing non-source-fence coverage.

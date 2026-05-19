@@ -15,7 +15,7 @@ Implement #342 as a direct follow-up to the now-merged #343 baseline. Add a firs
 **Testing**: TDD red via `just ci-lint-workflow`, local `just source-fence`, targeted verifier scripts, deliberate stale source-fence mutation, `git diff --check`, exact-head CI
 **Target Platform**: GitHub Actions `ubuntu-latest`
 **Project Type**: Rust live trading binary with CI workflow
-**Performance Goals**: Warm `source-fence` lane about 1-2 minutes excluding first-run compile variance; failure must occur before `cargo-nextest` setup/full test execution dominates
+**Performance Goals**: Warm `source-fence` lane about 1-2 minutes excluding first-run compile variance; ~~failure must occur before `cargo-nextest` setup/full test execution dominates~~ **Superseded by #400** (PR #401): source-fence and the sharded test lane run in parallel; source-fence still finishes in ~1m wall-clock, but its failure no longer gates the start of nextest setup. Merge enforcement is `gate.needs` + `needs.source-fence.result == "success"`.
 **Constraints**: no requirement narrowing, no full test sharding, no path-filter changes, no unpinned Python packages, no raw cargo workflow commands, no merge without approval
 **Scale/Scope**: One #342 topology and verifier slice covering source-fence job, recipe, gate, linter, and required missing verifier scripts
 

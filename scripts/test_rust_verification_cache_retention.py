@@ -859,6 +859,16 @@ def assert_cache_prune_refuses_wrapped_active_processes_by_cwd() -> None:
         "rustup run stable cargo build",
         "bash -c 'cargo test'",
         "python3 -W ignore scripts/rust_verification.py cargo --repo . -- test",
+        # Combined POSIX short-flag clusters: -c is "next-arg-required" but
+        # bash/sh/zsh also accept it bundled with other short flags.
+        "bash -lc 'cargo test'",
+        "bash -ic 'cargo test'",
+        "sh -ec 'cargo test'",
+        "zsh -fc 'cargo test'",
+        # `nice --` end-of-options marker followed by the command.
+        "nice -- cargo build",
+        # Legitimate stack of supported wrappers that exhausts the depth cap.
+        "sudo nice env -i bash -c 'rustup run stable cargo test'",
     ]
     for command in commands:
         with tempfile.TemporaryDirectory() as tmp:
@@ -878,10 +888,15 @@ def assert_cache_prune_refuses_wrapped_active_processes_by_cwd() -> None:
 
             bin_dir = tmp_path / "bin"
             bin_dir.mkdir()
+            # Embed the command with single-quote escaping ('\'' inside '...'),
+            # so that commands carrying inner single quotes (e.g. shell -c
+            # payloads) survive the fake ps shim intact instead of being
+            # split by printf into discarded extra format arguments.
+            escaped_command = command.replace("'", "'\\''")
             write_executable(
                 bin_dir / "ps",
                 f"""#!/usr/bin/env bash
-printf '123 {command}\\n'
+printf '123 {escaped_command}\\n'
 """,
             )
             proc_dir = tmp_path / "proc" / "123"
@@ -901,6 +916,53 @@ printf '123 {command}\\n'
                 raise AssertionError((command, payload))
             if not debug_file.exists():
                 raise AssertionError(f"wrapped active process {command!r} did not protect cache")
+
+
+def assert_cache_prune_ignores_bash_login_without_command_by_cwd() -> None:
+    # Negative case: a bare login/interactive shell without -c does NOT carry
+    # a cargo payload and must not produce a false-positive refusal even when
+    # its cwd points at the repo.
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, active_process_patterns=["cargo", "rust_verification.py"])
+
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        debug_file = target / "debug" / "old.bin"
+        debug_file.parent.mkdir(parents=True)
+        debug_file.write_bytes(b"abc")
+        old_time = time.time() - (15 * 24 * 60 * 60)
+        os.utime(debug_file, (old_time, old_time))
+        os.utime(debug_file.parent, (old_time, old_time))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+printf '123 bash -l\\n'
+""",
+        )
+        proc_dir = tmp_path / "proc" / "123"
+        proc_dir.mkdir(parents=True)
+        (proc_dir / "cwd").symlink_to(repo)
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "proc")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+        result = run_owner(["cache-prune", "--repo", str(repo), "--apply", "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        removed = {entry["relative_path"] for entry in payload["removed"]}
+        if removed != {"debug"}:
+            raise AssertionError(payload)
+        if debug_file.parent.exists():
+            raise AssertionError("bare `bash -l` produced false-positive refusal")
 
 
 def assert_cache_prune_apply_waits_for_managed_cargo_lock() -> None:
@@ -1531,6 +1593,7 @@ def main() -> int:
     assert_cache_prune_apply_ignores_visible_unrelated_process_by_cwd()
     assert_cache_prune_ignores_pattern_mentions_in_arguments()
     assert_cache_prune_refuses_wrapped_active_processes_by_cwd()
+    assert_cache_prune_ignores_bash_login_without_command_by_cwd()
     assert_cache_prune_apply_waits_for_managed_cargo_lock()
     assert_cache_prune_apply_waits_for_managed_run_lock()
     assert_cache_prune_apply_checks_active_process_before_scan()

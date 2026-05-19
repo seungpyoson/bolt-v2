@@ -475,11 +475,24 @@ def python_script_name(tokens: list[str], start: int) -> str | None:
 
 
 def shell_command(tokens: list[str]) -> str | None:
+    # POSIX shells accept `-c` either alone (bash -c CMD) or combined with
+    # other short flags (bash -lc CMD, bash -ic CMD, sh -ec CMD, zsh -fc CMD).
+    # A cluster is any token with a single leading "-" (not "--") that
+    # contains the letter "c"; the command string is always the next token.
+    # Long-form (--command=) is not POSIX and is not supported here.
     index = 1
     while index < len(tokens):
         token = tokens[index]
-        if token == "-c" and index + 1 < len(tokens):
-            return tokens[index + 1]
+        if index + 1 < len(tokens):
+            if token == "-c":
+                return tokens[index + 1]
+            if (
+                token.startswith("-")
+                and not token.startswith("--")
+                and len(token) > 1
+                and "c" in token[1:]
+            ):
+                return tokens[index + 1]
         index += 1
     return None
 
@@ -526,6 +539,8 @@ def sudo_command_index(tokens: list[str]) -> int:
 
 def nice_command_index(tokens: list[str]) -> int:
     index = 1
+    if index < len(tokens) and tokens[index] == "--":
+        return index + 1
     if index < len(tokens) and tokens[index] == "-n" and index + 1 < len(tokens):
         return index + 2
     if index < len(tokens) and re.fullmatch(r"-?\d+", tokens[index]):
@@ -534,7 +549,11 @@ def nice_command_index(tokens: list[str]) -> int:
 
 
 def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
-    if not tokens or depth > 4:
+    # Depth cap guards against pathological re-tokenisation loops while
+    # leaving headroom for realistic legitimate wrapper stacks. A supported
+    # chain like `sudo nice env -i bash -c 'rustup run stable cargo test'`
+    # reaches `cargo` at depth 5; cap 6 keeps one slot of safety margin.
+    if not tokens or depth > 6:
         return set()
     executable = basename_token(tokens[0])
     names = {executable}

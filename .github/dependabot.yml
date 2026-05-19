@@ -32,16 +32,6 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
-    # Wait for the wider community to surface compromised releases before
-    # adopting them. The tj-actions/changed-files attack (CVE-2025-30066,
-    # March 2025) was detected within ~48 hours of the malicious push; a
-    # one-week cooldown means our linter's format check + PR review are
-    # operating on releases that already survived public scrutiny. Cooldown
-    # applies to version updates only — security updates bypass it.
-    cooldown:
-      semver-major-days: 14
-      semver-minor-days: 7
-      semver-patch-days: 7
     groups:
       action-dependencies:
         patterns:

@@ -1714,11 +1714,19 @@ def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config
 def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str]:
     # Dependabot groups action bumps so all taiki-e/install-action pins move
     # together; this guards against half-bumps in human-authored PRs that
-    # leave workflow files referencing inconsistent SHAs.
+    # leave workflow files referencing inconsistent SHAs. Scan line-by-line
+    # against the same anchored uses: regex the format check uses, after
+    # stripping comments, so commentary or nested data containing the action
+    # ref does not produce false positives.
     sha_to_files: dict[str, list[str]] = {}
     for workflow_name, workflow_text in workflows.items():
-        for match in TAIKI_INSTALL_ACTION_PIN_RE.finditer(workflow_text):
-            sha_to_files.setdefault(match.group(1), []).append(workflow_name)
+        for line in workflow_text.splitlines():
+            clean = strip_comment(line)
+            if not TAIKI_INSTALL_ACTION_RE.match(clean):
+                continue
+            match = TAIKI_INSTALL_ACTION_PIN_RE.search(clean)
+            if match is not None:
+                sha_to_files.setdefault(match.group(1), []).append(workflow_name)
     if len(sha_to_files) <= 1:
         return []
     parts = sorted(

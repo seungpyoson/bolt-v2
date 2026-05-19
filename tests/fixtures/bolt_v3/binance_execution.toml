@@ -1,0 +1,14 @@
+account_id = "BINANCE-001"
+product_types = ["spot", "usd_m", "coin_m"]
+environment = "testnet"
+base_url_http = "https://api.binance.com"
+base_url_ws = "wss://stream.binance.com:9443/ws"
+base_url_ws_trading = "wss://ws-api.binance.com/ws-api/v3"
+use_ws_trading = false
+use_position_ids = true
+default_taker_fee = "0.0004"
+futures_leverages = { "BTCUSDT" = 5 }
+futures_margin_types = { "BTCUSDT" = "cross" }
+treat_expired_as_canceled = false
+use_trade_lite = false
+transport_backend = "sockudo"

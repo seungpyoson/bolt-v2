@@ -41,7 +41,7 @@ use bolt_v2::{
         BoltV3AdapterMappingError, BoltV3MarketClockFn, map_bolt_v3_adapters_with_market_identity,
     },
     bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},
-    bolt_v3_market_families::updown::{MarketIdentityPlan, plan_market_identity},
+    bolt_v3_market_families::{MarketIdentityPlan, updown::plan_market_identity},
     bolt_v3_providers::{
         binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
     },
@@ -296,9 +296,7 @@ fn empty_market_identity_plan_installs_no_provider_filter() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let resolved = fixture_resolved_secrets();
 
-    let empty_plan = MarketIdentityPlan {
-        updown_targets: Vec::new(),
-    };
+    let empty_plan = MarketIdentityPlan::empty();
     let clock = fixed_clock(0);
 
     let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &empty_plan, clock)

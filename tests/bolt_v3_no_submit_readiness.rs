@@ -12,8 +12,7 @@ use bolt_v2::{
     bolt_v3_no_submit_readiness_schema::{
         CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
         NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
-        REPORT_WRITE_STAGE, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY, STATUS_KEY,
-        STATUS_SATISFIED,
+        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
     },
 };
 use sha2::{Digest, Sha256};
@@ -24,22 +23,6 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    let report = serde_json::json!({
-        STAGES_KEY: [
-            { STAGE_KEY: OPERATOR_APPROVAL_STAGE, STATUS_KEY: STATUS_SATISFIED },
-            { STAGE_KEY: SECRET_RESOLUTION_STAGE, STATUS_KEY: STATUS_SATISFIED },
-            { STAGE_KEY: LIVE_NODE_BUILD_STAGE, STATUS_KEY: STATUS_SATISFIED },
-            { STAGE_KEY: "controlled_connect", STATUS_KEY: STATUS_SATISFIED },
-            { STAGE_KEY: "reference_readiness", STATUS_KEY: STATUS_SATISFIED },
-            { STAGE_KEY: "controlled_disconnect", STATUS_KEY: STATUS_SATISFIED },
-            { STAGE_KEY: REPORT_WRITE_STAGE, STATUS_KEY: STATUS_SATISFIED }
-        ]
-    });
-    std::fs::write(
-        &report_path,
-        serde_json::to_vec(&report).expect("report should serialize"),
-    )
-    .expect("report should be written");
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -48,8 +31,22 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
+    let metadata = BoltV3NoSubmitReadinessReportMetadata::from_loaded(&loaded)
+        .await
+        .expect("report metadata should be derived from loaded config");
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        metadata,
+        Ok(()),
+        Ok(()),
+        Ok(()),
+        &["secret-value".to_string()],
+    );
+    report
+        .write_redacted_json_with_max_bytes(&report_path, 4096)
+        .expect("report should be written");
 
     check_bolt_v3_live_canary_gate(&loaded)
         .await
@@ -83,14 +80,9 @@ fn no_submit_readiness_local_runner_writes_satisfied_connect_reference_disconnec
 #[tokio::test(flavor = "current_thread")]
 async fn no_submit_readiness_report_records_authenticated_fields_and_required_stages() {
     let loaded = loaded_with_test_live_canary();
-    let head_sha = "a526e1886f1877fcce0e5c7f667c45375c1709a4";
-    let metadata = BoltV3NoSubmitReadinessReportMetadata::from_loaded(
-        &loaded,
-        "operator-approved-canary-001",
-        head_sha,
-    )
-    .await
-    .expect("report metadata should be derived from loaded config");
+    let metadata = BoltV3NoSubmitReadinessReportMetadata::from_loaded(&loaded)
+        .await
+        .expect("report metadata should be derived from loaded config");
 
     let report = run_bolt_v3_no_submit_readiness_from_stage_results(
         metadata,
@@ -100,24 +92,38 @@ async fn no_submit_readiness_report_records_authenticated_fields_and_required_st
         &["secret-value".to_string()],
     );
     let value = serde_json::to_value(&report).expect("report should serialize");
+    let object = value
+        .as_object()
+        .expect("serialized readiness report should be a JSON object");
+    let top_level_keys: std::collections::BTreeSet<&str> =
+        object.keys().map(String::as_str).collect();
     let approval_id_hash = sha256_hex("operator-approved-canary-001");
-    let config_checksum = sha256_hex(
-        &std::fs::read_to_string(&loaded.root_path).expect("fixture root TOML should be readable"),
-    );
-    let expected_report_path = loaded
-        .root_path
-        .parent()
-        .expect("fixture root path should have parent")
-        .join("not-written-before-approval-check.json");
 
+    assert_eq!(
+        top_level_keys,
+        [
+            "approval_id_hash",
+            "config_bundle_checksum",
+            "executable_identity",
+            "schema_version",
+            "stages"
+        ]
+        .into_iter()
+        .collect()
+    );
     assert_eq!(value["schema_version"], NO_SUBMIT_READINESS_SCHEMA_VERSION);
     assert_eq!(value["approval_id_hash"], approval_id_hash);
     assert_ne!(value["approval_id_hash"], "operator-approved-canary-001");
-    assert_eq!(value["head_sha"], head_sha);
-    assert_eq!(value["config_checksum"], config_checksum);
     assert_eq!(
-        value["report_path"],
-        expected_report_path.to_string_lossy().as_ref()
+        value["config_bundle_checksum"],
+        loaded.config_bundle_checksum.as_str()
+    );
+    assert_eq!(
+        value["executable_identity"]
+            .as_str()
+            .expect("executable identity should serialize as a string")
+            .len(),
+        64
     );
     for required_stage in [
         OPERATOR_APPROVAL_STAGE,
@@ -305,27 +311,42 @@ fn no_submit_readiness_writer_enforces_configured_byte_cap() {
     );
 
     let error = report
-        .write_redacted_json_with_max_bytes(&report_path, 1)
+        .write_redacted_json_with_max_bytes(&report_path, 1_u64)
         .expect_err("oversized report must fail closed");
 
-    assert!(
-        matches!(error, BoltV3NoSubmitReadinessError::ReportTooLarge { .. }),
-        "expected report byte-cap error, got {error:?}"
-    );
+    let BoltV3NoSubmitReadinessError::ReportTooLarge {
+        path,
+        length,
+        max_length,
+    } = error
+    else {
+        panic!("expected report byte-cap error, got {error:?}");
+    };
+    assert_eq!(path, report_path);
+    assert!(length > 1_u64, "oversized report length must be recorded");
+    assert_eq!(max_length, 1_u64);
     assert!(
         !report_path.exists(),
         "oversized report must not be written to disk"
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn no_submit_readiness_rejects_empty_operator_approval_before_build() {
-    let loaded = loaded_with_test_live_canary();
+#[test]
+fn no_submit_readiness_rejects_empty_configured_operator_approval_before_build() {
+    let loaded = loaded_with_live_canary(
+        loaded_with_test_live_canary(),
+        LiveCanaryBlock {
+            approval_id: "   ".to_string(),
+            no_submit_readiness_report_path: "not-written-before-approval-check.json".to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
+        },
+    );
 
-    let error =
-        run_bolt_v3_no_submit_readiness(&loaded, "   ", "a526e1886f1877fcce0e5c7f667c45375c1709a4")
-            .await
-            .expect_err("missing approval must fail before runtime build");
+    let error = run_bolt_v3_no_submit_readiness(&loaded)
+        .expect_err("missing configured approval must fail before runtime build");
 
     assert!(
         matches!(
@@ -337,23 +358,15 @@ async fn no_submit_readiness_rejects_empty_operator_approval_before_build() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn no_submit_readiness_rejects_operator_approval_mismatch_before_build() {
+async fn no_submit_readiness_rejects_sync_runner_inside_active_tokio_runtime() {
     let loaded = loaded_with_test_live_canary();
 
-    let error = run_bolt_v3_no_submit_readiness(
-        &loaded,
-        "different-approval",
-        "a526e1886f1877fcce0e5c7f667c45375c1709a4",
-    )
-    .await
-    .expect_err("approval mismatch must fail before runtime build");
+    let error = run_bolt_v3_no_submit_readiness(&loaded)
+        .expect_err("sync no-submit runner must reject active Tokio runtime before SSM build");
 
     assert!(
-        matches!(
-            error,
-            BoltV3NoSubmitReadinessError::OperatorApprovalIdMismatch
-        ),
-        "expected approval mismatch error, got {error:?}"
+        matches!(error, BoltV3NoSubmitReadinessError::ActiveTokioRuntime),
+        "expected active runtime boundary error, got {error:?}"
     );
 }
 
@@ -408,32 +421,82 @@ fn no_submit_readiness_runtime_uses_resolved_secret_redaction_values() {
 }
 
 #[test]
-fn no_submit_readiness_metadata_checksum_uses_async_file_io() {
+fn no_submit_readiness_executable_identity_uses_current_exe_async_file_io() {
     let source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness.rs")
         .expect("no-submit readiness source should exist");
 
     assert!(
-        source.contains("tokio::fs::read(&loaded.root_path).await"),
-        "metadata checksum must not block the current-thread async readiness path"
+        source.contains("std::env::current_exe()"),
+        "metadata executable identity must be derived from the current executable path"
     );
     assert!(
-        !source.contains("std::fs::read(&loaded.root_path)"),
-        "metadata checksum must not use blocking file I/O inside the async readiness path"
+        source.contains("tokio::fs::read(&path)"),
+        "metadata executable identity must not block the current-thread async readiness path"
+    );
+    assert!(
+        !source.contains("std::fs::read(&path)"),
+        "metadata executable identity must not use blocking file I/O inside the async readiness path"
     );
 }
 
 #[test]
-fn no_submit_readiness_operator_harness_uses_localset() {
-    let source = std::fs::read_to_string("tests/bolt_v3_no_submit_readiness_operator.rs")
-        .expect("operator harness source should exist");
+fn no_submit_readiness_sync_runner_uses_localset_after_build() {
+    let source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness.rs")
+        .expect("no-submit readiness source should exist");
 
     assert!(
         source.contains("tokio::task::LocalSet::new()"),
-        "operator no-submit harness must create a LocalSet for NT local tasks"
+        "sync no-submit runner must create a LocalSet for NT local tasks"
     );
     assert!(
         source.contains(".run_until("),
-        "operator no-submit harness must enter the readiness future through LocalSet::run_until"
+        "sync no-submit runner must enter the readiness future through LocalSet::run_until"
+    );
+    let build_pos = source
+        .find("build_bolt_v3_live_node(loaded)")
+        .expect("sync runner must build the live node");
+    let localset_pos = source
+        .find("tokio::task::LocalSet::new()")
+        .expect("sync runner must create a LocalSet");
+    assert!(
+        build_pos < localset_pos,
+        "SSM-backed live-node build must happen before entering the readiness Tokio runtime"
+    );
+}
+
+#[test]
+fn no_submit_readiness_operator_approval_is_config_owned_not_env_owned() {
+    let source = std::fs::read_to_string("tests/bolt_v3_no_submit_readiness_operator.rs")
+        .expect("operator harness source should exist");
+
+    for forbidden in [
+        concat!("BOLT_V3_", "OPERATOR_APPROVAL_ID"),
+        concat!("BOLT_V3_", "HEAD_SHA"),
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "operator no-submit approval/head evidence must not be supplied through env var `{forbidden}`"
+        );
+    }
+    assert!(
+        source.contains("live_canary.approval_id"),
+        "operator no-submit approval must be read from loaded TOML"
+    );
+    assert!(
+        source.contains("Command::new(env!(\"CARGO_BIN_EXE_bolt-v2\"))"),
+        "operator no-submit harness must invoke the production binary"
+    );
+    assert!(
+        source.contains("\"no-submit-readiness\""),
+        "operator no-submit harness must invoke the production no-submit-readiness command"
+    );
+    assert!(
+        !source.contains("run_bolt_v3_no_submit_readiness("),
+        "operator no-submit harness must not call the producer directly from the test binary"
+    );
+    assert!(
+        !source.contains("no_submit_readiness_current_checkout_head_sha"),
+        "operator no-submit harness must not derive separate checkout head evidence"
     );
 }
 
@@ -462,6 +525,7 @@ fn loaded_with_test_live_canary() -> LoadedBoltV3Config {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     )
 }
@@ -469,9 +533,8 @@ fn loaded_with_test_live_canary() -> LoadedBoltV3Config {
 fn test_report_metadata() -> BoltV3NoSubmitReadinessReportMetadata {
     BoltV3NoSubmitReadinessReportMetadata {
         approval_id_hash: sha256_hex("operator-approved-canary-001"),
-        head_sha: "a526e1886f1877fcce0e5c7f667c45375c1709a4".to_string(),
-        config_checksum: "test-config-checksum".to_string(),
-        report_path: "not-written-before-approval-check.json".to_string(),
+        executable_identity: "test-executable-identity".to_string(),
+        config_bundle_checksum: "test-config-bundle-checksum".to_string(),
     }
 }
 
@@ -509,6 +572,33 @@ fn no_submit_readiness_source_has_no_trade_or_runner_tokens() {
             );
         }
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn no_submit_readiness_serializes_top_level_schema_version_key_matching_constant() {
+    let loaded = loaded_with_test_live_canary();
+    let metadata = BoltV3NoSubmitReadinessReportMetadata::from_loaded(&loaded)
+        .await
+        .expect("report metadata should be derived from loaded config");
+
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        metadata,
+        Ok(()),
+        Ok(()),
+        Ok(()),
+        &["secret-value".to_string()],
+    );
+    let value = serde_json::to_value(&report).expect("report should serialize");
+    let object = value
+        .as_object()
+        .expect("serialized readiness report should be a JSON object");
+
+    let top_level_keys: std::collections::BTreeSet<&str> =
+        object.keys().map(String::as_str).collect();
+    assert!(
+        top_level_keys.contains(SCHEMA_VERSION_KEY),
+        "producer must emit top-level key `{SCHEMA_VERSION_KEY}` so the live-canary gate's schema-version pin reads the same JSON key the producer writes; observed top-level keys: {top_level_keys:?}"
+    );
 }
 
 fn loaded_with_live_canary(

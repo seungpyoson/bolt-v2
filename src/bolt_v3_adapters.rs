@@ -17,7 +17,7 @@ use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClien
 
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_market_families::updown::MarketIdentityPlan,
+    bolt_v3_market_families::MarketIdentityPlan,
     bolt_v3_providers::{self, ProviderAdapterMapContext},
     bolt_v3_secrets::ResolvedBoltV3Secrets,
 };
@@ -220,9 +220,7 @@ pub fn map_bolt_v3_adapters(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
-    let empty_plan = MarketIdentityPlan {
-        updown_targets: Vec::new(),
-    };
+    let empty_plan = MarketIdentityPlan::empty();
     // The clock here is never invoked: with no updown targets, no
     // provider filter closure is built, so the closure body is never
     // entered. We wire in a deterministic constant so callers cannot
@@ -403,11 +401,9 @@ mod tests {
     ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
         assert_eq!(context.client.venue.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
         assert_eq!(context.client_key, "polymarket_main");
-        assert_eq!(context.plan.updown_targets.len(), 1);
-        assert_eq!(
-            context.plan.updown_targets[0].execution_client_id,
-            context.client_key
-        );
+        let targets = updown::target_plans(context.plan).collect::<Vec<_>>();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].execution_client_id, context.client_key);
         Ok(BoltV3ClientAdapterConfig {
             data: None,
             execution: None,
@@ -419,7 +415,7 @@ mod tests {
     ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
         assert_eq!(context.client.venue.as_str(), FAKE_UPDOWN_PROVIDER_KEY);
         assert_eq!(context.client_key, "polymarket_main");
-        assert!(context.plan.updown_targets.is_empty());
+        assert_eq!(context.plan.targets().count(), 0);
         Ok(BoltV3ClientAdapterConfig {
             data: None,
             execution: None,
@@ -467,6 +463,7 @@ mod tests {
         let root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
         LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: String::new(),
             root,
             strategies: Vec::new(),
         }
@@ -507,6 +504,7 @@ mod tests {
             .replace("venue = \"POLYMARKET\"", "venue = \"FAKE_UPDOWN_PROVIDER\"");
         let mut loaded = LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: String::new(),
             root: toml::from_str(&fake_root_text).expect("fake-provider root should parse"),
             strategies: Vec::new(),
         };
@@ -514,16 +512,15 @@ mod tests {
             .root
             .clients
             .retain(|client_key, _client| client_key == "polymarket_main");
-        let plan = MarketIdentityPlan {
-            updown_targets: vec![UpdownTargetPlan {
-                strategy_instance_id: "fake-strategy".to_string(),
-                configured_target_id: "fake-updown".to_string(),
-                execution_client_id: "polymarket_main".to_string(),
-                underlying_asset: "BTC".to_string(),
-                cadence_secs: 300,
-                cadence_slug_token: "5m".to_string(),
-            }],
-        };
+        let mut plan = MarketIdentityPlan::empty();
+        plan.push_target(UpdownTargetPlan {
+            strategy_instance_id: "fake-strategy".to_string(),
+            configured_target_id: "fake-updown".to_string(),
+            execution_client_id: "polymarket_main".to_string(),
+            underlying_asset: "BTC".to_string(),
+            cadence_secs: 300,
+            cadence_slug_token: "5m".to_string(),
+        });
         let resolved = ResolvedBoltV3Secrets {
             clients: BTreeMap::new(),
         };
@@ -558,6 +555,7 @@ mod tests {
             .replace("venue = \"POLYMARKET\"", "venue = \"FAKE_UPDOWN_PROVIDER\"");
         let mut loaded = LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: String::new(),
             root: toml::from_str(&fake_root_text).expect("fake-provider root should parse"),
             strategies: Vec::new(),
         };
@@ -565,16 +563,15 @@ mod tests {
             .root
             .clients
             .retain(|client_key, _client| client_key == "polymarket_main");
-        let plan = MarketIdentityPlan {
-            updown_targets: vec![UpdownTargetPlan {
-                strategy_instance_id: "fake-strategy".to_string(),
-                configured_target_id: "fake-updown".to_string(),
-                execution_client_id: "polymarket_main".to_string(),
-                underlying_asset: "BTC".to_string(),
-                cadence_secs: 300,
-                cadence_slug_token: "5m".to_string(),
-            }],
-        };
+        let mut plan = MarketIdentityPlan::empty();
+        plan.push_target(UpdownTargetPlan {
+            strategy_instance_id: "fake-strategy".to_string(),
+            configured_target_id: "fake-updown".to_string(),
+            execution_client_id: "polymarket_main".to_string(),
+            underlying_asset: "BTC".to_string(),
+            cadence_secs: 300,
+            cadence_slug_token: "5m".to_string(),
+        });
         let resolved = ResolvedBoltV3Secrets {
             clients: BTreeMap::new(),
         };
@@ -627,6 +624,7 @@ mod tests {
             .replace("venue = \"POLYMARKET\"", "venue = \"FAKE_UPDOWN_PROVIDER\"");
         let mut loaded = LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: String::new(),
             root: toml::from_str(&fake_root_text).expect("fake-provider root should parse"),
             strategies: Vec::new(),
         };
@@ -634,9 +632,7 @@ mod tests {
             .root
             .clients
             .retain(|client_key, _client| client_key == "polymarket_main");
-        let plan = MarketIdentityPlan {
-            updown_targets: Vec::new(),
-        };
+        let plan = MarketIdentityPlan::empty();
         let resolved = ResolvedBoltV3Secrets {
             clients: BTreeMap::new(),
         };

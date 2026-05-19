@@ -2951,6 +2951,7 @@ fn loaded_with_live_canary(report_path: &str) -> LoadedBoltV3Config {
         approval_id: "operator-approved-canary-001".to_string(),
         no_submit_readiness_report_path: report_path.to_string(),
         max_no_submit_readiness_report_bytes: 4096,
+        operator_evidence: None,
         max_live_order_count: 1,
         max_notional_per_order: "0.25".to_string(),
     });

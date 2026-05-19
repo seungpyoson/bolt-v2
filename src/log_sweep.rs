@@ -1,30 +1,27 @@
+use chrono::NaiveDate;
 use std::fs;
 use std::path::Path;
 
-const LOG_TARGET_DIR: &str = "var/logs";
+const NT_LOG_DATE_FORMAT: &str = "%Y-%m-%d";
+const UUID_TEXT_LEN: usize = 36;
+const UUID_DASH_POSITIONS: [usize; 4] = [8, 13, 18, 23];
 
-/// Move stale NautilusTrader log files from the current directory into `var/logs/`.
+/// Move stale NautilusTrader log files from the configured source directory
+/// into the configured archive directory.
 ///
 /// Called before kernel init so only previous runs' logs exist. Errors are
 /// logged to stderr and swallowed — a failed sweep must never prevent startup.
-pub fn sweep_stale_logs() {
-    sweep_logs_in(Path::new("."));
-}
-
-/// Entry point that accepts an explicit root directory.
-/// Production code uses `sweep_stale_logs()` which defaults to CWD.
-pub fn sweep_logs_in(root: &Path) {
-    if let Err(e) = sweep_inner(root) {
+pub fn sweep_logs_in(source_dir: &Path, archive_dir: &Path) {
+    if let Err(e) = sweep_inner(source_dir, archive_dir) {
         eprintln!("log_sweep: {e}");
     }
 }
 
-fn sweep_inner(root: &Path) -> Result<(), std::io::Error> {
-    let target = root.join(LOG_TARGET_DIR);
-    fs::create_dir_all(&target)?;
+fn sweep_inner(source_dir: &Path, archive_dir: &Path) -> Result<(), std::io::Error> {
+    fs::create_dir_all(archive_dir)?;
 
     let mut moved = 0u32;
-    let entries = fs::read_dir(root)?;
+    let entries = fs::read_dir(source_dir)?;
 
     for entry in entries {
         let entry = match entry {
@@ -49,9 +46,12 @@ fn sweep_inner(root: &Path) -> Result<(), std::io::Error> {
             continue;
         }
 
-        let dest = target.join(&*file_name);
+        let dest = archive_dir.join(&*file_name);
         if dest.exists() {
-            eprintln!("log_sweep: skipping {name} (already exists in {LOG_TARGET_DIR}/)");
+            eprintln!(
+                "log_sweep: skipping {name} (already exists in {})",
+                archive_dir.display()
+            );
             continue;
         }
 
@@ -78,7 +78,10 @@ fn sweep_inner(root: &Path) -> Result<(), std::io::Error> {
     }
 
     if moved > 0 {
-        eprintln!("log_sweep: moved {moved} file(s) to {LOG_TARGET_DIR}/");
+        eprintln!(
+            "log_sweep: moved {moved} file(s) to {}",
+            archive_dir.display()
+        );
     }
 
     Ok(())
@@ -100,30 +103,17 @@ pub fn is_nt_log_filename(name: &str) -> bool {
         },
     };
 
-    let bytes = stem.as_bytes();
-    // Minimum: 1 char trader_id + '_' + 10-char date + '_' + 36-char UUID4 = 49
-    if bytes.len() < 49 {
-        return false;
-    }
-
-    // Scan for _YYYY-MM-DD_ pattern; require exactly 36-char UUID4 follows.
-    // Need i + 12 (date window) + 36 (UUID4) <= len, i.e. i <= len - 48.
-    // Exclusive upper bound is len - 47.
-    for i in 0..bytes.len().saturating_sub(47) {
-        if bytes[i] == b'_'
-            && bytes[i + 1..i + 5].iter().all(|b| b.is_ascii_digit())
-            && bytes[i + 5] == b'-'
-            && bytes[i + 6..i + 8].iter().all(|b| b.is_ascii_digit())
-            && bytes[i + 8] == b'-'
-            && bytes[i + 9..i + 11].iter().all(|b| b.is_ascii_digit())
-            && bytes[i + 11] == b'_'
+    for (separator_index, _) in stem.match_indices('_') {
+        let prefix = &stem[..separator_index];
+        let suffix = &stem[separator_index + 1..];
+        let Some((date, uuid)) = suffix.split_once('_') else {
+            continue;
+        };
+        if prefix.contains('-')
+            && NaiveDate::parse_from_str(date, NT_LOG_DATE_FORMAT).is_ok()
+            && is_uuid4_format(uuid)
         {
-            let prefix = &stem[..i];
-            let uuid_start = i + 12;
-            // Prefix must contain a hyphen (TraderId requires NAME-TAG format)
-            if prefix.contains('-') && stem.len() - uuid_start == 36 {
-                return is_uuid4_format(&stem[uuid_start..]);
-            }
+            return true;
         }
     }
     false
@@ -132,12 +122,12 @@ pub fn is_nt_log_filename(name: &str) -> bool {
 /// Returns true if `s` has the shape of a UUID4:
 /// 36 chars, lowercase hex digits with dashes at exactly positions 8/13/18/23.
 fn is_uuid4_format(s: &str) -> bool {
-    if s.len() != 36 {
+    if s.len() != UUID_TEXT_LEN {
         return false;
     }
     let b = s.as_bytes();
     b.iter().enumerate().all(|(i, &c)| match i {
-        8 | 13 | 18 | 23 => c == b'-',
+        _ if UUID_DASH_POSITIONS.contains(&i) => c == b'-',
         _ => matches!(c, b'0'..=b'9' | b'a'..=b'f'),
     })
 }

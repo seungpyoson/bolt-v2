@@ -47,7 +47,7 @@ pub struct BoltV3RegisteredClient {
 /// name). The summary is the only inspectable surface this module
 /// exposes; the builder itself owns the actual factory and config
 /// instances.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct BoltV3RegistrationSummary {
     pub clients: BTreeMap<String, BoltV3RegisteredClient>,
 }
@@ -144,6 +144,7 @@ mod tests {
     use nautilus_common::enums::Environment;
     use nautilus_live::node::LiveNode;
     use nautilus_model::identifiers::TraderId;
+    use nautilus_network::websocket::TransportBackend;
     use nautilus_polymarket::{
         config::PolymarketDataClientConfig, factories::PolymarketDataClientFactory,
     };
@@ -164,6 +165,7 @@ mod tests {
         let root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
         LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: String::new(),
             root,
             strategies: Vec::new(),
         }
@@ -279,7 +281,7 @@ mod tests {
                             subscribe_new_markets: false,
                             auto_load_missing_instruments: false,
                             auto_load_debounce_ms: 250,
-                            transport_backend: Default::default(),
+                            transport_backend: TransportBackend::Sockudo,
                             filters: Vec::new(),
                             new_market_filter: None,
                         }),

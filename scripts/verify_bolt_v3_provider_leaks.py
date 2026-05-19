@@ -45,49 +45,9 @@ class FindingAllowance:
     exact_excerpt: str
 
 
-# The remaining updown-shaped market-identity boundary is intentionally tracked
-# by https://github.com/seungpyoson/bolt-v2/issues/290. Keep these exceptions
-# exact so any new market-family leakage fails this verifier.
-# `exact_excerpt` must match the stripped source line produced by `excerpt_for`;
-# if the allowed source line is reformatted, update the allowance in the same
-# change.
-FINDING_ALLOWANCES = (
-    FindingAllowance(
-        "src/bolt_v3_adapters.rs",
-        "core accesses concrete market-family module path",
-        "bolt_v3_market_families::updown::MarketIdentityPlan,",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_providers/mod.rs",
-        "core accesses concrete market-family module path",
-        "bolt_v3_market_families::updown::MarketIdentityPlan,",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_adapters.rs",
-        "concrete market-family type name in core production code",
-        "pub type BoltV3UpdownNowFn = Arc<dyn Fn() -> i64 + Send + Sync>;",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_adapters.rs",
-        "concrete market-family type name in core production code",
-        "let zero_clock: BoltV3UpdownNowFn = Arc::new(|| 0_i64);",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_adapters.rs",
-        "concrete market-family type name in core production code",
-        "clock: BoltV3UpdownNowFn,",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_providers/mod.rs",
-        "concrete market-family type name in core production code",
-        "bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig},",
-    ),
-    FindingAllowance(
-        "src/bolt_v3_providers/mod.rs",
-        "concrete market-family type name in core production code",
-        "pub clock: BoltV3UpdownNowFn,",
-    ),
-)
+# Keep this tuple empty unless an active, reviewed Phase 9 exception exists.
+# `exact_excerpt` must match the stripped source line produced by `excerpt_for`.
+FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = ()
 
 
 def rules_for(
@@ -99,20 +59,23 @@ def rules_for(
 
 
 def discovered_core_files(root: Path) -> tuple[str, ...]:
-    """Return core Bolt-v3 files; binding modules are intentionally excluded."""
+    """Return provider-neutral source files; binding modules are intentionally excluded."""
 
     src = root / "src"
-    paths = set(src.glob("bolt_v3_*.rs"))
-    paths.update(
+    paths = {
         path
-        for path in (
-            src / "bolt_v3_archetypes" / "mod.rs",
-            src / "bolt_v3_market_families" / "mod.rs",
-            src / "bolt_v3_providers" / "mod.rs",
-        )
-        if path.exists()
-    )
+        for path in src.rglob("*.rs")
+        if path.is_file() and not is_concrete_binding_module(root, path)
+    }
     return tuple(sorted(path.relative_to(root).as_posix() for path in paths))
+
+
+def is_concrete_binding_module(root: Path, path: Path) -> bool:
+    rel = path.relative_to(root).as_posix()
+    concrete_roots = ("src/bolt_v3_providers/", "src/bolt_v3_market_families/")
+    if not rel.startswith(concrete_roots):
+        return False
+    return not rel.endswith("/mod.rs")
 
 
 def discovered_binding_names(root: Path, directory: str) -> tuple[str, ...]:

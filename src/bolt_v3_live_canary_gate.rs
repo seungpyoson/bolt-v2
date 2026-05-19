@@ -427,6 +427,7 @@ mod tests {
             max_no_submit_readiness_report_bytes: 4096,
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
+            operator_evidence: None,
         };
 
         assert_eq!(

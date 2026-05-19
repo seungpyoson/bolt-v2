@@ -41,6 +41,23 @@ fn bolt_v3_secrets_check_reports_provider_secret_fields() {
 }
 
 #[test]
+fn bolt_v3_cli_exposes_no_submit_readiness_operator_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args(["no-submit-readiness", "--help"])
+        .output()
+        .expect("bolt-v3 no-submit readiness help should run");
+
+    assert!(
+        output.status.success(),
+        "expected no-submit-readiness help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+}
+
+#[test]
 fn bolt_v3_secrets_check_rejects_missing_provider_secret_field() {
     let config_path = write_bolt_v3_fixture_root(|root| {
         root.replace(

@@ -23,7 +23,7 @@ use std::{any::Any, fmt, sync::Arc};
 use crate::{
     bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3MarketClockFn},
     bolt_v3_config::{BoltV3RootConfig, ClientBlock},
-    bolt_v3_market_families::updown::MarketIdentityPlan,
+    bolt_v3_market_families::MarketIdentityPlan,
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
 };
 

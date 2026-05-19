@@ -115,5 +115,5 @@ As the maintainer, I can extend workflow lint only for the exact #332 topology s
 ## Assumptions
 
 - PR #346/#342 and PR #347/#203 are the stacked bases for this work, so `source-fence` and the standard-library workflow verifier already exist.
-- The repo keeps one managed Rust execution path through `rust_verification.py`; workflow YAML must continue to call `just` recipes, not raw cargo.
+- The repo keeps one managed Rust execution path through `scripts/rust_verification.py`; workflow YAML must continue to call `just` recipes, not raw cargo.
 - Exact-head CI and external reviews are deferred until the current stacked PR head can get a real CI run.

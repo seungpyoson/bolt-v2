@@ -16,6 +16,7 @@ use nautilus_binance::common::enums::{
     BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
 };
 use nautilus_binance::config::BinanceDataClientConfig;
+use nautilus_network::websocket::TransportBackend;
 use nautilus_polymarket::{
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
@@ -92,6 +93,7 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert!(!data.subscribe_new_markets);
     assert!(!data.auto_load_missing_instruments);
     assert_eq!(data.auto_load_debounce_ms, 250);
+    assert_eq!(data.transport_backend, TransportBackend::Sockudo);
 
     let exec = polymarket
         .execution
@@ -137,6 +139,7 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert_eq!(exec.retry_delay_initial_ms, 250);
     assert_eq!(exec.retry_delay_max_ms, 2000);
     assert_eq!(exec.ack_timeout_secs, 5);
+    assert_eq!(exec.transport_backend, TransportBackend::Sockudo);
 }
 
 #[test]
@@ -214,6 +217,7 @@ fn binance_data_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
         Some(fixture_binance_secrets().api_secret.as_str())
     );
     assert_eq!(data.instrument_status_poll_secs, 3600);
+    assert_eq!(data.transport_backend, TransportBackend::Sockudo);
 }
 
 #[test]
@@ -252,6 +256,7 @@ validate_data_sequence = false
 buffer_deltas = false
 emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
+external_clients = []
 debug = false
 graceful_shutdown_on_error = false
 qsize = 100000
@@ -261,6 +266,7 @@ load_cache = true
 snapshot_orders = false
 snapshot_positions = false
 snapshot_positions_interval_secs = 0
+external_clients = []
 debug = false
 reconciliation = true
 reconciliation_startup_delay_secs = 10
@@ -315,6 +321,7 @@ fileout_level = "INFO"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+runtime_capture_start_poll_interval_ms = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
@@ -343,6 +350,8 @@ max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 ack_timeout_secs = 5
+fee_cache_ttl_secs = 300
+transport_backend = "sockudo"
 "#;
     let root: BoltV3RootConfig =
         toml::from_str(toml_text).expect("polymarket-execution-only TOML should parse");
@@ -360,6 +369,7 @@ ack_timeout_secs = 5
     // error driven by the resolved-secrets gap, not a default.
     let loaded = LoadedBoltV3Config {
         root_path: support::repo_path("tests/fixtures/bolt_v3/root.toml"),
+        config_bundle_checksum: String::new(),
         root,
         strategies: Vec::new(),
     };

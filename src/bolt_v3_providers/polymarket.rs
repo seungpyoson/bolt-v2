@@ -24,11 +24,14 @@
 //! core and is called from this module the same way the archetype
 //! binding calls `parse_decimal_string`.
 
-use std::{any::Any, sync::Arc};
+mod fees;
+
+use std::{any::Any, sync::Arc, time::Duration};
 
 use nautilus_model::identifiers::AccountId;
+use nautilus_network::websocket::TransportBackend;
 use nautilus_polymarket::{
-    common::credential::Secrets as PolymarketSecrets,
+    common::credential::{EvmPrivateKey, Secrets as PolymarketSecrets},
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
     factories::{PolymarketDataClientFactory, PolymarketExecutionClientFactory},
@@ -43,8 +46,9 @@ use crate::{
         BoltV3ExecutionClientAdapterConfig, BoltV3MarketClockFn,
     },
     bolt_v3_config::ClientBlock,
-    bolt_v3_market_families::updown::{
-        self, MarketIdentityPlan, UpdownTargetPlan, updown_market_slug, updown_period_pair,
+    bolt_v3_market_families::{
+        MarketIdentityPlan,
+        updown::{self, UpdownTargetPlan, updown_market_slug, updown_period_pair},
     },
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
@@ -52,12 +56,14 @@ use crate::{
         SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
-    clients::polymarket::{FeeProvider, PolymarketClobFeeProvider},
-    secrets::pad_base64,
+    strategies::registry::FeeProvider,
 };
+
+use self::fees::PolymarketClobFeeProvider;
 
 pub const KEY: &str = "POLYMARKET";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
+const URL_SAFE_BASE64_BLOCK_WIDTH: usize = 4;
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,
     consumer: "Polymarket execution client",
@@ -91,6 +97,7 @@ pub struct PolymarketDataConfig {
     pub auto_load_debounce_ms: u64,
     pub update_instruments_interval_mins: u64,
     pub ws_max_subscriptions: u64,
+    pub transport_backend: TransportBackend,
 }
 
 /// NT's `impl_serialization_for_identifier!` macro deserializes typed
@@ -122,7 +129,6 @@ pub struct PolymarketExecutionConfig {
     /// underlying funder wallet); permitted to be absent for `eoa`,
     /// where the EOA is itself the funder. Validation enforces this
     /// per-signature-type requirement and the EVM address syntax.
-    #[serde(default)]
     pub funder: Option<String>,
     pub base_url_http: String,
     pub base_url_ws: String,
@@ -132,6 +138,8 @@ pub struct PolymarketExecutionConfig {
     pub retry_delay_initial_ms: u64,
     pub retry_delay_max_ms: u64,
     pub ack_timeout_secs: u64,
+    pub fee_cache_ttl_secs: u64,
+    pub transport_backend: TransportBackend,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -330,6 +338,7 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
         ("retry_delay_initial_ms", execution.retry_delay_initial_ms),
         ("retry_delay_max_ms", execution.retry_delay_max_ms),
         ("ack_timeout_secs", execution.ack_timeout_secs),
+        ("fee_cache_ttl_secs", execution.fee_cache_ttl_secs),
     ];
     for (field, value) in positive_fields {
         if *value == 0 {
@@ -394,6 +403,16 @@ pub fn resolve_secrets(
         &secrets.private_key_ssm_path,
         resolver,
     )?;
+    if let Err(reason) = validate_private_key_shape(&private_key) {
+        return Err(BoltV3SecretError {
+            client_key: context.client_key.to_string(),
+            field: "private_key_ssm_path".to_string(),
+            ssm_path: secrets.private_key_ssm_path.clone(),
+            source: format!(
+                "resolved polymarket private_key is not valid EVM private key material accepted by the NautilusTrader polymarket adapter: {reason}"
+            ),
+        });
+    }
     let api_key = resolve_field(
         context.client_key,
         "api_key_ssm_path",
@@ -408,7 +427,7 @@ pub fn resolve_secrets(
         &secrets.api_secret_ssm_path,
         resolver,
     )?;
-    let api_secret = pad_base64(api_secret_raw);
+    let api_secret = normalize_api_secret_padding(api_secret_raw);
     let passphrase = resolve_field(
         context.client_key,
         "passphrase_ssm_path",
@@ -422,6 +441,19 @@ pub fn resolve_secrets(
         api_secret,
         passphrase,
     }))
+}
+
+fn validate_private_key_shape(private_key: &str) -> Result<(), String> {
+    EvmPrivateKey::new(private_key)
+        .map(|_| ())
+        .map_err(|source| source.to_string())
+}
+
+fn normalize_api_secret_padding(mut api_secret: String) -> String {
+    let pad_len = (URL_SAFE_BASE64_BLOCK_WIDTH - api_secret.len() % URL_SAFE_BASE64_BLOCK_WIDTH)
+        % URL_SAFE_BASE64_BLOCK_WIDTH;
+    api_secret.extend(std::iter::repeat_n('=', pad_len));
+    api_secret
 }
 
 pub fn map_adapters(
@@ -502,7 +534,10 @@ pub fn build_fee_provider(
         message: format!("failed to create Polymarket fee HTTP client: {error}"),
     })?;
 
-    Ok(Arc::new(PolymarketClobFeeProvider::new(client)))
+    Ok(Arc::new(PolymarketClobFeeProvider::new(
+        client,
+        Duration::from_secs(cfg.fee_cache_ttl_secs),
+    )))
 }
 
 fn map_data(
@@ -549,7 +584,7 @@ fn map_data(
         subscribe_new_markets: cfg.subscribe_new_markets,
         auto_load_missing_instruments: cfg.auto_load_missing_instruments,
         auto_load_debounce_ms: cfg.auto_load_debounce_ms,
-        transport_backend: Default::default(),
+        transport_backend: cfg.transport_backend,
         filters,
         new_market_filter: None,
     })
@@ -560,8 +595,7 @@ fn build_market_slug_filters_for_client(
     client_key: &str,
     clock: BoltV3MarketClockFn,
 ) -> Vec<Arc<dyn InstrumentFilter>> {
-    plan.updown_targets
-        .iter()
+    updown::target_plans(plan)
         .filter(|target| target.execution_client_id == client_key)
         .map(|target| build_market_slug_filter(target, clock.clone()))
         .collect()
@@ -631,7 +665,7 @@ fn map_execution(
         retry_delay_initial_ms: cfg.retry_delay_initial_ms,
         retry_delay_max_ms: cfg.retry_delay_max_ms,
         ack_timeout_secs: cfg.ack_timeout_secs,
-        transport_backend: Default::default(),
+        transport_backend: cfg.transport_backend,
     })
 }
 

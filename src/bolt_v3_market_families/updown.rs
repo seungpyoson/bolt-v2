@@ -34,11 +34,18 @@
 //! price derivation, and trade-action construction. Those boundaries
 //! belong to later slices.
 
-use serde::Deserialize;
+use std::time::Duration;
+
+use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
-    bolt_v3_market_families::MarketFamilyValidationBinding,
+    bolt_v3_instrument_filters::{InstrumentFilterError, InstrumentFilterTarget},
+    bolt_v3_market_families::{
+        MarketFamilyValidationBinding, MarketIdentityPlan, MarketIdentityTarget,
+        MarketSelectionTarget, SelectedBinaryOptionMarket, TargetRuntimeFields,
+    },
 };
 
 pub const KEY: &str = "updown";
@@ -47,6 +54,9 @@ pub fn validation_binding() -> MarketFamilyValidationBinding {
     MarketFamilyValidationBinding {
         key: KEY,
         validate_target: validate_target_block,
+        instrument_filter_target_for_strategy,
+        target_runtime_fields,
+        select_binary_option_market,
     }
 }
 
@@ -70,19 +80,19 @@ pub struct TargetBlock {
     pub blocked_after_secs: u64,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TargetKind {
     RotatingMarket,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RotatingMarketFamily {
     Updown,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MarketSelectionRule {
     ActiveOrNext,
@@ -216,34 +226,6 @@ pub fn validate_target_cadence(context: &str, cadence_secs: i64) -> Vec<String> 
     errors
 }
 
-/// Pure projection of all updown rotating-market targets in a
-/// validated bolt-v3 configuration. One `UpdownTargetPlan` per
-/// configured strategy whose target maps to the updown family.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MarketIdentityPlan {
-    pub updown_targets: Vec<UpdownTargetPlan>,
-}
-
-pub struct MarketIdentityExecutionClientTargetRef<'a> {
-    pub family_key: &'static str,
-    pub configured_target_id: &'a str,
-    pub execution_client_id: &'a str,
-}
-
-impl MarketIdentityPlan {
-    pub fn execution_client_target_refs(
-        &self,
-    ) -> impl Iterator<Item = MarketIdentityExecutionClientTargetRef<'_>> {
-        self.updown_targets
-            .iter()
-            .map(|target| MarketIdentityExecutionClientTargetRef {
-                family_key: KEY,
-                configured_target_id: target.configured_target_id.as_str(),
-                execution_client_id: target.execution_client_id.as_str(),
-            })
-    }
-}
-
 /// Pure identity facts for one configured updown rotating-market
 /// target. Every value here is derived from validated configuration
 /// and the runtime-contract slug-token table; nothing here depends on
@@ -258,6 +240,29 @@ pub struct UpdownTargetPlan {
     pub cadence_slug_token: String,
 }
 
+impl MarketIdentityTarget for UpdownTargetPlan {
+    fn family_key(&self) -> &'static str {
+        KEY
+    }
+
+    fn configured_target_id(&self) -> &str {
+        &self.configured_target_id
+    }
+
+    fn execution_client_id(&self) -> &str {
+        &self.execution_client_id
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+pub fn target_plans(plan: &MarketIdentityPlan) -> impl Iterator<Item = &UpdownTargetPlan> {
+    plan.targets()
+        .filter_map(|target| target.as_any().downcast_ref::<UpdownTargetPlan>())
+}
+
 /// Current and next updown market-slug candidates for a single
 /// `UpdownTargetPlan` evaluated against an injected `now_unix_secs`
 /// value (intended to come from the NautilusTrader node clock at the
@@ -269,6 +274,116 @@ pub struct UpdownSlugCandidates {
     pub current_market_slug: String,
     pub next_market_slug: String,
 }
+
+/// Strategy-facing target facts needed to select an updown market from
+/// NautilusTrader-loaded instruments. Values come from TOML plus the
+/// NautilusTrader node clock supplied by caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdownSelectionTarget<'a> {
+    pub underlying_asset: &'a str,
+    pub cadence_secs: i64,
+    pub cadence_slug_token: &'a str,
+}
+
+/// Selected updown market from NautilusTrader `BinaryOption`
+/// instruments. This module owns the NT metadata interpretation so
+/// strategy code consumes typed up/down instrument facts instead of
+/// reading product metadata keys in place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedUpdownMarket {
+    pub market_id: String,
+    pub instrument_id: InstrumentId,
+    pub up_instrument_id: InstrumentId,
+    pub down_instrument_id: InstrumentId,
+    pub start_timestamp_milliseconds: u64,
+    pub seconds_to_end: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdownOutcomeSide {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone)]
+struct UpdownOutcomeInstrument {
+    side: UpdownOutcomeSide,
+    market_id: String,
+    instrument_id: InstrumentId,
+    activation_milliseconds: u64,
+    expiration_milliseconds: u64,
+}
+
+#[derive(Debug)]
+struct UpdownOutcomePair {
+    up: Option<UpdownOutcomeInstrument>,
+    down: Option<UpdownOutcomeInstrument>,
+}
+
+impl UpdownOutcomePair {
+    fn empty() -> Self {
+        Self {
+            up: None,
+            down: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum BoltV3InstrumentFilterError {
+    NonPositiveCadenceSeconds {
+        strategy_instance_id: Option<String>,
+        configured_target_id: Option<String>,
+        cadence_seconds: i64,
+    },
+    NegativeNowUnixSeconds {
+        now_unix_seconds: i64,
+    },
+    PeriodPairOverflow {
+        now_unix_seconds: i64,
+        cadence_seconds: i64,
+    },
+    TargetParseFailed {
+        strategy_instance_id: String,
+        message: String,
+    },
+}
+
+impl std::fmt::Display for BoltV3InstrumentFilterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonPositiveCadenceSeconds {
+                strategy_instance_id,
+                configured_target_id,
+                cadence_seconds,
+            } => write!(
+                f,
+                "{prefix}target.cadence_seconds must be a positive integer (got {cadence_seconds})",
+                prefix = format_target_prefix(strategy_instance_id, configured_target_id),
+            ),
+            Self::NegativeNowUnixSeconds { now_unix_seconds } => write!(
+                f,
+                "now_unix_seconds must be non-negative (got {now_unix_seconds})"
+            ),
+            Self::PeriodPairOverflow {
+                now_unix_seconds,
+                cadence_seconds,
+            } => write!(
+                f,
+                "updown period pair overflows i64 (now_unix_seconds={now_unix_seconds}, cadence_seconds={cadence_seconds})"
+            ),
+            Self::TargetParseFailed {
+                strategy_instance_id,
+                message,
+            } => write!(
+                f,
+                "strategy `{strategy_instance_id}`: target failed updown typed deserialization after validation: {message}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BoltV3InstrumentFilterError {}
 
 #[derive(Debug)]
 pub enum BoltV3MarketIdentityError {
@@ -369,13 +484,13 @@ impl std::error::Error for BoltV3MarketIdentityError {}
 pub fn plan_market_identity(
     loaded: &LoadedBoltV3Config,
 ) -> Result<MarketIdentityPlan, BoltV3MarketIdentityError> {
-    let mut updown_targets = Vec::with_capacity(loaded.strategies.len());
+    let mut plan = MarketIdentityPlan::empty();
     for strategy in &loaded.strategies {
-        if let Some(plan) = plan_strategy_updown_target(strategy)? {
-            updown_targets.push(plan);
+        if let Some(target) = plan_strategy_updown_target(strategy)? {
+            plan.push_target(target);
         }
     }
-    Ok(MarketIdentityPlan { updown_targets })
+    Ok(plan)
 }
 
 fn plan_strategy_updown_target(
@@ -491,6 +606,236 @@ pub fn candidates_for_target(
         next_period_start_unix_secs: next_start,
         current_market_slug,
         next_market_slug,
+    })
+}
+
+pub fn instrument_filter_target_for_strategy(
+    strategy: &LoadedStrategy,
+) -> Result<Option<InstrumentFilterTarget>, InstrumentFilterError> {
+    let target =
+        instrument_filter_target_from_strategy(strategy).map_err(instrument_filter_error)?;
+    Ok(target.map(|target| InstrumentFilterTarget {
+        strategy_instance_id: target.strategy_instance_id,
+        family_key: KEY,
+        configured_target_id: target.configured_target_id,
+        execution_client_id: target.execution_client_id,
+        underlying_asset: target.underlying_asset,
+        cadence_seconds: target.cadence_secs,
+        cadence_slug_token: target.cadence_slug_token,
+    }))
+}
+
+fn instrument_filter_target_from_strategy(
+    strategy: &LoadedStrategy,
+) -> Result<Option<UpdownTargetPlan>, BoltV3MarketIdentityError> {
+    plan_strategy_updown_target(strategy)
+}
+
+fn instrument_filter_error(error: BoltV3MarketIdentityError) -> InstrumentFilterError {
+    match error {
+        BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
+            strategy_instance_id,
+            configured_target_id,
+            cadence_secs,
+        } => InstrumentFilterError::NonPositiveCadenceSeconds {
+            strategy_instance_id,
+            configured_target_id,
+            cadence_seconds: cadence_secs,
+        },
+        BoltV3MarketIdentityError::NegativeNowUnixSeconds { now_unix_secs } => {
+            InstrumentFilterError::NegativeNowUnixSeconds {
+                now_unix_seconds: now_unix_secs,
+            }
+        }
+        BoltV3MarketIdentityError::PeriodPairOverflow {
+            now_unix_secs,
+            cadence_secs,
+        } => InstrumentFilterError::PeriodPairOverflow {
+            now_unix_seconds: now_unix_secs,
+            cadence_seconds: cadence_secs,
+        },
+        BoltV3MarketIdentityError::TargetParseFailed {
+            strategy_instance_id,
+            message,
+        } => InstrumentFilterError::TargetParseFailed {
+            strategy_instance_id,
+            message,
+        },
+        BoltV3MarketIdentityError::UnsupportedCadenceSeconds { .. } => {
+            InstrumentFilterError::TargetValidationFailure {
+                message: error.to_string(),
+            }
+        }
+    }
+}
+
+pub fn target_runtime_fields(
+    target: &toml::Value,
+) -> Result<TargetRuntimeFields, InstrumentFilterError> {
+    let target = deserialize_target_block(target)
+        .map_err(|message| InstrumentFilterError::Other { message })?;
+    let cadence_slug_token = updown_cadence_slug_token(target.cadence_secs).ok_or_else(|| {
+        InstrumentFilterError::TargetValidationFailure {
+            message: BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
+                strategy_instance_id: None,
+                configured_target_id: Some(target.configured_target_id.clone()),
+                cadence_secs: target.cadence_secs,
+            }
+            .to_string(),
+        }
+    })?;
+    Ok(TargetRuntimeFields {
+        configured_target_id: target.configured_target_id,
+        target_kind: target_runtime_string(target.kind),
+        rotating_market_family: target_runtime_string(target.rotating_market_family),
+        underlying_asset: target.underlying_asset,
+        cadence_seconds: target.cadence_secs,
+        cadence_seconds_source_field: "target.cadence_secs",
+        cadence_slug_token: cadence_slug_token.to_string(),
+        market_selection_rule: target_runtime_string(target.market_selection_rule),
+        retry_interval_seconds: target.retry_interval_secs,
+        blocked_after_seconds: target.blocked_after_secs,
+    })
+}
+
+fn target_runtime_string<T>(value: T) -> String
+where
+    T: serde::Serialize,
+{
+    toml::Value::try_from(value)
+        .expect("validated updown target enum should serialize")
+        .as_str()
+        .expect("validated updown target enum should serialize to string")
+        .to_string()
+}
+
+pub fn select_market_from_instruments(
+    target: UpdownSelectionTarget<'_>,
+    instruments: &[InstrumentAny],
+    now_milliseconds: u64,
+) -> Option<SelectedUpdownMarket> {
+    let now_unix_secs = i64::try_from(Duration::from_millis(now_milliseconds).as_secs()).ok()?;
+    let (current_start, next_start) =
+        updown_period_pair(target.cadence_secs, now_unix_secs).ok()?;
+    let current_slug = updown_market_slug(
+        target.underlying_asset,
+        target.cadence_slug_token,
+        current_start,
+    );
+    let next_slug = updown_market_slug(
+        target.underlying_asset,
+        target.cadence_slug_token,
+        next_start,
+    );
+
+    candidate_market_for_slug(instruments, &current_slug, current_start, now_milliseconds).or_else(
+        || candidate_market_for_slug(instruments, &next_slug, next_start, now_milliseconds),
+    )
+}
+
+pub fn select_binary_option_market(
+    target: MarketSelectionTarget<'_>,
+    instruments: &[InstrumentAny],
+    now_milliseconds: u64,
+) -> Option<SelectedBinaryOptionMarket> {
+    let market = select_market_from_instruments(
+        UpdownSelectionTarget {
+            underlying_asset: target.underlying_asset,
+            cadence_secs: target.cadence_seconds,
+            cadence_slug_token: target.cadence_slug_token,
+        },
+        instruments,
+        now_milliseconds,
+    )?;
+    Some(SelectedBinaryOptionMarket {
+        market_id: market.market_id,
+        instrument_id: market.instrument_id,
+        up_instrument_id: market.up_instrument_id,
+        down_instrument_id: market.down_instrument_id,
+        start_timestamp_milliseconds: market.start_timestamp_milliseconds,
+        seconds_to_end: market.seconds_to_end,
+    })
+}
+
+fn candidate_market_for_slug(
+    instruments: &[InstrumentAny],
+    market_slug: &str,
+    period_start_unix_secs: i64,
+    now_milliseconds: u64,
+) -> Option<SelectedUpdownMarket> {
+    let mut pair = UpdownOutcomePair::empty();
+    for instrument in instruments {
+        let Some(outcome) = updown_outcome_instrument(instrument, market_slug) else {
+            continue;
+        };
+        match outcome.side {
+            UpdownOutcomeSide::Up if pair.up.is_none() => pair.up = Some(outcome),
+            UpdownOutcomeSide::Down if pair.down.is_none() => pair.down = Some(outcome),
+            _ => return None,
+        }
+    }
+
+    let up = pair.up?;
+    let down = pair.down?;
+    if up.market_id != down.market_id {
+        return None;
+    }
+
+    let expiration_milliseconds = up.expiration_milliseconds.min(down.expiration_milliseconds);
+    if expiration_milliseconds <= now_milliseconds {
+        return None;
+    }
+
+    let start_timestamp_milliseconds = if up.activation_milliseconds == 0
+        || down.activation_milliseconds == 0
+    {
+        u64::try_from(Duration::from_secs(u64::try_from(period_start_unix_secs).ok()?).as_millis())
+            .ok()?
+    } else {
+        up.activation_milliseconds.min(down.activation_milliseconds)
+    };
+
+    Some(SelectedUpdownMarket {
+        market_id: up.market_id,
+        instrument_id: up.instrument_id,
+        up_instrument_id: up.instrument_id,
+        down_instrument_id: down.instrument_id,
+        start_timestamp_milliseconds,
+        seconds_to_end: Duration::from_millis(
+            expiration_milliseconds.saturating_sub(now_milliseconds),
+        )
+        .as_secs(),
+    })
+}
+
+fn updown_outcome_instrument(
+    instrument: &InstrumentAny,
+    expected_market_slug: &str,
+) -> Option<UpdownOutcomeInstrument> {
+    let InstrumentAny::BinaryOption(binary) = instrument else {
+        return None;
+    };
+    let info = binary.info.as_ref()?;
+    if info.get_str("market_slug")? != expected_market_slug {
+        return None;
+    }
+    let side = match binary.outcome.as_ref()?.as_str() {
+        "Up" => UpdownOutcomeSide::Up,
+        "Down" => UpdownOutcomeSide::Down,
+        _ => return None,
+    };
+    Some(UpdownOutcomeInstrument {
+        side,
+        market_id: info.get_str("market_id")?.to_string(),
+        instrument_id: binary.id,
+        activation_milliseconds: u64::try_from(
+            Duration::from_nanos(binary.activation_ns.as_u64()).as_millis(),
+        )
+        .ok()?,
+        expiration_milliseconds: u64::try_from(
+            Duration::from_nanos(binary.expiration_ns.as_u64()).as_millis(),
+        )
+        .ok()?,
     })
 }
 

@@ -14,7 +14,7 @@
 ## Requirement Completeness
 
 - [x] No `[NEEDS CLARIFICATION]` markers remain.
-- [x] Requirements define fail-closed behavior for SSM, venue auth, report shape, and approval mismatch.
+- [x] Requirements define fail-closed behavior for SSM, venue auth, report shape, and missing configured approval.
 - [x] Requirements define NT boundary and zero-order restrictions.
 - [x] Requirements define SSM-only secret source and no environment fallback.
 - [x] Requirements define redacted evidence artifacts.

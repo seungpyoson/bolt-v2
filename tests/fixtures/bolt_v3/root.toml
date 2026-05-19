@@ -29,6 +29,7 @@ validate_data_sequence = false
 buffer_deltas = false
 emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
+external_clients = []
 debug = false
 graceful_shutdown_on_error = false
 qsize = 100000
@@ -38,6 +39,7 @@ load_cache = true
 snapshot_orders = false
 snapshot_positions = false
 snapshot_positions_interval_secs = 0
+external_clients = []
 debug = false
 reconciliation = true
 reconciliation_startup_delay_secs = 10
@@ -92,6 +94,7 @@ fileout_level = "INFO"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+runtime_capture_start_poll_interval_ms = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
@@ -120,6 +123,7 @@ auto_load_missing_instruments = false
 auto_load_debounce_ms = 250
 update_instruments_interval_mins = 60
 ws_max_subscriptions = 200
+transport_backend = "sockudo"
 
 [clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
@@ -133,6 +137,8 @@ max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 ack_timeout_secs = 5
+fee_cache_ttl_secs = 300
+transport_backend = "sockudo"
 
 [clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
@@ -149,6 +155,7 @@ environment = "mainnet"
 base_url_http = "https://api.binance.com" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream.binance.com:9443/ws" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws
 instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
+transport_backend = "sockudo"
 
 [clients.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"

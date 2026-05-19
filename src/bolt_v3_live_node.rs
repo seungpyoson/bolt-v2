@@ -57,6 +57,10 @@ use crate::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
     bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_decision_evidence::{
+        BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+        JsonlBoltV3DecisionEvidenceWriter,
+    },
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_providers,
     bolt_v3_secrets::{
@@ -76,6 +80,19 @@ pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     redaction_values: Vec<String>,
+}
+
+#[derive(Debug)]
+struct NoStrategyDecisionEvidenceWriter;
+
+impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl BoltV3LiveNodeRuntime {
@@ -567,9 +584,10 @@ fn classify_live_node_run_and_capture_shutdown(
 }
 
 /// Test-friendly variant of [`build_bolt_v3_live_node`] which lets the caller
-/// inject the environment-variable predicate and the SSM resolver. Production
-/// code must use [`build_bolt_v3_live_node`], which queries `std::env` and
-/// invokes the real Amazon Web Services Systems Manager resolver.
+/// inject the forbidden-environment predicate and the SSM resolver. Production
+/// code must use [`build_bolt_v3_live_node`], which applies the real credential
+/// environment guard and invokes the real Amazon Web Services Systems Manager
+/// resolver.
 pub fn build_bolt_v3_live_node_with<F, R, E>(
     loaded: &LoadedBoltV3Config,
     env_is_set: F,
@@ -613,7 +631,22 @@ fn build_live_node_with_clients(
     resolved: &ResolvedBoltV3Secrets,
     adapters: BoltV3AdapterConfigs,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
-    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed());
+    let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = if loaded.strategies.is_empty() {
+        Arc::new(NoStrategyDecisionEvidenceWriter)
+    } else {
+        Arc::new(
+            JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
+                BoltV3LiveNodeError::StrategyRegistration(
+                    BoltV3StrategyRegistrationError::Evidence {
+                        message: error.to_string(),
+                    },
+                )
+            })?,
+        )
+    };
+    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(
+        decision_evidence.clone(),
+    ));
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
@@ -625,6 +658,7 @@ fn build_live_node_with_clients(
         resolved,
         crate::bolt_v3_archetypes::runtime_bindings(),
         submit_admission.clone(),
+        decision_evidence,
     )
     .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
     for strategy in &strategy_summary.registered {
@@ -699,7 +733,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         buffer_deltas: data.buffer_deltas,
         emit_quotes_from_book: data.emit_quotes_from_book,
         emit_quotes_from_book_depths: data.emit_quotes_from_book_depths,
-        external_clients: data.external_clients.clone(),
+        external_clients: configured_external_clients(&data.external_clients),
         debug: data.debug,
         graceful_shutdown_on_error: data.graceful_shutdown_on_error,
         qsize: data.qsize,
@@ -713,7 +747,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         snapshot_positions_interval_secs: u64_zero_as_none_f64(
             exec.snapshot_positions_interval_secs,
         ),
-        external_clients: exec.external_clients.clone(),
+        external_clients: configured_external_clients(&exec.external_clients),
         debug: exec.debug,
         reconciliation: exec.reconciliation,
         reconciliation_lookback_mins,
@@ -819,6 +853,10 @@ fn non_empty_strings(values: &[String]) -> Option<Vec<String>> {
     (!values.is_empty()).then(|| values.to_vec())
 }
 
+fn configured_external_clients(values: &[ClientId]) -> Option<Vec<ClientId>> {
+    (!values.is_empty()).then(|| values.to_vec())
+}
+
 /// Caller must run root validation first so the string is a valid NT `BarIntervalType`.
 fn bar_interval_type_from_str(value: &str) -> BarIntervalType {
     BarIntervalType::from_str(value).expect("root validation must accept data bar interval type")
@@ -834,6 +872,10 @@ pub fn wire_bolt_v3_runtime_capture(
         stop_handle,
         &loaded.root.persistence.catalog_directory,
         loaded.root.persistence.streaming.flush_interval_ms,
+        loaded
+            .root
+            .persistence
+            .runtime_capture_start_poll_interval_ms,
         None,
     )
 }
@@ -855,7 +897,7 @@ pub fn wire_bolt_v3_runtime_capture(
 /// passed through `LiveNodeBuilder::build`, so the
 /// provider-owned credential log module filters remain active during
 /// connect.
-/// A future production v3 entrypoint must preserve that ordering.
+/// The production bolt-v3 entrypoint preserves that ordering.
 ///
 /// This boundary is **bounded**: the dispatched engine-level connect
 /// futures are wrapped in `tokio::time::timeout` driven by
@@ -972,6 +1014,7 @@ mod tests {
         let root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
         LoadedBoltV3Config {
             root_path: std::path::PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: String::new(),
             root,
             strategies: Vec::new(),
         }

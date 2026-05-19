@@ -587,7 +587,7 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
         .find(".arm(gate_report)")
         .expect("run wrapper must arm submit admission from the live canary gate report");
     let run_index = source
-        .find("let run_future = node.run();")
+        .find("node.run()")
         .expect("run wrapper must own the single NT runner call");
     let capture_index = source
         .find("wire_bolt_v3_runtime_capture(node, node_handle, loaded)")

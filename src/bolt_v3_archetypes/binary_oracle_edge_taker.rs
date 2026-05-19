@@ -39,26 +39,25 @@ use serde::Deserialize;
 use toml::{Value, map::Map};
 
 use nautilus_model::{
-    enums::{OrderType, TimeInForce},
+    enums::{OrderSide, OrderType, PositionSide, TimeInForce},
     identifiers::StrategyId,
 };
 
 use crate::{
     bolt_v3_archetypes::ArchetypeValidationBinding,
     bolt_v3_config::{BoltV3StrategyConfig, LoadedStrategy},
-    bolt_v3_market_families::updown,
     bolt_v3_providers::polymarket,
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
     },
     strategies::{
-        eth_chainlink_taker::EthChainlinkTakerBuilder,
+        binary_oracle_edge_taker::{BinaryOracleEdgeTakerBuilder, KEY as STRATEGY_KIND},
         production_strategy_registry,
         registry::{StrategyBuildContext, StrategyBuilder},
     },
 };
 
-pub const KEY: &str = "binary_oracle_edge_taker";
+pub const KEY: &str = STRATEGY_KIND;
 
 pub fn validation_binding() -> ArchetypeValidationBinding {
     ArchetypeValidationBinding {
@@ -69,6 +68,7 @@ pub fn validation_binding() -> ArchetypeValidationBinding {
 
 pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
     key: KEY,
+    strategy_kind: BinaryOracleEdgeTakerBuilder::kind,
     register: register_runtime_strategy,
 };
 
@@ -108,6 +108,8 @@ pub struct RuntimeParametersBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct OrderParams {
+    pub side: OrderSide,
+    pub position_side: PositionSide,
     pub order_type: OrderType,
     pub time_in_force: TimeInForce,
     pub is_post_only: bool,
@@ -159,6 +161,10 @@ pub enum BinaryOracleEdgeTakerRuntimeConfigError {
         strategy_instance_id: String,
         message: String,
     },
+    ReferenceData {
+        strategy_instance_id: String,
+        message: String,
+    },
     Numeric {
         strategy_instance_id: String,
         field: &'static str,
@@ -194,6 +200,13 @@ impl std::fmt::Display for BinaryOracleEdgeTakerRuntimeConfigError {
                 f,
                 "strategies.{strategy_instance_id} target is invalid: {message}"
             ),
+            Self::ReferenceData {
+                strategy_instance_id,
+                message,
+            } => write!(
+                f,
+                "strategies.{strategy_instance_id} reference_data is invalid: {message}"
+            ),
             Self::Numeric {
                 strategy_instance_id,
                 field,
@@ -220,9 +233,8 @@ pub fn register_runtime_strategy(
     node: &mut nautilus_live::node::LiveNode,
     context: StrategyRegistrationContext<'_>,
 ) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
-    let raw = raw_taker_config(context.strategy).map_err(|error| binding_error(&context, error))?;
-    let parameters =
-        parameters_block(context.strategy).map_err(|error| binding_error(&context, error))?;
+    let raw = raw_taker_config(context.strategy, context.loaded)
+        .map_err(|error| binding_error(&context, error))?;
     let client = context
         .loaded
         .root
@@ -245,7 +257,6 @@ pub fn register_runtime_strategy(
     .map_err(|error| binding_message(&context, error.to_string()))?;
     let build_context = StrategyBuildContext::new(
         fee_provider,
-        parameters.runtime.reference_publish_topic,
         context.decision_evidence.clone(),
         context.submit_admission.clone(),
     );
@@ -253,7 +264,7 @@ pub fn register_runtime_strategy(
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
         .register_strategy(
-            EthChainlinkTakerBuilder::kind(),
+            BinaryOracleEdgeTakerBuilder::kind(),
             &raw,
             &build_context,
             node.kernel().trader(),
@@ -263,6 +274,7 @@ pub fn register_runtime_strategy(
 
 pub fn raw_taker_config(
     strategy: &LoadedStrategy,
+    loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
 ) -> Result<Value, BinaryOracleEdgeTakerRuntimeConfigError> {
     if strategy.config.strategy_archetype.as_str() != KEY {
         return Err(BinaryOracleEdgeTakerRuntimeConfigError::WrongArchetype {
@@ -272,22 +284,50 @@ pub fn raw_taker_config(
     }
 
     let parameters = parameters_block(strategy)?;
-    let target = updown::deserialize_target_block(&strategy.config.target).map_err(|message| {
-        BinaryOracleEdgeTakerRuntimeConfigError::Target {
+    let target =
+        crate::bolt_v3_market_families::target_runtime_fields_from_target(&strategy.config.target)
+            .map_err(|error| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+                strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+                message: error.to_string(),
+            })?;
+    loaded
+        .root
+        .clients
+        .get(strategy.config.execution_client_id.as_str())
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            message,
-        }
-    })?;
+            message: format!(
+                "execution_client_id `{}` is not present in loaded clients",
+                strategy.config.execution_client_id
+            ),
+        })?;
+    let reference_data = configured_reference_data(strategy)?;
+    loaded
+        .root
+        .clients
+        .get(reference_data.data_client_id.as_str())
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: format!(
+                "reference_data data_client_id `{}` is not present in loaded clients",
+                reference_data.data_client_id
+            ),
+        })?;
 
-    let max_position_usdc = decimal_string_to_f64(
+    let order_notional_target = decimal_string_to_f64(
+        &strategy.config.strategy_instance_id,
+        "parameters.order_notional_target",
+        &parameters.order_notional_target,
+    )?;
+    let maximum_position_notional = decimal_string_to_f64(
         &strategy.config.strategy_instance_id,
         "parameters.maximum_position_notional",
         &parameters.maximum_position_notional,
     )?;
-    let period_duration_secs = i64_to_u64(
+    let cadence_seconds = i64_to_u64(
         &strategy.config.strategy_instance_id,
-        "target.cadence_secs",
-        target.cadence_secs,
+        target.cadence_seconds_source_field,
+        target.cadence_seconds,
     )?;
 
     let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
@@ -295,9 +335,118 @@ pub fn raw_taker_config(
     insert_string(&mut table, "strategy_id", nt_strategy_id(strategy)?);
     insert_string(
         &mut table,
+        "order_id_tag",
+        strategy.config.order_id_tag.clone(),
+    );
+    insert_string(&mut table, "oms_type", oms_type_value(strategy).to_string());
+    insert_bool(
+        &mut table,
+        "use_uuid_client_order_ids",
+        strategy.config.use_uuid_client_order_ids,
+    );
+    insert_bool(
+        &mut table,
+        "use_hyphens_in_client_order_ids",
+        strategy.config.use_hyphens_in_client_order_ids,
+    );
+    insert_string_array(
+        &mut table,
+        "external_order_claims",
+        &strategy.config.external_order_claims,
+    );
+    insert_bool(
+        &mut table,
+        "manage_contingent_orders",
+        strategy.config.manage_contingent_orders,
+    );
+    insert_bool(
+        &mut table,
+        "manage_gtd_expiry",
+        strategy.config.manage_gtd_expiry,
+    );
+    insert_bool(&mut table, "manage_stop", strategy.config.manage_stop);
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "market_exit_interval_ms",
+        strategy.config.market_exit_interval_ms,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "market_exit_max_attempts",
+        strategy.config.market_exit_max_attempts,
+    )?;
+    insert_string(
+        &mut table,
+        "market_exit_time_in_force",
+        strategy.config.market_exit_time_in_force.clone(),
+    );
+    insert_bool(
+        &mut table,
+        "market_exit_reduce_only",
+        strategy.config.market_exit_reduce_only,
+    );
+    insert_bool(&mut table, "log_events", strategy.config.log_events);
+    insert_bool(&mut table, "log_commands", strategy.config.log_commands);
+    insert_bool(
+        &mut table,
+        "log_rejected_due_post_only_as_warning",
+        strategy.config.log_rejected_due_post_only_as_warning,
+    );
+    insert_string(
+        &mut table,
         "client_id",
         strategy.config.execution_client_id.to_string(),
     );
+    insert_string(
+        &mut table,
+        "configured_target_id",
+        target.configured_target_id,
+    );
+    insert_string(&mut table, "target_kind", target.target_kind);
+    insert_string(
+        &mut table,
+        "rotating_market_family",
+        target.rotating_market_family,
+    );
+    insert_string(&mut table, "underlying_asset", target.underlying_asset);
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "cadence_seconds",
+        cadence_seconds,
+    )?;
+    insert_string(&mut table, "cadence_slug_token", target.cadence_slug_token);
+    insert_string(
+        &mut table,
+        "market_selection_rule",
+        target.market_selection_rule,
+    );
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "retry_interval_seconds",
+        target.retry_interval_seconds,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "blocked_after_seconds",
+        target.blocked_after_seconds,
+    )?;
+    insert_string(
+        &mut table,
+        "reference_venue",
+        reference_data.data_client_id.to_string(),
+    );
+    insert_string(
+        &mut table,
+        "reference_instrument_id",
+        reference_data.instrument_id.to_string(),
+    );
+    insert_order_config(&mut table, "entry_order", &parameters.entry_order);
+    insert_order_config(&mut table, "exit_order", &parameters.exit_order);
     insert_u64(
         &mut table,
         strategy_instance_id,
@@ -307,16 +456,15 @@ pub fn raw_taker_config(
     insert_u64(
         &mut table,
         strategy_instance_id,
-        "period_duration_secs",
-        period_duration_secs,
-    )?;
-    insert_u64(
-        &mut table,
-        strategy_instance_id,
         "reentry_cooldown_secs",
         parameters.runtime.reentry_cooldown_secs,
     )?;
-    insert_float(&mut table, "max_position_usdc", max_position_usdc);
+    insert_float(&mut table, "order_notional_target", order_notional_target);
+    insert_float(
+        &mut table,
+        "maximum_position_notional",
+        maximum_position_notional,
+    );
     insert_u64(
         &mut table,
         strategy_instance_id,
@@ -326,7 +474,7 @@ pub fn raw_taker_config(
     insert_float(&mut table, "risk_lambda", parameters.runtime.risk_lambda);
     insert_i64(
         &mut table,
-        "worst_case_ev_min_bps",
+        "edge_threshold_basis_points",
         parameters.edge_threshold_basis_points,
     );
     insert_i64(
@@ -376,7 +524,7 @@ pub fn raw_taker_config(
     insert_u64(
         &mut table,
         strategy_instance_id,
-        "forced_flat_stale_chainlink_ms",
+        "forced_flat_stale_reference_ms",
         parameters.runtime.forced_flat_stale_chainlink_ms,
     )?;
     insert_float(
@@ -491,6 +639,49 @@ fn insert_string(table: &mut Map<String, Value>, key: &'static str, value: Strin
     table.insert(key.to_string(), Value::String(value));
 }
 
+fn insert_bool(table: &mut Map<String, Value>, key: &'static str, value: bool) {
+    table.insert(key.to_string(), Value::Boolean(value));
+}
+
+fn insert_string_array(table: &mut Map<String, Value>, key: &'static str, values: &[String]) {
+    table.insert(
+        key.to_string(),
+        Value::Array(values.iter().cloned().map(Value::String).collect()),
+    );
+}
+
+fn insert_order_config(table: &mut Map<String, Value>, key: &'static str, order: &OrderParams) {
+    let mut order_table = Map::new();
+    insert_string(&mut order_table, "side", enum_variant_lowercase(order.side));
+    insert_string(
+        &mut order_table,
+        "position_side",
+        enum_variant_lowercase(order.position_side),
+    );
+    insert_string(
+        &mut order_table,
+        "order_type",
+        enum_variant_lowercase(order.order_type),
+    );
+    insert_string(
+        &mut order_table,
+        "time_in_force",
+        enum_variant_lowercase(order.time_in_force),
+    );
+    insert_bool(&mut order_table, "is_post_only", order.is_post_only);
+    insert_bool(&mut order_table, "is_reduce_only", order.is_reduce_only);
+    insert_bool(
+        &mut order_table,
+        "is_quote_quantity",
+        order.is_quote_quantity,
+    );
+    table.insert(key.to_string(), Value::Table(order_table));
+}
+
+fn enum_variant_lowercase<T: std::fmt::Debug>(value: T) -> String {
+    format!("{value:?}").to_ascii_lowercase()
+}
+
 fn insert_i64(table: &mut Map<String, Value>, key: &'static str, value: i64) {
     table.insert(key.to_string(), Value::Integer(value));
 }
@@ -513,6 +704,42 @@ fn insert_u64(
 
 fn insert_float(table: &mut Map<String, Value>, key: &'static str, value: f64) {
     table.insert(key.to_string(), Value::Float(value));
+}
+
+fn oms_type_value(strategy: &LoadedStrategy) -> &'static str {
+    match strategy.config.oms_type {
+        nautilus_model::enums::OmsType::Netting => "netting",
+        _ => "unsupported",
+    }
+}
+
+fn configured_reference_data(
+    strategy: &LoadedStrategy,
+) -> Result<&crate::bolt_v3_config::ReferenceDataBlock, BinaryOracleEdgeTakerRuntimeConfigError> {
+    let mut entries = strategy.config.reference_data.iter();
+    match (entries.next(), entries.next()) {
+        (Some((_role, block)), None) => Ok(block),
+        (None, _) => Err(BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: "requires exactly one [reference_data.<role>] block".to_string(),
+        }),
+        (Some(_), Some(_)) => Err(BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: format!(
+                "requires exactly one [reference_data.<role>] block; got roles [{}]",
+                reference_data_role_names(&strategy.config)
+            ),
+        }),
+    }
+}
+
+fn reference_data_role_names(strategy: &BoltV3StrategyConfig) -> String {
+    strategy
+        .reference_data
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn validate_required_reference_data(context: &str, strategy: &BoltV3StrategyConfig) -> Vec<String> {
@@ -576,8 +803,18 @@ fn validate_parameter_bounds(
 }
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
-    let expected = (OrderType::Limit, TimeInForce::Fok, false, false, false);
+    let expected = (
+        OrderSide::Buy,
+        PositionSide::Long,
+        OrderType::Limit,
+        TimeInForce::Fok,
+        false,
+        false,
+        false,
+    );
     let actual = (
+        entry.side,
+        entry.position_side,
         entry.order_type,
         entry.time_in_force,
         entry.is_post_only,
@@ -587,7 +824,7 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
     if actual != expected {
         vec![format!(
             "{context}: parameters.entry_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only order_type=limit, time_in_force=fok, is_post_only=false, is_reduce_only=false, is_quote_quantity=false is allowed"
+             only side=buy, position_side=long, order_type=limit, time_in_force=fok, is_post_only=false, is_reduce_only=false, is_quote_quantity=false is allowed"
         )]
     } else {
         Vec::new()
@@ -595,8 +832,18 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
 }
 
 fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {
-    let expected = (OrderType::Market, TimeInForce::Ioc, false, false, false);
+    let expected = (
+        OrderSide::Sell,
+        PositionSide::Long,
+        OrderType::Market,
+        TimeInForce::Ioc,
+        false,
+        false,
+        false,
+    );
     let actual = (
+        exit.side,
+        exit.position_side,
         exit.order_type,
         exit.time_in_force,
         exit.is_post_only,
@@ -606,7 +853,7 @@ fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String
     if actual != expected {
         vec![format!(
             "{context}: parameters.exit_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only order_type=market, time_in_force=ioc, is_post_only=false, is_reduce_only=false, is_quote_quantity=false is allowed"
+             only side=sell, position_side=long, order_type=market, time_in_force=ioc, is_post_only=false, is_reduce_only=false, is_quote_quantity=false is allowed"
         )]
     } else {
         Vec::new()

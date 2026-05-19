@@ -55,6 +55,7 @@ async fn live_canary_gate_rejects_empty_approval_id() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -80,6 +81,7 @@ async fn live_canary_gate_rejects_empty_readiness_report_path() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -105,6 +107,7 @@ async fn live_canary_gate_rejects_zero_order_count() {
             max_live_order_count: 0,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -133,6 +136,7 @@ async fn live_canary_gate_rejects_zero_report_byte_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 0,
+            operator_evidence: None,
         },
     );
 
@@ -163,6 +167,7 @@ async fn live_canary_gate_rejects_invalid_canary_notional_values() {
                 max_live_order_count: 1,
                 max_notional_per_order: candidate.to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
+                operator_evidence: None,
             },
         );
 
@@ -196,6 +201,7 @@ async fn live_canary_gate_rejects_invalid_root_notional_values() {
                 max_live_order_count: 1,
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
+                operator_evidence: None,
             },
         );
 
@@ -233,6 +239,7 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
             max_live_order_count: 1,
             max_notional_per_order: " 1.00 ".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -266,6 +273,7 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "10.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -286,6 +294,7 @@ async fn live_canary_gate_rejects_notional_above_root_risk_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "11.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -317,6 +326,7 @@ async fn live_canary_gate_rejects_empty_stage_report() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -350,6 +360,7 @@ async fn live_canary_gate_rejects_report_missing_stages_key() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -388,6 +399,7 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -421,6 +433,7 @@ async fn live_canary_gate_reports_each_unsatisfied_required_stage_once() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -457,6 +470,7 @@ async fn live_canary_gate_rejects_missing_no_submit_report() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -485,6 +499,7 @@ async fn live_canary_gate_rejects_malformed_no_submit_report_json() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -519,6 +534,7 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: report_len,
+            operator_evidence: None,
         },
     );
 
@@ -542,6 +558,7 @@ async fn live_canary_gate_rejects_no_submit_report_above_configured_byte_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 1,
+            operator_evidence: None,
         },
     );
 
@@ -573,6 +590,7 @@ async fn live_canary_gate_distinguishes_non_object_report_from_missing_stages() 
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -609,6 +627,7 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -644,6 +663,7 @@ async fn live_canary_gate_rejects_name_only_stage_field() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -689,6 +709,7 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 

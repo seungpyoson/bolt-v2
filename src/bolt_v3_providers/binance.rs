@@ -27,12 +27,14 @@
 use std::{any::Any, sync::Arc};
 
 use nautilus_binance::{
+    common::credential::Ed25519Credential,
     common::enums::{
         BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
     },
     config::BinanceDataClientConfig,
     factories::BinanceDataClientFactory,
 };
+use nautilus_network::websocket::TransportBackend;
 use serde::Deserialize;
 
 use crate::{
@@ -46,7 +48,6 @@ use crate::{
         SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
-    secrets::validate_binance_api_secret_shape,
 };
 
 pub const KEY: &str = "BINANCE";
@@ -80,6 +81,7 @@ pub struct BinanceDataConfig {
     /// compiled-in default endpoint.
     pub base_url_ws: String,
     pub instrument_status_poll_secs: u64,
+    pub transport_backend: TransportBackend,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -257,6 +259,20 @@ pub fn resolve_secrets(
     }))
 }
 
+fn validate_binance_api_secret_shape(api_secret: &str) -> Result<(), String> {
+    if api_secret.trim().is_empty() {
+        return Err("resolved Binance api_secret is empty".to_string());
+    }
+
+    Ed25519Credential::new("BINANCE-SHAPE-CHECK".to_string(), api_secret)
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "resolved Binance api_secret is not valid Ed25519 key material accepted by the NT Binance adapter: {error}"
+            )
+        })
+}
+
 pub fn map_adapters(
     context: ProviderAdapterMapContext<'_>,
 ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
@@ -297,7 +313,7 @@ fn map_data(
         api_key: Some(secrets.api_key.clone()),
         api_secret: Some(secrets.api_secret.clone()),
         instrument_status_poll_secs: cfg.instrument_status_poll_secs,
-        transport_backend: Default::default(),
+        transport_backend: cfg.transport_backend,
     })
 }
 

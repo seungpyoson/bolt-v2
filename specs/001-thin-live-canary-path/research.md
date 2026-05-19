@@ -14,7 +14,7 @@ The project now has Phases 3-5 merged on authoritative `main`, including the bol
 - Gate report is validated but not retained for submit admission: `src/bolt_v3_live_node.rs:312-317`.
 - Gate report fields are available for admission: `src/bolt_v3_live_canary_gate.rs:32-38`.
 - Mandatory decision evidence is created once per registration pass and shared into strategy contexts: `src/bolt_v3_strategy_registration.rs:97-119`.
-- The only direct strategy NT submit helper records decision evidence first: `src/strategies/eth_chainlink_taker.rs:2825-2834`.
+- The only direct strategy NT submit helper records decision evidence first: `src/strategies/binary_oracle_edge_taker.rs:2825-2834`.
 - There is no `src/bolt_v3_submit_admission.rs` or `tests/bolt_v3_submit_admission.rs` on current main.
 - PR #316 and #317 are stale stacked drafts based on pre-merge branches; they may inform design but must not be merged, rebased, or ported wholesale.
 - NT-first doctrine says Bolt owns TOML, SSM policy, explicit runtime values, safe NT config conversion, and startup checks only when NT would fail poorly: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md:167-180`.

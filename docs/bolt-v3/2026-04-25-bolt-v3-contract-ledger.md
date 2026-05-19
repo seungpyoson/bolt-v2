@@ -39,8 +39,8 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 - invariant:
   - root risk authority for Bolt-owned strategy sizing is live now; NautilusTrader live risk-engine fields are explicit in TOML and mapped into `LiveRiskEngineConfig`
   - NautilusTrader live data-, risk-, and exec-engine config fields are explicit in TOML for the current pin and mapped into their corresponding `Live*EngineConfig` structs
-  - NautilusTrader `LoggerConfig` fields are explicit in the Bolt-v3 builder path for the current pin; TOML owns stdout/file levels, bolt-v3 owns credential-log module filters, and unsupported file-writer surfaces remain disabled
-  - remaining top-level NautilusTrader `LiveNodeConfig` fields not represented in TOML are explicit disabled/empty settings in the Bolt-v3 builder path rather than inherited through `LiveNodeConfig::default()`
+  - NautilusTrader `LoggerConfig` fields accepted by the Rust live runtime are explicit in TOML and mapped in the Bolt-v3 builder path for the current pin; provider-owned credential-log module filters use the configured safe module level, and unsupported file-writer surfaces remain explicitly disabled
+  - remaining top-level NautilusTrader `LiveNodeConfig` disabled/false fields are explicit in TOML; `data_clients` and `exec_clients` are derived from configured venues through provider Adapter registration rather than inherited through `LiveNodeConfig::default()`
 - canonical owner:
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 4
 - dependent references:
@@ -91,7 +91,7 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 
 - invariant:
   - current strategy behavior is the behavioral reference, not the monolithic file structure to copy
-  - pricing, reference-data fusion, market identity, risk and sizing, decision evaluation, and execution mapping live behind separately testable module boundaries
+  - pricing, reference data, instrument filters, risk and sizing, decision evaluation, and execution mapping live behind separately testable module boundaries
 - canonical owner:
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 8.5
 - implementation status:

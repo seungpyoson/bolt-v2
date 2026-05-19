@@ -93,6 +93,50 @@ def test_clean_fixture_has_no_findings() -> None:
         assert verifier.scan_root(root) == []
 
 
+def test_real_scan_covers_provider_neutral_source_files() -> None:
+    verifier = load_verifier()
+    core_files = set(verifier.discovered_core_files(REPO_ROOT))
+    for rel in (
+        "src/bin/stream_to_lake.rs",
+        "src/lib.rs",
+        "src/main.rs",
+        "src/secrets.rs",
+        "src/strategies/binary_oracle_edge_taker.rs",
+    ):
+        assert rel in core_files
+    for rel in (
+        "src/bolt_v3_providers/binance.rs",
+        "src/bolt_v3_providers/polymarket.rs",
+        "src/bolt_v3_providers/polymarket/fees.rs",
+        "src/bolt_v3_market_families/updown.rs",
+    ):
+        assert rel not in core_files
+
+
+def test_shared_secret_module_provider_import_is_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/secrets.rs": """
+                    use nautilus_binance::common::credential::Ed25519Credential;
+                    pub struct SsmResolverSession;
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert any(
+            finding.path == "src/secrets.rs"
+            and finding.message == "concrete NT provider crate in core production code"
+            for finding in findings
+        )
+
+
 def test_closed_provider_variants_and_factory_imports_are_findings() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -201,7 +245,7 @@ def test_family_module_and_type_leaks_are_findings_for_new_families() -> None:
         assert "concrete market-family type name in core production code" in messages
 
 
-def test_finding_allowances_are_exact_and_path_scoped() -> None:
+def test_concrete_market_family_paths_are_not_allowlisted() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -211,18 +255,17 @@ def test_finding_allowances_are_exact_and_path_scoped() -> None:
             | {
                 "src/bolt_v3_adapters.rs": """
                     use crate::{
-                        bolt_v3_market_families::updown::MarketIdentityPlan,
+                        bolt_v3_market_families::updown::InstrumentFilterConfig,
                     };
-                    pub type BoltV3UpdownNowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
                 """,
                 "src/bolt_v3_providers/mod.rs": """
                     use crate::{
-                        bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig},
-                        bolt_v3_market_families::updown::MarketIdentityPlan,
+                        bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3VenueAdapterConfig},
+                        bolt_v3_market_families::updown::InstrumentFilterConfig,
                     };
                 """,
                 "src/bolt_v3_readiness.rs": """
-                    use crate::bolt_v3_market_families::updown::MarketIdentityPlan;
+                    use crate::bolt_v3_market_families::updown::InstrumentFilterConfig;
                 """,
                 "src/bolt_v3_validate.rs": """
                     pub fn leaked_family_literal() -> &'static str {
@@ -237,25 +280,22 @@ def test_finding_allowances_are_exact_and_path_scoped() -> None:
             (finding.path, finding.message) for finding in findings
         }
 
-        assert (
+        for path in (
             "src/bolt_v3_adapters.rs",
-            "core accesses concrete market-family module path",
-        ) not in by_path_and_message
-        assert (
             "src/bolt_v3_providers/mod.rs",
-            "core accesses concrete market-family module path",
-        ) not in by_path_and_message
-        assert (
             "src/bolt_v3_readiness.rs",
-            "core accesses concrete market-family module path",
-        ) in by_path_and_message
+        ):
+            assert (
+                path,
+                "core accesses concrete market-family module path",
+            ) in by_path_and_message
         assert (
             "src/bolt_v3_validate.rs",
             "market-family key string literal in core production code",
         ) in by_path_and_message
 
 
-def test_allowance_does_not_absorb_sibling_family_path_on_same_line() -> None:
+def test_sibling_family_path_on_same_line_is_reported() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -264,7 +304,7 @@ def test_allowance_does_not_absorb_sibling_family_path_on_same_line() -> None:
             binding_files()
             | {
                 "src/bolt_v3_adapters.rs": """
-                    use crate::bolt_v3_market_families::updown::MarketIdentityPlan; use crate::bolt_v3_market_families::updown::UpdownTargetPlan;
+                    use crate::bolt_v3_market_families::updown::InstrumentFilterConfig; use crate::bolt_v3_market_families::updown::UpdownInstrumentFilterTarget;
                 """,
             },
         )
@@ -276,7 +316,7 @@ def test_allowance_does_not_absorb_sibling_family_path_on_same_line() -> None:
             if finding.message == "core accesses concrete market-family module path"
         ]
 
-        assert path_findings, "sibling family path must not be hidden by the allowance"
+        assert path_findings, "sibling family path must be reported"
 
 
 def test_new_core_file_is_auto_scanned() -> None:
@@ -848,8 +888,8 @@ def main() -> int:
         test_clean_fixture_has_no_findings,
         test_closed_provider_variants_and_factory_imports_are_findings,
         test_family_module_and_type_leaks_are_findings_for_new_families,
-        test_finding_allowances_are_exact_and_path_scoped,
-        test_allowance_does_not_absorb_sibling_family_path_on_same_line,
+        test_concrete_market_family_paths_are_not_allowlisted,
+        test_sibling_family_path_on_same_line_is_reported,
         test_new_core_file_is_auto_scanned,
         test_production_after_cfg_test_block_is_scanned,
         test_cfg_not_test_is_scanned_as_production,

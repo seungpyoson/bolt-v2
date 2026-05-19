@@ -11,15 +11,10 @@ zig_version := "0.15.2"
 
 target := "aarch64-unknown-linux-gnu"
 worktree_root := env_var('HOME') + "/worktrees/bolt-v2"
-live_input := "config/live.local.toml"
-live_input_example := "config/live.local.example.toml"
-live_config := "config/live.toml"
+live_root := "config/root.toml"
+live_root_example := "config/root.example.toml"
 repo_root := justfile_directory()
-rust_verification_owner := env_var('HOME') + "/.claude/lib/rust_verification.py"
-rust_verification_source_repo := "seungpyoson/claude-config"
-rust_verification_source_sha := "cc6e0fb82459b8589ce02f543295d52ba39ebcaf"
-rust_verification_require_script := "scripts/require_rust_verification_owner.sh"
-rust_verification_ci_install_script := "scripts/install_ci_rust_verification_owner.sh"
+rust_verification_owner := repo_root + "/scripts/rust_verification.py"
 
 [private]
 check-workspace:
@@ -49,7 +44,7 @@ check-workspace:
 
 [private]
 require-rust-verification-owner:
-    RUST_VERIFICATION_SOURCE_REPO="{{rust_verification_source_repo}}" RUST_VERIFICATION_SOURCE_SHA="{{rust_verification_source_sha}}" bash "{{rust_verification_require_script}}" "{{rust_verification_owner}}"
+    python3 "{{rust_verification_owner}}" validate-policy --repo "{{repo_root}}" >/dev/null
 
 verify-bolt-v3-runtime-literals: check-workspace
     python3 scripts/test_verify_bolt_v3_runtime_literals.py
@@ -59,6 +54,10 @@ verify-bolt-v3-provider-leaks: check-workspace
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
     python3 scripts/verify_bolt_v3_provider_leaks.py
 
+verify-bolt-v3-status-map-current: check-workspace
+    python3 scripts/test_verify_bolt_v3_status_map_current.py
+    python3 scripts/verify_bolt_v3_status_map_current.py
+
 verify-bolt-v3-core-boundary: check-workspace
     python3 scripts/test_verify_bolt_v3_core_boundary.py
     python3 scripts/verify_bolt_v3_core_boundary.py
@@ -67,13 +66,23 @@ verify-bolt-v3-naming: check-workspace
     python3 scripts/test_verify_bolt_v3_naming.py
     python3 scripts/verify_bolt_v3_naming.py
 
-verify-bolt-v3-status-map-current: check-workspace
-    python3 scripts/test_verify_bolt_v3_status_map_current.py
-    python3 scripts/verify_bolt_v3_status_map_current.py
-
 verify-bolt-v3-pure-rust-runtime: check-workspace
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
+
+verify-bolt-v3-legacy-default-fence: check-workspace
+    python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
+    python3 scripts/verify_bolt_v3_legacy_default_fence.py
+
+verify-bolt-v3-strategy-policy-fence: check-workspace
+    python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
+    python3 scripts/verify_bolt_v3_strategy_policy_fence.py
+
+test-verify-runtime-capture-yaml: check-workspace
+    python3 scripts/test_verify_runtime_capture_yaml.py
+
+verify-runtime-capture-yaml: test-verify-runtime-capture-yaml
+    python3 scripts/verify_runtime_capture_yaml.py
 
 fmt-check: check-workspace require-rust-verification-owner verify-bolt-v3-runtime-literals verify-bolt-v3-provider-leaks
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fmt --check
@@ -130,34 +139,38 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_status_map_current.py
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
+    python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
+    python3 scripts/verify_bolt_v3_legacy_default_fence.py
+    python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
+    python3 scripts/verify_bolt_v3_strategy_policy_fence.py
+    python3 scripts/test_verify_runtime_capture_yaml.py
+    # Fresh CI runners need the pinned NT checkout before source-capture checks.
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
+    python3 scripts/verify_runtime_capture_yaml.py
     # #342 owns these canonical source-fence checks. Until #332 changes full
     # nextest ownership, `test` intentionally still duplicates them under `gate`.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_controlled_connect --test bolt_v3_production_entrypoint -- --nocapture
 
-live-generate: check-workspace require-rust-verification-owner
+require-live-root: check-workspace
     #!/usr/bin/env bash
-    # Generate the runtime artifact from the human-edited local source of truth.
-    if [ ! -f "{{live_input}}" ]; then
-        echo "Missing {{live_input}}"
-        echo "Create it from {{live_input_example}}, then rerun."
+    if [ ! -f "{{live_root}}" ]; then
+        echo "Missing {{live_root}}"
+        echo "Create it from {{live_root_example}}, then rerun."
         exit 1
     fi
 
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --quiet --bin render_live_config -- --input {{live_input}} --output {{live_config}}
-
 # Canonical repo-local operator lane for bolt-v2 from this checkout.
-live: live-generate
-    # Run with the generated runtime config artifact.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- run --config {{live_config}}
+live: require-live-root require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- run --config {{live_root}}
 
 # Optional diagnostics for the live operator config.
-live-check: live-generate
+live-check: require-live-root require-rust-verification-owner
     # Validate secret-config completeness only; do not resolve secrets.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets check --config {{live_config}}
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets check --config {{live_root}}
 
-live-resolve: live-generate
-    # Perform actual secret resolution against the generated runtime config.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets resolve --config {{live_config}}
+live-resolve: require-live-root require-rust-verification-owner
+    # Perform actual secret resolution against the bolt-v3 root config.
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets resolve --config {{live_root}}
 
 ci-lint-workflow:
     #!/usr/bin/env bash
@@ -183,8 +196,9 @@ ci-lint-workflow:
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
     just_target='{{target}}'
     managed_build_profile='release'
-    toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('ci/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
-    toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('ci/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
+    policy_json="$(python3 "{{rust_verification_owner}}" validate-policy --repo "{{repo_root}}")"
+    toml_target="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_target"])')"
+    toml_profile="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_profile"])')"
     if ! python3 scripts/test_verify_ci_workflow_hygiene.py; then
         failed=1
     fi
@@ -192,6 +206,12 @@ ci-lint-workflow:
         failed=1
     fi
     if ! python3 scripts/test_verify_ci_path_filters.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_rust_verification.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_rust_verification_decoupling.py; then
         failed=1
     fi
     if ! python3 scripts/verify_ci_path_filters.py; then

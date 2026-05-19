@@ -5,7 +5,7 @@
 #
 # Spool root: <catalog_path>/live/<instance_id>/
 # Per-instrument Feather streams land under <stream>/<instrument_id>/*.feather
-# (driven by per_instrument_stream_types()). Bars stay flat as bars_*.feather.
+# (driven by per_instrument_stream_types()).
 # JSONL captures are appended via JsonlAppender.
 captured_streams:
   - stream: quotes
@@ -26,16 +26,6 @@ captured_streams:
     test_coverage:
       - captures_trade_tick_to_per_instrument_feather_spool
     missing_assertions: []
-
-  - stream: bars
-    nt_message_type: nautilus_model::data::Bar
-    subscription_or_topic: subscribe_bars("data.bars.*")
-    storage_path: live/<instance_id>/bars_*.feather   # flat legacy contract (excluded from per_instrument_stream_types)
-    storage_format: Feather
-    test_coverage:
-      - keeps_bars_on_flat_legacy_spool_contract
-    missing_assertions:
-      - No coverage that two distinct bar_types for one instrument do not collide (the very motivation for the flat contract)
 
   - stream: order_book_deltas
     nt_message_type: nautilus_model::data::OrderBookDeltas (written as individual OrderBookDelta rows)

@@ -78,12 +78,12 @@
 
 **Goal**: Real SSM/venue readiness harness exists but is ignored by default and approval-gated before any side effect.
 
-**Independent Test**: `cargo test --test bolt_v3_no_submit_readiness_operator -- --nocapture` shows ignored by default.
+**Independent Test**: `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_no_submit_readiness_operator_command -- --nocapture` shows the production no-submit command is exposed.
 
 - [x] T021 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving missing approval id fails before secret resolution.
-- [x] T022 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving approval mismatch fails before secret resolution.
-- [x] T023 [US2] Implement real-run approval validation in `src/bolt_v3_no_submit_readiness.rs`.
-- [x] T024 [US2] Add ignored operator harness in `tests/bolt_v3_no_submit_readiness_operator.rs`.
+- [x] T022 [P] [US2] Write failing test in `tests/bolt_v3_no_submit_readiness.rs` proving operator approval and executable evidence are not supplied through env vars.
+- [x] T023 [US2] Implement real-run approval validation from `[live_canary].approval_id` in `src/bolt_v3_no_submit_readiness.rs`.
+- [x] T024 [US2] Add production `bolt-v2 no-submit-readiness --config <path>` command and keep any ignored harness as a CLI wrapper only.
 - [x] T025 [US2] Run default operator-harness test and capture ignored-by-default output.
 - [x] T026 [US2] Do not run ignored real SSM/venue command without explicit user approval in current thread.
 
@@ -106,7 +106,7 @@
 **Purpose**: Verify Phase 7 branch before PR or implementation-complete claim.
 
 - [x] T030 Run `cargo test --test bolt_v3_no_submit_readiness -- --nocapture`.
-- [x] T031 Run `cargo test --test bolt_v3_no_submit_readiness_operator -- --nocapture`.
+- [x] T031 Run `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_no_submit_readiness_operator_command -- --nocapture`.
 - [x] T032 Run `cargo test --test bolt_v3_live_canary_gate -- --nocapture`.
 - [x] T033 Run relevant integration tests for live-node controlled connect if touched.
 - [x] T034 Run `cargo fmt --check`.

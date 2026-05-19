@@ -252,11 +252,10 @@ REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release
 BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
 # taiki-e/install-action must be pinned to a 40-hex commit SHA (mutable tags
 # like @v2 are rejected). The specific SHA is NOT enforced here — Dependabot
-# opens a PR with release notes for every bump, PR review is the human gate,
-# and the cooldown in .github/dependabot.yml gives the community time to flag
-# compromises before adoption. See tj-actions/changed-files (CVE-2025-30066,
-# March 2025) for why SHA-pinning matters and why hardcoding a specific SHA
-# here adds maintenance burden without real supply-chain value.
+# opens a PR with release notes for every bump and PR review is the human
+# gate. See tj-actions/changed-files (CVE-2025-30066, March 2025) for why
+# SHA-pinning matters and why hardcoding a specific SHA here adds maintenance
+# burden without real supply-chain value.
 TAIKI_INSTALL_ACTION_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*taiki-e/install-action@[0-9a-f]{40}\s*$")
 TAIKI_INSTALL_ACTION_PIN_RE = re.compile(r"\btaiki-e/install-action@([0-9a-f]{40})\b")
 CI_INSTALL_ACTION_TOOLS = {

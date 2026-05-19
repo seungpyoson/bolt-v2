@@ -72,7 +72,6 @@ jobs:
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           lint-workflow-contract: "true"
           toolchain-components: rustfmt
@@ -86,7 +85,6 @@ jobs:
     steps:
       - uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
       - uses: Swatinem/rust-cache@example
@@ -111,7 +109,6 @@ jobs:
     steps:
       - uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           toolchain-components: clippy
           include-managed-target-dir: "true"
@@ -125,7 +122,7 @@ jobs:
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
       - run: just clippy
 
   check-aarch64:
@@ -143,7 +140,6 @@ jobs:
       - uses: ./.github/actions/setup-environment
         if: needs.detector.outputs.build_required != 'true'
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-build-values: "true"
           use-default-target: "true"
@@ -163,7 +159,7 @@ jobs:
         if: needs.detector.outputs.build_required != 'true'
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
       - if: needs.detector.outputs.build_required != 'true'
         run: just check-aarch64
 
@@ -175,7 +171,6 @@ jobs:
     steps:
       - uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
@@ -188,7 +183,7 @@ jobs:
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
       - run: just source-fence
 
   test-archive:
@@ -202,7 +197,6 @@ jobs:
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
       - uses: Swatinem/rust-cache@example
@@ -217,7 +211,7 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
       - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
@@ -234,7 +228,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -256,7 +250,6 @@ jobs:
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
@@ -299,7 +292,6 @@ jobs:
     steps:
       - uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-build-values: "true"
           use-default-target: "true"
@@ -314,7 +306,7 @@ jobs:
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
       - name: Install zig
         run: |
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
@@ -496,7 +488,6 @@ jobs:
         id: setup
         uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
       - name: Install cargo-deny
@@ -511,8 +502,6 @@ jobs:
 BASE_ACTION = """
 name: Setup Environment
 inputs:
-  claude-config-read-token:
-    required: true
   just-version:
     required: true
   include-deny-version:
@@ -548,12 +537,6 @@ outputs:
     value: ${{ steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}
   rust_verification_owner:
     value: ${{ steps.shared.outputs.rust_verification_owner }}
-  rust_verification_source_repo:
-    value: ${{ steps.shared.outputs.rust_verification_source_repo }}
-  rust_verification_source_sha:
-    value: ${{ steps.shared.outputs.rust_verification_source_sha }}
-  rust_verification_ci_install_script:
-    value: ${{ steps.shared.outputs.rust_verification_ci_install_script }}
   managed_target_dir:
     value: ${{ steps.target_dir.outputs.managed_target_dir }}
   managed_target_dir_relative:
@@ -574,9 +557,6 @@ runs:
       run: |
         echo "rust_toolchain=$(awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
         echo "rust_verification_owner=$(just --evaluate rust_verification_owner)" >> "$GITHUB_OUTPUT"
-        echo "rust_verification_source_repo=$(just --evaluate rust_verification_source_repo)" >> "$GITHUB_OUTPUT"
-        echo "rust_verification_source_sha=$(just --evaluate rust_verification_source_sha)" >> "$GITHUB_OUTPUT"
-        echo "rust_verification_ci_install_script=$(just --evaluate rust_verification_ci_install_script)" >> "$GITHUB_OUTPUT"
         if [ "${{ inputs.include-deny-version }}" = "true" ]; then
           echo "deny_version=$(just --evaluate deny_version)" >> "$GITHUB_OUTPUT"
         fi
@@ -589,12 +569,6 @@ runs:
           echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
           echo "zigbuild_x86_64_unknown_linux_gnu_sha256=$(just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256)" >> "$GITHUB_OUTPUT"
         fi
-    - name: Install managed Rust owner
-      shell: bash
-      env:
-        CLAUDE_CONFIG_READ_TOKEN: ${{ inputs.claude-config-read-token }}
-      run: |
-        bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}
       id: target_dir
@@ -1019,8 +993,8 @@ def main() -> int:
         "check-aarch64 must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
-            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'justfile') }}",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'justfile') }}",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
         ),
     )
     assert_error(
@@ -1059,7 +1033,7 @@ def main() -> int:
         "clippy must use isolated managed target cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'justfile') }}\n",
+            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n",
             "",
         ),
     )
@@ -1220,8 +1194,8 @@ def main() -> int:
         "test-archive cache must not use restore-keys",
         replace_once(
             BASE_WORKFLOW,
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}\n      - name: Install cargo-nextest",
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
         ),
     )
     assert_error(
@@ -1463,17 +1437,6 @@ def main() -> int:
     assert_workflows_error(
         "advisory.yml advisories must include deny version",
         {"ci.yml": BASE_WORKFLOW, "advisory.yml": replace_once(BASE_ADVISORY_WORKFLOW, '          include-deny-version: "true"\n', "")},
-    )
-    assert_workflows_error(
-        "advisory.yml advisories setup token must come from secrets.CLAUDE_CONFIG_READ_TOKEN",
-        {
-            "ci.yml": BASE_WORKFLOW,
-            "advisory.yml": replace_once(
-                BASE_ADVISORY_WORKFLOW,
-                "claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}",
-                "claude-config-read-token: ${{ secrets.OTHER_TOKEN }}",
-            ),
-        },
     )
     assert_workflows_error(
         "advisory.yml advisories must use setup.outputs.deny_version",
@@ -2306,8 +2269,8 @@ def main() -> int:
         "clippy must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
-            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'justfile') }}",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'justfile') }}",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
         ),
     )
     assert_error(
@@ -2336,15 +2299,19 @@ def main() -> int:
         action=replace_once(
             replace_once(
                 BASE_ACTION,
-                "    - name: Lint workflow contract",
-                "    - name: Moved lint workflow contract",
+                """    - name: Lint workflow contract
+      if: ${{ inputs.lint-workflow-contract == 'true' }}
+      shell: bash
+      run: just ci-lint-workflow
+""",
+                "",
             ),
-            "    - name: Install managed Rust owner",
+            "    - name: Resolve managed target dir",
             """    - name: Lint workflow contract
       if: ${{ inputs.lint-workflow-contract == 'true' }}
       shell: bash
       run: just ci-lint-workflow
-    - name: Install managed Rust owner""",
+    - name: Resolve managed target dir""",
         ),
     )
     assert_error(

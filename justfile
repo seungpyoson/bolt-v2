@@ -14,11 +14,7 @@ worktree_root := env_var('HOME') + "/worktrees/bolt-v2"
 live_root := "config/root.toml"
 live_root_example := "config/root.example.toml"
 repo_root := justfile_directory()
-rust_verification_owner := env_var('HOME') + "/.claude/lib/rust_verification.py"
-rust_verification_source_repo := "seungpyoson/claude-config"
-rust_verification_source_sha := "cc6e0fb82459b8589ce02f543295d52ba39ebcaf"
-rust_verification_require_script := "scripts/require_rust_verification_owner.sh"
-rust_verification_ci_install_script := "scripts/install_ci_rust_verification_owner.sh"
+rust_verification_owner := repo_root + "/scripts/rust_verification.py"
 
 [private]
 check-workspace:
@@ -48,7 +44,7 @@ check-workspace:
 
 [private]
 require-rust-verification-owner:
-    RUST_VERIFICATION_SOURCE_REPO="{{rust_verification_source_repo}}" RUST_VERIFICATION_SOURCE_SHA="{{rust_verification_source_sha}}" bash "{{rust_verification_require_script}}" "{{rust_verification_owner}}"
+    python3 "{{rust_verification_owner}}" validate-policy --repo "{{repo_root}}" >/dev/null
 
 verify-bolt-v3-runtime-literals: check-workspace
     python3 scripts/test_verify_bolt_v3_runtime_literals.py
@@ -200,8 +196,9 @@ ci-lint-workflow:
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
     just_target='{{target}}'
     managed_build_profile='release'
-    toml_target="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('ci/rust-verification.toml').open('rb'))['commands']['build']['target'])")"
-    toml_profile="$(python3 -c "import pathlib, tomllib; print(tomllib.load(pathlib.Path('ci/rust-verification.toml').open('rb'))['commands']['build']['profile'])")"
+    policy_json="$(python3 "{{rust_verification_owner}}" validate-policy --repo "{{repo_root}}")"
+    toml_target="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_target"])')"
+    toml_profile="$(printf '%s\n' "$policy_json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build_profile"])')"
     if ! python3 scripts/test_verify_ci_workflow_hygiene.py; then
         failed=1
     fi
@@ -209,6 +206,12 @@ ci-lint-workflow:
         failed=1
     fi
     if ! python3 scripts/test_verify_ci_path_filters.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_rust_verification.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_rust_verification_decoupling.py; then
         failed=1
     fi
     if ! python3 scripts/verify_ci_path_filters.py; then

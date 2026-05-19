@@ -669,6 +669,54 @@ classification = "live_canary_gate_diagnostic_template"
 reason = "This placeholder labels malformed readiness stages in fail-closed diagnostics when no stage identifier exists."
 
 [[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"null"'''
+context = '''Value::Null => "null",'''
+classification = "live_canary_gate_diagnostic_value_kind"
+reason = "This diagnostic names the JSON value kind observed for a malformed no-submit readiness linkage field; it is operator triage output, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"bool"'''
+context = '''Value::Bool(_) => "bool",'''
+classification = "live_canary_gate_diagnostic_value_kind"
+reason = "This diagnostic names the JSON value kind observed for a malformed no-submit readiness linkage field; it is operator triage output, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"number"'''
+context = '''Value::Number(_) => "number",'''
+classification = "live_canary_gate_diagnostic_value_kind"
+reason = "This diagnostic names the JSON value kind observed for a malformed no-submit readiness linkage field; it is operator triage output, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"string"'''
+context = '''Value::String(_) => "string",'''
+classification = "live_canary_gate_diagnostic_value_kind"
+reason = "This diagnostic names the JSON value kind observed for a malformed no-submit readiness linkage field; it is operator triage output, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"array"'''
+context = '''Value::Array(_) => "array",'''
+classification = "live_canary_gate_diagnostic_value_kind"
+reason = "This diagnostic names the JSON value kind observed for a malformed no-submit readiness linkage field; it is operator triage output, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"object"'''
+context = '''Value::Object(_) => "object",'''
+classification = "live_canary_gate_diagnostic_value_kind"
+reason = "This diagnostic names the JSON value kind observed for a malformed no-submit readiness linkage field; it is operator triage output, not a runtime value."
+
+[[allowed]]
 path = '''src/bolt_v3_live_canary_gate.rs'''
 kind = '''string'''
 literal = '''"bolt-v3 live canary max_notional_per_order ({max_notional_per_order}) exceeds \

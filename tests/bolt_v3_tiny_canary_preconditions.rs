@@ -2,6 +2,12 @@ mod support;
 
 use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_no_submit_readiness_schema::{
+        APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
+        CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, LIVE_NODE_BUILD_STAGE,
+        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
+        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGES_KEY,
+    },
     bolt_v3_tiny_canary_evidence::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryOutcome,
         Phase8CanaryPreflightStatus, Phase8EvidenceRef, Phase8LiveCanaryResultRefs,
@@ -12,6 +18,7 @@ use bolt_v2::{
 };
 use rust_decimal::Decimal;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
 
@@ -2959,20 +2966,21 @@ fn loaded_with_live_canary(report_path: &str) -> LoadedBoltV3Config {
 }
 
 fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let json = serde_json::json!({
-        "schema_version": 1,
-        "head_sha": "7f2d981f584a0378842d9a76fffd9cd03fce2ce5",
-        "root_config_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "operator_approval_id_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "live_canary_approval_id_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        "stages": [
-            {"stage": "operator_approval", "status": "satisfied"},
-            {"stage": "secret_resolution", "status": "satisfied"},
-            {"stage": "live_node_build", "status": "satisfied"},
-            {"stage": "controlled_connect", "status": "satisfied"},
-            {"stage": "reference_readiness", "status": "satisfied"},
-            {"stage": "controlled_disconnect", "status": "satisfied"},
-            {"stage": "report_write", "status": "satisfied"}
+        SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+        APPROVAL_ID_HASH_KEY: sha256_hex("operator-approved-canary-001".as_bytes()),
+        EXECUTABLE_IDENTITY_KEY: current_executable_identity(),
+        CONFIG_BUNDLE_CHECKSUM_KEY: loaded.config_bundle_checksum,
+        STAGES_KEY: [
+            {"stage": OPERATOR_APPROVAL_STAGE, "status": "satisfied"},
+            {"stage": SECRET_RESOLUTION_STAGE, "status": "satisfied"},
+            {"stage": LIVE_NODE_BUILD_STAGE, "status": "satisfied"},
+            {"stage": CONTROLLED_CONNECT_STAGE, "status": "satisfied"},
+            {"stage": REFERENCE_READINESS_STAGE, "status": "satisfied"},
+            {"stage": CONTROLLED_DISCONNECT_STAGE, "status": "satisfied"},
+            {"stage": REPORT_WRITE_STAGE, "status": "satisfied"}
         ],
         "redactions": []
     });
@@ -2983,6 +2991,15 @@ fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
         serde_json::to_vec(&json).expect("report should serialize"),
     )
     .expect("report should write");
+}
+
+fn current_executable_identity() -> String {
+    let path = std::env::current_exe().expect("current test executable path should resolve");
+    sha256_hex(&std::fs::read(path).expect("current test executable should be readable"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_order: &str) {

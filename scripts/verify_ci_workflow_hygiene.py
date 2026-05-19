@@ -250,7 +250,15 @@ JUST_LANE_RE = re.compile(
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
 BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
-TAIKI_INSTALL_ACTION = "taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c"
+# taiki-e/install-action must be pinned to a 40-hex commit SHA (mutable tags
+# like @v2 are rejected). The specific SHA is NOT enforced here — Dependabot
+# opens a PR with release notes for every bump, PR review is the human gate,
+# and the cooldown in .github/dependabot.yml gives the community time to flag
+# compromises before adoption. See tj-actions/changed-files (CVE-2025-30066,
+# March 2025) for why SHA-pinning matters and why hardcoding a specific SHA
+# here adds maintenance burden without real supply-chain value.
+TAIKI_INSTALL_ACTION_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*taiki-e/install-action@[0-9a-f]{40}\s*$")
+TAIKI_INSTALL_ACTION_PIN_RE = re.compile(r"\btaiki-e/install-action@([0-9a-f]{40})\b")
 CI_INSTALL_ACTION_TOOLS = {
     "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
@@ -682,15 +690,14 @@ def job_just_lanes(job_lines: list[str]) -> set[str]:
     return {match.group(2) for match in JUST_LANE_RE.finditer(uncommented_text(job_lines))}
 
 
-def block_uses_exact_action(block: list[str], action: str) -> bool:
-    pattern = re.compile(rf"^\s*(?:-\s*)?uses:\s*{re.escape(action)}\s*$")
-    return any(pattern.match(strip_comment(line)) for line in block)
+def block_uses_pinned_install_action(block: list[str]) -> bool:
+    return any(TAIKI_INSTALL_ACTION_RE.match(strip_comment(line)) for line in block)
 
 
 def install_action_tool_step(job_lines: list[str], tool: str, output: str) -> tuple[int, list[str]] | None:
     expected_tool = f"{tool}@${{{{ {output} }}}}"
     for index, block in enumerate(step_blocks(job_lines)):
-        if block_uses_exact_action(block, TAIKI_INSTALL_ACTION) and block_has_input(block, "tool", expected_tool):
+        if block_uses_pinned_install_action(block) and block_has_input(block, "tool", expected_tool):
             return index, block
     return None
 
@@ -1700,7 +1707,25 @@ def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config
         errors.extend(verify_prebuilt_tool_installs(workflow_text, workflow_name))
     errors.extend(verify_setup_action(action_text))
     errors.extend(verify_nextest_config(nextest_config_text))
+    errors.extend(verify_install_action_pin_consistency(workflows))
     return errors
+
+
+def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str]:
+    # Dependabot groups action bumps so all taiki-e/install-action pins move
+    # together; this guards against half-bumps in human-authored PRs that
+    # leave workflow files referencing inconsistent SHAs.
+    sha_to_files: dict[str, list[str]] = {}
+    for workflow_name, workflow_text in workflows.items():
+        for match in TAIKI_INSTALL_ACTION_PIN_RE.finditer(workflow_text):
+            sha_to_files.setdefault(match.group(1), []).append(workflow_name)
+    if len(sha_to_files) <= 1:
+        return []
+    parts = sorted(
+        f"{sha} in {','.join(sorted(set(files)))}"
+        for sha, files in sha_to_files.items()
+    )
+    return ["taiki-e/install-action SHA mismatch across workflows: " + "; ".join(parts)]
 
 
 def main() -> int:

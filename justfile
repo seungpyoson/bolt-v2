@@ -15,11 +15,7 @@ live_input := "config/live.local.toml"
 live_input_example := "config/live.local.example.toml"
 live_config := "config/live.toml"
 repo_root := justfile_directory()
-rust_verification_owner := env_var('HOME') + "/.claude/lib/rust_verification.py"
-rust_verification_source_repo := "seungpyoson/claude-config"
-rust_verification_source_sha := "cc6e0fb82459b8589ce02f543295d52ba39ebcaf"
-rust_verification_require_script := "scripts/require_rust_verification_owner.sh"
-rust_verification_ci_install_script := "scripts/install_ci_rust_verification_owner.sh"
+rust_verification_owner := repo_root + "/scripts/rust_verification.py"
 
 [private]
 check-workspace:
@@ -49,7 +45,7 @@ check-workspace:
 
 [private]
 require-rust-verification-owner:
-    RUST_VERIFICATION_SOURCE_REPO="{{rust_verification_source_repo}}" RUST_VERIFICATION_SOURCE_SHA="{{rust_verification_source_sha}}" bash "{{rust_verification_require_script}}" "{{rust_verification_owner}}"
+    python3 "{{rust_verification_owner}}" validate-policy --repo "{{repo_root}}" >/dev/null
 
 verify-bolt-v3-runtime-literals: check-workspace
     python3 scripts/test_verify_bolt_v3_runtime_literals.py
@@ -192,6 +188,12 @@ ci-lint-workflow:
         failed=1
     fi
     if ! python3 scripts/test_verify_ci_path_filters.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_rust_verification.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_rust_verification_decoupling.py; then
         failed=1
     fi
     if ! python3 scripts/verify_ci_path_filters.py; then

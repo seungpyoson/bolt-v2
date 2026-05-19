@@ -145,8 +145,6 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "inputs.include-nextest-version",
     "inputs.include-build-values",
     "inputs.lint-workflow-contract",
-    "CLAUDE_CONFIG_READ_TOKEN:",
-    "inputs.claude-config-read-token",
     "just ci-lint-workflow",
     "awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml",
     "just --evaluate deny_version",
@@ -156,9 +154,6 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "just --evaluate zigbuild_version",
     "just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256",
     "just --evaluate rust_verification_owner",
-    "just --evaluate rust_verification_source_repo",
-    "just --evaluate rust_verification_source_sha",
-    "just --evaluate rust_verification_ci_install_script",
     'target-dir --repo "$GITHUB_WORKSPACE"',
     "os.path.relpath",
 )
@@ -171,16 +166,12 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
     "zigbuild_version": "steps.shared.outputs.zigbuild_version",
     "zigbuild_x86_64_unknown_linux_gnu_sha256": "steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256",
     "rust_verification_owner": "steps.shared.outputs.rust_verification_owner",
-    "rust_verification_source_repo": "steps.shared.outputs.rust_verification_source_repo",
-    "rust_verification_source_sha": "steps.shared.outputs.rust_verification_source_sha",
-    "rust_verification_ci_install_script": "steps.shared.outputs.rust_verification_ci_install_script",
     "managed_target_dir": "steps.target_dir.outputs.managed_target_dir",
     "managed_target_dir_relative": "steps.target_dir.outputs.managed_target_dir_relative",
 }
 SETUP_ACTION_ORDERED_STEPS = (
     "Lint workflow contract",
     "Read shared values",
-    "Install managed Rust owner",
     "Resolve managed target dir",
     "Setup Rust toolchain",
 )
@@ -1443,8 +1434,6 @@ def verify_managed_workflow(workflow_text: str, workflow_name: str) -> list[str]
         if not setup_action_blocks(lines):
             errors.append(f"{workflow_name} {job} must use setup-environment")
             continue
-        if not job_has_setup_input(lines, "claude-config-read-token", "${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}"):
-            errors.append(f"{workflow_name} {job} setup token must come from secrets.CLAUDE_CONFIG_READ_TOKEN")
         if not job_has_setup_input(lines, "just-version", "${{ env.JUST_VERSION }}"):
             errors.append(f"{workflow_name} {job} setup just-version must come from env.JUST_VERSION")
         if "fmt-check" in lanes:

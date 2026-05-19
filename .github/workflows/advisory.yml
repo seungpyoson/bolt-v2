@@ -28,7 +28,6 @@ jobs:
         id: setup
         uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
 

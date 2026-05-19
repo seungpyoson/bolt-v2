@@ -25,7 +25,7 @@ Extend the #203 workflow hygiene verifier for #250 priority item 1 on top of lan
 
 - **NT-First Thin Layer**: PASS. CI workflow hygiene does not alter runtime trading behavior or NT surfaces.
 - **Generic Core, Concrete Edges**: PASS. No provider, market, strategy, or adapter code changes.
-- **Single Path And Config-Controlled Runtime**: PASS. Runtime config and secret path remain unchanged; managed Rust owner remains the one CI Rust path.
+- **Single Path And Config-Controlled Runtime**: PASS. Runtime config and secret path remain unchanged; repo-local managed Rust owner remains the one CI Rust path.
 - **Test-First Safety Gates**: PASS. The verifier is introduced through failing self-tests before workflow changes are accepted.
 - **Evidence Before Claims**: PASS. Exact current issue body, stacked base SHA, local lint output, and exact-head CI are required evidence.
 - **Minimal Slice Discipline**: PASS. The primary slice is #203. Landed #332 topology is treated as a base invariant; residual #195/#205/#344/#340 surfaces remain out of scope.

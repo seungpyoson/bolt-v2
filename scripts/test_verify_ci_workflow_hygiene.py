@@ -59,7 +59,6 @@ jobs:
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           lint-workflow-contract: "true"
           toolchain-components: rustfmt
@@ -73,7 +72,6 @@ jobs:
     steps:
       - uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
       - uses: Swatinem/rust-cache@example
@@ -98,7 +96,6 @@ jobs:
     steps:
       - uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           toolchain-components: clippy
           include-managed-target-dir: "true"
@@ -130,7 +127,6 @@ jobs:
       - uses: ./.github/actions/setup-environment
         if: needs.detector.outputs.build_required != 'true'
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-build-values: "true"
           use-default-target: "true"
@@ -162,7 +158,6 @@ jobs:
     steps:
       - uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
@@ -189,7 +184,6 @@ jobs:
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
       - uses: Swatinem/rust-cache@example
@@ -243,7 +237,6 @@ jobs:
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
@@ -286,7 +279,6 @@ jobs:
     steps:
       - uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-build-values: "true"
           use-default-target: "true"
@@ -483,7 +475,6 @@ jobs:
         id: setup
         uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
       - name: Install cargo-deny
@@ -498,8 +489,6 @@ jobs:
 BASE_ACTION = """
 name: Setup Environment
 inputs:
-  claude-config-read-token:
-    required: true
   just-version:
     required: true
   include-deny-version:
@@ -535,12 +524,6 @@ outputs:
     value: ${{ steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}
   rust_verification_owner:
     value: ${{ steps.shared.outputs.rust_verification_owner }}
-  rust_verification_source_repo:
-    value: ${{ steps.shared.outputs.rust_verification_source_repo }}
-  rust_verification_source_sha:
-    value: ${{ steps.shared.outputs.rust_verification_source_sha }}
-  rust_verification_ci_install_script:
-    value: ${{ steps.shared.outputs.rust_verification_ci_install_script }}
   managed_target_dir:
     value: ${{ steps.target_dir.outputs.managed_target_dir }}
   managed_target_dir_relative:
@@ -561,9 +544,6 @@ runs:
       run: |
         echo "rust_toolchain=$(awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
         echo "rust_verification_owner=$(just --evaluate rust_verification_owner)" >> "$GITHUB_OUTPUT"
-        echo "rust_verification_source_repo=$(just --evaluate rust_verification_source_repo)" >> "$GITHUB_OUTPUT"
-        echo "rust_verification_source_sha=$(just --evaluate rust_verification_source_sha)" >> "$GITHUB_OUTPUT"
-        echo "rust_verification_ci_install_script=$(just --evaluate rust_verification_ci_install_script)" >> "$GITHUB_OUTPUT"
         if [ "${{ inputs.include-deny-version }}" = "true" ]; then
           echo "deny_version=$(just --evaluate deny_version)" >> "$GITHUB_OUTPUT"
         fi
@@ -576,12 +556,6 @@ runs:
           echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
           echo "zigbuild_x86_64_unknown_linux_gnu_sha256=$(just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256)" >> "$GITHUB_OUTPUT"
         fi
-    - name: Install managed Rust owner
-      shell: bash
-      env:
-        CLAUDE_CONFIG_READ_TOKEN: ${{ inputs.claude-config-read-token }}
-      run: |
-        bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}
       id: target_dir
@@ -1402,17 +1376,6 @@ def main() -> int:
     assert_workflows_error(
         "advisory.yml advisories must include deny version",
         {"ci.yml": BASE_WORKFLOW, "advisory.yml": replace_once(BASE_ADVISORY_WORKFLOW, '          include-deny-version: "true"\n', "")},
-    )
-    assert_workflows_error(
-        "advisory.yml advisories setup token must come from secrets.CLAUDE_CONFIG_READ_TOKEN",
-        {
-            "ci.yml": BASE_WORKFLOW,
-            "advisory.yml": replace_once(
-                BASE_ADVISORY_WORKFLOW,
-                "claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}",
-                "claude-config-read-token: ${{ secrets.OTHER_TOKEN }}",
-            ),
-        },
     )
     assert_workflows_error(
         "advisory.yml advisories must use setup.outputs.deny_version",
@@ -2275,15 +2238,19 @@ def main() -> int:
         action=replace_once(
             replace_once(
                 BASE_ACTION,
-                "    - name: Lint workflow contract",
-                "    - name: Moved lint workflow contract",
+                """    - name: Lint workflow contract
+      if: ${{ inputs.lint-workflow-contract == 'true' }}
+      shell: bash
+      run: just ci-lint-workflow
+""",
+                "",
             ),
-            "    - name: Install managed Rust owner",
+            "    - name: Resolve managed target dir",
             """    - name: Lint workflow contract
       if: ${{ inputs.lint-workflow-contract == 'true' }}
       shell: bash
       run: just ci-lint-workflow
-    - name: Install managed Rust owner""",
+    - name: Resolve managed target dir""",
         ),
     )
     assert_error(

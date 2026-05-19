@@ -410,6 +410,67 @@ fn bolt_v3_strategy_execution_client_id_rejects_data_only_client_with_client_voc
 }
 
 #[test]
+fn bolt_v3_strategy_execution_client_id_rejects_polymarket_client_split_from_data_client_with_client_vocabulary()
+ {
+    // Bug class: a config can split a Polymarket venue across two
+    // `clients.<id>` blocks (one execution-only, one data-only). The
+    // existing execution-capable check still passes, but
+    // `bolt_v3_providers::polymarket::build_market_slug_filters_for_client`
+    // binds per-target market-slug filters to a single `client_key` and
+    // skips every target whose `execution_client_id != client_key`.
+    // Splitting the data adapter off the execution client_key therefore
+    // silently strips the configured target market restriction during
+    // data-client mapping. Fail closed: require a co-located [data]
+    // block on every Polymarket execution client referenced by a strategy.
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let polymarket_main_data_block = "[clients.polymarket_main.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n\n";
+    let polymarket_data_only_client = "\n[clients.polymarket_data]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_data.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
+    let split_fixture = format!(
+        "{}{}",
+        replace_in_fixture_root(polymarket_main_data_block, ""),
+        polymarket_data_only_client
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&split_fixture).expect("split polymarket clients fixture should parse");
+    let strategy: BoltV3StrategyConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&root, &loaded);
+    let rendered = messages.join("\n");
+    assert!(
+        rendered.contains("strategy execution_client_id `polymarket_main`"),
+        "expected rejection citing strategy execution_client_id `polymarket_main`, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("data-capable client"),
+        "expected rejection citing `data-capable client`, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("referenced client has no [data] block"),
+        "expected rejection citing `referenced client has no [data] block`, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("Polymarket"),
+        "expected rejection to name the Polymarket provider, got: {rendered}"
+    );
+    assert!(!rendered.contains("data-capable venue"));
+    assert!(!rendered.contains("referenced venue"));
+}
+
+#[test]
 fn bolt_v3_reference_data_client_id_rejects_execution_only_client_with_client_vocabulary() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},

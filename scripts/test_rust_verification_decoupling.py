@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import pathlib
 import subprocess
 import sys
@@ -14,14 +15,25 @@ REMOVED_SCRIPTS = (
     REPO_ROOT / "scripts" / "install_ci_rust_verification_owner.sh",
     REPO_ROOT / "scripts" / "require_rust_verification_owner.sh",
 )
-RUNTIME_SURFACES = (
-    REPO_ROOT / "justfile",
-    REPO_ROOT / "tests" / "verify_build.sh",
-    REPO_ROOT / ".github" / "actions" / "setup-environment" / "action.yml",
-    REPO_ROOT / ".github" / "workflows" / "ci.yml",
-    REPO_ROOT / ".github" / "workflows" / "advisory.yml",
-    REPO_ROOT / ".github" / "workflows" / "dependabot-auto-merge.yml",
-    REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py",
+RUNTIME_SURFACE_PATTERNS = (
+    "justfile",
+    ".githooks/*",
+    ".github/actions/**/*.yaml",
+    ".github/actions/**/*.yml",
+    ".github/workflows/*.yaml",
+    ".github/workflows/*.yml",
+    "scripts/*.py",
+    "scripts/*.sh",
+    "tests/*.sh",
+)
+RUNTIME_SURFACE_EXCLUDES = (
+    "scripts/test_*.py",
+)
+REQUIRED_RUNTIME_SURFACES = (
+    ".github/workflows/ci-docs-pass-stub.yml",
+    ".github/workflows/stale.yml",
+    ".github/workflows/summary.yml",
+    ".githooks/post-checkout",
 )
 FORBIDDEN_RUNTIME_FRAGMENTS = (
     "CLAUDE_CONFIG_READ_TOKEN",
@@ -32,6 +44,36 @@ FORBIDDEN_RUNTIME_FRAGMENTS = (
     "/.claude/lib/rust_verification.py",
     "~/.claude/lib/rust_verification.py",
 )
+
+
+def tracked_runtime_surfaces() -> tuple[pathlib.Path, ...]:
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+
+    surfaces: list[pathlib.Path] = []
+    for relative in result.stdout.split("\0"):
+        if not relative:
+            continue
+        if any(fnmatch.fnmatch(relative, pattern) for pattern in RUNTIME_SURFACE_EXCLUDES):
+            continue
+        if any(fnmatch.fnmatch(relative, pattern) for pattern in RUNTIME_SURFACE_PATTERNS):
+            surfaces.append(REPO_ROOT / relative)
+    return tuple(sorted(surfaces))
+
+
+def assert_runtime_surface_discovery_covers_current_repo() -> None:
+    discovered = {path.relative_to(REPO_ROOT).as_posix() for path in tracked_runtime_surfaces()}
+    missing = sorted(set(REQUIRED_RUNTIME_SURFACES) - discovered)
+    if missing:
+        raise AssertionError(f"runtime surface discovery missed: {missing}")
 
 
 def assert_owner_cli_contract() -> None:
@@ -56,7 +98,7 @@ def assert_no_external_owner_install_path() -> None:
     for path in REMOVED_SCRIPTS:
         if path.exists():
             offenders.append(f"{path.relative_to(REPO_ROOT)} still exists")
-    for path in RUNTIME_SURFACES:
+    for path in tracked_runtime_surfaces():
         text = path.read_text(encoding="utf-8")
         for fragment in FORBIDDEN_RUNTIME_FRAGMENTS:
             if fragment in text:
@@ -66,6 +108,7 @@ def assert_no_external_owner_install_path() -> None:
 
 
 def main() -> int:
+    assert_runtime_surface_discovery_covers_current_repo()
     assert_owner_cli_contract()
     assert_no_external_owner_install_path()
     print("OK: Rust verification decoupling self-tests passed.")

@@ -199,6 +199,7 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'.cargo/config.toml'",
     "'.config/nextest.toml'",
     "'ci/rust-verification.toml'",
+    "'scripts/rust_verification.py'",
     "'justfile'",
     "'build.rs'",
     "'src/**'",

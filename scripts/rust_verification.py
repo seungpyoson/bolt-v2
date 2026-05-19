@@ -4,12 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import pathlib
 import re
+import shutil
+import stat
 import subprocess
 import sys
+import time
 from typing import Any
 
 try:
@@ -36,6 +41,10 @@ SCRUB_ENV_KEYS = (
 
 
 class PolicyError(RuntimeError):
+    pass
+
+
+class ProcessVisibilityError(RuntimeError):
     pass
 
 
@@ -77,6 +86,15 @@ def parse_minimal_toml(path: pathlib.Path) -> dict[str, Any]:
                     value: Any = json.loads(value_text)
                 except json.JSONDecodeError as exc:
                     raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: invalid string") from exc
+            elif value_text.startswith("[") and value_text.endswith("]"):
+                try:
+                    value = json.loads(value_text)
+                except json.JSONDecodeError as exc:
+                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: invalid array") from exc
+                if not all(isinstance(item, str) for item in value):
+                    raise PolicyError(f"{POLICY_RELATIVE_PATH}:{lineno}: unsupported array")
+            elif value_text in ("true", "false"):
+                value = value_text == "true"
             elif value_text.isdigit():
                 value = int(value_text)
             else:
@@ -139,6 +157,8 @@ def validate_policy_data(data: dict[str, Any]) -> None:
             raise PolicyError(f"commands.build.{key} must be a safe identifier")
     if build.get("artifact_layout") != "cargo":
         raise PolicyError("commands.build.artifact_layout must be 'cargo'")
+    if "cache" in data:
+        validate_cache_policy(data)
 
 
 def status_for_repo(repo: pathlib.Path) -> str:
@@ -164,6 +184,23 @@ def target_dir(repo: pathlib.Path, policy: dict[str, Any] | None = None) -> path
     return root_base() / namespace / "target"
 
 
+def cache_lock_path(policy: dict[str, Any]) -> pathlib.Path:
+    return root_base() / policy["target_namespace"] / "cache.lock"
+
+
+@contextlib.contextmanager
+def cache_lock(policy: dict[str, Any], *, exclusive: bool) -> Any:
+    path = cache_lock_path(policy)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(handle.fileno(), mode)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def managed_env(repo: pathlib.Path, policy: dict[str, Any] | None = None) -> dict[str, str]:
     env = os.environ.copy()
     for key in SCRUB_ENV_KEYS:
@@ -171,6 +208,384 @@ def managed_env(repo: pathlib.Path, policy: dict[str, Any] | None = None) -> dic
     env["CARGO_TARGET_DIR"] = str(target_dir(repo, policy))
     env["RUST_VERIFICATION_PRESERVE_ROUTING_ENV"] = "1"
     return env
+
+
+def classify_cache_subtree(relative_path: str) -> str:
+    if relative_path in ("debug", "release", "tmp"):
+        return relative_path
+    parts = relative_path.split("-")
+    if len(parts) >= 3 and all(parts):
+        return "cross-target"
+    return "other"
+
+
+def existing_disk_path(path: pathlib.Path) -> pathlib.Path:
+    current = path
+    while not current.exists() and current.parent != current:
+        current = current.parent
+    return current
+
+
+def scan_cache_tree(path: pathlib.Path) -> tuple[int, float, int]:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return 0, 0.0, 0
+    except OSError:
+        return 0, 0.0, 1
+    mode = info.st_mode
+    latest_mtime = float(info.st_mtime)
+    if stat.S_ISREG(mode) or stat.S_ISLNK(mode):
+        blocks = getattr(info, "st_blocks", None)
+        bytes_used = int(blocks) * 512 if blocks is not None else int(info.st_size)
+        return bytes_used, latest_mtime, 0
+    if not stat.S_ISDIR(mode):
+        return 0, latest_mtime, 1
+
+    total_bytes = 0
+    skipped = 0
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                child_bytes, child_mtime, child_skipped = scan_cache_tree(path / entry.name)
+                total_bytes += child_bytes
+                skipped += child_skipped
+                latest_mtime = max(latest_mtime, child_mtime)
+    except OSError:
+        skipped += 1
+    return total_bytes, latest_mtime, skipped
+
+
+def disk_usage_bytes(path: pathlib.Path) -> int:
+    if not path.exists():
+        return 0
+    result = subprocess.run(
+        ["du", "-sk", "-P", str(path)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise OSError(result.stderr.strip() or f"du failed for {path}")
+    return int(result.stdout.split()[0]) * 1024
+
+
+def cache_status_payload(repo: pathlib.Path) -> dict[str, Any]:
+    policy = load_policy(repo)
+    target = target_dir(repo, policy)
+    filesystem = shutil.disk_usage(existing_disk_path(target))
+    subtrees: list[dict[str, Any]] = []
+    total_bytes = 0
+    skipped_special_entries = 0
+    if target.exists():
+        for child in sorted(target.iterdir(), key=lambda item: item.name):
+            _logical_bytes, latest_mtime, skipped = scan_cache_tree(child)
+            try:
+                child_bytes = disk_usage_bytes(child)
+            except OSError:
+                child_bytes = 0
+                skipped = max(skipped, 1)
+            total_bytes += child_bytes
+            skipped_special_entries += skipped
+            subtrees.append(
+                {
+                    "bytes": child_bytes,
+                    "class": classify_cache_subtree(child.name),
+                    "latest_mtime": latest_mtime,
+                    "path": str(child),
+                    "relative_path": child.name,
+                    "skipped_special_entries": skipped,
+                }
+            )
+    pressure = cache_pressure(total_bytes=total_bytes, filesystem_free=filesystem.free, policy=policy)
+    return {
+        "filesystem": {
+            "free_bytes": filesystem.free,
+            "total_bytes": filesystem.total,
+            "used_bytes": filesystem.used,
+        },
+        "policy": str(policy_path(repo)),
+        "skipped_special_entries": skipped_special_entries,
+        "status": "ok",
+        "subtrees": subtrees,
+        "target_dir": str(target),
+        **pressure,
+        "total_bytes": total_bytes,
+    }
+
+
+def cache_config(policy: dict[str, Any], *, required: bool = False) -> dict[str, Any]:
+    config = policy.get("cache")
+    if config is None:
+        if required:
+            raise PolicyError("cache table is required")
+        return {}
+    if not isinstance(config, dict):
+        raise PolicyError("cache table must be a table")
+    return config
+
+
+def cache_thresholds(policy: dict[str, Any]) -> dict[str, int]:
+    config = cache_config(policy, required=True)
+    thresholds: dict[str, int] = {}
+    for key in ("min_free_bytes", "soft_limit_bytes"):
+        value = config.get(key)
+        if not is_non_negative_int(value):
+            raise PolicyError(f"cache.{key} must be a non-negative integer")
+        thresholds[key] = value
+    return thresholds
+
+
+def is_non_negative_int(value: Any) -> bool:
+    return type(value) is int and value >= 0
+
+
+def cache_pressure(*, total_bytes: int, filesystem_free: int, policy: dict[str, Any]) -> dict[str, Any]:
+    if "cache" not in policy:
+        return {"pressure": False, "pressure_reasons": [], "thresholds": None}
+    thresholds = cache_thresholds(policy)
+    reasons: list[str] = []
+    if total_bytes > thresholds["soft_limit_bytes"]:
+        reasons.append("cache exceeds soft_limit_bytes")
+    if filesystem_free < thresholds["min_free_bytes"]:
+        reasons.append("filesystem free below min_free_bytes")
+    return {
+        "pressure": bool(reasons),
+        "pressure_reasons": reasons,
+        "thresholds": thresholds,
+    }
+
+
+def retention_config(policy: dict[str, Any], class_name: str) -> dict[str, Any]:
+    retention = cache_config(policy, required=True).get("retention", {})
+    if not isinstance(retention, dict):
+        raise PolicyError("cache.retention table must be a table")
+    config = retention.get(class_name, {})
+    if not isinstance(config, dict):
+        raise PolicyError(f"cache.retention.{class_name} must be a table")
+    return config
+
+
+def active_process_patterns(policy: dict[str, Any]) -> list[str]:
+    patterns = cache_config(policy, required=True).get("active_process_patterns", [])
+    if not isinstance(patterns, list) or not all(isinstance(pattern, str) and pattern for pattern in patterns):
+        raise PolicyError("cache.active_process_patterns must be a string array")
+    return patterns
+
+
+def validate_cache_policy(policy: dict[str, Any]) -> None:
+    config = cache_config(policy, required=True)
+    cache_thresholds(policy)
+    active_process_patterns(policy)
+    retention = config.get("retention")
+    if not isinstance(retention, dict):
+        raise PolicyError("cache.retention table must be a table")
+    for class_name in ("debug", "release", "cross-target", "tmp", "other"):
+        class_config = retention_config(policy, class_name)
+        prunable = class_config.get("prunable")
+        if not isinstance(prunable, bool):
+            raise PolicyError(f"cache.retention.{class_name}.prunable must be a boolean")
+        prune_after_days = class_config.get("prune_after_days")
+        if prunable and not is_non_negative_int(prune_after_days):
+            raise PolicyError(f"cache.retention.{class_name}.prune_after_days must be a non-negative integer")
+
+
+def is_prune_candidate(
+    subtree: dict[str, Any],
+    policy: dict[str, Any],
+    *,
+    now: float,
+    pressure: bool,
+) -> tuple[bool, str]:
+    if not pressure:
+        return False, "cache below pressure thresholds"
+    config = retention_config(policy, subtree["class"])
+    if config.get("prunable") is not True:
+        return False, "class is not prunable"
+    prune_after_days = config.get("prune_after_days")
+    if not is_non_negative_int(prune_after_days):
+        return False, "class has no prune age"
+    if subtree.get("skipped_special_entries", 0):
+        return False, "subtree scan incomplete"
+    cutoff = now - (prune_after_days * 24 * 60 * 60)
+    if subtree["latest_mtime"] > cutoff:
+        return False, "subtree is newer than prune age"
+    return True, f"older than {prune_after_days} days"
+
+
+def process_cwd(pid: int) -> pathlib.Path | None:
+    base = pathlib.Path(os.environ.get("RUST_VERIFICATION_PROCESS_CWD_BASE", "/proc"))
+    try:
+        return (base / str(pid) / "cwd").resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+
+
+def path_is_or_inside(path: pathlib.Path, parent: pathlib.Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: dict[str, Any]) -> list[dict[str, Any]]:
+    patterns = active_process_patterns(policy)
+    if not patterns:
+        return []
+    result = subprocess.run(
+        ["ps", "-axo", "pid=,command="],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ProcessVisibilityError("unable to inspect active processes")
+    current_pid = os.getpid()
+    related: list[dict[str, Any]] = []
+    repo_scope = repo.resolve()
+    target_scope = target.resolve()
+    scope_texts = {str(repo), str(target), str(repo_scope), str(target_scope)}
+    unscoped_match = False
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        pid_text, _, command = stripped.partition(" ")
+        if not pid_text.isdigit() or int(pid_text) == current_pid:
+            continue
+        matched_pattern = next((pattern for pattern in patterns if pattern in command), None)
+        if matched_pattern is None:
+            continue
+        pid = int(pid_text)
+        cwd = process_cwd(pid)
+        command_matches_scope = any(scope_text in command for scope_text in scope_texts)
+        cwd_matches_scope = cwd is not None and (
+            path_is_or_inside(cwd, repo_scope) or path_is_or_inside(cwd, target_scope)
+        )
+        if not command_matches_scope and not cwd_matches_scope:
+            if cwd is not None:
+                continue
+            unscoped_match = True
+            continue
+        entry = {
+            "command": command,
+            "pid": pid,
+            "reason": f"matched {matched_pattern} and referenced repo or target",
+        }
+        if cwd is not None:
+            entry["cwd"] = str(cwd)
+        related.append(entry)
+    if unscoped_match:
+        raise ProcessVisibilityError("matching process found without repo or target evidence")
+    return related
+
+
+def is_direct_child(path: pathlib.Path, parent: pathlib.Path) -> bool:
+    try:
+        relative = path.relative_to(parent)
+    except ValueError:
+        return False
+    return len(relative.parts) == 1
+
+
+def remove_cache_candidate(entry: dict[str, Any], target: pathlib.Path) -> None:
+    path = pathlib.Path(entry["path"])
+    if path == target or not is_direct_child(path, target):
+        raise PolicyError("refusing to remove non-child cache path")
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def active_process_refusal_payload(repo: pathlib.Path, target: pathlib.Path, policy: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        active = active_related_processes(repo, target, policy)
+    except ProcessVisibilityError as exc:
+        return {
+            "candidates": [],
+            "dry_run": False,
+            "reclaimable_bytes": 0,
+            "refusal_code": "insufficient_process_visibility",
+            "refusal_reason": str(exc),
+            "refused": True,
+            "target_dir": str(target),
+        }
+    if active:
+        return {
+            "active_processes": active,
+            "candidates": [],
+            "dry_run": False,
+            "reclaimable_bytes": 0,
+            "refusal_code": "active_process",
+            "refusal_reason": "active related Rust verification process detected",
+            "refused": True,
+            "target_dir": str(target),
+        }
+    return None
+
+
+def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
+    policy = load_policy(repo)
+    validate_cache_policy(policy)
+    lock_context = cache_lock(policy, exclusive=True) if not dry_run else contextlib.nullcontext()
+    with lock_context:
+        if not dry_run:
+            target = target_dir(repo, policy)
+            refusal = active_process_refusal_payload(repo, target, policy)
+            if refusal is not None:
+                return refusal
+        status = cache_status_payload(repo)
+        if not dry_run:
+            refusal = active_process_refusal_payload(repo, pathlib.Path(status["target_dir"]), policy)
+            if refusal is not None:
+                return refusal
+        candidates: list[dict[str, Any]] = []
+        reclaimable_bytes = 0
+        now = time.time()
+        for subtree in status["subtrees"]:
+            candidate, reason = is_prune_candidate(subtree, policy, now=now, pressure=bool(status["pressure"]))
+            if not candidate:
+                continue
+            entry = dict(subtree)
+            entry["reason"] = reason
+            candidates.append(entry)
+            reclaimable_bytes += int(entry["bytes"])
+        removed: list[dict[str, Any]] = []
+        if not dry_run:
+            target = pathlib.Path(status["target_dir"])
+            refusal = active_process_refusal_payload(repo, target, policy)
+            if refusal is not None:
+                return refusal
+            for entry in candidates:
+                remove_cache_candidate(entry, target)
+                removed.append(entry)
+        return {
+            "candidates": candidates,
+            "dry_run": dry_run,
+            "pressure": status["pressure"],
+            "pressure_reasons": status["pressure_reasons"],
+            "reclaimable_bytes": reclaimable_bytes,
+            "removed": removed,
+            "refused": False,
+            "target_dir": status["target_dir"],
+        }
+
+
+def refusal_payload(*, code: str, reason: str, dry_run: bool, target: str | None = None) -> dict[str, Any]:
+    return {
+        "candidates": [],
+        "dry_run": dry_run,
+        "reclaimable_bytes": 0,
+        "refusal_code": code,
+        "refusal_reason": reason,
+        "refused": True,
+        "target_dir": target,
+    }
 
 
 def command_args(args: list[str]) -> list[str]:
@@ -256,7 +671,8 @@ def cmd_cargo(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     cargo = os.environ.get("RUST_VERIFICATION_REAL_CARGO", "cargo")
-    return run_process([cargo, *command_args(args.args)], repo=repo, env=managed_env(repo, policy))
+    with cache_lock(policy, exclusive=False):
+        return run_process([cargo, *command_args(args.args)], repo=repo, env=managed_env(repo, policy))
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -272,7 +688,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
     justfile = repo / "justfile"
     argv = ["just", "-f", str(justfile), "--working-directory", str(repo), "--", command["recipe"], *args.args]
-    return run_process(argv, repo=repo, env=managed_env(repo, policy))
+    with cache_lock(policy, exclusive=False):
+        return run_process(argv, repo=repo, env=managed_env(repo, policy))
 
 
 def cmd_scrub_env_keys(_args: argparse.Namespace) -> int:
@@ -290,6 +707,42 @@ def cmd_describe(args: argparse.Namespace) -> int:
         payload["target_dir"] = str(target_dir(repo, policy))
         payload["project_id"] = policy["project_id"]
     print(json.dumps(payload, sort_keys=True))
+    return 0
+
+
+def cmd_cache_status(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    try:
+        print(json.dumps(cache_status_payload(repo), sort_keys=True))
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
+def cmd_cache_prune(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    dry_run = not args.apply
+    try:
+        payload = cache_prune_payload(repo, dry_run=dry_run)
+        print(json.dumps(payload, sort_keys=True))
+    except FileNotFoundError as exc:
+        expected_policy = policy_path(repo)
+        missing = pathlib.Path(getattr(exc, "filename", "") or exc.args[0])
+        code = "missing_policy" if missing == expected_policy else "operation_failed"
+        payload = refusal_payload(code=code, reason=str(exc), dry_run=dry_run)
+        print(json.dumps(payload, sort_keys=True))
+        return 2
+    except PolicyError as exc:
+        payload = refusal_payload(code="invalid_policy", reason=str(exc), dry_run=dry_run)
+        print(json.dumps(payload, sort_keys=True))
+        return 2
+    except OSError as exc:
+        payload = refusal_payload(code="operation_failed", reason=str(exc), dry_run=dry_run)
+        print(json.dumps(payload, sort_keys=True))
+        return 2
+    if payload.get("refused"):
+        return 2
     return 0
 
 
@@ -340,6 +793,19 @@ def build_parser() -> argparse.ArgumentParser:
     describe = subparsers.add_parser("describe")
     describe.add_argument("--repo", required=True)
     describe.set_defaults(func=cmd_describe)
+
+    cache_status = subparsers.add_parser("cache-status")
+    cache_status.add_argument("--repo", required=True)
+    cache_status.add_argument("--json", action="store_true")
+    cache_status.set_defaults(func=cmd_cache_status)
+
+    cache_prune = subparsers.add_parser("cache-prune")
+    cache_prune.add_argument("--repo", required=True)
+    cache_prune_mode = cache_prune.add_mutually_exclusive_group()
+    cache_prune_mode.add_argument("--dry-run", action="store_true")
+    cache_prune_mode.add_argument("--apply", action="store_true")
+    cache_prune.add_argument("--json", action="store_true")
+    cache_prune.set_defaults(func=cmd_cache_prune)
 
     cleanup = subparsers.add_parser("cleanup")
     cleanup.set_defaults(func=cmd_cleanup)

@@ -503,10 +503,10 @@ def env_command_index(tokens: list[str]) -> int:
         token = tokens[index]
         if token == "--":
             return index + 1
-        if token in ("-i", "--ignore-environment", "-0", "--null"):
+        if token in ("-i", "--ignore-environment", "-0", "--null", "-v", "--debug"):
             index += 1
             continue
-        if token in ("-u", "--unset", "--chdir") and index + 1 < len(tokens):
+        if token in ("-u", "--unset", "-C", "--chdir") and index + 1 < len(tokens):
             index += 2
             continue
         if token == "-S" and index + 1 < len(tokens):
@@ -514,6 +514,16 @@ def env_command_index(tokens: list[str]) -> int:
         if token.startswith("--unset=") or token.startswith("--chdir="):
             index += 1
             continue
+        if token.startswith("-") and not token.startswith("--"):
+            cluster = token[1:]
+            if "S" in cluster and index + 1 < len(tokens):
+                return index
+            if cluster.startswith(("u", "C")) and len(cluster) > 1:
+                index += 1
+                continue
+            if all(char in "i0v" for char in cluster):
+                index += 1
+                continue
         if "=" in token and not token.startswith("-"):
             index += 1
             continue
@@ -521,14 +531,50 @@ def env_command_index(tokens: list[str]) -> int:
     return index
 
 
+def env_wrapped_tokens(tokens: list[str]) -> list[str]:
+    index = env_command_index(tokens)
+    if index < len(tokens) and index + 1 < len(tokens):
+        token = tokens[index]
+        if token == "-S" or (token.startswith("-") and not token.startswith("--") and "S" in token[1:]):
+            split_tokens = command_tokens(tokens[index + 1])
+            split_index = env_command_index(["env", *split_tokens]) - 1
+            return split_tokens[max(split_index, 0) :]
+    return tokens[index:]
+
+
 def sudo_command_index(tokens: list[str]) -> int:
+    argument_options = {
+        "-u",
+        "--user",
+        "-g",
+        "--group",
+        "-h",
+        "--host",
+        "-p",
+        "--prompt",
+        "-C",
+        "--close-from",
+        "-T",
+        "--command-timeout",
+        "-r",
+        "--role",
+        "-t",
+        "--type",
+        "-U",
+        "--other-user",
+        "-D",
+        "--chdir",
+    }
     index = 1
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
             return index + 1
-        if token in ("-u", "-g", "-h", "-p", "-C", "-T") and index + 1 < len(tokens):
+        if token in argument_options and index + 1 < len(tokens):
             index += 2
+            continue
+        if "=" in token and not token.startswith("-"):
+            index += 1
             continue
         if token.startswith("-"):
             index += 1
@@ -539,13 +585,34 @@ def sudo_command_index(tokens: list[str]) -> int:
 
 def nice_command_index(tokens: list[str]) -> int:
     index = 1
-    if index < len(tokens) and tokens[index] == "--":
-        return index + 1
-    if index < len(tokens) and tokens[index] == "-n" and index + 1 < len(tokens):
-        return index + 2
-    if index < len(tokens) and re.fullmatch(r"-?\d+", tokens[index]):
-        return index + 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            continue
+        if token == "-n" and index + 1 < len(tokens):
+            index += 2
+            continue
+        if re.fullmatch(r"-n-?\d+", token):
+            index += 1
+            continue
+        if re.fullmatch(r"-?\d+", token):
+            index += 1
+            continue
+        return index
     return index
+
+
+def rustup_run_tokens(tokens: list[str]) -> list[str]:
+    index = 2
+    while index < len(tokens) and tokens[index].startswith("-"):
+        index += 1
+    if index >= len(tokens):
+        return []
+    index += 1
+    if index < len(tokens) and tokens[index] == "--":
+        index += 1
+    return tokens[index:]
 
 
 def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
@@ -558,17 +625,13 @@ def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
     executable = basename_token(tokens[0])
     names = {executable}
     if executable == "env":
-        index = env_command_index(tokens)
-        if index < len(tokens) and tokens[index] == "-S" and index + 1 < len(tokens):
-            names.update(process_names_from_tokens(command_tokens(tokens[index + 1]), depth=depth + 1))
-        else:
-            names.update(process_names_from_tokens(tokens[index:], depth=depth + 1))
+        names.update(process_names_from_tokens(env_wrapped_tokens(tokens), depth=depth + 1))
     elif executable in ("sudo", "doas"):
         names.update(process_names_from_tokens(tokens[sudo_command_index(tokens) :], depth=depth + 1))
     elif executable == "nice":
         names.update(process_names_from_tokens(tokens[nice_command_index(tokens) :], depth=depth + 1))
     elif executable == "rustup" and len(tokens) >= 4 and tokens[1] == "run":
-        names.update(process_names_from_tokens(tokens[3:], depth=depth + 1))
+        names.update(process_names_from_tokens(rustup_run_tokens(tokens), depth=depth + 1))
     elif executable in ("bash", "dash", "fish", "sh", "zsh"):
         command = shell_command(tokens)
         if command is not None:

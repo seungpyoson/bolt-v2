@@ -869,6 +869,22 @@ def assert_cache_prune_refuses_wrapped_active_processes_by_cwd() -> None:
         "nice -- cargo build",
         # Legitimate stack of supported wrappers that exhausts the depth cap.
         "sudo nice env -i bash -c 'rustup run stable cargo test'",
+        # Review-regression cases: supported wrapper flags must still expose
+        # the wrapped cargo process so apply-prune refuses an active cache.
+        "sudo --user root cargo build",
+        "sudo --group wheel cargo build",
+        "sudo --chdir /tmp cargo build",
+        "sudo VAR=val cargo build",
+        "env -v cargo build",
+        "env --debug cargo build",
+        "env -uLD_PRELOAD cargo build",
+        "env -iS 'cargo build'",
+        "env -S 'VAR=val cargo build'",
+        "nice -n10 cargo build",
+        "nice -n 10 -- cargo build",
+        "nice -10 -- cargo build",
+        "rustup run stable -- cargo build",
+        "rustup run --install stable cargo build",
     ]
     for command in commands:
         with tempfile.TemporaryDirectory() as tmp:

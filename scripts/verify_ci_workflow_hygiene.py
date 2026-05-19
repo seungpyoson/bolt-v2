@@ -258,18 +258,25 @@ BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner 
 # burden without real supply-chain value.
 #
 # Two regexes intentionally:
-#   * TAIKI_INSTALL_ACTION_RE matches well-formed pinned uses: lines and
-#     captures the SHA. Uppercase hex is allowed in the match so the consistency
+#   * TAIKI_INSTALL_ACTION_RE matches well-formed pinned single-line `uses:`
+#     references. Optional matching quotes (single OR double, enforced by
+#     backreference so mismatched quotes still fail) are accepted around the
+#     reference. Uppercase hex is allowed in the match so the consistency
 #     check can normalize via .lower() rather than silently rejecting valid
-#     uppercase pins.
-#   * TAIKI_INSTALL_ACTION_REF_RE is a broad detector for any line that
-#     references taiki-e/install-action at all (quoted or not, mutable tag or
-#     SHA). The consistency check uses it to surface mutable-tag references as
-#     loud errors instead of silently skipping them.
+#     uppercase pins. The SHA is captured in group(2); group(1) is the
+#     (possibly empty) opening quote used by the backreference.
+#   * TAIKI_INSTALL_ACTION_MENTION_RE is a broad detector for any cleaned
+#     line that mentions `taiki-e/install-action@` at all — whether the
+#     `uses:` token sits on the same line (single-line form) or on a
+#     preceding line (YAML multi-line scalar form). The consistency check
+#     uses it to surface every reference, then requires the line to match
+#     the strict single-line pinned form; anything else (mutable tag,
+#     mismatched quotes, multi-line scalar) is reported with a precise
+#     file:line.
 TAIKI_INSTALL_ACTION_RE = re.compile(
-    r"^\s*(?:-\s*)?uses:\s*taiki-e/install-action@([0-9a-fA-F]{40})\s*$"
+    r"""^\s*(?:-\s*)?uses:\s*(['"]?)taiki-e/install-action@([0-9a-fA-F]{40})\1\s*$"""
 )
-TAIKI_INSTALL_ACTION_REF_RE = re.compile(r"\buses:\s*['\"]?taiki-e/install-action@")
+TAIKI_INSTALL_ACTION_MENTION_RE = re.compile(r"\btaiki-e/install-action@")
 CI_INSTALL_ACTION_TOOLS = {
     "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
@@ -1729,26 +1736,31 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
     # after stripping comments so commentary containing the action ref does
     # not produce false positives.
     #
-    # The broad detector (TAIKI_INSTALL_ACTION_REF_RE) finds every line that
-    # references taiki-e/install-action at all; any such line that does not
-    # match the strict 40-hex form is reported with a precise file:line so
-    # mutable tags (e.g. @v2) and other malformed pins fail loudly instead of
-    # being silently skipped. SHAs are lowercased before bucketing so the
-    # consistency check treats uppercase and lowercase hex as the same pin.
+    # The broad detector (TAIKI_INSTALL_ACTION_MENTION_RE) finds every line
+    # that mentions the action ref at all — including YAML multi-line scalar
+    # form where `uses:` sits on a preceding line. Any such line that does
+    # not match the strict single-line pinned form is reported with a precise
+    # file:line so mutable tags (e.g. @v2), multi-line scalars, mismatched
+    # quotes, and other malformed pins fail loudly instead of being silently
+    # skipped. SHAs are lowercased before bucketing so the consistency check
+    # treats uppercase and lowercase hex as the same pin. Lines that fail
+    # the strict form do NOT contribute to the bucket map — a malformed
+    # reference must not phantom-bucket and mask a real drift.
     errors: list[str] = []
     sha_to_files: dict[str, list[str]] = {}
     for workflow_name, workflow_text in workflows.items():
         for line_index, line in enumerate(workflow_text.splitlines(), start=1):
             clean = strip_comment(line)
-            if not TAIKI_INSTALL_ACTION_REF_RE.search(clean):
+            if not TAIKI_INSTALL_ACTION_MENTION_RE.search(clean):
                 continue
             match = TAIKI_INSTALL_ACTION_RE.match(clean)
             if match is None:
                 errors.append(
-                    f"{workflow_name}:{line_index}: taiki-e/install-action ref must be pinned to 40-hex SHA, got: {clean.strip()}"
+                    f"{workflow_name}:{line_index}: taiki-e/install-action must be referenced as "
+                    f"'uses: taiki-e/install-action@<40-hex-SHA>' on a single line, got: {clean.strip()}"
                 )
                 continue
-            sha = match.group(1).lower()
+            sha = match.group(2).lower()
             sha_to_files.setdefault(sha, []).append(workflow_name)
     if len(sha_to_files) > 1:
         parts = sorted(

@@ -846,12 +846,12 @@ def assert_pin_consistency_rejects_mutable_tag() -> None:
         e
         for e in errors
         if "taiki-e/install-action" in e
-        and "40-hex SHA" in e
+        and "40-hex-SHA" in e
         and "advisory.yml" in e
     ]
     if not matching:
         raise AssertionError(
-            f"expected mutable-tag rejection mentioning '40-hex SHA' and the file, got: {errors!r}"
+            f"expected mutable-tag rejection mentioning '40-hex-SHA' and the file, got: {errors!r}"
         )
 
 
@@ -911,6 +911,151 @@ def assert_pin_consistency_intra_file_mismatch_uses_pin_drift_wording() -> None:
         )
 
 
+def _replace_advisory_pin_with(replacement: str) -> str:
+    """Replace the first taiki-e/install-action pin in BASE_ADVISORY_WORKFLOW.
+
+    The full `uses: taiki-e/install-action@<sha>` line (without a leading
+    dash — the advisory fixture uses the multi-key step form) is replaced
+    verbatim so callers can inject mutable tags, quoted forms, mismatched
+    quotes, or YAML multi-line scalars without altering surrounding job
+    structure.
+    """
+    original = f"uses: taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}"
+    if original not in BASE_ADVISORY_WORKFLOW:
+        raise RuntimeError(
+            "advisory fixture missing canonical install-action `uses:` line"
+        )
+    return BASE_ADVISORY_WORKFLOW.replace(original, replacement, 1)
+
+
+def assert_pin_consistency_rejects_multi_line_mutable_tag() -> None:
+    """BLOCK 1: multi-line `uses:` with mutable tag must emit malformed-form error."""
+    verifier = load_verifier()
+    multi_line = "uses:\n          taiki-e/install-action@v2"
+    advisory = _replace_advisory_pin_with(multi_line)
+    errors = verifier.verify_install_action_pin_consistency(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory}
+    )
+    matching = [
+        e
+        for e in errors
+        if "advisory.yml:" in e
+        and "40-hex-SHA" in e
+        and "taiki-e/install-action@v2" in e
+    ]
+    if not matching:
+        raise AssertionError(
+            f"expected multi-line @v2 to be flagged with file:line and 40-hex-SHA wording, got: {errors!r}"
+        )
+
+
+def assert_pin_consistency_rejects_multi_line_valid_sha() -> None:
+    """BLOCK 1: multi-line `uses:` with valid SHA still emits error AND does not bucket."""
+    verifier = load_verifier()
+    multi_line = f"uses:\n          taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}"
+    advisory = _replace_advisory_pin_with(multi_line)
+    # ci.yml uses SHA_ALT (single line), advisory uses SHA_BASE (multi-line, malformed).
+    ci_alt = BASE_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_ALT}",
+    )
+    errors = verifier.verify_install_action_pin_consistency(
+        {"ci.yml": ci_alt, "advisory.yml": advisory}
+    )
+    style_errors = [
+        e for e in errors if "advisory.yml:" in e and "40-hex-SHA" in e
+    ]
+    if not style_errors:
+        raise AssertionError(
+            f"expected multi-line valid SHA to be flagged as malformed, got: {errors!r}"
+        )
+    # The malformed multi-line SHA must NOT phantom-bucket: there is only one
+    # well-formed bucket (SHA_ALT in ci.yml), so no drift error should appear.
+    drift_errors = [e for e in errors if "taiki-e/install-action pin drift" in e]
+    if drift_errors:
+        raise AssertionError(
+            f"multi-line SHA must not contribute to the bucket map, got drift: {drift_errors!r}"
+        )
+
+
+def assert_pin_consistency_accepts_double_quoted_sha() -> None:
+    """BLOCK 2: double-quoted valid SHA must not emit a malformed-form error."""
+    verifier = load_verifier()
+    quoted = f'uses: "taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}"'
+    advisory = _replace_advisory_pin_with(quoted)
+    errors = verifier.verify_install_action_pin_consistency(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory}
+    )
+    malformed = [e for e in errors if "advisory.yml:" in e and "40-hex-SHA" in e]
+    if malformed:
+        raise AssertionError(
+            f"double-quoted valid SHA must not be flagged as malformed, got: {malformed!r}"
+        )
+    drift = [e for e in errors if "taiki-e/install-action pin drift" in e]
+    if drift:
+        raise AssertionError(
+            f"double-quoted same SHA must not produce drift, got: {drift!r}"
+        )
+
+
+def assert_pin_consistency_accepts_single_quoted_sha() -> None:
+    """BLOCK 2: single-quoted valid SHA must not emit a malformed-form error."""
+    verifier = load_verifier()
+    quoted = f"uses: 'taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}'"
+    advisory = _replace_advisory_pin_with(quoted)
+    errors = verifier.verify_install_action_pin_consistency(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory}
+    )
+    malformed = [e for e in errors if "advisory.yml:" in e and "40-hex-SHA" in e]
+    if malformed:
+        raise AssertionError(
+            f"single-quoted valid SHA must not be flagged as malformed, got: {malformed!r}"
+        )
+
+
+def assert_pin_consistency_rejects_mismatched_quotes() -> None:
+    """BLOCK 2: mismatched quotes must still fail strictly (backreference)."""
+    verifier = load_verifier()
+    mismatched = f"uses: \"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}'"
+    advisory = _replace_advisory_pin_with(mismatched)
+    errors = verifier.verify_install_action_pin_consistency(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory}
+    )
+    matching = [
+        e
+        for e in errors
+        if "advisory.yml:" in e and "40-hex-SHA" in e
+    ]
+    if not matching:
+        raise AssertionError(
+            f"mismatched quotes must be flagged as malformed, got: {errors!r}"
+        )
+
+
+def assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action() -> None:
+    """NIT C: verify_prebuilt_tool_installs must accept uppercase 40-hex pins.
+
+    Uppercase 40-hex SHAs are valid pins now that the shared regex accepts
+    [0-9a-fA-F]{40}; the broader prebuilt-tool-install check must not emit a
+    'must install ... with pinned taiki-e/install-action' error for them.
+    """
+    verifier = load_verifier()
+    advisory_upper = BASE_ADVISORY_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE_UPPER}",
+    )
+    errors = verifier.verify_prebuilt_tool_installs(advisory_upper, "advisory.yml")
+    pinning_errors = [
+        e
+        for e in errors
+        if "with pinned taiki-e/install-action" in e
+    ]
+    if pinning_errors:
+        raise AssertionError(
+            f"uppercase SHA must be accepted as pinned, got: {pinning_errors!r}"
+        )
+
+
 def main() -> int:
     assert_clean()
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
@@ -919,6 +1064,12 @@ def main() -> int:
     assert_pin_consistency_rejects_mutable_tag()
     assert_pin_consistency_accepts_uppercase_sha()
     assert_pin_consistency_intra_file_mismatch_uses_pin_drift_wording()
+    assert_pin_consistency_rejects_multi_line_mutable_tag()
+    assert_pin_consistency_rejects_multi_line_valid_sha()
+    assert_pin_consistency_accepts_double_quoted_sha()
+    assert_pin_consistency_accepts_single_quoted_sha()
+    assert_pin_consistency_rejects_mismatched_quotes()
+    assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(
         "concurrency group must key pull_request runs by PR number",

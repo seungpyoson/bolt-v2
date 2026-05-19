@@ -5,12 +5,12 @@
 
 ## Summary
 
-Turn epic #123 into a reliable disk-pressure governance plan before code changes. The first deliverable is docs/spec coverage: live issue map, operator walkthrough, verified local-vs-CI Rust verification policy, no-mistakes routing evidence, issue-to-PR decomposition, and finite Phase 1 research gates for #374, #375, and #377. Implementation slices follow TDD one issue per PR.
+Turn epic #123 into a reliable disk-pressure governance plan before additional code changes. The first deliverable is docs/spec coverage: live issue map, operator walkthrough, verified local-vs-CI Rust verification policy, no-mistakes routing evidence, issue-to-PR decomposition, #286 completion evidence, and finite Phase 1 research gates for #374, #375, and #377. Remaining implementation slices follow TDD one issue per PR.
 
 ## Technical Context
 
 **Language/Version**: Rust workspace with repo-local SpecKit docs and shell/Python verification wrappers
-**Primary Dependencies**: `.specify`, `just`, `cargo-nextest`, `~/.claude/lib/rust_verification.py`, GitHub Actions cache/artifacts, no-mistakes, external review plugins
+**Primary Dependencies**: `.specify`, `just`, `cargo-nextest`, `scripts/rust_verification.py`, `ci/rust-verification.toml`, GitHub Actions cache/artifacts, no-mistakes, external review plugins
 **Storage**: Markdown specs/docs, managed Rust target cache, local temp paths, AI-agent logs/sessions, cargo registry/git caches
 **Testing**: Speckit artifact checks, `git diff --check`, CI exact-head checks before review; local Cargo only by explicit exception
 **Target Platform**: macOS developer machine plus GitHub Actions Linux runners
@@ -27,7 +27,7 @@ Turn epic #123 into a reliable disk-pressure governance plan before code changes
 - Generic core: PASS. No provider, venue, market, wallet, or strategy policy branch is added.
 - Single path and config-controlled runtime: PASS. The plan rejects raw cargo bypasses, S3 mutable target cache, and hardcoded thresholds.
 - Test-first safety gates: PASS. Future implementation slices require red/green TDD before production code changes.
-- Evidence before claims: PASS. Current issue bodies/comments and exact repo head are the evidence base; no completion claim is made for child fixes.
+- Evidence before claims: PASS. Current issue bodies/comments and exact repo head are the evidence base; #286 completion is tied to PR #404 and merge commit `400dac8acc8ec04fc7b4aefc41bab10390d6404f`, while other child fixes remain open.
 - Minimal slice discipline: PASS. This PR is a #123 planning/gate slice; child implementation remains one issue per PR.
 
 ## Project Structure

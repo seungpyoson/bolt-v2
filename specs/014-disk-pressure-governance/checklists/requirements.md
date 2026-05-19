@@ -9,7 +9,7 @@
 - [x] CHK001 Are all current #123 child issues represented with a single owner role? [Completeness, Spec FR-001]
 - [x] CHK002 Are investigation anchors distinguished from implementation owners? [Clarity, Spec FR-002]
 - [x] CHK003 Are #374, #375, and #377 Phase 1 research gates captured as preconditions? [Coverage, Spec FR-004, FR-005, FR-006]
-- [x] CHK004 Are #286 and #376 deliverables specified without requiring speculative implementation? [Completeness, Spec FR-007, FR-008]
+- [x] CHK004 Is #286 recorded as completed by PR #404, and is #376 specified without requiring speculative implementation? [Completeness, Spec FR-007, FR-008]
 - [x] CHK005 Is out-of-scope machine-level cache cleanup explicitly routed away from this epic? [Boundary, Spec Edge Cases]
 
 ## Requirement Clarity

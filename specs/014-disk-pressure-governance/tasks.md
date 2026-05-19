@@ -47,21 +47,28 @@
 **Independent Test**: #374 cannot proceed until Phase 1 MECE cargo invocation enumeration is present and reviewed.
 
 - [ ] T011 [US2] Draft #374 Phase 1 cargo invocation enumeration in a follow-up #374 branch/PR.
-- [ ] T012 [US2] Include no-mistakes command/env behavior and worktree-local target proof in #374 enumeration.
+- [ ] T012 [US2] Include no-mistakes command/env behavior, worktree-local target proof, and #404 wrapper residuals in #374 enumeration.
 - [ ] T013 [US2] Add failing verifier/test for #374 selected implementation seam before changing wrapper behavior.
 - [ ] T014 [US2] Add verifier coverage that blocks no-mistakes raw-Cargo drift and rejects any S3 active-target-cache path.
 - [ ] T015 [US2] Implement #374 only after T011/T012/T013/T014 and review gate pass.
+
+Explicit #374 residuals from #286 / PR #404 review:
+
+- `env -iuLD_PRELOAD cargo build`
+- `rustup run stable -- -- cargo build`
+- depth-cap observability for deeply wrapped process detection
+- wrapper inventory for `timeout`, `xargs`, `setsid`, `taskset`, `ionice`, `chrt`, `make`, `python -c` / `os.system(...)`, and symlink-renamed `cargo` or `rustc`
 
 ---
 
 ## Phase 5: User Story 3 - Right-Size Known Caches And Logs (Priority: P2)
 
-**Goal**: Prepare #286 and #375 retention/hygiene work.
+**Goal**: Preserve #286 completion evidence and prepare #375 retention/hygiene work.
 
 **Independent Test**: Dry-run status/prune requirements protect active work and pinned/current toolchains.
 
-- [ ] T016 [US3] Draft #286 managed-cache status/prune test seam in a #286 branch.
-- [ ] T017 [US3] Add failing #286 status/prune verifier before implementation, including config-sourced thresholds/limits.
+- [x] T016 [US3] Record #286 managed-cache status/prune completion by PR #404 at merge commit `400dac8acc8ec04fc7b4aefc41bab10390d6404f`.
+- [x] T017 [US3] Record #286 verifier coverage as completed by PR #404; residual wrapper inventory remains in #374.
 - [ ] T018 [US3] Draft #375 developer-tool enumeration before rotation/TTL/toolchain code.
 - [ ] T019 [US3] Add failing #375 hygiene verifier before implementation.
 
@@ -105,4 +112,4 @@
 
 ## Implementation Strategy
 
-MVP is US1: issue map, disk-saving walkthrough, and verification policy. Implementation starts with #374/#286/#375 only after their Phase 1 gates are pinned and reviewed.
+MVP is US1: issue map, disk-saving walkthrough, and verification policy. #286 is complete via PR #404. Remaining implementation starts with #374/#375/#376/#377 only after each issue's Phase 1 gate is pinned and reviewed.

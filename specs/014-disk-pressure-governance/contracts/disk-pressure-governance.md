@@ -5,11 +5,11 @@
 | Issue | Role | Planned PR mapping |
 |---|---|---|
 | #123 | Epic/governance | This planning PR only; does not close child implementation |
-| #48 | Investigation history | No new implementation PR; forward work maps to #374 or #286 |
+| #48 | Investigation history | No new implementation PR; remaining forward work maps to #374; managed-cache work completed by #286 / PR #404 |
 | #70 | Closed investigation | No PR unless new evidence reopens the symptom |
-| #124 | Managed-cache symptom | No direct implementation PR; forward work maps to #286 |
+| #124 | Managed-cache symptom | No direct implementation PR; managed-cache work completed by #286 / PR #404 |
 | #125 | Claude task-output incident anchor | bolt-v2-side anchor only; implementation belongs to `seungpyoson/claude-config#597` |
-| #286 | Managed Rust cache retention | One implementation PR for status/prune/retention policy |
+| #286 | Managed Rust cache retention | Complete: PR #404 merged into main at `400dac8acc8ec04fc7b4aefc41bab10390d6404f`; residual wrapper inventory belongs to #374 |
 | #374 | Wrapper hardening | One implementation PR after Phase 1 cargo-path enumeration is pinned |
 | #375 | Developer-tool hygiene | One implementation PR after Phase 1 developer-tool enumeration is pinned |
 | #376 | Uncovered surface inventory | One investigation/doc PR; follow-up implementation issue created from inventory |
@@ -28,16 +28,26 @@
 
 Snapshot scope: operator `spson`, local machine, 2026-05-18.
 
-- `just` resolves bolt-v2 Rust target output to `/Users/spson/.cache/rust-verification/bolt-v2/target`.
+- `USER_HOME_DIR` denotes the audited operator home directory; raw evidence paths remain on the linked issue/PR.
+- `just` resolves bolt-v2 Rust target output to `USER_HOME_DIR/.cache/rust-verification/bolt-v2/target`.
 - Checked bolt-v2 worktrees resolve to the same managed target path.
 - no-mistakes v1.18.3 had no `CARGO_TARGET_DIR` in the daemon environment during the 2026-05-18 check.
 - `.no-mistakes.yaml` currently configures raw `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check`.
-- A recorded no-mistakes bolt-v2 run wrote into `/Users/spson/.no-mistakes/worktrees/70a6a97b9d39/01KRQ799H1N51HC3PH5ZNKMWN9/target/...` and failed with `No space left on device`.
+- A recorded no-mistakes bolt-v2 run wrote into `USER_HOME_DIR/.no-mistakes/worktrees/WORKTREE_HASH/WORKTREE_ID/target/...` and failed with `No space left on device`.
+
+## Explicit #374 Wrapper-Inventory Follow-Ups From #286 / PR #404
+
+#286 closed the managed Rust cache retention policy. The following active-process wrapper gaps are intentionally not re-opened under #286 and must stay tracked under #374:
+
+- `env -iuLD_PRELOAD cargo build`
+- `rustup run stable -- -- cargo build`
+- depth-cap observability for deeply wrapped process detection
+- broader wrapper inventory: `timeout`, `xargs`, `setsid`, `taskset`, `ionice`, `chrt`, `make`, `python -c` / `os.system(...)`, and symlink-renamed `cargo` or `rustc`
 
 ## Cleanup Safety Contract
 
 - Status/dry-run before apply.
-- Refuse apply when matching active writer/build processes are detected unless #286 defines a reviewed emergency override.
+- Refuse apply when matching active writer/build processes are detected under the #286 managed-cache policy.
 - Never unlink live Claude `.output` files as a reclaim mechanism.
 - Never delete whole managed target cache by default.
 - Never remove pinned or active Rust toolchains.

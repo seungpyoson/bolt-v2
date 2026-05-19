@@ -41,7 +41,7 @@ As the developer, I can run bolt-v2 Rust checks through one managed path so bash
 
 As the operator, I can reclaim disk from managed caches, AI tooling logs/sessions, and obsolete toolchains through dry-run-first policies that preserve hot cache and current toolchains.
 
-**Why this priority**: #286 and #375 describe large but partly useful consumers where blind deletion trades disk pressure for slower or broken future work.
+**Why this priority**: #286 is now complete and #375 remains open; both describe large but partly useful consumers where blind deletion trades disk pressure for slower or broken future work.
 
 **Independent Test**: Requirements distinguish hot cache, rebuildable-but-expensive cache, stale cache, rotating logs, session TTL, and protected toolchains.
 
@@ -83,7 +83,7 @@ As the operator, I can prove every known disk-writing surface is inventoried and
 - **FR-004**: #374 implementation MUST NOT start until a Phase 1 MECE enumeration covers cargo invocation launchers, env state, invocation forms, cwd classes, and targets with explicit gap/overlap review.
 - **FR-005**: #375 implementation MUST NOT start until a Phase 1 MECE enumeration covers developer tools, exact written paths, growth shape, native rotation support, and ownership.
 - **FR-006**: #377 implementation MUST NOT start until a Phase 1 MECE enumeration covers known-owned classes, unbounded known classes, future-class dimensions, operator interface, and detection failure modes.
-- **FR-007**: #286 MUST define managed Rust cache status and pruning policy with per-subtree size, recency, current free disk, active-process refusal, dry-run default, and explicit apply mode.
+- **FR-007**: #286 is complete via PR #404 and MUST remain the managed Rust cache status/pruning policy source for per-subtree size, recency, current free disk, active-process refusal, dry-run default, and explicit apply mode.
 - **FR-008**: #376 MUST inventory bolt-v3 runtime output, local CI/test artifacts, cargo registry, and cargo git steady-state with exact paths, representative run size, growth rate, retention policy, and owner issue.
 - **FR-009**: The operator walkthrough MUST answer whether to run cargo tests locally: CI is the default broad verifier after a PR exists; local cargo is exception-only for narrow TDD, CI failure reproduction, or local routing/cache behavior; full local suite is allowed only after disk preflight, routing proof, and an explicit reason not covered by CI.
 - **FR-010**: The repo MUST NOT treat S3 as an active Cargo target cache. S3 may be used only for reviewed artifacts/evidence or deploy bundles, not concurrent mutable build output.
@@ -110,12 +110,13 @@ As the operator, I can prove every known disk-writing surface is inventoried and
 - **SC-001**: A reviewer can classify every current #123 child issue into exactly one owner category and see residual work.
 - **SC-002**: The first implementation slice can start from a finite Phase 1 enumeration instead of speculative cleanup or shim design.
 - **SC-003**: The walkthrough gives a deterministic local-vs-CI Rust verification policy and rejects raw cargo, no-mistakes duplicate full-local cargo, and S3-cache workarounds.
-- **SC-004**: Requirements for #374, #375, and #377 make the May 17 Phase-1 research gates explicit preconditions.
+- **SC-004**: Requirements for #374, #375, and #377 make the May 17 Phase-1 research gates explicit preconditions, while #286 is recorded as completed by PR #404.
 - **SC-005**: Future PRs can be reviewed against a finite checklist of issue mapping, TDD, local verification, CI, no-mistakes, and external review gates.
 
 ## Assumptions
 
-- `origin/main` at `4e6aacbd38f7dc254fe8d9893e514fa2f29c52e6` is the fetched source of truth for this planning slice as of 2026-05-18.
+- `origin/main` at `400dac8acc8ec04fc7b4aefc41bab10390d6404f` is the fetched source of truth for this planning slice as of 2026-05-20.
 - Issue bodies and comments fetched on 2026-05-18 are authoritative for current #123 scope.
+- #286 is closed by PR #404; wrapper edge residuals found during #404 review are tracked by #374, not by re-opening #286.
 - Implementation that changes local Claude/Codex runtime belongs in `claude-config` unless a bolt-v2 repo artifact is explicitly required.
 - Existing untracked files in the root checkout are user-owned and out of scope for this planning worktree.

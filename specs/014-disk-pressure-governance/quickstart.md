@@ -4,16 +4,18 @@
 
 Run read-only checks first:
 
+Replace `REPO_ROOT_PATH` and `USER_HOME_DIR` with the local repo and home paths before running.
+
 ```bash
-df -h ~
+df -h USER_HOME_DIR
 du -sh \
-  ~/Projects/Claude/bolt-v2/target \
-  ~/.cache/rust-verification/bolt-v2 \
-  ~/.cargo/registry \
-  ~/.cargo/git \
-  ~/.codex/log \
-  ~/.codex/sessions \
-  ~/.rustup/toolchains \
+  REPO_ROOT_PATH/target \
+  USER_HOME_DIR/.cache/rust-verification/bolt-v2 \
+  USER_HOME_DIR/.cargo/registry \
+  USER_HOME_DIR/.cargo/git \
+  USER_HOME_DIR/.codex/log \
+  USER_HOME_DIR/.codex/sessions \
+  USER_HOME_DIR/.rustup/toolchains \
   /private/tmp/claude-* \
   /private/tmp/bolt-v2-* \
   2>/dev/null
@@ -31,16 +33,16 @@ Verified local snapshot for operator `spson` on 2026-05-18:
 
 | Path | Size | Classification |
 |---|---:|---|
-| `~/Projects/Claude/bolt-v2/target` | 27G | unmanaged repo-local Cargo target |
+| `REPO_ROOT_PATH/target` | 27G | unmanaged repo-local Cargo target |
 | `/private/tmp/bolt-v2-shadow-target` | 10G | unmanaged temp Cargo target |
-| `~/.cache/rust-verification/bolt-v2/target` | 16G | managed Rust target cache |
-| `~/.no-mistakes/worktrees/.../target` | historical | no-mistakes worktree-local Cargo target; one recorded run failed with `No space left on device` |
+| `USER_HOME_DIR/.cache/rust-verification/bolt-v2/target` | 16G | managed Rust target cache |
+| `USER_HOME_DIR/.no-mistakes/worktrees/.../target` | historical | no-mistakes worktree-local Cargo target; one recorded run failed with `No space left on device` |
 
 | Path family | Owner | Default action |
 |---|---|---|
 | repo or worktree `target/` | #374 | Do not delete as "fix"; prove routing gap, then dry-run cleanup |
 | no-mistakes worktree-local `target/` | #374 | Route no-mistakes through managed commands or exact-head CI evidence |
-| `~/.cache/rust-verification/bolt-v2` | #286 | Status/prune policy, preserve hot cache |
+| `USER_HOME_DIR/.cache/rust-verification/bolt-v2` | #286 | Completed by PR #404; use status/prune policy and preserve hot cache |
 | `/private/var/.../T/cargo-*` | #70 | Closed historical scratch-diagnostic class unless reproduced |
 | `/private/tmp/claude-*/*/*/tasks/*.output` | #125 / claude-config | Do not unlink live files; follow Claude task-output guard work |
 | Codex logs/sessions, factory logs, rustup toolchains | #375 | Rotation/TTL/pin-driven hygiene |

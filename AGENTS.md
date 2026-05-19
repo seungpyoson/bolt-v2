@@ -44,5 +44,5 @@ These repo-level rules are in addition to any higher-level agent instructions.
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`specs/013-production-live-readiness/plan.md`
+`specs/014-disk-pressure-governance/plan.md`
 <!-- SPECKIT END -->

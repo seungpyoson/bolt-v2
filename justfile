@@ -2,7 +2,6 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 # bolt-v2 build commands — single source of truth.
 # CI and local both call these recipes. No raw cargo build/check commands in workflow YAML.
-# Smoke-test hash perturbation for restore-keys validation; revert before merge.
 
 nextest_version := "0.9.132"
 deny_version := "0.19.0"

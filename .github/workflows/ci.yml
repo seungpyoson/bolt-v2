@@ -281,7 +281,7 @@ jobs:
   # adding brittle filter expressions that could hide neighboring tests.
   test-archive:
     name: nextest archive
-    needs: [detector, source-fence]
+    needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     env:

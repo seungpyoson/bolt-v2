@@ -18,7 +18,7 @@ As the maintainer, I can see deterministic Bolt-v3 source-fence and verifier fai
 **Acceptance Scenarios**:
 
 1. **Given** a source-fence test searches for stale production source shape, **When** the `source-fence` lane runs, **Then** the lane fails on that filter without installing `cargo-nextest` or running full `just test`.
-2. **Given** the workflow reaches the full `test` job, **When** `source-fence` has not succeeded, **Then** `test` is blocked or skipped and the aggregate `gate` fails closed.
+2. **Given** the workflow reaches the full `test` job, **When** `source-fence` has not succeeded, **Then** ~~`test` is blocked or skipped and~~ the aggregate `gate` fails closed. **Superseded by #400** (PR #401): `test`/`test-archive` no longer waits on `source-fence`; the lanes run in parallel and `gate` is the sole merge enforcer via `needs.source-fence.result == "success"`.
 3. **Given** the source-fence filters still also exist in full `nextest`, **When** #332 has landed, **Then** the duplicate execution is explicitly documented as intentional under one aggregate gate.
 
 ### User Story 2 - Verifier Script Set Is Complete (Priority: P1)
@@ -41,7 +41,7 @@ As the maintainer, I can rely on `gate` and `just ci-lint-workflow` to fail clos
 
 **Why this priority**: #203 is still open, so #342 must carry its own narrow invariant update instead of shipping an unlinted topology change.
 
-**Independent Test**: Remove the `source-fence` job, remove its gate result check, or remove the `test` dependency on it and confirm `just ci-lint-workflow` reports the specific missing invariant.
+**Independent Test**: Remove the `source-fence` job, remove its gate result check, ~~or remove the `test` dependency on it~~ and confirm `just ci-lint-workflow` reports the specific missing invariant. **Superseded by #400** (PR #401): the `test` dependency was removed; the active negative invariant is `test-archive must not need source-fence` — re-adding the dep makes the verifier fail.
 
 **Acceptance Scenarios**:
 

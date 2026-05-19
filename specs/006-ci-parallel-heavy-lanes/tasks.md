@@ -45,7 +45,7 @@
 
 ## User Story 3 - Preserve Source-Fence Ownership (Priority: P1)
 
-**Goal**: #342 source-fence filters remain intentionally duplicated in full nextest and required before the sharded `test` lane.
+**Goal**: #342 source-fence filters remain intentionally duplicated in full nextest ~~and required before the sharded `test` lane~~. **Superseded by #400** (PR #401) for the second clause: source-fence and the sharded test lane run in parallel; merge enforcement is gate.needs + needs.source-fence.result == "success".
 
 **Independent Test**: Workflow comments and PR body state the duplicate ownership decision; verifier keeps ~~`test needs source-fence` and~~ `gate needs source-fence`. **Superseded by #400** (PR #401) for the `test needs source-fence` half: see T022 below.
 

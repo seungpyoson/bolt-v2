@@ -237,6 +237,13 @@ CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
 SHARED_REGISTRY_CACHE_KEY = "cargo-registry-git-v1"
 SHARED_REGISTRY_SAVE_IF = "${{ github.job == 'test-archive' }}"
 REGISTRY_CACHE_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
+# Jobs that opt into the managed-target actions/cache. Each value is the
+# job-specific key prefix segment between `managed-target-v1-${runner.os}-
+# ${runner.arch}-` and the hashFiles suffix. Adding a new job that uses
+# `steps.setup.outputs.managed_target_dir` requires (a) registering its
+# expected prefix here so `managed_target_cache_errors` enforces key isolation
+# AND a matching `restore-keys` prefix fallback (#400), and (b) updating the
+# self-test fixture in `scripts/test_verify_ci_workflow_hygiene.py`.
 MANAGED_TARGET_CACHE_KEYS = {
     "clippy": "clippy-host",
     "check-aarch64": "check-aarch64-dev",
@@ -671,14 +678,37 @@ def block_key_value_has_prefix(block: list[str], prefix: str) -> bool:
 
 
 def block_declares_restore_keys_prefix(block: list[str], prefix: str) -> bool:
-    saw_marker = False
-    for line in block:
-        text = strip_comment(line)
-        if "restore-keys:" in text:
-            saw_marker = True
+    # Handle both YAML forms:
+    #   inline:        restore-keys: managed-target-v1-...-clippy-host-
+    #   block-scalar:  restore-keys: |
+    #                    managed-target-v1-...-clippy-host-
+    # `block_input_items` returns the inline value directly. For the block
+    # scalar form the value is `|` (or `>`); the prefix lives on indented
+    # continuation lines below the marker, which we scan with the marker's
+    # own indent as the boundary so unrelated later inputs cannot satisfy
+    # the check.
+    for name, value in block_input_items(block):
+        if name != "restore-keys":
             continue
-        if saw_marker and prefix in text:
+        if prefix in value:
             return True
+        if value.strip() not in ("|", ">", "|-", ">-", "|+", ">+"):
+            continue
+        for marker_idx, line in enumerate(block):
+            text = strip_comment(line)
+            if "restore-keys:" not in text:
+                continue
+            marker_indent = len(line) - len(line.lstrip(" "))
+            for child in block[marker_idx + 1:]:
+                child_text = strip_comment(child)
+                if not child_text.strip():
+                    continue
+                child_indent = len(child) - len(child.lstrip(" "))
+                if child_indent <= marker_indent:
+                    break
+                if prefix in child_text:
+                    return True
+            break
     return False
 
 

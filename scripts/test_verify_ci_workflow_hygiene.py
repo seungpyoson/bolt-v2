@@ -1239,6 +1239,36 @@ def main() -> int:
             "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - name: Install zig",
         ),
     )
+    # #400 parser tightness: the inline-scalar form of restore-keys is a valid
+    # YAML alternative to the block-scalar (`|`) form. The verifier must accept
+    # both. Uses clippy's block-scalar declaration as the conversion source.
+    assert_clean(
+        workflow=replace_once(
+            BASE_WORKFLOW,
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+        ),
+    )
+    # #400 parser tightness: a restore-keys block-scalar declaring an unrelated
+    # cache family prefix must fail the per-job prefix check.
+    assert_error(
+        "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: |\n            nextest-archive-v1-\n      - run: just clippy",
+        ),
+    )
+    # #400 parser tightness: an empty block-scalar body (no prefix line under
+    # `restore-keys: |`) must not be treated as a satisfied restore-keys.
+    assert_error(
+        "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: |\n      - run: just clippy",
+        ),
+    )
     assert_error(
         "test-archive build must be skipped on archive cache hit",
         replace_once(

@@ -46,7 +46,7 @@ Design details are in [data-model.md](data-model.md) and [quickstart.md](quickst
 
 Implementation surfaces:
 
-- `.github/workflows/ci.yml`: add `source-fence`, make `test` depend on it, add it to `gate`.
+- `.github/workflows/ci.yml`: add `source-fence`, ~~make `test` depend on it,~~ add it to `gate`. **Superseded by #400** (PR #401): the `test`/`test-archive` -> `source-fence` dep was removed; the lanes run in parallel and `gate` enforces both.
 - `justfile`: add `source-fence` recipe and narrow linter invariants for job/gate/test dependencies.
 - `scripts/verify_bolt_v3_pure_rust_runtime.py`: new pure-Rust runtime verifier.
 - `scripts/verify_bolt_v3_status_map_current.py`: new status-map evidence verifier.

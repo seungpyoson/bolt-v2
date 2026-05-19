@@ -8,7 +8,8 @@ use bolt_v2::{
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
         CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, LIVE_NODE_BUILD_STAGE,
         NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
-        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
+        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
+        STATUS_KEY, STATUS_SATISFIED,
     },
 };
 use sha2::{Digest, Sha256};
@@ -228,10 +229,7 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
     loaded.root.risk.default_max_notional_per_order = " 10.00 ".to_string();
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report(
-        &report_path,
-        &[("connect", "satisfied"), ("disconnect", "satisfied")],
-    );
+    write_no_submit_report(&report_path, &[]);
 
     let loaded = loaded_with_live_canary(
         loaded,
@@ -265,7 +263,7 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
     loaded.root.risk.default_max_notional_per_order = "10.00".to_string();
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report(&report_path, &[("connect", "satisfied")]);
+    write_no_submit_report(&report_path, &[]);
 
     let loaded = loaded_with_live_canary(
         loaded,
@@ -406,7 +404,7 @@ async fn live_canary_gate_rejects_empty_stage_report() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_linked_report_value(&report_path, serde_json::json!({ "stages": [] }));
+    write_linked_report_value(&report_path, serde_json::json!({ STAGES_KEY: [] }));
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -476,10 +474,7 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report(
-        &report_path,
-        &[("connect", "satisfied"), ("disconnect", "blocked")],
-    );
+    write_no_submit_report(&report_path, &[(CONTROLLED_DISCONNECT_STAGE, "blocked")]);
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -499,7 +494,9 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
     match error {
         BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
             assert!(
-                reasons.iter().any(|reason| reason.contains("disconnect")),
+                reasons
+                    .iter()
+                    .any(|reason| reason.contains(CONTROLLED_DISCONNECT_STAGE)),
                 "error should name the blocked stage, got {reasons:?}"
             );
         }
@@ -579,7 +576,8 @@ async fn live_canary_gate_rejects_malformed_no_submit_report_json() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"{"stages":["#).expect("report fixture should be written");
+    std::fs::write(&report_path, format!(r#"{{"{STAGES_KEY}":["#))
+        .expect("report fixture should be written");
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -611,7 +609,7 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report(&report_path, &[("connect", "satisfied")]);
+    write_no_submit_report(&report_path, &[]);
     let report_len = std::fs::metadata(&report_path)
         .expect("report metadata should be readable")
         .len();
@@ -638,7 +636,7 @@ async fn live_canary_gate_rejects_no_submit_report_above_configured_byte_cap() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"{"stages":[]}"#).expect("report fixture should be written");
+    write_report_value(&report_path, serde_json::json!({ STAGES_KEY: [] }));
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -670,7 +668,8 @@ async fn live_canary_gate_distinguishes_non_object_report_from_missing_stages() 
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"["satisfied"]"#).expect("report fixture should be written");
+    std::fs::write(&report_path, format!(r#"["{STATUS_SATISFIED}"]"#))
+        .expect("report fixture should be written");
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -709,7 +708,10 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_linked_report_value(&report_path, serde_json::json!({ "stages": "satisfied" }));
+    write_linked_report_value(
+        &report_path,
+        serde_json::json!({ STAGES_KEY: STATUS_SATISFIED }),
+    );
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -791,7 +793,11 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report_with_stage_field(&report_path, "stage", &[("connect", "SATISFIED")]);
+    write_no_submit_report_with_stage_field(
+        &report_path,
+        STAGE_KEY,
+        &[(CONTROLLED_CONNECT_STAGE, "SATISFIED")],
+    );
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -827,7 +833,7 @@ fn loaded_without_live_canary(loaded: LoadedBoltV3Config) -> LoadedBoltV3Config 
 }
 
 fn write_no_submit_report(path: &std::path::Path, stages: &[(&str, &str)]) {
-    write_no_submit_report_with_stage_field(path, "stage", stages);
+    write_no_submit_report_with_stage_field(path, STAGE_KEY, stages);
 }
 
 fn write_no_submit_report_with_linkage(
@@ -846,7 +852,7 @@ fn write_no_submit_report_with_linkage(
         REPORT_WRITE_STAGE,
     ]
     .into_iter()
-    .map(|stage| serde_json::json!({ "stage": stage, "status": "satisfied" }))
+    .map(|stage| serde_json::json!({ STAGE_KEY: stage, STATUS_KEY: STATUS_SATISFIED }))
     .collect::<Vec<_>>();
     write_report_value(
         path,
@@ -855,7 +861,7 @@ fn write_no_submit_report_with_linkage(
             APPROVAL_ID_HASH_KEY: approval_id_hash,
             EXECUTABLE_IDENTITY_KEY: executable_identity,
             CONFIG_BUNDLE_CHECKSUM_KEY: config_bundle_checksum,
-            "stages": stages,
+            STAGES_KEY: stages,
         }),
     );
 }
@@ -874,7 +880,7 @@ fn write_linked_report_value(path: &std::path::Path, value: serde_json::Value) {
         .expect("linked report fixture must be an object")
         .clone();
     let mut linkage = linked_report_object(Vec::new());
-    linkage.remove("stages");
+    linkage.remove(STAGES_KEY);
     for (key, value) in linkage {
         object.entry(key).or_insert(value);
     }
@@ -905,7 +911,7 @@ fn linked_report_object(
                 .config_bundle_checksum
         ),
     );
-    object.insert("stages".to_string(), serde_json::Value::Array(stages));
+    object.insert(STAGES_KEY.to_string(), serde_json::Value::Array(stages));
     object
 }
 
@@ -920,7 +926,7 @@ fn complete_stage_values() -> Vec<serde_json::Value> {
         REPORT_WRITE_STAGE,
     ]
     .into_iter()
-    .map(|stage| serde_json::json!({ "stage": stage, "status": "satisfied" }))
+    .map(|stage| serde_json::json!({ STAGE_KEY: stage, STATUS_KEY: STATUS_SATISFIED }))
     .collect()
 }
 
@@ -939,7 +945,7 @@ fn write_no_submit_report_with_stage_field(
         REPORT_WRITE_STAGE,
     ]
     .into_iter()
-    .map(|stage| (stage, "satisfied"))
+    .map(|stage| (stage, STATUS_SATISFIED))
     .collect::<Vec<_>>();
     for &(stage, status) in stages {
         if let Some(existing) = complete_stages
@@ -953,9 +959,9 @@ fn write_no_submit_report_with_stage_field(
     }
     let stages: Vec<_> = complete_stages
         .iter()
-        .map(|(stage, status)| serde_json::json!({ stage_field: stage, "status": status }))
+        .map(|(stage, status)| serde_json::json!({ stage_field: stage, STATUS_KEY: status }))
         .collect();
-    write_linked_report_value(path, serde_json::json!({ "stages": stages }));
+    write_linked_report_value(path, serde_json::json!({ STAGES_KEY: stages }));
 }
 
 fn current_executable_identity() -> String {

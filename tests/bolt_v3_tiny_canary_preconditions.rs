@@ -6,7 +6,8 @@ use bolt_v2::{
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
         CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, LIVE_NODE_BUILD_STAGE,
         NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
-        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGES_KEY,
+        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
+        STATUS_KEY, STATUS_SATISFIED,
     },
     bolt_v3_tiny_canary_evidence::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryOutcome,
@@ -2974,15 +2975,14 @@ fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
         EXECUTABLE_IDENTITY_KEY: current_executable_identity(),
         CONFIG_BUNDLE_CHECKSUM_KEY: loaded.config_bundle_checksum,
         STAGES_KEY: [
-            {"stage": OPERATOR_APPROVAL_STAGE, "status": "satisfied"},
-            {"stage": SECRET_RESOLUTION_STAGE, "status": "satisfied"},
-            {"stage": LIVE_NODE_BUILD_STAGE, "status": "satisfied"},
-            {"stage": CONTROLLED_CONNECT_STAGE, "status": "satisfied"},
-            {"stage": REFERENCE_READINESS_STAGE, "status": "satisfied"},
-            {"stage": CONTROLLED_DISCONNECT_STAGE, "status": "satisfied"},
-            {"stage": REPORT_WRITE_STAGE, "status": "satisfied"}
-        ],
-        "redactions": []
+            {STAGE_KEY: OPERATOR_APPROVAL_STAGE, STATUS_KEY: STATUS_SATISFIED},
+            {STAGE_KEY: SECRET_RESOLUTION_STAGE, STATUS_KEY: STATUS_SATISFIED},
+            {STAGE_KEY: LIVE_NODE_BUILD_STAGE, STATUS_KEY: STATUS_SATISFIED},
+            {STAGE_KEY: CONTROLLED_CONNECT_STAGE, STATUS_KEY: STATUS_SATISFIED},
+            {STAGE_KEY: REFERENCE_READINESS_STAGE, STATUS_KEY: STATUS_SATISFIED},
+            {STAGE_KEY: CONTROLLED_DISCONNECT_STAGE, STATUS_KEY: STATUS_SATISFIED},
+            {STAGE_KEY: REPORT_WRITE_STAGE, STATUS_KEY: STATUS_SATISFIED}
+        ]
     });
     std::fs::create_dir_all(path.parent().expect("report parent should exist"))
         .expect("report parent should create");

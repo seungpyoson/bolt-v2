@@ -201,7 +201,7 @@ jobs:
           save-if: ${{ github.job == 'test-archive' }}
       - name: Restore nextest archive
         id: nextest-archive-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
@@ -218,7 +218,7 @@ jobs:
           just test-archive "$NEXTEST_ARCHIVE_PATH"
       - name: Save nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
@@ -1179,7 +1179,7 @@ def main() -> int:
         "test-archive must restore nextest archive cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Restore nextest archive\n        id: nextest-archive-cache\n        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0\n",
+            "      - name: Restore nextest archive\n        id: nextest-archive-cache\n        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
             "",
         ),
     )
@@ -1187,7 +1187,7 @@ def main() -> int:
         "test-archive must save nextest archive cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Save nextest archive\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0\n",
+            "      - name: Save nextest archive\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
             "",
         ),
     )

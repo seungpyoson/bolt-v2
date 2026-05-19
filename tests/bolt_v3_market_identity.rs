@@ -869,7 +869,7 @@ fn validate_module_must_not_own_provider_client_validation() {
         "validate_polymarket_venue",
         "validate_binance_venue",
         // Polymarket execution-shape policy.
-        "validate_polymarket_funder_address",
+        "validate_polymarket_funder",
         "check_evm_address_syntax",
         // Provider data/execution bounds policy.
         "validate_polymarket_data_bounds",

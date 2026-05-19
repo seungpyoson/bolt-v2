@@ -237,7 +237,7 @@ timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
 timeout_disconnection_secs = 10
 delay_post_stop_secs = 5
-timeout_shutdown_secs = 10
+timeout_shutdown = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -332,7 +332,7 @@ venue = "POLYMARKET"
 [clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
-funder_address = "0x1111111111111111111111111111111111111111"
+funder = "0x1111111111111111111111111111111111111111"
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 base_url_data_api = "https://data-api.polymarket.com"

@@ -403,7 +403,7 @@ kind = "string"
 literal = "\"0x\""
 context = "let rest = value.strip_prefix(\"0x\").ok_or(\"missing `0x` prefix\")?;"
 classification = "evm_address_syntax_gate"
-reason = "This is the required EVM hexadecimal address prefix enforced by Polymarket funder-address validation."
+reason = "This is the required EVM hexadecimal address prefix enforced by Polymarket funder validation."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
@@ -448,16 +448,16 @@ reason = "This label names the Polymarket data config field being validated in a
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
-literal = "\"update_instruments_interval_minutes\""
-context = "\"update_instruments_interval_minutes\","
+literal = "\"update_instruments_interval_mins\""
+context = "\"update_instruments_interval_mins\","
 classification = "validation_field_label"
 reason = "This label names the Polymarket data config field being validated in a positive-integer check."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
-literal = "\"websocket_max_subscriptions_per_connection\""
-context = "\"websocket_max_subscriptions_per_connection\","
+literal = "\"ws_max_subscriptions\""
+context = "(\"ws_max_subscriptions\", data.ws_max_subscriptions),"
 classification = "validation_field_label"
 reason = "This label names the Polymarket data config field being validated in a positive-integer check."
 

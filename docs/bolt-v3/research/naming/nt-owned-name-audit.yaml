@@ -6,8 +6,8 @@
 #   Bolt/venue/product names.
 #
 # Scope:
-#   Canonical docs under docs/bolt-v3/2026-04-25-bolt-v3-*.md plus
-#   implementation files scanned by scripts/verify_bolt_v3_naming.py.
+#   Top-level bolt-v3 docs, bolt-v3 research artifacts, implementation
+#   files, fixtures, and tests scanned by scripts/verify_bolt_v3_naming.py.
 
 schema_version: 1
 nautilus_trader_revision: "38b912a8b0fe14e4046773973ff46a3b798b1e3e"
@@ -70,7 +70,9 @@ path_scoped_forbidden:
   - from: venue_name
     to: venue
     include_globs:
-      - docs/bolt-v3/[0-9]*-bolt-v3-*.md
+      - docs/bolt-v3/*.md
+      - docs/bolt-v3/research/**/*.yaml
+      - docs/bolt-v3/research/**/*.toml
       - docs/bolt-v3/research/runtime-capture/*.yaml
       - config/**/*.toml
       - contracts/**/*.toml
@@ -83,7 +85,9 @@ path_scoped_forbidden:
   - from: venue_config_key
     to: execution_client_id
     include_globs:
-      - docs/bolt-v3/[0-9]*-bolt-v3-*.md
+      - docs/bolt-v3/*.md
+      - docs/bolt-v3/research/**/*.yaml
+      - docs/bolt-v3/research/**/*.toml
       - src/bolt_v3_*.rs
       - src/bolt_v3_*/**/*.rs
       - tests/bolt_v3_*.rs
@@ -118,7 +122,9 @@ path_scoped_forbidden:
   - from: venue_kind
     to: venue
     include_globs:
-      - docs/bolt-v3/[0-9]*-bolt-v3-*.md
+      - docs/bolt-v3/*.md
+      - docs/bolt-v3/research/**/*.yaml
+      - docs/bolt-v3/research/**/*.toml
       - src/bolt_v3_*.rs
       - src/bolt_v3_*/**/*.rs
       - tests/bolt_v3_*.rs
@@ -126,7 +132,9 @@ path_scoped_forbidden:
   - from: "venues."
     to: "clients."
     include_globs:
-      - docs/bolt-v3/[0-9]*-bolt-v3-*.md
+      - docs/bolt-v3/*.md
+      - docs/bolt-v3/research/**/*.yaml
+      - docs/bolt-v3/research/**/*.toml
       - src/bolt_v3_*.rs
       - src/bolt_v3_*/**/*.rs
       - config/**/*.toml
@@ -135,6 +143,74 @@ path_scoped_forbidden:
       - tests/**/*.toml
       - tests/fixtures/**/*.toml
     reason: "Bolt-v3 config paths use `[clients.<id>]`; legacy `[venues.<id>]` table/path residues must fail source-fence"
+  - from: update_instruments_interval_minutes
+    to: update_instruments_interval_mins
+    include_globs:
+      - docs/bolt-v3/*.md
+      - docs/bolt-v3/research/**/*.yaml
+      - docs/bolt-v3/research/**/*.toml
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+      - tests/config_parsing.rs
+      - tests/fixtures/**/*.toml
+    reason: "PolymarketDataClientConfig owns update_instruments_interval_mins; minutes is an alias"
+  - from: websocket_max_subscriptions_per_connection
+    to: ws_max_subscriptions
+    include_globs:
+      - docs/bolt-v3/*.md
+      - docs/bolt-v3/research/**/*.yaml
+      - docs/bolt-v3/research/**/*.toml
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+      - tests/config_parsing.rs
+      - tests/fixtures/**/*.toml
+    reason: "PolymarketDataClientConfig owns ws_max_subscriptions; the long websocket alias is forbidden"
+  - from: funder_address
+    to: funder
+    include_globs:
+      - docs/bolt-v3/*.md
+      - docs/bolt-v3/research/**/*.yaml
+      - docs/bolt-v3/research/**/*.toml
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+      - tests/config_parsing.rs
+      - tests/fixtures/**/*.toml
+    reason: "PolymarketExecClientConfig owns funder; funder_address is an alias"
+  - from: timeout_shutdown_secs
+    to: timeout_shutdown
+    include_globs:
+      - docs/bolt-v3/*.md
+      - docs/bolt-v3/research/**/*.yaml
+      - docs/bolt-v3/research/**/*.toml
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+      - tests/config_parsing.rs
+      - tests/fixtures/**/*.toml
+    reason: "LiveNodeConfig owns timeout_shutdown; the TOML key must not rename it"
+  - from: seconds_to_expiry
+    to: seconds_to_market_end
+    include_globs:
+      - docs/bolt-v3/*.md
+      - docs/bolt-v3/research/**/*.yaml
+      - docs/bolt-v3/research/**/*.toml
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Bolt-v3 binary-oracle canary evidence names the selected market boundary as market_end"
+  - from: strategy_venue
+    to: execution_client_id
+    include_globs:
+      - docs/bolt-v3/*.md
+      - docs/bolt-v3/research/**/*.yaml
+      - docs/bolt-v3/research/**/*.toml
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Phase 8 evidence stores the strategy TOML execution_client_id, not an NT Venue"
 
 accepted_non_nt_names:
   - name: decision_trace_id
@@ -148,7 +224,7 @@ accepted_non_nt_names:
     reason: "Bolt market-selection attempt timestamp derived from NT node clock"
   - name: selected_market_observed_timestamp
     owner: bolt_derived
-    reason: "Bolt observation timestamp for selected-market facts"
+    reason: "Bolt observation timestamp for selected-market facts; represented as Unix milliseconds in Phase 8 evidence"
   - name: price_to_beat_observed_timestamp
     owner: venue_product_owned
     reason: "Timestamp for the Chainlink Data Streams benchmark observation, not an NT ts_event"

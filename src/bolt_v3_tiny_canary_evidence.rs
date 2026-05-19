@@ -53,7 +53,7 @@ pub enum Phase8CanaryBlockReason {
     StrategyInputSafetyAuditBlocked,
     LiveOrderCountCapNotOne,
     NonPositiveRealizedVolatility,
-    NonPositiveTimeToExpiry,
+    NonPositiveTimeToMarketEnd,
     NonPositiveSpotPrice,
     NonPositivePriceToBeatValue,
     NonPositiveExpectedEdgeBasisPoints,
@@ -83,7 +83,7 @@ pub struct Phase8StrategyInputSafetyAudit {
 
 pub struct Phase8StrategyInputSafetyInputs<'a> {
     pub realized_volatility: Decimal,
-    pub seconds_to_expiry: u64,
+    pub seconds_to_market_end: u64,
     pub spot_price: Decimal,
     pub price_to_beat_value: Decimal,
     pub expected_edge_basis_points: Decimal,
@@ -117,8 +117,8 @@ impl Phase8StrategyInputSafetyAudit {
         if inputs.realized_volatility <= Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveRealizedVolatility);
         }
-        if inputs.seconds_to_expiry == 0 {
-            block_reasons.push(Phase8CanaryBlockReason::NonPositiveTimeToExpiry);
+        if inputs.seconds_to_market_end == 0 {
+            block_reasons.push(Phase8CanaryBlockReason::NonPositiveTimeToMarketEnd);
         }
         if inputs.spot_price <= Decimal::ZERO {
             block_reasons.push(Phase8CanaryBlockReason::NonPositiveSpotPrice);
@@ -226,7 +226,7 @@ impl Phase8StrategyInputSafetyAudit {
             })?;
         let mut audit = Self::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
             realized_volatility,
-            seconds_to_expiry: raw.seconds_to_expiry,
+            seconds_to_market_end: raw.seconds_to_market_end,
             spot_price,
             price_to_beat_value,
             expected_edge_basis_points,
@@ -416,7 +416,7 @@ fn phase8_market_selection_start_is_nearest_next(
 #[serde(deny_unknown_fields)]
 struct Phase8StrategyInputEvidenceFile {
     realized_volatility: String,
-    seconds_to_expiry: u64,
+    seconds_to_market_end: u64,
     spot_price: String,
     price_to_beat_value: String,
     expected_edge_basis_points: String,
@@ -1612,7 +1612,7 @@ struct Phase8FinancialEnvelopeEvidenceFile {
     max_live_order_count: u32,
     max_notional_per_order: String,
     strategy_instance_id: String,
-    strategy_venue: String,
+    execution_client_id: String,
     configured_target_id: String,
     target_kind: String,
     rotating_market_family: String,
@@ -1697,7 +1697,7 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             max_live_order_count: live_canary.max_live_order_count,
             max_notional_per_order: live_canary.max_notional_per_order.clone(),
             strategy_instance_id: strategy.strategy_instance_id.clone(),
-            strategy_venue: strategy.execution_client_id.to_string(),
+            execution_client_id: strategy.execution_client_id.to_string(),
             configured_target_id: required_toml_string(target, stringify!(configured_target_id))?,
             target_kind: required_toml_string(target, stringify!(kind))?,
             rotating_market_family: required_toml_string(
@@ -1761,8 +1761,8 @@ impl Phase8FinancialEnvelopeEvidenceFile {
                 strategy_instance_id
             )));
         }
-        if self.strategy_venue != loaded.strategy_venue {
-            return Err(financial_envelope_mismatch(stringify!(strategy_venue)));
+        if self.execution_client_id != loaded.execution_client_id {
+            return Err(financial_envelope_mismatch(stringify!(execution_client_id)));
         }
         if self.configured_target_id != loaded.configured_target_id {
             return Err(financial_envelope_mismatch(stringify!(
@@ -1864,7 +1864,7 @@ fn financial_envelope_mismatch(field: &'static str) -> anyhow::Error {
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Phase8PreRunStateEvidenceFile {
-    strategy_venue: String,
+    execution_client_id: String,
     configured_target_id: String,
     host_clock_skew_within_bound: bool,
     host_clock_skew_evidence_hash: String,
@@ -1893,8 +1893,8 @@ struct Phase8PreRunStateEvidenceFile {
 
 impl Phase8PreRunStateEvidenceFile {
     fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
-        if self.strategy_venue != loaded.strategy_venue {
-            return Err(pre_run_state_mismatch(stringify!(strategy_venue)));
+        if self.execution_client_id != loaded.execution_client_id {
+            return Err(pre_run_state_mismatch(stringify!(execution_client_id)));
         }
         if self.configured_target_id != loaded.configured_target_id {
             return Err(pre_run_state_mismatch(stringify!(configured_target_id)));
@@ -2029,7 +2029,7 @@ fn pre_run_state_blocked(field: &'static str) -> anyhow::Error {
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Phase8AbortPlanEvidenceFile {
-    strategy_venue: String,
+    execution_client_id: String,
     configured_target_id: String,
     cancel_if_open_defined: bool,
     nt_accepted_venue_pending_abort_defined: bool,
@@ -2040,8 +2040,8 @@ struct Phase8AbortPlanEvidenceFile {
 
 impl Phase8AbortPlanEvidenceFile {
     fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
-        if self.strategy_venue != loaded.strategy_venue {
-            return Err(abort_plan_mismatch(stringify!(strategy_venue)));
+        if self.execution_client_id != loaded.execution_client_id {
+            return Err(abort_plan_mismatch(stringify!(execution_client_id)));
         }
         if self.configured_target_id != loaded.configured_target_id {
             return Err(abort_plan_mismatch(stringify!(configured_target_id)));

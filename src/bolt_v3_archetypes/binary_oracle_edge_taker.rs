@@ -223,7 +223,7 @@ pub fn register_runtime_strategy(
     let raw = raw_taker_config(context.strategy).map_err(|error| binding_error(&context, error))?;
     let parameters =
         parameters_block(context.strategy).map_err(|error| binding_error(&context, error))?;
-    let venue = context
+    let client = context
         .loaded
         .root
         .clients
@@ -239,7 +239,7 @@ pub fn register_runtime_strategy(
         })?;
     let fee_provider = polymarket::build_fee_provider(
         context.strategy.config.execution_client_id.as_str(),
-        venue,
+        client,
         context.resolved,
     )
     .map_err(|error| binding_message(&context, error.to_string()))?;

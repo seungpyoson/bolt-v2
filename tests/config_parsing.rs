@@ -99,7 +99,7 @@ fn bolt_v3_polymarket_account_id_uses_nt_typed_identifier() {
     let exec_toml = r#"
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
-funder_address = "0x1111111111111111111111111111111111111111"
+funder = "0x1111111111111111111111111111111111111111"
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 base_url_data_api = "https://data-api.polymarket.com"
@@ -122,7 +122,7 @@ fn bolt_v3_polymarket_account_id_rejects_empty_string_at_parse_time() {
     let exec_toml = r#"
 account_id = ""
 signature_type = "poly_proxy"
-funder_address = "0x1111111111111111111111111111111111111111"
+funder = "0x1111111111111111111111111111111111111111"
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 base_url_data_api = "https://data-api.polymarket.com"
@@ -138,6 +138,61 @@ ack_timeout_secs = 5
     assert!(
         rendered.contains("empty") || rendered.contains("invalid"),
         "rejection should explain the empty account_id, got: {rendered}"
+    );
+}
+
+#[test]
+fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
+    use bolt_v2::{
+        bolt_v3_config::BoltV3RootConfig,
+        bolt_v3_providers::polymarket::{PolymarketDataConfig, PolymarketExecutionConfig},
+    };
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let nt_named = fixture;
+
+    let parsed: BoltV3RootConfig =
+        toml::from_str(&nt_named).expect("NT-owned field names should parse");
+    let polymarket = parsed
+        .clients
+        .get("polymarket_main")
+        .expect("polymarket fixture client should exist");
+    let data: PolymarketDataConfig = polymarket
+        .data
+        .clone()
+        .expect("polymarket data block should exist")
+        .try_into()
+        .expect("polymarket data block should parse with NT names");
+    assert_eq!(data.update_instruments_interval_mins, 60);
+    assert_eq!(data.ws_max_subscriptions, 200);
+    let execution: PolymarketExecutionConfig = polymarket
+        .execution
+        .clone()
+        .expect("polymarket execution block should exist")
+        .try_into()
+        .expect("polymarket execution block should parse with NT names");
+    assert_eq!(
+        execution.funder.as_deref(),
+        Some("0x1111111111111111111111111111111111111111")
+    );
+    assert_eq!(parsed.nautilus.timeout_shutdown, 10);
+
+    let old_update = ["update_instruments", "_interval", "_minutes"].concat();
+    let old_ws = ["websocket", "_max_subscriptions", "_per_connection"].concat();
+    let old_funder = ["funder", "_address = "].concat();
+    let old_shutdown = ["timeout_shutdown", "_secs = "].concat();
+    let aliases = nt_named
+        .replace("update_instruments_interval_mins", &old_update)
+        .replace("ws_max_subscriptions", &old_ws)
+        .replace("funder = ", &old_funder)
+        .replace("timeout_shutdown = ", &old_shutdown);
+    let error = toml::from_str::<BoltV3RootConfig>(&aliases)
+        .expect_err("NT-owned alias field names should fail parse");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("unknown field"),
+        "alias rejection should come from deny_unknown_fields, got: {rendered}"
     );
 }
 
@@ -327,7 +382,7 @@ fn bolt_v3_strategy_execution_client_id_rejects_data_only_client_with_client_voc
         bolt_v3_validate::validate_strategies,
     };
 
-    let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nmax_retries = 3\nretry_delay_initial_ms = 250\nretry_delay_max_ms = 2000\nack_timeout_secs = 5\n\n";
+    let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nmax_retries = 3\nretry_delay_initial_ms = 250\nretry_delay_max_ms = 2000\nack_timeout_secs = 5\n\n";
     let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(execution_block, ""))
         .expect("data-only polymarket fixture should parse");
     let strategy: BoltV3StrategyConfig = toml::from_str(
@@ -1377,7 +1432,7 @@ timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
 timeout_disconnection_secs = 10
 delay_post_stop_secs = 5
-timeout_shutdown_secs = 10
+timeout_shutdown = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -1472,7 +1527,7 @@ venue = "POLYMARKET"
 [clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
-funder_address = "0x1111111111111111111111111111111111111111"
+funder = "0x1111111111111111111111111111111111111111"
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 base_url_data_api = "https://data-api.polymarket.com"
@@ -1519,7 +1574,7 @@ timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
 timeout_disconnection_secs = 10
 delay_post_stop_secs = 5
-timeout_shutdown_secs = 10
+timeout_shutdown = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -1677,7 +1732,7 @@ timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
 timeout_disconnection_secs = 10
 delay_post_stop_secs = 5
-timeout_shutdown_secs = 10
+timeout_shutdown = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -1777,13 +1832,13 @@ base_url_data_api = "https://data-api.polymarket.com"
 http_timeout_secs = 0
 ws_timeout_secs = 0
 subscribe_new_markets = false
-update_instruments_interval_minutes = 0
-websocket_max_subscriptions_per_connection = 0
+update_instruments_interval_mins = 0
+ws_max_subscriptions = 0
 
 [clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
-funder_address = "0x1111111111111111111111111111111111111111"
+funder = "0x1111111111111111111111111111111111111111"
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 base_url_data_api = "https://data-api.polymarket.com"
@@ -1806,8 +1861,8 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
     let expected = [
         "clients.polymarket_main.data.http_timeout_secs must be a positive integer",
         "clients.polymarket_main.data.ws_timeout_secs must be a positive integer",
-        "clients.polymarket_main.data.update_instruments_interval_minutes must be a positive integer",
-        "clients.polymarket_main.data.websocket_max_subscriptions_per_connection must be a positive integer",
+        "clients.polymarket_main.data.update_instruments_interval_mins must be a positive integer",
+        "clients.polymarket_main.data.ws_max_subscriptions must be a positive integer",
         "clients.polymarket_main.execution.http_timeout_secs must be a positive integer",
         "clients.polymarket_main.execution.max_retries must be a positive integer",
         "clients.polymarket_main.execution.retry_delay_initial_ms must be a positive integer",
@@ -2216,49 +2271,49 @@ fn rejects_ssm_paths_missing_leading_slash() {
 }
 
 #[test]
-fn rejects_polymarket_funder_address_with_invalid_evm_syntax() {
+fn rejects_polymarket_funder_with_invalid_evm_syntax() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "funder_address = \"0x1111111111111111111111111111111111111111\"",
-        "funder_address = \"0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\"",
+        "funder = \"0x1111111111111111111111111111111111111111\"",
+        "funder = \"0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\"",
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("invalid-funder fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
         messages.iter().any(|m| m.contains("polymarket_main")
-            && m.contains("funder_address")
+            && m.contains("funder")
             && m.contains("not a valid EVM public address")),
         "expected EVM-syntax validation error, got: {messages:#?}"
     );
 }
 
 #[test]
-fn rejects_polymarket_funder_address_zero_address() {
+fn rejects_polymarket_funder_zero_address() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "funder_address = \"0x1111111111111111111111111111111111111111\"",
-        "funder_address = \"0x0000000000000000000000000000000000000000\"",
+        "funder = \"0x1111111111111111111111111111111111111111\"",
+        "funder = \"0x0000000000000000000000000000000000000000\"",
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("zero-funder fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
         messages.iter().any(|m| m.contains("polymarket_main")
-            && m.contains("funder_address")
+            && m.contains("funder")
             && m.contains("zero address")),
         "expected zero-address validation error, got: {messages:#?}"
     );
 }
 
 #[test]
-fn rejects_missing_funder_address_for_poly_proxy_signature_type() {
+fn rejects_missing_funder_for_poly_proxy_signature_type() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "funder_address = \"0x1111111111111111111111111111111111111111\"\n",
+        "funder = \"0x1111111111111111111111111111111111111111\"\n",
         "",
     );
     let root: BoltV3RootConfig =
@@ -2266,18 +2321,18 @@ fn rejects_missing_funder_address_for_poly_proxy_signature_type() {
     let messages = validate_root_only(&root);
     assert!(
         messages.iter().any(|m| m.contains("polymarket_main")
-            && m.contains("funder_address")
+            && m.contains("funder")
             && m.contains("required when signature_type is `poly_proxy` or `poly_gnosis_safe`")),
         "expected required-funder validation error, got: {messages:#?}"
     );
 }
 
 #[test]
-fn allows_missing_funder_address_for_eoa_signature_type() {
+fn allows_missing_funder_for_eoa_signature_type() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let without_funder = replace_in_fixture_root(
-        "funder_address = \"0x1111111111111111111111111111111111111111\"\n",
+        "funder = \"0x1111111111111111111111111111111111111111\"\n",
         "",
     );
     let with_eoa = without_funder.replace(
@@ -2288,8 +2343,8 @@ fn allows_missing_funder_address_for_eoa_signature_type() {
         toml::from_str(&with_eoa).expect("eoa-without-funder fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
-        !messages.iter().any(|m| m.contains("funder_address")),
-        "EOA signature must allow absent funder_address, got: {messages:#?}"
+        !messages.iter().any(|m| m.contains("funder")),
+        "EOA signature must allow absent funder, got: {messages:#?}"
     );
 }
 
@@ -2316,7 +2371,7 @@ fn rejects_binance_data_zero_instrument_status_poll_secs() {
 fn rejects_polymarket_data_only_client_with_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder_address = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nmax_retries = 3\nretry_delay_initial_ms = 250\nretry_delay_max_ms = 2000\nack_timeout_secs = 5\n\n";
+    let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nmax_retries = 3\nretry_delay_initial_ms = 250\nretry_delay_max_ms = 2000\nack_timeout_secs = 5\n\n";
     let mutated = replace_in_fixture_root(execution_block, "");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("polymarket data-only secrets fixture should parse");
@@ -2355,7 +2410,7 @@ fn rejects_polymarket_data_subscribe_new_markets_true_in_current_slice() {
 fn rejects_more_than_one_polymarket_venue_in_current_slice() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let extra_venue = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nupdate_instruments_interval_minutes = 60\nwebsocket_max_subscriptions_per_connection = 200\n\n[clients.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
+    let extra_venue = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\n\n[clients.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = format!("{fixture}{extra_venue}");

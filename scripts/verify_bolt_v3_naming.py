@@ -25,7 +25,9 @@ CANONICAL_DOCS = [
     REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-contract-ledger.md",
 ]
 SCAN_GLOBS = [
-    "docs/bolt-v3/2026-04-25-bolt-v3-*.md",
+    "docs/bolt-v3/*.md",
+    "docs/bolt-v3/research/**/*.toml",
+    "docs/bolt-v3/research/**/*.yaml",
     "docs/bolt-v3/research/runtime-capture/*.yaml",
     "src/**/*.rs",
     "tests/**/*.rs",

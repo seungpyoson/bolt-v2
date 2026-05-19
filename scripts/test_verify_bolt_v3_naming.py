@@ -153,6 +153,19 @@ def test_scan_paths_excludes_audit_target_git_and_reviews() -> None:
         raise AssertionError(f"unexpected scanned paths: {sorted(paths)}")
 
 
+def test_default_scan_paths_cover_companion_docs_and_research_artifacts() -> None:
+    scanned = {path.relative_to(VERIFIER.REPO_ROOT).as_posix() for path in VERIFIER.scan_paths()}
+    required = {
+        "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md",
+        "docs/bolt-v3/2026-04-28-source-grounded-status-map.md",
+        "docs/bolt-v3/2026-05-18-production-readiness-contract.md",
+        "docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml",
+    }
+    missing = required - scanned
+    if missing:
+        raise AssertionError(f"default naming scan missing {sorted(missing)}")
+
+
 def test_main_reports_forbidden_and_required_names() -> None:
     original_root = VERIFIER.REPO_ROOT
     original_audit_path = VERIFIER.AUDIT_PATH
@@ -196,6 +209,7 @@ def main() -> int:
         test_load_audit_handles_inline_comments_and_single_quotes,
         test_word_regex_is_bounded_to_identifier_words,
         test_scan_paths_excludes_audit_target_git_and_reviews,
+        test_default_scan_paths_cover_companion_docs_and_research_artifacts,
         test_main_reports_forbidden_and_required_names,
     ]
     for test in tests:

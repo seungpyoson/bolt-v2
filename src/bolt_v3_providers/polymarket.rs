@@ -87,8 +87,8 @@ pub struct PolymarketDataConfig {
     pub http_timeout_secs: u64,
     pub ws_timeout_secs: u64,
     pub subscribe_new_markets: bool,
-    pub update_instruments_interval_minutes: u64,
-    pub websocket_max_subscriptions_per_connection: u64,
+    pub update_instruments_interval_mins: u64,
+    pub ws_max_subscriptions: u64,
 }
 
 /// NT's `impl_serialization_for_identifier!` macro deserializes typed
@@ -121,7 +121,7 @@ pub struct PolymarketExecutionConfig {
     /// where the EOA is itself the funder. Validation enforces this
     /// per-signature-type requirement and the EVM address syntax.
     #[serde(default)]
-    pub funder_address: Option<String>,
+    pub funder: Option<String>,
     pub base_url_http: String,
     pub base_url_ws: String,
     pub base_url_data_api: String,
@@ -207,7 +207,7 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
     if let Some(execution) = &client.execution {
         match execution.clone().try_into::<PolymarketExecutionConfig>() {
             Ok(parsed) => {
-                errors.extend(validate_funder_address(key, &parsed));
+                errors.extend(validate_funder(key, &parsed));
                 errors.extend(validate_execution_bounds(key, &parsed));
             }
             Err(message) => {
@@ -234,10 +234,10 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
     errors
 }
 
-fn validate_funder_address(key: &str, execution: &PolymarketExecutionConfig) -> Vec<String> {
+fn validate_funder(key: &str, execution: &PolymarketExecutionConfig) -> Vec<String> {
     let mut errors = Vec::new();
     let funder = execution
-        .funder_address
+        .funder
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
@@ -247,12 +247,12 @@ fn validate_funder_address(key: &str, execution: &PolymarketExecutionConfig) -> 
     );
     match (requires_funder, funder) {
         (true, None) => errors.push(format!(
-            "clients.{key}.execution.funder_address is required when signature_type is `poly_proxy` or `poly_gnosis_safe`"
+            "clients.{key}.execution.funder is required when signature_type is `poly_proxy` or `poly_gnosis_safe`"
         )),
         (_, Some(value)) => {
             if let Err(message) = check_evm_address_syntax(value) {
                 errors.push(format!(
-                    "clients.{key}.execution.funder_address is not a valid EVM public address ({message}): `{value}`"
+                    "clients.{key}.execution.funder is not a valid EVM public address ({message}): `{value}`"
                 ));
             }
         }
@@ -281,13 +281,10 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
         ("http_timeout_secs", data.http_timeout_secs),
         ("ws_timeout_secs", data.ws_timeout_secs),
         (
-            "update_instruments_interval_minutes",
-            data.update_instruments_interval_minutes,
+            "update_instruments_interval_mins",
+            data.update_instruments_interval_mins,
         ),
-        (
-            "websocket_max_subscriptions_per_connection",
-            data.websocket_max_subscriptions_per_connection,
-        ),
+        ("ws_max_subscriptions", data.ws_max_subscriptions),
     ];
     for (field, value) in positive_fields {
         if *value == 0 {
@@ -476,7 +473,7 @@ pub fn build_fee_provider(
         Some(secrets.api_key.clone()),
         Some(secrets.api_secret.clone()),
         Some(secrets.passphrase.clone()),
-        cfg.funder_address.clone(),
+        cfg.funder.clone(),
     )
     .map_err(|error| BoltV3AdapterMappingError::ValidationInvariant {
         client_key: client_key.to_string(),
@@ -519,15 +516,16 @@ fn map_data(
             message: "must be false before mapping to NT because pinned NT subscribes to all Polymarket markets when this flag is true".to_string(),
         });
     }
-    let ws_max_subscriptions = usize::try_from(cfg.websocket_max_subscriptions_per_connection)
-        .map_err(|_| BoltV3AdapterMappingError::NumericRange {
+    let ws_max_subscriptions = usize::try_from(cfg.ws_max_subscriptions).map_err(|_| {
+        BoltV3AdapterMappingError::NumericRange {
             client_key: client_key.to_string(),
-            field: "data.websocket_max_subscriptions_per_connection",
+            field: "data.ws_max_subscriptions",
             message: format!(
                 "value {} does not fit in usize on this target",
-                cfg.websocket_max_subscriptions_per_connection
+                cfg.ws_max_subscriptions
             ),
-        })?;
+        }
+    })?;
     let filters = build_market_slug_filters_for_client(plan, client_key, clock);
     Ok(PolymarketDataClientConfig {
         base_url_http: Some(cfg.base_url_http),
@@ -537,7 +535,7 @@ fn map_data(
         http_timeout_secs: cfg.http_timeout_secs,
         ws_timeout_secs: cfg.ws_timeout_secs,
         ws_max_subscriptions,
-        update_instruments_interval_mins: cfg.update_instruments_interval_minutes,
+        update_instruments_interval_mins: cfg.update_instruments_interval_mins,
         subscribe_new_markets: cfg.subscribe_new_markets,
         auto_load_missing_instruments: false,
         auto_load_debounce_ms: 100,
@@ -613,7 +611,7 @@ fn map_execution(
         api_key: Some(secrets.api_key.clone()),
         api_secret: Some(secrets.api_secret.clone()),
         passphrase: Some(secrets.passphrase.clone()),
-        funder: cfg.funder_address,
+        funder: cfg.funder,
         signature_type: nt_signature_type(cfg.signature_type),
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),

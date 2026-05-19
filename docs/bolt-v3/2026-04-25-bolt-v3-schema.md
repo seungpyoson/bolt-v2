@@ -97,7 +97,7 @@ timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
 timeout_disconnection_secs = 10
 delay_post_stop_secs = 5
-timeout_shutdown_secs = 10
+timeout_shutdown = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -203,13 +203,13 @@ base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClient
 http_timeout_secs = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
 ws_timeout_secs = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
 subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets — forced false in current bolt-v3 scope
-update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
-websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
+update_instruments_interval_mins = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
+ws_max_subscriptions = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 
 [clients.polymarket_main.execution]
 account_id = "POLYMARKET-001" # NT: nautilus_model::identifiers::AccountId
 signature_type = "poly_proxy" # NT: nautilus_polymarket::common::enums::SignatureType
-funder_address = "0x1111111111111111111111111111111111111111" # NT: PolymarketExecClientConfig.funder
+funder = "0x1111111111111111111111111111111111111111" # NT: PolymarketExecClientConfig.funder
 base_url_http = "https://clob.polymarket.com" # NT: PolymarketExecClientConfig.base_url_http
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user" # NT: PolymarketExecClientConfig.base_url_ws
 base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketExecClientConfig.base_url_data_api
@@ -281,7 +281,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 - type: string enum
 - required: yes
 - current allowed value for live trading:
-  - `live`
+  - `Live`
 - any other value fails validation
 
 ### `[nautilus]`
@@ -329,7 +329,7 @@ The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-le
 - maps to Nautilus `LiveNodeConfig.delay_post_stop`
 - note: Nautilus builder helper naming uses `with_delay_post_stop_secs`, but the config field itself is `delay_post_stop`
 
-#### `timeout_shutdown_secs`
+#### `timeout_shutdown`
 
 - type: positive integer
 - required: yes
@@ -625,6 +625,8 @@ This section is optional for parse/build-only checks and required before `run_bo
 
 The `[live_canary]` TOML block is necessary but not sufficient for the one tiny-capital canary operator harness. Before live runner entry, the ignored Phase 8 harness also requires an operator-supplied evidence envelope through these environment fields. Values are evidence paths, sha256s, timestamps, or hashed identifiers; do not put secret values in these fields.
 
+These environment names belong to the ignored operator harness, not the production `src/bolt_v3_*` runtime literal audit. The production runtime literal verifier intentionally scans only production bolt-v3 sources.
+
 #### Approval and preflight fields
 
 - `BOLT_V3_PHASE8_HEAD_SHA`: exact commit SHA approved for the attempt
@@ -669,7 +671,7 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 `strategy_input_evidence` fields:
 
 - `realized_volatility`: decimal string, positive
-- `seconds_to_expiry`: integer seconds, positive
+- `seconds_to_market_end`: integer seconds, positive
 - `spot_price`: decimal string, positive
 - `price_to_beat_value`: decimal string, positive
 - `expected_edge_basis_points`: decimal string, positive and equal to `worst_case_edge_basis_points`
@@ -686,7 +688,7 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 - `market_selection_source_sha256`: required sha256 when `market_selection_outcome = "next"`
 - `market_selection_outcome`: string enum, `current` or `next`
 - `polymarket_condition_id`, `polymarket_market_slug`, `polymarket_question_id`, `up_instrument_id`, `down_instrument_id`: selected-market identifiers
-- `selected_market_observed_timestamp`: integer timestamp, non-zero
+- `selected_market_observed_timestamp`: integer milliseconds, non-zero
 - `polymarket_market_start_timestamp_ms`, `polymarket_market_end_timestamp_ms`: integer milliseconds, selected start must precede selected end
 
 `market_selection_result` source artifact fields:
@@ -697,14 +699,14 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 - `candidate_market_start_timestamps_ms`: non-empty integer-millisecond list used for nearest-next approval
 - `market_selection_outcome`: string enum, must match strategy-input evidence
 - `polymarket_condition_id`, `polymarket_market_slug`, `polymarket_question_id`, `up_instrument_id`, `down_instrument_id`: selected-market identifiers matching strategy-input evidence
-- `selected_market_observed_timestamp`: integer timestamp matching strategy-input evidence
+- `selected_market_observed_timestamp`: integer milliseconds matching strategy-input evidence
 - `polymarket_market_start_timestamp_ms`, `polymarket_market_end_timestamp_ms`: integer milliseconds matching strategy-input evidence
 
 `financial_envelope` fields:
 
 - `max_live_order_count`: integer, must equal `1`
 - `max_notional_per_order`: decimal string matching `[live_canary].max_notional_per_order`
-- `strategy_instance_id`, `strategy_venue`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`: strings matching the loaded strategy/TOML
+- `strategy_instance_id`, `execution_client_id`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`: strings matching the loaded strategy/TOML
 - `cadence_secs`, `retry_interval_secs`, `blocked_after_secs`: integer seconds matching the loaded target runtime
 - `market_selection_rule`: string matching the loaded target runtime
 - `price_to_beat_source`: string matching `[parameters.runtime].price_to_beat_source`
@@ -716,14 +718,14 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 
 `pre_run_state` fields:
 
-- `strategy_venue`, `configured_target_id`: strings matching the financial envelope
+- `execution_client_id`, `configured_target_id`: strings matching the financial envelope
 - `host_clock_skew_within_bound`, `conflicting_open_orders_absent`, `preexisting_position_absent`, `market_state_approved`, `market_window_approved`, `funding_margin_covers_max_notional_plus_fees`, `single_runner_lock_acquired`, `egress_identity_approved`, `clob_v2_adapter_signing_verified`, `clob_v2_collateral_accounting_verified`, `clob_v2_fee_behavior_verified`, `release_manifest_nt_revision_matches_compiled_pin`: booleans, all must be `true`
 - `host_clock_skew_evidence_hash`, `venue_account_state_evidence_hash`, `market_state_evidence_hash`, `funding_margin_evidence_hash`, `single_runner_lock_evidence_hash`, `egress_identity_evidence_hash`, `clob_v2_adapter_signing_evidence_hash`, `clob_v2_collateral_accounting_evidence_hash`, `clob_v2_fee_behavior_evidence_hash`, `release_manifest_evidence_hash`: sha256 bindings to operator-held evidence artifacts
 - `release_manifest_clob_signing_version`: non-empty string for the CLOB V2 signing release proof
 
 `abort_plan` fields:
 
-- `strategy_venue`, `configured_target_id`: strings matching the financial envelope
+- `execution_client_id`, `configured_target_id`: strings matching the financial envelope
 - `cancel_if_open_defined`, `nt_accepted_venue_pending_abort_defined`, `partial_fill_abort_defined`, `network_partition_during_submit_abort_defined`, `panic_gate_trip_abort_defined`: booleans, all must be `true`
 
 Live-result proof JSON files:
@@ -822,14 +824,14 @@ Presence of `[data]` means a data client is configured.
 - the pinned NautilusTrader Polymarket data client calls `ws_client.subscribe_market(vec![])` from inside its `connect()` when this flag is `true`, which is effectively an all-markets subscription and violates the bolt-v3 controlled-connect boundary
 - this flag is forced `false` until the dedicated market-subscription slice owns the controlled-subscribe path
 
-##### `update_instruments_interval_minutes`
+##### `update_instruments_interval_mins`
 
 - type: positive integer
 - required: yes
 - background Polymarket adapter refresh interval only
 - not the sole mechanism keeping current rotating-market data loaded
 
-##### `websocket_max_subscriptions_per_connection`
+##### `ws_max_subscriptions`
 
 - type: positive integer
 - required: yes
@@ -864,13 +866,13 @@ Meaning:
 
 bolt parses this string enum and maps it to the current pinned Nautilus/Polymarket integer enum required by the adapter.
 
-#### `funder_address`
+#### `funder`
 
 - type: optional string
 - required: yes for Polymarket execution when `signature_type` is `poly_proxy` or `poly_gnosis_safe`
 - allowed absent for `signature_type = "eoa"`
 - this is a public address, not a secret value
-- it lives in the root venue execution config, not in `[secrets]`
+- it lives in the root client execution config, not in `[secrets]`
 - zero address is invalid when the selected signature path requires a real funder wallet
 
 #### `max_retries`
@@ -905,8 +907,8 @@ The current schema also requires these pinned adapter fields to be explicit:
 
 ### `[clients.<identifier>.secrets]`
 
-Presence of `[secrets]` means the venue requires credential resolution.
-The block must be consumed by an adapter in the same venue:
+Presence of `[secrets]` means the client requires credential resolution.
+The block must be consumed by an adapter in the same client:
 
 - Polymarket `[secrets]` is allowed only when `[execution]` is present
 - Binance `[secrets]` is allowed only when `[data]` is present
@@ -1181,7 +1183,7 @@ This section is optional.
 
 If present:
 
-- each block references a root venue that includes `[data]`
+- each block references a root client that includes `[data]`
 - each block declares the exact NautilusTrader `instrument_id` the strategy subscribes to
 - for the current `binary_oracle_edge_taker`, the required role name is `primary`
 
@@ -1292,7 +1294,7 @@ For the current `binary_oracle_edge_taker` archetype:
 
 - type: decimal string
 - required
-- maximum cumulative gross USDC entry-cost exposure the strategy may target for the selected market
+- maximum cumulative gross pUSD entry-cost exposure the strategy may target for the selected market
 - fees are not included in this cap
 - runtime capacity computation is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 7.3
 
@@ -1334,18 +1336,18 @@ Must fail if:
 - any unknown field is present
 - a strategy file path is duplicated
 - a referenced file does not exist
-- a venue reference points to a missing venue
+- a client reference points to a missing client
 - a strategy `execution_client_id` points to a data-only client (no `[execution]` block)
 - a reference-data `data_client_id` points to a client without `[data]`
 - more than one `[clients.<identifier>]` block declares the same `venue` (NT `Venue` identifier) in the current one-client-per-venue slice
-- a `[secrets]` block is present without the same venue's consuming adapter block
+- a `[secrets]` block is present without the same client's consuming adapter block
 - an SSM parameter path is empty or does not start with `/`
 - two listed strategy files declare the same `strategy_instance_id`
 - two listed strategy files declare the same `order_id_tag`
 - two configured targets declare the same `configured_target_id`
 - `signature_type` is not one of the allowed strings
-- Polymarket `signature_type = "poly_proxy"` or `signature_type = "poly_gnosis_safe"` is missing a non-zero `funder_address`
-- Polymarket `funder_address`, when present, is not a `0x`-prefixed 40-hex-character non-zero EVM address
+- Polymarket `signature_type = "poly_proxy"` or `signature_type = "poly_gnosis_safe"` is missing a non-zero `funder`
+- Polymarket `funder`, when present, is not a `0x`-prefixed 40-hex-character non-zero EVM address
 - `target.kind = "rotating_market"` includes fields not valid for rotating-market targets
 - `target.kind = "instrument"` is selected before instrument targets are added by a future contract slice
 - `target.underlying_asset` is empty, longer than 32 characters, or contains characters outside uppercase ASCII letters, digits, and underscore
@@ -1387,7 +1389,7 @@ timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
 timeout_disconnection_secs = 10
 delay_post_stop_secs = 5
-timeout_shutdown_secs = 10
+timeout_shutdown = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -1493,13 +1495,13 @@ base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClient
 http_timeout_secs = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
 ws_timeout_secs = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
 subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets — forced false in current bolt-v3 scope
-update_instruments_interval_minutes = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
-websocket_max_subscriptions_per_connection = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
+update_instruments_interval_mins = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
+ws_max_subscriptions = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 
 [clients.polymarket_main.execution]
 account_id = "POLYMARKET-001" # NT: nautilus_model::identifiers::AccountId
 signature_type = "poly_proxy" # NT: nautilus_polymarket::common::enums::SignatureType
-funder_address = "0x1111111111111111111111111111111111111111" # NT: PolymarketExecClientConfig.funder
+funder = "0x1111111111111111111111111111111111111111" # NT: PolymarketExecClientConfig.funder
 base_url_http = "https://clob.polymarket.com" # NT: PolymarketExecClientConfig.base_url_http
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user" # NT: PolymarketExecClientConfig.base_url_ws
 base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketExecClientConfig.base_url_data_api

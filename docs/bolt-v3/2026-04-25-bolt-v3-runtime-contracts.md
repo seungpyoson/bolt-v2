@@ -448,7 +448,7 @@ Exact fields:
 Definitions:
 
 - `selected_market` = the `selected_market` shape from Section 6.2
-- `selected_market_observed_timestamp` = the timestamp when the selected market facts were observed
+- `selected_market_observed_timestamp` = Unix milliseconds when the selected market facts were observed
 - `price_to_beat_value` = decoded Chainlink Data Streams benchmark price from `GET /api/v1/reports?feedID=<feed_id>&timestamp=<boundary_unix>`
 - `price_to_beat_observed_timestamp` = the timestamp when `price_to_beat_value` was observed
 - `price_to_beat_source` is configured by `[parameters.runtime].price_to_beat_source`; current launch-scope value:

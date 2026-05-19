@@ -281,7 +281,7 @@ impl Phase8StrategyInputSafetyAudit {
             Phase8CanaryBlockReason::InvalidMarketSelectionBinding,
         );
         audit.block_if(
-            raw.selected_market_observed_timestamp == u64::MIN
+            raw.selected_market_observed_timestamp_ms == u64::MIN
                 || raw.market_selection_timestamp_ms == u64::MIN
                 || raw.polymarket_market_start_timestamp_ms == u64::MIN
                 || raw.polymarket_market_end_timestamp_ms
@@ -366,7 +366,7 @@ fn phase8_market_selection_source_matches_strategy(
         && source.polymarket_question_id.trim() == raw.polymarket_question_id.trim()
         && source.up_instrument_id.trim() == raw.up_instrument_id.trim()
         && source.down_instrument_id.trim() == raw.down_instrument_id.trim()
-        && source.selected_market_observed_timestamp == raw.selected_market_observed_timestamp
+        && source.selected_market_observed_timestamp_ms == raw.selected_market_observed_timestamp_ms
         && source.polymarket_market_start_timestamp_ms == raw.polymarket_market_start_timestamp_ms
         && source.polymarket_market_end_timestamp_ms == raw.polymarket_market_end_timestamp_ms
 }
@@ -393,7 +393,7 @@ fn phase8_market_selection_outcome_matches_window(
             market_start_timestamp_ms,
             candidate_market_start_timestamps_ms,
         ),
-        _ => true,
+        _ => false,
     }
 }
 
@@ -437,7 +437,7 @@ struct Phase8StrategyInputEvidenceFile {
     polymarket_question_id: String,
     up_instrument_id: String,
     down_instrument_id: String,
-    selected_market_observed_timestamp: u64,
+    selected_market_observed_timestamp_ms: u64,
     polymarket_market_start_timestamp_ms: u64,
     polymarket_market_end_timestamp_ms: u64,
 }
@@ -455,7 +455,7 @@ struct Phase8MarketSelectionSourceEvidenceFile {
     polymarket_question_id: String,
     up_instrument_id: String,
     down_instrument_id: String,
-    selected_market_observed_timestamp: u64,
+    selected_market_observed_timestamp_ms: u64,
     polymarket_market_start_timestamp_ms: u64,
     polymarket_market_end_timestamp_ms: u64,
 }

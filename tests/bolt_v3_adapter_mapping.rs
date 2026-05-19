@@ -237,7 +237,7 @@ timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
 timeout_disconnection_secs = 10
 delay_post_stop_secs = 5
-timeout_shutdown = 10
+timeout_shutdown_secs = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true

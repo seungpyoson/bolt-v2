@@ -97,7 +97,7 @@ timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
 timeout_disconnection_secs = 10
 delay_post_stop_secs = 5
-timeout_shutdown = 10
+timeout_shutdown_secs = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -286,7 +286,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 ### `[nautilus]`
 
-The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-level `LiveNodeConfig` surfaces not represented here are intentionally disabled or empty in the Bolt-v3 builder path (`instance_id`, `cache`, `msgbus`, `portfolio`, `emulator`, `streaming`, `loop_debug`, `data_clients`, and `exec_clients`). They are not inherited from `LiveNodeConfig::default()`.
+The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-level `LiveNodeConfig` surfaces not represented here are intentionally disabled or empty in the Bolt-v3 builder path (`instance_id`, `cache`, `msgbus`, `portfolio`, `emulator`, `streaming`, `loop_debug`, `data_clients`, and `exec_clients`). They are not inherited from `LiveNodeConfig::default()`. Duration-valued TOML fields use explicit `_secs` suffixes because the operator file stores integer seconds; the Rust mapper converts those integers into NautilusTrader `Duration` fields such as `delay_post_stop` and `timeout_shutdown`.
 
 #### `load_state`
 
@@ -327,15 +327,15 @@ The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-le
 - type: non-negative integer
 - required: yes
 - maps to Nautilus `LiveNodeConfig.delay_post_stop`
-- note: Nautilus builder helper naming uses `with_delay_post_stop_secs`, but the config field itself is `delay_post_stop`
+- note: Nautilus builder helper naming uses `with_delay_post_stop_secs`; bolt-v3 TOML uses `delay_post_stop_secs` and maps to NT `delay_post_stop`
 
-#### `timeout_shutdown`
+#### `timeout_shutdown_secs`
 
 - type: positive integer
 - required: yes
 - maps to Nautilus live-node shutdown timeout, not a custom bolt concept
 - exact mapping target: Nautilus `LiveNodeConfig.timeout_shutdown`
-- note: Nautilus builder helper naming uses `with_delay_shutdown_secs`, but the config field itself is `timeout_shutdown`
+- note: Nautilus builder helper naming uses `with_delay_shutdown_secs`; bolt-v3 TOML uses `timeout_shutdown_secs` and maps to NT `timeout_shutdown`
 
 ### `[nautilus.data_engine]`
 
@@ -688,7 +688,7 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 - `market_selection_source_sha256`: required sha256 when `market_selection_outcome = "next"`
 - `market_selection_outcome`: string enum, `current` or `next`
 - `polymarket_condition_id`, `polymarket_market_slug`, `polymarket_question_id`, `up_instrument_id`, `down_instrument_id`: selected-market identifiers
-- `selected_market_observed_timestamp`: integer milliseconds, non-zero
+- `selected_market_observed_timestamp_ms`: integer milliseconds, non-zero
 - `polymarket_market_start_timestamp_ms`, `polymarket_market_end_timestamp_ms`: integer milliseconds, selected start must precede selected end
 
 `market_selection_result` source artifact fields:
@@ -699,7 +699,7 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 - `candidate_market_start_timestamps_ms`: non-empty integer-millisecond list used for nearest-next approval
 - `market_selection_outcome`: string enum, must match strategy-input evidence
 - `polymarket_condition_id`, `polymarket_market_slug`, `polymarket_question_id`, `up_instrument_id`, `down_instrument_id`: selected-market identifiers matching strategy-input evidence
-- `selected_market_observed_timestamp`: integer milliseconds matching strategy-input evidence
+- `selected_market_observed_timestamp_ms`: integer milliseconds matching strategy-input evidence
 - `polymarket_market_start_timestamp_ms`, `polymarket_market_end_timestamp_ms`: integer milliseconds matching strategy-input evidence
 
 `financial_envelope` fields:
@@ -1389,7 +1389,7 @@ timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
 timeout_disconnection_secs = 10
 delay_post_stop_secs = 5
-timeout_shutdown = 10
+timeout_shutdown_secs = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true

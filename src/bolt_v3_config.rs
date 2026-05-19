@@ -64,7 +64,7 @@ pub struct NautilusBlock {
     pub timeout_portfolio_secs: u64,
     pub timeout_disconnection_secs: u64,
     pub delay_post_stop_secs: u64,
-    pub timeout_shutdown: u64,
+    pub timeout_shutdown_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

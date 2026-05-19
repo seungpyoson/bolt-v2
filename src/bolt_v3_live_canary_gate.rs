@@ -22,7 +22,7 @@ use tokio::io::AsyncReadExt;
 use crate::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config},
     bolt_v3_no_submit_readiness_schema::{
-        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE, NAME_KEY,
+        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
         OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE,
         SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
     },
@@ -366,7 +366,6 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
                 for stage in stages {
                     let name = stage
                         .get(STAGE_KEY)
-                        .or_else(|| stage.get(NAME_KEY))
                         .and_then(Value::as_str)
                         .unwrap_or("<unnamed>");
                     present_stage_names.insert(name.to_string());

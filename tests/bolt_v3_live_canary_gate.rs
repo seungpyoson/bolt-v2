@@ -630,7 +630,7 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn live_canary_gate_reports_unsatisfied_stage_name_fallback() {
+async fn live_canary_gate_rejects_name_only_stage_field() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
@@ -649,13 +649,25 @@ async fn live_canary_gate_reports_unsatisfied_stage_name_fallback() {
 
     let error = check_bolt_v3_live_canary_gate(&loaded)
         .await
-        .expect_err("unsatisfied report with name fallback must fail closed");
+        .expect_err("report using stale name field must fail closed");
 
     match error {
         BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
             assert!(
-                reasons.iter().any(|reason| reason.contains("disconnect")),
-                "error should name the blocked stage from name fallback, got {reasons:?}"
+                reasons.iter().any(|reason| reason.contains("<unnamed>")),
+                "error should reject stale name-only stage as unnamed, got {reasons:?}"
+            );
+            assert!(
+                reasons
+                    .iter()
+                    .any(|reason| reason.contains("required stage `controlled_disconnect`")),
+                "error should treat stale name-only field as missing canonical stage, got {reasons:?}"
+            );
+            assert!(
+                !reasons
+                    .iter()
+                    .any(|reason| reason.contains("disconnect` status")),
+                "stale name-only field must not be accepted as a stage name, got {reasons:?}"
             );
         }
         other => panic!("expected unsatisfied report rejection, got {other:?}"),

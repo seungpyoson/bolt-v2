@@ -424,7 +424,7 @@ Definitions:
 Boundary:
 
 - no `event_page_slug` or `polymarket_event_slug`
-- no `selected_market_observed_timestamp`
+- no `selected_market_observed_timestamp_ms`
 - no price-to-beat fields
 - no `has_selected_market_open_orders`
 - no entry-readiness summary field
@@ -440,17 +440,17 @@ It contains the selected market plus the reference-price cluster needed by the c
 Exact fields:
 
 - `selected_market`
-- `selected_market_observed_timestamp`
+- `selected_market_observed_timestamp_ms`
 - `price_to_beat_value`
-- `price_to_beat_observed_timestamp`
+- `price_to_beat_observed_timestamp_ms`
 - `price_to_beat_source`
 
 Definitions:
 
 - `selected_market` = the `selected_market` shape from Section 6.2
-- `selected_market_observed_timestamp` = Unix milliseconds when the selected market facts were observed
+- `selected_market_observed_timestamp_ms` = Unix milliseconds when the selected market facts were observed
 - `price_to_beat_value` = decoded Chainlink Data Streams benchmark price from `GET /api/v1/reports?feedID=<feed_id>&timestamp=<boundary_unix>`
-- `price_to_beat_observed_timestamp` = the timestamp when `price_to_beat_value` was observed
+- `price_to_beat_observed_timestamp_ms` = the timestamp when `price_to_beat_value` was observed
 - `price_to_beat_source` is configured by `[parameters.runtime].price_to_beat_source`; current launch-scope value:
   - `chainlink_data_streams.report_at_boundary`
 
@@ -900,11 +900,11 @@ If `target_kind = "rotating_market"` and `rotating_market_family = "updown"` and
 - `polymarket_question_id`
 - `up_instrument_id`
 - `down_instrument_id`
-- `selected_market_observed_timestamp`
+- `selected_market_observed_timestamp_ms`
 - `polymarket_market_start_timestamp_ms`
 - `polymarket_market_end_timestamp_ms`
 - `price_to_beat_value`
-- `price_to_beat_observed_timestamp`
+- `price_to_beat_observed_timestamp_ms`
 - `price_to_beat_source`
 
 #### `entry_evaluation`
@@ -1411,7 +1411,7 @@ The bolt-v3 live canary gate is the fail-closed admission boundary before `run_b
 
 The gate validates only operator approval and prior no-submit readiness evidence. It checks that `[live_canary]` is present, `approval_id` is non-empty, `max_no_submit_readiness_report_bytes` is positive, `max_live_order_count` is positive, `max_notional_per_order` is a positive decimal, and `max_notional_per_order` is less than or equal to `risk.default_max_notional_per_order`.
 
-The gate reads at most the configured `max_no_submit_readiness_report_bytes` from `no_submit_readiness_report_path` and requires a JSON object with a non-empty `stages` array. Each stage must expose `status = "satisfied"` case-insensitively; stage names may be carried by either `stage` or `name` for diagnostics. Missing, unreadable, oversized, unparsable, non-array, empty, or unsatisfied reports reject the run before NT's runner loop is entered.
+The gate reads at most the configured `max_no_submit_readiness_report_bytes` from `no_submit_readiness_report_path` and requires a JSON object with a non-empty `stages` array. Each stage must expose `stage` and `status = "satisfied"` case-insensitively. Missing, unreadable, oversized, unparsable, non-array, empty, or unsatisfied reports reject the run before NT's runner loop is entered.
 
 The gate is read-only. It does not connect clients, subscribe to data, register strategies, select markets, construct orders, submit orders, cancel orders, or mutate NT state. The built `LiveNode` may already exist when the gate runs, but a gate rejection must occur before `LiveNode::run`.
 

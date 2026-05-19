@@ -176,17 +176,17 @@ fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
         execution.funder.as_deref(),
         Some("0x1111111111111111111111111111111111111111")
     );
-    assert_eq!(parsed.nautilus.timeout_shutdown, 10);
+    assert_eq!(parsed.nautilus.timeout_shutdown_secs, 10);
 
     let old_update = ["update_instruments", "_interval", "_minutes"].concat();
     let old_ws = ["websocket", "_max_subscriptions", "_per_connection"].concat();
     let old_funder = ["funder", "_address = "].concat();
-    let old_shutdown = ["timeout_shutdown", "_secs = "].concat();
+    let old_shutdown = ["timeout", "_shutdown = "].concat();
     let aliases = nt_named
         .replace("update_instruments_interval_mins", &old_update)
         .replace("ws_max_subscriptions", &old_ws)
         .replace("funder = ", &old_funder)
-        .replace("timeout_shutdown = ", &old_shutdown);
+        .replace("timeout_shutdown_secs = ", &old_shutdown);
     let error = toml::from_str::<BoltV3RootConfig>(&aliases)
         .expect_err("NT-owned alias field names should fail parse");
     let rendered = error.to_string();
@@ -1432,7 +1432,7 @@ timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
 timeout_disconnection_secs = 10
 delay_post_stop_secs = 5
-timeout_shutdown = 10
+timeout_shutdown_secs = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -1574,7 +1574,7 @@ timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
 timeout_disconnection_secs = 10
 delay_post_stop_secs = 5
-timeout_shutdown = 10
+timeout_shutdown_secs = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -1732,7 +1732,7 @@ timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
 timeout_disconnection_secs = 10
 delay_post_stop_secs = 5
-timeout_shutdown = 10
+timeout_shutdown_secs = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true

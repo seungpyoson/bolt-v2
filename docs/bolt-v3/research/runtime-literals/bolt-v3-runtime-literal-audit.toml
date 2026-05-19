@@ -641,14 +641,6 @@ reason = "This names the preferred no-submit readiness report stage identifier f
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness_schema.rs"
 kind = "string"
-literal = '''"name"'''
-context = '''pub const NAME_KEY: &str = "name";'''
-classification = "no_submit_readiness_report_schema_field"
-reason = "This names the backward-compatible no-submit readiness report stage identifier field consumed by the fail-closed live-canary gate."
-
-[[allowed]]
-path = "src/bolt_v3_no_submit_readiness_schema.rs"
-kind = "string"
 literal = '''"status"'''
 context = '''pub const STATUS_KEY: &str = "status";'''
 classification = "no_submit_readiness_report_schema_field"

@@ -41,11 +41,10 @@ SCAN_GLOBS = [
 EXCLUDED_RELATIVE_PATHS = {
     "docs/bolt-v3/research/naming/nt-owned-name-audit.yaml",
 }
-WORD_RE_TEMPLATE = r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])"
-
-
 def word_re(term: str) -> re.Pattern[str]:
-    return re.compile(WORD_RE_TEMPLATE.format(re.escape(term)))
+    prefix = r"(?<![A-Za-z0-9_])" if term[:1].isalnum() or term[:1] == "_" else ""
+    suffix = r"(?![A-Za-z0-9_])" if term[-1:].isalnum() or term[-1:] == "_" else ""
+    return re.compile(f"{prefix}{re.escape(term)}{suffix}")
 
 
 def load_audit() -> dict:
@@ -69,7 +68,25 @@ def scan_paths() -> list[Path]:
 
 def matches_any(path: Path, patterns: list[str]) -> bool:
     rel = str(path.relative_to(REPO_ROOT))
-    return any(fnmatch.fnmatch(rel, pattern) for pattern in patterns)
+    return any(
+        fnmatch.fnmatch(rel, expanded)
+        for pattern in patterns
+        for expanded in expand_globstar_zero_depth(pattern)
+    )
+
+
+def expand_globstar_zero_depth(pattern: str) -> list[str]:
+    patterns = {pattern}
+    queue = [pattern]
+    while queue:
+        current = queue.pop()
+        if "**/" not in current:
+            continue
+        collapsed = current.replace("**/", "", 1)
+        if collapsed not in patterns:
+            patterns.add(collapsed)
+            queue.append(collapsed)
+    return sorted(patterns)
 
 
 def main() -> int:

@@ -129,8 +129,8 @@ path_scoped_forbidden:
       - src/bolt_v3_*/**/*.rs
       - tests/bolt_v3_*.rs
     reason: "Bolt-v3 client blocks store the NT Venue identifier in `venue`; operator-facing contracts should not call that value a kind"
-  - from: "venues."
-    to: "clients."
+  - from: "[venues."
+    to: "[clients."
     include_globs:
       - docs/bolt-v3/*.md
       - docs/bolt-v3/research/**/*.yaml
@@ -179,8 +179,8 @@ path_scoped_forbidden:
       - tests/config_parsing.rs
       - tests/fixtures/**/*.toml
     reason: "PolymarketExecClientConfig owns funder; funder_address is an alias"
-  - from: timeout_shutdown_secs
-    to: timeout_shutdown
+  - from: "timeout_shutdown ="
+    to: "timeout_shutdown_secs ="
     include_globs:
       - docs/bolt-v3/*.md
       - docs/bolt-v3/research/**/*.yaml
@@ -190,7 +190,27 @@ path_scoped_forbidden:
       - tests/bolt_v3_*.rs
       - tests/config_parsing.rs
       - tests/fixtures/**/*.toml
-    reason: "LiveNodeConfig owns timeout_shutdown; the TOML key must not rename it"
+    reason: "Bolt-v3 TOML stores second-valued runtime quantities with `_secs`; the Rust mapper converts to NT LiveNodeConfig.timeout_shutdown"
+  - from: selected_market_observed_timestamp
+    to: selected_market_observed_timestamp_ms
+    include_globs:
+      - docs/bolt-v3/*.md
+      - docs/bolt-v3/research/**/*.yaml
+      - docs/bolt-v3/research/**/*.toml
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Phase 8 selected-market observation timestamps are Unix milliseconds and must carry `_ms`"
+  - from: price_to_beat_observed_timestamp
+    to: price_to_beat_observed_timestamp_ms
+    include_globs:
+      - docs/bolt-v3/*.md
+      - docs/bolt-v3/research/**/*.yaml
+      - docs/bolt-v3/research/**/*.toml
+      - src/bolt_v3_*.rs
+      - src/bolt_v3_*/**/*.rs
+      - tests/bolt_v3_*.rs
+    reason: "Price-to-beat observation timestamps are Unix milliseconds and must carry `_ms`"
   - from: seconds_to_expiry
     to: seconds_to_market_end
     include_globs:
@@ -213,6 +233,30 @@ path_scoped_forbidden:
     reason: "Phase 8 evidence stores the strategy TOML execution_client_id, not an NT Venue"
 
 accepted_non_nt_names:
+  - name: timeout_connection_secs
+    owner: bolt_toml_unit_encoded_nt_passthrough
+    nt_evidence: "Maps to Nautilus LiveNodeConfig.timeout_connection through Duration::from_secs"
+    reason: "Bolt-v3 TOML stores operator-facing duration quantities as integer seconds with `_secs` suffixes"
+  - name: timeout_reconciliation_secs
+    owner: bolt_toml_unit_encoded_nt_passthrough
+    nt_evidence: "Maps to Nautilus LiveNodeConfig.timeout_reconciliation through Duration::from_secs"
+    reason: "Bolt-v3 TOML stores operator-facing duration quantities as integer seconds with `_secs` suffixes"
+  - name: timeout_portfolio_secs
+    owner: bolt_toml_unit_encoded_nt_passthrough
+    nt_evidence: "Maps to Nautilus LiveNodeConfig.timeout_portfolio through Duration::from_secs"
+    reason: "Bolt-v3 TOML stores operator-facing duration quantities as integer seconds with `_secs` suffixes"
+  - name: timeout_disconnection_secs
+    owner: bolt_toml_unit_encoded_nt_passthrough
+    nt_evidence: "Maps to Nautilus LiveNodeConfig.timeout_disconnection through Duration::from_secs"
+    reason: "Bolt-v3 TOML stores operator-facing duration quantities as integer seconds with `_secs` suffixes"
+  - name: delay_post_stop_secs
+    owner: bolt_toml_unit_encoded_nt_passthrough
+    nt_evidence: "Maps to Nautilus LiveNodeConfig.delay_post_stop through Duration::from_secs"
+    reason: "Bolt-v3 TOML stores operator-facing duration quantities as integer seconds with `_secs` suffixes"
+  - name: timeout_shutdown_secs
+    owner: bolt_toml_unit_encoded_nt_passthrough
+    nt_evidence: "Maps to Nautilus LiveNodeConfig.timeout_shutdown through Duration::from_secs"
+    reason: "Bolt-v3 TOML stores operator-facing duration quantities as integer seconds with `_secs` suffixes"
   - name: decision_trace_id
     owner: bolt_derived
     reason: "Bolt lifecycle correlation key, not an NT UUID field"
@@ -222,10 +266,10 @@ accepted_non_nt_names:
   - name: market_selection_timestamp_ms
     owner: bolt_derived
     reason: "Bolt market-selection attempt timestamp derived from NT node clock"
-  - name: selected_market_observed_timestamp
+  - name: selected_market_observed_timestamp_ms
     owner: bolt_derived
     reason: "Bolt observation timestamp for selected-market facts; represented as Unix milliseconds in Phase 8 evidence"
-  - name: price_to_beat_observed_timestamp
+  - name: price_to_beat_observed_timestamp_ms
     owner: venue_product_owned
     reason: "Timestamp for the Chainlink Data Streams benchmark observation, not an NT ts_event"
   - name: polymarket_market_start_timestamp_ms

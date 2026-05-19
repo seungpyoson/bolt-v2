@@ -1437,8 +1437,8 @@ impl Phase8OperatorLiveResultPaths {
             .root
             .nautilus
             .timeout_reconciliation_secs
-            .saturating_add(loaded.root.nautilus.timeout_shutdown);
-        let poll_interval = Duration::from_secs(loaded.root.nautilus.timeout_shutdown);
+            .saturating_add(loaded.root.nautilus.timeout_shutdown_secs);
+        let poll_interval = Duration::from_secs(loaded.root.nautilus.timeout_shutdown_secs);
         let deadline = Instant::now() + Duration::from_secs(wait_secs);
         let mut observed_errors = Vec::new();
 
@@ -1449,7 +1449,7 @@ impl Phase8OperatorLiveResultPaths {
                     observed_errors.push(error.to_string());
                     if Instant::now() >= deadline {
                         anyhow::bail!(
-                            "phase8 post-run operator evidence did not become ready within nautilus.timeout_reconciliation_secs + nautilus.timeout_shutdown; observed errors: {}",
+                            "phase8 post-run operator evidence did not become ready within nautilus.timeout_reconciliation_secs + nautilus.timeout_shutdown_secs; observed errors: {}",
                             observed_errors.join(" | ")
                         );
                     }

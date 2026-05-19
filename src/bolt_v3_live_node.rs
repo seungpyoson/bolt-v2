@@ -543,7 +543,7 @@ fn no_submit_stop_timeout_secs(loaded: &LoadedBoltV3Config) -> u64 {
         .nautilus
         .timeout_disconnection_secs
         .saturating_add(loaded.root.nautilus.delay_post_stop_secs)
-        .saturating_add(loaded.root.nautilus.timeout_shutdown)
+        .saturating_add(loaded.root.nautilus.timeout_shutdown_secs)
 }
 
 fn classify_live_node_run_and_capture_shutdown(
@@ -792,7 +792,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         timeout_portfolio: Duration::from_secs(nautilus.timeout_portfolio_secs),
         timeout_disconnection: Duration::from_secs(nautilus.timeout_disconnection_secs),
         delay_post_stop: Duration::from_secs(nautilus.delay_post_stop_secs),
-        timeout_shutdown: Duration::from_secs(nautilus.timeout_shutdown),
+        timeout_shutdown: Duration::from_secs(nautilus.timeout_shutdown_secs),
         cache: None,
         msgbus: None,
         portfolio: None,

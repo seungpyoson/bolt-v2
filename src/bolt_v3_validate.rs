@@ -130,7 +130,10 @@ fn validate_nautilus_block(block: &NautilusBlock) -> Vec<String> {
             "nautilus.timeout_disconnection_secs",
             block.timeout_disconnection_secs,
         ),
-        ("nautilus.timeout_shutdown", block.timeout_shutdown),
+        (
+            "nautilus.timeout_shutdown_secs",
+            block.timeout_shutdown_secs,
+        ),
     ];
     for (label, value) in positive_fields {
         if *value == 0 {

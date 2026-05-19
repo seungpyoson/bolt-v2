@@ -663,6 +663,13 @@ def block_uses_managed_target_cache(block: list[str]) -> bool:
     )
 
 
+def block_key_value_has_prefix(block: list[str], prefix: str) -> bool:
+    for name, value in block_input_items(block):
+        if name == "key" and prefix in value:
+            return True
+    return False
+
+
 def block_declares_restore_keys_prefix(block: list[str], prefix: str) -> bool:
     saw_marker = False
     for line in block:
@@ -688,7 +695,10 @@ def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
     expected_prefix = (
         f"managed-target-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{expected_key}-"
     )
-    if not any(expected_prefix in uncommented_text(block) for block in target_blocks):
+    # The exact `key:` value must carry the job-specific prefix. Checking the
+    # whole block's text would also match a prefix that only appears in
+    # `restore-keys:`, masking key/restore-keys drift.
+    if not any(block_key_value_has_prefix(block, expected_prefix) for block in target_blocks):
         return [f"{job} managed target cache key must isolate {expected_key}"]
 
     # #400: each managed-target cache MUST declare a restore-keys prefix fallback

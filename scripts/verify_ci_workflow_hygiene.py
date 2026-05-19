@@ -250,7 +250,33 @@ JUST_LANE_RE = re.compile(
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
 BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
-TAIKI_INSTALL_ACTION = "taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c"
+# taiki-e/install-action must be pinned to a 40-hex commit SHA (mutable tags
+# like @v2 are rejected). The specific SHA is NOT enforced here — Dependabot
+# opens a PR with release notes for every bump and PR review is the human
+# gate. See tj-actions/changed-files (CVE-2025-30066, March 2025) for why
+# SHA-pinning matters and why hardcoding a specific SHA here adds maintenance
+# burden without real supply-chain value.
+#
+# Two regexes intentionally:
+#   * TAIKI_INSTALL_ACTION_RE matches well-formed pinned single-line `uses:`
+#     references. Optional matching quotes (single OR double, enforced by
+#     backreference so mismatched quotes still fail) are accepted around the
+#     reference. Uppercase hex is allowed in the match so the consistency
+#     check can normalize via .lower() rather than silently rejecting valid
+#     uppercase pins. The SHA is captured in group(2); group(1) is the
+#     (possibly empty) opening quote used by the backreference.
+#   * TAIKI_INSTALL_ACTION_MENTION_RE is a broad detector for any cleaned
+#     line that mentions `taiki-e/install-action@` at all — whether the
+#     `uses:` token sits on the same line (single-line form) or on a
+#     preceding line (YAML multi-line scalar form). The consistency check
+#     uses it to surface every reference, then requires the line to match
+#     the strict single-line pinned form; anything else (mutable tag,
+#     mismatched quotes, multi-line scalar) is reported with a precise
+#     file:line.
+TAIKI_INSTALL_ACTION_RE = re.compile(
+    r"""^\s*(?:-\s*)?uses:\s*(['"]?)taiki-e/install-action@([0-9a-fA-F]{40})\1\s*$"""
+)
+TAIKI_INSTALL_ACTION_MENTION_RE = re.compile(r"\btaiki-e/install-action@")
 CI_INSTALL_ACTION_TOOLS = {
     "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
@@ -682,15 +708,14 @@ def job_just_lanes(job_lines: list[str]) -> set[str]:
     return {match.group(2) for match in JUST_LANE_RE.finditer(uncommented_text(job_lines))}
 
 
-def block_uses_exact_action(block: list[str], action: str) -> bool:
-    pattern = re.compile(rf"^\s*(?:-\s*)?uses:\s*{re.escape(action)}\s*$")
-    return any(pattern.match(strip_comment(line)) for line in block)
+def block_uses_pinned_install_action(block: list[str]) -> bool:
+    return any(TAIKI_INSTALL_ACTION_RE.match(strip_comment(line)) for line in block)
 
 
 def install_action_tool_step(job_lines: list[str], tool: str, output: str) -> tuple[int, list[str]] | None:
     expected_tool = f"{tool}@${{{{ {output} }}}}"
     for index, block in enumerate(step_blocks(job_lines)):
-        if block_uses_exact_action(block, TAIKI_INSTALL_ACTION) and block_has_input(block, "tool", expected_tool):
+        if block_uses_pinned_install_action(block) and block_has_input(block, "tool", expected_tool):
             return index, block
     return None
 
@@ -1700,6 +1725,49 @@ def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config
         errors.extend(verify_prebuilt_tool_installs(workflow_text, workflow_name))
     errors.extend(verify_setup_action(action_text))
     errors.extend(verify_nextest_config(nextest_config_text))
+    errors.extend(verify_install_action_pin_consistency(workflows))
+    return errors
+
+
+def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str]:
+    # Dependabot groups action bumps so all taiki-e/install-action pins move
+    # together; this guards against half-bumps in human-authored PRs that
+    # leave workflow files referencing inconsistent SHAs. Scan line-by-line
+    # after stripping comments so commentary containing the action ref does
+    # not produce false positives.
+    #
+    # The broad detector (TAIKI_INSTALL_ACTION_MENTION_RE) finds every line
+    # that mentions the action ref at all — including YAML multi-line scalar
+    # form where `uses:` sits on a preceding line. Any such line that does
+    # not match the strict single-line pinned form is reported with a precise
+    # file:line so mutable tags (e.g. @v2), multi-line scalars, mismatched
+    # quotes, and other malformed pins fail loudly instead of being silently
+    # skipped. SHAs are lowercased before bucketing so the consistency check
+    # treats uppercase and lowercase hex as the same pin. Lines that fail
+    # the strict form do NOT contribute to the bucket map — a malformed
+    # reference must not phantom-bucket and mask a real drift.
+    errors: list[str] = []
+    sha_to_files: dict[str, list[str]] = {}
+    for workflow_name, workflow_text in workflows.items():
+        for line_index, line in enumerate(workflow_text.splitlines(), start=1):
+            clean = strip_comment(line)
+            if not TAIKI_INSTALL_ACTION_MENTION_RE.search(clean):
+                continue
+            match = TAIKI_INSTALL_ACTION_RE.match(clean)
+            if match is None:
+                errors.append(
+                    f"{workflow_name}:{line_index}: taiki-e/install-action must be referenced as "
+                    f"'uses: taiki-e/install-action@<40-hex-SHA>' on a single line, got: {clean.strip()}"
+                )
+                continue
+            sha = match.group(2).lower()
+            sha_to_files.setdefault(sha, []).append(workflow_name)
+    if len(sha_to_files) > 1:
+        parts = sorted(
+            f"{sha} in {','.join(sorted(set(files)))}"
+            for sha, files in sha_to_files.items()
+        )
+        errors.append("taiki-e/install-action pin drift: " + "; ".join(parts))
     return errors
 
 

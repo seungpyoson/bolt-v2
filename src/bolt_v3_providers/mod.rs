@@ -1,14 +1,14 @@
-//! Per-provider binding root for bolt-v3 venue config block shapes
-//! and per-venue startup-validation policy.
+//! Per-provider binding root for bolt-v3 client config block shapes
+//! and per-client startup-validation policy.
 //!
 //! Core config in `crate::bolt_v3_config` owns the root and strategy
-//! envelopes plus raw provider keys. Concrete provider key literals and
-//! `[venues.<name>.{data,execution,secrets}]` block shapes live in
+//! envelopes plus NT venue identifiers. Concrete NT venue literals and
+//! `[clients.<name>.{data,execution,secrets}]` block shapes live in
 //! per-provider binding modules under this root.
 //!
 //! This module also owns the family-agnostic dispatch surface that
 //! core startup validation in `crate::bolt_v3_validate` calls into:
-//! every `[venues.<id>]` block is routed here, the provider key is read
+//! every `[clients.<id>]` block is routed here, the NT venue is read
 //! once, and the matching per-provider
 //! validator owns the rest of the structural venue-shape rules.
 //! Provider-neutral helpers used by more than one provider validator
@@ -21,9 +21,9 @@ pub mod polymarket;
 use std::{any::Any, fmt, sync::Arc};
 
 use crate::{
-    bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3UpdownNowFn, BoltV3VenueAdapterConfig},
-    bolt_v3_config::{BoltV3RootConfig, VenueBlock},
-    bolt_v3_market_families::updown::MarketIdentityPlan,
+    bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3MarketClockFn},
+    bolt_v3_config::{BoltV3RootConfig, ClientBlock},
+    bolt_v3_market_families::MarketIdentityPlan,
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
 };
 
@@ -35,7 +35,7 @@ pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
     }
 }
 
-pub type ResolvedVenueSecrets = Arc<dyn ProviderResolvedSecrets>;
+pub type ResolvedClientSecrets = Arc<dyn ProviderResolvedSecrets>;
 
 pub trait SsmSecretResolver {
     fn resolve_secret(&mut self, region: &str, ssm_path: &str) -> Result<String, String>;
@@ -52,18 +52,18 @@ where
 }
 
 pub struct ProviderSecretResolveContext<'a> {
-    pub venue_key: &'a str,
+    pub client_key: &'a str,
     pub region: &'a str,
-    pub venue: &'a VenueBlock,
+    pub client: &'a ClientBlock,
 }
 
 pub struct ProviderAdapterMapContext<'a> {
     pub root: &'a BoltV3RootConfig,
-    pub venue_key: &'a str,
-    pub venue: &'a VenueBlock,
+    pub client_key: &'a str,
+    pub client: &'a ClientBlock,
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub plan: &'a MarketIdentityPlan,
-    pub clock: BoltV3UpdownNowFn,
+    pub clock: BoltV3MarketClockFn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,10 +80,10 @@ impl ProviderCredentialedBlock {
         }
     }
 
-    fn is_present(self, venue: &VenueBlock) -> bool {
+    fn is_present(self, client: &ClientBlock) -> bool {
         match self {
-            Self::Data => venue.data.is_some(),
-            Self::Execution => venue.execution.is_some(),
+            Self::Data => client.data.is_some(),
+            Self::Execution => client.execution.is_some(),
         }
     }
 }
@@ -96,7 +96,7 @@ pub struct ProviderSecretRequirement {
 
 pub struct ProviderBinding {
     pub key: &'static str,
-    pub validate_venue: fn(&str, &VenueBlock) -> Vec<String>,
+    pub validate_client: fn(&str, &ClientBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
     pub required_secret_blocks: &'static [ProviderSecretRequirement],
     pub secret_field_names: &'static [&'static str],
@@ -105,17 +105,17 @@ pub struct ProviderBinding {
     pub resolve_secrets: for<'a> fn(
         ProviderSecretResolveContext<'a>,
         &mut dyn SsmSecretResolver,
-    ) -> Result<ResolvedVenueSecrets, BoltV3SecretError>,
+    ) -> Result<ResolvedClientSecrets, BoltV3SecretError>,
     pub map_adapters: for<'a> fn(
         ProviderAdapterMapContext<'a>,
     )
-        -> Result<BoltV3VenueAdapterConfig, BoltV3AdapterMappingError>,
+        -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError>,
 }
 
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
-        validate_venue: polymarket::validate_venue,
+        validate_client: polymarket::validate_client,
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
         required_secret_blocks: polymarket::REQUIRED_SECRET_BLOCKS,
         secret_field_names: polymarket::SECRET_FIELD_NAMES,
@@ -126,7 +126,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     },
     ProviderBinding {
         key: binance::KEY,
-        validate_venue: binance::validate_venue,
+        validate_client: binance::validate_client,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
         required_secret_blocks: binance::REQUIRED_SECRET_BLOCKS,
         secret_field_names: binance::SECRET_FIELD_NAMES,
@@ -158,23 +158,23 @@ pub fn credential_log_modules() -> impl Iterator<Item = &'static str> {
 }
 
 /// Family-agnostic surface read by core startup validation. Routes
-/// each venue block to its per-provider validator based on provider
-/// key. Returns the full error list for the venue block.
-pub fn validate_venue_block(key: &str, venue: &VenueBlock) -> Vec<String> {
-    match binding_for_provider_key(venue.kind.as_str()) {
+/// each client block to its per-provider validator based on provider
+/// key. Returns the full error list for the client block.
+pub fn validate_client_block(key: &str, client: &ClientBlock) -> Vec<String> {
+    match binding_for_provider_key(client.venue.as_str()) {
         Some(binding) => {
             let mut errors = validate_required_secret_blocks(
                 key,
                 binding.key,
-                venue,
+                client,
                 binding.required_secret_blocks,
             );
-            errors.extend((binding.validate_venue)(key, venue));
+            errors.extend((binding.validate_client)(key, client));
             errors
         }
         None => vec![format!(
-            "venues.{key}.kind `{}` is not supported by this build",
-            venue.kind.as_str()
+            "clients.{key}.venue `{}` is not supported by this build",
+            client.venue.as_str()
         )],
     }
 }
@@ -182,17 +182,17 @@ pub fn validate_venue_block(key: &str, venue: &VenueBlock) -> Vec<String> {
 fn validate_required_secret_blocks(
     key: &str,
     provider_key: &str,
-    venue: &VenueBlock,
+    client: &ClientBlock,
     requirements: &[ProviderSecretRequirement],
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    if venue.secrets.is_some() {
+    if client.secrets.is_some() {
         return errors;
     }
     for requirement in requirements {
-        if requirement.block.is_present(venue) {
+        if requirement.block.is_present(client) {
             errors.push(format!(
-                "venues.{key} (kind={provider_key}) declares [{}] but is missing the required [secrets] block; \
+                "clients.{key} (provider={provider_key}) declares [{}] but is missing the required [secrets] block; \
                  the bolt-v3 secret contract requires SSM credential resolution for every {}",
                 requirement.block.as_str(),
                 requirement.consumer
@@ -206,8 +206,8 @@ fn validate_required_secret_blocks(
 mod tests {
     use super::*;
 
-    fn venue_from_toml(text: &str) -> VenueBlock {
-        toml::from_str(text).expect("test venue should parse")
+    fn client_from_toml(text: &str) -> ClientBlock {
+        toml::from_str(text).expect("test client should parse")
     }
 
     #[test]
@@ -229,9 +229,9 @@ mod tests {
 
     #[test]
     fn provider_required_secrets_rejects_credentialed_block_without_secrets() {
-        let venue = venue_from_toml(
+        let client = client_from_toml(
             r#"
-            kind = "fake"
+            venue = "FAKE"
 
             [data]
             "#,
@@ -241,7 +241,8 @@ mod tests {
             consumer: "fake data adapter",
         };
 
-        let errors = validate_required_secret_blocks("fake_venue", "fake", &venue, &[requirement]);
+        let errors =
+            validate_required_secret_blocks("fake_client", "FAKE", &client, &[requirement]);
 
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("declares [data] but is missing the required [secrets] block"));
@@ -250,9 +251,9 @@ mod tests {
 
     #[test]
     fn provider_required_secrets_ignores_absent_credentialed_block() {
-        let venue = venue_from_toml(
+        let client = client_from_toml(
             r#"
-            kind = "fake"
+            venue = "FAKE"
             "#,
         );
         let requirement = ProviderSecretRequirement {
@@ -260,7 +261,8 @@ mod tests {
             consumer: "fake execution adapter",
         };
 
-        let errors = validate_required_secret_blocks("fake_venue", "fake", &venue, &[requirement]);
+        let errors =
+            validate_required_secret_blocks("fake_client", "FAKE", &client, &[requirement]);
 
         assert!(errors.is_empty());
     }

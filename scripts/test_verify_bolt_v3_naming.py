@@ -121,6 +121,38 @@ def test_word_regex_is_bounded_to_identifier_words() -> None:
         raise AssertionError("unexpected subword match")
 
 
+def test_word_regex_matches_terms_with_trailing_punctuation() -> None:
+    regex = VERIFIER.word_re("[venues.")
+    if not regex.search("[venues.polymarket_main]"):
+        raise AssertionError("expected dotted table-prefix match")
+
+
+def test_matches_any_treats_globstar_as_zero_or_more_directories() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        direct = root / "config" / "root.toml"
+        nested = root / "config" / "live" / "root.toml"
+        deeply_nested = root / "config" / "live" / "prod" / "root.toml"
+        direct.parent.mkdir(parents=True)
+        nested.parent.mkdir(parents=True)
+        deeply_nested.parent.mkdir(parents=True)
+        direct.write_text("probe\n", encoding="utf-8")
+        nested.write_text("probe\n", encoding="utf-8")
+        deeply_nested.write_text("probe\n", encoding="utf-8")
+        try:
+            VERIFIER.REPO_ROOT = root
+            pattern = ["config/**/*.toml"]
+            if not VERIFIER.matches_any(direct, pattern):
+                raise AssertionError("globstar should match zero nested directories")
+            if not VERIFIER.matches_any(nested, pattern):
+                raise AssertionError("globstar should match nested directories")
+            if not VERIFIER.matches_any(deeply_nested, pattern):
+                raise AssertionError("globstar should match deeper nested directories")
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+
+
 def test_scan_paths_excludes_audit_target_git_and_reviews() -> None:
     original_root = VERIFIER.REPO_ROOT
     original_scan_globs = VERIFIER.SCAN_GLOBS
@@ -151,6 +183,19 @@ def test_scan_paths_excludes_audit_target_git_and_reviews() -> None:
 
     if paths != {"src/core.rs"}:
         raise AssertionError(f"unexpected scanned paths: {sorted(paths)}")
+
+
+def test_default_scan_paths_cover_companion_docs_and_research_artifacts() -> None:
+    scanned = {path.relative_to(VERIFIER.REPO_ROOT).as_posix() for path in VERIFIER.scan_paths()}
+    required = {
+        "docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md",
+        "docs/bolt-v3/2026-04-28-source-grounded-status-map.md",
+        "docs/bolt-v3/2026-05-18-production-readiness-contract.md",
+        "docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml",
+    }
+    missing = required - scanned
+    if missing:
+        raise AssertionError(f"default naming scan missing {sorted(missing)}")
 
 
 def test_main_reports_forbidden_and_required_names() -> None:
@@ -190,13 +235,69 @@ def test_main_reports_forbidden_and_required_names() -> None:
         raise AssertionError(f"expected forbidden naming finding, got code={code}, stderr={output!r}")
 
 
+def test_main_reports_path_scoped_forbidden_table_prefix() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    original_audit_path = VERIFIER.AUDIT_PATH
+    original_docs = VERIFIER.CANONICAL_DOCS
+    original_scan_globs = VERIFIER.SCAN_GLOBS
+    original_excluded = VERIFIER.EXCLUDED_RELATIVE_PATHS
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        audit_path = root / "audit.yaml"
+        audit_path.write_text(
+            """
+audit_id: "probe"
+version: 1
+renamed_in_current_audit: []
+defensive_forbidden: []
+path_scoped_forbidden:
+  - from: "[venues."
+    to: "[clients."
+    include_globs:
+      - "tests/fixtures/**/*.toml"
+    reason: "client table"
+accepted_non_nt_names: []
+""".lstrip(),
+            encoding="utf-8",
+        )
+        source = root / "tests" / "fixtures" / "root.toml"
+        source.parent.mkdir(parents=True)
+        source.write_text("[venues.polymarket_main]\n", encoding="utf-8")
+        docs = root / "docs" / "contract.md"
+        docs.parent.mkdir(parents=True)
+        docs.write_text("canonical docs\n", encoding="utf-8")
+        stderr = io.StringIO()
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.AUDIT_PATH = audit_path
+            VERIFIER.CANONICAL_DOCS = [docs]
+            VERIFIER.SCAN_GLOBS = ["tests/fixtures/**/*.toml"]
+            VERIFIER.EXCLUDED_RELATIVE_PATHS = set()
+            with contextlib.redirect_stderr(stderr):
+                code = VERIFIER.main()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.AUDIT_PATH = original_audit_path
+            VERIFIER.CANONICAL_DOCS = original_docs
+            VERIFIER.SCAN_GLOBS = original_scan_globs
+            VERIFIER.EXCLUDED_RELATIVE_PATHS = original_excluded
+
+    output = stderr.getvalue()
+    if code != 1 or "forbidden '[venues.'" not in output:
+        raise AssertionError(f"expected path-scoped table finding, got code={code}, stderr={output!r}")
+
+
 def main() -> int:
     tests = [
         test_load_audit_uses_pyyaml_for_standard_yaml_features,
         test_load_audit_handles_inline_comments_and_single_quotes,
         test_word_regex_is_bounded_to_identifier_words,
+        test_word_regex_matches_terms_with_trailing_punctuation,
+        test_matches_any_treats_globstar_as_zero_or_more_directories,
         test_scan_paths_excludes_audit_target_git_and_reviews,
+        test_default_scan_paths_cover_companion_docs_and_research_artifacts,
         test_main_reports_forbidden_and_required_names,
+        test_main_reports_path_scoped_forbidden_table_prefix,
     ]
     for test in tests:
         test()

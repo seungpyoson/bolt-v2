@@ -10,7 +10,7 @@
 
 ## Requirement Clarity
 
-- [x] CHK006 Is "early" defined by `test` depending on `source-fence`, not only by adding another parallel job? [Clarity, Spec FR-002]
+- [x] CHK006 ~~Is "early" defined by `test` depending on `source-fence`, not only by adding another parallel job?~~ [Clarity, Spec FR-002] **Superseded by #400** (PR #401): "early" is now defined by source-fence completing in ~1m (parallel lane) and `gate.needs` rejecting non-success, not by serial dep order.
 - [x] CHK007 Is "minimal lane" defined as no full `cargo-nextest` install or full integration test suite? [Clarity, Spec FR-005]
 - [x] CHK008 Is fail-closed behavior defined as accepting only `needs.source-fence.result == "success"`? [Clarity, Spec FR-006]
 

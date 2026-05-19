@@ -63,8 +63,8 @@ just test -- --partition count:<shard>/4
 
 This slice intentionally keeps the #342 source-fence filters inside full nextest as duplicate coverage. The duplication is valid only because:
 
-- `source-fence` remains required before `test`.
-- `gate` requires both `source-fence` and aggregate `test`.
+- ~~`source-fence` remains required before `test`.~~ **Superseded by #400** (PR #401): the lanes now run in parallel; merge enforcement is `gate.needs` + `needs.source-fence.result == "success"`.
+- `gate` requires both `source-fence` and aggregate `test`. (unchanged)
 - The workflow and PR body document the duplicate ownership.
 
 ## Exact-run evidence

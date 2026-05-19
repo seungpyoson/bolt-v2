@@ -51,9 +51,9 @@ This phase may use network access and real environment dependencies.
 It validates:
 
 - Amazon Web Services Systems Manager secret resolution
-- forbidden venue-kind environment-variable fallbacks are absent
-- keyed venue config can be converted into NautilusTrader client config
-- required reference-data venues and instruments are resolvable
+- forbidden provider-specific environment-variable fallbacks are absent
+- keyed client config can be converted into NautilusTrader client config
+- required reference-data clients and instruments are resolvable
 - current market-selection machinery can load NautilusTrader venue/instrument state and attempt selection through that state only
 - root risk config is enforced for Bolt-owned strategy sizing fields, and supported NautilusTrader risk-engine knobs are explicit and mapped rather than accepted as no-ops
 - current `updown` market-identity readiness gates for each configured `updown` target
@@ -108,7 +108,7 @@ Rules:
 - no second secret source is allowed
 - resolved secret values must never be written to logs
 
-For every keyed venue which declares a `[secrets]` block, bolt must fail live validation and startup if any canonical credential environment variables for that venue kind are present.
+For every keyed client which declares a `[secrets]` block, bolt must fail live validation and startup if any canonical credential environment variables for that provider are present.
 
 Structural validation also rejects secret blocks that no configured adapter consumes:
 
@@ -130,9 +130,9 @@ For current Binance reference-data use, the forbidden variables are:
 - `BINANCE_API_KEY`
 - `BINANCE_API_SECRET`
 
-This per-venue environment-variable blocklist belongs to the venue-kind handler in bolt code.
+This per-client environment-variable blocklist belongs to the provider handler in bolt code.
 It is not a generic secret framework.
-The handler must derive the effective blocklist from the configured venue kind, environment, and product type before any NautilusTrader client constructor is called.
+The handler must derive the effective blocklist from the configured client provider, NT `Venue`, environment, and product type before any NautilusTrader client constructor is called.
 
 ## 4. Root Risk Contract
 
@@ -172,18 +172,18 @@ Current implementation behavior:
 - Bolt-v3 maps the complete pinned `LoggerConfig` field set without relying on `LoggerConfig::default()` inheritance; `file_config` stays `None` and `clear_log_file` stays `false` because the pinned Rust live runtime rejects any other value at build-time validation
 - Bolt-v3 maps the remaining top-level `LiveNodeConfig` residuals explicitly and does not rely on top-level `LiveNodeConfig::default()` inheritance
 - `scripts/verify_bolt_v3_runtime_literals.py` scans production root `src/bolt_v3_*.rs` files plus files under `src/bolt_v3_*` module directories and requires candidate runtime-bearing literals to be classified in `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`
-- the baseline fixture asserts all explicit data-engine values, `nt_bypass = false`, `100/00:00:01` submit/modify rate limits, an empty NT per-instrument notional map, `nt_debug = false`, current NT-default `nt_qsize`, and all explicit exec-engine values
+- the baseline fixture asserts all explicit data-engine values, `risk.nautilus.bypass = false`, `100/00:00:01` submit/modify rate limits, an empty NT per-instrument notional map, `risk.nautilus.debug = false`, current NT-default `risk.nautilus.qsize`, and all explicit exec-engine values
 
 Future synchronization behavior:
 
-- keyed execution venues own instrument loading and instrument refresh
-- whenever a keyed execution venue loads or refreshes instruments, bolt synchronizes `default_max_notional_per_order` onto the currently loaded instrument set for that venue
+- keyed execution clients own instrument loading and instrument refresh
+- whenever a keyed execution client loads or refreshes instruments, bolt synchronizes `default_max_notional_per_order` onto the currently loaded instrument set for that client
 - this synchronization is tied to venue instrument loading, not to strategy target-rotation callbacks
 - when the loaded instrument set changes, old cap entries for instruments no longer present in the current loaded set are removed
 
 Mechanism:
 
-- bolt follows NautilusTrader instrument topics on the Nautilus message bus for keyed execution venues
+- bolt follows NautilusTrader instrument topics on the Nautilus message bus for keyed execution clients
 - currently loaded instruments are learned from `data.instrument.{venue}.*`
 - instrument removal or expiry is learned from `data.close.{venue}.*`
 - there is no separate bolt poll loop and no strategy-to-bolt callback for this
@@ -216,8 +216,8 @@ The current Phase 1 contract has exactly one implicit execution leg.
 
 For the implicit Phase 1 leg:
 
-- `venue_config_key` identifies the configured venue instance from TOML
-- `venue_kind` identifies the venue family for that configured instance
+- `execution_client_id` identifies the configured execution client from strategy TOML
+- `venue` identifies the NT `Venue` value for that configured client
 - selected-market, mechanical, entry, pre-submit, and order-submission fields describe that same implicit leg
 
 This is the `leg_count = 1` case of the execution-leg model, not a Bolt-wide single-venue architecture limit.
@@ -267,24 +267,24 @@ Current Polymarket loading contract:
 - on each evaluation of that closure, it yields market slugs for the current and next cadence windows for each configured `underlying_asset`
 - bolt invokes NautilusTrader's `request_instruments` path at startup and when the generated current/next slug pair changes under the NautilusTrader node clock
 - normal retry ticks read NautilusTrader cache only
-- if the `request_instruments` call for the current slug pair fails, retry that request at `target.retry_interval_seconds` until it succeeds or the slug pair changes
+- if the `request_instruments` call for the current slug pair fails, retry that request at `target.retry_interval_secs` until it succeeds or the slug pair changes
 - `subscribe_new_markets` remains `false` in the current live-trading scope
 - broad Polymarket instrument loading without target-derived filters is forbidden
 
 Current `updown` slug derivation rule:
 
-- slug format: `"{underlying_asset_lowercase}-updown-{cadence_slug_token}-{period_start_unix_seconds}"`
-- `cadence_slug_token` is a runtime-contract-defined token for `cadence_seconds`
+- slug format: `"{underlying_asset_lowercase}-updown-{cadence_slug_token}-{period_start_unix_secs}"`
+- `cadence_slug_token` is a runtime-contract-defined token for `cadence_secs`
 - currently defined mappings:
   - `60` -> `1m`
   - `300` -> `5m`
   - `900` -> `15m`
   - `3600` -> `1h`
   - `14400` -> `4h`
-- any other `cadence_seconds` value is unsupported until this runtime contract defines its slug token
-- `now_unix_seconds` comes from the NautilusTrader node clock
-- `current_period_start_unix_seconds = floor(now_unix_seconds / cadence_seconds) * cadence_seconds`
-- `next_period_start_unix_seconds = current_period_start_unix_seconds + cadence_seconds`
+- any other `cadence_secs` value is unsupported until this runtime contract defines its slug token
+- `now_unix_secs` comes from the NautilusTrader node clock
+- `current_period_start_unix_secs = floor(now_unix_secs / cadence_secs) * cadence_secs`
+- `next_period_start_unix_secs = current_period_start_unix_secs + cadence_secs`
 - the current market-selection process yields exactly two market slugs per configured `updown` target on each evaluation:
   - current-period slug
   - next-period slug
@@ -304,9 +304,9 @@ For `market_selection_rule = "active_or_next"`:
 
 For current `updown`:
 
-- `current` means the role whose selected market time window satisfies `polymarket_market_start_timestamp_milliseconds <= market_selection_timestamp_milliseconds < polymarket_market_end_timestamp_milliseconds`
+- `current` means the role whose selected market time window satisfies `polymarket_market_start_timestamp_ms <= market_selection_timestamp_ms < polymarket_market_end_timestamp_ms`
 
-- `next` means the role whose selected market `polymarket_market_start_timestamp_milliseconds` is the smallest value greater than `market_selection_timestamp_milliseconds`
+- `next` means the role whose selected market `polymarket_market_start_timestamp_ms` is the smallest value greater than `market_selection_timestamp_ms`
 
 Prohibited behaviors:
 
@@ -321,13 +321,13 @@ If a rotating-market target cannot be selected:
 
 - emit `market_selection_result`
 - remain non-trading
-- retry at `target.retry_interval_seconds`
+- retry at `target.retry_interval_secs`
 - no backoff
 
-If market selection keeps failing for `target.blocked_after_seconds`:
+If market selection keeps failing for `target.blocked_after_secs`:
 
 - mark the strategy blocked/degraded
-- continue retrying at `target.retry_interval_seconds` unless the strategy is stopped
+- continue retrying at `target.retry_interval_secs` unless the strategy is stopped
 
 Blocked/degraded operational behavior:
 
@@ -357,20 +357,20 @@ Exact fields:
 
 - `configured_target_id`
 - `target_kind`
-- `venue_config_key`
-- `venue_kind`
+- `execution_client_id`
+- `venue`
 - `rotating_market_family`
 - `underlying_asset`
-- `cadence_seconds`
+- `cadence_secs`
 - `market_selection_rule`
-- `retry_interval_seconds`
-- `blocked_after_seconds`
+- `retry_interval_secs`
+- `blocked_after_secs`
 
 Field constraints:
 
 - `target_kind = "rotating_market"`
-- `venue_config_key` is the exact strategy-file `venue` reference
-- `venue_kind = "polymarket"` for the current `updown` scope
+- `execution_client_id` is the exact strategy-file `execution_client_id` reference (one of the keys under root `[clients.<id>]`)
+- `venue = "POLYMARKET"` (the NT `Venue` identifier) for the current `updown` scope
 - `rotating_market_family = "updown"`
 - `market_selection_rule = "active_or_next"`
 
@@ -394,8 +394,8 @@ It is not an observed-facts object and it does not include entry readiness or st
 Every selected market must contain:
 
 - `target_kind`
-- `venue_config_key`
-- `venue_kind`
+- `execution_client_id`
+- `venue`
 
 #### Current updown rotating-market fields
 
@@ -407,8 +407,8 @@ If `target_kind = "rotating_market"` and `rotating_market_family = "updown"`, th
 - `polymarket_question_id`
 - `up_instrument_id`
 - `down_instrument_id`
-- `polymarket_market_start_timestamp_milliseconds`
-- `polymarket_market_end_timestamp_milliseconds`
+- `polymarket_market_start_timestamp_ms`
+- `polymarket_market_end_timestamp_ms`
 
 Definitions:
 
@@ -418,13 +418,13 @@ Definitions:
 - `polymarket_question_id` = the Polymarket question identifier string for the selected market
 - `up_instrument_id` = the literal NautilusTrader instrument identifier string for the `Up` instrument
 - `down_instrument_id` = the literal NautilusTrader instrument identifier string for the `Down` instrument
-- `polymarket_market_start_timestamp_milliseconds` = selected market start timestamp in Unix milliseconds
-- `polymarket_market_end_timestamp_milliseconds` = selected market end timestamp in Unix milliseconds
+- `polymarket_market_start_timestamp_ms` = selected market start timestamp in Unix milliseconds
+- `polymarket_market_end_timestamp_ms` = selected market end timestamp in Unix milliseconds
 
 Boundary:
 
 - no `event_page_slug` or `polymarket_event_slug`
-- no `selected_market_observed_timestamp`
+- no `selected_market_observed_timestamp_ms`
 - no price-to-beat fields
 - no `has_selected_market_open_orders`
 - no entry-readiness summary field
@@ -440,17 +440,17 @@ It contains the selected market plus the reference-price cluster needed by the c
 Exact fields:
 
 - `selected_market`
-- `selected_market_observed_timestamp`
+- `selected_market_observed_timestamp_ms`
 - `price_to_beat_value`
-- `price_to_beat_observed_timestamp`
+- `price_to_beat_observed_timestamp_ms`
 - `price_to_beat_source`
 
 Definitions:
 
 - `selected_market` = the `selected_market` shape from Section 6.2
-- `selected_market_observed_timestamp` = the timestamp when the selected market facts were observed
+- `selected_market_observed_timestamp_ms` = Unix milliseconds when the selected market facts were observed
 - `price_to_beat_value` = decoded Chainlink Data Streams benchmark price from `GET /api/v1/reports?feedID=<feed_id>&timestamp=<boundary_unix>`
-- `price_to_beat_observed_timestamp` = the timestamp when `price_to_beat_value` was observed
+- `price_to_beat_observed_timestamp_ms` = the timestamp when `price_to_beat_value` was observed
 - `price_to_beat_source` is configured by `[parameters.runtime].price_to_beat_source`; current launch-scope value:
   - `chainlink_data_streams.report_at_boundary`
 
@@ -476,12 +476,12 @@ Allowed variants:
 - `next`
 - `failed`
 
-`market_selection_timestamp_milliseconds` is the NautilusTrader node-clock Unix millisecond timestamp used for the market-selection attempt and for classifying a selected market as `current` or `next`.
+`market_selection_timestamp_ms` is the NautilusTrader node-clock Unix millisecond timestamp used for the market-selection attempt and for classifying a selected market as `current` or `next`.
 
 `current` and `next` variants contain:
 
 - `configured_updown_target`
-- `market_selection_timestamp_milliseconds`
+- `market_selection_timestamp_ms`
 - `updown_selected_market_facts`
 
 `selected_market` is reachable through `updown_selected_market_facts.selected_market`.
@@ -490,7 +490,7 @@ Do not duplicate it as a sibling field in a successful `market_selection_result`
 The `failed` variant contains:
 
 - `configured_updown_target`
-- `market_selection_timestamp_milliseconds`
+- `market_selection_timestamp_ms`
 - `market_selection_failure_reason`
 
 Allowed `market_selection_failure_reason` values:
@@ -561,7 +561,7 @@ Boundary:
 If an archetype requires reference data:
 
 - the strategy file must declare it explicitly
-- the root file must declare the keyed data venue explicitly
+- the root file must declare the keyed data client explicitly
 - the strategy subscribes directly through NautilusTrader data clients
 
 There is no bolt-owned reference actor.
@@ -573,7 +573,7 @@ For the current `binary_oracle_edge_taker`:
 
 Reference-data resolution rule for validation:
 
-- `resolvable` means that after NautilusTrader venue/instrument loading completes, the declared `instrument_id` exists in the NautilusTrader instrument cache for the referenced keyed venue
+- `resolvable` means that after NautilusTrader venue/instrument loading completes, the declared `instrument_id` exists in the NautilusTrader instrument cache for the referenced keyed client
 - `resolvable` does not require receiving a live quote before `just check` completes
 
 ### 7.1 Current `binary_oracle_edge_taker` pricing inputs
@@ -584,7 +584,7 @@ For the current `binary_oracle_edge_taker`, the reference stream and pricing inp
   - derived from the latest two-sided midpoint on `reference_data.primary`
   - midpoint formula: `(best_bid_price + best_ask_price) / 2`
   - if the latest quote tick does not contain both sides, midpoint is unavailable
-  - if the latest midpoint sample is older than `target.retry_interval_seconds` seconds, the reference quote is stale
+  - if the latest midpoint sample is older than `target.retry_interval_secs` seconds, the reference quote is stale
 - `price_to_beat_source`
   - must match `[parameters.runtime].price_to_beat_source`
 
@@ -597,20 +597,20 @@ The current realized-volatility estimator is defined as:
 - input samples:
   - midpoint samples from `reference_data.primary`
 - retention window:
-  - keep midpoint samples whose timestamps fall within the trailing `target.cadence_seconds` seconds
+  - keep midpoint samples whose timestamps fall within the trailing `target.cadence_secs` seconds
 - reset rule:
-  - if the gap between consecutive midpoint samples exceeds `target.retry_interval_seconds` seconds, reset the estimator state
+  - if the gap between consecutive midpoint samples exceeds `target.retry_interval_secs` seconds, reset the estimator state
 - readiness rule:
   - at least two midpoint samples are required
   - sample timestamps used for the estimator must be strictly increasing
-  - `elapsed_seconds`, measured from the first retained sample timestamp to the last retained sample timestamp, must be strictly positive
+  - `elapsed_secs`, measured from the first retained sample timestamp to the last retained sample timestamp, must be strictly positive
 - return formula:
   - for each consecutive midpoint pair, compute `log(current_midpoint / previous_midpoint)`
 - annualization formula:
   - `SECONDS_PER_YEAR = 31_536_000`
-  - `realized_volatility = sqrt((sum_squared_log_returns / elapsed_seconds) * SECONDS_PER_YEAR)`
+  - `realized_volatility = sqrt((sum_squared_log_returns / elapsed_secs) * SECONDS_PER_YEAR)`
 - bridge-valid rule:
-  - if the last ready realized-volatility value is older than `target.retry_interval_seconds` seconds, realized volatility is not ready
+  - if the last ready realized-volatility value is older than `target.retry_interval_secs` seconds, realized volatility is not ready
 
 ### 7.3 Current `binary_oracle_edge_taker` entry evaluation
 
@@ -761,7 +761,7 @@ Fields that fail the one-to-one naming rule must be renamed before launch unless
 
 Save broadly, decide narrowly:
 
-- for every configured venue, target, and instrument that bolt activates, bolt subscribes to every NautilusTrader data, execution, order, position, account, report, and lifecycle stream exposed by the pinned Rust APIs for that activated scope
+- for every configured client, target, and instrument that bolt activates, bolt subscribes to every NautilusTrader data, execution, order, position, account, report, and lifecycle stream exposed by the pinned Rust APIs for that activated scope
 - if the pinned adapter does not expose a stream, the stream is recorded as unavailable evidence rather than silently ignored
 - local evidence captures every NautilusTrader fact that reaches the live node through those broad subscriptions, and every NautilusTrader fact bolt emits, submits, or reads
 - raw capture preserves NautilusTrader-native names, values, timestamps, identifiers, and event/report boundaries
@@ -792,8 +792,8 @@ These fields are required on every structured decision event:
 - `strategy_instance_id`
 - `strategy_archetype`
 - `trader_id`
-- `venue_config_key`
-- `venue_kind`
+- `execution_client_id`
+- `venue`
 - `runtime_mode`
 - `release_id`
 - `config_hash`
@@ -819,12 +819,12 @@ Definitions:
   - the exact `strategy_archetype` value from the strategy file
 - `trader_id`
   - the exact root-file `trader_id` value
-- `venue_config_key`
-  - the keyed trading venue reference from the strategy file
-  - not a reference-data venue key
-- `venue_kind`
-  - the exact `kind` value from the configured venue block referenced by `venue_config_key`
-  - for the current `updown` scope, `polymarket`
+- `execution_client_id`
+  - the strategy file's `execution_client_id` (a `[clients.<id>]` key)
+  - not a reference-data client key
+- `venue`
+  - the exact NT `Venue` identifier value from the `[clients.<id>]` block referenced by `execution_client_id`
+  - for the current `updown` scope, `POLYMARKET`
   - describes the implicit execution leg in the Phase 1 execution-leg model
 - `runtime_mode`
   - the exact root-file `[runtime].mode` value
@@ -872,13 +872,13 @@ Event-schema version is `1`.
 Required additional fields:
 
 - `target_kind`
-- `market_selection_timestamp_milliseconds`
+- `market_selection_timestamp_ms`
 - `market_selection_outcome`
 - `market_selection_failure_reason`
 
 `market_selection_failure_reason` must be null when `market_selection_outcome` is `current` or `next`.
 `market_selection_failure_reason` must be non-null when `market_selection_outcome = "failed"`.
-`market_selection_timestamp_milliseconds` is the NautilusTrader node-clock Unix millisecond timestamp used to classify the selected market as `current` or `next`.
+`market_selection_timestamp_ms` is the NautilusTrader node-clock Unix millisecond timestamp used to classify the selected market as `current` or `next`.
 
 Allowed `market_selection_outcome` values are the variant names defined for `market_selection_result` in Section 6.4 (`current`, `next`, `failed`).
 
@@ -888,10 +888,10 @@ If `target_kind = "rotating_market"`, the event must also contain these configur
 
 - `rotating_market_family`
 - `underlying_asset`
-- `cadence_seconds`
+- `cadence_secs`
 - `market_selection_rule`
-- `retry_interval_seconds`
-- `blocked_after_seconds`
+- `retry_interval_secs`
+- `blocked_after_secs`
 
 If `target_kind = "rotating_market"` and `rotating_market_family = "updown"` and market selection succeeds, the event must also contain these selected market and selected market facts fields:
 
@@ -900,11 +900,11 @@ If `target_kind = "rotating_market"` and `rotating_market_family = "updown"` and
 - `polymarket_question_id`
 - `up_instrument_id`
 - `down_instrument_id`
-- `selected_market_observed_timestamp`
-- `polymarket_market_start_timestamp_milliseconds`
-- `polymarket_market_end_timestamp_milliseconds`
+- `selected_market_observed_timestamp_ms`
+- `polymarket_market_start_timestamp_ms`
+- `polymarket_market_end_timestamp_ms`
 - `price_to_beat_value`
-- `price_to_beat_observed_timestamp`
+- `price_to_beat_observed_timestamp_ms`
 - `price_to_beat_source`
 
 #### `entry_evaluation`
@@ -1373,20 +1373,20 @@ The bolt-v3 build path returns a `LiveNode` in `Idle` state with NT data and exe
 Controlled-connect boundary contract:
 
 - opt-in: `build_bolt_v3_live_node` and its `_with` / `_with_summary` siblings do not invoke this boundary; a caller must call it explicitly on a node previously returned by one of those builders
-- bounded: the dispatched engine-level connect futures are wrapped in `tokio::time::timeout` driven by `nautilus.timeout_connection_seconds`; on timeout the boundary returns `BoltV3LiveNodeError::ConnectTimeout { timeout_seconds }` and the caller owns subsequent disconnect/teardown via `disconnect_bolt_v3_clients`
+- bounded: the dispatched engine-level connect futures are wrapped in `tokio::time::timeout` driven by `nautilus.timeout_connection_secs`; on timeout the boundary returns `BoltV3LiveNodeError::ConnectTimeout { timeout_secs }` and the caller owns subsequent disconnect/teardown via `disconnect_bolt_v3_clients`
 - dispatch + connected check: the pinned NT `DataEngine::connect` and `ExecutionEngine::connect` dispatchers swallow individual client `connect()` errors and only log them, so after the dispatch returns the boundary consults `NautilusKernel::check_engines_connected()` and returns `BoltV3LiveNodeError::ConnectIncomplete` if any registered client did not transition to `is_connected`; this slice intentionally keeps the error variant generic and does not synthesize a per-client failure list
 - not NT cache or instrument readiness: the boundary does not gate on NT cache contents, instrument-availability checks, or any readiness predicate beyond `kernel.check_engines_connected()`; cache/instrument readiness is owned by a future slice
 - no copying NT private drain logic: the boundary does not copy or reimplement NT's private `flush_pending_data`, `drive_with_event_buffering`, or runner/channel internals; it strictly composes the public `kernel.connect_*` and `kernel.check_engines_connected` API surface
 - pinned-NT-only: the boundary reaches NT only through `LiveNode::kernel_mut().connect_data_clients`, `LiveNode::kernel_mut().connect_exec_clients`, and `LiveNode::kernel().check_engines_connected` (the pinned NT controlled-connect API surface)
 - no-trade: the boundary never enters NT's runner loop, never invokes NT's trader entrypoint, never registers strategies, never selects markets, never constructs orders, never submits orders, and never invokes any user-level subscription API; `NodeState` therefore remains in whatever state the node was in before the call (typically `Idle`)
-- credential-log filter preserved: in a bolt-v3-only process, NT's first-wins logger has already been initialized by the bolt-v3 `LoggerConfig` passed through `LiveNodeBuilder::build`, so the `NT_CREDENTIAL_LOG_MODULES` filter remains active during the connect dispatch; the future production v3 entrypoint must preserve this first-initializer ordering
+- credential-log filter preserved: in a bolt-v3-only process, NT's first-wins logger has already been initialized by the bolt-v3 `LoggerConfig` passed through `LiveNodeBuilder::build`, so the `NT_CREDENTIAL_LOG_MODULES` filter remains active during the connect dispatch; the production bolt-v3 entrypoint preserves this first-initializer ordering
 
 Errors from individual NT client `connect()` calls are surfaced via NT's logger; NT's engine-level dispatchers in `nautilus_data::engine::DataEngine::connect` and `nautilus_execution::engine::ExecutionEngine::connect` log individual `Err` values rather than propagating them. The bolt-v3 boundary returns `Ok(())` only when both dispatchers have returned within the configured bound **and** `kernel.check_engines_connected()` returns true. Otherwise it returns `ConnectTimeout` or `ConnectIncomplete` and the caller is expected to drive `disconnect_bolt_v3_clients` to drain any partially-connected NT clients.
 
 Controlled-disconnect boundary contract:
 
 - recovery counterpart to controlled-connect: callers should invoke `disconnect_bolt_v3_clients` after a `ConnectTimeout` or `ConnectIncomplete` to drain any partially-connected NT clients under a bounded timeout
-- bounded: the `kernel.disconnect_clients` future is wrapped in `tokio::time::timeout` driven by `nautilus.timeout_disconnection_seconds`; on timeout the boundary returns `BoltV3LiveNodeError::DisconnectTimeout { timeout_seconds }`
+- bounded: the `kernel.disconnect_clients` future is wrapped in `tokio::time::timeout` driven by `nautilus.timeout_disconnection_secs`; on timeout the boundary returns `BoltV3LiveNodeError::DisconnectTimeout { timeout_secs }`
 - error-propagating: NT's engine-level disconnect aggregator returns `anyhow::Result<()>`, and the boundary surfaces any `Err(..)` as `BoltV3LiveNodeError::DisconnectFailed(error)` rather than silently swallowing it
 - failure recovery: pinned NT's `NautilusKernel::disconnect_clients` calls data-engine disconnect before execution-engine disconnect and can short-circuit on a data-engine `Err`; after `DisconnectFailed`, the `LiveNode` is in an indeterminate cleanup state and production recovery should rebuild a fresh `LiveNode` rather than assuming every client disconnected
 - pinned-NT-only: the boundary reaches NT only through `LiveNode::kernel_mut().disconnect_clients` (the pinned NT controlled-disconnect API surface); it does not call `LiveNode::stop` and never enters NT's runner-driven lifecycle
@@ -1399,9 +1399,9 @@ The controlled-connect and controlled-disconnect boundaries alone do not enable 
 
 The bolt-v3 startup readiness check is a library-level diagnostic surface. It reports explicit facts for the existing startup boundaries: forbidden credential environment variables, SSM secret resolution, adapter mapping, `LiveNodeBuilder` construction, NT client registration, and final `LiveNode` build. It does not return or encode an aggregate launch decision.
 
-The check composes the same production boundaries used by the build path and stops before the controlled-connect boundary. A successful report means the configured venues can pass those startup checks and a `LiveNode` can be built with registered clients. It does not prove that clients are connected, NT caches are populated, instruments are available, strategies are registered, markets have been selected, orders can be constructed, or orders can be submitted.
+The check composes the same production boundaries used by the build path and stops before the controlled-connect boundary. A successful report means the configured clients can pass those startup checks and a `LiveNode` can be built with registered clients. It does not prove that clients are connected, NT caches are populated, instruments are available, strategies are registered, markets have been selected, orders can be constructed, or orders can be submitted.
 
-If no venues are configured, the check still emits `Satisfied` root facts for stages that have no venue work to perform. Callers must inspect fact details and subjects instead of treating a uniform `Satisfied` status set as a venue-bearing launch decision.
+If no clients are configured, the check still emits `Satisfied` root facts for stages that have no client work to perform. Callers must inspect fact details and subjects instead of treating a uniform `Satisfied` status set as a client-bearing launch decision.
 
 The built `LiveNode` is discarded after the build fact is recorded. The check must not call `connect_bolt_v3_clients`, `disconnect_bolt_v3_clients`, any user-level subscription API, any runner API, any strategy actor API, or any order API. Controlled-connect remains an explicit, separate caller action under Section 11.6.
 
@@ -1411,7 +1411,7 @@ The bolt-v3 live canary gate is the fail-closed admission boundary before `run_b
 
 The gate validates only operator approval and prior no-submit readiness evidence. It checks that `[live_canary]` is present, `approval_id` is non-empty, `max_no_submit_readiness_report_bytes` is positive, `max_live_order_count` is positive, `max_notional_per_order` is a positive decimal, and `max_notional_per_order` is less than or equal to `risk.default_max_notional_per_order`.
 
-The gate reads at most the configured `max_no_submit_readiness_report_bytes` from `no_submit_readiness_report_path` and requires a JSON object with a non-empty `stages` array. Each stage must expose `status = "satisfied"` case-insensitively; stage names may be carried by either `stage` or `name` for diagnostics. Missing, unreadable, oversized, unparsable, non-array, empty, or unsatisfied reports reject the run before NT's runner loop is entered.
+The gate reads at most the configured `max_no_submit_readiness_report_bytes` from `no_submit_readiness_report_path` and requires a JSON object with a non-empty `stages` array. Each stage must expose `stage` and `status = "satisfied"` case-insensitively. Missing, unreadable, oversized, unparsable, non-array, empty, or unsatisfied reports reject the run before NT's runner loop is entered.
 
 The gate is read-only. It does not connect clients, subscribe to data, register strategies, select markets, construct orders, submit orders, cancel orders, or mutate NT state. The built `LiveNode` may already exist when the gate runs, but a gate rejection must occur before `LiveNode::run`.
 

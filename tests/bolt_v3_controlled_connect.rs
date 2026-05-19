@@ -64,8 +64,8 @@ fn fixture_loaded_with_timeouts(
     // from disk.
     let root_path = repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    loaded.root.nautilus.timeout_connection_seconds = connection_timeout_secs;
-    loaded.root.nautilus.timeout_disconnection_seconds = disconnection_timeout_secs;
+    loaded.root.nautilus.timeout_connection_secs = connection_timeout_secs;
+    loaded.root.nautilus.timeout_disconnection_secs = disconnection_timeout_secs;
     loaded
 }
 
@@ -129,7 +129,7 @@ fn builder_path_passes_explicit_risk_engine_to_nt_build() {
     // Mutate after Bolt's config-load validation so this test proves the
     // production builder passes the risk engine config to NT's own build-time
     // validation, instead of constructing a fresh default engine config.
-    loaded.root.risk.nt_max_order_submit_rate = "not-a-rate-limit".to_string();
+    loaded.root.risk.nautilus.max_order_submit_rate = "not-a-rate-limit".to_string();
 
     let error = make_bolt_v3_live_node_builder(&loaded)
         .expect("v3 builder should construct from fixture")
@@ -254,7 +254,7 @@ fn controlled_connect_returns_timeout_when_engine_connect_exceeds_configured_bou
             Box::new(MockDataClientFactory),
             Box::new(
                 MockDataClientConfig::new("SLOW_MOCK_DATA", "MOCKVENUE")
-                    .with_connect_delay_milliseconds(2_000),
+                    .with_connect_delay_ms(2_000),
             ),
         )
         .expect("slow mock data client should register on bolt-v3 builder");
@@ -271,8 +271,8 @@ fn controlled_connect_returns_timeout_when_engine_connect_exceeds_configured_bou
         .expect_err("controlled-connect must surface the configured timeout");
 
     match error {
-        BoltV3LiveNodeError::ConnectTimeout { timeout_seconds } => {
-            assert_eq!(timeout_seconds, 1);
+        BoltV3LiveNodeError::ConnectTimeout { timeout_secs } => {
+            assert_eq!(timeout_secs, 1);
         }
         other => panic!("expected ConnectTimeout, got {other}"),
     }
@@ -410,7 +410,7 @@ fn controlled_disconnect_returns_timeout_when_engine_disconnect_exceeds_configur
 
     // Keep the connect bound generous and the disconnect bound short
     // so this test proves controlled-disconnect uses
-    // `timeout_disconnection_seconds`, not the connection timeout.
+    // `timeout_disconnection_secs`, not the connection timeout.
     let loaded = fixture_loaded_with_timeouts(30, 1);
     let builder =
         make_bolt_v3_live_node_builder(&loaded).expect("v3 builder should construct from fixture");
@@ -420,7 +420,7 @@ fn controlled_disconnect_returns_timeout_when_engine_disconnect_exceeds_configur
             Box::new(MockDataClientFactory),
             Box::new(
                 MockDataClientConfig::new("SLOW_DISCONNECT_MOCK_DATA", "MOCKVENUE")
-                    .with_disconnect_delay_milliseconds(2_000),
+                    .with_disconnect_delay_ms(2_000),
             ),
         )
         .expect("slow-disconnect mock data client should register on bolt-v3 builder");
@@ -441,8 +441,8 @@ fn controlled_disconnect_returns_timeout_when_engine_disconnect_exceeds_configur
         .expect_err("controlled-disconnect must surface the configured timeout");
 
     match error {
-        BoltV3LiveNodeError::DisconnectTimeout { timeout_seconds } => {
-            assert_eq!(timeout_seconds, 1);
+        BoltV3LiveNodeError::DisconnectTimeout { timeout_secs } => {
+            assert_eq!(timeout_secs, 1);
         }
         other => panic!("expected DisconnectTimeout, got {other}"),
     }
@@ -532,7 +532,7 @@ fn controlled_disconnect_is_callable_after_connect_timeout_partial_state() {
             Box::new(MockDataClientFactory),
             Box::new(
                 MockDataClientConfig::new("SLOW_CONNECT_MOCK_DATA", "MOCKVENUE")
-                    .with_connect_delay_milliseconds(2_000),
+                    .with_connect_delay_ms(2_000),
             ),
         )
         .expect("slow-connect mock data client should register on bolt-v3 builder");
@@ -548,8 +548,8 @@ fn controlled_disconnect_is_callable_after_connect_timeout_partial_state() {
         .block_on(connect_bolt_v3_clients(&mut node, &loaded))
         .expect_err("controlled-connect must surface the configured timeout");
     match error {
-        BoltV3LiveNodeError::ConnectTimeout { timeout_seconds } => {
-            assert_eq!(timeout_seconds, 1);
+        BoltV3LiveNodeError::ConnectTimeout { timeout_secs } => {
+            assert_eq!(timeout_secs, 1);
         }
         other => panic!("expected ConnectTimeout, got {other}"),
     }
@@ -587,7 +587,7 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
         .find(".arm(gate_report)")
         .expect("run wrapper must arm submit admission from the live canary gate report");
     let run_index = source
-        .find("let run_future = node.run();")
+        .find("node.run()")
         .expect("run wrapper must own the single NT runner call");
     let capture_index = source
         .find("wire_bolt_v3_runtime_capture(node, node_handle, loaded)")

@@ -12,7 +12,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use nautilus_common::enums::{Environment, LogLevel};
+use nautilus_model::{
+    enums::OmsType,
+    identifiers::{ClientId, InstrumentId, TraderId, Venue},
+};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
 
@@ -20,17 +26,16 @@ use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validat
 #[serde(deny_unknown_fields)]
 pub struct BoltV3RootConfig {
     pub schema_version: u32,
-    pub trader_id: String,
+    pub trader_id: TraderId,
     pub strategy_files: Vec<String>,
     pub runtime: RuntimeBlock,
     pub nautilus: NautilusBlock,
     pub risk: RiskBlock,
     pub logging: LoggingBlock,
     pub persistence: PersistenceBlock,
-    #[serde(default)]
     pub live_canary: Option<LiveCanaryBlock>,
     pub aws: AwsBlock,
-    pub venues: BTreeMap<String, VenueBlock>,
+    pub clients: BTreeMap<String, ClientBlock>,
 }
 
 // `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit
@@ -44,13 +49,7 @@ pub struct BoltV3RootConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeBlock {
-    pub mode: RuntimeMode,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum RuntimeMode {
-    Live,
+    pub mode: Environment,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -58,14 +57,14 @@ pub enum RuntimeMode {
 pub struct NautilusBlock {
     pub load_state: bool,
     pub save_state: bool,
-    pub timeout_connection_seconds: u64,
-    pub timeout_reconciliation_seconds: u64,
+    pub timeout_connection_secs: u64,
+    pub timeout_reconciliation_secs: u64,
     pub data_engine: NautilusDataEngineBlock,
     pub exec_engine: NautilusExecEngineBlock,
-    pub timeout_portfolio_seconds: u64,
-    pub timeout_disconnection_seconds: u64,
-    pub delay_post_stop_seconds: u64,
-    pub timeout_shutdown_seconds: u64,
+    pub timeout_portfolio_secs: u64,
+    pub timeout_disconnection_secs: u64,
+    pub delay_post_stop_secs: u64,
+    pub timeout_shutdown_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -81,7 +80,7 @@ pub struct NautilusDataEngineBlock {
     pub buffer_deltas: bool,
     pub emit_quotes_from_book: bool,
     pub emit_quotes_from_book_depths: bool,
-    pub external_client_ids: Vec<String>,
+    pub external_clients: Vec<ClientId>,
     pub debug: bool,
     pub graceful_shutdown_on_error: bool,
     pub qsize: u32,
@@ -93,30 +92,30 @@ pub struct NautilusExecEngineBlock {
     pub load_cache: bool,
     pub snapshot_orders: bool,
     pub snapshot_positions: bool,
-    pub snapshot_positions_interval_seconds: u64,
-    pub external_client_ids: Vec<String>,
+    pub snapshot_positions_interval_secs: u64,
+    pub external_clients: Vec<ClientId>,
     pub debug: bool,
     pub reconciliation: bool,
-    pub reconciliation_startup_delay_seconds: u64,
+    pub reconciliation_startup_delay_secs: u64,
     pub reconciliation_lookback_mins: u32,
     pub reconciliation_instrument_ids: Vec<String>,
     pub filter_unclaimed_external_orders: bool,
     pub filter_position_reports: bool,
     pub filtered_client_order_ids: Vec<String>,
     pub generate_missing_orders: bool,
-    pub inflight_check_interval_milliseconds: u32,
-    pub inflight_check_threshold_milliseconds: u32,
+    pub inflight_check_interval_ms: u32,
+    pub inflight_check_threshold_ms: u32,
     pub inflight_check_retries: u32,
-    pub open_check_interval_seconds: u64,
+    pub open_check_interval_secs: u64,
     pub open_check_lookback_mins: u32,
-    pub open_check_threshold_milliseconds: u32,
+    pub open_check_threshold_ms: u32,
     pub open_check_missing_retries: u32,
     pub open_check_open_only: bool,
     pub max_single_order_queries_per_cycle: u32,
-    pub single_order_query_delay_milliseconds: u32,
-    pub position_check_interval_seconds: u64,
+    pub single_order_query_delay_ms: u32,
+    pub position_check_interval_secs: u64,
     pub position_check_lookback_mins: u32,
-    pub position_check_threshold_milliseconds: u32,
+    pub position_check_threshold_ms: u32,
     pub position_check_retries: u32,
     pub purge_closed_orders_interval_mins: u32,
     pub purge_closed_orders_buffer_mins: u32,
@@ -125,7 +124,7 @@ pub struct NautilusExecEngineBlock {
     pub purge_account_events_interval_mins: u32,
     pub purge_account_events_lookback_mins: u32,
     pub purge_from_database: bool,
-    pub own_books_audit_interval_seconds: u64,
+    pub own_books_audit_interval_secs: u64,
     pub graceful_shutdown_on_error: bool,
     pub qsize: u32,
     pub allow_overfills: bool,
@@ -136,50 +135,33 @@ pub struct NautilusExecEngineBlock {
 #[serde(deny_unknown_fields)]
 pub struct RiskBlock {
     pub default_max_notional_per_order: String,
-    pub nt_bypass: bool,
-    pub nt_max_order_submit_rate: String,
-    pub nt_max_order_modify_rate: String,
-    pub nt_max_notional_per_order: BTreeMap<String, String>,
-    pub nt_debug: bool,
-    pub nt_graceful_shutdown_on_error: bool,
-    pub nt_qsize: u32,
+    pub nautilus: NautilusRiskBlock,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NautilusRiskBlock {
+    pub bypass: bool,
+    pub max_order_submit_rate: String,
+    pub max_order_modify_rate: String,
+    pub max_notional_per_order: BTreeMap<String, String>,
+    pub debug: bool,
+    pub graceful_shutdown_on_error: bool,
+    pub qsize: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LoggingBlock {
-    pub standard_output_level: LogLevel,
-    pub file_level: LogLevel,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum LogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-    Off,
-}
-
-impl LogLevel {
-    pub fn to_level_filter(self) -> log::LevelFilter {
-        match self {
-            LogLevel::Trace => log::LevelFilter::Trace,
-            LogLevel::Debug => log::LevelFilter::Debug,
-            LogLevel::Info => log::LevelFilter::Info,
-            LogLevel::Warn => log::LevelFilter::Warn,
-            LogLevel::Error => log::LevelFilter::Error,
-            LogLevel::Off => log::LevelFilter::Off,
-        }
-    }
+    pub stdout_level: LogLevel,
+    pub fileout_level: LogLevel,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PersistenceBlock {
     pub catalog_directory: String,
+    pub runtime_capture_start_poll_interval_ms: u64,
     pub decision_evidence: DecisionEvidenceBlock,
     pub streaming: StreamingBlock,
 }
@@ -202,13 +184,44 @@ pub struct LiveCanaryBlock {
     pub max_no_submit_readiness_report_bytes: u64,
     pub max_live_order_count: u32,
     pub max_notional_per_order: String,
+    pub operator_evidence: Option<LiveCanaryOperatorEvidenceBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LiveCanaryOperatorEvidenceBlock {
+    pub approval_envelope_path: String,
+    pub ssm_manifest_path: String,
+    pub ssm_manifest_sha256: String,
+    pub strategy_input_evidence_path: String,
+    pub strategy_input_evidence_sha256: String,
+    pub financial_envelope_path: String,
+    pub financial_envelope_sha256: String,
+    pub pre_run_state_path: String,
+    pub pre_run_state_sha256: String,
+    pub abort_plan_path: String,
+    pub abort_plan_sha256: String,
+    pub canary_evidence_path: String,
+    pub approval_not_before_unix_seconds: i64,
+    pub approval_not_after_unix_seconds: i64,
+    pub approval_nonce_path: String,
+    pub approval_nonce_sha256: String,
+    pub approval_consumption_path: String,
+    pub decision_evidence_path: String,
+    pub client_order_id_hash: String,
+    pub venue_order_id_hash: String,
+    pub nt_submit_event_path: String,
+    pub venue_order_state_path: String,
+    pub strategy_cancel_path: Option<String>,
+    pub restart_reconciliation_path: String,
+    pub post_run_hygiene_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct StreamingBlock {
     pub catalog_fs_protocol: CatalogFsProtocol,
-    pub flush_interval_milliseconds: u64,
+    pub flush_interval_ms: u64,
     pub replace_existing: bool,
     pub rotation_kind: RotationKind,
 }
@@ -233,24 +246,11 @@ pub struct AwsBlock {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct VenueBlock {
-    pub kind: ProviderKey,
-    #[serde(default)]
+pub struct ClientBlock {
+    pub venue: Venue,
     pub data: Option<toml::Value>,
-    #[serde(default)]
     pub execution: Option<toml::Value>,
-    #[serde(default)]
     pub secrets: Option<toml::Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[serde(transparent)]
-pub struct ProviderKey(String);
-
-impl ProviderKey {
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -261,7 +261,20 @@ pub struct BoltV3StrategyConfig {
     pub strategy_archetype: StrategyArchetypeKey,
     pub order_id_tag: String,
     pub oms_type: OmsType,
-    pub venue: String,
+    pub use_uuid_client_order_ids: bool,
+    pub use_hyphens_in_client_order_ids: bool,
+    pub external_order_claims: Vec<String>,
+    pub manage_contingent_orders: bool,
+    pub manage_gtd_expiry: bool,
+    pub manage_stop: bool,
+    pub market_exit_interval_ms: u64,
+    pub market_exit_max_attempts: u64,
+    pub market_exit_time_in_force: String,
+    pub market_exit_reduce_only: bool,
+    pub log_events: bool,
+    pub log_commands: bool,
+    pub log_rejected_due_post_only_as_warning: bool,
+    pub execution_client_id: ClientId,
     /// Raw `[target]` envelope. The strategy envelope keeps the TOML
     /// field name `target` but its Rust type is a generic raw-TOML
     /// container so target-shape fields live in the per-family binding
@@ -270,7 +283,6 @@ pub struct BoltV3StrategyConfig {
     /// matching family validator and inside the family planner; the
     /// strategy envelope itself is target-shape-neutral.
     pub target: toml::Value,
-    #[serde(default)]
     pub reference_data: BTreeMap<String, ReferenceDataBlock>,
     pub parameters: toml::Value,
 }
@@ -285,17 +297,11 @@ impl StrategyArchetypeKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum OmsType {
-    Netting,
-}
-
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReferenceDataBlock {
-    pub venue: String,
-    pub instrument_id: String,
+    pub data_client_id: ClientId,
+    pub instrument_id: InstrumentId,
 }
 
 #[derive(Debug, Clone)]
@@ -308,6 +314,7 @@ pub struct LoadedStrategy {
 #[derive(Debug, Clone)]
 pub struct LoadedBoltV3Config {
     pub root_path: PathBuf,
+    pub config_bundle_checksum: String,
     pub root: BoltV3RootConfig,
     pub strategies: Vec<LoadedStrategy>,
 }
@@ -316,7 +323,7 @@ pub struct LoadedBoltV3Config {
 pub enum BoltV3ConfigError {
     FileRead {
         path: PathBuf,
-        source: std::io::Error,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
     Parse {
         path: PathBuf,
@@ -342,7 +349,7 @@ impl std::fmt::Display for BoltV3ConfigError {
 impl std::error::Error for BoltV3ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            BoltV3ConfigError::FileRead { source, .. } => Some(source),
+            BoltV3ConfigError::FileRead { source, .. } => Some(source.as_ref()),
             BoltV3ConfigError::Validation(error) => Some(error),
             _ => None,
         }
@@ -350,23 +357,20 @@ impl std::error::Error for BoltV3ConfigError {
 }
 
 pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV3ConfigError> {
-    let root_text =
-        std::fs::read_to_string(root_path).map_err(|source| BoltV3ConfigError::FileRead {
+    let root_text = crate::bounded_config_read::read_to_string(root_path).map_err(|source| {
+        BoltV3ConfigError::FileRead {
             path: root_path.to_path_buf(),
-            source,
-        })?;
+            source: Box::new(source),
+        }
+    })?;
     let root: BoltV3RootConfig =
         toml::from_str(&root_text).map_err(|error| BoltV3ConfigError::Parse {
             path: root_path.to_path_buf(),
             message: error.to_string(),
         })?;
 
-    let root_dir = root_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-
     let mut strategies = Vec::with_capacity(root.strategy_files.len());
+    let mut strategy_texts = Vec::with_capacity(root.strategy_files.len());
     let mut seen_paths = HashSet::new();
     let mut path_errors: Vec<String> = Vec::new();
 
@@ -377,7 +381,7 @@ pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV
             ));
             continue;
         }
-        let absolute = root_dir.join(relative);
+        let absolute = resolve_root_relative_path(root_path, relative);
         if !absolute.exists() {
             path_errors.push(format!(
                 "strategy file `{relative}` does not exist at {}",
@@ -385,16 +389,18 @@ pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV
             ));
             continue;
         }
-        let text =
-            std::fs::read_to_string(&absolute).map_err(|source| BoltV3ConfigError::FileRead {
+        let text = crate::bounded_config_read::read_to_string(&absolute).map_err(|source| {
+            BoltV3ConfigError::FileRead {
                 path: absolute.clone(),
-                source,
-            })?;
+                source: Box::new(source),
+            }
+        })?;
         let strategy: BoltV3StrategyConfig =
             toml::from_str(&text).map_err(|error| BoltV3ConfigError::Parse {
                 path: absolute.clone(),
                 message: error.to_string(),
             })?;
+        strategy_texts.push((relative.clone(), text));
         strategies.push(LoadedStrategy {
             config_path: absolute,
             relative_path: relative.clone(),
@@ -414,9 +420,49 @@ pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV
 
     Ok(LoadedBoltV3Config {
         root_path: root_path.to_path_buf(),
+        config_bundle_checksum: config_bundle_checksum(&root_text, &strategy_texts),
         root,
         strategies,
     })
+}
+
+const CONFIG_BUNDLE_CHECKSUM_DOMAIN: &[u8] = b"bolt-v3.config-bundle.v1\n";
+
+fn config_bundle_checksum(root_text: &str, strategy_texts: &[(String, String)]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(CONFIG_BUNDLE_CHECKSUM_DOMAIN);
+    hasher.update((strategy_texts.len() as u32 + 1).to_be_bytes());
+    update_config_bundle_entry(&mut hasher, 0, "root", root_text.as_bytes());
+
+    let mut sorted_strategy_texts: Vec<_> = strategy_texts.iter().collect();
+    sorted_strategy_texts.sort_by(|left, right| left.0.cmp(&right.0));
+    for (relative_path, text) in sorted_strategy_texts {
+        update_config_bundle_entry(&mut hasher, 1, relative_path, text.as_bytes());
+    }
+
+    hex::encode(hasher.finalize())
+}
+
+fn update_config_bundle_entry(hasher: &mut Sha256, kind: u8, key: &str, content: &[u8]) {
+    hasher.update([kind]);
+    hasher.update((key.len() as u32).to_be_bytes());
+    hasher.update(key.as_bytes());
+    hasher.update((content.len() as u64).to_be_bytes());
+    hasher.update(content);
+}
+
+pub(crate) fn resolve_root_relative_path(
+    root_path: &Path,
+    configured_path: impl AsRef<Path>,
+) -> PathBuf {
+    let configured_path = configured_path.as_ref();
+    if configured_path.is_absolute() {
+        return configured_path.to_path_buf();
+    }
+    match root_path.parent() {
+        Some(root_parent) => root_parent.join(configured_path),
+        None => configured_path.to_path_buf(),
+    }
 }
 
 #[cfg(test)]
@@ -435,15 +481,15 @@ mod tests {
     fn parses_minimal_root_block() {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
         assert_eq!(root.schema_version, 1);
-        assert_eq!(root.trader_id, "BOLT-001");
-        assert_eq!(root.runtime.mode, RuntimeMode::Live);
-        assert!(root.venues.contains_key("polymarket_main"));
-        assert!(root.venues.contains_key("binance_reference"));
-        let polymarket = &root.venues["polymarket_main"];
-        assert_eq!(polymarket.kind.as_str(), "polymarket");
+        assert_eq!(root.trader_id, TraderId::from("BOLT-001"));
+        assert_eq!(root.runtime.mode, Environment::Live);
+        assert!(root.clients.contains_key("polymarket_main"));
+        assert!(root.clients.contains_key("binance_reference"));
+        let polymarket = &root.clients["polymarket_main"];
+        assert_eq!(polymarket.venue, Venue::from("POLYMARKET"));
         assert!(polymarket.execution.is_some());
-        let binance = &root.venues["binance_reference"];
-        assert_eq!(binance.kind.as_str(), "binance");
+        let binance = &root.clients["binance_reference"];
+        assert_eq!(binance.venue, Venue::from("BINANCE"));
         assert!(binance.execution.is_none());
     }
 

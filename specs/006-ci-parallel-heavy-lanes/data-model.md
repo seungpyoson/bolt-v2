@@ -31,7 +31,7 @@
 - **Represents**: The `test` job expanded into four deterministic nextest partitions.
 - **Required attributes**:
   - Job id: `test`
-  - Needs: `[detector, source-fence]`
+  - Needs: ~~`[detector, source-fence]`~~ **Superseded by #400** (PR #401): the sharded test lane (`test-archive` -> `test-shards` -> `test`) no longer depends on `source-fence`. After the #332 split, `test-archive needs: detector` only; merge enforcement is `gate.needs` + `needs.source-fence.result == "success"`.
   - `strategy.fail-fast: false`
   - `strategy.matrix.shard: [1, 2, 3, 4]`
   - Shared nextest cache key is bounded and saved only by shard 1
@@ -63,8 +63,8 @@
 - **Represents**: Explicit #342/#332 ownership of canonical source-fence filters.
 - **Required attributes**:
   - Decision: full nextest intentionally duplicates #342 filters in this slice
-  - `test` remains dependent on `source-fence`
-  - `gate` requires both `source-fence` and aggregate `test`
+  - ~~`test` remains dependent on `source-fence`~~ **Superseded by #400** (PR #401): dep removed; lanes run in parallel.
+  - `gate` requires both `source-fence` and aggregate `test` (unchanged)
 - **Validation**: Spec, workflow comment, and PR body must state this decision so duplicate execution is intentional and reviewable.
 
 ## BeforeAfterTimingEvidence

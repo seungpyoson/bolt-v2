@@ -1,0 +1,41 @@
+schema_version = 1
+project_id = "bolt-v2"
+target_namespace = "bolt-v2"
+
+[commands]
+
+[commands.test]
+recipe = "managed-test"
+
+[commands.clippy]
+recipe = "managed-clippy"
+
+[commands.build]
+recipe = "managed-build"
+artifact_layout = "cargo"
+profile = "release"
+target = "aarch64-unknown-linux-gnu"
+
+[cache]
+min_free_bytes = 10737418240
+soft_limit_bytes = 53687091200
+active_process_patterns = ["cargo", "cargo-clippy", "cargo-fmt", "cargo-nextest", "rustc", "nextest", "rust_verification.py"]
+
+[cache.retention.debug]
+prune_after_days = 14
+prunable = true
+
+[cache.retention.release]
+prune_after_days = 30
+prunable = true
+
+[cache.retention.cross-target]
+prune_after_days = 30
+prunable = true
+
+[cache.retention.tmp]
+prune_after_days = 1
+prunable = true
+
+[cache.retention.other]
+prunable = false

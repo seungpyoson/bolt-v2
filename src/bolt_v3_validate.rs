@@ -3,7 +3,7 @@
 //! Schema rules: docs/bolt-v3/2026-04-25-bolt-v3-schema.md Section 8.
 //!
 //! This module owns common strategy-envelope validation (schema
-//! version, uniqueness of instance / order-id-tag, venue / execution
+//! version, uniqueness of instance / order-id-tag, client / execution
 //! lookup, per-role reference-data structural validation), root-block
 //! validation, and root risk decimal syntax only. Market-family-shaped
 //! target rules
@@ -22,12 +22,12 @@
 //! matching archetype validator via
 //! `crate::bolt_v3_archetypes::validate_strategy_archetype`.
 //! Per-provider venue-block validation (provider-shaped
-//! `[venues.<id>.{data,execution,secrets}]` rules: typed
+//! `[clients.<id>.{data,execution,secrets}]` rules: typed
 //! deserialization, cross-block presence rules, provider data /
 //! execution bounds, EVM funder-address syntax, provider secret-path
 //! ownership) is owned by the per-provider binding modules under
-//! `crate::bolt_v3_providers`; `validate_venues_block` dispatches each
-//! venue block through `crate::bolt_v3_providers::validate_venue_block`.
+//! `crate::bolt_v3_providers`; `validate_clients_block` dispatches each
+//! client block through `crate::bolt_v3_providers::validate_client_block`.
 //! Only the genuinely provider-neutral SSM parameter-path utility
 //! (`validate_ssm_parameter_path`) stays in this module and is exposed
 //! `pub(crate)` so the per-provider secret validators can call it the
@@ -37,13 +37,13 @@ use std::{collections::BTreeMap, collections::HashSet, path::Path, str::FromStr}
 
 use nautilus_model::{
     enums::{BarAggregation, BarIntervalType},
-    identifiers::{ClientId, ClientOrderId, InstrumentId},
+    identifiers::{ClientOrderId, InstrumentId},
 };
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
-    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy, NautilusBlock,
-    PersistenceBlock, RiskBlock, VenueBlock,
+    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, ClientBlock, LoadedStrategy, NautilusBlock,
+    PersistenceBlock, RiskBlock,
 };
 
 #[derive(Debug)]
@@ -90,17 +90,23 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
             root.schema_version, SUPPORTED_ROOT_SCHEMA_VERSION
         ));
     }
-    if root.trader_id.trim().is_empty() {
-        errors.push("trader_id must be a non-empty string".to_string());
-    }
     if root.strategy_files.is_empty() {
         errors.push("strategy_files must list at least one strategy file".to_string());
+    }
+    // FINDING-1: NT's `Environment` has Backtest/Sandbox/Live; bolt-v3 is a
+    // live-trading LiveNode wrapper and must reject the other variants
+    // explicitly rather than booting NT's kernel in an unsupported mode.
+    if root.runtime.mode != nautilus_common::enums::Environment::Live {
+        errors.push(format!(
+            "runtime.mode `{:?}` is not supported by bolt-v3 (only Live is implemented)",
+            root.runtime.mode
+        ));
     }
     errors.extend(validate_nautilus_block(&root.nautilus));
     errors.extend(validate_risk_block(&root.risk));
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
-    errors.extend(validate_venues_block(&root.venues));
+    errors.extend(validate_clients_block(&root.clients));
 
     errors
 }
@@ -109,24 +115,24 @@ fn validate_nautilus_block(block: &NautilusBlock) -> Vec<String> {
     let mut errors = Vec::new();
     let positive_fields: &[(&str, u64)] = &[
         (
-            "nautilus.timeout_connection_seconds",
-            block.timeout_connection_seconds,
+            "nautilus.timeout_connection_secs",
+            block.timeout_connection_secs,
         ),
         (
-            "nautilus.timeout_reconciliation_seconds",
-            block.timeout_reconciliation_seconds,
+            "nautilus.timeout_reconciliation_secs",
+            block.timeout_reconciliation_secs,
         ),
         (
-            "nautilus.timeout_portfolio_seconds",
-            block.timeout_portfolio_seconds,
+            "nautilus.timeout_portfolio_secs",
+            block.timeout_portfolio_secs,
         ),
         (
-            "nautilus.timeout_disconnection_seconds",
-            block.timeout_disconnection_seconds,
+            "nautilus.timeout_disconnection_secs",
+            block.timeout_disconnection_secs,
         ),
         (
-            "nautilus.timeout_shutdown_seconds",
-            block.timeout_shutdown_seconds,
+            "nautilus.timeout_shutdown_secs",
+            block.timeout_shutdown_secs,
         ),
     ];
     for (label, value) in positive_fields {
@@ -156,13 +162,6 @@ fn validate_data_engine_block(
             ));
         }
     }
-    for client_id in &block.external_client_ids {
-        if let Err(error) = ClientId::new_checked(client_id) {
-            errors.push(format!(
-                "nautilus.data_engine.external_client_ids contains invalid client ID `{client_id}` ({error})"
-            ));
-        }
-    }
     if block.graceful_shutdown_on_error {
         errors.push(
             "nautilus.data_engine.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
@@ -185,20 +184,20 @@ fn validate_exec_engine_block(
     let mut errors = Vec::new();
     let positive_fields: &[(&str, u64)] = &[
         (
-            "nautilus.exec_engine.inflight_check_threshold_milliseconds",
-            block.inflight_check_threshold_milliseconds as u64,
+            "nautilus.exec_engine.inflight_check_threshold_ms",
+            block.inflight_check_threshold_ms as u64,
         ),
         (
-            "nautilus.exec_engine.open_check_threshold_milliseconds",
-            block.open_check_threshold_milliseconds as u64,
+            "nautilus.exec_engine.open_check_threshold_ms",
+            block.open_check_threshold_ms as u64,
         ),
         (
             "nautilus.exec_engine.max_single_order_queries_per_cycle",
             block.max_single_order_queries_per_cycle as u64,
         ),
         (
-            "nautilus.exec_engine.position_check_threshold_milliseconds",
-            block.position_check_threshold_milliseconds as u64,
+            "nautilus.exec_engine.position_check_threshold_ms",
+            block.position_check_threshold_ms as u64,
         ),
     ];
     for (label, value) in positive_fields {
@@ -235,13 +234,6 @@ fn validate_exec_engine_block(
         ));
     }
 
-    for client_id in &block.external_client_ids {
-        if let Err(error) = ClientId::new_checked(client_id) {
-            errors.push(format!(
-                "nautilus.exec_engine.external_client_ids contains invalid client ID `{client_id}` ({error})"
-            ));
-        }
-    }
     for instrument_id in &block.reconciliation_instrument_ids {
         if let Err(error) = InstrumentId::from_str(instrument_id) {
             errors.push(format!(
@@ -267,30 +259,30 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
             value = block.default_max_notional_per_order
         ));
     }
-    if block.nt_bypass {
-        errors.push("risk.nt_bypass must be false".to_string());
+    if block.nautilus.bypass {
+        errors.push("risk.nautilus.bypass must be false".to_string());
     }
-    if block.nt_graceful_shutdown_on_error {
+    if block.nautilus.graceful_shutdown_on_error {
         errors.push(
-            "risk.nt_graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
+            "risk.nautilus.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
                 .to_string(),
         );
     }
     let nt_risk_default = nautilus_live::config::LiveRiskEngineConfig::default();
-    if block.nt_qsize != nt_risk_default.qsize {
+    if block.nautilus.qsize != nt_risk_default.qsize {
         errors.push(format!(
-            "risk.nt_qsize must match NT default {}; NT rejects non-default qsize on the Rust live runtime",
+            "risk.nautilus.qsize must match NT default {}; NT rejects non-default qsize on the Rust live runtime",
             nt_risk_default.qsize
         ));
     }
     for (label, value) in [
         (
-            "risk.nt_max_order_submit_rate",
-            block.nt_max_order_submit_rate.as_str(),
+            "risk.nautilus.max_order_submit_rate",
+            block.nautilus.max_order_submit_rate.as_str(),
         ),
         (
-            "risk.nt_max_order_modify_rate",
-            block.nt_max_order_modify_rate.as_str(),
+            "risk.nautilus.max_order_modify_rate",
+            block.nautilus.max_order_modify_rate.as_str(),
         ),
     ] {
         if let Err(reason) = validate_rate_limit_string(value) {
@@ -299,24 +291,24 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
             ));
         }
     }
-    for (instrument_id, notional) in &block.nt_max_notional_per_order {
+    for (instrument_id, notional) in &block.nautilus.max_notional_per_order {
         // Mirrors NT's `LiveRiskEngineConfig::validate_runtime_support`;
         // keep this early-bound config validation aligned on pin bumps.
         if let Err(error) = InstrumentId::from_str(instrument_id) {
             errors.push(format!(
-                "risk.nt_max_notional_per_order key `{instrument_id}` is not a valid Nautilus instrument ID ({error})"
+                "risk.nautilus.max_notional_per_order key `{instrument_id}` is not a valid Nautilus instrument ID ({error})"
             ));
         }
         match parse_decimal_string(notional) {
             Ok(value) if value <= Decimal::ZERO => {
                 errors.push(format!(
-                    "risk.nt_max_notional_per_order[`{instrument_id}`] must be a positive decimal string: `{notional}`"
+                    "risk.nautilus.max_notional_per_order[`{instrument_id}`] must be a positive decimal string: `{notional}`"
                 ));
             }
             Ok(_) => {}
             Err(reason) => {
                 errors.push(format!(
-                    "risk.nt_max_notional_per_order[`{instrument_id}`] is not a valid decimal string ({reason}): `{notional}`"
+                    "risk.nautilus.max_notional_per_order[`{instrument_id}`] is not a valid decimal string ({reason}): `{notional}`"
                 ));
             }
         }
@@ -368,11 +360,9 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
             block.catalog_directory
         ));
     }
-    if block.streaming.flush_interval_milliseconds == 0 {
-        errors.push(
-            "persistence.streaming.flush_interval_milliseconds must be a positive integer"
-                .to_string(),
-        );
+    if block.streaming.flush_interval_ms == 0 {
+        errors
+            .push("persistence.streaming.flush_interval_ms must be a positive integer".to_string());
     }
     errors
 }
@@ -385,38 +375,42 @@ fn validate_aws_block(block: &AwsBlock) -> Vec<String> {
     errors
 }
 
-fn validate_venues_block(venues: &BTreeMap<String, VenueBlock>) -> Vec<String> {
+fn validate_clients_block(clients: &BTreeMap<String, ClientBlock>) -> Vec<String> {
     let mut errors = Vec::new();
-    if venues.is_empty() {
-        errors.push("venues must define at least one venue block".to_string());
+    if clients.is_empty() {
+        errors.push("clients must define at least one client block".to_string());
         return errors;
     }
-    // The current bolt-v3 scope is one venue per provider key. Multi-venue
-    // routing (multiple keyed venues for the same provider) is not yet
+    // The current bolt-v3 scope is one client per NT venue. Multi-client
+    // routing (multiple keyed clients for the same venue) is not yet
     // covered by the NT typed-venue routing path or by bolt-v3 strategy
     // validation. NT client registration names can differ, but engine
     // instrument subscriptions still key on typed venues such as
     // POLYMARKET/BINANCE, so we fail closed until that routing is
     // explicitly designed.
-    let mut kind_counts: BTreeMap<String, Vec<&str>> = BTreeMap::new();
-    for (key, venue) in venues {
-        kind_counts
-            .entry(venue.kind.as_str().to_string())
-            .or_default()
-            .push(key.as_str());
+    let mut venue_counts: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for (key, client) in clients {
+        match venue_counts.entry(client.venue.as_str().to_string()) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().push(key.as_str());
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(vec![key.as_str()]);
+            }
+        }
     }
-    for (kind, keys) in &kind_counts {
+    for (venue, keys) in &venue_counts {
         if keys.len() > 1 {
             errors.push(format!(
-                "venues: at most one [venues.<id>] block per kind is supported in this slice; \
-                 kind `{kind}` is declared by {} venues: {}",
+                "clients: at most one [clients.<id>] block per venue is supported in this slice; \
+                 venue `{venue}` is declared by {} clients: {}",
                 keys.len(),
                 keys.join(", ")
             ));
         }
     }
-    for (key, venue) in venues {
-        errors.extend(crate::bolt_v3_providers::validate_venue_block(key, venue));
+    for (key, client) in clients {
+        errors.extend(crate::bolt_v3_providers::validate_client_block(key, client));
     }
     errors
 }
@@ -432,7 +426,7 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
     let trimmed = value.trim();
     if trimmed.is_empty() {
         errors.push(format!(
-            "venues.{key}.secrets.{field} must be a non-empty SSM path"
+            "clients.{key}.secrets.{field} must be a non-empty SSM path"
         ));
     } else if !trimmed.starts_with('/') {
         // The Rust AWS SDK accepts both `name`-style and `/name`-style
@@ -441,7 +435,7 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
         // like `/bolt/<venue>/<field>` is the only supported shape and
         // typos that drop the leading slash fail closed at startup.
         errors.push(format!(
-            "venues.{key}.secrets.{field} must be an absolute-style SSM parameter path starting with `/`: `{value}`"
+            "clients.{key}.secrets.{field} must be an absolute-style SSM parameter path starting with `/`: `{value}`"
         ));
     }
     errors
@@ -481,20 +475,30 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             ));
         }
 
-        match root.venues.get(&strategy.venue) {
+        match root.clients.get(strategy.execution_client_id.as_str()) {
             None => errors.push(format!(
-                "{context}: venue reference `{}` does not match any [venues.<id>] block",
-                strategy.venue
+                "{context}: execution_client_id `{}` does not match any [clients.<id>] block",
+                strategy.execution_client_id
             )),
-            Some(venue) => {
-                if venue.execution.is_none() {
+            Some(client) => {
+                if client.execution.is_none() {
                     errors.push(format!(
-                        "{context}: strategy venue `{}` must reference an execution-capable venue \
-                         (the referenced venue has no [execution] block)",
-                        strategy.venue
+                        "{context}: strategy execution_client_id `{}` must reference an execution-capable client \
+                         (the referenced client has no [execution] block)",
+                        strategy.execution_client_id
                     ));
                 }
             }
+        }
+
+        // FINDING-1: NT's OmsType has Unspecified/Netting/Hedging. Bolt's
+        // position and risk accounting is only valid for Netting; reject
+        // other variants explicitly so support can be added deliberately.
+        if strategy.oms_type != nautilus_model::enums::OmsType::Netting {
+            errors.push(format!(
+                "{context}: oms_type `{:?}` is not supported by bolt-v3 (only Netting is implemented)",
+                strategy.oms_type
+            ));
         }
 
         let (target_metadata, target_errors) =
@@ -507,7 +511,7 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
                 ));
             }
         }
-        errors.extend(target_errors);
+        errors.extend(target_errors.into_iter().map(|error| error.to_string()));
 
         errors.extend(validate_reference_data(&context, root, strategy));
         errors.extend(crate::bolt_v3_archetypes::validate_strategy_archetype(
@@ -528,25 +532,20 @@ fn validate_reference_data(
     let mut errors = Vec::new();
 
     for (role, block) in &strategy.reference_data {
-        match root.venues.get(&block.venue) {
+        match root.clients.get(block.data_client_id.as_str()) {
             None => errors.push(format!(
-                "{context}: reference_data.{role}.venue `{}` does not match any [venues.<id>] block",
-                block.venue
+                "{context}: reference_data.{role}.data_client_id `{}` does not match any [clients.<id>] block",
+                block.data_client_id
             )),
-            Some(venue) => {
-                if venue.data.is_none() {
+            Some(client) => {
+                if client.data.is_none() {
                     errors.push(format!(
-                        "{context}: reference_data.{role}.venue `{}` must reference a data-capable venue \
-                         (the referenced venue has no [data] block)",
-                        block.venue
+                        "{context}: reference_data.{role}.data_client_id `{}` must reference a data-capable client \
+                         (the referenced client has no [data] block)",
+                        block.data_client_id
                     ));
                 }
             }
-        }
-        if block.instrument_id.trim().is_empty() {
-            errors.push(format!(
-                "{context}: reference_data.{role}.instrument_id must not be empty"
-            ));
         }
     }
 

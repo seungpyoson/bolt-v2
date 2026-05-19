@@ -1034,6 +1034,12 @@ fn phase8_operator_head_is_resolved_from_checkout() -> anyhow::Result<()> {
     Ok(())
 }
 
+// `#[rustfmt::skip]` pins the source layout of this async fn because the
+// self-reflective sibling tests (`phase8_operator_harness_derives_strategy_audit_from_evidence_file`,
+// `phase8_operator_harness_consumes_approval_after_entry_validation`) scan this fn's source bytes
+// for specific substrings (e.g. `envelope.consume_approval_after_live_runner_entry_validation`).
+// Future `cargo fmt` runs would otherwise reflow multi-line method chains and break those scans.
+#[rustfmt::skip]
 #[tokio::test(flavor = "current_thread")]
 #[ignore]
 async fn phase8_operator_harness_requires_exact_approval_before_live_runner() -> anyhow::Result<()>
@@ -1042,7 +1048,7 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
     let loaded = load_bolt_v3_config(std::path::Path::new(&envelope.root_toml_path))?;
     let root_hash = Phase8OperatorApprovalEnvelope::sha256_file(&envelope.root_toml_path)?;
     let current_head = phase8_current_checkout_head_sha()?;
-    let current_unix_seconds = phase8_current_unix_seconds()?;
+    let current_unix_secs = phase8_current_unix_secs()?;
     let approved_price_to_beat_source = envelope.approved_price_to_beat_source()?;
     let strategy_audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
         &envelope.strategy_input_evidence_path,
@@ -1059,7 +1065,7 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
             .map(|block| block.approval_id.as_str())
             .unwrap_or_default(),
         &loaded,
-        current_unix_seconds,
+        current_unix_secs,
     )?;
     let preflight = evaluate_phase8_canary_preflight(&loaded, &current_head, strategy_audit).await;
     if !preflight.can_enter_live_runner() {
@@ -1096,9 +1102,9 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
                 evidence_input.approved_strategy_instance_id_hash.clone();
             result_paths.assert_belongs_to_runtime_capture(&runtime_capture.spool_root)?;
             let pre_run_snapshot = result_paths.snapshot_before_run()?;
-            let live_runner_entry_unix_seconds = phase8_current_unix_seconds()?;
+            let live_runner_entry_unix_secs = phase8_current_unix_secs()?;
             envelope.consume_approval_after_live_runner_entry_validation(
-                live_runner_entry_unix_seconds,
+                live_runner_entry_unix_secs,
             )?;
             run_bolt_v3_live_node(&mut node, &loaded)
                 .await
@@ -1146,7 +1152,7 @@ fn phase8_current_checkout_head_sha() -> anyhow::Result<String> {
     Ok(head.to_string())
 }
 
-fn phase8_current_unix_seconds() -> anyhow::Result<i64> {
+fn phase8_current_unix_secs() -> anyhow::Result<i64> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|source| anyhow::anyhow!("system time is before UNIX_EPOCH: {source}"))?;
@@ -1427,13 +1433,13 @@ impl Phase8OperatorLiveResultPaths {
         Phase8LiveOrderRef,
         Phase8LiveCanaryResultRefs,
     )> {
-        let wait_seconds = loaded
+        let wait_secs = loaded
             .root
             .nautilus
-            .timeout_reconciliation_seconds
-            .saturating_add(loaded.root.nautilus.timeout_shutdown_seconds);
-        let poll_interval = Duration::from_secs(loaded.root.nautilus.timeout_shutdown_seconds);
-        let deadline = Instant::now() + Duration::from_secs(wait_seconds);
+            .timeout_reconciliation_secs
+            .saturating_add(loaded.root.nautilus.timeout_shutdown_secs);
+        let poll_interval = Duration::from_secs(loaded.root.nautilus.timeout_shutdown_secs);
+        let deadline = Instant::now() + Duration::from_secs(wait_secs);
         let mut observed_errors = Vec::new();
 
         loop {
@@ -1443,7 +1449,7 @@ impl Phase8OperatorLiveResultPaths {
                     observed_errors.push(error.to_string());
                     if Instant::now() >= deadline {
                         anyhow::bail!(
-                            "phase8 post-run operator evidence did not become ready within nautilus.timeout_reconciliation_seconds + nautilus.timeout_shutdown_seconds; observed errors: {}",
+                            "phase8 post-run operator evidence did not become ready within nautilus.timeout_reconciliation_secs + nautilus.timeout_shutdown_secs; observed errors: {}",
                             observed_errors.join(" | ")
                         );
                     }

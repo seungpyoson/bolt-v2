@@ -32,6 +32,7 @@ use nautilus_model::{
     identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId, Venue},
     types::{AccountBalance, MarginBalance},
 };
+use sha2::{Digest, Sha256};
 
 const TEST_DELAY_POST_STOP_SECS: u64 = 0;
 const TEST_TRADER_ID: &str = "TESTER-001";
@@ -52,11 +53,22 @@ static MOCK_EXEC_SUBMISSIONS: OnceLock<Mutex<Vec<RecordedSubmitOrder>>> = OnceLo
 #[derive(Debug, Default)]
 pub struct RecordingDecisionEvidenceWriter {
     records: Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence>>,
+    admission_decisions:
+        Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence>>,
 }
 
 impl RecordingDecisionEvidenceWriter {
     pub fn records(&self) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence> {
         self.records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn admission_decisions(
+        &self,
+    ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence> {
+        self.admission_decisions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -74,6 +86,17 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(intent.clone());
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        self.admission_decisions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(decision.clone());
         Ok(())
     }
 }
@@ -147,13 +170,14 @@ pub fn validated_bolt_v3_live_canary_gate_report(
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
     loaded.root.risk.default_max_notional_per_order = max_notional_per_order.to_string();
     let report_path = temp.path().join("no-submit-readiness.json");
-    write_satisfied_no_submit_readiness_report(&report_path);
+    write_satisfied_no_submit_readiness_report(&report_path, &loaded.config_bundle_checksum);
     loaded.root.live_canary = Some(bolt_v2::bolt_v3_config::LiveCanaryBlock {
         approval_id: "operator-approved-canary-001".to_string(),
         no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
         max_live_order_count,
         max_notional_per_order: max_notional_per_order.to_string(),
         max_no_submit_readiness_report_bytes: 4096,
+        operator_evidence: None,
     });
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -165,14 +189,18 @@ pub fn validated_bolt_v3_live_canary_gate_report(
         .expect("valid live canary fixture should pass gate")
 }
 
-fn write_satisfied_no_submit_readiness_report(path: &Path) {
+fn write_satisfied_no_submit_readiness_report(path: &Path, config_bundle_checksum: &str) {
     use bolt_v2::bolt_v3_no_submit_readiness_schema::{
         CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
-        OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE,
-        SECRET_RESOLUTION_STAGE,
+        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
+        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
     };
 
     let report = serde_json::json!({
+        SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+        "approval_id_hash": sha256_hex("operator-approved-canary-001".as_bytes()),
+        "executable_identity": current_executable_identity(),
+        "config_bundle_checksum": config_bundle_checksum,
         "stages": [
             { "stage": OPERATOR_APPROVAL_STAGE, "status": "satisfied" },
             { "stage": SECRET_RESOLUTION_STAGE, "status": "satisfied" },
@@ -190,156 +218,13 @@ fn write_satisfied_no_submit_readiness_report(path: &Path) {
     .expect("readiness report should be written");
 }
 
-pub fn runtime_toml_with_reference_venue(
-    reference_chainlink_block: &str,
-    reference_venue_block: &str,
-    resolution_basis: &str,
-) -> String {
-    format!(
-        r#"
-[node]
-name = "bolt-v2"
-trader_id = "TRADER-001"
-environment = "Live"
-load_state = true
-save_state = true
-timeout_connection_secs = 60
-timeout_reconciliation_secs = 30
-timeout_portfolio_secs = 10
-timeout_disconnection_secs = 10
-delay_post_stop_secs = 10
-delay_shutdown_secs = 5
-
-[logging]
-stdout_level = "Info"
-file_level = "Off"
-
-[[data_clients]]
-name = "POLYMARKET"
-type = "polymarket"
-[data_clients.config]
-subscribe_new_markets = false
-update_instruments_interval_mins = 60
-ws_max_subscriptions = 200
-event_slugs = ["btc-updown-5m"]
-
-[[exec_clients]]
-name = "POLYMARKET"
-type = "polymarket"
-[exec_clients.config]
-account_id = "POLYMARKET-001"
-signature_type = 2
-funder = "0xdeadbeef"
-[exec_clients.secrets]
-region = "us-east-1"
-pk = "/pk"
-api_key = "/key"
-api_secret = "/secret"
-passphrase = "/pass"
-
-[raw_capture]
-output_dir = "/srv/bolt-v2/var/raw"
-
-[reference]
-publish_topic = "platform.reference.default"
-min_publish_interval_ms = 100
-
-{reference_chainlink_block}
-
-{reference_venue_block}
-
-[[rulesets]]
-id = "PRIMARY"
-venue = "polymarket"
-resolution_basis = "{resolution_basis}"
-min_time_to_expiry_secs = 60
-max_time_to_expiry_secs = 900
-min_liquidity_num = 1000
-require_accepting_orders = true
-freeze_before_end_secs = 90
-selector_poll_interval_ms = 250
-candidate_load_timeout_secs = 12
-[rulesets.selector]
-tag_slug = "bitcoin"
-
-[audit]
-local_dir = "/srv/bolt-v2/var/audit"
-s3_uri = "s3://bolt-runtime-history/phase1"
-ship_interval_secs = 30
-upload_attempt_timeout_secs = 45
-roll_max_bytes = 1048576
-roll_max_secs = 300
-max_local_backlog_bytes = 10485760
-"#
-    )
+fn current_executable_identity() -> String {
+    let path = std::env::current_exe().expect("current test executable path should resolve");
+    sha256_hex(&fs::read(path).expect("current test executable should be readable"))
 }
 
-pub fn live_local_chainlink_operator_input() -> String {
-    r#"
-[node]
-name = "BOLT-V2-TEST"
-trader_id = "BOLT-TEST"
-
-[polymarket]
-instrument_id = "0xabc-12345678901234567890.POLYMARKET"
-account_id = "POLYMARKET-001"
-funder = "0xabc"
-
-[secrets]
-pk = "/bolt/poly/pk"
-api_key = "/bolt/poly/key"
-api_secret = "/bolt/poly/secret"
-passphrase = "/bolt/poly/passphrase"
-
-[raw_capture]
-output_dir = "/srv/bolt-v2/var/raw"
-
-[reference]
-publish_topic = "platform.reference.default"
-min_publish_interval_ms = 100
-
-[reference.chainlink]
-region = "us-east-1"
-api_key = "/bolt/chainlink/api_key"
-api_secret = "/bolt/chainlink/api_secret"
-ws_url = "wss://streams.chain.link"
-ws_reconnect_alert_threshold = 5
-
-[[reference.venues]]
-name = "CHAINLINK-BTC"
-type = "chainlink"
-instrument_id = "BTCUSD.CHAINLINK"
-base_weight = 1.0
-stale_after_ms = 1500
-disable_after_ms = 5000
-[reference.venues.chainlink]
-feed_id = "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472"
-price_scale = 8
-
-[[rulesets]]
-id = "PRIMARY"
-venue = "polymarket"
-resolution_basis = "chainlink_btcusd"
-min_time_to_expiry_secs = 60
-max_time_to_expiry_secs = 900
-min_liquidity_num = 1000
-require_accepting_orders = true
-freeze_before_end_secs = 90
-selector_poll_interval_ms = 1000
-candidate_load_timeout_secs = 30
-[rulesets.selector]
-tag_slug = "bitcoin"
-
-[audit]
-local_dir = "/srv/bolt-v2/var/audit"
-s3_uri = "s3://bolt-runtime-history/phase1"
-ship_interval_secs = 30
-upload_attempt_timeout_secs = 30
-roll_max_bytes = 1048576
-roll_max_secs = 300
-max_local_backlog_bytes = 10485760
-"#
-    .to_string()
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }
 
 impl Drop for TempCaseDir {
@@ -370,7 +255,7 @@ impl MockDataClientConfig {
         }
     }
 
-    pub fn with_connect_delay_milliseconds(mut self, milliseconds: u64) -> Self {
+    pub fn with_connect_delay_ms(mut self, milliseconds: u64) -> Self {
         self.connect_delay = Duration::from_millis(milliseconds);
         self
     }
@@ -390,7 +275,7 @@ impl MockDataClientConfig {
     /// milliseconds inside `DataClient::disconnect` before flipping
     /// its `connected` flag. Used to drive the bolt-v3
     /// controlled-disconnect timeout path without touching real I/O.
-    pub fn with_disconnect_delay_milliseconds(mut self, milliseconds: u64) -> Self {
+    pub fn with_disconnect_delay_ms(mut self, milliseconds: u64) -> Self {
         self.disconnect_delay = Duration::from_millis(milliseconds);
         self
     }
@@ -711,10 +596,10 @@ impl ExecutionClient for MockExecutionClient {
     }
 }
 
-/// PKCS8-wrapped Ed25519 private key, base64-encoded. The bolt-v3 binance
-/// shape validator (`crate::secrets::validate_binance_api_secret_shape`)
-/// requires that the resolved api_secret decode as a valid PKCS8 Ed25519
-/// key, so the fake resolver must hand back a value that satisfies it.
+/// PKCS8-wrapped Ed25519 private key, base64-encoded. The bolt-v3 Binance
+/// provider validator requires that the resolved api_secret decode as a
+/// valid PKCS8 Ed25519 key, so the fake resolver must hand back a value
+/// that satisfies it.
 const FAKE_BOLT_V3_BINANCE_API_SECRET: &str =
     "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f";
 

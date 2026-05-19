@@ -41,7 +41,7 @@ The central constraint is that canary mode is not a separate architecture. It is
 - `src/bolt_v3_live_node.rs:414-419` registers configured strategies during bolt-v3 build after client registration.
 - `src/bolt_v3_live_canary_gate.rs:32-38` exposes the report fields Phase 6 must consume: approval id, readiness path, readiness byte cap, order-count cap, canary notional cap, and root notional cap.
 - `src/bolt_v3_strategy_registration.rs:97-119` creates one `JsonlBoltV3DecisionEvidenceWriter` from the loaded config and passes cloned mandatory evidence handles into strategy registration contexts.
-- `src/strategies/eth_chainlink_taker.rs:2825-2834` contains the only direct strategy NT submit helper; it records decision evidence before calling `self.submit_order(order, None, Some(client_id))`.
+- `src/strategies/binary_oracle_edge_taker.rs:2825-2834` contains the only direct strategy NT submit helper; it records decision evidence before calling `self.submit_order(order, None, Some(client_id))`.
 - `rg -n "bolt_v3_submit_admission|SubmitAdmission|admission" src tests` found no Phase 6 admission module or tests on main.
 - `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md:167-180` defines Bolt as thin over NT and NT as owner of runtime adapter behavior, market data, execution, and constructed-client behavior.
 - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md:193-195` defines NT Portfolio/cache-derived state as the source for account/position/order/fill facts.
@@ -130,7 +130,7 @@ Scope:
 - Consume only the validated `BoltV3LiveCanaryGateReport` produced by `check_bolt_v3_live_canary_gate`; do not duplicate live-canary TOML parsing in admission code.
 - Enforce `max_live_order_count` as a global budget of admitted submit attempts across all registered strategies. Entry submits, exit submits, and replace-submit paths all consume the same budget. Plain cancel requests are not submits and do not consume budget.
 - Consuming budget before NT submit is fail-closed and must not be refunded on NT submit error unless user approves a different requirement before implementation.
-- Enforce `max_notional_per_order` against a strategy-supplied positive `Decimal` notional. For `EthChainlinkTaker`, notional is strategy-owned because the strategy knows the economic order shape.
+- Enforce `max_notional_per_order` against a strategy-supplied positive `Decimal` notional. For `BinaryOracleEdgeTaker`, notional is strategy-owned because the strategy knows the economic order shape.
 - Preserve ordering: decision evidence persistence succeeds first, submit admission consumes budget second, NT `submit_order` happens third.
 - Preserve `run_bolt_v3_live_node` runtime-capture behavior while making the validated gate report available to the shared admission state before runtime capture is wired and before the runner starts.
 - Phase 6 inherits the existing readiness-report validation already performed by `check_bolt_v3_live_canary_gate`; it does not produce readiness evidence.
@@ -193,7 +193,7 @@ Likely files touched:
 - `src/bolt_v3_strategy_registration.rs`
 - `src/strategies/registry.rs`
 - `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`
-- `src/strategies/eth_chainlink_taker.rs`
+- `src/strategies/binary_oracle_edge_taker.rs`
 - `tests/bolt_v3_submit_admission.rs`
 - focused existing tests that construct strategy contexts or bolt-v3 live nodes
 

@@ -1,10 +1,10 @@
 //! Forbidden credential environment-variable checks and SSM secret
-//! resolution for bolt-v3 venues.
+//! resolution for bolt-v3 clients.
 //!
 //! Per docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md Section 3, every
-//! configured venue with a [secrets] block must fail live validation and
-//! startup if any canonical credential environment variables for that venue
-//! kind are present. The blocklist is owned by the venue-kind handler in
+//! configured client with a [secrets] block must fail live validation and
+//! startup if any canonical credential environment variables for that provider
+//! are present. The blocklist is owned by the provider handler in
 //! bolt code and must be checked before any NautilusTrader client
 //! constructor is called.
 //!
@@ -12,23 +12,23 @@
 //! configured `[secrets]` block from Amazon Web Services Systems Manager
 //! using `[aws].region` as the resolver region. Resolved values are held
 //! behind provider-owned handles whose Debug output redacts every secret field; the
-//! resolved error type carries venue key, secret-config field, and SSM
+//! resolved error type carries client key, secret-config field, and SSM
 //! path context, but never the resolved secret value itself.
 
 use std::collections::BTreeMap;
 
 use crate::{
-    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, ProviderKey},
+    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
     bolt_v3_providers::{
-        self, ProviderSecretResolveContext, ResolvedVenueSecrets, SsmSecretResolver,
+        self, ProviderSecretResolveContext, ResolvedClientSecrets, SsmSecretResolver,
     },
     secrets::SsmResolverSession,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForbiddenEnvVarFinding {
-    pub venue_key: String,
-    pub provider_key: ProviderKey,
+    pub client_key: String,
+    pub provider_key: String,
     pub env_var: &'static str,
 }
 
@@ -36,10 +36,10 @@ impl std::fmt::Display for ForbiddenEnvVarFinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "venues.{key} (kind={kind}) declares [secrets] but the forbidden credential environment variable `{var}` is set; \
-             the bolt-v3 secret contract requires SSM resolution and forbids env-var fallbacks for this venue kind",
-            key = self.venue_key,
-            kind = self.provider_key.as_str(),
+            "clients.{key} (provider={provider}) declares [secrets] but the forbidden credential environment variable `{var}` is set; \
+             the bolt-v3 secret contract requires SSM resolution and forbids env-var fallbacks for this provider",
+            key = self.client_key,
+            provider = self.provider_key,
             var = self.env_var,
         )
     }
@@ -81,19 +81,19 @@ where
     F: FnMut(&str) -> bool,
 {
     let mut findings = Vec::new();
-    for (key, venue) in &config.venues {
-        if venue.secrets.is_none() {
+    for (key, client) in &config.clients {
+        if client.secrets.is_none() {
             continue;
         }
-        let blocklist = match bolt_v3_providers::binding_for_provider_key(venue.kind.as_str()) {
+        let blocklist = match bolt_v3_providers::binding_for_provider_key(client.venue.as_str()) {
             Some(binding) => binding.forbidden_env_vars,
             None => &[],
         };
         for env_var in blocklist {
             if env_is_set(env_var) {
                 findings.push(ForbiddenEnvVarFinding {
-                    venue_key: key.clone(),
-                    provider_key: venue.kind.clone(),
+                    client_key: key.clone(),
+                    provider_key: client.venue.as_str().to_string(),
                     env_var,
                 });
             }
@@ -107,23 +107,23 @@ where
     }
 }
 
-pub type ResolvedBoltV3VenueSecrets = ResolvedVenueSecrets;
+pub type ResolvedBoltV3ClientSecrets = ResolvedClientSecrets;
 
 #[derive(Clone)]
 pub struct ResolvedBoltV3Secrets {
-    pub venues: BTreeMap<String, ResolvedBoltV3VenueSecrets>,
+    pub clients: BTreeMap<String, ResolvedBoltV3ClientSecrets>,
 }
 
 impl ResolvedBoltV3Secrets {
-    pub fn get_as<T: 'static>(&self, venue_key: &str) -> Option<&T> {
-        self.venues
-            .get(venue_key)
+    pub fn get_as<T: 'static>(&self, client_key: &str) -> Option<&T> {
+        self.clients
+            .get(client_key)
             .and_then(|secrets| secrets.as_any().downcast_ref())
     }
 
     pub fn redaction_values(&self) -> Vec<String> {
         let mut values = self
-            .venues
+            .clients
             .values()
             .flat_map(|secrets| secrets.redaction_values())
             .filter(|value| !value.is_empty())
@@ -138,14 +138,14 @@ impl ResolvedBoltV3Secrets {
 impl std::fmt::Debug for ResolvedBoltV3Secrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResolvedBoltV3Secrets")
-            .field("venues", &self.venues)
+            .field("clients", &self.clients)
             .finish()
     }
 }
 
 #[derive(Debug)]
 pub struct BoltV3SecretError {
-    pub venue_key: String,
+    pub client_key: String,
     pub field: String,
     pub ssm_path: String,
     pub source: String,
@@ -156,16 +156,16 @@ impl std::fmt::Display for BoltV3SecretError {
         if self.ssm_path.is_empty() {
             write!(
                 f,
-                "venues.{venue}.secrets.{field}: {source}",
-                venue = self.venue_key,
+                "clients.{client_key}.secrets.{field}: {source}",
+                client_key = self.client_key,
                 field = self.field,
                 source = self.source,
             )
         } else {
             write!(
                 f,
-                "venues.{venue}.secrets.{field} (path={path}): {source}",
-                venue = self.venue_key,
+                "clients.{client_key}.secrets.{field} (path={path}): {source}",
+                client_key = self.client_key,
                 field = self.field,
                 path = self.ssm_path,
                 source = self.source,
@@ -176,8 +176,8 @@ impl std::fmt::Display for BoltV3SecretError {
 
 impl std::error::Error for BoltV3SecretError {}
 
-/// Resolve every configured bolt-v3 venue `[secrets]` block from Amazon Web
-/// Services Systems Manager using `[aws].region` and the explicit per-venue
+/// Resolve every configured bolt-v3 client `[secrets]` block from Amazon Web
+/// Services Systems Manager using `[aws].region` and the explicit per-client
 /// SSM paths in the parsed root config. Production startup must use this
 /// function; tests should call [`resolve_bolt_v3_secrets_with`] with an
 /// injected resolver instead.
@@ -196,7 +196,7 @@ pub fn resolve_bolt_v3_secrets(
 
 /// Test-friendly variant of [`resolve_bolt_v3_secrets`] which lets the caller
 /// inject the SSM resolver. The closure is invoked with `(region, ssm_path)`
-/// pairs derived from `[aws].region` and the per-venue secret-config paths.
+/// pairs derived from `[aws].region` and the per-client secret-config paths.
 pub fn resolve_bolt_v3_secrets_with<F, E>(
     loaded: &LoadedBoltV3Config,
     mut resolver: F,
@@ -206,54 +206,80 @@ where
     E: std::fmt::Display,
 {
     let region = loaded.root.aws.region.as_str();
-    let mut venues = BTreeMap::new();
+    let mut clients = BTreeMap::new();
 
-    for (venue_key, venue) in &loaded.root.venues {
-        match venue.secrets.as_ref() {
+    for (client_key, client) in &loaded.root.clients {
+        match client.secrets.as_ref() {
             Some(_) => {}
             None => continue,
         }
 
-        let Some(binding) = bolt_v3_providers::binding_for_provider_key(venue.kind.as_str()) else {
+        let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str())
+        else {
             return Err(BoltV3SecretError {
-                venue_key: venue_key.clone(),
-                field: "kind".to_string(),
+                client_key: client_key.clone(),
+                field: "venue".to_string(),
                 ssm_path: String::new(),
                 source: format!(
-                    "provider key `{}` is not supported by this build",
-                    venue.kind.as_str()
+                    "venue `{}` is not supported by this build",
+                    client.venue.as_str()
                 ),
             });
         };
         let resolved = (binding.resolve_secrets)(
             ProviderSecretResolveContext {
-                venue_key,
+                client_key,
                 region,
-                venue,
+                client,
             },
             &mut resolver,
         )?;
-        venues.insert(venue_key.clone(), resolved);
+        clients.insert(client_key.clone(), resolved);
     }
 
-    Ok(ResolvedBoltV3Secrets { venues })
+    Ok(ResolvedBoltV3Secrets { clients })
 }
 
 pub fn resolve_field(
-    venue_key: &str,
+    client_key: &str,
     field: &'static str,
     region: &str,
     ssm_path: &str,
     resolver: &mut dyn SsmSecretResolver,
 ) -> Result<String, BoltV3SecretError> {
-    resolver
+    let value = resolver
         .resolve_secret(region, ssm_path)
         .map_err(|error| BoltV3SecretError {
-            venue_key: venue_key.to_string(),
+            client_key: client_key.to_string(),
             field: field.to_string(),
             ssm_path: ssm_path.to_string(),
             source: error,
-        })
+        })?;
+    if value.trim().is_empty() {
+        return Err(BoltV3SecretError {
+            client_key: client_key.to_string(),
+            field: field.to_string(),
+            ssm_path: ssm_path.to_string(),
+            source: "resolved SSM value is empty or whitespace-only".to_string(),
+        });
+    }
+    if value.trim() != value {
+        return Err(BoltV3SecretError {
+            client_key: client_key.to_string(),
+            field: field.to_string(),
+            ssm_path: ssm_path.to_string(),
+            source: "resolved SSM value has leading or trailing whitespace".to_string(),
+        });
+    }
+    if value.chars().any(char::is_whitespace) {
+        return Err(BoltV3SecretError {
+            client_key: client_key.to_string(),
+            field: field.to_string(),
+            ssm_path: ssm_path.to_string(),
+            source: "resolved SSM value contains embedded whitespace".to_string(),
+        });
+    }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -267,6 +293,9 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
     use std::path::PathBuf;
 
+    const SYNTHETIC_POLYMARKET_PRIVATE_KEY: &str =
+        "0x1111111111111111111111111111111111111111111111111111111111111111";
+
     fn minimal_root_toml() -> &'static str {
         include_str!("../tests/fixtures/bolt_v3/root.toml")
     }
@@ -274,6 +303,7 @@ mod tests {
     fn fixture_loaded_config() -> LoadedBoltV3Config {
         LoadedBoltV3Config {
             root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: "test-config-bundle-checksum".to_string(),
             root: toml::from_str(minimal_root_toml()).unwrap(),
             strategies: Vec::new(),
         }
@@ -281,8 +311,8 @@ mod tests {
 
     fn synthetic_binance_secret() -> String {
         // PKCS8-wrapped Ed25519 private key, base64-encoded. Mirrors the
-        // shape accepted by `validate_binance_api_secret_shape` so the
-        // resolver can run its production validator over this synthetic
+        // shape accepted by the Binance provider secret validator, so the
+        // resolver can run its provider-owned check over this synthetic
         // value without rejecting it.
         let mut der = vec![0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03];
         der.extend_from_slice(&[0x2B, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
@@ -292,9 +322,9 @@ mod tests {
 
     fn fake_secret_value(path: &str) -> String {
         match path {
-            "/bolt/polymarket_main/private_key" => "poly-private-key".to_string(),
+            "/bolt/polymarket_main/private_key" => SYNTHETIC_POLYMARKET_PRIVATE_KEY.to_string(),
             "/bolt/polymarket_main/api_key" => "poly-api-key".to_string(),
-            "/bolt/polymarket_main/api_secret" => "abc".to_string(),
+            "/bolt/polymarket_main/api_secret" => "YWJj".to_string(),
             "/bolt/polymarket_main/passphrase" => "poly-passphrase".to_string(),
             "/bolt/binance_reference/api_key" => "binance-api-key".to_string(),
             "/bolt/binance_reference/api_secret" => synthetic_binance_secret(),
@@ -330,26 +360,26 @@ mod tests {
     }
 
     #[test]
-    fn flags_set_polymarket_var_for_configured_polymarket_venue() {
+    fn flags_set_polymarket_var_for_configured_polymarket_client() {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
         let error =
             check_no_forbidden_credential_env_vars_with(&root, |var| var == "POLYMARKET_PK")
                 .expect_err("POLYMARKET_PK should trip the polymarket blocklist");
         assert_eq!(error.findings.len(), 1);
-        assert_eq!(error.findings[0].venue_key, "polymarket_main");
-        assert_eq!(error.findings[0].provider_key.as_str(), polymarket::KEY);
+        assert_eq!(error.findings[0].client_key, "polymarket_main");
+        assert_eq!(error.findings[0].provider_key, polymarket::KEY);
         assert_eq!(error.findings[0].env_var, "POLYMARKET_PK");
     }
 
     #[test]
-    fn flags_set_binance_var_for_configured_binance_venue() {
+    fn flags_set_binance_var_for_configured_binance_client() {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
         let error =
             check_no_forbidden_credential_env_vars_with(&root, |var| var == "BINANCE_API_SECRET")
                 .expect_err("BINANCE_API_SECRET should trip the binance blocklist");
         assert_eq!(error.findings.len(), 1);
-        assert_eq!(error.findings[0].venue_key, "binance_reference");
-        assert_eq!(error.findings[0].provider_key.as_str(), binance::KEY);
+        assert_eq!(error.findings[0].client_key, "binance_reference");
+        assert_eq!(error.findings[0].provider_key, binance::KEY);
         assert_eq!(error.findings[0].env_var, "BINANCE_API_SECRET");
     }
 
@@ -361,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_configured_bolt_v3_venue_secrets_from_ssm_paths() {
+    fn resolves_configured_bolt_v3_client_secrets_from_ssm_paths() {
         let loaded = fixture_loaded_config();
         let mut calls = Vec::new();
 
@@ -371,7 +401,7 @@ mod tests {
         })
         .expect("fixture secrets should resolve");
 
-        assert_eq!(resolved.venues.len(), 2);
+        assert_eq!(resolved.clients.len(), 2);
         assert!(
             calls.iter().all(|(region, _)| region == "eu-west-1"),
             "all SSM calls must use [aws].region from the fixture root.toml: {calls:#?}"
@@ -393,9 +423,9 @@ mod tests {
         let polymarket = resolved
             .get_as::<ResolvedBoltV3PolymarketSecrets>("polymarket_main")
             .expect("polymarket_main should resolve to Polymarket secrets");
-        assert_eq!(polymarket.private_key, "poly-private-key");
+        assert_eq!(polymarket.private_key, SYNTHETIC_POLYMARKET_PRIVATE_KEY);
         assert_eq!(polymarket.api_key, "poly-api-key");
-        assert_eq!(polymarket.api_secret, "abc=");
+        assert_eq!(polymarket.api_secret, "YWJj");
         assert_eq!(polymarket.passphrase, "poly-passphrase");
 
         let binance = resolved
@@ -403,6 +433,171 @@ mod tests {
             .expect("binance_reference should resolve to Binance secrets");
         assert_eq!(binance.api_key, "binance-api-key");
         assert_eq!(binance.api_secret, synthetic_binance_secret());
+    }
+
+    #[test]
+    fn rejects_empty_resolved_secret_values_before_nt_can_fall_back_to_env() {
+        let loaded = fixture_loaded_config();
+
+        let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
+            if path == "/bolt/polymarket_main/api_key" {
+                Ok::<_, &'static str>("   ".to_string())
+            } else {
+                Ok(fake_secret_value(path))
+            }
+        })
+        .expect_err("empty resolved SSM secret value must fail before NT env fallback");
+
+        assert_eq!(error.client_key, "polymarket_main");
+        assert_eq!(error.field, "api_key_ssm_path");
+        assert_eq!(error.ssm_path, "/bolt/polymarket_main/api_key");
+        assert_eq!(
+            error.source,
+            "resolved SSM value is empty or whitespace-only"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_resolved_polymarket_private_key_shape() {
+        let loaded = fixture_loaded_config();
+
+        let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
+            if path == "/bolt/polymarket_main/private_key" {
+                Ok::<_, &'static str>("not-a-valid-evm-private-key".to_string())
+            } else {
+                Ok(fake_secret_value(path))
+            }
+        })
+        .expect_err("invalid resolved Polymarket private key must fail before NT client build");
+
+        assert_eq!(error.client_key, "polymarket_main");
+        assert_eq!(error.field, "private_key_ssm_path");
+        assert_eq!(error.ssm_path, "/bolt/polymarket_main/private_key");
+        assert!(
+            error.source.contains(
+                "resolved polymarket private_key is not valid EVM private key material accepted by the NautilusTrader polymarket adapter:"
+            ),
+            "error should preserve adapter diagnostic detail, got: {}",
+            error.source
+        );
+    }
+
+    #[test]
+    fn wrapped_polymarket_private_key_error_does_not_leak_raw_input_bytes() {
+        // Per MECE PR #331 P3 round-1 finding P3-NB2: when the
+        // resolver wraps the NT EvmPrivateKey validator error, the raw
+        // SSM value must not appear in the wrapped error chain. NT's
+        // current EvmPrivateKey::new diagnostic does not embed the
+        // input, but a future NT revision that included the offending
+        // bytes in its error string would propagate them through
+        // `BoltV3SecretError::Display` to operator logs. This guard
+        // pins the no-leak contract by passing a distinct sentinel
+        // value and asserting the sentinel is not a substring of any
+        // surface of the wrapped error (`source` field or `Display`
+        // output).
+        let loaded = fixture_loaded_config();
+        let sentinel = "BOLTV3_PRIVATE_KEY_SENTINEL_DO_NOT_LEAK_2BC58A4DE0F1";
+
+        let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
+            if path == "/bolt/polymarket_main/private_key" {
+                Ok::<_, &'static str>(sentinel.to_string())
+            } else {
+                Ok(fake_secret_value(path))
+            }
+        })
+        .expect_err(
+            "sentinel private_key must fail shape validation before NT client construction",
+        );
+
+        assert_eq!(error.field, "private_key_ssm_path");
+        assert!(
+            !error.source.contains(sentinel),
+            "wrapped error source must not include the raw secret bytes; got source: {}",
+            error.source
+        );
+        let displayed = error.to_string();
+        assert!(
+            !displayed.contains(sentinel),
+            "wrapped error Display output must not include the raw secret bytes; got: {displayed}"
+        );
+    }
+
+    #[test]
+    fn wrapped_binance_api_secret_error_does_not_leak_raw_input_bytes() {
+        // Per MECE PR #331 P3 round-1 finding P3-NB2: same no-leak
+        // contract as
+        // `wrapped_polymarket_private_key_error_does_not_leak_raw_input_bytes`,
+        // applied to the Binance Ed25519Credential validator wrapper.
+        // The sentinel passes resolve_field's whitespace checks but
+        // fails Ed25519 PKCS8 base64 shape validation; the wrapped
+        // error must not surface the sentinel bytes.
+        let loaded = fixture_loaded_config();
+        let sentinel = "BOLTV3_API_SECRET_SENTINEL_DO_NOT_LEAK_8D4F2E1AC3B7";
+
+        let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
+            if path == "/bolt/binance_reference/api_secret" {
+                Ok::<_, &'static str>(sentinel.to_string())
+            } else {
+                Ok(fake_secret_value(path))
+            }
+        })
+        .expect_err("sentinel api_secret must fail shape validation before NT client construction");
+
+        assert_eq!(error.field, "api_secret_ssm_path");
+        assert!(
+            !error.source.contains(sentinel),
+            "wrapped error source must not include the raw secret bytes; got source: {}",
+            error.source
+        );
+        let displayed = error.to_string();
+        assert!(
+            !displayed.contains(sentinel),
+            "wrapped error Display output must not include the raw secret bytes; got: {displayed}"
+        );
+    }
+
+    #[test]
+    fn rejects_whitespace_padded_resolved_secret_values_without_trimming() {
+        let loaded = fixture_loaded_config();
+
+        let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
+            if path == "/bolt/polymarket_main/api_secret" {
+                Ok::<_, &'static str>(" YWJj ".to_string())
+            } else {
+                Ok(fake_secret_value(path))
+            }
+        })
+        .expect_err("SSM secret values must be exact and must not be trimmed in code");
+
+        assert_eq!(error.client_key, "polymarket_main");
+        assert_eq!(error.field, "api_secret_ssm_path");
+        assert_eq!(error.ssm_path, "/bolt/polymarket_main/api_secret");
+        assert_eq!(
+            error.source,
+            "resolved SSM value has leading or trailing whitespace"
+        );
+    }
+
+    #[test]
+    fn rejects_embedded_whitespace_resolved_secret_values_without_normalizing() {
+        let loaded = fixture_loaded_config();
+
+        let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
+            if path == "/bolt/polymarket_main/api_key" {
+                Ok::<_, &'static str>("abc def".to_string())
+            } else {
+                Ok(fake_secret_value(path))
+            }
+        })
+        .expect_err("SSM secret values must be exact and must not be normalized in code");
+
+        assert_eq!(error.client_key, "polymarket_main");
+        assert_eq!(error.field, "api_key_ssm_path");
+        assert_eq!(error.ssm_path, "/bolt/polymarket_main/api_key");
+        assert_eq!(
+            error.source,
+            "resolved SSM value contains embedded whitespace"
+        );
     }
 
     #[test]
@@ -418,7 +613,7 @@ mod tests {
         assert!(debug.contains("polymarket_main"));
         assert!(debug.contains("binance_reference"));
         for secret in [
-            "poly-private-key",
+            SYNTHETIC_POLYMARKET_PRIVATE_KEY,
             "poly-api-key",
             "poly-passphrase",
             "binance-api-key",
@@ -432,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn ssm_failure_reports_bolt_v3_venue_field_and_path() {
+    fn ssm_failure_reports_bolt_v3_client_field_and_path() {
         let loaded = fixture_loaded_config();
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
@@ -446,7 +641,7 @@ mod tests {
         let message = error.to_string();
 
         assert!(
-            message.contains("venues.binance_reference.secrets.api_secret_ssm_path"),
+            message.contains("clients.binance_reference.secrets.api_secret_ssm_path"),
             "expected field context in error: {message}"
         );
         assert!(
@@ -463,18 +658,12 @@ mod tests {
     fn resolve_bolt_v3_secrets_takes_session_and_loaded_config() {
         // Per #252 design review: production startup owns the
         // `SsmResolverSession` at the `build_bolt_v3_live_node` boundary
-        // and threads it down explicitly, so every top-level `resolve_*`
-        // helper has the same shape: caller-owned session passed by
-        // reference. Letting `resolve_bolt_v3_secrets` build its own
-        // session internally (the prior shape) created an asymmetry —
-        // sister resolvers (`resolve_polymarket`, `resolve_chainlink`,
-        // `resolve_binance`) take `&SsmResolverSession`, while the
-        // bolt-v3 entry point silently constructed and dropped its own,
-        // hiding the session lifetime from the caller and preventing
-        // future code from sharing one session across both bolt-v3
-        // secrets and other startup-side resolution. This guard pins the
-        // lifted shape; the test seam remains
-        // [`resolve_bolt_v3_secrets_with`].
+        // and threads it down explicitly. Letting
+        // `resolve_bolt_v3_secrets` build its own session internally
+        // hides the session lifetime from the caller and prevents the
+        // startup boundary from sharing one session across all bolt-v3
+        // venue secret resolution. This guard pins the lifted shape;
+        // tests keep using [`resolve_bolt_v3_secrets_with`].
         fn _assert_signature<F>(_f: F)
         where
             F: Fn(

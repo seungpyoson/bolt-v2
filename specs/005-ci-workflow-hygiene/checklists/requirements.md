@@ -15,7 +15,7 @@
 ## Requirement Clarity
 
 - [x] CHK005 Are exact required job ids listed by name instead of described generically? [Clarity, Spec FR-003]
-- [x] CHK006 Is "lane-specific setup trimming" defined as managed target-dir opt-in, not removal of the managed Rust owner from fmt-check? [Clarity, Spec FR-009..FR-010]
+- [x] CHK006 Is "lane-specific setup trimming" defined as managed target-dir opt-in, not removal of the repo-local managed Rust owner from fmt-check? [Clarity, Spec FR-009..FR-010]
 - [x] CHK007 Is deploy defense-in-depth defined as direct needs plus retained aggregate gate? [Clarity, Spec FR-007]
 - [x] CHK007A Is cargo-zigbuild checksum verification defined as an in-repo pinned hash rather than same-origin release checksum trust? [Clarity, Spec FR-014]
 

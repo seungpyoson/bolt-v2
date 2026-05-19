@@ -1,10 +1,12 @@
 # Research: CI Source-Fence Lane
 
+> **Superseded in part by #400** (PR #401): the "`test` waits for `source-fence`" decision below is no longer the active topology. After #332 sharded `test` into `test-archive` -> `test-shards` -> aggregate `test`, the carry-forward dep moved to `test-archive needs: [detector, source-fence]`. #400 removed that dep so the two lanes run in parallel. Merge enforcement now lives only in `gate.needs` (which still requires `source-fence` and aggregate `test` to succeed). The historical decision text is preserved below for forensics; the live invariant is the verifier rule `test-archive must not need source-fence` and the gate result check on `needs.source-fence.result == "success"`.
+
 ## Decision: `test` waits for `source-fence`
 
-**Rationale**: GitHub Actions does not automatically cancel independent jobs when one job fails. If `test` starts in parallel with `source-fence`, the stale-assertion case from run `25859831755` can still pay full test setup cost. `test needs: [detector, source-fence]` makes source-fence drift fail before full nextest setup.
+**Rationale (historical, superseded by #400)**: GitHub Actions does not automatically cancel independent jobs when one job fails. If `test` starts in parallel with `source-fence`, the stale-assertion case from run `25859831755` can still pay full test setup cost. `test needs: [detector, source-fence]` makes source-fence drift fail before full nextest setup.
 
-**Alternatives considered**: Let both jobs run after `detector`. Rejected because it does not satisfy the early-failure intent when source-fence drift is deterministic.
+**Alternatives considered**: Let both jobs run after `detector`. Rejected at the time because it did not satisfy the early-failure intent when source-fence drift is deterministic. **Adopted by #400** once the cost of a partial-restore rebuild (smoke evidence: ~30s clippy / ~1m28s source-fence / ~46s test-archive on warm cache) made the fail-fast saving negligible against the parallel-lane wall-clock gain.
 
 ## Decision: One `just source-fence` recipe
 

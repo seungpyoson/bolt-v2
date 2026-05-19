@@ -5,7 +5,7 @@
 
 ## Summary
 
-Implement #332 as a stacked follow-up to #342 and #203. Split the serialized `clippy` lane into top-level host `clippy` and `check-aarch64` jobs, shard the full nextest lane four ways through the existing managed `just test` path, preserve one fail-closed aggregate gate, and extend workflow lint only for the new #332 topology. Source-fence filters remain intentionally duplicated in full nextest for this slice, with `source-fence` still required before `test`; this preserves coverage without adding brittle exclusion filters.
+Implement #332 as a stacked follow-up to #342 and #203. Split the serialized `clippy` lane into top-level host `clippy` and `check-aarch64` jobs, shard the full nextest lane four ways through the existing managed `just test` path, preserve one fail-closed aggregate gate, and extend workflow lint only for the new #332 topology. Source-fence filters remain intentionally duplicated in full nextest for this slice, with ~~`source-fence` still required before `test`~~ (**Superseded by #400** (PR #401): the lanes run in parallel; gate enforces both); this preserves coverage without adding brittle exclusion filters.
 
 ## Technical Context
 
@@ -25,7 +25,7 @@ Implement #332 as a stacked follow-up to #342 and #203. Split the serialized `cl
 
 - **NT-First Thin Layer**: PASS. CI topology changes do not alter runtime trading behavior or NT surfaces.
 - **Generic Core, Concrete Edges**: PASS. No provider, market, strategy, or adapter code changes.
-- **Single Path And Config-Controlled Runtime**: PASS. Workflow YAML still calls repo `just` recipes; managed Rust owner remains the one Rust verification path.
+- **Single Path And Config-Controlled Runtime**: PASS. Workflow YAML still calls repo `just` recipes; repo-local managed Rust owner remains the one Rust verification path.
 - **Test-First Safety Gates**: PASS. New topology invariants start as failing verifier self-tests.
 - **Evidence Before Claims**: PASS. Issue #332 body/comment, #333 epic acceptance, #343 baseline, local lint, and exact-head CI are required evidence surfaces.
 - **Minimal Slice Discipline**: PASS. The slice includes all #332 requirements and explicitly excludes #195/#205/#344/#340/generic #203 work.

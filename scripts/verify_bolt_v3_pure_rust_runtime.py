@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the Bolt-v3 runtime has no Python bridge layer.
-
-This script intentionally allows Python verifier tooling under `scripts/`.
-It checks production Rust source and Cargo metadata for Python FFI/build
-bridges such as PyO3, maturin, or cpython.
-"""
+"""Verify the Bolt-v3 runtime stays pure Rust and SSM-SDK backed."""
 
 from __future__ import annotations
 
@@ -13,8 +8,14 @@ import sys
 import tomllib
 from pathlib import Path
 
+from verify_bolt_v3_provider_leaks import (
+    production_text as production_source_text,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+CARGO_TOML = REPO_ROOT / "Cargo.toml"
+STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
 
 FORBIDDEN_ROOT_FILES = (
     "pyproject.toml",
@@ -39,9 +40,45 @@ FORBIDDEN_RUST_PATTERNS = (
     (re.compile(r"\bcpython::"), "cpython Rust API usage"),
     (re.compile(r"#\s*\[\s*py(?:class|function|method|module|methods)"), "Python export attribute"),
     (re.compile(r"\bPython::with_gil\b"), "Python GIL runtime usage"),
-    # Keep the runtime boundary strict: production `src/` should not define
-    # Python-shaped result/object types even outside direct PyO3 imports.
     (re.compile(r"\bPy(?:Any|Err|Module|Object|Result)\b"), "Python object/result type"),
+)
+
+RUNTIME_SOURCE_PATHS = tuple(
+    sorted(
+        {
+            "src/main.rs",
+            "src/nt_runtime_capture.rs",
+            "src/secrets.rs",
+            *(
+                path.relative_to(REPO_ROOT).as_posix()
+                for path in (REPO_ROOT / "src").glob("bolt_v3*.rs")
+            ),
+            *(
+                path.relative_to(REPO_ROOT).as_posix()
+                for directory in (REPO_ROOT / "src").glob("bolt_v3_*")
+                if directory.is_dir()
+                for path in directory.rglob("*.rs")
+            ),
+            *(
+                path.relative_to(REPO_ROOT).as_posix()
+                for path in (REPO_ROOT / "src" / "strategies").rglob("*.rs")
+            ),
+        }
+    )
+)
+
+FORBIDDEN_RUNTIME_SOURCE_PATTERNS = (
+    (re.compile(r"\bpyo3\b", re.IGNORECASE), "PyO3 runtime binding"),
+    (re.compile(r"\bmaturin\b", re.IGNORECASE), "maturin Python extension build"),
+    (
+        re.compile(r"(?:std::process::)?Command::new\s*\("),
+        "runtime subprocess",
+    ),
+)
+
+REQUIRED_STATUS_MAP_PHRASES = (
+    "| 3 | No Python runtime layer | Implemented as current source-scan gate |",
+    "`scripts/verify_bolt_v3_pure_rust_runtime.py`",
 )
 
 DEPENDENCY_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
@@ -102,6 +139,14 @@ def cargo_lock_package_names(path: Path) -> set[str]:
         if isinstance(package, dict) and package.get("name"):
             names.add(str(package["name"]).lower())
     return names
+
+
+def production_text(path: Path) -> str:
+    return strip_cfg_test_items(path.read_text(encoding="utf-8"))
+
+
+def strip_cfg_test_items(text: str) -> str:
+    return production_source_text(text)
 
 
 def line_number(text: str, pos: int) -> int:
@@ -236,6 +281,12 @@ def strip_rust_comments_and_literals(text: str) -> str:
 def main() -> int:
     findings: list[str] = []
 
+    cargo_dependencies = cargo_dependency_names(CARGO_TOML)
+    if "aws-sdk-ssm" not in cargo_dependencies:
+        findings.append("Cargo.toml does not include aws-sdk-ssm")
+    if "aws-config" not in cargo_dependencies:
+        findings.append("Cargo.toml does not include aws-config")
+
     for rel in FORBIDDEN_ROOT_FILES:
         path = REPO_ROOT / rel
         if path.exists():
@@ -252,19 +303,37 @@ def main() -> int:
         findings.append(f"Cargo.lock references forbidden Python bridge package {name!r}")
 
     for path in sorted((REPO_ROOT / "src").glob("**/*.rs")):
-        text = path.read_text(encoding="utf-8")
-        scan_text = strip_rust_comments_and_literals(text)
         rel = path.relative_to(REPO_ROOT).as_posix()
+        text = path.read_text(encoding="utf-8")
+        scan_text = strip_rust_comments_and_literals(strip_cfg_test_items(text))
         for pattern, label in FORBIDDEN_RUST_PATTERNS:
             for match in pattern.finditer(scan_text):
                 findings.append(f"{rel}:{line_number(text, match.start())}: {label}")
+
+    for rel in RUNTIME_SOURCE_PATHS:
+        path = REPO_ROOT / rel
+        if not path.exists():
+            continue
+        text = production_text(path)
+        for pattern, label in FORBIDDEN_RUNTIME_SOURCE_PATTERNS:
+            for match in pattern.finditer(text):
+                findings.append(
+                    f"{rel}:{line_number(text, match.start())}: forbidden {label}: {match.group(0)}"
+                )
+
+    status_map = STATUS_MAP.read_text(encoding="utf-8")
+    if "| 3 | No Python runtime layer | Missing verifier |" in status_map:
+        findings.append("status map still marks row 3 as missing a verifier")
+    for phrase in REQUIRED_STATUS_MAP_PHRASES:
+        if phrase not in status_map:
+            findings.append(f"status map missing current pure-Rust evidence phrase: {phrase}")
 
     if findings:
         for finding in findings:
             print(f"FAIL: {finding}", file=sys.stderr)
         return 1
 
-    print("OK: Bolt-v3 pure Rust runtime audit passed.")
+    print("OK: Bolt-v3 pure-Rust runtime verifier passed.")
     return 0
 
 

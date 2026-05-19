@@ -6,6 +6,7 @@ use tempfile::tempdir;
 fn stream_to_lake_fails_when_live_spool_is_missing() {
     let source_root = tempdir().unwrap();
     let output_root = tempdir().unwrap();
+    let contract_path = std::fs::canonicalize("contracts/polymarket.toml").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_stream_to_lake"))
         .args([
@@ -15,6 +16,8 @@ fn stream_to_lake_fails_when_live_spool_is_missing() {
             "missing-instance",
             "--output-root",
             output_root.path().to_str().expect("utf-8 path"),
+            "--contract",
+            contract_path.to_str().expect("utf-8 path"),
         ])
         .output()
         .expect("stream_to_lake should run");

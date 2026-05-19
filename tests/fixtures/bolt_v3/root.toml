@@ -6,17 +6,17 @@ strategy_files = [
 ]
 
 [runtime]
-mode = "live"
+mode = "Live"
 
 [nautilus]
 load_state = true
 save_state = true
-timeout_connection_seconds = 30
-timeout_reconciliation_seconds = 60
-timeout_portfolio_seconds = 10
-timeout_disconnection_seconds = 10
-delay_post_stop_seconds = 5
-timeout_shutdown_seconds = 10
+timeout_connection_secs = 30
+timeout_reconciliation_secs = 60
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 5
+timeout_shutdown_secs = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -29,7 +29,7 @@ validate_data_sequence = false
 buffer_deltas = false
 emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
-external_client_ids = []
+external_clients = []
 debug = false
 graceful_shutdown_on_error = false
 qsize = 100000
@@ -38,30 +38,30 @@ qsize = 100000
 load_cache = true
 snapshot_orders = false
 snapshot_positions = false
-snapshot_positions_interval_seconds = 0
-external_client_ids = []
+snapshot_positions_interval_secs = 0
+external_clients = []
 debug = false
 reconciliation = true
-reconciliation_startup_delay_seconds = 10
+reconciliation_startup_delay_secs = 10
 reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []
 filter_unclaimed_external_orders = false
 filter_position_reports = false
 filtered_client_order_ids = []
 generate_missing_orders = true
-inflight_check_interval_milliseconds = 2000
-inflight_check_threshold_milliseconds = 5000
+inflight_check_interval_ms = 2000
+inflight_check_threshold_ms = 5000
 inflight_check_retries = 5
-open_check_interval_seconds = 0
+open_check_interval_secs = 0
 open_check_lookback_mins = 60
-open_check_threshold_milliseconds = 5000
+open_check_threshold_ms = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
-single_order_query_delay_milliseconds = 100
-position_check_interval_seconds = 0
+single_order_query_delay_ms = 100
+position_check_interval_secs = 0
 position_check_lookback_mins = 60
-position_check_threshold_milliseconds = 5000
+position_check_threshold_ms = 5000
 position_check_retries = 3
 purge_closed_orders_interval_mins = 0
 purge_closed_orders_buffer_mins = 0
@@ -70,7 +70,7 @@ purge_closed_positions_buffer_mins = 0
 purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
-own_books_audit_interval_seconds = 0
+own_books_audit_interval_secs = 0
 graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
@@ -78,76 +78,85 @@ manage_own_order_books = false
 
 [risk]
 default_max_notional_per_order = "10.00"
-nt_bypass = false
-nt_max_order_submit_rate = "100/00:00:01"
-nt_max_order_modify_rate = "100/00:00:01"
-nt_max_notional_per_order = {}
-nt_debug = false
-nt_graceful_shutdown_on_error = false
-nt_qsize = 100000
+
+[risk.nautilus]
+bypass = false
+max_order_submit_rate = "100/00:00:01"
+max_order_modify_rate = "100/00:00:01"
+max_notional_per_order = {}
+debug = false
+graceful_shutdown_on_error = false
+qsize = 100000
 
 [logging]
-standard_output_level = "INFO"
-file_level = "INFO"
+stdout_level = "INFO"
+fileout_level = "INFO"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+runtime_capture_start_poll_interval_ms = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
-flush_interval_milliseconds = 1000
+flush_interval_ms = 1000
 replace_existing = false
 rotation_kind = "none"
 
 [aws]
 region = "eu-west-1"
 
-[venues.polymarket_main]
-kind = "polymarket"
+[clients.polymarket_main]
+venue = "POLYMARKET"
 
-[venues.polymarket_main.data]
+[clients.polymarket_main.data]
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 base_url_gamma = "https://gamma-api.polymarket.com"
 base_url_data_api = "https://data-api.polymarket.com"
-http_timeout_seconds = 60
-ws_timeout_seconds = 30
+http_timeout_secs = 60
+ws_timeout_secs = 30
 subscribe_new_markets = false
-update_instruments_interval_minutes = 60
-websocket_max_subscriptions_per_connection = 200
+auto_load_missing_instruments = false
+auto_load_debounce_ms = 250
+update_instruments_interval_mins = 60
+ws_max_subscriptions = 200
+transport_backend = "sockudo"
 
-[venues.polymarket_main.execution]
+[clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
-funder_address = "0x1111111111111111111111111111111111111111"
+funder = "0x1111111111111111111111111111111111111111"
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 base_url_data_api = "https://data-api.polymarket.com"
-http_timeout_seconds = 60
+http_timeout_secs = 60
 max_retries = 3
-retry_delay_initial_milliseconds = 250
-retry_delay_max_milliseconds = 2000
-ack_timeout_seconds = 5
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+ack_timeout_secs = 5
+fee_cache_ttl_secs = 300
+transport_backend = "sockudo"
 
-[venues.polymarket_main.secrets]
+[clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket_main/private_key"
 api_key_ssm_path = "/bolt/polymarket_main/api_key"
 api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
 passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
 
-[venues.binance_reference]
-kind = "binance"
+[clients.binance_reference]
+venue = "BINANCE"
 
-[venues.binance_reference.data]
+[clients.binance_reference.data]
 product_types = ["spot"]
 environment = "mainnet"
 base_url_http = "https://api.binance.com" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream.binance.com:9443/ws" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws
-instrument_status_poll_seconds = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
+instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
+transport_backend = "sockudo"
 
-[venues.binance_reference.secrets]
+[clients.binance_reference.secrets]
 api_key_ssm_path = "/bolt/binance_reference/api_key"
 api_secret_ssm_path = "/bolt/binance_reference/api_secret"

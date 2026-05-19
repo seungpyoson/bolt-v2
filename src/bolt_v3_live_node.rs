@@ -7,9 +7,9 @@
 //! - validates the forbidden credential env-var blocklist before
 //!   constructing any NautilusTrader client
 //! - resolves SSM secrets via the bolt-v3 secret resolver
-//! - maps the validated bolt-v3 venue blocks into provider-owned
+//! - maps the validated bolt-v3 client blocks into provider-owned
 //!   NT-native adapter configs
-//! - registers the per-venue NT data and execution client factories on a
+//! - registers the per-client NT data and execution client factories on a
 //!   `nautilus_live::builder::LiveNodeBuilder` via the
 //!   [`crate::bolt_v3_client_registration`] boundary
 //! - calls `LiveNodeBuilder::build`, which is **not** purely passive:
@@ -47,7 +47,7 @@ use nautilus_live::{
 };
 use nautilus_model::{
     enums::BarIntervalType,
-    identifiers::{ClientId, StrategyId, TraderId},
+    identifiers::{ClientId, StrategyId},
 };
 use ustr::Ustr;
 
@@ -56,7 +56,11 @@ use crate::{
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
-    bolt_v3_config::{LoadedBoltV3Config, RuntimeMode},
+    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_decision_evidence::{
+        BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+        JsonlBoltV3DecisionEvidenceWriter,
+    },
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_providers,
     bolt_v3_secrets::{
@@ -76,6 +80,19 @@ pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     redaction_values: Vec<String>,
+}
+
+#[derive(Debug)]
+struct NoStrategyDecisionEvidenceWriter;
+
+impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl BoltV3LiveNodeRuntime {
@@ -170,13 +187,13 @@ impl std::error::Error for BoltV3LiveNodeBuilderError {
 #[derive(Debug)]
 pub enum BoltV3LiveNodeError {
     ForbiddenEnv(ForbiddenEnvVarError),
-    /// `SsmResolverSession::new()` failed before any venue secret was
+    /// `SsmResolverSession::new()` failed before any client secret was
     /// read. The wrapped `SecretError` is the upstream Tokio /
     /// AWS-SDK-config setup failure. Distinct from
-    /// [`SecretResolution`] (which carries a per-venue `BoltV3SecretError`
-    /// with venue key, secret-config field name, and SSM path) because
-    /// session setup happens before any venue path is consulted, so an
-    /// operator message that names a venue or SSM path would be wrong.
+    /// [`SecretResolution`] (which carries a per-client `BoltV3SecretError`
+    /// with client key, secret-config field name, and SSM path) because
+    /// session setup happens before any client path is consulted, so an
+    /// operator message that names a client or SSM path would be wrong.
     SecretResolverSetup(crate::secrets::SecretError),
     SecretResolution(BoltV3SecretError),
     AdapterMapping(BoltV3AdapterMappingError),
@@ -211,7 +228,7 @@ pub enum BoltV3LiveNodeError {
     /// ([`connect_bolt_v3_clients`]) bounds the dispatched
     /// `NautilusKernel::connect_data_clients` and
     /// `NautilusKernel::connect_exec_clients` calls by the
-    /// `nautilus.timeout_connection_seconds` value from the loaded
+    /// `nautilus.timeout_connection_secs` value from the loaded
     /// bolt-v3 config. A `ConnectTimeout` is surfaced when that bound
     /// elapses before NT's engine-level connect dispatchers return,
     /// instead of the controlled-connect call hanging indefinitely.
@@ -220,7 +237,7 @@ pub enum BoltV3LiveNodeError {
     /// distinguish a 1-second test timeout from a 30-second
     /// production timeout without re-reading the source config.
     ConnectTimeout {
-        timeout_seconds: u64,
+        timeout_secs: u64,
     },
     /// The bolt-v3 controlled-connect boundary dispatched both NT
     /// engine-level connect futures within the configured bound, but
@@ -240,14 +257,14 @@ pub enum BoltV3LiveNodeError {
     /// The bolt-v3 controlled-disconnect boundary
     /// ([`disconnect_bolt_v3_clients`]) bounds the
     /// `NautilusKernel::disconnect_clients` future by the
-    /// `nautilus.timeout_disconnection_seconds` value from the loaded
+    /// `nautilus.timeout_disconnection_secs` value from the loaded
     /// bolt-v3 config. A `DisconnectTimeout` is surfaced when that
     /// bound elapses before NT finishes disconnecting all data and
     /// execution clients, instead of the controlled-disconnect call
     /// hanging indefinitely. The wrapped value is the configured
     /// timeout the boundary applied (in seconds).
     DisconnectTimeout {
-        timeout_seconds: u64,
+        timeout_secs: u64,
     },
     /// The bolt-v3 controlled-disconnect boundary dispatched
     /// `NautilusKernel::disconnect_clients` and NT returned an
@@ -256,11 +273,11 @@ pub enum BoltV3LiveNodeError {
     /// from its engine-level disconnect aggregator.
     DisconnectFailed(anyhow::Error),
     NoSubmitStartTimeout {
-        timeout_seconds: u64,
+        timeout_secs: u64,
     },
     NoSubmitStartFailed(anyhow::Error),
     NoSubmitStopTimeout {
-        timeout_seconds: u64,
+        timeout_secs: u64,
     },
     NoSubmitStopFailed(anyhow::Error),
 }
@@ -271,7 +288,7 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::ForbiddenEnv(error) => write!(f, "{error}"),
             BoltV3LiveNodeError::SecretResolverSetup(error) => write!(
                 f,
-                "bolt-v3 SSM resolver session setup failed before any venue \
+                "bolt-v3 SSM resolver session setup failed before any client \
                  secret could be read: {error}"
             ),
             BoltV3LiveNodeError::SecretResolution(error) => {
@@ -315,10 +332,10 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 "LiveNode run failed and NT runtime capture shutdown failed: \
                  run error: {run_error}; shutdown error: {shutdown_error}"
             ),
-            BoltV3LiveNodeError::ConnectTimeout { timeout_seconds } => write!(
+            BoltV3LiveNodeError::ConnectTimeout { timeout_secs } => write!(
                 f,
                 "bolt-v3 controlled-connect exceeded the configured \
-                 nautilus.timeout_connection_seconds bound ({timeout_seconds}s)"
+                 nautilus.timeout_connection_secs bound ({timeout_secs}s)"
             ),
             BoltV3LiveNodeError::ConnectIncomplete => write!(
                 f,
@@ -327,28 +344,28 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                  returned false; at least one registered NT data or execution client did \
                  not transition to is_connected after NT swallowed/logged its connect error"
             ),
-            BoltV3LiveNodeError::DisconnectTimeout { timeout_seconds } => write!(
+            BoltV3LiveNodeError::DisconnectTimeout { timeout_secs } => write!(
                 f,
                 "bolt-v3 controlled-disconnect exceeded the configured \
-                 nautilus.timeout_disconnection_seconds bound ({timeout_seconds}s)"
+                 nautilus.timeout_disconnection_secs bound ({timeout_secs}s)"
             ),
             BoltV3LiveNodeError::DisconnectFailed(error) => write!(
                 f,
                 "bolt-v3 controlled-disconnect surfaced an NT engine-level disconnect \
                  aggregator error: {error}"
             ),
-            BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_seconds } => write!(
+            BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_secs } => write!(
                 f,
                 "bolt-v3 no-submit controlled-start exceeded configured \
-                 live-node timeout bounds ({timeout_seconds}s)"
+                 live-node timeout bounds ({timeout_secs}s)"
             ),
             BoltV3LiveNodeError::NoSubmitStartFailed(error) => {
                 write!(f, "bolt-v3 no-submit controlled-start failed: {error}")
             }
-            BoltV3LiveNodeError::NoSubmitStopTimeout { timeout_seconds } => write!(
+            BoltV3LiveNodeError::NoSubmitStopTimeout { timeout_secs } => write!(
                 f,
                 "bolt-v3 no-submit controlled-stop exceeded configured \
-                 live-node timeout bounds ({timeout_seconds}s)"
+                 live-node timeout bounds ({timeout_secs}s)"
             ),
             BoltV3LiveNodeError::NoSubmitStopFailed(error) => {
                 write!(f, "bolt-v3 no-submit controlled-stop failed: {error}")
@@ -488,11 +505,11 @@ where
         Ok(()) => return Ok(()),
         Err(error) => error,
     };
-    let timeout_seconds = loaded.root.nautilus.timeout_connection_seconds;
-    if timeout_seconds == 0 {
+    let timeout_secs = loaded.root.nautilus.timeout_connection_secs;
+    if timeout_secs == 0 {
         return Err(first_error);
     }
-    tokio::time::sleep(Duration::from_secs(timeout_seconds)).await;
+    tokio::time::sleep(Duration::from_secs(timeout_secs)).await;
     reference_readiness(runtime).map_err(|final_error| {
         if final_error == first_error {
             final_error
@@ -506,12 +523,12 @@ async fn start_bolt_v3_no_submit_readiness(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let timeout_seconds = no_submit_start_timeout_seconds(loaded);
+    let timeout_secs = no_submit_start_timeout_secs(loaded);
     let start = node.start();
-    match tokio::time::timeout(Duration::from_secs(timeout_seconds), start).await {
+    match tokio::time::timeout(Duration::from_secs(timeout_secs), start).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(BoltV3LiveNodeError::NoSubmitStartFailed(error)),
-        Err(_) => Err(BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_seconds }),
+        Err(_) => Err(BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_secs }),
     }
 }
 
@@ -519,31 +536,31 @@ async fn stop_bolt_v3_no_submit_readiness(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let timeout_seconds = no_submit_stop_timeout_seconds(loaded);
+    let timeout_secs = no_submit_stop_timeout_secs(loaded);
     let stop = node.stop();
-    match tokio::time::timeout(Duration::from_secs(timeout_seconds), stop).await {
+    match tokio::time::timeout(Duration::from_secs(timeout_secs), stop).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(BoltV3LiveNodeError::NoSubmitStopFailed(error)),
-        Err(_) => Err(BoltV3LiveNodeError::NoSubmitStopTimeout { timeout_seconds }),
+        Err(_) => Err(BoltV3LiveNodeError::NoSubmitStopTimeout { timeout_secs }),
     }
 }
 
-fn no_submit_start_timeout_seconds(loaded: &LoadedBoltV3Config) -> u64 {
+fn no_submit_start_timeout_secs(loaded: &LoadedBoltV3Config) -> u64 {
     loaded
         .root
         .nautilus
-        .timeout_connection_seconds
-        .saturating_add(loaded.root.nautilus.timeout_reconciliation_seconds)
-        .saturating_add(loaded.root.nautilus.timeout_portfolio_seconds)
+        .timeout_connection_secs
+        .saturating_add(loaded.root.nautilus.timeout_reconciliation_secs)
+        .saturating_add(loaded.root.nautilus.timeout_portfolio_secs)
 }
 
-fn no_submit_stop_timeout_seconds(loaded: &LoadedBoltV3Config) -> u64 {
+fn no_submit_stop_timeout_secs(loaded: &LoadedBoltV3Config) -> u64 {
     loaded
         .root
         .nautilus
-        .timeout_disconnection_seconds
-        .saturating_add(loaded.root.nautilus.delay_post_stop_seconds)
-        .saturating_add(loaded.root.nautilus.timeout_shutdown_seconds)
+        .timeout_disconnection_secs
+        .saturating_add(loaded.root.nautilus.delay_post_stop_secs)
+        .saturating_add(loaded.root.nautilus.timeout_shutdown_secs)
 }
 
 fn classify_live_node_run_and_capture_shutdown(
@@ -567,9 +584,10 @@ fn classify_live_node_run_and_capture_shutdown(
 }
 
 /// Test-friendly variant of [`build_bolt_v3_live_node`] which lets the caller
-/// inject the environment-variable predicate and the SSM resolver. Production
-/// code must use [`build_bolt_v3_live_node`], which queries `std::env` and
-/// invokes the real Amazon Web Services Systems Manager resolver.
+/// inject the forbidden-environment predicate and the SSM resolver. Production
+/// code must use [`build_bolt_v3_live_node`], which applies the real credential
+/// environment guard and invokes the real Amazon Web Services Systems Manager
+/// resolver.
 pub fn build_bolt_v3_live_node_with<F, R, E>(
     loaded: &LoadedBoltV3Config,
     env_is_set: F,
@@ -613,7 +631,22 @@ fn build_live_node_with_clients(
     resolved: &ResolvedBoltV3Secrets,
     adapters: BoltV3AdapterConfigs,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
-    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed());
+    let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = if loaded.strategies.is_empty() {
+        Arc::new(NoStrategyDecisionEvidenceWriter)
+    } else {
+        Arc::new(
+            JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
+                BoltV3LiveNodeError::StrategyRegistration(
+                    BoltV3StrategyRegistrationError::Evidence {
+                        message: error.to_string(),
+                    },
+                )
+            })?,
+        )
+    };
+    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(
+        decision_evidence.clone(),
+    ));
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
@@ -625,6 +658,7 @@ fn build_live_node_with_clients(
         resolved,
         crate::bolt_v3_archetypes::runtime_bindings(),
         submit_admission.clone(),
+        decision_evidence,
     )
     .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
     for strategy in &strategy_summary.registered {
@@ -661,17 +695,19 @@ fn make_bolt_v3_live_node_builder_from_config(
 }
 
 pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
-    let trader_id = TraderId::from(loaded.root.trader_id.as_str());
-    let environment = match loaded.root.runtime.mode {
-        RuntimeMode::Live => Environment::Live,
-    };
+    let trader_id = loaded.root.trader_id;
+    let environment = loaded.root.runtime.mode;
     let mut module_level: AHashMap<Ustr, LevelFilter> = AHashMap::new();
     for module_path in bolt_v3_providers::credential_log_modules() {
         module_level.insert(Ustr::from(module_path), LevelFilter::Warn);
     }
     let logging = LoggerConfig {
-        stdout_level: loaded.root.logging.standard_output_level.to_level_filter(),
-        fileout_level: loaded.root.logging.file_level.to_level_filter(),
+        stdout_level: nautilus_common::logging::map_log_level_to_filter(
+            loaded.root.logging.stdout_level,
+        ),
+        fileout_level: nautilus_common::logging::map_log_level_to_filter(
+            loaded.root.logging.fileout_level,
+        ),
         component_level: AHashMap::new(),
         module_level,
         log_components_only: false,
@@ -697,7 +733,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         buffer_deltas: data.buffer_deltas,
         emit_quotes_from_book: data.emit_quotes_from_book,
         emit_quotes_from_book_depths: data.emit_quotes_from_book_depths,
-        external_clients: strings_as_client_ids(&data.external_client_ids),
+        external_clients: configured_external_clients(&data.external_clients),
         debug: data.debug,
         graceful_shutdown_on_error: data.graceful_shutdown_on_error,
         qsize: data.qsize,
@@ -709,32 +745,32 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         snapshot_orders: exec.snapshot_orders,
         snapshot_positions: exec.snapshot_positions,
         snapshot_positions_interval_secs: u64_zero_as_none_f64(
-            exec.snapshot_positions_interval_seconds,
+            exec.snapshot_positions_interval_secs,
         ),
-        external_clients: strings_as_client_ids(&exec.external_client_ids),
+        external_clients: configured_external_clients(&exec.external_clients),
         debug: exec.debug,
         reconciliation: exec.reconciliation,
         reconciliation_lookback_mins,
         // `f64` is lossless for all practical delay values (< 2^53 seconds).
-        reconciliation_startup_delay_secs: exec.reconciliation_startup_delay_seconds as f64,
+        reconciliation_startup_delay_secs: exec.reconciliation_startup_delay_secs as f64,
         reconciliation_instrument_ids: non_empty_strings(&exec.reconciliation_instrument_ids),
         filter_unclaimed_external_orders: exec.filter_unclaimed_external_orders,
         filter_position_reports: exec.filter_position_reports,
         filtered_client_order_ids: non_empty_strings(&exec.filtered_client_order_ids),
         generate_missing_orders: exec.generate_missing_orders,
-        inflight_check_interval_ms: exec.inflight_check_interval_milliseconds,
-        inflight_check_threshold_ms: exec.inflight_check_threshold_milliseconds,
+        inflight_check_interval_ms: exec.inflight_check_interval_ms,
+        inflight_check_threshold_ms: exec.inflight_check_threshold_ms,
         inflight_check_retries: exec.inflight_check_retries,
-        open_check_interval_secs: u64_zero_as_none_f64(exec.open_check_interval_seconds),
+        open_check_interval_secs: u64_zero_as_none_f64(exec.open_check_interval_secs),
         open_check_lookback_mins: u32_zero_as_none(exec.open_check_lookback_mins),
-        open_check_threshold_ms: exec.open_check_threshold_milliseconds,
+        open_check_threshold_ms: exec.open_check_threshold_ms,
         open_check_missing_retries: exec.open_check_missing_retries,
         open_check_open_only: exec.open_check_open_only,
         max_single_order_queries_per_cycle: exec.max_single_order_queries_per_cycle,
-        single_order_query_delay_ms: exec.single_order_query_delay_milliseconds,
-        position_check_interval_secs: u64_zero_as_none_f64(exec.position_check_interval_seconds),
+        single_order_query_delay_ms: exec.single_order_query_delay_ms,
+        position_check_interval_secs: u64_zero_as_none_f64(exec.position_check_interval_secs),
         position_check_lookback_mins: exec.position_check_lookback_mins,
-        position_check_threshold_ms: exec.position_check_threshold_milliseconds,
+        position_check_threshold_ms: exec.position_check_threshold_ms,
         position_check_retries: exec.position_check_retries,
         purge_closed_orders_interval_mins: u32_zero_as_none(exec.purge_closed_orders_interval_mins),
         purge_closed_orders_buffer_mins: u32_zero_as_none(exec.purge_closed_orders_buffer_mins),
@@ -751,28 +787,29 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
             exec.purge_account_events_lookback_mins,
         ),
         purge_from_database: exec.purge_from_database,
-        own_books_audit_interval_secs: u64_zero_as_none_f64(exec.own_books_audit_interval_seconds),
+        own_books_audit_interval_secs: u64_zero_as_none_f64(exec.own_books_audit_interval_secs),
         graceful_shutdown_on_error: exec.graceful_shutdown_on_error,
         qsize: exec.qsize,
         allow_overfills: exec.allow_overfills,
         manage_own_order_books: exec.manage_own_order_books,
     };
     let risk_engine = nautilus_live::config::LiveRiskEngineConfig {
-        bypass: loaded.root.risk.nt_bypass,
-        max_order_submit_rate: loaded.root.risk.nt_max_order_submit_rate.clone(),
-        max_order_modify_rate: loaded.root.risk.nt_max_order_modify_rate.clone(),
+        bypass: loaded.root.risk.nautilus.bypass,
+        max_order_submit_rate: loaded.root.risk.nautilus.max_order_submit_rate.clone(),
+        max_order_modify_rate: loaded.root.risk.nautilus.max_order_modify_rate.clone(),
         // Bolt stores this as a BTreeMap for deterministic config/debug output;
         // NT's live risk config consumes the same string pairs as a HashMap.
         max_notional_per_order: loaded
             .root
             .risk
-            .nt_max_notional_per_order
+            .nautilus
+            .max_notional_per_order
             .clone()
             .into_iter()
             .collect(),
-        debug: loaded.root.risk.nt_debug,
-        graceful_shutdown_on_error: loaded.root.risk.nt_graceful_shutdown_on_error,
-        qsize: loaded.root.risk.nt_qsize,
+        debug: loaded.root.risk.nautilus.debug,
+        graceful_shutdown_on_error: loaded.root.risk.nautilus.graceful_shutdown_on_error,
+        qsize: loaded.root.risk.nautilus.qsize,
     };
 
     // Explicit struct literal: upstream NT `LiveNodeConfig` field additions must be
@@ -784,12 +821,12 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         save_state: nautilus.save_state,
         logging,
         instance_id: None,
-        timeout_connection: Duration::from_secs(nautilus.timeout_connection_seconds),
-        timeout_reconciliation: Duration::from_secs(nautilus.timeout_reconciliation_seconds),
-        timeout_portfolio: Duration::from_secs(nautilus.timeout_portfolio_seconds),
-        timeout_disconnection: Duration::from_secs(nautilus.timeout_disconnection_seconds),
-        delay_post_stop: Duration::from_secs(nautilus.delay_post_stop_seconds),
-        timeout_shutdown: Duration::from_secs(nautilus.timeout_shutdown_seconds),
+        timeout_connection: Duration::from_secs(nautilus.timeout_connection_secs),
+        timeout_reconciliation: Duration::from_secs(nautilus.timeout_reconciliation_secs),
+        timeout_portfolio: Duration::from_secs(nautilus.timeout_portfolio_secs),
+        timeout_disconnection: Duration::from_secs(nautilus.timeout_disconnection_secs),
+        delay_post_stop: Duration::from_secs(nautilus.delay_post_stop_secs),
+        timeout_shutdown: Duration::from_secs(nautilus.timeout_shutdown_secs),
         cache: None,
         msgbus: None,
         portfolio: None,
@@ -816,14 +853,13 @@ fn non_empty_strings(values: &[String]) -> Option<Vec<String>> {
     (!values.is_empty()).then(|| values.to_vec())
 }
 
+fn configured_external_clients(values: &[ClientId]) -> Option<Vec<ClientId>> {
+    (!values.is_empty()).then(|| values.to_vec())
+}
+
 /// Caller must run root validation first so the string is a valid NT `BarIntervalType`.
 fn bar_interval_type_from_str(value: &str) -> BarIntervalType {
     BarIntervalType::from_str(value).expect("root validation must accept data bar interval type")
-}
-
-/// Caller must run root validation first so every value is a valid NT `ClientId`.
-fn strings_as_client_ids(values: &[String]) -> Option<Vec<ClientId>> {
-    (!values.is_empty()).then(|| values.iter().map(ClientId::new).collect())
 }
 
 pub fn wire_bolt_v3_runtime_capture(
@@ -835,11 +871,11 @@ pub fn wire_bolt_v3_runtime_capture(
         node,
         stop_handle,
         &loaded.root.persistence.catalog_directory,
+        loaded.root.persistence.streaming.flush_interval_ms,
         loaded
             .root
             .persistence
-            .streaming
-            .flush_interval_milliseconds,
+            .runtime_capture_start_poll_interval_ms,
         None,
     )
 }
@@ -851,7 +887,7 @@ pub fn wire_bolt_v3_runtime_capture(
 /// `NautilusKernel::connect_exec_clients`) on every NT data and
 /// execution client that the bolt-v3 client-registration boundary added
 /// to `node`, bounded by the bolt-v3
-/// `nautilus.timeout_connection_seconds` value from `loaded`.
+/// `nautilus.timeout_connection_secs` value from `loaded`.
 ///
 /// This boundary is **opt-in**: `build_bolt_v3_live_node` and its
 /// `_with` / `_with_summary` siblings deliberately do not invoke it.
@@ -861,11 +897,11 @@ pub fn wire_bolt_v3_runtime_capture(
 /// passed through `LiveNodeBuilder::build`, so the
 /// provider-owned credential log module filters remain active during
 /// connect.
-/// A future production v3 entrypoint must preserve that ordering.
+/// The production bolt-v3 entrypoint preserves that ordering.
 ///
 /// This boundary is **bounded**: the dispatched engine-level connect
 /// futures are wrapped in `tokio::time::timeout` driven by
-/// `nautilus.timeout_connection_seconds`. If the bound elapses before
+/// `nautilus.timeout_connection_secs`. If the bound elapses before
 /// both engines finish dispatching connect to their registered clients
 /// the function returns [`BoltV3LiveNodeError::ConnectTimeout`] and
 /// the `LiveNode` is left in whatever partially-connected state NT
@@ -906,8 +942,8 @@ pub async fn connect_bolt_v3_clients(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let timeout_seconds = loaded.root.nautilus.timeout_connection_seconds;
-    let bound = Duration::from_secs(timeout_seconds);
+    let timeout_secs = loaded.root.nautilus.timeout_connection_secs;
+    let bound = Duration::from_secs(timeout_secs);
     let connect = async {
         let kernel = node.kernel_mut();
         kernel.connect_data_clients().await;
@@ -917,7 +953,7 @@ pub async fn connect_bolt_v3_clients(
     match tokio::time::timeout(bound, connect).await {
         Ok(true) => Ok(()),
         Ok(false) => Err(BoltV3LiveNodeError::ConnectIncomplete),
-        Err(_) => Err(BoltV3LiveNodeError::ConnectTimeout { timeout_seconds }),
+        Err(_) => Err(BoltV3LiveNodeError::ConnectTimeout { timeout_secs }),
     }
 }
 
@@ -927,7 +963,7 @@ pub async fn connect_bolt_v3_clients(
 /// (`NautilusKernel::disconnect_clients`) on every NT data and
 /// execution client previously added through the bolt-v3
 /// client-registration boundary, bounded by the bolt-v3
-/// `nautilus.timeout_disconnection_seconds` value from `loaded`.
+/// `nautilus.timeout_disconnection_secs` value from `loaded`.
 ///
 /// Recovery counterpart to [`connect_bolt_v3_clients`]: after a
 /// `ConnectTimeout` or `ConnectIncomplete` the caller is expected to
@@ -957,13 +993,13 @@ pub async fn disconnect_bolt_v3_clients(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let timeout_seconds = loaded.root.nautilus.timeout_disconnection_seconds;
-    let bound = Duration::from_secs(timeout_seconds);
+    let timeout_secs = loaded.root.nautilus.timeout_disconnection_secs;
+    let bound = Duration::from_secs(timeout_secs);
     let disconnect = async { node.kernel_mut().disconnect_clients().await };
     match tokio::time::timeout(bound, disconnect).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(BoltV3LiveNodeError::DisconnectFailed(error)),
-        Err(_) => Err(BoltV3LiveNodeError::DisconnectTimeout { timeout_seconds }),
+        Err(_) => Err(BoltV3LiveNodeError::DisconnectTimeout { timeout_secs }),
     }
 }
 
@@ -971,12 +1007,14 @@ pub async fn disconnect_bolt_v3_clients(
 mod tests {
     use super::*;
     use crate::bolt_v3_config::BoltV3RootConfig;
+    use nautilus_model::identifiers::TraderId;
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
         let root_text = include_str!("../tests/fixtures/bolt_v3/root.toml");
         let root: BoltV3RootConfig = toml::from_str(root_text).unwrap();
         LoadedBoltV3Config {
             root_path: std::path::PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: String::new(),
             root,
             strategies: Vec::new(),
         }
@@ -1151,7 +1189,7 @@ mod tests {
     #[test]
     fn live_node_config_maps_explicit_nt_risk_debug_from_v3_root() {
         let mut loaded = fixture_loaded_config();
-        loaded.root.risk.nt_debug = true;
+        loaded.root.risk.nautilus.debug = true;
 
         let cfg = make_live_node_config(&loaded);
 
@@ -1174,12 +1212,14 @@ mod tests {
         loaded
             .root
             .risk
-            .nt_max_notional_per_order
+            .nautilus
+            .max_notional_per_order
             .insert("ETHUSDT.BINANCE".to_string(), "12345.00".to_string());
         loaded
             .root
             .risk
-            .nt_max_notional_per_order
+            .nautilus
+            .max_notional_per_order
             .insert("BTCUSDT.BINANCE".to_string(), "25000.50".to_string());
         let cfg = make_live_node_config(&loaded);
 
@@ -1267,14 +1307,14 @@ mod tests {
     }
 
     #[test]
-    fn secret_resolver_setup_variant_renders_clean_message_without_empty_venue_path() {
+    fn secret_resolver_setup_variant_renders_clean_message_without_empty_client_path() {
         // Per #255-2: before this fix, session-construction failure was
-        // mapped into `BoltV3SecretError` with empty `venue_key` and
+        // mapped into `BoltV3SecretError` with empty `client_key` and
         // `ssm_path`, rendering as a confusing
-        // `venues..secrets.ssm_resolver_session ...`. The dedicated
+        // an empty client key in the secret-path template. The dedicated
         // `BoltV3LiveNodeError::SecretResolverSetup(SecretError)` variant
         // gives operators a clean, accurate message that does not
-        // pretend a venue or SSM path is involved (none is — the
+        // pretend a client or SSM path is involved (none is — the
         // failure happens before any path is read).
         let inner = crate::secrets::SecretError::for_test(
             "failed to build Tokio runtime for SSM resolver session: simulated".to_string(),
@@ -1282,8 +1322,8 @@ mod tests {
         let err = BoltV3LiveNodeError::SecretResolverSetup(inner);
         let rendered = format!("{err}");
         assert!(
-            !rendered.contains("venues."),
-            "SecretResolverSetup must not render through the venue/SSM-path template"
+            !rendered.contains(".secrets.ssm_resolver_session"),
+            "SecretResolverSetup must not render through the client/SSM-path template"
         );
         assert!(
             !rendered.contains("ssm_path"),

@@ -5,7 +5,7 @@
 
 ## Summary
 
-Implement #342 as a direct follow-up to the now-merged #343 baseline. Add a first-class `source-fence` CI job and `just source-fence` recipe that run the Bolt-v3 verifier script set and canonical structural test binaries before full `test`. Extend `gate` and `just ci-lint-workflow` so the new lane is required and fail-closed. Do not implement #332 sharding, #195 artifact retention, #205 deploy deduplication, #335/#344 path-filter work, or #340 config-path migration.
+Implement #342 as a direct follow-up to the now-merged #343 baseline. Add a first-class `source-fence` CI job and `just source-fence` recipe that run the Bolt-v3 verifier script set and canonical structural test binaries ~~before full `test`~~ (**Superseded by #400** (PR #401): in parallel with full `test`; gate enforces both). Extend `gate` and `just ci-lint-workflow` so the new lane is required and fail-closed. Do not implement #332 sharding, #195 artifact retention, #205 deploy deduplication, #335/#344 path-filter work, or #340 config-path migration.
 
 ## Technical Context
 
@@ -15,7 +15,7 @@ Implement #342 as a direct follow-up to the now-merged #343 baseline. Add a firs
 **Testing**: TDD red via `just ci-lint-workflow`, local `just source-fence`, targeted verifier scripts, deliberate stale source-fence mutation, `git diff --check`, exact-head CI
 **Target Platform**: GitHub Actions `ubuntu-latest`
 **Project Type**: Rust live trading binary with CI workflow
-**Performance Goals**: Warm `source-fence` lane about 1-2 minutes excluding first-run compile variance; failure must occur before `cargo-nextest` setup/full test execution dominates
+**Performance Goals**: Warm `source-fence` lane about 1-2 minutes excluding first-run compile variance; ~~failure must occur before `cargo-nextest` setup/full test execution dominates~~ **Superseded by #400** (PR #401): source-fence and the sharded test lane run in parallel; source-fence still finishes in ~1m wall-clock, but its failure no longer gates the start of nextest setup. Merge enforcement is `gate.needs` + `needs.source-fence.result == "success"`.
 **Constraints**: no requirement narrowing, no full test sharding, no path-filter changes, no unpinned Python packages, no raw cargo workflow commands, no merge without approval
 **Scale/Scope**: One #342 topology and verifier slice covering source-fence job, recipe, gate, linter, and required missing verifier scripts
 
@@ -34,7 +34,7 @@ Implement #342 as a direct follow-up to the now-merged #343 baseline. Add a firs
 
 Detailed decisions are in [research.md](research.md).
 
-- Use job serialization `test needs: [detector, source-fence]` so a stale source fence blocks full test setup.
+- Use job serialization `test needs: [detector, source-fence]` so a stale source fence blocks full test setup. **Superseded by #400** (PR #401): the carried-forward `test-archive needs: [detector, source-fence]` was removed; the two lanes now run in parallel under `gate` enforcement.
 - Use one `just source-fence` recipe as the local/CI source of truth.
 - Add the two missing verifier scripts instead of deleting them from the #342 contract.
 - Keep temporary duplicate execution explicit until #332 changes full nextest ownership.
@@ -46,7 +46,7 @@ Design details are in [data-model.md](data-model.md) and [quickstart.md](quickst
 
 Implementation surfaces:
 
-- `.github/workflows/ci.yml`: add `source-fence`, make `test` depend on it, add it to `gate`.
+- `.github/workflows/ci.yml`: add `source-fence`, ~~make `test` depend on it,~~ add it to `gate`. **Superseded by #400** (PR #401): the `test`/`test-archive` -> `source-fence` dep was removed; the lanes run in parallel and `gate` enforces both.
 - `justfile`: add `source-fence` recipe and narrow linter invariants for job/gate/test dependencies.
 - `scripts/verify_bolt_v3_pure_rust_runtime.py`: new pure-Rust runtime verifier.
 - `scripts/verify_bolt_v3_status_map_current.py`: new status-map evidence verifier.

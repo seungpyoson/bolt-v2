@@ -28,12 +28,11 @@ jobs:
         id: setup
         uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c # v2.78.2
+        uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e # v2.79.1
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none

@@ -26,18 +26,35 @@ fn bolt_v3_secrets_check_reports_provider_secret_fields() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains(
-            "venues.polymarket_main: required secret fields present \
+            "clients.polymarket_main: required secret fields present \
              (private_key_ssm_path, api_key_ssm_path, api_secret_ssm_path, passphrase_ssm_path)"
         ),
         "expected Polymarket secret field inventory, got: {stdout}"
     );
     assert!(
         stdout.contains(
-            "venues.binance_reference: required secret fields present \
+            "clients.binance_reference: required secret fields present \
              (api_key_ssm_path, api_secret_ssm_path)"
         ),
         "expected Binance secret field inventory, got: {stdout}"
     );
+}
+
+#[test]
+fn bolt_v3_cli_exposes_no_submit_readiness_operator_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args(["no-submit-readiness", "--help"])
+        .output()
+        .expect("bolt-v3 no-submit readiness help should run");
+
+    assert!(
+        output.status.success(),
+        "expected no-submit-readiness help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
 }
 
 #[test]
@@ -61,7 +78,7 @@ fn bolt_v3_secrets_check_rejects_missing_provider_secret_field() {
     assert!(!output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("venues.polymarket_main.secrets:"));
+    assert!(stderr.contains("clients.polymarket_main.secrets:"));
     assert!(stderr.contains("api_secret_ssm_path"));
 }
 

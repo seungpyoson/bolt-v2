@@ -16,15 +16,18 @@ use std::{
 };
 
 use rust_decimal::Decimal;
-use serde_json::Value;
+use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
 use crate::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config},
     bolt_v3_no_submit_readiness_schema::{
-        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE, NAME_KEY,
-        OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE,
-        SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
+        APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
+        CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, LIVE_NODE_BUILD_STAGE,
+        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
+        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
+        STATUS_KEY, STATUS_SATISFIED,
     },
 };
 
@@ -118,6 +121,18 @@ pub enum BoltV3LiveCanaryGateError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    ReadinessReportSchemaVersionMismatch {
+        path: PathBuf,
+        expected: &'static str,
+        actual: Option<String>,
+    },
+    CurrentExecutablePath {
+        source: std::io::Error,
+    },
+    ExecutableIdentityRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     UnsatisfiedNoSubmitReadinessReport {
         path: PathBuf,
         reasons: Vec<String>,
@@ -186,6 +201,31 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                     path.display()
                 )
             }
+            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+                path,
+                expected,
+                actual,
+            } => match actual {
+                Some(actual) => write!(
+                    f,
+                    "bolt-v3 no-submit readiness report {} schema_version is `{actual}`, expected `{expected}`",
+                    path.display()
+                ),
+                None => write!(
+                    f,
+                    "bolt-v3 no-submit readiness report {} schema_version is missing or not a string, expected `{expected}`",
+                    path.display()
+                ),
+            },
+            BoltV3LiveCanaryGateError::CurrentExecutablePath { source } => write!(
+                f,
+                "failed to resolve bolt-v3 live canary gate executable path: {source}"
+            ),
+            BoltV3LiveCanaryGateError::ExecutableIdentityRead { path, source } => write!(
+                f,
+                "failed to read bolt-v3 live canary gate executable {}: {source}",
+                path.display()
+            ),
             BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { path, reasons } => {
                 write!(
                     f,
@@ -203,6 +243,8 @@ impl std::error::Error for BoltV3LiveCanaryGateError {
         match self {
             BoltV3LiveCanaryGateError::ReadinessReportRead { source, .. } => Some(source),
             BoltV3LiveCanaryGateError::ReadinessReportParse { source, .. } => Some(source),
+            BoltV3LiveCanaryGateError::CurrentExecutablePath { source } => Some(source),
+            BoltV3LiveCanaryGateError::ExecutableIdentityRead { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -267,12 +309,41 @@ pub async fn check_bolt_v3_live_canary_gate(
             source,
         }
     })?;
-    validate_no_submit_readiness_report(&report).map_err(|reasons| {
-        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport {
+    let Some(report_object) = report.as_object() else {
+        return Err(
+            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+                path: report_path.clone(),
+                expected: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+                actual: None,
+            },
+        );
+    };
+    let observed_schema_version = report_object
+        .get(SCHEMA_VERSION_KEY)
+        .and_then(Value::as_str);
+    if observed_schema_version != Some(NO_SUBMIT_READINESS_SCHEMA_VERSION) {
+        return Err(
+            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+                path: report_path.clone(),
+                expected: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+                actual: observed_schema_version.map(str::to_string),
+            },
+        );
+    }
+    let expected_approval_id_hash = sha256_hex(approval_id.as_bytes());
+    let expected_executable_identity = executable_identity().await?;
+    validate_no_submit_readiness_report(
+        report_object,
+        &expected_approval_id_hash,
+        &expected_executable_identity,
+        &loaded.config_bundle_checksum,
+    )
+    .map_err(
+        |reasons| BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport {
             path: report_path.clone(),
             reasons,
-        }
-    })?;
+        },
+    )?;
 
     Ok(BoltV3LiveCanaryGateReport {
         approval_id: approval_id.to_string(),
@@ -346,15 +417,31 @@ fn parse_positive_decimal(
     Ok(decimal)
 }
 
-fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>> {
+fn validate_no_submit_readiness_report(
+    report: &Map<String, Value>,
+    expected_approval_id_hash: &str,
+    expected_executable_identity: &str,
+    expected_config_bundle_checksum: &str,
+) -> Result<(), Vec<String>> {
     let mut reasons = Vec::new();
-    let report = match report.as_object() {
-        Some(report) => report,
-        None => {
-            reasons.push(format!("expected JSON object, got {report}"));
-            return Err(reasons);
-        }
-    };
+    validate_linkage_field(
+        &mut reasons,
+        report,
+        APPROVAL_ID_HASH_KEY,
+        expected_approval_id_hash,
+    );
+    validate_linkage_field(
+        &mut reasons,
+        report,
+        EXECUTABLE_IDENTITY_KEY,
+        expected_executable_identity,
+    );
+    validate_linkage_field(
+        &mut reasons,
+        report,
+        CONFIG_BUNDLE_CHECKSUM_KEY,
+        expected_config_bundle_checksum,
+    );
     match report.get(STAGES_KEY) {
         None => reasons.push("stages array is missing".to_string()),
         Some(stages_value) => match stages_value.as_array() {
@@ -366,7 +453,6 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
                 for stage in stages {
                     let name = stage
                         .get(STAGE_KEY)
-                        .or_else(|| stage.get(NAME_KEY))
                         .and_then(Value::as_str)
                         .unwrap_or("<unnamed>");
                     present_stage_names.insert(name.to_string());
@@ -400,8 +486,63 @@ fn validate_no_submit_readiness_report(report: &Value) -> Result<(), Vec<String>
     }
 }
 
+fn validate_linkage_field(
+    reasons: &mut Vec<String>,
+    report: &Map<String, Value>,
+    field: &'static str,
+    expected: &str,
+) {
+    let Some(value) = report.get(field) else {
+        reasons.push(format!("linkage field `{field}` is missing"));
+        return;
+    };
+    let Some(actual) = value.as_str() else {
+        reasons.push(format!(
+            "linkage field `{field}` is not a string (got {})",
+            report_field_kind(value)
+        ));
+        return;
+    };
+    if actual.trim().is_empty() {
+        reasons.push(format!("linkage field `{field}` is empty"));
+        return;
+    }
+    if actual != expected {
+        reasons.push(format!(
+            "linkage field `{field}` does not match expected value"
+        ));
+    }
+}
+
+fn report_field_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 fn matches_satisfied_status(status: Option<&str>) -> bool {
     matches!(status, Some(value) if value.eq_ignore_ascii_case(STATUS_SATISFIED))
+}
+
+async fn executable_identity() -> Result<String, BoltV3LiveCanaryGateError> {
+    let path = std::env::current_exe()
+        .map_err(|source| BoltV3LiveCanaryGateError::CurrentExecutablePath { source })?;
+    let bytes = tokio::fs::read(&path).await.map_err(|source| {
+        BoltV3LiveCanaryGateError::ExecutableIdentityRead {
+            path: path.clone(),
+            source,
+        }
+    })?;
+    Ok(sha256_hex(&bytes))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }
 
 const REQUIRED_NO_SUBMIT_READINESS_STAGES: &[&str] = &[
@@ -428,6 +569,7 @@ mod tests {
             max_no_submit_readiness_report_bytes: 4096,
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
+            operator_evidence: None,
         };
 
         assert_eq!(

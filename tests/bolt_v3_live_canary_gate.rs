@@ -5,11 +5,14 @@ use bolt_v2::{
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness_schema::{
-        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
-        OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE,
-        SECRET_RESOLUTION_STAGE,
+        APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
+        CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, LIVE_NODE_BUILD_STAGE,
+        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
+        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
+        STATUS_KEY, STATUS_SATISFIED,
     },
 };
+use sha2::{Digest, Sha256};
 use tokio::task::LocalSet;
 
 #[test]
@@ -55,6 +58,7 @@ async fn live_canary_gate_rejects_empty_approval_id() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -80,6 +84,7 @@ async fn live_canary_gate_rejects_empty_readiness_report_path() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -105,6 +110,7 @@ async fn live_canary_gate_rejects_zero_order_count() {
             max_live_order_count: 0,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -133,6 +139,7 @@ async fn live_canary_gate_rejects_zero_report_byte_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 0,
+            operator_evidence: None,
         },
     );
 
@@ -163,6 +170,7 @@ async fn live_canary_gate_rejects_invalid_canary_notional_values() {
                 max_live_order_count: 1,
                 max_notional_per_order: candidate.to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
+                operator_evidence: None,
             },
         );
 
@@ -196,6 +204,7 @@ async fn live_canary_gate_rejects_invalid_root_notional_values() {
                 max_live_order_count: 1,
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
+                operator_evidence: None,
             },
         );
 
@@ -220,10 +229,7 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
     loaded.root.risk.default_max_notional_per_order = " 10.00 ".to_string();
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report(
-        &report_path,
-        &[("connect", "satisfied"), ("disconnect", "satisfied")],
-    );
+    write_no_submit_report(&report_path, &[]);
 
     let loaded = loaded_with_live_canary(
         loaded,
@@ -233,6 +239,7 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
             max_live_order_count: 1,
             max_notional_per_order: " 1.00 ".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -256,7 +263,7 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
     loaded.root.risk.default_max_notional_per_order = "10.00".to_string();
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report(&report_path, &[("connect", "satisfied")]);
+    write_no_submit_report(&report_path, &[]);
 
     let loaded = loaded_with_live_canary(
         loaded,
@@ -266,12 +273,100 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "10.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
     check_bolt_v3_live_canary_gate(&loaded)
         .await
         .expect("notional equal to root risk cap should pass");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_stale_no_submit_linkage_fields() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report_with_linkage(
+        &report_path,
+        "stale-approval-id-hash",
+        "stale-executable-identity",
+        "stale-config-bundle-checksum",
+    );
+
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
+        },
+    );
+
+    check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("stale no-submit linkage must fail closed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_missing_wrong_or_non_string_schema_version() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let cases = [
+        ("missing", None, None),
+        (
+            "wrong",
+            Some(serde_json::json!("bolt-v3.no-submit-readiness.v1")),
+            Some("bolt-v3.no-submit-readiness.v1"),
+        ),
+        ("number", Some(serde_json::json!(2)), None),
+    ];
+
+    for (case_name, schema_version, expected_actual) in cases {
+        let report_path = tempdir.path().join(format!("{case_name}.json"));
+        let mut report = linked_report_object(complete_stage_values());
+        match schema_version {
+            Some(value) => {
+                report.insert(SCHEMA_VERSION_KEY.to_string(), value);
+            }
+            None => {
+                report.remove(SCHEMA_VERSION_KEY);
+            }
+        }
+        write_report_value(&report_path, serde_json::Value::Object(report));
+        let loaded = loaded_with_live_canary(
+            loaded.clone(),
+            LiveCanaryBlock {
+                approval_id: "operator-approved-canary-001".to_string(),
+                no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+                max_live_order_count: 1,
+                max_notional_per_order: "1.00".to_string(),
+                max_no_submit_readiness_report_bytes: 4096,
+                operator_evidence: None,
+            },
+        );
+
+        let error = check_bolt_v3_live_canary_gate(&loaded)
+            .await
+            .expect_err("schema-version mismatch must fail closed");
+
+        match error {
+            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+                expected,
+                actual,
+                ..
+            } => {
+                assert_eq!(expected, NO_SUBMIT_READINESS_SCHEMA_VERSION);
+                assert_eq!(actual.as_deref(), expected_actual, "case={case_name}");
+            }
+            other => panic!("expected schema-version mismatch rejection, got {other:?}"),
+        }
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -286,6 +381,7 @@ async fn live_canary_gate_rejects_notional_above_root_risk_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "11.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -308,7 +404,7 @@ async fn live_canary_gate_rejects_empty_stage_report() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"{"stages":[]}"#).expect("report fixture should be written");
+    write_linked_report_value(&report_path, serde_json::json!({ STAGES_KEY: [] }));
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -317,6 +413,7 @@ async fn live_canary_gate_rejects_empty_stage_report() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -341,7 +438,7 @@ async fn live_canary_gate_rejects_report_missing_stages_key() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"{"other":true}"#).expect("report fixture should be written");
+    write_linked_report_value(&report_path, serde_json::json!({ "other": true }));
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -350,6 +447,7 @@ async fn live_canary_gate_rejects_report_missing_stages_key() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -376,10 +474,7 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report(
-        &report_path,
-        &[("connect", "satisfied"), ("disconnect", "blocked")],
-    );
+    write_no_submit_report(&report_path, &[(CONTROLLED_DISCONNECT_STAGE, "blocked")]);
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -388,6 +483,7 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -398,7 +494,9 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
     match error {
         BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
             assert!(
-                reasons.iter().any(|reason| reason.contains("disconnect")),
+                reasons
+                    .iter()
+                    .any(|reason| reason.contains(CONTROLLED_DISCONNECT_STAGE)),
                 "error should name the blocked stage, got {reasons:?}"
             );
         }
@@ -421,6 +519,7 @@ async fn live_canary_gate_reports_each_unsatisfied_required_stage_once() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -457,6 +556,7 @@ async fn live_canary_gate_rejects_missing_no_submit_report() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -476,7 +576,8 @@ async fn live_canary_gate_rejects_malformed_no_submit_report_json() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"{"stages":["#).expect("report fixture should be written");
+    std::fs::write(&report_path, format!(r#"{{"{STAGES_KEY}":["#))
+        .expect("report fixture should be written");
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -485,6 +586,7 @@ async fn live_canary_gate_rejects_malformed_no_submit_report_json() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -507,7 +609,7 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report(&report_path, &[("connect", "satisfied")]);
+    write_no_submit_report(&report_path, &[]);
     let report_len = std::fs::metadata(&report_path)
         .expect("report metadata should be readable")
         .len();
@@ -519,6 +621,7 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: report_len,
+            operator_evidence: None,
         },
     );
 
@@ -533,7 +636,7 @@ async fn live_canary_gate_rejects_no_submit_report_above_configured_byte_cap() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"{"stages":[]}"#).expect("report fixture should be written");
+    write_report_value(&report_path, serde_json::json!({ STAGES_KEY: [] }));
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -542,6 +645,7 @@ async fn live_canary_gate_rejects_no_submit_report_above_configured_byte_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 1,
+            operator_evidence: None,
         },
     );
 
@@ -564,42 +668,7 @@ async fn live_canary_gate_distinguishes_non_object_report_from_missing_stages() 
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"["satisfied"]"#).expect("report fixture should be written");
-    let loaded = loaded_with_live_canary(
-        loaded,
-        LiveCanaryBlock {
-            approval_id: "operator-approved-canary-001".to_string(),
-            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
-            max_live_order_count: 1,
-            max_notional_per_order: "1.00".to_string(),
-            max_no_submit_readiness_report_bytes: 4096,
-        },
-    );
-
-    let error = check_bolt_v3_live_canary_gate(&loaded)
-        .await
-        .expect_err("non-object no-submit readiness report must fail closed");
-
-    match error {
-        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
-            assert!(
-                reasons
-                    .iter()
-                    .any(|reason| reason.contains("expected JSON object")),
-                "error should name the malformed report object, got {reasons:?}"
-            );
-        }
-        other => panic!("expected unsatisfied report rejection, got {other:?}"),
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let report_path = tempdir.path().join("no-submit-readiness.json");
-    std::fs::write(&report_path, r#"{"stages":"satisfied"}"#)
+    std::fs::write(&report_path, format!(r#"["{STATUS_SATISFIED}"]"#))
         .expect("report fixture should be written");
     let loaded = loaded_with_live_canary(
         loaded,
@@ -609,6 +678,49 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("non-object no-submit readiness report must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+            expected,
+            actual,
+            ..
+        } => {
+            assert_eq!(expected, NO_SUBMIT_READINESS_SCHEMA_VERSION);
+            assert!(
+                actual.is_none(),
+                "expected actual=None for non-object report, got {actual:?}"
+            );
+        }
+        other => panic!("expected schema-version mismatch rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_linked_report_value(
+        &report_path,
+        serde_json::json!({ STAGES_KEY: STATUS_SATISFIED }),
+    );
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -630,7 +742,7 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn live_canary_gate_reports_unsatisfied_stage_name_fallback() {
+async fn live_canary_gate_rejects_name_only_stage_field() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
@@ -644,18 +756,31 @@ async fn live_canary_gate_reports_unsatisfied_stage_name_fallback() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
     let error = check_bolt_v3_live_canary_gate(&loaded)
         .await
-        .expect_err("unsatisfied report with name fallback must fail closed");
+        .expect_err("report using stale name field must fail closed");
 
     match error {
         BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
             assert!(
-                reasons.iter().any(|reason| reason.contains("disconnect")),
-                "error should name the blocked stage from name fallback, got {reasons:?}"
+                reasons.iter().any(|reason| reason.contains("<unnamed>")),
+                "error should reject stale name-only stage as unnamed, got {reasons:?}"
+            );
+            assert!(
+                reasons
+                    .iter()
+                    .any(|reason| reason.contains("required stage `controlled_disconnect`")),
+                "error should treat stale name-only field as missing canonical stage, got {reasons:?}"
+            );
+            assert!(
+                !reasons
+                    .iter()
+                    .any(|reason| reason.contains("disconnect` status")),
+                "stale name-only field must not be accepted as a stage name, got {reasons:?}"
             );
         }
         other => panic!("expected unsatisfied report rejection, got {other:?}"),
@@ -668,7 +793,11 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report_with_stage_field(&report_path, "stage", &[("connect", "SATISFIED")]);
+    write_no_submit_report_with_stage_field(
+        &report_path,
+        STAGE_KEY,
+        &[(CONTROLLED_CONNECT_STAGE, "SATISFIED")],
+    );
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -677,6 +806,7 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            operator_evidence: None,
         },
     );
 
@@ -703,7 +833,101 @@ fn loaded_without_live_canary(loaded: LoadedBoltV3Config) -> LoadedBoltV3Config 
 }
 
 fn write_no_submit_report(path: &std::path::Path, stages: &[(&str, &str)]) {
-    write_no_submit_report_with_stage_field(path, "stage", stages);
+    write_no_submit_report_with_stage_field(path, STAGE_KEY, stages);
+}
+
+fn write_no_submit_report_with_linkage(
+    path: &std::path::Path,
+    approval_id_hash: &str,
+    executable_identity: &str,
+    config_bundle_checksum: &str,
+) {
+    let stages = [
+        OPERATOR_APPROVAL_STAGE,
+        SECRET_RESOLUTION_STAGE,
+        LIVE_NODE_BUILD_STAGE,
+        CONTROLLED_CONNECT_STAGE,
+        REFERENCE_READINESS_STAGE,
+        CONTROLLED_DISCONNECT_STAGE,
+        REPORT_WRITE_STAGE,
+    ]
+    .into_iter()
+    .map(|stage| serde_json::json!({ STAGE_KEY: stage, STATUS_KEY: STATUS_SATISFIED }))
+    .collect::<Vec<_>>();
+    write_report_value(
+        path,
+        serde_json::json!({
+            SCHEMA_VERSION_KEY: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+            APPROVAL_ID_HASH_KEY: approval_id_hash,
+            EXECUTABLE_IDENTITY_KEY: executable_identity,
+            CONFIG_BUNDLE_CHECKSUM_KEY: config_bundle_checksum,
+            STAGES_KEY: stages,
+        }),
+    );
+}
+
+fn write_report_value(path: &std::path::Path, value: serde_json::Value) {
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&value).expect("report fixture should serialize"),
+    )
+    .expect("report fixture should be written");
+}
+
+fn write_linked_report_value(path: &std::path::Path, value: serde_json::Value) {
+    let mut object = value
+        .as_object()
+        .expect("linked report fixture must be an object")
+        .clone();
+    let mut linkage = linked_report_object(Vec::new());
+    linkage.remove(STAGES_KEY);
+    for (key, value) in linkage {
+        object.entry(key).or_insert(value);
+    }
+    write_report_value(path, serde_json::Value::Object(object));
+}
+
+fn linked_report_object(
+    stages: Vec<serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut object = serde_json::Map::new();
+    object.insert(
+        SCHEMA_VERSION_KEY.to_string(),
+        serde_json::json!(NO_SUBMIT_READINESS_SCHEMA_VERSION),
+    );
+    object.insert(
+        APPROVAL_ID_HASH_KEY.to_string(),
+        serde_json::json!(sha256_hex("operator-approved-canary-001".as_bytes())),
+    );
+    object.insert(
+        EXECUTABLE_IDENTITY_KEY.to_string(),
+        serde_json::json!(current_executable_identity()),
+    );
+    object.insert(
+        CONFIG_BUNDLE_CHECKSUM_KEY.to_string(),
+        serde_json::json!(
+            load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+                .expect("fixture v3 config should load")
+                .config_bundle_checksum
+        ),
+    );
+    object.insert(STAGES_KEY.to_string(), serde_json::Value::Array(stages));
+    object
+}
+
+fn complete_stage_values() -> Vec<serde_json::Value> {
+    [
+        OPERATOR_APPROVAL_STAGE,
+        SECRET_RESOLUTION_STAGE,
+        LIVE_NODE_BUILD_STAGE,
+        CONTROLLED_CONNECT_STAGE,
+        REFERENCE_READINESS_STAGE,
+        CONTROLLED_DISCONNECT_STAGE,
+        REPORT_WRITE_STAGE,
+    ]
+    .into_iter()
+    .map(|stage| serde_json::json!({ STAGE_KEY: stage, STATUS_KEY: STATUS_SATISFIED }))
+    .collect()
 }
 
 fn write_no_submit_report_with_stage_field(
@@ -721,7 +945,7 @@ fn write_no_submit_report_with_stage_field(
         REPORT_WRITE_STAGE,
     ]
     .into_iter()
-    .map(|stage| (stage, "satisfied"))
+    .map(|stage| (stage, STATUS_SATISFIED))
     .collect::<Vec<_>>();
     for &(stage, status) in stages {
         if let Some(existing) = complete_stages
@@ -735,12 +959,16 @@ fn write_no_submit_report_with_stage_field(
     }
     let stages: Vec<_> = complete_stages
         .iter()
-        .map(|(stage, status)| serde_json::json!({ stage_field: stage, "status": status }))
+        .map(|(stage, status)| serde_json::json!({ stage_field: stage, STATUS_KEY: status }))
         .collect();
-    let report = serde_json::json!({ "stages": stages });
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&report).expect("report should serialize"),
-    )
-    .expect("report fixture should be written");
+    write_linked_report_value(path, serde_json::json!({ STAGES_KEY: stages }));
+}
+
+fn current_executable_identity() -> String {
+    let path = std::env::current_exe().expect("current test executable path should resolve");
+    sha256_hex(&std::fs::read(path).expect("current test executable should be readable"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }

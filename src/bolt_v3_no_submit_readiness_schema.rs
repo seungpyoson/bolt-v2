@@ -1,7 +1,10 @@
-pub const NO_SUBMIT_READINESS_SCHEMA_VERSION: &str = "bolt-v3.no-submit-readiness.v1";
+pub const NO_SUBMIT_READINESS_SCHEMA_VERSION: &str = "bolt-v3.no-submit-readiness.v2";
+pub const SCHEMA_VERSION_KEY: &str = "schema_version";
+pub const APPROVAL_ID_HASH_KEY: &str = "approval_id_hash";
+pub const EXECUTABLE_IDENTITY_KEY: &str = "executable_identity";
+pub const CONFIG_BUNDLE_CHECKSUM_KEY: &str = "config_bundle_checksum";
 pub const STAGES_KEY: &str = "stages";
 pub const STAGE_KEY: &str = "stage";
-pub const NAME_KEY: &str = "name";
 pub const STATUS_KEY: &str = "status";
 pub const STATUS_SATISFIED: &str = "satisfied";
 pub const OPERATOR_APPROVAL_STAGE: &str = "operator_approval";

@@ -86,7 +86,7 @@ As the maintainer, I can extend workflow lint only for the exact #332 topology s
 - **FR-008**: The `test` matrix MUST set `strategy.fail-fast: false` so every shard result is observable by the aggregate gate.
 - **FR-009**: The aggregate `gate` MUST need `detector`, `fmt-check`, `deny`, `clippy`, `check-aarch64`, `source-fence`, `test`, and `build`.
 - **FR-010**: The aggregate `gate` MUST accept only `success` for `clippy`, `check-aarch64`, `source-fence`, and aggregate `test`, while preserving the existing build-required skip semantics for `build`.
-- **FR-011**: `test` MUST continue to depend on `source-fence`, and `gate` MUST continue to require `source-fence` if #342 filters are excluded from full nextest shards.
+- **FR-011**: ~~`test` MUST continue to depend on `source-fence`,~~ and `gate` MUST continue to require `source-fence` if #342 filters are excluded from full nextest shards. **Superseded by #400** (PR #401): the `test` (carried as `test-archive` after this #332 split) -> `source-fence` dep is removed; the two lanes run in parallel and merge enforcement is wholly on `gate.needs` + `needs.source-fence.result == "success"`. The `gate` requirement on `source-fence` is unchanged.
 - **FR-012**: The branch MUST explicitly document whether source-fence filters are excluded from or intentionally duplicated by full nextest shards.
 - **FR-013**: `just ci-lint-workflow` MUST fail with actionable output if the new `check-aarch64` job, its setup/cache key, gate need, or gate result check is missing.
 - **FR-014**: `just ci-lint-workflow` MUST fail with actionable output if the test matrix shard list, `fail-fast: false`, partition command, bounded shared nextest cache plus shard-1 save policy, or reproduction log command is missing.
@@ -115,5 +115,5 @@ As the maintainer, I can extend workflow lint only for the exact #332 topology s
 ## Assumptions
 
 - PR #346/#342 and PR #347/#203 are the stacked bases for this work, so `source-fence` and the standard-library workflow verifier already exist.
-- The repo keeps one managed Rust execution path through `rust_verification.py`; workflow YAML must continue to call `just` recipes, not raw cargo.
+- The repo keeps one managed Rust execution path through `scripts/rust_verification.py`; workflow YAML must continue to call `just` recipes, not raw cargo.
 - Exact-head CI and external reviews are deferred until the current stacked PR head can get a real CI run.

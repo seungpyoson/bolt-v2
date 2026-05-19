@@ -59,12 +59,33 @@ TAG_SKIP_REQUIRED_JOBS = (
 )
 TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-shards", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
+JOB_REQUIRED_JUST_RECIPE = {
+    "fmt-check": "fmt-check",
+    "deny": "deny",
+    "clippy": "clippy",
+    "check-aarch64": "check-aarch64",
+    "source-fence": "source-fence",
+    "build": "build",
+}
+CI_PR_PATHS_IGNORE_BASELINE = (
+    ".claude/**",
+    ".codex/**",
+    ".gemini/**",
+    ".github/ISSUE_TEMPLATE/**",
+    ".opencode/**",
+    ".pi/**",
+    ".specify/**",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    "LICENSE",
+    "REASONIX.md",
+)
 LIVE_NODE_TEST_GROUP = "live-node"
 LIVE_NODE_UNIT_TEST_FILTERS = (
     "binary(=bolt_v2)",
     "test(~bolt_v3_client_registration::tests::)",
     "test(~bolt_v3_live_node::tests::)",
-    "test(~platform::runtime::tests::)",
 )
 LIVE_NODE_NEXTEST_BINARIES = (
     "bolt_v3_adapter_mapping",
@@ -77,12 +98,8 @@ LIVE_NODE_NEXTEST_BINARIES = (
     "bolt_v3_submit_admission",
     "bolt_v3_tiny_canary_operator",
     "config_parsing",
-    "eth_chainlink_taker_runtime",
     "lake_batch",
-    "live_node_run",
     "nt_runtime_capture",
-    "platform_runtime",
-    "polymarket_bootstrap",
     "venue_contract",
 )
 LIVE_NODE_NEXTEST_FILTER = " | ".join(f"binary(={binary})" for binary in LIVE_NODE_NEXTEST_BINARIES)
@@ -145,8 +162,6 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "inputs.include-nextest-version",
     "inputs.include-build-values",
     "inputs.lint-workflow-contract",
-    "CLAUDE_CONFIG_READ_TOKEN:",
-    "inputs.claude-config-read-token",
     "just ci-lint-workflow",
     "awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml",
     "just --evaluate deny_version",
@@ -156,9 +171,6 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "just --evaluate zigbuild_version",
     "just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256",
     "just --evaluate rust_verification_owner",
-    "just --evaluate rust_verification_source_repo",
-    "just --evaluate rust_verification_source_sha",
-    "just --evaluate rust_verification_ci_install_script",
     'target-dir --repo "$GITHUB_WORKSPACE"',
     "os.path.relpath",
 )
@@ -171,16 +183,12 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
     "zigbuild_version": "steps.shared.outputs.zigbuild_version",
     "zigbuild_x86_64_unknown_linux_gnu_sha256": "steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256",
     "rust_verification_owner": "steps.shared.outputs.rust_verification_owner",
-    "rust_verification_source_repo": "steps.shared.outputs.rust_verification_source_repo",
-    "rust_verification_source_sha": "steps.shared.outputs.rust_verification_source_sha",
-    "rust_verification_ci_install_script": "steps.shared.outputs.rust_verification_ci_install_script",
     "managed_target_dir": "steps.target_dir.outputs.managed_target_dir",
     "managed_target_dir_relative": "steps.target_dir.outputs.managed_target_dir_relative",
 }
 SETUP_ACTION_ORDERED_STEPS = (
     "Lint workflow contract",
     "Read shared values",
-    "Install managed Rust owner",
     "Resolve managed target dir",
     "Setup Rust toolchain",
 )
@@ -207,7 +215,8 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'rust-toolchain.toml'",
     "'.cargo/config.toml'",
     "'.config/nextest.toml'",
-    "'.claude/rust-verification.toml'",
+    "'ci/rust-verification.toml'",
+    "'scripts/rust_verification.py'",
     "'justfile'",
     "'build.rs'",
     "'src/**'",
@@ -220,14 +229,21 @@ TEST_ARCHIVE_KEY_INPUTS = (
 TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst"
 TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
-TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830"
-TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830"
+TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"
+TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_UPLOAD_ACTION = "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
 SHARED_REGISTRY_CACHE_KEY = "cargo-registry-git-v1"
 SHARED_REGISTRY_SAVE_IF = "${{ github.job == 'test-archive' }}"
 REGISTRY_CACHE_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
+# Jobs that opt into the managed-target actions/cache. Each value is the
+# job-specific key prefix segment between `managed-target-v1-${runner.os}-
+# ${runner.arch}-` and the hashFiles suffix. Adding a new job that uses
+# `steps.setup.outputs.managed_target_dir` requires (a) registering its
+# expected prefix here so `managed_target_cache_errors` enforces key isolation
+# AND a matching `restore-keys` prefix fallback (#400), and (b) updating the
+# self-test fixture in `scripts/test_verify_ci_workflow_hygiene.py`.
 MANAGED_TARGET_CACHE_KEYS = {
     "clippy": "clippy-host",
     "check-aarch64": "check-aarch64-dev",
@@ -241,7 +257,33 @@ JUST_LANE_RE = re.compile(
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
 BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
-TAIKI_INSTALL_ACTION = "taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c"
+# taiki-e/install-action must be pinned to a 40-hex commit SHA (mutable tags
+# like @v2 are rejected). The specific SHA is NOT enforced here — Dependabot
+# opens a PR with release notes for every bump and PR review is the human
+# gate. See tj-actions/changed-files (CVE-2025-30066, March 2025) for why
+# SHA-pinning matters and why hardcoding a specific SHA here adds maintenance
+# burden without real supply-chain value.
+#
+# Two regexes intentionally:
+#   * TAIKI_INSTALL_ACTION_RE matches well-formed pinned single-line `uses:`
+#     references. Optional matching quotes (single OR double, enforced by
+#     backreference so mismatched quotes still fail) are accepted around the
+#     reference. Uppercase hex is allowed in the match so the consistency
+#     check can normalize via .lower() rather than silently rejecting valid
+#     uppercase pins. The SHA is captured in group(2); group(1) is the
+#     (possibly empty) opening quote used by the backreference.
+#   * TAIKI_INSTALL_ACTION_MENTION_RE is a broad detector for any cleaned
+#     line that mentions `taiki-e/install-action@` at all — whether the
+#     `uses:` token sits on the same line (single-line form) or on a
+#     preceding line (YAML multi-line scalar form). The consistency check
+#     uses it to surface every reference, then requires the line to match
+#     the strict single-line pinned form; anything else (mutable tag,
+#     mismatched quotes, multi-line scalar) is reported with a precise
+#     file:line.
+TAIKI_INSTALL_ACTION_RE = re.compile(
+    r"""^\s*(?:-\s*)?uses:\s*(['"]?)taiki-e/install-action@([0-9a-fA-F]{40})\1\s*$"""
+)
+TAIKI_INSTALL_ACTION_MENTION_RE = re.compile(r"\btaiki-e/install-action@")
 CI_INSTALL_ACTION_TOOLS = {
     "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
@@ -300,6 +342,48 @@ def strip_comment(line: str) -> str:
         if char == "#":
             return line[:index].rstrip()
     return line.rstrip()
+
+
+def extract_paths_ignore_for_trigger(
+    workflow_text: str, trigger: str
+) -> tuple[str, ...] | None:
+    """Return the paths-ignore list under `on.<trigger>`, or None if absent.
+
+    Parses the block-style YAML this repo uses; flow-style maps are not supported.
+    """
+
+    lines = [strip_comment(line).rstrip() for line in workflow_text.splitlines()]
+
+    def section_index(start: int, header: str, max_indent: int) -> int | None:
+        i = start
+        while i < len(lines):
+            line = lines[i]
+            if line and len(line) - len(line.lstrip(" ")) <= max_indent and line != header:
+                return None
+            if line == header:
+                return i
+            i += 1
+        return None
+
+    on_idx = section_index(0, "on:", max_indent=-1)
+    if on_idx is None:
+        return None
+    trigger_idx = section_index(on_idx + 1, f"  {trigger}:", max_indent=0)
+    if trigger_idx is None:
+        return None
+    pi_idx = section_index(trigger_idx + 1, "    paths-ignore:", max_indent=2)
+    if pi_idx is None:
+        return None
+
+    items: list[str] = []
+    for i in range(pi_idx + 1, len(lines)):
+        line = lines[i]
+        if line and len(line) - len(line.lstrip(" ")) <= 4:
+            break
+        stripped = line.lstrip()
+        if stripped.startswith("- "):
+            items.append(stripped[2:].strip().strip("'").strip('"'))
+    return tuple(items)
 
 
 def parse_jobs(workflow_text: str) -> dict[str, list[str]]:
@@ -612,6 +696,54 @@ def block_uses_managed_target_cache(block: list[str]) -> bool:
     )
 
 
+def block_key_value_has_prefix(block: list[str], prefix: str) -> bool:
+    for name, value in block_input_items(block):
+        if name == "key" and prefix in value:
+            return True
+    return False
+
+
+def block_declares_restore_keys_prefix(block: list[str], prefix: str) -> bool:
+    # Locate the `with:` line to determine the input indent. The marker for
+    # `restore-keys:` is anchored at that exact indent so earlier lines whose
+    # values happen to contain the substring `restore-keys:` (e.g., a quoted
+    # step-level `name:`) cannot impersonate the input.
+    input_indent: int | None = None
+    for line in block:
+        match = re.match(r"^(\s*)with:\s*$", strip_comment(line).rstrip())
+        if match is not None:
+            input_indent = len(match.group(1)) + 2
+            break
+    if input_indent is None:
+        return False
+    marker_re = re.compile(rf"^\s{{{input_indent}}}restore-keys:\s*(.*)$")
+    for marker_idx, line in enumerate(block):
+        match = marker_re.match(strip_comment(line))
+        if not match:
+            continue
+        value = match.group(1).strip()
+        # Inline-scalar form: `restore-keys: managed-target-v1-...-clippy-host-`.
+        # Anything not starting with a block-scalar indicator is treated as an
+        # inline value and matched directly.
+        if not value.startswith(("|", ">")):
+            return prefix in value
+        # Block-scalar form: `restore-keys: |` (plus YAML 1.2 chomping or
+        # explicit-indentation indicators like `|2`, `>+1`, `|-3`). Body lines
+        # are indented strictly more than the marker line; the scan stops at
+        # the first line whose indent is equal-or-lesser.
+        for child in block[marker_idx + 1:]:
+            child_text = strip_comment(child)
+            if not child_text.strip():
+                continue
+            child_indent = len(child) - len(child.lstrip(" "))
+            if child_indent <= input_indent:
+                break
+            if prefix in child_text:
+                return True
+        return False
+    return False
+
+
 def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
     expected_key = MANAGED_TARGET_CACHE_KEYS[job]
     target_blocks = [
@@ -622,8 +754,26 @@ def managed_target_cache_errors(job: str, job_lines: list[str]) -> list[str]:
     if not target_blocks:
         return [f"{job} must use isolated managed target cache"]
 
-    if not any(f"managed-target-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{expected_key}-" in uncommented_text(block) for block in target_blocks):
+    expected_prefix = (
+        f"managed-target-v1-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{expected_key}-"
+    )
+    # The exact `key:` value must carry the job-specific prefix. Checking the
+    # whole block's text would also match a prefix that only appears in
+    # `restore-keys:`, masking key/restore-keys drift.
+    if not any(block_key_value_has_prefix(block, expected_prefix) for block in target_blocks):
         return [f"{job} managed target cache key must isolate {expected_key}"]
+
+    # #400: each managed-target cache MUST declare a restore-keys prefix fallback
+    # matching the job's key prefix. Without it, any change to CI orchestration
+    # files included in hashFiles (justfile, ci/rust-verification.toml,
+    # scripts/rust_verification.py) misses the exact key and pays the full
+    # ~22m aarch64 release cross-compile instead of an incremental rebuild.
+    if not any(
+        block_declares_restore_keys_prefix(block, expected_prefix) for block in target_blocks
+    ):
+        return [
+            f"{job} managed target cache must declare restore-keys prefix {expected_prefix}"
+        ]
     return []
 
 
@@ -631,15 +781,14 @@ def job_just_lanes(job_lines: list[str]) -> set[str]:
     return {match.group(2) for match in JUST_LANE_RE.finditer(uncommented_text(job_lines))}
 
 
-def block_uses_exact_action(block: list[str], action: str) -> bool:
-    pattern = re.compile(rf"^\s*(?:-\s*)?uses:\s*{re.escape(action)}\s*$")
-    return any(pattern.match(strip_comment(line)) for line in block)
+def block_uses_pinned_install_action(block: list[str]) -> bool:
+    return any(TAIKI_INSTALL_ACTION_RE.match(strip_comment(line)) for line in block)
 
 
 def install_action_tool_step(job_lines: list[str], tool: str, output: str) -> tuple[int, list[str]] | None:
     expected_tool = f"{tool}@${{{{ {output} }}}}"
     for index, block in enumerate(step_blocks(job_lines)):
-        if block_uses_exact_action(block, TAIKI_INSTALL_ACTION) and block_has_input(block, "tool", expected_tool):
+        if block_uses_pinned_install_action(block) and block_has_input(block, "tool", expected_tool):
             return index, block
     return None
 
@@ -1241,6 +1390,19 @@ def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
     jobs = parse_jobs(workflow_text)
 
+    actual_pr_paths_ignore = extract_paths_ignore_for_trigger(workflow_text, "pull_request")
+    if actual_pr_paths_ignore is None or tuple(sorted(actual_pr_paths_ignore)) != CI_PR_PATHS_IGNORE_BASELINE:
+        errors.append(
+            "on.pull_request paths-ignore must match baseline "
+            f"{CI_PR_PATHS_IGNORE_BASELINE} (got {actual_pr_paths_ignore!r})"
+        )
+    actual_push_paths_ignore = extract_paths_ignore_for_trigger(workflow_text, "push")
+    if actual_push_paths_ignore is not None:
+        errors.append(
+            "on.push must have no paths-ignore (push to main/tags must always run full CI); "
+            f"got {actual_push_paths_ignore!r}"
+        )
+
     errors.extend(verify_pr_concurrency(workflow_text))
 
     if not workflow_permissions_have_actions_read(workflow_text):
@@ -1260,15 +1422,20 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "source-fence" in jobs and "detector" not in extract_needs(jobs["source-fence"]):
         # FR-005: #342 owns the early-fail source-fence lane, so it remains detector-gated.
         errors.append("source-fence needs detector")
-    if "source-fence" in jobs and not job_runs_command(jobs["source-fence"], "just source-fence"):
-        errors.append("source-fence must run just source-fence")
+
+    for job_name, recipe in JOB_REQUIRED_JUST_RECIPE.items():
+        if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):
+            errors.append(f"{job_name} must run just {recipe}")
 
     if "test-archive" in jobs:
         test_archive_needs = extract_needs(jobs["test-archive"])
         if "detector" not in test_archive_needs:
             errors.append("test-archive needs detector")
-        if "source-fence" not in test_archive_needs:
-            errors.append("test-archive needs source-fence")
+        # #400: source-fence and test-archive run in parallel. The aggregate
+        # `gate` job is the sole merge enforcer for both lanes; reintroducing a
+        # serial dep would re-create the fail-fast cost #400 eliminated.
+        if "source-fence" in test_archive_needs:
+            errors.append("test-archive must not need source-fence")
     if "test-shards" in jobs and "test-archive" not in extract_needs(jobs["test-shards"]):
         errors.append("test-shards needs test-archive")
 
@@ -1286,8 +1453,6 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("check-aarch64 must have no job-level if condition")
         if not check_aarch64_has_coverage_owner_step(jobs["check-aarch64"]):
             errors.append("check-aarch64 must document build-lane aarch64 coverage delegation")
-        if "just check-aarch64" not in uncommented_text(jobs["check-aarch64"]):
-            errors.append("check-aarch64 must run just check-aarch64")
         if not check_aarch64_installs_cross_compiler_packages(jobs["check-aarch64"]):
             errors.append("check-aarch64 must install aarch64 cross compiler packages")
         errors.extend(check_aarch64_standalone_guard_errors(jobs["check-aarch64"]))
@@ -1443,8 +1608,6 @@ def verify_managed_workflow(workflow_text: str, workflow_name: str) -> list[str]
         if not setup_action_blocks(lines):
             errors.append(f"{workflow_name} {job} must use setup-environment")
             continue
-        if not job_has_setup_input(lines, "claude-config-read-token", "${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}"):
-            errors.append(f"{workflow_name} {job} setup token must come from secrets.CLAUDE_CONFIG_READ_TOKEN")
         if not job_has_setup_input(lines, "just-version", "${{ env.JUST_VERSION }}"):
             errors.append(f"{workflow_name} {job} setup just-version must come from env.JUST_VERSION")
         if "fmt-check" in lanes:
@@ -1638,6 +1801,49 @@ def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config
         errors.extend(verify_prebuilt_tool_installs(workflow_text, workflow_name))
     errors.extend(verify_setup_action(action_text))
     errors.extend(verify_nextest_config(nextest_config_text))
+    errors.extend(verify_install_action_pin_consistency(workflows))
+    return errors
+
+
+def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str]:
+    # Dependabot groups action bumps so all taiki-e/install-action pins move
+    # together; this guards against half-bumps in human-authored PRs that
+    # leave workflow files referencing inconsistent SHAs. Scan line-by-line
+    # after stripping comments so commentary containing the action ref does
+    # not produce false positives.
+    #
+    # The broad detector (TAIKI_INSTALL_ACTION_MENTION_RE) finds every line
+    # that mentions the action ref at all — including YAML multi-line scalar
+    # form where `uses:` sits on a preceding line. Any such line that does
+    # not match the strict single-line pinned form is reported with a precise
+    # file:line so mutable tags (e.g. @v2), multi-line scalars, mismatched
+    # quotes, and other malformed pins fail loudly instead of being silently
+    # skipped. SHAs are lowercased before bucketing so the consistency check
+    # treats uppercase and lowercase hex as the same pin. Lines that fail
+    # the strict form do NOT contribute to the bucket map — a malformed
+    # reference must not phantom-bucket and mask a real drift.
+    errors: list[str] = []
+    sha_to_files: dict[str, list[str]] = {}
+    for workflow_name, workflow_text in workflows.items():
+        for line_index, line in enumerate(workflow_text.splitlines(), start=1):
+            clean = strip_comment(line)
+            if not TAIKI_INSTALL_ACTION_MENTION_RE.search(clean):
+                continue
+            match = TAIKI_INSTALL_ACTION_RE.match(clean)
+            if match is None:
+                errors.append(
+                    f"{workflow_name}:{line_index}: taiki-e/install-action must be referenced as "
+                    f"'uses: taiki-e/install-action@<40-hex-SHA>' on a single line, got: {clean.strip()}"
+                )
+                continue
+            sha = match.group(2).lower()
+            sha_to_files.setdefault(sha, []).append(workflow_name)
+    if len(sha_to_files) > 1:
+        parts = sorted(
+            f"{sha} in {','.join(sorted(set(files)))}"
+            for sha, files in sha_to_files.items()
+        )
+        errors.append("taiki-e/install-action pin drift: " + "; ".join(parts))
     return errors
 
 

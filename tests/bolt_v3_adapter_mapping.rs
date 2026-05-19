@@ -10,12 +10,13 @@ use bolt_v2::{
         binance::ResolvedBoltV3BinanceSecrets,
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     },
-    bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
+    bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
 };
 use nautilus_binance::common::enums::{
     BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
 };
 use nautilus_binance::config::BinanceDataClientConfig;
+use nautilus_network::websocket::TransportBackend;
 use nautilus_polymarket::{
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
@@ -38,20 +39,20 @@ fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
 }
 
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
-    let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
-    venues.insert(
+    let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
+    clients.insert(
         "polymarket_main".to_string(),
         Arc::new(fixture_polymarket_secrets()),
     );
-    venues.insert(
+    clients.insert(
         "binance_reference".to_string(),
         Arc::new(fixture_binance_secrets()),
     );
-    ResolvedBoltV3Secrets { venues }
+    ResolvedBoltV3Secrets { clients }
 }
 
 #[test]
-fn polymarket_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
+fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let resolved = fixture_resolved_secrets();
@@ -59,7 +60,7 @@ fn polymarket_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
 
     let polymarket = configs
-        .venues
+        .clients
         .get("polymarket_main")
         .expect("polymarket_main must be present in mapper output");
 
@@ -90,6 +91,21 @@ fn polymarket_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert_eq!(data.ws_max_subscriptions, 200);
     assert_eq!(data.update_instruments_interval_mins, 60);
     assert!(!data.subscribe_new_markets);
+    assert!(!data.auto_load_missing_instruments);
+    assert_eq!(data.auto_load_debounce_ms, 250);
+    assert_eq!(data.transport_backend, TransportBackend::Sockudo);
+    assert_eq!(
+        data.filters.len(),
+        1,
+        "production adapter mapping must install the updown market-slug filter"
+    );
+    assert_eq!(
+        data.filters[0]
+            .market_slugs()
+            .expect("installed updown market-slug filter must return current and next slugs")
+            .len(),
+        2
+    );
 
     let exec = polymarket
         .execution
@@ -135,6 +151,7 @@ fn polymarket_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert_eq!(exec.retry_delay_initial_ms, 250);
     assert_eq!(exec.retry_delay_max_ms, 2000);
     assert_eq!(exec.ack_timeout_secs, 5);
+    assert_eq!(exec.transport_backend, TransportBackend::Sockudo);
 }
 
 #[test]
@@ -146,9 +163,9 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let polymarket_data = loaded
         .root
-        .venues
+        .clients
         .get_mut("polymarket_main")
-        .and_then(|venue| venue.data.as_mut())
+        .and_then(|client| client.data.as_mut())
         .and_then(toml::Value::as_table_mut)
         .expect("fixture polymarket data table should exist");
     polymarket_data.insert(
@@ -161,9 +178,9 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
         .expect_err("mapper must not forward subscribe_new_markets=true to NT");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
-            venue_key, field, ..
+            client_key, field, ..
         } => {
-            assert_eq!(venue_key, "polymarket_main");
+            assert_eq!(client_key, "polymarket_main");
             assert_eq!(field, "data.subscribe_new_markets");
         }
         other => panic!("expected ValidationInvariant, got {other}"),
@@ -171,7 +188,7 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
 }
 
 #[test]
-fn binance_data_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
+fn binance_data_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let resolved = fixture_resolved_secrets();
@@ -179,7 +196,7 @@ fn binance_data_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
 
     let binance = configs
-        .venues
+        .clients
         .get("binance_reference")
         .expect("binance_reference must be present in mapper output");
     let data = binance
@@ -212,13 +229,14 @@ fn binance_data_venue_config_plus_resolved_secrets_maps_to_nt_native_fields() {
         Some(fixture_binance_secrets().api_secret.as_str())
     );
     assert_eq!(data.instrument_status_poll_secs, 3600);
+    assert_eq!(data.transport_backend, TransportBackend::Sockudo);
 }
 
 #[test]
 fn missing_or_invalid_root_config_remains_caught_by_validation_not_mapper_defaults() {
     use bolt_v2::bolt_v3_validate::validate_root_only;
 
-    // Missing [secrets] for polymarket execution venue: the existing
+    // Missing [secrets] for polymarket execution client: the existing
     // validator must catch this *before* the mapper ever runs. The
     // mapper itself must not silently fall back to defaults.
     let toml_text = r#"
@@ -227,17 +245,17 @@ trader_id = "BOLT-001"
 strategy_files = ["strategies/binary_oracle.toml"]
 
 [runtime]
-mode = "live"
+mode = "Live"
 
 [nautilus]
 load_state = true
 save_state = true
-timeout_connection_seconds = 30
-timeout_reconciliation_seconds = 60
-timeout_portfolio_seconds = 10
-timeout_disconnection_seconds = 10
-delay_post_stop_seconds = 5
-timeout_shutdown_seconds = 10
+timeout_connection_secs = 30
+timeout_reconciliation_secs = 60
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 5
+timeout_shutdown_secs = 10
 
 [nautilus.data_engine]
 time_bars_build_with_no_updates = true
@@ -250,7 +268,7 @@ validate_data_sequence = false
 buffer_deltas = false
 emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
-external_client_ids = []
+external_clients = []
 debug = false
 graceful_shutdown_on_error = false
 qsize = 100000
@@ -259,30 +277,30 @@ qsize = 100000
 load_cache = true
 snapshot_orders = false
 snapshot_positions = false
-snapshot_positions_interval_seconds = 0
-external_client_ids = []
+snapshot_positions_interval_secs = 0
+external_clients = []
 debug = false
 reconciliation = true
-reconciliation_startup_delay_seconds = 10
+reconciliation_startup_delay_secs = 10
 reconciliation_lookback_mins = 0
 reconciliation_instrument_ids = []
 filter_unclaimed_external_orders = false
 filter_position_reports = false
 filtered_client_order_ids = []
 generate_missing_orders = true
-inflight_check_interval_milliseconds = 2000
-inflight_check_threshold_milliseconds = 5000
+inflight_check_interval_ms = 2000
+inflight_check_threshold_ms = 5000
 inflight_check_retries = 5
-open_check_interval_seconds = 0
+open_check_interval_secs = 0
 open_check_lookback_mins = 60
-open_check_threshold_milliseconds = 5000
+open_check_threshold_ms = 5000
 open_check_missing_retries = 5
 open_check_open_only = true
 max_single_order_queries_per_cycle = 10
-single_order_query_delay_milliseconds = 100
-position_check_interval_seconds = 0
+single_order_query_delay_ms = 100
+position_check_interval_secs = 0
 position_check_lookback_mins = 60
-position_check_threshold_milliseconds = 5000
+position_check_threshold_ms = 5000
 position_check_retries = 3
 purge_closed_orders_interval_mins = 0
 purge_closed_orders_buffer_mins = 0
@@ -291,7 +309,7 @@ purge_closed_positions_buffer_mins = 0
 purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
-own_books_audit_interval_seconds = 0
+own_books_audit_interval_secs = 0
 graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
@@ -299,48 +317,53 @@ manage_own_order_books = false
 
 [risk]
 default_max_notional_per_order = "10.00"
-nt_bypass = false
-nt_max_order_submit_rate = "100/00:00:01"
-nt_max_order_modify_rate = "100/00:00:01"
-nt_max_notional_per_order = {}
-nt_debug = false
-nt_graceful_shutdown_on_error = false
-nt_qsize = 100000
+
+[risk.nautilus]
+bypass = false
+max_order_submit_rate = "100/00:00:01"
+max_order_modify_rate = "100/00:00:01"
+max_notional_per_order = {}
+debug = false
+graceful_shutdown_on_error = false
+qsize = 100000
 
 [logging]
-standard_output_level = "INFO"
-file_level = "INFO"
+stdout_level = "INFO"
+fileout_level = "INFO"
 
 [persistence]
 catalog_directory = "/var/lib/bolt/catalog"
+runtime_capture_start_poll_interval_ms = 50
 
 [persistence.decision_evidence]
 order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
 
 [persistence.streaming]
 catalog_fs_protocol = "file"
-flush_interval_milliseconds = 1000
+flush_interval_ms = 1000
 replace_existing = false
 rotation_kind = "none"
 
 [aws]
 region = "eu-west-1"
 
-[venues.polymarket_main]
-kind = "polymarket"
+[clients.polymarket_main]
+venue = "POLYMARKET"
 
-[venues.polymarket_main.execution]
+[clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
 signature_type = "poly_proxy"
-funder_address = "0x1111111111111111111111111111111111111111"
+funder = "0x1111111111111111111111111111111111111111"
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 base_url_data_api = "https://data-api.polymarket.com"
-http_timeout_seconds = 60
+http_timeout_secs = 60
 max_retries = 3
-retry_delay_initial_milliseconds = 250
-retry_delay_max_milliseconds = 2000
-ack_timeout_seconds = 5
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+ack_timeout_secs = 5
+fee_cache_ttl_secs = 300
+transport_backend = "sockudo"
 "#;
     let root: BoltV3RootConfig =
         toml::from_str(toml_text).expect("polymarket-execution-only TOML should parse");
@@ -358,20 +381,25 @@ ack_timeout_seconds = 5
     // error driven by the resolved-secrets gap, not a default.
     let loaded = LoadedBoltV3Config {
         root_path: support::repo_path("tests/fixtures/bolt_v3/root.toml"),
+        config_bundle_checksum: String::new(),
         root,
         strategies: Vec::new(),
     };
     let empty_resolved = ResolvedBoltV3Secrets {
-        venues: BTreeMap::new(),
+        clients: BTreeMap::new(),
     };
     let error = map_bolt_v3_adapters(&loaded, &empty_resolved)
         .expect_err("mapper must not synthesize defaults for missing resolved secrets");
+    let rendered = error.to_string();
+    assert!(rendered.contains("(provider=POLYMARKET)"));
+    assert!(!rendered.contains("(kind="));
+    assert!(!rendered.contains("(venue="));
     match error {
         BoltV3AdapterMappingError::MissingResolvedSecrets {
-            venue_key,
+            client_key,
             expected_provider_key,
         } => {
-            assert_eq!(venue_key, "polymarket_main");
+            assert_eq!(client_key, "polymarket_main");
             assert_eq!(expected_provider_key, polymarket::KEY);
         }
         other => panic!("expected MissingResolvedSecrets, got {other}"),

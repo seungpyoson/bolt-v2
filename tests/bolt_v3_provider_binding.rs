@@ -38,14 +38,14 @@ use std::{
 
 use bolt_v2::{
     bolt_v3_adapters::{
-        BoltV3AdapterMappingError, BoltV3UpdownNowFn, map_bolt_v3_adapters_with_market_identity,
+        BoltV3AdapterMappingError, BoltV3MarketClockFn, map_bolt_v3_adapters_with_market_identity,
     },
     bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},
-    bolt_v3_market_families::updown::{MarketIdentityPlan, plan_market_identity},
+    bolt_v3_market_families::{MarketIdentityPlan, updown::plan_market_identity},
     bolt_v3_providers::{
         binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
     },
-    bolt_v3_secrets::{ResolvedBoltV3Secrets, ResolvedBoltV3VenueSecrets},
+    bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
 };
 use nautilus_polymarket::config::PolymarketDataClientConfig;
 
@@ -64,8 +64,8 @@ fn set_target_field(strategy: &mut LoadedStrategy, key: &str, value: toml::Value
 }
 
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
-    let mut venues: BTreeMap<String, ResolvedBoltV3VenueSecrets> = BTreeMap::new();
-    venues.insert(
+    let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
+    clients.insert(
         "polymarket_main".to_string(),
         Arc::new(ResolvedBoltV3PolymarketSecrets {
             private_key: "binding-poly-private-key".to_string(),
@@ -74,18 +74,18 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
             passphrase: "binding-poly-passphrase".to_string(),
         }),
     );
-    venues.insert(
+    clients.insert(
         "binance_reference".to_string(),
         Arc::new(ResolvedBoltV3BinanceSecrets {
             api_key: "binding-binance-api-key".to_string(),
             api_secret: "binding-binance-api-secret".to_string(),
         }),
     );
-    ResolvedBoltV3Secrets { venues }
+    ResolvedBoltV3Secrets { clients }
 }
 
-fn fixed_clock(now_unix_seconds: i64) -> BoltV3UpdownNowFn {
-    Arc::new(move || now_unix_seconds)
+fn fixed_clock(now_unix_secs: i64) -> BoltV3MarketClockFn {
+    Arc::new(move || now_unix_secs)
 }
 
 #[test]
@@ -95,7 +95,7 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
     let resolved = fixture_resolved_secrets();
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
 
-    // Fixed `now_unix_seconds = 601` puts the planner inside the
+    // Fixed `now_unix_secs = 601` puts the planner inside the
     // BTC/5m window [600, 900): current=600 and next=900. The provider
     // binding's filter must surface those slugs in `[current, next]`
     // order on every `market_slugs()` call.
@@ -105,7 +105,7 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
         .expect("mapping with market identity should succeed");
 
     let polymarket = configs
-        .venues
+        .clients
         .get("polymarket_main")
         .expect("polymarket_main must be present in mapper output");
     let data = polymarket
@@ -141,7 +141,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
     // Build three strategies whose declaration sequence is deliberately
     // NON-MONOTONIC across every likely accidental sort key
     // (strategy_instance_id, configured_target_id, underlying_asset,
-    // cadence_seconds, cadence_slug_token). Any accidental `sort_by`
+    // cadence_secs, cadence_slug_token). Any accidental `sort_by`
     // inside the binding layer would re-order at least one index and
     // trip a per-index slug assertion below.
     let mut second = loaded.strategies[0].clone();
@@ -159,7 +159,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
             "underlying_asset",
             toml::Value::String("LTC".to_string()),
         );
-        set_target_field(first, "cadence_seconds", toml::Value::Integer(900));
+        set_target_field(first, "cadence_secs", toml::Value::Integer(900));
     }
     second.config.strategy_instance_id = "alpha_strategy_main".to_string();
     set_target_field(
@@ -172,7 +172,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
         "underlying_asset",
         toml::Value::String("XRP".to_string()),
     );
-    set_target_field(&mut second, "cadence_seconds", toml::Value::Integer(300));
+    set_target_field(&mut second, "cadence_secs", toml::Value::Integer(300));
 
     third.config.strategy_instance_id = "mike_strategy_main".to_string();
     set_target_field(
@@ -185,7 +185,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
         "underlying_asset",
         toml::Value::String("BTC".to_string()),
     );
-    set_target_field(&mut third, "cadence_seconds", toml::Value::Integer(3600));
+    set_target_field(&mut third, "cadence_secs", toml::Value::Integer(3600));
 
     loaded.strategies.push(second);
     loaded.strategies.push(third);
@@ -203,7 +203,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
         .expect("mapping should succeed");
 
     let polymarket = configs
-        .venues
+        .clients
         .get("polymarket_main")
         .expect("polymarket_main must be present");
     let data = polymarket
@@ -258,9 +258,9 @@ fn market_identity_path_still_rejects_subscribe_new_markets_true() {
 
     let polymarket_data = loaded
         .root
-        .venues
+        .clients
         .get_mut("polymarket_main")
-        .and_then(|venue| venue.data.as_mut())
+        .and_then(|client| client.data.as_mut())
         .and_then(toml::Value::as_table_mut)
         .expect("fixture polymarket data table should exist");
     polymarket_data.insert(
@@ -276,9 +276,9 @@ fn market_identity_path_still_rejects_subscribe_new_markets_true() {
         .expect_err("mapper must not forward subscribe_new_markets=true to NT");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
-            venue_key, field, ..
+            client_key, field, ..
         } => {
-            assert_eq!(venue_key, "polymarket_main");
+            assert_eq!(client_key, "polymarket_main");
             assert_eq!(field, "data.subscribe_new_markets");
         }
         other => panic!("expected ValidationInvariant, got {other}"),
@@ -296,16 +296,14 @@ fn empty_market_identity_plan_installs_no_provider_filter() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let resolved = fixture_resolved_secrets();
 
-    let empty_plan = MarketIdentityPlan {
-        updown_targets: Vec::new(),
-    };
+    let empty_plan = MarketIdentityPlan::empty();
     let clock = fixed_clock(0);
 
     let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &empty_plan, clock)
         .expect("mapping should succeed");
 
     let polymarket = configs
-        .venues
+        .clients
         .get("polymarket_main")
         .expect("polymarket_main must be present");
     let data = polymarket
@@ -342,13 +340,13 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
 
     let counter = Arc::new(AtomicI64::new(601));
     let clock_handle = counter.clone();
-    let clock: BoltV3UpdownNowFn = Arc::new(move || clock_handle.load(Ordering::Relaxed));
+    let clock: BoltV3MarketClockFn = Arc::new(move || clock_handle.load(Ordering::Relaxed));
 
     let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
         .expect("mapping should succeed");
 
     let polymarket = configs
-        .venues
+        .clients
         .get("polymarket_main")
         .expect("polymarket_main must be present");
     let data = polymarket
@@ -384,31 +382,32 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
 }
 
 #[test]
-fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
+fn provider_binding_rejects_updown_target_bound_to_non_polymarket_client() {
     // The binding layer must fail loud if a configured rotating-market
-    // target points at a non-Polymarket venue. Without this guard the
+    // target points at a non-Polymarket client. Without this guard the
     // target would be silently dropped, because filter installation
-    // only runs on the Polymarket branch of the venue iteration.
+    // only runs on the Polymarket branch of the client iteration.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
-    // Mutate the strategy to bind to the Binance reference venue.
-    loaded.strategies[0].config.venue = "binance_reference".to_string();
+    // Mutate the strategy to bind to the Binance reference client.
+    loaded.strategies[0].config.execution_client_id =
+        nautilus_model::identifiers::ClientId::from("binance_reference");
 
     let resolved = fixture_resolved_secrets();
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
     let clock = fixed_clock(0);
 
     let error = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
-        .expect_err("non-polymarket venue binding must fail loud at the adapter boundary");
+        .expect_err("non-polymarket client binding must fail loud at the adapter boundary");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
-            venue_key,
+            client_key,
             field,
             message,
         } => {
-            assert_eq!(venue_key, "binance_reference");
-            assert_eq!(field, "strategy.target.venue_config_key");
+            assert_eq!(client_key, "binance_reference");
+            assert_eq!(field, "strategy.execution_client_id");
             assert!(
                 message.contains("does not support that market family"),
                 "error message should explain the family/provider compatibility boundary: {message}"
@@ -419,32 +418,33 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_venue() {
 }
 
 #[test]
-fn provider_binding_rejects_updown_target_bound_to_unknown_venue() {
-    // A target whose `venue_config_key` does not appear under
-    // `[venues]` is also a misconfiguration the binding layer must
+fn provider_binding_rejects_updown_target_bound_to_unknown_client() {
+    // A target whose `execution_client_id` does not appear under
+    // `[clients]` is also a misconfiguration the binding layer must
     // reject explicitly rather than silently produce no filter.
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
-    loaded.strategies[0].config.venue = "venue_does_not_exist".to_string();
+    loaded.strategies[0].config.execution_client_id =
+        nautilus_model::identifiers::ClientId::from("client_does_not_exist");
 
     let resolved = fixture_resolved_secrets();
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
     let clock = fixed_clock(0);
 
     let error = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
-        .expect_err("unknown venue binding must fail loud at the adapter boundary");
+        .expect_err("unknown client binding must fail loud at the adapter boundary");
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
-            venue_key,
+            client_key,
             field,
             message,
         } => {
-            assert_eq!(venue_key, "venue_does_not_exist");
-            assert_eq!(field, "strategy.target.venue_config_key");
+            assert_eq!(client_key, "client_does_not_exist");
+            assert_eq!(field, "strategy.execution_client_id");
             assert!(
-                message.contains("unknown venue"),
-                "error message should describe the unknown-venue case: {message}"
+                message.contains("unknown client"),
+                "error message should describe the unknown-client case: {message}"
             );
         }
         other => panic!("expected ValidationInvariant, got {other}"),

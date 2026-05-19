@@ -55,7 +55,7 @@ As the maintainer, I can reduce unnecessary serialization without weakening the 
 - #332 has landed in the base, so test-shard topology and the top-level `check-aarch64` lane are active workflow hygiene invariants.
 - #205 has not landed in this base. Same-SHA deploy reuse lint is out of this slice until a reuse path exists.
 - #344 pass-stub behavior has not landed in this base. Required-check stub drift lint is out of this slice until a stub workflow exists.
-- `fmt-check` still needs the managed Rust owner for `just fmt-check`; only managed target-dir resolution is trimmed.
+- `fmt-check` still needs the repo-local managed Rust owner for `just fmt-check`; only managed target-dir resolution is trimmed.
 - The verifier must parse enough GitHub Actions YAML shape for this repo without adding unpinned dependencies.
 
 ## Requirements
@@ -66,7 +66,7 @@ As the maintainer, I can reduce unnecessary serialization without weakening the 
 - **FR-002**: `just ci-lint-workflow` MUST run the CI workflow hygiene verifier self-tests and the verifier.
 - **FR-003**: The verifier MUST require exact current CI job ids: `detector`, `fmt-check`, `deny`, `clippy`, `check-aarch64`, `source-fence`, `test-shards`, `test`, `build`, `gate`, and `deploy`.
 - **FR-004**: The verifier MUST require `gate.needs` and gate result checks for detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, and build.
-- **FR-005**: The verifier MUST require `source-fence` to depend on detector, `test-shards` to depend on detector and source-fence, and aggregate `test` to depend on `test-shards`.
+- **FR-005**: The verifier MUST require `source-fence` to depend on detector, ~~`test-shards` to depend on detector and source-fence~~, and aggregate `test` to depend on `test-shards`. **Superseded by #400** (PR #401): after the #332/#400 sharding+decoupling, the verifier requires `test-archive needs: detector` (and `test-archive must not need source-fence`), `test-shards needs: test-archive`, and aggregate `test needs: test-shards`. The source-fence dep was removed from the test path entirely.
 - **FR-006**: The verifier MUST require `build` to depend on detector and to gate on `needs.detector.outputs.build_required`.
 - **FR-007**: The verifier MUST require `deploy.needs` to include gate, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, and test.
 - **FR-008**: The workflow MUST remove the unnecessary `fmt-check` dependency on detector.

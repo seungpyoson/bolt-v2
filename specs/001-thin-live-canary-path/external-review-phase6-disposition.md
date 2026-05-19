@@ -22,9 +22,9 @@ Reviewed plan artifacts and current main code surfaces for Phase 6 submit admiss
 
 | Provider | Job | Result | Disposition |
 | --- | --- | --- | --- |
-| Claude | `e9a7bcd9-8274-4121-a093-d5ec1ad35641` | `APPROVE` | Plan ready for TDD. Full scope included `src/strategies/eth_chainlink_taker.rs`. |
-| DeepSeek | `job_a7e36397-2c73-45e1-b0c0-7ab9a1604339` | `APPROVE` | Plan ready for TDD. Direct API packet excluded `src/strategies/eth_chainlink_taker.rs` due provider file-size cap. |
-| GLM | `job_bff84adf-a9a9-4058-a83e-e98bc3cac5c4` | `APPROVE` | Plan ready for TDD. Direct API packet excluded `src/strategies/eth_chainlink_taker.rs` due provider file-size cap. |
+| Claude | `e9a7bcd9-8274-4121-a093-d5ec1ad35641` | `APPROVE` | Plan ready for TDD. Full scope included `src/strategies/binary_oracle_edge_taker.rs`. |
+| DeepSeek | `job_a7e36397-2c73-45e1-b0c0-7ab9a1604339` | `APPROVE` | Plan ready for TDD. Direct API packet excluded `src/strategies/binary_oracle_edge_taker.rs` due provider file-size cap. |
+| GLM | `job_bff84adf-a9a9-4058-a83e-e98bc3cac5c4` | `APPROVE` | Plan ready for TDD. Direct API packet excluded `src/strategies/binary_oracle_edge_taker.rs` due provider file-size cap. |
 
 ## PR #324 Implementation Review
 

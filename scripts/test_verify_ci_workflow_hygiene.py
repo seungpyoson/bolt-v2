@@ -29,6 +29,19 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'GEMINI.md'
+      - 'REASONIX.md'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.claude/**'
+      - '.codex/**'
+      - '.gemini/**'
+      - '.opencode/**'
+      - '.pi/**'
+      - '.specify/**'
   push:
     branches: [main]
     tags: ["v*"]
@@ -59,7 +72,6 @@ jobs:
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           lint-workflow-contract: "true"
           toolchain-components: rustfmt
@@ -73,7 +85,6 @@ jobs:
     steps:
       - uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
       - uses: Swatinem/rust-cache@example
@@ -98,7 +109,6 @@ jobs:
     steps:
       - uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           toolchain-components: clippy
           include-managed-target-dir: "true"
@@ -112,7 +122,9 @@ jobs:
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-
       - run: just clippy
 
   check-aarch64:
@@ -130,7 +142,6 @@ jobs:
       - uses: ./.github/actions/setup-environment
         if: needs.detector.outputs.build_required != 'true'
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-build-values: "true"
           use-default-target: "true"
@@ -150,7 +161,9 @@ jobs:
         if: needs.detector.outputs.build_required != 'true'
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-
       - if: needs.detector.outputs.build_required != 'true'
         run: just check-aarch64
 
@@ -162,7 +175,6 @@ jobs:
     steps:
       - uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
@@ -175,12 +187,14 @@ jobs:
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-
       - run: just source-fence
 
   test-archive:
     name: nextest archive
-    needs: [detector, source-fence]
+    needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     env:
@@ -189,7 +203,6 @@ jobs:
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
       - uses: Swatinem/rust-cache@example
@@ -201,10 +214,10 @@ jobs:
           save-if: ${{ github.job == 'test-archive' }}
       - name: Restore nextest archive
         id: nextest-archive-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
       - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
@@ -218,10 +231,10 @@ jobs:
           just test-archive "$NEXTEST_ARCHIVE_PATH"
       - name: Save nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -243,7 +256,6 @@ jobs:
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
@@ -286,7 +298,6 @@ jobs:
     steps:
       - uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-build-values: "true"
           use-default-target: "true"
@@ -301,7 +312,9 @@ jobs:
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-
       - name: Install zig
         run: |
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
@@ -483,7 +496,6 @@ jobs:
         id: setup
         uses: ./.github/actions/setup-environment
         with:
-          claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}
           just-version: ${{ env.JUST_VERSION }}
           include-deny-version: "true"
       - name: Install cargo-deny
@@ -498,8 +510,6 @@ jobs:
 BASE_ACTION = """
 name: Setup Environment
 inputs:
-  claude-config-read-token:
-    required: true
   just-version:
     required: true
   include-deny-version:
@@ -535,12 +545,6 @@ outputs:
     value: ${{ steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}
   rust_verification_owner:
     value: ${{ steps.shared.outputs.rust_verification_owner }}
-  rust_verification_source_repo:
-    value: ${{ steps.shared.outputs.rust_verification_source_repo }}
-  rust_verification_source_sha:
-    value: ${{ steps.shared.outputs.rust_verification_source_sha }}
-  rust_verification_ci_install_script:
-    value: ${{ steps.shared.outputs.rust_verification_ci_install_script }}
   managed_target_dir:
     value: ${{ steps.target_dir.outputs.managed_target_dir }}
   managed_target_dir_relative:
@@ -561,9 +565,6 @@ runs:
       run: |
         echo "rust_toolchain=$(awk -F'\\\"' '/^channel = / {print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
         echo "rust_verification_owner=$(just --evaluate rust_verification_owner)" >> "$GITHUB_OUTPUT"
-        echo "rust_verification_source_repo=$(just --evaluate rust_verification_source_repo)" >> "$GITHUB_OUTPUT"
-        echo "rust_verification_source_sha=$(just --evaluate rust_verification_source_sha)" >> "$GITHUB_OUTPUT"
-        echo "rust_verification_ci_install_script=$(just --evaluate rust_verification_ci_install_script)" >> "$GITHUB_OUTPUT"
         if [ "${{ inputs.include-deny-version }}" = "true" ]; then
           echo "deny_version=$(just --evaluate deny_version)" >> "$GITHUB_OUTPUT"
         fi
@@ -576,12 +577,6 @@ runs:
           echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
           echo "zigbuild_x86_64_unknown_linux_gnu_sha256=$(just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256)" >> "$GITHUB_OUTPUT"
         fi
-    - name: Install managed Rust owner
-      shell: bash
-      env:
-        CLAUDE_CONFIG_READ_TOKEN: ${{ inputs.claude-config-read-token }}
-      run: |
-        bash "${{ steps.shared.outputs.rust_verification_ci_install_script }}" "${{ steps.shared.outputs.rust_verification_source_repo }}" "${{ steps.shared.outputs.rust_verification_source_sha }}"
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}
       id: target_dir
@@ -602,11 +597,11 @@ BASE_NEXTEST_CONFIG = """
 live-node = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'binary(=bolt_v2) & (test(~bolt_v3_client_registration::tests::) | test(~bolt_v3_live_node::tests::) | test(~platform::runtime::tests::))'
+filter = 'binary(=bolt_v2) & (test(~bolt_v3_client_registration::tests::) | test(~bolt_v3_live_node::tests::))'
 test-group = 'live-node'
 
 [[profile.default.overrides]]
-filter = 'binary(=bolt_v3_adapter_mapping) | binary(=bolt_v3_client_registration) | binary(=bolt_v3_controlled_connect) | binary(=bolt_v3_credential_log_suppression) | binary(=bolt_v3_live_canary_gate) | binary(=bolt_v3_readiness) | binary(=bolt_v3_strategy_registration) | binary(=bolt_v3_submit_admission) | binary(=bolt_v3_tiny_canary_operator) | binary(=config_parsing) | binary(=eth_chainlink_taker_runtime) | binary(=lake_batch) | binary(=live_node_run) | binary(=nt_runtime_capture) | binary(=platform_runtime) | binary(=polymarket_bootstrap) | binary(=venue_contract)'
+filter = 'binary(=bolt_v3_adapter_mapping) | binary(=bolt_v3_client_registration) | binary(=bolt_v3_controlled_connect) | binary(=bolt_v3_credential_log_suppression) | binary(=bolt_v3_live_canary_gate) | binary(=bolt_v3_readiness) | binary(=bolt_v3_strategy_registration) | binary(=bolt_v3_submit_admission) | binary(=bolt_v3_tiny_canary_operator) | binary(=config_parsing) | binary(=lake_batch) | binary(=nt_runtime_capture) | binary(=venue_contract)'
 test-group = 'live-node'
 """
 
@@ -771,9 +766,9 @@ def assert_nextest_live_node_group_required() -> None:
         nextest_config=BASE_NEXTEST_CONFIG.replace("test-group = 'live-node'", "test-group = 'other'"),
     )
     assert_error(
-        "missing test(~platform::runtime::tests::)",
+        "missing test(~bolt_v3_live_node::tests::)",
         nextest_config=BASE_NEXTEST_CONFIG.replace(
-            " | test(~platform::runtime::tests::)",
+            " | test(~bolt_v3_live_node::tests::)",
             "",
         ),
     )
@@ -791,9 +786,298 @@ def assert_nextest_live_node_group_covers_bolt_v3_builders() -> None:
         )
 
 
+# Pin-consistency fixtures. The base SHA already appears throughout BASE_WORKFLOW
+# and BASE_ADVISORY_WORKFLOW; SHA_ALT is a different valid 40-hex SHA used to
+# exercise drift, and SHA_BASE_UPPER is the base SHA in uppercase to exercise
+# normalization.
+PIN_CONSISTENCY_SHA_BASE = "3771e22aa892e03fd35585fae288baad1755695c"
+PIN_CONSISTENCY_SHA_ALT = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+PIN_CONSISTENCY_SHA_BASE_UPPER = PIN_CONSISTENCY_SHA_BASE.upper()
+
+
+def assert_pin_consistency_cross_file_mismatch_errors() -> None:
+    """Finding 1: two workflows with different valid SHA pins must report drift."""
+    verifier = load_verifier()
+    advisory_alt = BASE_ADVISORY_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_ALT}",
+    )
+    errors = verifier.verify_workflows(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory_alt},
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    drift_errors = [e for e in errors if "taiki-e/install-action pin drift" in e]
+    if len(drift_errors) < 1:
+        raise AssertionError(
+            f"expected at least one pin-drift error, got: {drift_errors!r} (full: {errors!r})"
+        )
+    drift = drift_errors[0]
+    if PIN_CONSISTENCY_SHA_BASE not in drift or PIN_CONSISTENCY_SHA_ALT not in drift:
+        raise AssertionError(
+            f"pin-drift error must list both SHAs, got: {drift!r}"
+        )
+    if "ci.yml" not in drift or "advisory.yml" not in drift:
+        raise AssertionError(
+            f"pin-drift error must list both files, got: {drift!r}"
+        )
+
+
+def assert_pin_consistency_same_sha_no_error() -> None:
+    """Finding 1: identical SHAs across workflows must not error."""
+    verifier = load_verifier()
+    errors = verifier.verify_workflows(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW},
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    drift_errors = [e for e in errors if "pin drift" in e]
+    if drift_errors:
+        raise AssertionError(
+            f"expected no pin-drift errors for identical SHAs, got: {drift_errors!r}"
+        )
+
+
+def assert_pin_consistency_rejects_mutable_tag() -> None:
+    """Finding 2: mutable tags (e.g. @v2) must fail with a 40-hex SHA message."""
+    verifier = load_verifier()
+    mutable_advisory = BASE_ADVISORY_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        "taiki-e/install-action@v2",
+    )
+    errors = verifier.verify_workflows(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": mutable_advisory},
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    matching = [
+        e
+        for e in errors
+        if "taiki-e/install-action" in e
+        and "40-hex-SHA" in e
+        and "advisory.yml" in e
+    ]
+    if not matching:
+        raise AssertionError(
+            f"expected mutable-tag rejection mentioning '40-hex-SHA' and the file, got: {errors!r}"
+        )
+
+
+def assert_pin_consistency_accepts_uppercase_sha() -> None:
+    """Finding 3: uppercase hex SHAs must be detected AND normalized to lowercase."""
+    verifier = load_verifier()
+    advisory_upper = BASE_ADVISORY_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE_UPPER}",
+    )
+    ci_alt = BASE_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_ALT}",
+    )
+    errors = verifier.verify_workflows(
+        {"ci.yml": ci_alt, "advisory.yml": advisory_upper},
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    drift_errors = [e for e in errors if "taiki-e/install-action pin drift" in e]
+    if not drift_errors:
+        raise AssertionError(
+            f"expected drift error proving uppercase SHA was detected and bucketed, got errors: {errors!r}"
+        )
+    drift = drift_errors[0]
+    if PIN_CONSISTENCY_SHA_BASE_UPPER in drift:
+        raise AssertionError(
+            f"pin-drift error must report normalized lowercase SHA, found uppercase: {drift!r}"
+        )
+    if PIN_CONSISTENCY_SHA_BASE not in drift or PIN_CONSISTENCY_SHA_ALT not in drift:
+        raise AssertionError(
+            f"pin-drift error must list lowercased base SHA and alt SHA, got: {drift!r}"
+        )
+
+
+def assert_pin_consistency_intra_file_mismatch_uses_pin_drift_wording() -> None:
+    """Finding 5: intra-file drift must use 'pin drift:' wording, not 'across workflows'."""
+    verifier = load_verifier()
+    workflow_with_two_pins = BASE_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_ALT}",
+        1,
+    )
+    errors = verifier.verify_workflows(
+        {"ci.yml": workflow_with_two_pins},
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    drift_errors = [e for e in errors if "taiki-e/install-action pin drift:" in e]
+    if not drift_errors:
+        raise AssertionError(
+            f"expected intra-file drift to use 'pin drift:' wording, got: {errors!r}"
+        )
+    if any("across workflows" in e for e in errors):
+        raise AssertionError(
+            f"intra-file drift must not say 'across workflows', got: {errors!r}"
+        )
+
+
+def _replace_advisory_pin_with(replacement: str) -> str:
+    """Replace the first taiki-e/install-action pin in BASE_ADVISORY_WORKFLOW.
+
+    The full `uses: taiki-e/install-action@<sha>` line (without a leading
+    dash — the advisory fixture uses the multi-key step form) is replaced
+    verbatim so callers can inject mutable tags, quoted forms, mismatched
+    quotes, or YAML multi-line scalars without altering surrounding job
+    structure.
+    """
+    original = f"uses: taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}"
+    if original not in BASE_ADVISORY_WORKFLOW:
+        raise RuntimeError(
+            "advisory fixture missing canonical install-action `uses:` line"
+        )
+    return BASE_ADVISORY_WORKFLOW.replace(original, replacement, 1)
+
+
+def assert_pin_consistency_rejects_multi_line_mutable_tag() -> None:
+    """BLOCK 1: multi-line `uses:` with mutable tag must emit malformed-form error."""
+    verifier = load_verifier()
+    multi_line = "uses:\n          taiki-e/install-action@v2"
+    advisory = _replace_advisory_pin_with(multi_line)
+    errors = verifier.verify_install_action_pin_consistency(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory}
+    )
+    matching = [
+        e
+        for e in errors
+        if "advisory.yml:" in e
+        and "40-hex-SHA" in e
+        and "taiki-e/install-action@v2" in e
+    ]
+    if not matching:
+        raise AssertionError(
+            f"expected multi-line @v2 to be flagged with file:line and 40-hex-SHA wording, got: {errors!r}"
+        )
+
+
+def assert_pin_consistency_rejects_multi_line_valid_sha() -> None:
+    """BLOCK 1: multi-line `uses:` with valid SHA still emits error AND does not bucket."""
+    verifier = load_verifier()
+    multi_line = f"uses:\n          taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}"
+    advisory = _replace_advisory_pin_with(multi_line)
+    # ci.yml uses SHA_ALT (single line), advisory uses SHA_BASE (multi-line, malformed).
+    ci_alt = BASE_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_ALT}",
+    )
+    errors = verifier.verify_install_action_pin_consistency(
+        {"ci.yml": ci_alt, "advisory.yml": advisory}
+    )
+    style_errors = [
+        e for e in errors if "advisory.yml:" in e and "40-hex-SHA" in e
+    ]
+    if not style_errors:
+        raise AssertionError(
+            f"expected multi-line valid SHA to be flagged as malformed, got: {errors!r}"
+        )
+    # The malformed multi-line SHA must NOT phantom-bucket: there is only one
+    # well-formed bucket (SHA_ALT in ci.yml), so no drift error should appear.
+    drift_errors = [e for e in errors if "taiki-e/install-action pin drift" in e]
+    if drift_errors:
+        raise AssertionError(
+            f"multi-line SHA must not contribute to the bucket map, got drift: {drift_errors!r}"
+        )
+
+
+def assert_pin_consistency_accepts_double_quoted_sha() -> None:
+    """BLOCK 2: double-quoted valid SHA must not emit a malformed-form error."""
+    verifier = load_verifier()
+    quoted = f'uses: "taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}"'
+    advisory = _replace_advisory_pin_with(quoted)
+    errors = verifier.verify_install_action_pin_consistency(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory}
+    )
+    malformed = [e for e in errors if "advisory.yml:" in e and "40-hex-SHA" in e]
+    if malformed:
+        raise AssertionError(
+            f"double-quoted valid SHA must not be flagged as malformed, got: {malformed!r}"
+        )
+    drift = [e for e in errors if "taiki-e/install-action pin drift" in e]
+    if drift:
+        raise AssertionError(
+            f"double-quoted same SHA must not produce drift, got: {drift!r}"
+        )
+
+
+def assert_pin_consistency_accepts_single_quoted_sha() -> None:
+    """BLOCK 2: single-quoted valid SHA must not emit a malformed-form error."""
+    verifier = load_verifier()
+    quoted = f"uses: 'taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}'"
+    advisory = _replace_advisory_pin_with(quoted)
+    errors = verifier.verify_install_action_pin_consistency(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory}
+    )
+    malformed = [e for e in errors if "advisory.yml:" in e and "40-hex-SHA" in e]
+    if malformed:
+        raise AssertionError(
+            f"single-quoted valid SHA must not be flagged as malformed, got: {malformed!r}"
+        )
+
+
+def assert_pin_consistency_rejects_mismatched_quotes() -> None:
+    """BLOCK 2: mismatched quotes must still fail strictly (backreference)."""
+    verifier = load_verifier()
+    mismatched = f"uses: \"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}'"
+    advisory = _replace_advisory_pin_with(mismatched)
+    errors = verifier.verify_install_action_pin_consistency(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory}
+    )
+    matching = [
+        e
+        for e in errors
+        if "advisory.yml:" in e and "40-hex-SHA" in e
+    ]
+    if not matching:
+        raise AssertionError(
+            f"mismatched quotes must be flagged as malformed, got: {errors!r}"
+        )
+
+
+def assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action() -> None:
+    """NIT C: verify_prebuilt_tool_installs must accept uppercase 40-hex pins.
+
+    Uppercase 40-hex SHAs are valid pins now that the shared regex accepts
+    [0-9a-fA-F]{40}; the broader prebuilt-tool-install check must not emit a
+    'must install ... with pinned taiki-e/install-action' error for them.
+    """
+    verifier = load_verifier()
+    advisory_upper = BASE_ADVISORY_WORKFLOW.replace(
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}",
+        f"taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE_UPPER}",
+    )
+    errors = verifier.verify_prebuilt_tool_installs(advisory_upper, "advisory.yml")
+    pinning_errors = [
+        e
+        for e in errors
+        if "with pinned taiki-e/install-action" in e
+    ]
+    if pinning_errors:
+        raise AssertionError(
+            f"uppercase SHA must be accepted as pinned, got: {pinning_errors!r}"
+        )
+
+
 def main() -> int:
     assert_clean()
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
+    assert_pin_consistency_cross_file_mismatch_errors()
+    assert_pin_consistency_same_sha_no_error()
+    assert_pin_consistency_rejects_mutable_tag()
+    assert_pin_consistency_accepts_uppercase_sha()
+    assert_pin_consistency_intra_file_mismatch_uses_pin_drift_wording()
+    assert_pin_consistency_rejects_multi_line_mutable_tag()
+    assert_pin_consistency_rejects_multi_line_valid_sha()
+    assert_pin_consistency_accepts_double_quoted_sha()
+    assert_pin_consistency_accepts_single_quoted_sha()
+    assert_pin_consistency_rejects_mismatched_quotes()
+    assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(
         "concurrency group must key pull_request runs by PR number",
@@ -1006,8 +1290,8 @@ def main() -> int:
         "check-aarch64 must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
-            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
         ),
     )
     assert_error(
@@ -1046,7 +1330,7 @@ def main() -> int:
         "clippy must use isolated managed target cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}\n",
+            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n",
             "",
         ),
     )
@@ -1179,7 +1463,7 @@ def main() -> int:
         "test-archive must restore nextest archive cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Restore nextest archive\n        id: nextest-archive-cache\n        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0\n",
+            "      - name: Restore nextest archive\n        id: nextest-archive-cache\n        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
             "",
         ),
     )
@@ -1187,7 +1471,7 @@ def main() -> int:
         "test-archive must save nextest archive cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - name: Save nextest archive\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0\n",
+            "      - name: Save nextest archive\n        if: steps.nextest-archive-cache.outputs.cache-hit != 'true'\n        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5\n",
             "",
         ),
     )
@@ -1207,8 +1491,107 @@ def main() -> int:
         "test-archive cache must not use restore-keys",
         replace_once(
             BASE_WORKFLOW,
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}\n      - name: Install cargo-nextest",
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.claude/rust-verification.toml', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
+        ),
+    )
+    # #400: every managed-target cache must declare a restore-keys prefix fallback.
+    assert_error(
+        "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - run: just clippy",
+        ),
+    )
+    assert_error(
+        "check-aarch64 managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-\n      - if: needs.detector.outputs.build_required != 'true'",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - if: needs.detector.outputs.build_required != 'true'",
+        ),
+    )
+    assert_error(
+        "source-fence managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: just source-fence",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - run: just source-fence",
+        ),
+    )
+    assert_error(
+        "build managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-\n      - name: Install zig",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - name: Install zig",
+        ),
+    )
+    # #400 parser tightness: the inline-scalar form of restore-keys is a valid
+    # YAML alternative to the block-scalar (`|`) form. The verifier must accept
+    # both. Uses clippy's block-scalar declaration as the conversion source.
+    assert_clean(
+        workflow=replace_once(
+            BASE_WORKFLOW,
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+        ),
+    )
+    # #400 parser tightness: a restore-keys block-scalar declaring an unrelated
+    # cache family prefix must fail the per-job prefix check.
+    assert_error(
+        "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: |\n            nextest-archive-v1-\n      - run: just clippy",
+        ),
+    )
+    # #400 parser tightness: an empty block-scalar body (no prefix line under
+    # `restore-keys: |`) must not be treated as a satisfied restore-keys.
+    assert_error(
+        "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: |\n      - run: just clippy",
+        ),
+    )
+    # #400 parser tightness: YAML 1.2 §8.1.1 allows a block-scalar header to
+    # carry an explicit indentation indicator (e.g., `|2`, `|-3`, `>+1`) in
+    # addition to the bare/chomping forms. Currently the verifier only
+    # recognises six fixed forms (`|`, `>`, `|-`, `>-`, `|+`, `>+`); any
+    # block-scalar header containing an explicit indentation digit is
+    # silently skipped by the body-scan and the prefix check spuriously
+    # fails on an otherwise-valid restore-keys declaration. The fixture
+    # below switches clippy's `|` marker to `|2` (content indent 12 = 10 + 2
+    # relative to the `restore-keys:` line at indent 10, matching the YAML
+    # 1.2 spec).
+    assert_clean(
+        workflow=replace_once(
+            BASE_WORKFLOW,
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: |2\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+        ),
+    )
+    # #400 parser tightness: the body-scan that locates the `restore-keys:`
+    # marker line uses an unscoped substring match (`"restore-keys:" in
+    # text`) and walks the entire step block from the top. A step-level
+    # `name:` carrying the literal substring `restore-keys:` (which survives
+    # `strip_comment` because the substring is inside a double-quoted
+    # scalar) appears before the real `restore-keys:` input line, so the
+    # body-scan anchors on the wrong line; with `marker_indent` set to the
+    # step-level indent (8), the next line (`with:` at indent 8) ends the
+    # sub-scan immediately, the real block-scalar body (indent 12) is never
+    # consulted, and the prefix check spuriously fails. After the fix, the
+    # body-scan must anchor on the actual `restore-keys:` input line (the
+    # one whose `block_input_items` entry produced the block-scalar marker).
+    assert_clean(
+        workflow=replace_once(
+            BASE_WORKFLOW,
+            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "      - uses: actions/cache@example\n        name: \"Cache with restore-keys: probe\"\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
         ),
     )
     assert_error(
@@ -1247,16 +1630,16 @@ def main() -> int:
         "test-archive needs detector",
         replace_once(
             BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
-            "  test-archive:\n    name: nextest archive\n    needs: source-fence",
+            "  test-archive:\n    name: nextest archive\n    needs: detector",
+            "  test-archive:\n    name: nextest archive\n    needs: fmt-check",
         ),
     )
     assert_error(
-        "test-archive needs source-fence",
+        "test-archive must not need source-fence",
         replace_once(
             BASE_WORKFLOW,
-            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
             "  test-archive:\n    name: nextest archive\n    needs: detector",
+            "  test-archive:\n    name: nextest archive\n    needs: [detector, source-fence]",
         ),
     )
     assert_error(
@@ -1321,6 +1704,54 @@ def main() -> int:
     )
     for job in ("fmt-check", "deny", "clippy", "source-fence", "test-archive", "test-shards", "test"):
         assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))
+    assert_error(
+        "fmt-check must run just fmt-check",
+        replace_once(BASE_WORKFLOW, "- run: just fmt-check", "- run: echo skip fmt-check"),
+    )
+    assert_error(
+        "deny must run just deny",
+        replace_once(BASE_WORKFLOW, "- run: just deny", "- run: echo skip deny"),
+    )
+    assert_error(
+        "clippy must run just clippy",
+        replace_once(BASE_WORKFLOW, "- run: just clippy", "- run: echo skip clippy"),
+    )
+    assert_error(
+        "build must run just build",
+        replace_once(BASE_WORKFLOW, "- run: just build", "- run: echo skip build"),
+    )
+    assert_error(
+        "pull_request paths-ignore must match baseline",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - '.specify/**'\n",
+            "      - '.specify/**'\n      - 'docs/**'\n",
+        ),
+    )
+    assert_error(
+        "pull_request paths-ignore must match baseline",
+        replace_once(BASE_WORKFLOW, "      - '.claude/**'\n", ""),
+    )
+    assert_error(
+        "pull_request paths-ignore must match baseline",
+        replace_once(BASE_WORKFLOW, "      - '.specify/**'\n", ""),
+    )
+    assert_error(
+        "pull_request paths-ignore must match baseline",
+        replace_once(
+            BASE_WORKFLOW,
+            "    branches: [main]\n    paths-ignore:\n",
+            "    branches: [main]\n    # paths-ignore:\n",
+        ),
+    )
+    assert_error(
+        "on.push must have no paths-ignore",
+        replace_once(
+            BASE_WORKFLOW,
+            '  push:\n    branches: [main]\n    tags: ["v*"]\n',
+            '  push:\n    branches: [main]\n    tags: ["v*"]\n    paths-ignore:\n      - \'docs/**\'\n',
+        ),
+    )
     assert_error(
         "build needs detector",
         replace_once(
@@ -1402,17 +1833,6 @@ def main() -> int:
     assert_workflows_error(
         "advisory.yml advisories must include deny version",
         {"ci.yml": BASE_WORKFLOW, "advisory.yml": replace_once(BASE_ADVISORY_WORKFLOW, '          include-deny-version: "true"\n', "")},
-    )
-    assert_workflows_error(
-        "advisory.yml advisories setup token must come from secrets.CLAUDE_CONFIG_READ_TOKEN",
-        {
-            "ci.yml": BASE_WORKFLOW,
-            "advisory.yml": replace_once(
-                BASE_ADVISORY_WORKFLOW,
-                "claude-config-read-token: ${{ secrets.CLAUDE_CONFIG_READ_TOKEN }}",
-                "claude-config-read-token: ${{ secrets.OTHER_TOKEN }}",
-            ),
-        },
     )
     assert_workflows_error(
         "advisory.yml advisories must use setup.outputs.deny_version",
@@ -2245,8 +2665,8 @@ def main() -> int:
         "clippy must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
-            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.claude/rust-verification.toml', 'justfile') }}",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
         ),
     )
     assert_error(
@@ -2275,15 +2695,19 @@ def main() -> int:
         action=replace_once(
             replace_once(
                 BASE_ACTION,
-                "    - name: Lint workflow contract",
-                "    - name: Moved lint workflow contract",
+                """    - name: Lint workflow contract
+      if: ${{ inputs.lint-workflow-contract == 'true' }}
+      shell: bash
+      run: just ci-lint-workflow
+""",
+                "",
             ),
-            "    - name: Install managed Rust owner",
+            "    - name: Resolve managed target dir",
             """    - name: Lint workflow contract
       if: ${{ inputs.lint-workflow-contract == 'true' }}
       shell: bash
       run: just ci-lint-workflow
-    - name: Install managed Rust owner""",
+    - name: Resolve managed target dir""",
         ),
     )
     assert_error(

@@ -176,14 +176,14 @@ These are not implementation steps yet. They are the minimum red-test seams impl
 
 1. Parser/active-process tests for listed wrapper residuals, including bundled/separated `env -iu` forms, `rustup run` single and repeated `--` variants, `cargo +TOOLCHAIN`, shell aliases/functions/builtins, and `cargo install`.
 2. Source-fence or verifier test that rejects raw Cargo in `.no-mistakes.yaml`.
-3. Test that generic managed `cargo -- clean` refuses or is redirected to a dedicated exclusive path when active related processes exist.
+3. Test that generic managed `cargo clean`, invoked through `scripts/rust_verification.py cargo ... -- clean`, refuses or is redirected to a dedicated exclusive path when active related processes exist.
 4. Test that any proposed no-mistakes verification path uses managed commands or exact-head CI evidence, never a worktree-local target.
 5. Test that S3 is rejected as an active mutable target cache.
 6. Classification tests for `CARGO_TARGET_TMPDIR`, `CARGO_INCREMENTAL`, `CARGO_INSTALL_ROOT`, and `--out-dir` / `--artifact-dir` output overrides.
 
-## Completion Criteria For T011/T012
+## Acceptance Gate Before #374 Implementation
 
-T011/T012 can be checked only after:
+#374 implementation remains blocked until:
 
 1. This enumeration is reviewed for gaps and overlaps.
 2. The live #374 body contains or links to the pinned enumeration, per #374 acceptance update.

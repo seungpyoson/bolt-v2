@@ -6,6 +6,8 @@
 
 **Note**: This checklist is generated from `/speckit-checklist` intent. It tests the requirements writing and evidence plan, not implementation behavior.
 
+**Issue-ledger note**: Issue #409 tracks PortfolioSnapshot observability and must be explicit in readiness ledgers when observability evidence is claimed. Issue #360 is closed historical tiny-canary tracking, but that closure is not evidence that T046 produced a tiny-capital canary artifact.
+
 ## Requirement Completeness
 
 - [ ] CHK001 Are production-grade readiness requirements explicitly separated from tiny-capital canary proof, with success criteria for both stated independently? [Completeness, Spec §User Story 5, SC-006, Plan §Scale/Scope]
@@ -21,7 +23,7 @@
 - [ ] CHK008 Are source-level trace requirements explicit enough to prove there is no alternate submit, cancel-as-submit, direct `LiveNode::run`, legacy runtime, environment-secret, or adapter-bypass path? [Traceability, FR-001, FR-002, FR-003, FR-004, FR-009]
 - [ ] CHK009 Are provider, market-family, strategy, reference-data, and admission registries required to expose enough metadata for a reviewer to trace concrete config selections without hardcoded BTC, Binance, Polymarket, Chainlink, or one market family in core logic? [Traceability, FR-005, FR-006, FR-007, FR-008]
 - [ ] CHK010 Are readiness and canary artifacts required to include exact commit SHA, executable identity, config bundle checksum, report `generated_at_unix_seconds`, TOML-owned report max age, SSM manifest hash, strategy-input hash, financial envelope hash, operator approval id hash, operator approval window, and produced artifact SHA? [Completeness, Spec §Key Entities, Quickstart §Tiny-capital Canary]
-- [ ] CHK011 Are issue and PR traceability requirements defined so every blocker discovered during live-readiness tracing has a durable issue link, owner, evidence, and acceptance gate? [Gap, User Goal]
+- [ ] CHK011 Are issue and PR traceability requirements defined so every blocker discovered during live-readiness tracing has a durable issue link, owner, evidence, and acceptance gate, including explicit #409 PortfolioSnapshot ledger state? [Gap, User Goal]
 
 ## Requirement Clarity
 
@@ -41,7 +43,7 @@
 ## Acceptance Criteria Quality
 
 - [ ] CHK021 Can SC-005 be objectively evaluated from the readiness report fields, NT logs, and artifact hashes without relying on a successful process exit alone? [Acceptance Criteria, SC-005]
-- [ ] CHK022 Can SC-006 be objectively evaluated from redacted artifacts that bind live order count, notional cap, NT submit evidence, venue state, cancel if needed, and restart reconciliation to the same run? [Acceptance Criteria, SC-006]
+- [ ] CHK022 Can SC-006 be objectively evaluated from redacted artifacts that bind live order count, notional cap, NT submit evidence, venue state, cancel if needed, and restart reconciliation to the same run, without treating #360 closure as T046 proof? [Acceptance Criteria, SC-006]
 - [ ] CHK023 Are pass/fail criteria defined for each live-readiness blocker class: schema/config, SSM, build features, adapter protocol, reference cache, gate linkage, submit admission, venue response, cancel, and restart reconciliation? [Gap]
 - [ ] CHK024 Are requirements explicit that local mock tests, fixture reports, or source fences are supporting evidence only and cannot replace real SSM/venue/operator artifacts? [Acceptance Criteria, Spec §User Story 4, Spec §User Story 5]
 - [ ] CHK025 Are escalation criteria specified for when a blocker requires upstream NT changes rather than Bolt-side workaround code? [Acceptance Criteria, Spec §Edge Cases, FR-011]
@@ -59,7 +61,7 @@
 - [ ] CHK031 Are assumptions about Binance SBE schema compatibility, Polymarket transport backend availability, and Chainlink/reference source availability documented as live-readiness dependencies rather than implicit code facts? [Assumption, Gap]
 - [ ] CHK032 Are AWS account, region, SSM KMS key, parameter versioning, and permission requirements documented without exposing credential values? [Dependency, FR-004]
 - [ ] CHK033 Are operator approval boundaries specified for SSM mutation, no-submit connectivity, tiny-capital submit, production-cap submit, issue/PR mutation, approval-window expiry, nonce consumption, and replay rejection? [Dependency, Quickstart §Tiny-capital Canary]
-- [ ] CHK034 Is a production-readiness issue backlog required to remain open until each end-to-end blocker has current evidence and a passing gate? [Dependency, User Goal]
+- [ ] CHK034 Is a production-readiness issue backlog required to remain open until each end-to-end blocker has current evidence and a passing gate, and do closed historical issues such as #360 avoid implying T046 completion? [Dependency, User Goal]
 
 ## TDD And Verification Discipline
 

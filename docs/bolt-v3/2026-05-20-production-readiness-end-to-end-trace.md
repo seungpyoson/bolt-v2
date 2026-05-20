@@ -13,9 +13,14 @@ Purpose: give reviewers and operators a concrete code-path map for live trade re
 
 Related tracking:
 
-- Tiny-canary proof chain: issue #360
+- Tiny-canary historical gap tracker: issue #360 (closed). Closure is not proof
+  that T046 completed; only a redacted tiny-capital canary artifact on the exact
+  reviewed head can satisfy T046.
 - Production-grade readiness beyond tiny canary: issue #369
 - Real no-order connectivity blocker: issue #385
+- PortfolioSnapshot observability tracker: issue #409 (open on 2026-05-20).
+  This PR adds source-level capture, but the issue remains an issue-ledger item
+  until exact-head verification and approved issue mutation record the new state.
 - PR carrying this trace/control surface: PR #388
 
 ## Current Verdict
@@ -158,6 +163,8 @@ Current live-operator evidence:
 Current hard evidence:
 
 - T046 remains unchecked in `specs/001-thin-live-canary-path/tasks.md:110`.
+- Issue #360 is closed, but that closure is only historical tracking state and
+  is not accepted as T046 evidence.
 - No tiny-capital canary artifact was produced in this trace.
 - Therefore no production-grade readiness claim is supported.
 
@@ -175,6 +182,16 @@ Issue #369 remains the production-grade control issue. The new Speckit checklist
 - repeated-live operation;
 - monitoring, deploy provenance, and rollback;
 - TDD and exact-head verification discipline.
+
+## Issue Ledger Mutation Status
+
+No GitHub issue mutation was performed by this trace update. Required issue
+ledger updates remain blocked operator actions until explicitly approved:
+
+- Update issue #409 with the exact PR/head verification that proves
+  PortfolioSnapshot capture is represented in source, docs, and verifier gates.
+- Add or update successor/context links explaining that issue #360 closure does
+  not complete T046 and does not prove a tiny-capital canary artifact exists.
 
 ## Next TDD Slices
 

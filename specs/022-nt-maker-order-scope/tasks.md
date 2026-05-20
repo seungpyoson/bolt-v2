@@ -54,20 +54,20 @@ T002 disposition: commit `97cbf828423578e09a604bf31bdaa91ec3573df3` is kept only
 
 - [x] T022 [US3] Run ai-slop-cleaner pass scoped to changed files and remove needless abstraction, duplication, or speculative code
 - [x] T023 [US3] Run full verification from `specs/022-nt-maker-order-scope/quickstart.md`
-- [ ] T024 [P] [US3] Run post-implementation Claude audit and record verdict or block reason
-- [ ] T025 [P] [US3] Run post-implementation Gemini audit and record verdict or block reason
-- [ ] T026 [P] [US3] Run post-implementation Kimi audit and record verdict or block reason
-- [ ] T027 [P] [US3] Run post-implementation DeepSeek audit and record verdict or block reason
-- [ ] T028 [P] [US3] Run post-implementation GLM audit and record verdict or block reason
-- [ ] T029 [US3] Resolve or document every audit finding before commit
+- [ ] T024 [P] [US3] Run post-implementation Claude audit after exact PR head CI is green and record verdict or block reason
+- [ ] T025 [P] [US3] Run post-implementation Gemini audit after exact PR head CI is green and record verdict or block reason
+- [ ] T026 [P] [US3] Run post-implementation Kimi audit after exact PR head CI is green and record verdict or block reason
+- [ ] T027 [P] [US3] Run post-implementation DeepSeek audit after exact PR head CI is green and record verdict or block reason
+- [ ] T028 [P] [US3] Run post-implementation GLM audit after exact PR head CI is green and record verdict or block reason
+- [ ] T029 [US3] Resolve or document every audit finding before merge/readiness completion
 
 ## Phase 6: Commit And Push
 
 **Purpose**: Publish only after gates pass.
 
-- [ ] T030 Ensure `git status --short` contains only intended files
-- [ ] T031 Commit with a scope-accurate message
-- [ ] T032 Push `codex/maker-order-proof`
+- [x] T030 Ensure `git status --short` contains only intended files
+- [x] T031 Commit with a scope-accurate message
+- [x] T032 Push `codex/maker-order-proof-clean`
 
 ## Dependencies & Execution Order
 
@@ -75,8 +75,9 @@ T002 disposition: commit `97cbf828423578e09a604bf31bdaa91ec3573df3` is kept only
 - Phase 2 blocks implementation.
 - Phase 3 blocks implementation.
 - Phase 4 must follow TDD red before green.
-- Phase 5 blocks commit/push.
-- Phase 6 happens only after verification and audit gates pass.
+- T022-T023 block commit/push.
+- T024-T029 are post-push audit gates and remain blocked until exact PR head CI is green, per the repository review bar.
+- Phase 6 happens after T023 so external reviewers can review an exact pushed head.
 
 ## Parallel Opportunities
 
@@ -90,4 +91,5 @@ T002 disposition: commit `97cbf828423578e09a604bf31bdaa91ec3573df3` is kept only
 1. Finish blocking investigation tasks.
 2. Run pre-implementation adversarial quorum.
 3. Replay or implement only task-approved maker scope with red/green evidence.
-4. Audit, verify, commit, push.
+4. Verify, commit, and push the exact clean head.
+5. Run post-push audit only after the exact PR head CI is green.

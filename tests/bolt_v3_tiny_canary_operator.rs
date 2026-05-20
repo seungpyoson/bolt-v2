@@ -1917,8 +1917,16 @@ fn phase8_required_sha256_env(name: &str) -> anyhow::Result<String> {
     Ok(value)
 }
 
+#[test]
+fn phase8_sha256_shape_rejects_uppercase_hex() {
+    assert!(!phase8_is_sha256_hex(&"A".repeat(64)));
+}
+
 fn phase8_is_sha256_hex(value: &str) -> bool {
-    value.len() == 64 && value.chars().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn phase8_assert_path_starts_with(path: &str, base: &str, label: &str) -> anyhow::Result<()> {

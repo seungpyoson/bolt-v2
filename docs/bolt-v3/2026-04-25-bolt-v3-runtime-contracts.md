@@ -90,6 +90,8 @@ Current `updown` readiness gates:
 - if the Chainlink Data Streams report is missing, non-numeric, non-positive, or ambiguous, live validation fails for order readiness
 - no readiness check may use broad Gamma polling, standalone market-selection services, midpoint/spot/question/threshold fallback, or strategy-side discovery HTTP
 
+Implementation status: this Chainlink anchor is the runtime contract target, not current production-readiness proof. The current bolt-v3 provider binding surface registers Polymarket and Binance only; Chainlink data-feed binding and real no-submit evidence remain required before any Chainlink-dependent live readiness claim.
+
 Market-selection validation result classes:
 
 - no currently selectable `active_or_next` market is a live operational warning
@@ -275,13 +277,14 @@ Current `updown` slug derivation rule:
 
 - slug format: `"{underlying_asset_lowercase}-updown-{cadence_slug_token}-{period_start_unix_secs}"`
 - `cadence_slug_token` is a runtime-contract-defined token for `cadence_secs`
-- currently defined mappings:
+- currently defined explicit contract mappings:
   - `60` -> `1m`
   - `300` -> `5m`
   - `900` -> `15m`
   - `3600` -> `1h`
   - `14400` -> `4h`
 - any other `cadence_secs` value is unsupported until this runtime contract defines its slug token
+- this table is the accepted updown contract surface, not a fallback or discovery path; runtime must reject values absent from it
 - `now_unix_secs` comes from the NautilusTrader node clock
 - `current_period_start_unix_secs = floor(now_unix_secs / cadence_secs) * cadence_secs`
 - `next_period_start_unix_secs = current_period_start_unix_secs + cadence_secs`
@@ -832,14 +835,15 @@ Definitions:
   - the exact deployed release directory name selected by deploy automation
   - current deployment rule: release directory names are the git commit SHA string for the built artifact
 - `config_hash`
-  - SHA-256 of the concatenation of:
-    1. root-file bytes with line endings normalized to LF
-    2. each listed strategy-file bytes in root `strategy_files` order, with line endings normalized to LF
-  - if a file starts with a UTF-8 byte order mark, strip it before hashing
-  - each normalized file byte sequence is hashed as if it ends with exactly one LF
-  - files are concatenated with no separator
-  - the emitted digest is lowercase hexadecimal
-  - file paths are not included
+  - when emitted by bolt-v3 decision evidence, this must equal the loaded config bundle checksum used by no-submit readiness and live-canary gate linkage
+  - SHA-256 over the exact loaded TOML text bytes after UTF-8 decoding, with no line-ending normalization, BOM stripping, path rewriting, or separator-free concatenation
+  - hash framing:
+    1. domain separator bytes `bolt-v3.config-bundle.v1\n`
+    2. big-endian `u32` entry count, equal to root entry plus strategy-file entries
+    3. root entry with kind byte `0`, key `root`, key length as big-endian `u32`, content length as big-endian `u64`, then root TOML bytes
+    4. strategy entries sorted by configured relative path string, each with kind byte `1`, relative-path key, key length as big-endian `u32`, content length as big-endian `u64`, then strategy TOML bytes
+  - emitted digest is lowercase hexadecimal
+  - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
   - current value: `7c2aafb30fb143069c915a3f2057bb12174405f6`

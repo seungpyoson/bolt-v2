@@ -189,14 +189,14 @@ rotation_kind = "none"
 [live_canary]
 approval_id = "operator-approved-canary-001"
 no_submit_readiness_report_path = "reports/no-submit-readiness.json"
-max_no_submit_readiness_report_bytes = 4096
+max_no_submit_readiness_report_bytes = 65536
 readiness_report_max_age_seconds = 300
 max_live_order_count = 1
 max_notional_per_order = "1.00"
 
 [live_canary.operator_evidence]
 head_sha = "0123456789abcdef0123456789abcdef01234567"
-max_operator_evidence_file_bytes = 4096
+max_operator_evidence_file_bytes = 65536
 approval_consumption_max_age_seconds = 60
 approval_envelope_path = "operator-evidence/approval-envelope.json"
 approval_envelope_sha256 = "9999999999999999999999999999999999999999999999999999999999999999"
@@ -1650,14 +1650,14 @@ rotation_kind = "none"
 [live_canary]
 approval_id = "operator-approved-canary-001"
 no_submit_readiness_report_path = "reports/no-submit-readiness.json"
-max_no_submit_readiness_report_bytes = 4096
+max_no_submit_readiness_report_bytes = 65536
 readiness_report_max_age_seconds = 300
 max_live_order_count = 1
 max_notional_per_order = "1.00"
 
 [live_canary.operator_evidence]
 head_sha = "0123456789abcdef0123456789abcdef01234567"
-max_operator_evidence_file_bytes = 4096
+max_operator_evidence_file_bytes = 65536
 approval_consumption_max_age_seconds = 60
 approval_envelope_path = "operator-evidence/approval-envelope.json"
 approval_envelope_sha256 = "9999999999999999999999999999999999999999999999999999999999999999"

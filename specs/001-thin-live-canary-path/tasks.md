@@ -173,11 +173,11 @@ blockers, not as deferred approval to trade.
 - [x] T074 [US5] After T073, run `git diff --check` and `just source-fence`, then rerun scoped config/schema/docs re-review before push or external review.
 - [x] T075 [US5] Diagnose exact-head PR #388 CI clippy and gate failures with `gh pr checks 388 --repo seungpyoson/bolt-v2` plus failed job logs before editing `build.rs`.
 - [x] T076 [US5] Fix the exact clippy failures in `build.rs` and `src/bolt_v3_live_canary_gate.rs`, run `just clippy`, `git diff --check`, and `cargo test --test bolt_v3_live_canary_gate -- --nocapture`.
-- [ ] T077 [US5] Push the clippy-fix commit, re-check PR #388 exact-head CI is green, then start external quorum review.
+- [x] T077 [US5] Push the clippy-fix commit, re-check PR #388 exact-head CI is green, then start external quorum review.
 - [x] T078 [US5] Review all Greptile PR #388 comments, then either patch and reply/resolve or disprove each comment with file/line and test evidence.
 - [x] T079 [US5] Fix external-review consensus safety hardening in `src/bolt_v3_live_canary_gate.rs`, `src/bolt_v3_live_node.rs`, `tests/bolt_v3_live_canary_gate.rs`, and `tests/bolt_v3_tiny_canary_operator.rs`: reject symlinked no-submit readiness reports, fail closed on no-submit timeout sum overflow, and remove duplicate JSON keys from the unapproved-strategy-hash test.
-- [ ] T080 [US5] Reconcile external-review docs/ledger concerns: Chainlink provider availability vs runtime contracts, Phase 8 harness-only `BOLT_V3_PHASE8_*` env vars, PR #331 historical-anchor wording, P5 cadence-table wording, and runtime-contract freshness wording.
-- [ ] T081 [US5] After pushing T079, re-check PR #388 exact-head CI and retry Kimi on narrowed exact-head shards because the prior full-diff Kimi run timed out.
+- [x] T080 [US5] Reconcile external-review docs/ledger concerns: Chainlink provider availability vs runtime contracts, Phase 8 harness-only `BOLT_V3_PHASE8_*` env vars, PR #331 historical-anchor wording, P5 cadence-table wording, and runtime-contract freshness wording.
+- [x] T081 [US5] After pushing T079, re-check PR #388 exact-head CI and retry Kimi on narrowed exact-head shards because the prior full-diff Kimi run timed out.
 - [x] T082 [US5] Address Greptile post-`49d8ea3a` comments: remove broad `.git` build-script rerun trigger, align live-canary approval-consumption test fixture timestamps, and reply/resolve or disprove remaining review threads.
 - [x] T083 [US5] Address Greptile post-`26c83db4` P1 comments: bind `approval_envelope_path` content via `approval_envelope_sha256`, bind client/venue order hashes into approval-consumption proof validation, and avoid re-aging approval consumption during late TOCTOU revalidation while still checking the approval window.
 - [x] T084 [US5] Address local code-quality review follow-up: add a call-site regression test proving late live-canary gate revalidation still rejects an expired operator approval window without re-aging approval-consumption freshness.
@@ -186,6 +186,10 @@ blockers, not as deferred approval to trade.
 - [x] T087 [US5] Address Greptile post-`d9258272` style finding: remove dead `satisfied_stage_names` bookkeeping from no-submit readiness required-stage validation.
 - [x] T088 [US5] Address Greptile post-`ef72cd7b` style findings: clarify the standalone approval-consumption window guard and make bounded-read cap errors caller-neutral, then reply with the current `read_report_bytes_with_limit` call-path evidence.
 - [x] T089 [US5] Address Greptile post-`a3314e8e` documentation findings: document the second operator-evidence re-read/re-hash intent and late timestamp freshness headroom, then reply with code/doc evidence.
+- [x] T090 [US5] Address external-review checksum/docs drift: align `config_hash` prose with the actual framed `config_bundle_checksum`, clarify Chainlink provider availability vs runtime-contract target, mark `BOLT_V3_PHASE8_*` values as harness-only, clarify accepted updown cadence-table semantics, and align live-canary byte-cap examples.
+- [x] T091 [US5] Add TDD regression coverage proving a missing operator evidence file fails closed as `OperatorEvidenceRead` before hashing.
+- [x] T092 [US5] Add TDD regression coverage proving Phase 8 sha256 helpers reject uppercase hex and align helper behavior with the production live-canary gate.
+- [ ] T093 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run external-review consensus for the T080/T090-T092 slice.
 
 ## Out Of Scope For MVP
 

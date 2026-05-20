@@ -682,6 +682,24 @@ async fn live_canary_gate_rejects_oversized_approval_consumption_before_reading_
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_missing_operator_evidence_file_before_hashing() {
+    let mut operator_evidence = valid_operator_evidence();
+    let missing = std::path::Path::new(&operator_evidence.ssm_manifest_path)
+        .with_file_name("missing-ssm-manifest.json");
+    operator_evidence.ssm_manifest_path = missing.to_string_lossy().to_string();
+
+    let error = check_operator_evidence_rejection(operator_evidence, "ssm_manifest_sha256").await;
+
+    match error {
+        BoltV3LiveCanaryGateError::OperatorEvidenceRead { field, source, .. } => {
+            assert_eq!(field, "ssm_manifest_sha256");
+            assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+        }
+        other => panic!("expected missing operator evidence read rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_non_regular_operator_evidence_path() {
     let mut operator_evidence = valid_operator_evidence();
     let target = std::path::Path::new(&operator_evidence.ssm_manifest_path);

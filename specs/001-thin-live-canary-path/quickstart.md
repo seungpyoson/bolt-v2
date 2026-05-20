@@ -92,6 +92,9 @@ Preconditions:
 - max live order count and notional cap configured in TOML
 
 Required operator artifact environment:
+
+These `BOLT_V3_PHASE8_*` values are harness-only operator artifact inputs for the ignored tiny-canary proof path. They are not a production secret backend, not a runtime config fallback, and do not replace TOML-owned `[live_canary.operator_evidence]` fields or SSM-backed credential resolution.
+
 - `BOLT_V3_PHASE8_HEAD_SHA`
 - `BOLT_V3_PHASE8_ROOT_TOML_PATH`
 - `BOLT_V3_PHASE8_ROOT_TOML_SHA256`

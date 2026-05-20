@@ -136,9 +136,33 @@ reason = "This enforces positive GTD expiry nanos before calling the NT order fa
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "number"
 literal = '''0'''
+context = '''|| entry.expire_time_unix_nanos.is_some_and(|value| value > 0));'''
+classification = "nt_order_model_invariant"
+reason = "This enforces positive GTD expiry nanos before calling the NT order factory; the expiry value itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0'''
 context = '''&& exit.expire_time_unix_nanos.is_some_and(|value| value > 0);'''
 classification = "nt_order_model_invariant"
 reason = "This enforces positive GTD expiry nanos before calling the NT order factory; the expiry value itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0'''
+context = '''|| exit.expire_time_unix_nanos.is_some_and(|value| value > 0));'''
+classification = "nt_order_model_invariant"
+reason = "This enforces positive GTD expiry nanos before calling the NT order factory; the expiry value itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trigger_price"'''
+context = '''insert_float(&mut order_table, "trigger_price", trigger_price);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT stop-order trigger price field projected from TOML into the runtime strategy config."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -2956,6 +2980,22 @@ literal = '''"expire_time_unix_nanos"'''
 context = '''const ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD: &str = "expire_time_unix_nanos";'''
 classification = "strategy_config_field_name"
 reason = "This is the stable NT order expiry field label used in validation diagnostics; the timestamp value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trigger_price"'''
+context = '''const ORDER_TRIGGER_PRICE_FIELD: &str = "trigger_price";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT stop-order trigger price field label used in validation diagnostics; the price value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"{prefix}_order_type supports `limit`, `market`, or `stop_market`, got `{order_type:?}`"'''
+context = '''"{prefix}_order_type supports `limit`, `market`, or `stop_market`, got `{order_type:?}`"'''
+classification = "strategy_config_error_message"
+reason = "This is a stable validation diagnostic naming the NT factory variants enabled by this slice, not an operator runtime value."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"

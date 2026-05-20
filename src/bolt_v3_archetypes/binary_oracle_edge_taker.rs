@@ -19,8 +19,9 @@
 //!    - the supported `[parameters.entry_order]` and
 //!      `[parameters.exit_order]` combinations: taker limit/FOK or
 //!      market/IOC where applicable, maker limit/GTC with
-//!      `is_post_only=true`, and limit/GTD with an explicit
-//!      `expire_time_unix_nanos`.
+//!      `is_post_only=true`, limit/GTD with an explicit
+//!      `expire_time_unix_nanos`, and stop-market with an explicit
+//!      `trigger_price`.
 //!
 //! Core startup validation in `crate::bolt_v3_validate` keeps target-
 //! shape and per-role reference-data structural checks structural and
@@ -112,6 +113,7 @@ pub struct OrderParams {
     pub order_type: OrderType,
     pub time_in_force: TimeInForce,
     pub expire_time_unix_nanos: Option<u64>,
+    pub trigger_price: Option<Decimal>,
     pub is_post_only: bool,
     pub is_reduce_only: bool,
     pub is_quote_quantity: bool,
@@ -691,6 +693,16 @@ fn insert_order_config(
             expire_time_unix_nanos,
         )?;
     }
+    if let Some(trigger_price) = order.trigger_price {
+        let trigger_price = trigger_price.to_f64().ok_or_else(|| {
+            BinaryOracleEdgeTakerRuntimeConfigError::Numeric {
+                strategy_instance_id: strategy_instance_id.to_string(),
+                field: "trigger_price",
+                value: trigger_price.to_string(),
+            }
+        })?;
+        insert_float(&mut order_table, "trigger_price", trigger_price);
+    }
     insert_bool(&mut order_table, "is_post_only", order.is_post_only);
     insert_bool(&mut order_table, "is_reduce_only", order.is_reduce_only);
     insert_bool(
@@ -828,6 +840,7 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
     let taker_limit_fok = (OrderType::Limit, TimeInForce::Fok, false, false, false);
     let maker_limit_gtc = (OrderType::Limit, TimeInForce::Gtc, true, false, false);
     let gtd_limit = (OrderType::Limit, TimeInForce::Gtd, false, false);
+    let stop_market = (OrderType::StopMarket, false, false, false);
     let actual = (
         entry.order_type,
         entry.time_in_force,
@@ -842,10 +855,21 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
         entry.is_quote_quantity,
     ) == gtd_limit
         && entry.expire_time_unix_nanos.is_some_and(|value| value > 0);
-    if actual != taker_limit_fok && actual != maker_limit_gtc && !is_gtd_limit {
+    let is_stop_market = (
+        entry.order_type,
+        entry.is_post_only,
+        entry.is_reduce_only,
+        entry.is_quote_quantity,
+    ) == stop_market
+        && entry
+            .trigger_price
+            .is_some_and(|value| value > Decimal::ZERO)
+        && (entry.time_in_force != TimeInForce::Gtd
+            || entry.expire_time_unix_nanos.is_some_and(|value| value > 0));
+    if actual != taker_limit_fok && actual != maker_limit_gtc && !is_gtd_limit && !is_stop_market {
         vec![format!(
             "{context}: parameters.entry_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only order_type=limit with time_in_force=fok, time_in_force=gtc plus is_post_only=true, or time_in_force=gtd plus expire_time_unix_nanos is allowed; \
+             only order_type=limit with time_in_force=fok, time_in_force=gtc plus is_post_only=true, time_in_force=gtd plus expire_time_unix_nanos, or order_type=stop_market plus trigger_price is allowed; \
              is_reduce_only=false and is_quote_quantity=false are required"
         )]
     } else {
@@ -857,6 +881,7 @@ fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String
     let taker_market_ioc = (OrderType::Market, TimeInForce::Ioc, false, false, false);
     let maker_limit_gtc = (OrderType::Limit, TimeInForce::Gtc, true, false, false);
     let gtd_limit = (OrderType::Limit, TimeInForce::Gtd, false, false);
+    let stop_market = (OrderType::StopMarket, false, false, false);
     let actual = (
         exit.order_type,
         exit.time_in_force,
@@ -871,10 +896,21 @@ fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String
         exit.is_quote_quantity,
     ) == gtd_limit
         && exit.expire_time_unix_nanos.is_some_and(|value| value > 0);
-    if actual != taker_market_ioc && actual != maker_limit_gtc && !is_gtd_limit {
+    let is_stop_market = (
+        exit.order_type,
+        exit.is_post_only,
+        exit.is_reduce_only,
+        exit.is_quote_quantity,
+    ) == stop_market
+        && exit
+            .trigger_price
+            .is_some_and(|value| value > Decimal::ZERO)
+        && (exit.time_in_force != TimeInForce::Gtd
+            || exit.expire_time_unix_nanos.is_some_and(|value| value > 0));
+    if actual != taker_market_ioc && actual != maker_limit_gtc && !is_gtd_limit && !is_stop_market {
         vec![format!(
             "{context}: parameters.exit_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only order_type=market with time_in_force=ioc, or order_type=limit with time_in_force=gtc plus is_post_only=true, or order_type=limit with time_in_force=gtd plus expire_time_unix_nanos is allowed; \
+             only order_type=market with time_in_force=ioc, order_type=limit with time_in_force=gtc plus is_post_only=true, order_type=limit with time_in_force=gtd plus expire_time_unix_nanos, or order_type=stop_market plus trigger_price is allowed; \
              is_reduce_only=false and is_quote_quantity=false are required"
         )]
     } else {

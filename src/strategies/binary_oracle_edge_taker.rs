@@ -106,6 +106,7 @@ struct BinaryOracleEdgeTakerOrderConfig {
     order_type: OrderType,
     time_in_force: TimeInForce,
     expire_time_unix_nanos: Option<u64>,
+    trigger_price: Option<f64>,
     is_post_only: bool,
     is_reduce_only: bool,
     is_quote_quantity: bool,
@@ -238,6 +239,7 @@ macro_rules! binary_oracle_edge_taker_order_fields {
 }
 
 const ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD: &str = "expire_time_unix_nanos";
+const ORDER_TRIGGER_PRICE_FIELD: &str = "trigger_price";
 
 macro_rules! match_order_field_names {
     ($( $field:ident => $field_type:ident; )+) => {
@@ -3374,6 +3376,7 @@ impl BinaryOracleEdgeTaker {
             is_reduce_only: None,
             is_quote_quantity: None,
             expire_time_unix_nanos: None,
+            trigger_price: None,
             blocked_reason: evaluation.blocked_reason,
             forced_flat_reasons: evaluation.forced_flat_reasons.clone(),
         };
@@ -3418,6 +3421,7 @@ impl BinaryOracleEdgeTaker {
         decision.is_reduce_only = Some(order_config.is_reduce_only);
         decision.is_quote_quantity = Some(order_config.is_quote_quantity);
         decision.expire_time_unix_nanos = order_config.expire_time_unix_nanos;
+        decision.trigger_price = order_config.trigger_price;
         decision.blocked_reason = None;
         decision
     }
@@ -3642,6 +3646,11 @@ impl BinaryOracleEdgeTaker {
             self.config.entry_order.order_type,
             self.config.entry_order.time_in_force,
             expire_time_from_config(self.config.entry_order.expire_time_unix_nanos),
+            trigger_price_from_config(
+                ORDER_CONFIGURATION_PREFIX_ENTRY,
+                self.config.entry_order.trigger_price,
+                price.precision,
+            )?,
             self.config.entry_order.is_post_only,
             self.config.entry_order.is_reduce_only,
             self.config.entry_order.is_quote_quantity,
@@ -3658,6 +3667,7 @@ impl BinaryOracleEdgeTaker {
             order_type: self.config.exit_order.order_type,
             time_in_force: self.config.exit_order.time_in_force,
             expire_time_unix_nanos: self.config.exit_order.expire_time_unix_nanos,
+            trigger_price: self.config.exit_order.trigger_price,
             is_post_only: self.config.exit_order.is_post_only,
             is_reduce_only: self.config.exit_order.is_reduce_only,
             is_quote_quantity: self.config.exit_order.is_quote_quantity,
@@ -3672,6 +3682,7 @@ impl BinaryOracleEdgeTaker {
                 &self.config.market_exit_time_in_force,
             )?,
             expire_time_unix_nanos: None,
+            trigger_price: None,
             is_post_only: false,
             is_reduce_only: self.config.market_exit_reduce_only,
             is_quote_quantity: false,
@@ -3720,6 +3731,11 @@ impl BinaryOracleEdgeTaker {
             order_config.order_type,
             order_config.time_in_force,
             expire_time_from_config(order_config.expire_time_unix_nanos),
+            trigger_price_from_config(
+                ORDER_CONFIGURATION_PREFIX_EXIT,
+                order_config.trigger_price,
+                price.precision,
+            )?,
             order_config.is_post_only,
             order_config.is_reduce_only,
             order_config.is_quote_quantity,
@@ -4599,6 +4615,7 @@ impl BinaryOracleEdgeTakerBuilder {
             if !matches!(
                 key.as_str(),
                 ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD
+                    | ORDER_TRIGGER_PRICE_FIELD
                     | binary_oracle_edge_taker_order_fields!(match_order_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field}.{key}"), key);
@@ -4617,6 +4634,16 @@ impl BinaryOracleEdgeTakerBuilder {
                 errors,
                 format!("{field}.{ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD}"),
                 BinaryOracleEdgeTakerFieldType::Integer,
+                value,
+            );
+        }
+        if let Some(value) = order_table.get(ORDER_TRIGGER_PRICE_FIELD)
+            && !BinaryOracleEdgeTakerFieldType::Float.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field}.{ORDER_TRIGGER_PRICE_FIELD}"),
+                BinaryOracleEdgeTakerFieldType::Float,
                 value,
             );
         }
@@ -4943,18 +4970,46 @@ fn validate_configured_order_against_nt_model(
     order_type: OrderType,
     time_in_force: TimeInForce,
     expire_time: Option<UnixNanos>,
+    trigger_price: Option<Price>,
 ) -> Result<()> {
-    match (order_type, time_in_force) {
-        (OrderType::Limit, TimeInForce::Gtd)
+    match (order_type, time_in_force, trigger_price) {
+        (OrderType::Limit, TimeInForce::Gtd, _)
             if expire_time.is_none_or(|value| value.as_u64() == 0) =>
         {
             anyhow::bail!("{prefix}_expire_time is required for GTD limit orders")
         }
-        (OrderType::Market, TimeInForce::Gtd) => {
+        (OrderType::StopMarket, TimeInForce::Gtd, _)
+            if expire_time.is_none_or(|value| value.as_u64() == 0) =>
+        {
+            anyhow::bail!("{prefix}_expire_time is required for GTD StopMarket orders")
+        }
+        (OrderType::Market, TimeInForce::Gtd, _) => {
             anyhow::bail!("GTD not supported for Market orders")
+        }
+        (OrderType::StopMarket, _, None) => {
+            anyhow::bail!("{prefix}_trigger_price is required for StopMarket orders")
+        }
+        (OrderType::Limit | OrderType::Market, _, Some(_)) => {
+            anyhow::bail!("{prefix}_trigger_price is only supported for StopMarket orders")
         }
         _ => Ok(()),
     }
+}
+
+fn trigger_price_from_config(
+    prefix: &'static str,
+    trigger_price: Option<f64>,
+    price_precision: u8,
+) -> Result<Option<Price>> {
+    trigger_price
+        .map(|value| {
+            anyhow::ensure!(
+                is_positive_finite(value),
+                "{prefix}_trigger_price must be positive and finite"
+            );
+            Ok(Price::new(value, price_precision))
+        })
+        .transpose()
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -4964,6 +5019,7 @@ fn build_configured_order(
     order_type: OrderType,
     time_in_force: TimeInForce,
     expire_time: Option<UnixNanos>,
+    trigger_price: Option<Price>,
     is_post_only: bool,
     is_reduce_only: bool,
     is_quote_quantity: bool,
@@ -4973,7 +5029,13 @@ fn build_configured_order(
     price: Price,
     client_order_id: ClientOrderId,
 ) -> Result<nautilus_model::orders::OrderAny> {
-    validate_configured_order_against_nt_model(prefix, order_type, time_in_force, expire_time)?;
+    validate_configured_order_against_nt_model(
+        prefix,
+        order_type,
+        time_in_force,
+        expire_time,
+        trigger_price,
+    )?;
 
     match order_type {
         OrderType::Limit => Ok(core.order_factory().limit(
@@ -5012,8 +5074,34 @@ fn build_configured_order(
                 Some(client_order_id),
             ))
         }
+        OrderType::StopMarket => {
+            anyhow::ensure!(
+                !is_post_only,
+                "{prefix}_is_post_only must be false for StopMarket orders"
+            );
+            Ok(core.order_factory().stop_market(
+                instrument_id,
+                order_side,
+                quantity,
+                trigger_price.expect("validated StopMarket trigger price"),
+                None,
+                Some(time_in_force),
+                expire_time,
+                Some(is_reduce_only),
+                Some(is_quote_quantity),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(client_order_id),
+            ))
+        }
         _ => {
-            anyhow::bail!("{prefix}_order_type supports `limit` or `market`, got `{order_type:?}`")
+            anyhow::bail!(
+                "{prefix}_order_type supports `limit`, `market`, or `stop_market`, got `{order_type:?}`"
+            )
         }
     }
 }
@@ -5585,11 +5673,12 @@ struct ExitEvaluation {
     blocked_reason: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct ExitOrderExecutionConfig {
     order_type: OrderType,
     time_in_force: TimeInForce,
     expire_time_unix_nanos: Option<u64>,
+    trigger_price: Option<f64>,
     is_post_only: bool,
     is_reduce_only: bool,
     is_quote_quantity: bool,
@@ -5609,6 +5698,7 @@ struct ExitSubmissionDecision {
     is_reduce_only: Option<bool>,
     is_quote_quantity: Option<bool>,
     expire_time_unix_nanos: Option<u64>,
+    trigger_price: Option<f64>,
     blocked_reason: Option<&'static str>,
     forced_flat_reasons: Vec<ForcedFlatReason>,
 }
@@ -5619,6 +5709,7 @@ impl ExitSubmissionDecision {
             order_type: self.order_type?,
             time_in_force: self.time_in_force?,
             expire_time_unix_nanos: self.expire_time_unix_nanos,
+            trigger_price: self.trigger_price,
             is_post_only: self.is_post_only?,
             is_reduce_only: self.is_reduce_only?,
             is_quote_quantity: self.is_quote_quantity?,
@@ -6165,6 +6256,7 @@ mod tests {
                     order_type: OrderType::Limit,
                     time_in_force: TimeInForce::Fok,
                     expire_time_unix_nanos: None,
+                    trigger_price: None,
                     is_post_only: false,
                     is_reduce_only: false,
                     is_quote_quantity: false,
@@ -6175,6 +6267,7 @@ mod tests {
                     order_type: OrderType::Market,
                     time_in_force: TimeInForce::Ioc,
                     expire_time_unix_nanos: None,
+                    trigger_price: None,
                     is_post_only: false,
                     is_reduce_only: false,
                     is_quote_quantity: false,
@@ -9180,6 +9273,56 @@ mod tests {
         };
         assert_eq!(order.time_in_force(), TimeInForce::Gtd);
         assert_eq!(order.expire_time(), Some(expire_time));
+    }
+
+    #[test]
+    fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        strategy.config.entry_order.order_type = OrderType::StopMarket;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+
+        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let quantity = Quantity::new(2.0, 2);
+        let admission_price = Price::new(0.40, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                admission_price,
+                ClientOrderId::from("O-19700101-000000-001-005-1"),
+            )
+            .expect("StopMarket order with explicit trigger price should build");
+
+        let admission = submit_admission_request_from_order(
+            &BoltV3OrderIntentEvidence {
+                strategy_id: strategy.config.strategy_id.clone(),
+                intent_kind: BoltV3OrderIntentKind::Entry,
+                instrument_id: instrument_id.to_string(),
+                client_order_id: order.client_order_id().to_string(),
+                order_side: OrderSide::Buy.to_string(),
+                price: admission_price.to_string(),
+                quantity: quantity.to_string(),
+            },
+            &order,
+        )
+        .expect("StopMarket admission should derive from compiled order plus fallback price");
+
+        let OrderAny::StopMarket(order) = order else {
+            panic!("StopMarket config should build an NT stop-market order");
+        };
+        assert_eq!(order.order_type(), OrderType::StopMarket);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtc);
+        assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
+        assert_eq!(order.price(), None);
+        assert!(!order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("0.800").expect("expected decimal should parse")
+        );
     }
 
     #[test]

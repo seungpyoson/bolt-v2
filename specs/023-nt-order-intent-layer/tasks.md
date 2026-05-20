@@ -128,6 +128,16 @@
 - [x] T050 Verify `just fmt-check`, `just source-fence`, focused order-intent tests, and branch cleanliness
 - [x] T051 Record CI follow-up evidence and no-mistakes state in `research.md`
 
+## Phase 13: TDD Slice 10 - StopMarket Factory Variant
+
+**Goal**: Enable the next NT `OrderFactory`-supported variant through the same order-template path without adding venue policy or bypassing NT.
+
+- [x] T052 [US2] RED: Add a positive StopMarket construction/admission regression in `src/strategies/binary_oracle_edge_taker.rs`
+- [x] T053 [US2] GREEN: Thread TOML-owned StopMarket trigger price through archetype/runtime order config into NT `OrderFactory::stop_market`
+- [x] T054 [US2] RED/GREEN: Add public config validation coverage for StopMarket order config in `tests/config_parsing.rs`
+- [x] T055 [US2] Verify focused StopMarket tests, runtime literal/source fences, full `cargo test`, and branch cleanliness
+- [x] T056 [US2] Record StopMarket evidence, exact-head gate state, and residual unsupported variants in `research.md`
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -142,6 +152,7 @@
 - Phase 10 blocks completion.
 - Phase 11 blocks completion because it resolves a post-implementation review blocker.
 - Phase 12 blocks completion because PR #434 exact-head CI failed after the pushed implementation.
+- Phase 13 is the first deferred Phase 7 factory-variant slice and blocks StopMarket support claims until verified.
 
 ## Parallel Opportunities
 

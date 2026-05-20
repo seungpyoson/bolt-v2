@@ -46,12 +46,15 @@ Validation:
 - Does not validate venue support.
 - Does not encode maker/taker as a separate enum.
 
-Factory-reachable order types in the pinned NT checkout. Listing here is not a support claim; each variant needs its own positive construction/admission test before Bolt claims support:
+Factory-reachable order types with current source/unit construction coverage in Bolt. This is not a live or adapter-specific support claim:
 
 - Market
 - Limit
 - StopMarket
 - StopLimit
+
+Remaining factory-reachable order types that still need one positive construction/admission slice before Bolt claims support:
+
 - MarketIfTouched
 - LimitIfTouched
 - TrailingStopMarket

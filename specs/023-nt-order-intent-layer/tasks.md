@@ -148,6 +148,17 @@
 - [x] T060 [US2] Verify post-review focused tests, runtime literal/source fences, full `cargo test`, and branch cleanliness
 - [x] T061 [US2] Record external-review findings, fixes, exact-head gate state, and residual risks in `research.md`
 
+## Phase 15: TDD Slice 12 - StopLimit Factory Variant
+
+**Goal**: Enable NT `OrderFactory::stop_limit` through the same order-template path without adding venue policy or changing triggered-market sizing semantics.
+
+- [x] T062 [P] [US2] Run internal NT-source review comparing remaining factory variants and record the recommendation in `research.md`
+- [x] T063 [P] [US2] Run internal Bolt-path review for the minimal next variant slice and record the recommendation in `research.md`
+- [x] T064 [US2] RED/GREEN: Add positive StopLimit construction/admission coverage in `src/strategies/binary_oracle_edge_taker.rs`
+- [x] T065 [US2] RED/GREEN: Add public archetype config coverage for StopLimit with TOML-owned `trigger_price` in `tests/config_parsing.rs`
+- [x] T066 [US2] Add raw archetype-to-runtime strategy build round-trip for `order_type=stop_limit` in `tests/bolt_v3_strategy_registration.rs`
+- [x] T067 [US2] Verify StopLimit focused tests, runtime literal/source fences, full `cargo test`, branch cleanliness, and exact-head gate state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -164,6 +175,7 @@
 - Phase 12 blocks completion because PR #434 exact-head CI failed after the pushed implementation.
 - Phase 13 is the first deferred Phase 7 factory-variant slice and blocks StopMarket support claims until verified.
 - Phase 14 blocks completion because Claude and Gemini both found post-Phase 13 StopMarket blockers.
+- Phase 15 is the next deferred Phase 7 factory-variant slice and blocks StopLimit support claims until verified and reviewed.
 
 ## Parallel Opportunities
 

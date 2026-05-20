@@ -4990,14 +4990,19 @@ fn validate_configured_order_against_nt_model(
         {
             anyhow::bail!("{prefix}_expire_time is required for GTD StopMarket orders")
         }
+        (OrderType::StopLimit, TimeInForce::Gtd, _)
+            if expire_time.is_none_or(|value| value.as_u64() == 0) =>
+        {
+            anyhow::bail!("{prefix}_expire_time is required for GTD StopLimit orders")
+        }
         (OrderType::Market, TimeInForce::Gtd, _) => {
             anyhow::bail!("GTD not supported for Market orders")
         }
-        (OrderType::StopMarket, _, None) => {
-            anyhow::bail!("{prefix}_trigger_price is required for StopMarket orders")
+        (OrderType::StopMarket | OrderType::StopLimit, _, None) => {
+            anyhow::bail!("{prefix}_trigger_price is required for triggered orders")
         }
         (OrderType::Limit | OrderType::Market, _, Some(_)) => {
-            anyhow::bail!("{prefix}_trigger_price is only supported for StopMarket orders")
+            anyhow::bail!("{prefix}_trigger_price is only supported for triggered orders")
         }
         _ => Ok(()),
     }
@@ -5105,9 +5110,29 @@ fn build_configured_order(
                 Some(client_order_id),
             ))
         }
+        OrderType::StopLimit => Ok(core.order_factory().stop_limit(
+            instrument_id,
+            order_side,
+            quantity,
+            price,
+            trigger_price.expect("validated triggered order trigger price"),
+            None,
+            Some(time_in_force),
+            expire_time,
+            Some(is_post_only),
+            Some(is_reduce_only),
+            Some(is_quote_quantity),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(client_order_id),
+        )),
         _ => {
             anyhow::bail!(
-                "{prefix}_order_type supports `limit`, `market`, or `stop_market`, got `{order_type:?}`"
+                "{prefix}_order_type supports `limit`, `market`, `stop_market`, or `stop_limit`, got `{order_type:?}`"
             )
         }
     }
@@ -9349,6 +9374,57 @@ mod tests {
         assert_eq!(
             admission.notional,
             Decimal::from_str("1.040").expect("expected decimal should parse")
+        );
+    }
+
+    #[test]
+    fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        strategy.config.entry_order.order_type = OrderType::StopLimit;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+
+        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let quantity = Quantity::new(2.0, 2);
+        let price = Price::new(0.40, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-006-1"),
+            )
+            .expect("StopLimit order with explicit trigger price should build");
+
+        let admission = submit_admission_request_from_order(
+            &BoltV3OrderIntentEvidence {
+                strategy_id: strategy.config.strategy_id.clone(),
+                intent_kind: BoltV3OrderIntentKind::Entry,
+                instrument_id: instrument_id.to_string(),
+                client_order_id: order.client_order_id().to_string(),
+                order_side: OrderSide::Buy.to_string(),
+                price: price.to_string(),
+                quantity: quantity.to_string(),
+            },
+            &order,
+        )
+        .expect("StopLimit admission should derive from the compiled NT order");
+
+        let OrderAny::StopLimit(order) = order else {
+            panic!("StopLimit config should build an NT stop-limit order");
+        };
+        assert_eq!(order.order_type(), OrderType::StopLimit);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtc);
+        assert_eq!(order.price(), Some(price));
+        assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
+        assert!(!order.is_post_only());
+        assert!(!order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("0.800").expect("expected decimal should parse")
         );
     }
 

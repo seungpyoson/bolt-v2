@@ -1025,6 +1025,44 @@ fn bolt_v3_archetype_accepts_stop_market_entry_with_trigger_price() {
 }
 
 #[test]
+fn bolt_v3_archetype_accepts_stop_limit_entry_with_trigger_price() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let fixture = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let stop_limit_strategy_source = fixture
+        .replace("order_type = \"limit\"", "order_type = \"stop_limit\"")
+        .replace(
+            "time_in_force = \"fok\"\nis_post_only = false",
+            "time_in_force = \"gtc\"\ntrigger_price = 0.52\nis_post_only = true",
+        );
+
+    let strategy: BoltV3StrategyConfig = toml::from_str(&stop_limit_strategy_source)
+        .expect("StopLimit trigger price should parse through typed order config");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&stable_root, &loaded);
+
+    assert!(
+        messages.is_empty(),
+        "StopLimit entry order with explicit trigger price should validate: {messages:#?}"
+    );
+}
+
+#[test]
 fn parses_minimal_bolt_v3_root_and_strategy_config() {
     use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock;
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;

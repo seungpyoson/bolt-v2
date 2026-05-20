@@ -136,23 +136,15 @@ reason = "This enforces positive GTD expiry nanos before calling the NT order fa
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "number"
 literal = '''0'''
-context = '''|| entry.expire_time_unix_nanos.is_some_and(|value| value > 0));'''
+context = '''|| order.expire_time_unix_nanos.is_some_and(|value| value > 0))'''
 classification = "nt_order_model_invariant"
-reason = "This enforces positive GTD expiry nanos before calling the NT order factory; the expiry value itself is TOML-owned."
+reason = "This helper enforces positive GTD expiry nanos before calling the NT order factory; the expiry value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "number"
 literal = '''0'''
 context = '''&& exit.expire_time_unix_nanos.is_some_and(|value| value > 0);'''
-classification = "nt_order_model_invariant"
-reason = "This enforces positive GTD expiry nanos before calling the NT order factory; the expiry value itself is TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "number"
-literal = '''0'''
-context = '''|| exit.expire_time_unix_nanos.is_some_and(|value| value > 0));'''
 classification = "nt_order_model_invariant"
 reason = "This enforces positive GTD expiry nanos before calling the NT order factory; the expiry value itself is TOML-owned."
 
@@ -2992,8 +2984,8 @@ reason = "This is the stable NT stop-order trigger price field label used in val
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"{prefix}_order_type supports `limit`, `market`, or `stop_market`, got `{order_type:?}`"'''
-context = '''"{prefix}_order_type supports `limit`, `market`, or `stop_market`, got `{order_type:?}`"'''
+literal = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, or `stop_limit`, got `{order_type:?}`"'''
+context = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, or `stop_limit`, got `{order_type:?}`"'''
 classification = "strategy_config_error_message"
 reason = "This is a stable validation diagnostic naming the NT factory variants enabled by this slice, not an operator runtime value."
 

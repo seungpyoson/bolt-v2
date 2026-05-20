@@ -168,7 +168,7 @@
 - [x] T070 [US2] Add StopLimit exit-order archetype and runtime round-trip coverage in `tests/config_parsing.rs` and `tests/bolt_v3_strategy_registration.rs`
 - [x] T071 [US2] Add negative StopLimit archetype coverage for missing/non-positive `trigger_price`, GTD-without-expiry, and unsupported strategy-scope flags
 - [x] T072 [US2] Verify focused tests, full local checks, and repo gates after the regression patch
-- [ ] T073 [US2] Verify post-push exact-head GitHub gate, no-mistakes state, and external review state for the regression patch head
+- [x] T073 [US2] Verify post-push exact-head GitHub gate, no-mistakes state, and external review state for the regression patch head
 
 ## Dependencies & Execution Order
 

@@ -337,6 +337,16 @@ fn binary_oracle_runtime_mapping_preserves_post_only_gtc_entry_order() {
         entry.get("is_post_only").and_then(toml::Value::as_bool),
         Some(true)
     );
+    assert_eq!(
+        entry.get("is_reduce_only").and_then(toml::Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        entry
+            .get("is_quote_quantity")
+            .and_then(toml::Value::as_bool),
+        Some(false)
+    );
 }
 
 #[test]
@@ -387,6 +397,14 @@ fn binary_oracle_runtime_mapping_preserves_post_only_gtc_exit_order() {
     assert_eq!(
         exit.get("is_post_only").and_then(toml::Value::as_bool),
         Some(true)
+    );
+    assert_eq!(
+        exit.get("is_reduce_only").and_then(toml::Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        exit.get("is_quote_quantity").and_then(toml::Value::as_bool),
+        Some(false)
     );
 }
 

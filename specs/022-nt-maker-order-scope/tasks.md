@@ -54,12 +54,12 @@ T002 disposition: commit `97cbf828423578e09a604bf31bdaa91ec3573df3` is kept only
 
 - [x] T022 [US3] Run ai-slop-cleaner pass scoped to changed files and remove needless abstraction, duplication, or speculative code
 - [x] T023 [US3] Run full verification from `specs/022-nt-maker-order-scope/quickstart.md`
-- [ ] T024 [P] [US3] Run post-implementation Claude audit after exact PR head CI is green and record verdict or block reason
-- [ ] T025 [P] [US3] Run post-implementation Gemini audit after exact PR head CI is green and record verdict or block reason
-- [ ] T026 [P] [US3] Run post-implementation Kimi audit after exact PR head CI is green and record verdict or block reason
-- [ ] T027 [P] [US3] Run post-implementation DeepSeek audit after exact PR head CI is green and record verdict or block reason
-- [ ] T028 [P] [US3] Run post-implementation GLM audit after exact PR head CI is green and record verdict or block reason
-- [ ] T029 [US3] Resolve or document every audit finding before merge/readiness completion
+- [x] T024 [P] [US3] Run post-implementation Claude audit after exact PR head CI is green and record verdict or block reason
+- [x] T025 [P] [US3] Run post-implementation Gemini audit after exact PR head CI is green and record verdict or block reason
+- [x] T026 [P] [US3] Run post-implementation Kimi audit after exact PR head CI is green and record verdict or block reason
+- [x] T027 [P] [US3] Run post-implementation DeepSeek audit after exact PR head CI is green and record verdict or block reason
+- [x] T028 [P] [US3] Run post-implementation GLM audit after exact PR head CI is green and record verdict or block reason
+- [x] T029 [US3] Resolve or document every audit finding before merge/readiness completion
 
 ## Phase 6: Commit And Push
 
@@ -95,7 +95,7 @@ T033 evidence: PR #434 head `769135106989e521cbc5e507e67442b6a376b74e` failed `n
 - [x] T045 Add a direct maker `OrderAny` construction test proving NT limit/GTC/post-only fields survive strategy order construction in `src/strategies/binary_oracle_edge_taker.rs`
 - [x] T046 Document maker-exit forced-flat semantics and passive-fill limits in `specs/022-nt-maker-order-scope/contracts/maker-order-config.md` and `docs/bolt-v3/2026-04-25-bolt-v3-schema.md`
 - [x] T047 Resolve or explicitly document every post-audit blocking and non-blocking finding in `specs/022-nt-maker-order-scope/research.md`
-- [ ] T048 Re-run required verification, commit follow-up changes, push, and confirm exact PR-head CI before closing T024-T029
+- [x] T048 Re-run required verification, commit follow-up changes, push, and confirm exact PR-head CI before closing T024-T029
 
 ## Dependencies & Execution Order
 

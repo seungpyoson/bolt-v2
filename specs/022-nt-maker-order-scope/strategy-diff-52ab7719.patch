@@ -13,7 +13,7 @@ index 3c59156b..db5ff668 100644
                  + self.ask_levels.values().copied().sum::<f64>(),
          );
      }
- 
+
      fn executable_price_for_order_side(&self, order_side: OrderSide) -> Option<f64> {
          match order_side {
              OrderSide::Buy => self.best_ask,
@@ -22,7 +22,7 @@ index 3c59156b..db5ff668 100644
          }
          .filter(|value| is_positive_finite(*value))
      }
- 
+
 +    fn passive_price_for_order_side(&self, order_side: OrderSide) -> Option<f64> {
 +        match order_side {
 +            OrderSide::Buy => self.best_bid,
@@ -60,7 +60,7 @@ index 3c59156b..db5ff668 100644
          _ => None,
      }
  }
- 
+
  fn expected_exit_order_side_for_position(position_side: PositionSide) -> Option<OrderSide> {
      match position_side {
          PositionSide::Long => Some(OrderSide::Sell),
@@ -68,11 +68,11 @@ index 3c59156b..db5ff668 100644
          _ => None,
      }
  }
- 
+
  fn is_observed_open_side(side: PositionSide) -> bool {
      matches!(side, PositionSide::Long | PositionSide::Short)
  }
- 
+
 -fn order_price_for_side(book: &OutcomeBookState, order_side: OrderSide) -> Option<f64> {
 -    book.executable_price_for_order_side(order_side)
 +fn order_price_for_side(
@@ -86,7 +86,7 @@ index 3c59156b..db5ff668 100644
 +        book.executable_price_for_order_side(order_side)
 +    }
  }
- 
+
  fn infer_strategy_position_side_from_entry_fill(
      entry_order_side: OrderSide,
      configured_entry_order_side: OrderSide,
@@ -94,7 +94,7 @@ index 3c59156b..db5ff668 100644
  ) -> Option<PositionSide> {
      (entry_order_side == configured_entry_order_side).then_some(configured_position_side)
  }
- 
+
  fn managed_position_effective_entry_cost(
      position: &OpenPositionState,
      configured_entry_order_side: OrderSide,
@@ -105,7 +105,7 @@ index 3c59156b..db5ff668 100644
          .then_some(position.avg_px_open)
          .filter(|effective_cost| is_positive_finite(*effective_cost))
  }
- 
+
  fn managed_position_exit_order(
      position: &OpenPositionState,
      configured_order_side: OrderSide,
@@ -120,7 +120,7 @@ index 3c59156b..db5ff668 100644
          ))
          .filter(|(_, price)| is_positive_finite(*price))
  }
- 
+
  fn managed_position_exit_value(
      position: &OpenPositionState,
      configured_order_side: OrderSide,
@@ -133,7 +133,7 @@ index 3c59156b..db5ff668 100644
          .flatten()?;
      Some(value).filter(|value| is_positive_finite(*value))
  }
- 
+
  impl PricingState {
      fn from_config(config: &BinaryOracleEdgeTakerConfig) -> Self {
          Self {
@@ -157,18 +157,18 @@ index 3c59156b..db5ff668 100644
          }?;
          self.context.fee_provider().fee_bps(instrument_id)?.to_f64()
      }
- 
+
      fn active_book_for_outcome(&self, side: OutcomeSide) -> &OutcomeBookState {
          match side {
              OutcomeSide::Up => &self.active.books.up,
              OutcomeSide::Down => &self.active.books.down,
          }
      }
- 
+
      fn configured_entry_order_side(&self) -> Result<OrderSide> {
          parse_configured_order_side(CONFIG_FIELD_ENTRY_ORDER_SIDE, &self.config.entry_order.side)
      }
- 
+
      fn executable_entry_cost(&self, side: OutcomeSide) -> Option<f64> {
          let order_side = self.configured_entry_order_side().ok()?;
 -        self.active_book_for_outcome(side)
@@ -180,11 +180,11 @@ index 3c59156b..db5ff668 100644
 +            book.executable_price_for_order_side(order_side)
 +        }
      }
- 
+
      fn submission_entry_price(&self, side: OutcomeSide) -> Option<f64> {
          self.executable_entry_cost(side)
      }
- 
+
      fn visible_book_notional_cap(&self, side: OutcomeSide) -> Option<f64> {
          let order_side = self.configured_entry_order_side().ok()?;
          let capped_execution = self
@@ -196,13 +196,13 @@ index 3c59156b..db5ff668 100644
              OutcomeSide::Down => capped_execution.quantity * capped_execution.vwap_price,
          })
      }
- 
+
      fn instrument_id_for_side(&self, side: OutcomeSide) -> Option<InstrumentId> {
          match side {
 @@ -2986,50 +3009,52 @@ impl BinaryOracleEdgeTaker {
          })
      }
- 
+
      fn open_position_effective_entry_cost(&self) -> Option<f64> {
          let open_position = &self.managed_position()?.position;
          let contract = self.configured_position_contract().ok()?;
@@ -212,7 +212,7 @@ index 3c59156b..db5ff668 100644
              contract.entry_position_side,
          )
      }
- 
+
      fn current_exit_order_for_open_position(&self) -> Option<(OrderSide, f64)> {
          let open_position = &self.managed_position()?.position;
          let contract = self.configured_position_contract().ok()?;
@@ -223,7 +223,7 @@ index 3c59156b..db5ff668 100644
 +            self.config.exit_order.is_post_only,
          )
      }
- 
+
      fn current_exit_value_for_open_position(&self) -> Option<f64> {
          let open_position = &self.managed_position()?.position;
          let contract = self.configured_position_contract().ok()?;
@@ -234,11 +234,11 @@ index 3c59156b..db5ff668 100644
 +            self.config.exit_order.is_post_only,
          )
      }
- 
+
      fn current_position_market_id(&self) -> Option<String> {
          self.exposure.current_position_market_id()
      }
- 
+
      fn current_position_seconds_to_expiry_at(&self, now_ms: u64) -> Option<u64> {
          let open_position = &self.managed_position()?.position;
          Self::seconds_to_expiry_from_selection(
@@ -247,7 +247,7 @@ index 3c59156b..db5ff668 100644
              now_ms,
          )
      }
- 
+
      fn current_position_fair_probability_up_at(&self, now_ms: u64) -> Option<f64> {
          let open_position = &self.managed_position()?.position;
          let spot_price = self.current_position_spot_price()?;
@@ -257,12 +257,12 @@ index 3c59156b..db5ff668 100644
              strategy.executable_entry_cost(OutcomeSide::Down),
              Some(0.41)
          );
- 
+
          strategy.config.entry_order.side = "sell".to_string();
          strategy.config.entry_order.position_side = "short".to_string();
          strategy.config.exit_order.side = "buy".to_string();
          strategy.config.exit_order.position_side = "short".to_string();
- 
+
          assert_eq!(
              strategy.submission_entry_price(OutcomeSide::Down),
              Some(0.40)
@@ -272,7 +272,7 @@ index 3c59156b..db5ff668 100644
              Some(0.40)
          );
      }
- 
+
 +    #[test]
 +    fn post_only_entry_submission_price_uses_passive_book_price() {
 +        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);

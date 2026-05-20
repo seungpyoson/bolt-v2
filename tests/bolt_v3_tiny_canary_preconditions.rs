@@ -3,11 +3,11 @@ mod support;
 use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_no_submit_readiness_schema::{
-        APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
-        CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, GENERATED_AT_UNIX_SECONDS_KEY,
-        LIVE_NODE_BUILD_STAGE, NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE,
-        REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
-        STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
+        APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY,
+        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY,
+        GENERATED_AT_UNIX_SECONDS_KEY, LIVE_NODE_BUILD_STAGE, NO_SUBMIT_READINESS_SCHEMA_VERSION,
+        OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY,
+        SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
     },
     bolt_v3_tiny_canary_evidence::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryOutcome,
@@ -1942,10 +1942,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     );
     let consumption: Value =
         serde_json::from_str(&consumption_json).expect("consumption should parse as json");
-    assert_eq!(
-        consumption["record_kind"],
-        "phase8_operator_approval_consumption"
-    );
+    assert_eq!(consumption["record_kind"], APPROVAL_CONSUMPTION_RECORD_KIND);
     assert_eq!(consumption["approval_not_before_unix_secs"], 1_000);
     assert_eq!(consumption["approval_not_after_unix_secs"], 2_000);
     assert_eq!(consumption["consumed_unix_secs"], 1_500);

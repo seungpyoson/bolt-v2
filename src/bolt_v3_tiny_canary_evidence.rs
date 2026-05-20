@@ -12,6 +12,9 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
+    bolt_v3_no_submit_readiness_schema::{
+        APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
+    },
 };
 
 const PHASE8_CANARY_EVIDENCE_SCHEMA_VERSION: u32 = 1;
@@ -22,8 +25,6 @@ const BLOCKED_BEFORE_LIVE_ORDER_REASON: &str = "blocked_before_live_order";
 const BLOCKED_BEFORE_SUBMIT_REASON: &str = "blocked_before_submit";
 const PHASE8_REQUIRED_LIVE_ORDER_CAP: u32 = 1;
 const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;
-const PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION: u32 = 1;
-const PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND: &str = "phase8_operator_approval_consumption";
 const PHASE8_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
 const PHASE8_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
 const PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND: &str = "market_selection_result";
@@ -1487,8 +1488,8 @@ impl Phase8OperatorApprovalEnvelope {
             })?;
         }
         let evidence = Phase8ApprovalConsumptionEvidence {
-            schema_version: PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION,
-            record_kind: PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND,
+            schema_version: APPROVAL_CONSUMPTION_SCHEMA_VERSION,
+            record_kind: APPROVAL_CONSUMPTION_RECORD_KIND,
             head_sha: &self.head_sha,
             root_toml_sha256: &self.root_toml_sha256,
             ssm_manifest_sha256: &self.ssm_manifest_sha256,
@@ -2118,7 +2119,7 @@ fn required_toml_bool(
 
 #[derive(Serialize)]
 struct Phase8ApprovalConsumptionEvidence<'a> {
-    schema_version: u32,
+    schema_version: i64,
     record_kind: &'static str,
     head_sha: &'a str,
     root_toml_sha256: &'a str,

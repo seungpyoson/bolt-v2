@@ -174,7 +174,6 @@ pub struct BoltV3NoSubmitReadinessReportMetadata {
     pub approval_id_hash: String,
     pub executable_identity: String,
     pub config_bundle_checksum: String,
-    pub generated_at_unix_seconds: u64,
 }
 
 impl BoltV3NoSubmitReadinessReportMetadata {
@@ -186,7 +185,6 @@ impl BoltV3NoSubmitReadinessReportMetadata {
             approval_id_hash,
             executable_identity: executable_identity().await?,
             config_bundle_checksum: loaded.config_bundle_checksum.clone(),
-            generated_at_unix_seconds: current_unix_seconds()?,
         })
     }
 }
@@ -261,6 +259,25 @@ pub fn run_bolt_v3_no_submit_readiness_from_stage_results(
     reference_readiness: Result<(), String>,
     controlled_disconnect: Result<(), String>,
     redacted_values: &[String],
+) -> Result<BoltV3NoSubmitReadinessReport, BoltV3NoSubmitReadinessError> {
+    let generated_at_unix_seconds = current_unix_seconds()?;
+    Ok(run_bolt_v3_no_submit_readiness_from_stage_results_at(
+        metadata,
+        controlled_connect,
+        reference_readiness,
+        controlled_disconnect,
+        redacted_values,
+        generated_at_unix_seconds,
+    ))
+}
+
+pub fn run_bolt_v3_no_submit_readiness_from_stage_results_at(
+    metadata: BoltV3NoSubmitReadinessReportMetadata,
+    controlled_connect: Result<(), String>,
+    reference_readiness: Result<(), String>,
+    controlled_disconnect: Result<(), String>,
+    redacted_values: &[String],
+    generated_at_unix_seconds: u64,
 ) -> BoltV3NoSubmitReadinessReport {
     let mut stages = Vec::new();
     push_satisfied_stage(&mut stages, OPERATOR_APPROVAL_STAGE);
@@ -298,7 +315,7 @@ pub fn run_bolt_v3_no_submit_readiness_from_stage_results(
         approval_id_hash: metadata.approval_id_hash,
         executable_identity: metadata.executable_identity,
         config_bundle_checksum: metadata.config_bundle_checksum,
-        generated_at_unix_seconds: metadata.generated_at_unix_seconds,
+        generated_at_unix_seconds,
         stages,
     }
 }
@@ -361,19 +378,21 @@ pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
     loaded: &LoadedBoltV3Config,
     metadata: BoltV3NoSubmitReadinessReportMetadata,
     redacted_values: &[String],
-) -> BoltV3NoSubmitReadinessReport {
+) -> Result<BoltV3NoSubmitReadinessReport, BoltV3NoSubmitReadinessError> {
     let (connect, reference, disconnect) =
         controlled_no_submit_readiness(runtime, loaded, |runtime| {
             reference_readiness_from_cache_evidence(loaded, &runtime.reference_cache_evidence())
         })
         .await;
-    run_bolt_v3_no_submit_readiness_from_stage_results(
+    let generated_at_unix_seconds = current_unix_seconds()?;
+    Ok(run_bolt_v3_no_submit_readiness_from_stage_results_at(
         metadata,
         connect.map_err(|error| error.to_string()),
         reference,
         disconnect.map_err(|error| error.to_string()),
         redacted_values,
-    )
+        generated_at_unix_seconds,
+    ))
 }
 
 pub fn run_bolt_v3_no_submit_readiness(
@@ -392,14 +411,12 @@ pub fn run_bolt_v3_no_submit_readiness(
     let metadata =
         readiness_runtime.block_on(BoltV3NoSubmitReadinessReportMetadata::from_loaded(loaded))?;
     let local = tokio::task::LocalSet::new();
-    Ok(
-        readiness_runtime.block_on(local.run_until(run_bolt_v3_no_submit_readiness_on_runtime(
-            &mut runtime,
-            loaded,
-            metadata,
-            &redacted_values,
-        ))),
-    )
+    readiness_runtime.block_on(local.run_until(run_bolt_v3_no_submit_readiness_on_runtime(
+        &mut runtime,
+        loaded,
+        metadata,
+        &redacted_values,
+    )))
 }
 
 fn no_submit_readiness_tokio_runtime()

@@ -1,4 +1,6 @@
 pub const NO_SUBMIT_READINESS_SCHEMA_VERSION: &str = "bolt-v3.no-submit-readiness.v2";
+pub const APPROVAL_CONSUMPTION_SCHEMA_VERSION: i64 = 1;
+pub const APPROVAL_CONSUMPTION_RECORD_KIND: &str = "phase8_operator_approval_consumption";
 pub const SCHEMA_VERSION_KEY: &str = "schema_version";
 pub const APPROVAL_ID_HASH_KEY: &str = "approval_id_hash";
 pub const EXECUTABLE_IDENTITY_KEY: &str = "executable_identity";

@@ -17,6 +17,9 @@ use std::{
 
 use async_trait::async_trait;
 use bolt_v2::bolt_v3_config::LiveCanaryOperatorEvidenceBlock;
+use bolt_v2::bolt_v3_no_submit_readiness_schema::{
+    APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
+};
 use nautilus_common::enums::Environment;
 use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_common::{
@@ -220,8 +223,8 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         )
     });
     let approval_consumption_proof = serde_json::json!({
-        "schema_version": 1,
-        "record_kind": "phase8_operator_approval_consumption",
+        "schema_version": APPROVAL_CONSUMPTION_SCHEMA_VERSION,
+        "record_kind": APPROVAL_CONSUMPTION_RECORD_KIND,
         "head_sha": head_sha,
         "root_toml_sha256": root_toml_sha256,
         "approval_envelope_sha256": approval_envelope_sha256,

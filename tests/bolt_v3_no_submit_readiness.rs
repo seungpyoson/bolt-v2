@@ -8,6 +8,7 @@ use bolt_v2::{
         BoltV3NoSubmitReadinessReportMetadata, BoltV3NoSubmitReadinessStatus,
         reference_readiness_from_cached_instrument_ids, run_bolt_v3_no_submit_readiness,
         run_bolt_v3_no_submit_readiness_from_stage_results,
+        run_bolt_v3_no_submit_readiness_from_stage_results_at,
         run_bolt_v3_no_submit_readiness_on_runtime,
     },
     bolt_v3_no_submit_readiness_schema::{
@@ -47,7 +48,8 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
         Ok(()),
         Ok(()),
         &["secret-value".to_string()],
-    );
+    )
+    .expect("readiness report should build");
     report
         .write_redacted_json_with_max_bytes(&report_path, 4096)
         .expect("report should be written");
@@ -80,7 +82,8 @@ fn no_submit_readiness_local_runner_writes_satisfied_connect_reference_disconnec
         Ok(()),
         Ok(()),
         &["secret-value".to_string()],
-    );
+    )
+    .expect("readiness report should build");
 
     assert_eq!(
         report.stage_status("controlled_connect"),
@@ -93,6 +96,46 @@ fn no_submit_readiness_local_runner_writes_satisfied_connect_reference_disconnec
     assert_eq!(
         report.stage_status("controlled_disconnect"),
         vec![BoltV3NoSubmitReadinessStatus::Satisfied]
+    );
+}
+
+#[test]
+fn no_submit_readiness_report_timestamp_is_injected_after_stage_results() {
+    let generated_after_stages = current_unix_seconds_for_test() + 30;
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results_at(
+        test_report_metadata(),
+        Ok(()),
+        Ok(()),
+        Ok(()),
+        &["secret-value".to_string()],
+        generated_after_stages,
+    );
+
+    assert_eq!(
+        report.generated_at_unix_seconds, generated_after_stages,
+        "generated_at_unix_seconds must describe report production time, not the earlier pre-stage metadata capture"
+    );
+}
+
+#[test]
+fn no_submit_readiness_runtime_stamps_report_after_controlled_stages() {
+    let source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness.rs")
+        .expect("no-submit readiness source should exist");
+    let runtime_fn = source
+        .split("pub async fn run_bolt_v3_no_submit_readiness_on_runtime")
+        .nth(1)
+        .and_then(|tail| tail.split("pub fn run_bolt_v3_no_submit_readiness(").next())
+        .expect("runtime no-submit function should be present");
+    let stage_index = runtime_fn
+        .find("controlled_no_submit_readiness(runtime, loaded")
+        .expect("runtime function should run controlled no-submit stages");
+    let report_index = runtime_fn
+        .find("run_bolt_v3_no_submit_readiness_from_stage_results_at")
+        .expect("runtime function should call post-stage timestamped report builder");
+
+    assert!(
+        stage_index < report_index,
+        "generated_at_unix_seconds must be stamped after controlled connect/reference/disconnect stages so stage duration does not consume report freshness"
     );
 }
 
@@ -109,7 +152,8 @@ async fn no_submit_readiness_report_records_authenticated_fields_and_required_st
         Ok(()),
         Ok(()),
         &["secret-value".to_string()],
-    );
+    )
+    .expect("readiness report should build");
     let value = serde_json::to_value(&report).expect("report should serialize");
     let object = value
         .as_object()
@@ -179,7 +223,8 @@ fn no_submit_readiness_report_does_not_contain_resolved_secret_values() {
         Ok(()),
         Err(format!("disconnect rejected key {secret}")),
         &[secret.to_string()],
-    );
+    )
+    .expect("readiness report should build");
     let debug = format!("{report:#?}");
     let json = serde_json::to_string_pretty(&report).expect("report should serialize");
 
@@ -201,7 +246,8 @@ fn no_submit_readiness_redacts_longest_overlapping_secret_values_first() {
         Ok(()),
         Ok(()),
         &[short_secret.to_string(), long_secret.to_string()],
-    );
+    )
+    .expect("readiness report should build");
     let json = serde_json::to_string_pretty(&report).expect("report should serialize");
 
     assert!(
@@ -223,7 +269,8 @@ fn no_submit_readiness_redaction_marker_survives_secret_values_inside_marker() {
         Ok(()),
         Ok(()),
         &["very-secret".to_string(), "redact".to_string()],
-    );
+    )
+    .expect("readiness report should build");
     let detail = report
         .stages
         .iter()
@@ -244,7 +291,8 @@ async fn no_submit_readiness_failed_connect_preserves_redacted_stage_details_and
         Ok(()),
         Err(format!("disconnect rejected token {secret}")),
         &[secret.to_string()],
-    );
+    )
+    .expect("readiness report should build");
 
     assert_eq!(
         report.stage_status(CONTROLLED_CONNECT_STAGE),
@@ -292,7 +340,8 @@ fn no_submit_readiness_records_failed_connect_reference_skip_and_disconnect_fail
         Ok(()),
         Err("simulated disconnect failure".to_string()),
         &[],
-    );
+    )
+    .expect("readiness report should build");
 
     assert_eq!(
         report.stage_status("controlled_connect"),
@@ -319,7 +368,8 @@ fn no_submit_readiness_fails_when_required_reference_instrument_missing_from_cac
         reference_readiness,
         Ok(()),
         &[],
-    );
+    )
+    .expect("readiness report should build");
 
     assert_eq!(
         report.stage_status("controlled_connect"),
@@ -356,7 +406,8 @@ async fn no_submit_readiness_cache_only_reference_evidence_cannot_pass_live_cana
         reference_readiness,
         Ok(()),
         &[],
-    );
+    )
+    .expect("readiness report should build");
 
     assert_eq!(
         report.stage_status(REFERENCE_READINESS_STAGE),
@@ -402,7 +453,8 @@ fn no_submit_readiness_fails_closed_when_only_required_reference_instruments_are
         reference_readiness,
         Ok(()),
         &[],
-    );
+    )
+    .expect("readiness report should build");
 
     assert_eq!(
         report.stage_status("controlled_connect"),
@@ -433,7 +485,8 @@ fn no_submit_readiness_writer_enforces_configured_byte_cap() {
         Ok(()),
         Ok(()),
         &[],
-    );
+    )
+    .expect("readiness report should build");
 
     let error = report
         .write_redacted_json_with_max_bytes(&report_path, 1_u64)
@@ -727,7 +780,6 @@ fn test_report_metadata() -> BoltV3NoSubmitReadinessReportMetadata {
         approval_id_hash: sha256_hex("operator-approved-canary-001"),
         executable_identity: "test-executable-identity".to_string(),
         config_bundle_checksum: "test-config-bundle-checksum".to_string(),
-        generated_at_unix_seconds: current_unix_seconds_for_test(),
     }
 }
 
@@ -787,7 +839,8 @@ async fn no_submit_readiness_serializes_top_level_schema_version_key_matching_co
         Ok(()),
         Ok(()),
         &["secret-value".to_string()],
-    );
+    )
+    .expect("readiness report should build");
     let value = serde_json::to_value(&report).expect("report should serialize");
     let object = value
         .as_object()

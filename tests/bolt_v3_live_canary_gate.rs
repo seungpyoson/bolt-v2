@@ -7,6 +7,7 @@ use bolt_v2::{
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness_schema::{
+        APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
         CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, GENERATED_AT_UNIX_SECONDS_KEY,
         LIVE_NODE_BUILD_STAGE, NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE,
@@ -888,6 +889,54 @@ async fn live_canary_gate_rejects_zero_readiness_report_max_age() {
             BoltV3LiveCanaryGateError::InvalidReadinessReportMaxAge { value: 0 }
         ),
         "expected readiness report max-age rejection, got {error:?}"
+    );
+}
+
+#[test]
+fn live_canary_gate_uses_named_approval_consumption_protocol_constants() {
+    let source = std::fs::read_to_string("src/bolt_v3_live_canary_gate.rs")
+        .expect("live canary gate source should exist");
+    let tiny_source = std::fs::read_to_string("src/bolt_v3_tiny_canary_evidence.rs")
+        .expect("tiny canary evidence source should exist");
+    let schema_source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness_schema.rs")
+        .expect("readiness schema source should exist");
+
+    assert!(
+        schema_source.contains("pub const APPROVAL_CONSUMPTION_SCHEMA_VERSION"),
+        "approval-consumption schema version must be a shared protocol constant"
+    );
+    assert!(
+        schema_source.contains("pub const APPROVAL_CONSUMPTION_RECORD_KIND"),
+        "approval-consumption record kind must be a shared protocol constant"
+    );
+    assert!(
+        source.contains("APPROVAL_CONSUMPTION_SCHEMA_VERSION"),
+        "gate validation must consume shared approval-consumption schema version"
+    );
+    assert!(
+        tiny_source.contains("APPROVAL_CONSUMPTION_SCHEMA_VERSION"),
+        "consumption evidence writer must consume shared approval-consumption schema version"
+    );
+    assert!(
+        !source.contains("validate_consumption_i64_field(&path, object, \"schema_version\", 1)?;"),
+        "approval-consumption schema version validation must not use an inline literal"
+    );
+    assert!(
+        !source.contains("const APPROVAL_CONSUMPTION_SCHEMA_VERSION"),
+        "approval-consumption constants must not be gate-local"
+    );
+    assert!(
+        !tiny_source.contains("const PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION"),
+        "approval-consumption constants must not be duplicated in the evidence writer"
+    );
+    assert_eq!(APPROVAL_CONSUMPTION_SCHEMA_VERSION, 1);
+    assert_eq!(
+        APPROVAL_CONSUMPTION_RECORD_KIND,
+        "phase8_operator_approval_consumption"
+    );
+    assert!(
+        !source.contains("\"phase8_operator_approval_consumption\",\n    )?;"),
+        "approval-consumption record-kind validation must not use an inline literal"
     );
 }
 
@@ -2155,8 +2204,8 @@ fn write_valid_approval_consumption_proof(evidence: &LiveCanaryOperatorEvidenceB
 
 fn approval_consumption_proof(evidence: &LiveCanaryOperatorEvidenceBlock) -> serde_json::Value {
     serde_json::json!({
-        "schema_version": 1,
-        "record_kind": "phase8_operator_approval_consumption",
+        "schema_version": APPROVAL_CONSUMPTION_SCHEMA_VERSION,
+        "record_kind": APPROVAL_CONSUMPTION_RECORD_KIND,
         "head_sha": evidence.head_sha,
         "root_toml_sha256": root_toml_sha256_for_test(),
         "approval_envelope_sha256": evidence.approval_envelope_sha256,

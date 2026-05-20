@@ -24,6 +24,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use crate::{
     bolt_v3_config::{LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
     bolt_v3_no_submit_readiness_schema::{
+        APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
         CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, GENERATED_AT_UNIX_SECONDS_KEY,
         LIVE_NODE_BUILD_STAGE, NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE,
@@ -809,12 +810,17 @@ async fn validate_operator_approval_consumption(
         }
     })?;
 
-    validate_consumption_i64_field(&path, object, "schema_version", 1)?;
+    validate_consumption_i64_field(
+        &path,
+        object,
+        "schema_version",
+        APPROVAL_CONSUMPTION_SCHEMA_VERSION,
+    )?;
     validate_consumption_string_field(
         &path,
         object,
         "record_kind",
-        "phase8_operator_approval_consumption",
+        APPROVAL_CONSUMPTION_RECORD_KIND,
     )?;
     let approval_id_hash = sha256_hex(approval_id.as_bytes());
     let canary_evidence_path_hash = sha256_hex(evidence.canary_evidence_path.as_bytes());
@@ -1436,6 +1442,7 @@ mod tests {
             load_bolt_v3_config,
         },
         bolt_v3_live_canary_gate::{
+            APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
             APPROVAL_ID_HASH_KEY, BoltV3LiveCanaryGateError, CONFIG_BUNDLE_CHECKSUM_KEY,
             CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY,
             GENERATED_AT_UNIX_SECONDS_KEY, LIVE_NODE_BUILD_STAGE,
@@ -1581,8 +1588,8 @@ mod tests {
         fs::write(
             &approval_consumption_path,
             serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "record_kind": "phase8_operator_approval_consumption",
+                "schema_version": APPROVAL_CONSUMPTION_SCHEMA_VERSION,
+                "record_kind": APPROVAL_CONSUMPTION_RECORD_KIND,
                 "head_sha": evidence.head_sha.as_str(),
                 "root_toml_sha256": root_toml_sha256,
                 "approval_envelope_sha256": evidence.approval_envelope_sha256.as_str(),
@@ -1769,8 +1776,8 @@ mod tests {
         write_json_value(
             &approval_consumption_path,
             serde_json::json!({
-                "schema_version": 1,
-                "record_kind": "phase8_operator_approval_consumption",
+                "schema_version": APPROVAL_CONSUMPTION_SCHEMA_VERSION,
+                "record_kind": APPROVAL_CONSUMPTION_RECORD_KIND,
                 "head_sha": evidence.head_sha,
                 "root_toml_sha256": sha256_hex(&root_toml_bytes),
                 "approval_envelope_sha256": evidence.approval_envelope_sha256,

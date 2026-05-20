@@ -1,6 +1,11 @@
 name: Summarize new issues
 
 on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to summarize"
+        required: true
   issues:
     types: [opened]
 
@@ -13,28 +18,65 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Resolve issue context
+        id: ctx
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_NUMBER: ${{ github.event.inputs.issue_number }}
+          EVENT_NUMBER: ${{ github.event.issue.number }}
+          EVENT_TITLE: ${{ github.event.issue.title }}
+          EVENT_BODY: ${{ github.event.issue.body }}
+        run: |
+          # Unify the two triggers. On workflow_dispatch the issue payload is
+          # absent, so fetch title/body via gh. All untrusted values arrive as
+          # env vars and are written through a randomized heredoc delimiter —
+          # they are never interpolated into this script.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            number="$INPUT_NUMBER"
+            title="$(gh issue view "$number" --json title --jq .title)"
+            body="$(gh issue view "$number" --json body --jq .body)"
+          else
+            number="$EVENT_NUMBER"
+            title="$EVENT_TITLE"
+            body="$EVENT_BODY"
+          fi
+
+          delim="EOF_$(openssl rand -hex 16)"
+          {
+            echo "number=$number"
+            echo "title<<$delim"
+            printf '%s\n' "$title"
+            echo "$delim"
+            echo "body<<$delim"
+            printf '%s\n' "$body"
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Run AI Summarization Chain
         id: ai_chain
         continue-on-error: true
         run: |
-          # 5-stage resilient chain (GPT-5 -> o3 -> Phi-4 -> o4-mini -> OpenRouter)
-          # Hand-rolled curl implementation used over actions/ai-inference to support 
-          # complex multi-model fallback and granular reasoning_effort control.
+          # 5-stage resilient chain (GPT-5 -> o3 -> Phi-4 -> o4-mini -> OpenRouter).
+          # Hand-rolled curl is used over actions/ai-inference to support the
+          # multi-model fallback and granular reasoning_effort control.
           MODELS=("openai/gpt-5" "openai/o3" "microsoft/phi-4-reasoning" "openai/o4-mini")
           SUCCESS=false
           FINAL_SUMMARY=""
           USED_MODEL=""
-          
+
           for model in "${MODELS[@]}"; do
             echo "Attempting summarization with $model..."
-            
-            # Determine reasoning effort (high is documented max)
+
+            # Determine reasoning effort (high is the documented max)
             REASONING=""
             if [[ "$model" == *"gpt-5"* || "$model" == *"o3"* || "$model" == *"o4-mini"* ]]; then
               REASONING="high"
             fi
 
-            # Safely construct JSON using Python
+            # Build the request body with Python's json.dumps so untrusted
+            # title/body (read from env) are JSON-escaped, never shell-parsed.
             REQUEST_BODY=$(python3 -c "import sys, json, os; print(json.dumps({
               'model': sys.argv[1],
               'messages': [
@@ -55,14 +97,11 @@ jobs:
               -H "Authorization: Bearer $GH_MODELS_TOKEN" \
               -d "$REQUEST_BODY")
 
-            # Extract summary safely
-            summary=$(echo "$response" | python3 -c "import sys, json; 
-try:
-    data = json.load(sys.stdin)
-    content = data['choices'][0]['message']['content']
-    if content: print(content)
-except Exception:
-    pass" 2>/dev/null)
+            # Extract the content with jq (preinstalled). `// empty` yields an
+            # empty string for missing choices / null content; malformed JSON
+            # makes jq fail and the suppressed stderr leaves summary empty, so
+            # the loop falls through to the next model.
+            summary=$(printf '%s' "$response" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
 
             if [ -n "$summary" ]; then
               FINAL_SUMMARY="$summary"
@@ -73,7 +112,7 @@ except Exception:
             echo "Failed with $model."
           done
 
-          # 2. OpenRouter Fallback
+          # 2. OpenRouter fallback
           if [ "$SUCCESS" = false ] && [ -n "$OPENROUTER_API_KEY" ]; then
             echo "Attempting OpenRouter fallback..."
             REQUEST_BODY=$(python3 -c "import sys, json, os; print(json.dumps({
@@ -96,14 +135,8 @@ except Exception:
               -H "Authorization: Bearer $OPENROUTER_API_KEY" \
               -d "$REQUEST_BODY")
 
-            summary=$(echo "$response" | python3 -c "import sys, json; 
-try:
-    data = json.load(sys.stdin)
-    content = data['choices'][0]['message']['content']
-    if content: print(content)
-except Exception:
-    pass" 2>/dev/null)
-            
+            summary=$(printf '%s' "$response" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+
             if [ -n "$summary" ]; then
               FINAL_SUMMARY="$summary"
               USED_MODEL="openrouter/auto (OpenRouter Fallback)"
@@ -112,7 +145,7 @@ except Exception:
           fi
 
           if [ "$SUCCESS" = true ]; then
-            # Safe multiline output using randomized unique delimiter
+            # Multiline-safe output with a randomized unique delimiter.
             DELIM="EOF_$(openssl rand -hex 16)"
             {
               echo "summary<<$DELIM"
@@ -127,15 +160,15 @@ except Exception:
         env:
           GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN || secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_TITLE: ${{ steps.ctx.outputs.title }}
+          ISSUE_BODY: ${{ steps.ctx.outputs.body }}
 
       - name: Comment with AI summary
         if: steps.ai_chain.outputs.summary != ''
         run: |
           body_file="$(mktemp)"
           trap 'rm -f "$body_file"' EXIT
-          
+
           {
             printf '%s\n\n' "### AI issue summary"
             printf '%s\n\n' "$SUMMARY"
@@ -144,7 +177,8 @@ except Exception:
           gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ steps.ctx.outputs.number }}
           SUMMARY: ${{ steps.ai_chain.outputs.summary }}
           MODEL_INFO: ${{ steps.ai_chain.outputs.model_info }}
 

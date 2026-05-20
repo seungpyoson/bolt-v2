@@ -2960,7 +2960,7 @@ fn loaded_with_live_canary(report_path: &str) -> LoadedBoltV3Config {
         no_submit_readiness_report_path: report_path.to_string(),
         max_no_submit_readiness_report_bytes: 4096,
         readiness_report_max_age_seconds: 60,
-        operator_evidence: None,
+        operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         max_live_order_count: 1,
         max_notional_per_order: "0.25".to_string(),
     });

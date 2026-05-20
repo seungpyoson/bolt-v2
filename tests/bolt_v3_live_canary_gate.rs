@@ -61,7 +61,7 @@ async fn live_canary_gate_rejects_empty_approval_id() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -88,7 +88,7 @@ async fn live_canary_gate_rejects_empty_readiness_report_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -99,6 +99,34 @@ async fn live_canary_gate_rejects_empty_readiness_report_path() {
     assert!(
         matches!(error, BoltV3LiveCanaryGateError::MissingReadinessReportPath),
         "expected missing readiness report path rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_missing_operator_evidence_before_reading_report() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-read-before-operator-evidence-check.json"
+                .to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: None,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("missing operator_evidence must fail closed before report read");
+
+    assert!(
+        matches!(error, BoltV3LiveCanaryGateError::MissingOperatorEvidence),
+        "missing operator_evidence must fail before reading report, got {error:?}"
     );
 }
 
@@ -115,7 +143,7 @@ async fn live_canary_gate_rejects_zero_order_count() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -145,7 +173,7 @@ async fn live_canary_gate_rejects_zero_report_byte_cap() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 0,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -177,7 +205,7 @@ async fn live_canary_gate_rejects_invalid_canary_notional_values() {
                 max_notional_per_order: candidate.to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-                operator_evidence: None,
+                operator_evidence: Some(valid_operator_evidence()),
             },
         );
 
@@ -212,7 +240,7 @@ async fn live_canary_gate_rejects_invalid_root_notional_values() {
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-                operator_evidence: None,
+                operator_evidence: Some(valid_operator_evidence()),
             },
         );
 
@@ -248,7 +276,7 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
             max_notional_per_order: " 1.00 ".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -283,13 +311,168 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
             max_notional_per_order: "10.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
     check_bolt_v3_live_canary_gate(&loaded)
         .await
         .expect("notional equal to root risk cap should pass");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_blank_operator_evidence_required_field() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.approval_envelope_path = "  ".to_string();
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("blank operator evidence field must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field } => {
+            assert_eq!(field, "approval_envelope_path");
+        }
+        other => panic!("expected approval_envelope_path rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_operator_evidence_window_without_positive_duration() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.approval_not_before_unix_seconds = 1_000;
+    operator_evidence.approval_not_after_unix_seconds = 1_000;
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("non-positive operator approval window must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::InvalidOperatorApprovalWindow {
+            approval_not_before_unix_seconds,
+            approval_not_after_unix_seconds,
+        } => {
+            assert_eq!(approval_not_before_unix_seconds, 1_000);
+            assert_eq!(approval_not_after_unix_seconds, 1_000);
+        }
+        other => panic!("expected invalid approval window rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_operator_evidence_window_before_current_time() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let now = current_unix_seconds_for_test() as i64;
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.approval_not_before_unix_seconds = now + 3600;
+    operator_evidence.approval_not_after_unix_seconds = now + 7200;
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("future operator approval window must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::InactiveOperatorApprovalWindow {
+            approval_not_before_unix_seconds,
+            approval_not_after_unix_seconds,
+            ..
+        } => {
+            assert_eq!(approval_not_before_unix_seconds, now + 3600);
+            assert_eq!(approval_not_after_unix_seconds, now + 7200);
+        }
+        other => panic!("expected inactive approval window rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_operator_evidence_window_after_current_time() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let now = current_unix_seconds_for_test() as i64;
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.approval_not_before_unix_seconds = now - 7200;
+    operator_evidence.approval_not_after_unix_seconds = now - 3600;
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("expired operator approval window must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::InactiveOperatorApprovalWindow {
+            approval_not_before_unix_seconds,
+            approval_not_after_unix_seconds,
+            ..
+        } => {
+            assert_eq!(approval_not_before_unix_seconds, now - 7200);
+            assert_eq!(approval_not_after_unix_seconds, now - 3600);
+        }
+        other => panic!("expected inactive approval window rejection, got {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -314,7 +497,7 @@ async fn live_canary_gate_rejects_stale_no_submit_linkage_fields() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -342,7 +525,7 @@ async fn live_canary_gate_rejects_no_submit_report_missing_generated_at() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -380,7 +563,7 @@ async fn live_canary_gate_rejects_expired_no_submit_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -417,7 +600,7 @@ async fn live_canary_gate_uses_toml_owned_readiness_report_max_age_seconds() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: configured_max_age_seconds,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -473,7 +656,7 @@ async fn live_canary_gate_rejects_missing_wrong_or_non_string_schema_version() {
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-                operator_evidence: None,
+                operator_evidence: Some(valid_operator_evidence()),
             },
         );
 
@@ -508,7 +691,7 @@ async fn live_canary_gate_rejects_notional_above_root_risk_cap() {
             max_notional_per_order: "11.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -541,7 +724,7 @@ async fn live_canary_gate_rejects_empty_stage_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -576,7 +759,7 @@ async fn live_canary_gate_rejects_report_missing_stages_key() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -613,7 +796,7 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -650,7 +833,7 @@ async fn live_canary_gate_reports_each_unsatisfied_required_stage_once() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -688,7 +871,7 @@ async fn live_canary_gate_rejects_missing_no_submit_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -719,7 +902,7 @@ async fn live_canary_gate_rejects_malformed_no_submit_report_json() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -755,7 +938,7 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: report_len,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -780,7 +963,7 @@ async fn live_canary_gate_rejects_no_submit_report_above_configured_byte_cap() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 1,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -814,7 +997,7 @@ async fn live_canary_gate_distinguishes_non_object_report_from_missing_stages() 
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -857,7 +1040,7 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -894,7 +1077,7 @@ async fn live_canary_gate_rejects_name_only_stage_field() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -945,7 +1128,7 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(valid_operator_evidence()),
         },
     );
 
@@ -969,6 +1152,10 @@ fn loaded_without_live_canary(loaded: LoadedBoltV3Config) -> LoadedBoltV3Config 
     let mut root = loaded.root;
     root.live_canary = None;
     LoadedBoltV3Config { root, ..loaded }
+}
+
+fn valid_operator_evidence() -> bolt_v2::bolt_v3_config::LiveCanaryOperatorEvidenceBlock {
+    support::valid_live_canary_operator_evidence()
 }
 
 fn write_no_submit_report(path: &std::path::Path, stages: &[(&str, &str)]) {

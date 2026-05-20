@@ -127,9 +127,9 @@ blockers, not as deferred approval to trade.
 
 **Independent Test**: `cargo test --test bolt_v3_live_canary_gate -- --nocapture` and `cargo test --test bolt_v3_tiny_canary_operator -- --nocapture` reject missing operator evidence, invalid approval windows, nonce mismatch, stale approval, SSM manifest mismatch, strategy-input mismatch, financial-envelope mismatch, and pre-run evidence mismatch.
 
-- [ ] T052 [P] [US5] Write failing production-gate tests in `tests/bolt_v3_live_canary_gate.rs` requiring `[live_canary].operator_evidence` for production `Run`.
+- [x] T052 [P] [US5] Write failing production-gate tests in `tests/bolt_v3_live_canary_gate.rs` requiring `[live_canary].operator_evidence` for production `Run`.
 - [ ] T053 [P] [US5] Write failing operator-envelope regression tests in `tests/bolt_v3_tiny_canary_operator.rs` for approval window, nonce, SSM manifest hash, strategy-input hash, financial-envelope hash, and pre-run evidence hash.
-- [ ] T054 [US5] Validate `LiveCanaryOperatorEvidenceBlock` inside `src/bolt_v3_live_canary_gate.rs` before submit admission arms in `src/bolt_v3_live_node.rs`.
+- [x] T054 [US5] Validate `LiveCanaryOperatorEvidenceBlock` inside `src/bolt_v3_live_canary_gate.rs` before submit admission arms in `src/bolt_v3_live_node.rs`.
 - [ ] T055 [US5] Update `docs/bolt-v3/2026-05-20-production-readiness-end-to-end-trace.md`, `specs/001-thin-live-canary-path/checklists/production-readiness.md`, and `specs/001-thin-live-canary-path/quickstart.md` with the production-enforced operator evidence fields.
 - [ ] T056 [US5] Run `cargo test --test bolt_v3_live_canary_gate -- --nocapture` and `cargo test --test bolt_v3_tiny_canary_operator -- --nocapture`.
 

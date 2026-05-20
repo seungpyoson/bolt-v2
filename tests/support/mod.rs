@@ -16,6 +16,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use bolt_v2::bolt_v3_config::LiveCanaryOperatorEvidenceBlock;
 use nautilus_common::enums::Environment;
 use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_common::{
@@ -159,6 +160,37 @@ pub fn repo_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
+pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock {
+    let now = current_unix_seconds() as i64;
+    LiveCanaryOperatorEvidenceBlock {
+        approval_envelope_path: "operator-evidence/approval-envelope.json".to_string(),
+        ssm_manifest_path: "operator-evidence/ssm-manifest.json".to_string(),
+        ssm_manifest_sha256: sha256_hex(b"ssm-manifest"),
+        strategy_input_evidence_path: "operator-evidence/strategy-input.json".to_string(),
+        strategy_input_evidence_sha256: sha256_hex(b"strategy-input"),
+        financial_envelope_path: "operator-evidence/financial-envelope.json".to_string(),
+        financial_envelope_sha256: sha256_hex(b"financial-envelope"),
+        pre_run_state_path: "operator-evidence/pre-run-state.json".to_string(),
+        pre_run_state_sha256: sha256_hex(b"pre-run-state"),
+        abort_plan_path: "operator-evidence/abort-plan.md".to_string(),
+        abort_plan_sha256: sha256_hex(b"abort-plan"),
+        canary_evidence_path: "operator-evidence/canary-evidence.json".to_string(),
+        approval_not_before_unix_seconds: now - 60,
+        approval_not_after_unix_seconds: now + 3600,
+        approval_nonce_path: "operator-evidence/approval-nonce.txt".to_string(),
+        approval_nonce_sha256: sha256_hex(b"approval-nonce"),
+        approval_consumption_path: "operator-evidence/approval-consumption.json".to_string(),
+        decision_evidence_path: "operator-evidence/decision-evidence.jsonl".to_string(),
+        client_order_id_hash: sha256_hex(b"client-order-id"),
+        venue_order_id_hash: sha256_hex(b"venue-order-id"),
+        nt_submit_event_path: "operator-evidence/nt-submit-event.json".to_string(),
+        venue_order_state_path: "operator-evidence/venue-order-state.json".to_string(),
+        strategy_cancel_path: Some("operator-evidence/strategy-cancel.json".to_string()),
+        restart_reconciliation_path: "operator-evidence/restart-reconciliation.json".to_string(),
+        post_run_hygiene_path: "operator-evidence/post-run-hygiene.json".to_string(),
+    }
+}
+
 pub fn validated_bolt_v3_live_canary_gate_report(
     max_live_order_count: u32,
     max_notional_per_order: rust_decimal::Decimal,
@@ -178,7 +210,7 @@ pub fn validated_bolt_v3_live_canary_gate_report(
         max_notional_per_order: max_notional_per_order.to_string(),
         max_no_submit_readiness_report_bytes: 4096,
         readiness_report_max_age_seconds: 60,
-        operator_evidence: None,
+        operator_evidence: Some(valid_live_canary_operator_evidence()),
     });
 
     let runtime = tokio::runtime::Builder::new_current_thread()

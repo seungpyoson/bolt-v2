@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
 use crate::{
-    bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config},
+    bolt_v3_config::{LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
         CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, GENERATED_AT_UNIX_SECONDS_KEY,
@@ -109,6 +109,19 @@ pub enum BoltV3LiveCanaryGateError {
         max_notional_per_order: Decimal,
         root_max_notional_per_order: Decimal,
     },
+    MissingOperatorEvidence,
+    MissingOperatorEvidenceField {
+        field: &'static str,
+    },
+    InvalidOperatorApprovalWindow {
+        approval_not_before_unix_seconds: i64,
+        approval_not_after_unix_seconds: i64,
+    },
+    InactiveOperatorApprovalWindow {
+        current_unix_seconds: u64,
+        approval_not_before_unix_seconds: i64,
+        approval_not_after_unix_seconds: i64,
+    },
     ReadinessReportRead {
         path: PathBuf,
         source: std::io::Error,
@@ -181,6 +194,33 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                 f,
                 "bolt-v3 live canary max_notional_per_order ({max_notional_per_order}) exceeds \
                  risk.default_max_notional_per_order ({root_max_notional_per_order})"
+            ),
+            BoltV3LiveCanaryGateError::MissingOperatorEvidence => write!(
+                f,
+                "bolt-v3 live canary `[live_canary].operator_evidence` is required"
+            ),
+            BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field } => write!(
+                f,
+                "bolt-v3 live canary `[live_canary].operator_evidence.{field}` is empty"
+            ),
+            BoltV3LiveCanaryGateError::InvalidOperatorApprovalWindow {
+                approval_not_before_unix_seconds,
+                approval_not_after_unix_seconds,
+            } => write!(
+                f,
+                "bolt-v3 live canary `[live_canary].operator_evidence.approval_not_after_unix_seconds` \
+                 must be greater than approval_not_before_unix_seconds \
+                 ({approval_not_before_unix_seconds}), got {approval_not_after_unix_seconds}"
+            ),
+            BoltV3LiveCanaryGateError::InactiveOperatorApprovalWindow {
+                current_unix_seconds,
+                approval_not_before_unix_seconds,
+                approval_not_after_unix_seconds,
+            } => write!(
+                f,
+                "bolt-v3 live canary operator approval window is not active: current time \
+                 {current_unix_seconds} is outside \
+                 [{approval_not_before_unix_seconds}, {approval_not_after_unix_seconds}]"
             ),
             BoltV3LiveCanaryGateError::ReadinessReportRead { path, source } => {
                 write!(
@@ -308,6 +348,9 @@ pub async fn check_bolt_v3_live_canary_gate(
         });
     }
 
+    let current_unix_seconds = current_unix_seconds()?;
+    validate_operator_evidence(block, current_unix_seconds)?;
+
     let report_path = resolve_report_path(&loaded.root_path, block);
     let report_bytes =
         read_report_bytes_with_limit(&report_path, block.max_no_submit_readiness_report_bytes)
@@ -341,7 +384,6 @@ pub async fn check_bolt_v3_live_canary_gate(
     }
     let expected_approval_id_hash = sha256_hex(approval_id.as_bytes());
     let expected_executable_identity = executable_identity().await?;
-    let current_unix_seconds = current_unix_seconds()?;
     validate_no_submit_readiness_report(
         report_object,
         &expected_approval_id_hash,
@@ -427,6 +469,93 @@ fn parse_positive_decimal(
         });
     }
     Ok(decimal)
+}
+
+fn validate_operator_evidence(
+    block: &LiveCanaryBlock,
+    current_unix_seconds: u64,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let evidence = block
+        .operator_evidence
+        .as_ref()
+        .ok_or(BoltV3LiveCanaryGateError::MissingOperatorEvidence)?;
+
+    for (field, value) in required_operator_evidence_fields(evidence) {
+        if value.trim().is_empty() {
+            return Err(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field });
+        }
+    }
+    if let Some(strategy_cancel_path) = &evidence.strategy_cancel_path {
+        if strategy_cancel_path.trim().is_empty() {
+            return Err(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
+                field: "strategy_cancel_path",
+            });
+        }
+    }
+
+    if evidence.approval_not_after_unix_seconds <= evidence.approval_not_before_unix_seconds {
+        return Err(BoltV3LiveCanaryGateError::InvalidOperatorApprovalWindow {
+            approval_not_before_unix_seconds: evidence.approval_not_before_unix_seconds,
+            approval_not_after_unix_seconds: evidence.approval_not_after_unix_seconds,
+        });
+    }
+
+    let current = i128::from(current_unix_seconds);
+    let not_before = i128::from(evidence.approval_not_before_unix_seconds);
+    let not_after = i128::from(evidence.approval_not_after_unix_seconds);
+    if current < not_before || current > not_after {
+        return Err(BoltV3LiveCanaryGateError::InactiveOperatorApprovalWindow {
+            current_unix_seconds,
+            approval_not_before_unix_seconds: evidence.approval_not_before_unix_seconds,
+            approval_not_after_unix_seconds: evidence.approval_not_after_unix_seconds,
+        });
+    }
+
+    Ok(())
+}
+
+fn required_operator_evidence_fields(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> [(&'static str, &str); 22] {
+    [
+        ("approval_envelope_path", &evidence.approval_envelope_path),
+        ("ssm_manifest_path", &evidence.ssm_manifest_path),
+        ("ssm_manifest_sha256", &evidence.ssm_manifest_sha256),
+        (
+            "strategy_input_evidence_path",
+            &evidence.strategy_input_evidence_path,
+        ),
+        (
+            "strategy_input_evidence_sha256",
+            &evidence.strategy_input_evidence_sha256,
+        ),
+        ("financial_envelope_path", &evidence.financial_envelope_path),
+        (
+            "financial_envelope_sha256",
+            &evidence.financial_envelope_sha256,
+        ),
+        ("pre_run_state_path", &evidence.pre_run_state_path),
+        ("pre_run_state_sha256", &evidence.pre_run_state_sha256),
+        ("abort_plan_path", &evidence.abort_plan_path),
+        ("abort_plan_sha256", &evidence.abort_plan_sha256),
+        ("canary_evidence_path", &evidence.canary_evidence_path),
+        ("approval_nonce_path", &evidence.approval_nonce_path),
+        ("approval_nonce_sha256", &evidence.approval_nonce_sha256),
+        (
+            "approval_consumption_path",
+            &evidence.approval_consumption_path,
+        ),
+        ("decision_evidence_path", &evidence.decision_evidence_path),
+        ("client_order_id_hash", &evidence.client_order_id_hash),
+        ("venue_order_id_hash", &evidence.venue_order_id_hash),
+        ("nt_submit_event_path", &evidence.nt_submit_event_path),
+        ("venue_order_state_path", &evidence.venue_order_state_path),
+        (
+            "restart_reconciliation_path",
+            &evidence.restart_reconciliation_path,
+        ),
+        ("post_run_hygiene_path", &evidence.post_run_hygiene_path),
+    ]
 }
 
 fn validate_no_submit_readiness_report(

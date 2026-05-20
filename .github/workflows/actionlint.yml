@@ -20,6 +20,7 @@ concurrency:
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
   actionlint:
@@ -30,24 +31,24 @@ jobs:
       - uses: reviewdog/action-actionlint@6fb7acc99f4a1008869fa8a0f09cfca740837d9d # v1.72.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # reporter=local prints findings to the job log; the job's exit code
-          # (governed by fail_level below) is the single gate. We chose it over
-          # github-check to keep contents:read-only (no checks: write), avoid a
-          # second separately-concluded check-run, and behave identically on
-          # fork PRs. Trade-off: no inline PR annotations.
+          # reporter=github-check posts findings as inline annotations (visible
+          # in the PR Checks tab). The real merge gate is the job's exit code,
+          # governed by fail_level: error — the job fails only on error-level
+          # findings (the #410 class).
           #
-          # A github-check variant also works and would keep annotations: with
-          # level: warning, reviewdog's conclusion() returns `neutral` (accepted
-          # by required checks) while fail_level=error still fails the job only
-          # on errors. We saw the action's *default* level: error instead post a
-          # `failure` conclusion on the intentional info-level SC2016 at commit
-          # 8624b66c (the job step stayed green). So local is a deliberate
-          # trade-off, not the only workable config.
-          reporter: local
+          # level: warning keeps the separate reviewdog check-run from
+          # false-failing on harmless notes: reviewdog's conclusion() returns
+          # `neutral` (accepted by required checks, does not block) whenever the
+          # configured level is info|warning and any annotation exists. At the
+          # action's *default* level: error that same path returns `failure` on
+          # ANY annotation, which red-flagged the intentional info-level SC2016
+          # in summary.yml at commit 8624b66c even though the job step was green.
+          reporter: github-check
+          level: warning
           # nofilter: lint every finding in every workflow file, not just lines
           # in the PR diff. reviewdog's default (file) and `added` would let a
           # structural error anchored away from an edited line (the #410 class)
           # slip past. fail_level then exits non-zero only on error-level
-          # findings, so info/warning notes are logged without failing the gate.
+          # findings, so info/warning notes are annotated without failing the job.
           filter_mode: nofilter
           fail_level: error

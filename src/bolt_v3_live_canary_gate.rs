@@ -100,6 +100,12 @@ pub enum BoltV3LiveCanaryGateError {
     InvalidReadinessReportSizeLimit {
         value: u64,
     },
+    InvalidOperatorEvidenceSizeLimit {
+        value: u64,
+    },
+    InvalidApprovalConsumptionMaxAge {
+        value: u64,
+    },
     InvalidMaxNotional {
         field: &'static str,
         value: String,
@@ -147,6 +153,11 @@ pub enum BoltV3LiveCanaryGateError {
         approval_not_before_unix_seconds: i64,
         approval_not_after_unix_seconds: i64,
         current_unix_seconds: u64,
+        approval_consumption_max_age_seconds: u64,
+    },
+    RootTomlRead {
+        path: PathBuf,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
     InvalidOperatorApprovalWindow {
         approval_not_before_unix_seconds: i64,
@@ -213,6 +224,14 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
             BoltV3LiveCanaryGateError::InvalidReadinessReportSizeLimit { value } => write!(
                 f,
                 "bolt-v3 live canary max_no_submit_readiness_report_bytes must be positive, got {value}"
+            ),
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceSizeLimit { value } => write!(
+                f,
+                "bolt-v3 live canary `[live_canary].operator_evidence.max_operator_evidence_file_bytes` must be positive, got {value}"
+            ),
+            BoltV3LiveCanaryGateError::InvalidApprovalConsumptionMaxAge { value } => write!(
+                f,
+                "bolt-v3 live canary `[live_canary].operator_evidence.approval_consumption_max_age_seconds` must be positive, got {value}"
             ),
             BoltV3LiveCanaryGateError::InvalidMaxNotional {
                 field,
@@ -286,9 +305,15 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                 approval_not_before_unix_seconds,
                 approval_not_after_unix_seconds,
                 current_unix_seconds,
+                approval_consumption_max_age_seconds,
             } => write!(
                 f,
-                "bolt-v3 live canary approval consumption proof {} is stale: consumed_unix_secs={consumed_unix_secs}, current_unix_seconds={current_unix_seconds}, approval window [{approval_not_before_unix_seconds}, {approval_not_after_unix_seconds}]",
+                "bolt-v3 live canary approval consumption proof {} is stale: consumed_unix_secs={consumed_unix_secs}, current_unix_seconds={current_unix_seconds}, approval window [{approval_not_before_unix_seconds}, {approval_not_after_unix_seconds}], approval_consumption_max_age_seconds={approval_consumption_max_age_seconds}",
+                path.display()
+            ),
+            BoltV3LiveCanaryGateError::RootTomlRead { path, source } => write!(
+                f,
+                "failed to read bolt-v3 live canary root TOML {}: {source}",
                 path.display()
             ),
             BoltV3LiveCanaryGateError::InvalidOperatorApprovalWindow {
@@ -386,6 +411,7 @@ impl std::error::Error for BoltV3LiveCanaryGateError {
             BoltV3LiveCanaryGateError::OperatorApprovalConsumptionParse { source, .. } => {
                 Some(source)
             }
+            BoltV3LiveCanaryGateError::RootTomlRead { source, .. } => Some(source.as_ref()),
             BoltV3LiveCanaryGateError::CurrentExecutablePath { source } => Some(source),
             BoltV3LiveCanaryGateError::ExecutableIdentityRead { source, .. } => Some(source),
             BoltV3LiveCanaryGateError::SystemTimeBeforeUnixEpoch { source } => Some(source),
@@ -603,6 +629,20 @@ async fn validate_operator_evidence(
             return Err(BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape { field });
         }
     }
+    if evidence.max_operator_evidence_file_bytes == 0 {
+        return Err(
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceSizeLimit {
+                value: evidence.max_operator_evidence_file_bytes,
+            },
+        );
+    }
+    if evidence.approval_consumption_max_age_seconds == 0 {
+        return Err(
+            BoltV3LiveCanaryGateError::InvalidApprovalConsumptionMaxAge {
+                value: evidence.approval_consumption_max_age_seconds,
+            },
+        );
+    }
 
     if evidence.approval_not_after_unix_seconds <= evidence.approval_not_before_unix_seconds {
         return Err(BoltV3LiveCanaryGateError::InvalidOperatorApprovalWindow {
@@ -635,7 +675,12 @@ async fn validate_operator_evidence_file_hashes(
 ) -> Result<(), BoltV3LiveCanaryGateError> {
     for binding in operator_evidence_file_hash_bindings(evidence) {
         let path = resolve_configured_path(root_path, binding.path);
-        let actual = sha256_file(&path, binding.hash_field).await?;
+        let actual = sha256_file(
+            &path,
+            binding.hash_field,
+            evidence.max_operator_evidence_file_bytes,
+        )
+        .await?;
         if actual != binding.expected_sha256 {
             return Err(BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch {
                 field: binding.hash_field,
@@ -653,12 +698,14 @@ async fn validate_operator_approval_consumption(
     current_unix_seconds: u64,
 ) -> Result<(), BoltV3LiveCanaryGateError> {
     let path = resolve_configured_path(root_path, &evidence.approval_consumption_path);
-    let bytes = tokio::fs::read(&path).await.map_err(|source| {
-        BoltV3LiveCanaryGateError::OperatorApprovalConsumptionRead {
-            path: path.clone(),
-            source,
-        }
-    })?;
+    let bytes = read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes)
+        .await
+        .map_err(
+            |source| BoltV3LiveCanaryGateError::OperatorApprovalConsumptionRead {
+                path: path.clone(),
+                source,
+            },
+        )?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|source| {
         BoltV3LiveCanaryGateError::OperatorApprovalConsumptionParse {
             path: path.clone(),
@@ -681,7 +728,10 @@ async fn validate_operator_approval_consumption(
     )?;
     let approval_id_hash = sha256_hex(approval_id.as_bytes());
     let canary_evidence_path_hash = sha256_hex(evidence.canary_evidence_path.as_bytes());
+    let root_toml_sha256 = root_toml_sha256(root_path)?;
     for (field, expected) in [
+        ("head_sha", evidence.head_sha.as_str()),
+        ("root_toml_sha256", root_toml_sha256.as_str()),
         ("ssm_manifest_sha256", evidence.ssm_manifest_sha256.as_str()),
         (
             "strategy_input_evidence_sha256",
@@ -725,7 +775,12 @@ async fn validate_operator_approval_consumption(
     let current = i128::from(current_unix_seconds);
     let not_before = i128::from(evidence.approval_not_before_unix_seconds);
     let not_after = i128::from(evidence.approval_not_after_unix_seconds);
-    if consumed < not_before || consumed > not_after || consumed > current {
+    let max_age = i128::from(evidence.approval_consumption_max_age_seconds);
+    if consumed < not_before
+        || consumed > not_after
+        || consumed > current
+        || current - consumed > max_age
+    {
         return Err(
             BoltV3LiveCanaryGateError::OperatorApprovalConsumptionStale {
                 path,
@@ -733,6 +788,7 @@ async fn validate_operator_approval_consumption(
                 approval_not_before_unix_seconds: evidence.approval_not_before_unix_seconds,
                 approval_not_after_unix_seconds: evidence.approval_not_after_unix_seconds,
                 current_unix_seconds,
+                approval_consumption_max_age_seconds: evidence.approval_consumption_max_age_seconds,
             },
         );
     }
@@ -815,7 +871,15 @@ fn consumption_i64_field(
 async fn sha256_file(
     path: &Path,
     field: &'static str,
+    max_bytes: u64,
 ) -> Result<String, BoltV3LiveCanaryGateError> {
+    reject_non_regular_or_oversized_file(path, max_bytes)
+        .await
+        .map_err(|source| BoltV3LiveCanaryGateError::OperatorEvidenceRead {
+            field,
+            path: path.to_path_buf(),
+            source,
+        })?;
     let mut file = tokio::fs::File::open(path).await.map_err(|source| {
         BoltV3LiveCanaryGateError::OperatorEvidenceRead {
             field,
@@ -841,10 +905,47 @@ async fn sha256_file(
     Ok(hex::encode(hasher.finalize()))
 }
 
+async fn read_regular_file_bounded(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+    reject_non_regular_or_oversized_file(path, max_bytes).await?;
+    tokio::fs::read(path).await
+}
+
+async fn reject_non_regular_or_oversized_file(path: &Path, max_bytes: u64) -> std::io::Result<()> {
+    let metadata = tokio::fs::symlink_metadata(path).await?;
+    if !metadata.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    let length = metadata.len();
+    if length > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn root_toml_sha256(root_path: &Path) -> Result<String, BoltV3LiveCanaryGateError> {
+    let root_text = crate::bounded_config_read::read_to_string(root_path).map_err(|source| {
+        BoltV3LiveCanaryGateError::RootTomlRead {
+            path: root_path.to_path_buf(),
+            source: Box::new(source),
+        }
+    })?;
+    Ok(sha256_hex(root_text.as_bytes()))
+}
+
 fn required_operator_evidence_fields(
     evidence: &LiveCanaryOperatorEvidenceBlock,
-) -> [(&'static str, &str); 22] {
+) -> [(&'static str, &str); 23] {
     [
+        ("head_sha", &evidence.head_sha),
         ("approval_envelope_path", &evidence.approval_envelope_path),
         ("ssm_manifest_path", &evidence.ssm_manifest_path),
         ("ssm_manifest_sha256", &evidence.ssm_manifest_sha256),

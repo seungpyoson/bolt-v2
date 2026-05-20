@@ -191,6 +191,9 @@ pub struct LiveCanaryBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LiveCanaryOperatorEvidenceBlock {
+    pub head_sha: String,
+    pub max_operator_evidence_file_bytes: u64,
+    pub approval_consumption_max_age_seconds: u64,
     pub approval_envelope_path: String,
     pub ssm_manifest_path: String,
     pub ssm_manifest_sha256: String,

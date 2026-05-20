@@ -96,6 +96,35 @@ readiness_report_max_age_seconds = 300
 max_live_order_count = 1
 max_notional_per_order = "1.00"
 
+[live_canary.operator_evidence]
+head_sha = "0123456789abcdef0123456789abcdef01234567"
+max_operator_evidence_file_bytes = 65536
+approval_consumption_max_age_seconds = 60
+approval_envelope_path = "/var/lib/bolt/operator-evidence/approval-envelope.json"
+ssm_manifest_path = "/var/lib/bolt/operator-evidence/ssm-manifest.json"
+ssm_manifest_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+strategy_input_evidence_path = "/var/lib/bolt/operator-evidence/strategy-input.json"
+strategy_input_evidence_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+financial_envelope_path = "/var/lib/bolt/operator-evidence/financial-envelope.json"
+financial_envelope_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+pre_run_state_path = "/var/lib/bolt/operator-evidence/pre-run-state.json"
+pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+abort_plan_path = "/var/lib/bolt/operator-evidence/abort-plan.json"
+abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+canary_evidence_path = "/var/lib/bolt/operator-evidence/canary-evidence.json"
+approval_not_before_unix_seconds = 1770000000
+approval_not_after_unix_seconds = 1770000300
+approval_nonce_path = "/var/lib/bolt/operator-evidence/approval-nonce.json"
+approval_nonce_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+approval_consumption_path = "/var/lib/bolt/operator-evidence/approval-consumed.json"
+decision_evidence_path = "/var/lib/bolt/operator-evidence/decision-evidence.jsonl"
+client_order_id_hash = "1111111111111111111111111111111111111111111111111111111111111111"
+venue_order_id_hash = "2222222222222222222222222222222222222222222222222222222222222222"
+nt_submit_event_path = "/var/lib/bolt/operator-evidence/nt-submit-event.json"
+venue_order_state_path = "/var/lib/bolt/operator-evidence/venue-order-state.json"
+restart_reconciliation_path = "/var/lib/bolt/operator-evidence/restart-reconciliation.json"
+post_run_hygiene_path = "/var/lib/bolt/operator-evidence/post-run-hygiene.json"
+
 [logging]
 stdout_level = "INFO"
 fileout_level = "INFO"

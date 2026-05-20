@@ -195,6 +195,9 @@ max_live_order_count = 1
 max_notional_per_order = "1.00"
 
 [live_canary.operator_evidence]
+head_sha = "0123456789abcdef0123456789abcdef01234567"
+max_operator_evidence_file_bytes = 4096
+approval_consumption_max_age_seconds = 60
 approval_envelope_path = "operator-evidence/approval-envelope.json"
 ssm_manifest_path = "operator-evidence/ssm-manifest.json"
 ssm_manifest_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -686,6 +689,18 @@ This section is optional for parse/build-only checks and required before `run_bo
 The `[live_canary]` TOML block is necessary but not sufficient for the one tiny-capital canary operator harness. Before live runner entry, the ignored Phase 8 harness also requires an operator-supplied evidence envelope through these environment fields. Values are evidence paths, sha256s, timestamps, or hashed identifiers; do not put secret values in these fields.
 
 These environment names belong to the ignored operator harness, not the production `src/bolt_v3_*` runtime literal audit. The production runtime literal verifier intentionally scans only production bolt-v3 sources.
+
+### `[live_canary.operator_evidence]`
+
+This section is required when `[live_canary]` is present. The production live canary gate treats every configured evidence path as read-only operator evidence and rejects non-regular files, symlinks, directories, unreadable files, or files larger than `max_operator_evidence_file_bytes` before hashing or parsing. Relative paths resolve from the root TOML directory.
+
+Required control fields:
+
+- `head_sha`: non-empty commit SHA for the exact approved head; the approval-consumption proof must carry the same `head_sha`
+- `max_operator_evidence_file_bytes`: positive integer cap applied to every operator evidence file read by the gate, including `approval_consumption_path`
+- `approval_consumption_max_age_seconds`: positive integer maximum age between `consumed_unix_secs` and gate evaluation time
+
+The approval-consumption JSON at `approval_consumption_path` must be a JSON object with `schema_version = 1`, `record_kind = "phase8_operator_approval_consumption"`, `head_sha`, `root_toml_sha256`, all configured evidence sha256 fields, `approval_id_hash`, `approval_not_before_unix_secs`, `approval_not_after_unix_secs`, `canary_evidence_path_hash`, and `consumed_unix_secs`. The gate computes `root_toml_sha256` from the loaded root TOML path at evaluation time and compares it to the proof; this value is not configured in TOML because hashing the file into itself would be circular.
 
 #### Approval and preflight fields
 
@@ -1637,6 +1652,9 @@ max_live_order_count = 1
 max_notional_per_order = "1.00"
 
 [live_canary.operator_evidence]
+head_sha = "0123456789abcdef0123456789abcdef01234567"
+max_operator_evidence_file_bytes = 4096
+approval_consumption_max_age_seconds = 60
 approval_envelope_path = "operator-evidence/approval-envelope.json"
 ssm_manifest_path = "operator-evidence/ssm-manifest.json"
 ssm_manifest_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

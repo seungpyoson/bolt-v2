@@ -248,6 +248,267 @@ async fn live_canary_gate_rejects_approval_consumption_hash_mismatch() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_approval_consumption_missing_head_sha() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let operator_evidence = valid_operator_evidence();
+    write_approval_consumption_proof_without_field(&operator_evidence, "head_sha");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("approval consumption proof missing head_sha must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMalformed { .. }
+        ) && error.to_string().contains("head_sha"),
+        "expected missing head_sha rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_approval_consumption_head_sha_mismatch() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let operator_evidence = valid_operator_evidence();
+    write_approval_consumption_proof_with_override(
+        &operator_evidence,
+        "head_sha",
+        serde_json::json!("fedcba9876543210fedcba9876543210fedcba98"),
+    );
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("approval consumption proof head_sha mismatch must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMismatch {
+                field: "head_sha",
+                ..
+            }
+        ),
+        "expected head_sha mismatch, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_approval_consumption_root_toml_sha256_mismatch() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let operator_evidence = valid_operator_evidence();
+    write_approval_consumption_proof_with_override(
+        &operator_evidence,
+        "root_toml_sha256",
+        serde_json::json!(sha256_hex(b"wrong-root-toml")),
+    );
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("approval consumption proof root_toml_sha256 mismatch must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMismatch {
+                field: "root_toml_sha256",
+                ..
+            }
+        ),
+        "expected root_toml_sha256 mismatch, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_stale_approval_consumption_beyond_configured_max_age() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let now = current_unix_seconds_for_test() as i64;
+    let mut operator_evidence = valid_operator_evidence_for_window(now - 600, now + 600);
+    operator_evidence.approval_consumption_max_age_seconds = 60;
+    write_approval_consumption_proof_with_override(
+        &operator_evidence,
+        "consumed_unix_secs",
+        serde_json::json!(now - 120),
+    );
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("stale approval consumption proof must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionStale { .. }
+        ),
+        "expected stale approval consumption rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_zero_operator_evidence_file_byte_cap() {
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.max_operator_evidence_file_bytes = 0;
+
+    let error =
+        check_operator_evidence_rejection(operator_evidence, "max_operator_evidence_file_bytes")
+            .await;
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceSizeLimit { value: 0 }
+        ),
+        "expected operator evidence byte-cap rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_zero_approval_consumption_max_age() {
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.approval_consumption_max_age_seconds = 0;
+
+    let error = check_operator_evidence_rejection(
+        operator_evidence,
+        "approval_consumption_max_age_seconds",
+    )
+    .await;
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::InvalidApprovalConsumptionMaxAge { value: 0 }
+        ),
+        "expected approval consumption max-age rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_oversized_operator_evidence_file_before_hashing() {
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.max_operator_evidence_file_bytes = 8;
+
+    let error = check_operator_evidence_rejection(operator_evidence, "ssm_manifest_sha256").await;
+
+    match error {
+        BoltV3LiveCanaryGateError::OperatorEvidenceRead { field, source, .. } => {
+            assert_eq!(field, "ssm_manifest_sha256");
+            assert!(
+                source.to_string().contains("exceeds"),
+                "expected oversize read rejection, got {source}"
+            );
+        }
+        other => panic!("expected oversized operator evidence read rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_oversized_approval_consumption_before_reading_to_eof() {
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.max_operator_evidence_file_bytes = 256;
+
+    let error =
+        check_operator_evidence_rejection(operator_evidence, "approval_consumption_path").await;
+
+    match error {
+        BoltV3LiveCanaryGateError::OperatorApprovalConsumptionRead { source, .. } => {
+            assert!(
+                source.to_string().contains("exceeds"),
+                "expected oversize proof read rejection, got {source}"
+            );
+        }
+        other => panic!("expected oversized approval consumption read rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_non_regular_operator_evidence_path() {
+    let mut operator_evidence = valid_operator_evidence();
+    let target = std::path::Path::new(&operator_evidence.ssm_manifest_path);
+    let symlink = target.with_file_name("ssm-manifest-link.json");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, &symlink).expect("test symlink should be created");
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(target, &symlink).expect("test symlink should be created");
+    operator_evidence.ssm_manifest_path = symlink.to_string_lossy().to_string();
+
+    let error = check_operator_evidence_rejection(operator_evidence, "ssm_manifest_sha256").await;
+
+    match error {
+        BoltV3LiveCanaryGateError::OperatorEvidenceRead { field, source, .. } => {
+            assert_eq!(field, "ssm_manifest_sha256");
+            assert!(
+                source.to_string().contains("regular file"),
+                "expected non-regular file rejection, got {source}"
+            );
+        }
+        other => panic!("expected non-regular operator evidence read rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_zero_order_count() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -1543,6 +1804,21 @@ fn write_approval_consumption_proof_with_override(
     );
 }
 
+fn write_approval_consumption_proof_without_field(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    field: &'static str,
+) {
+    let mut proof = approval_consumption_proof(evidence);
+    proof
+        .as_object_mut()
+        .expect("approval consumption proof should be an object")
+        .remove(field);
+    write_report_value(
+        std::path::Path::new(&evidence.approval_consumption_path),
+        proof,
+    );
+}
+
 fn write_valid_approval_consumption_proof(evidence: &LiveCanaryOperatorEvidenceBlock) {
     write_report_value(
         std::path::Path::new(&evidence.approval_consumption_path),
@@ -1554,6 +1830,8 @@ fn approval_consumption_proof(evidence: &LiveCanaryOperatorEvidenceBlock) -> ser
     serde_json::json!({
         "schema_version": 1,
         "record_kind": "phase8_operator_approval_consumption",
+        "head_sha": evidence.head_sha,
+        "root_toml_sha256": root_toml_sha256_for_test(),
         "ssm_manifest_sha256": evidence.ssm_manifest_sha256,
         "strategy_input_evidence_sha256": evidence.strategy_input_evidence_sha256,
         "financial_envelope_sha256": evidence.financial_envelope_sha256,
@@ -1670,4 +1948,11 @@ fn current_unix_seconds_for_test() -> u64 {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn root_toml_sha256_for_test() -> String {
+    sha256_hex(
+        &std::fs::read(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture root TOML should be readable"),
+    )
 }

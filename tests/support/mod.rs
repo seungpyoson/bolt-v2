@@ -209,9 +209,13 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
     let abort_plan_sha256 = sha256_file(&abort_plan_path);
     let approval_nonce_sha256 = sha256_file(&approval_nonce_path);
     let canary_evidence_path = canary_evidence_path.to_string_lossy().to_string();
+    let root_toml_sha256 = sha256_file(&repo_path("tests/fixtures/bolt_v3/root.toml"));
+    let head_sha = "0123456789abcdef0123456789abcdef01234567";
     let approval_consumption_proof = serde_json::json!({
         "schema_version": 1,
         "record_kind": "phase8_operator_approval_consumption",
+        "head_sha": head_sha,
+        "root_toml_sha256": root_toml_sha256,
         "ssm_manifest_sha256": ssm_manifest_sha256,
         "strategy_input_evidence_sha256": strategy_input_evidence_sha256,
         "financial_envelope_sha256": financial_envelope_sha256,
@@ -232,6 +236,9 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
     .expect("approval consumption proof should be written");
 
     LiveCanaryOperatorEvidenceBlock {
+        head_sha: head_sha.to_string(),
+        max_operator_evidence_file_bytes: 4096,
+        approval_consumption_max_age_seconds: 300,
         approval_envelope_path: approval_envelope_path.to_string_lossy().to_string(),
         ssm_manifest_path: ssm_manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256,

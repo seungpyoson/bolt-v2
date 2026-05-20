@@ -74,10 +74,11 @@ Current source code contains the intended single bolt-v3 production path and loc
 
 8. Live canary gate before runner entry
    - `src/bolt_v3_live_node.rs:436-446`
-   - `src/bolt_v3_live_canary_gate.rs:259-342`
-   - `src/bolt_v3_live_canary_gate.rs:422-474`
-   - The live runner checks the no-submit readiness report, approval hash, executable identity, config bundle checksum, configured caps, and required satisfied stages before arming submit admission.
-   - Trace meaning: a report with failed, skipped, stale, or mismatched stages is not live-runner evidence.
+   - `src/bolt_v3_live_canary_gate.rs:259-430`
+   - `src/bolt_v3_live_canary_gate.rs:474-570`
+   - The live runner checks `[live_canary].operator_evidence`, the no-submit readiness report, report freshness, approval hash, executable identity, config bundle checksum, configured caps, and required satisfied stages before arming submit admission.
+   - The operator approval window is checked before report validation and again after report validation using the late gate timestamp. The same late timestamp validates `generated_at_unix_seconds` against TOML-owned `readiness_report_max_age_seconds`.
+   - Trace meaning: missing operator evidence, expired approval, expired readiness report, or a report with failed, skipped, stale, or mismatched stages is not live-runner evidence.
 
 9. Submit admission before NT submit
    - `src/bolt_v3_submit_admission.rs:20-81`
@@ -106,11 +107,12 @@ Current source code contains the intended single bolt-v3 production path and loc
    - `src/bolt_v3_no_submit_readiness.rs:244-281`
    - `src/bolt_v3_no_submit_readiness.rs:291-331`
    - `src/bolt_v3_no_submit_readiness.rs:334-352`
-   - Stage builder records operator approval, secret resolution, live-node build, controlled connect, reference readiness, controlled disconnect, and report write.
+   - Stage builder records operator approval, secret resolution, live-node build, controlled connect, reference readiness, controlled disconnect, report write, and top-level `generated_at_unix_seconds`.
+   - Current reference readiness is fail-closed when NT cache evidence only proves configured instrument IDs. Instrument-ID cache membership is not treated as live reference-data freshness.
 
 4. Gate consumption
-   - `src/bolt_v3_live_canary_gate.rs:422-474`
-   - Gate requires all readiness stages to be present and satisfied.
+   - `src/bolt_v3_live_canary_gate.rs:474-570`
+   - Gate requires all readiness stages to be present and satisfied, the generated timestamp to be fresh under `[live_canary].readiness_report_max_age_seconds`, and the report linkage fields to match the current approval, executable identity, and config bundle checksum.
 
 Current hard-evidence requirements:
 
@@ -135,6 +137,7 @@ Current live-operator evidence:
    - `tests/bolt_v3_tiny_canary_operator.rs:1070-1086`
    - `src/bolt_v3_tiny_canary_evidence.rs:483`
    - Preflight blocks before live runner if the approval/evidence envelope is incomplete.
+   - Production `Run` also requires `[live_canary].operator_evidence` at the live canary gate. The gate validates required evidence fields and the active approval window before submit admission can arm.
 
 2. Live runner entry
    - `tests/bolt_v3_tiny_canary_operator.rs:1109`
@@ -147,6 +150,7 @@ Current live-operator evidence:
 4. Evidence validation
    - `tests/bolt_v3_tiny_canary_operator.rs:1339-1418`
    - Evidence hashes and references are bound before proof is accepted.
+   - Operator-envelope regressions cover approval-window rejection, nonce hash mismatch, SSM manifest hash mismatch, strategy-input hash mismatch, financial-envelope hash mismatch, and pre-run evidence hash mismatch.
 
 Current hard evidence:
 

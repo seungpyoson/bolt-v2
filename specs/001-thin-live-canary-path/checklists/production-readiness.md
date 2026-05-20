@@ -20,7 +20,7 @@
 - [ ] CHK007 Is every required live-readiness stage traceable to a named source file, command, artifact path, and expected evidence field? [Traceability, Spec §Success Criteria, Quickstart §Tiny-capital Canary]
 - [ ] CHK008 Are source-level trace requirements explicit enough to prove there is no alternate submit, cancel-as-submit, direct `LiveNode::run`, legacy runtime, environment-secret, or adapter-bypass path? [Traceability, FR-001, FR-002, FR-003, FR-004, FR-009]
 - [ ] CHK009 Are provider, market-family, strategy, reference-data, and admission registries required to expose enough metadata for a reviewer to trace concrete config selections without hardcoded BTC, Binance, Polymarket, Chainlink, or one market family in core logic? [Traceability, FR-005, FR-006, FR-007, FR-008]
-- [ ] CHK010 Are readiness and canary artifacts required to include exact commit SHA, executable identity, config bundle checksum, SSM manifest hash, strategy-input hash, financial envelope hash, operator approval id hash, and produced artifact SHA? [Completeness, Spec §Key Entities, Quickstart §Tiny-capital Canary]
+- [ ] CHK010 Are readiness and canary artifacts required to include exact commit SHA, executable identity, config bundle checksum, report `generated_at_unix_seconds`, TOML-owned report max age, SSM manifest hash, strategy-input hash, financial envelope hash, operator approval id hash, operator approval window, and produced artifact SHA? [Completeness, Spec §Key Entities, Quickstart §Tiny-capital Canary]
 - [ ] CHK011 Are issue and PR traceability requirements defined so every blocker discovered during live-readiness tracing has a durable issue link, owner, evidence, and acceptance gate? [Gap, User Goal]
 
 ## Requirement Clarity
@@ -35,7 +35,7 @@
 
 - [ ] CHK017 Do requirements consistently say that canary mode is the production path with caps, not a separate architecture or harness-only route? [Consistency, Plan §Summary, Plan §Eight-slice Plan, FR-013]
 - [ ] CHK018 Do no-hardcode requirements align between runtime TOML, strategy TOML, provider bindings, test fixtures, and operator artifact examples? [Consistency, FR-004, FR-005, FR-006, FR-007, FR-008]
-- [ ] CHK019 Do no-submit readiness requirements align with live canary gate requirements so a failed stage cannot be treated as usable gate evidence? [Consistency, Spec §User Story 4, SC-005]
+- [ ] CHK019 Do no-submit readiness requirements align with live canary gate requirements so a failed, skipped, cache-only, stale, expired, or mismatched stage cannot be treated as usable gate evidence? [Consistency, Spec §User Story 4, SC-005]
 - [ ] CHK020 Do production-readiness requirements avoid conflicting with the rule that NT owns lifecycle, cache, reconciliation, adapters, and venue protocol behavior? [Consistency, FR-011, Plan §Constitution Check]
 
 ## Acceptance Criteria Quality
@@ -48,7 +48,7 @@
 
 ## Scenario Coverage
 
-- [ ] CHK026 Are primary-flow requirements complete for no-submit readiness: approved run, exact config, SSM resolution, all configured clients connected, reference instruments cached, zero orders, clean disconnect, and redacted report accepted by the gate? [Coverage, Spec §User Story 4]
+- [ ] CHK026 Are primary-flow requirements complete for no-submit readiness: approved run, exact config, SSM resolution, all configured clients connected, live reference-data freshness evidence beyond cache-only instrument IDs, zero orders, clean disconnect, fresh generated timestamp, and redacted report accepted by the gate? [Coverage, Spec §User Story 4]
 - [ ] CHK027 Are exception-flow requirements complete for no-submit readiness: credential shape failure, missing SSM parameter, unavailable transport feature, venue protocol mismatch, partial client connection, missing reference cache, report write failure, and stale report? [Coverage, Gap]
 - [ ] CHK028 Are primary-flow requirements complete for production-grade live trading after canary: repeated approved runs, caps adjusted by config, monitoring evidence, reconciliation after restart, and no core code edits for new venues/strategies? [Coverage, Gap]
 - [ ] CHK029 Are recovery-flow requirements complete for failed live startup, partially connected clients, open order after canary, rejected venue order, process crash, and restart reconciliation disagreement? [Coverage, Gap]
@@ -58,7 +58,7 @@
 
 - [ ] CHK031 Are assumptions about Binance SBE schema compatibility, Polymarket transport backend availability, and Chainlink/reference source availability documented as live-readiness dependencies rather than implicit code facts? [Assumption, Gap]
 - [ ] CHK032 Are AWS account, region, SSM KMS key, parameter versioning, and permission requirements documented without exposing credential values? [Dependency, FR-004]
-- [ ] CHK033 Are operator approval boundaries specified for SSM mutation, no-submit connectivity, tiny-capital submit, production-cap submit, and issue/PR mutation? [Dependency, Quickstart §Tiny-capital Canary]
+- [ ] CHK033 Are operator approval boundaries specified for SSM mutation, no-submit connectivity, tiny-capital submit, production-cap submit, issue/PR mutation, approval-window expiry, nonce consumption, and replay rejection? [Dependency, Quickstart §Tiny-capital Canary]
 - [ ] CHK034 Is a production-readiness issue backlog required to remain open until each end-to-end blocker has current evidence and a passing gate? [Dependency, User Goal]
 
 ## TDD And Verification Discipline

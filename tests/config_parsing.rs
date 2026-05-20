@@ -686,6 +686,56 @@ fn bolt_v3_archetype_accepts_post_only_gtc_exit_order() {
 }
 
 #[test]
+fn bolt_v3_archetype_accepts_mixed_maker_taker_order_configs() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let fixture = fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+
+    let validate_strategy = |strategy_source: String, case_name: &str| {
+        let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
+            .unwrap_or_else(|error| panic!("{case_name} should parse via NT order enums: {error}"));
+        let loaded = vec![LoadedStrategy {
+            config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+            relative_path: "strategies/binary_oracle.toml".to_string(),
+            config: strategy,
+        }];
+        let messages = validate_strategies(&stable_root, &loaded);
+        assert!(
+            messages.is_empty(),
+            "{case_name} should be accepted by binary_oracle_edge_taker validation: {messages:#?}"
+        );
+    };
+
+    let maker_entry_taker_exit = fixture
+        .replace("time_in_force = \"fok\"", "time_in_force = \"gtc\"")
+        .replacen("is_post_only = false", "is_post_only = true", 1);
+    validate_strategy(maker_entry_taker_exit, "maker entry with taker exit");
+
+    let maker_exit_taker_entry = fixture
+        .replace("order_type = \"market\"", "order_type = \"limit\"")
+        .replace("time_in_force = \"ioc\"", "time_in_force = \"gtc\"");
+    let (before_exit, exit_block) = maker_exit_taker_entry
+        .split_once("[parameters.exit_order]")
+        .expect("fixture should include exit order block");
+    let maker_exit_taker_entry = format!(
+        "{before_exit}[parameters.exit_order]{}",
+        exit_block.replacen("is_post_only = false", "is_post_only = true", 1)
+    );
+    validate_strategy(maker_exit_taker_entry, "taker entry with maker exit");
+}
+
+#[test]
 fn polymarket_post_order_params_declares_camel_case_is_post_only_flag() {
     let query_source = include_str!("fixtures/nt_polymarket_query_post_order_params_7c2aafb.txt");
     let nt_field = ["post", "only"].join("_");

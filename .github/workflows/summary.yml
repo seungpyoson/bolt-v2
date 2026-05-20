@@ -17,6 +17,9 @@ jobs:
         id: ai_chain
         continue-on-error: true
         run: |
+          # 5-stage resilient chain (GPT-5 -> o3 -> Phi-4 -> o4-mini -> OpenRouter)
+          # Hand-rolled curl implementation used over actions/ai-inference to support 
+          # complex multi-model fallback and granular reasoning_effort control.
           MODELS=("openai/gpt-5" "openai/o3" "microsoft/phi-4-reasoning" "openai/o4-mini")
           SUCCESS=false
           FINAL_SUMMARY=""
@@ -25,11 +28,9 @@ jobs:
           for model in "${MODELS[@]}"; do
             echo "Attempting summarization with $model..."
             
-            # Determine reasoning effort
+            # Determine reasoning effort (high is documented max)
             REASONING=""
-            if [[ "$model" == *"gpt-5"* ]]; then
-              REASONING="xhigh"
-            elif [[ "$model" == *"o3"* || "$model" == *"o4-mini"* ]]; then
+            if [[ "$model" == *"gpt-5"* || "$model" == *"o3"* || "$model" == *"o4-mini"* ]]; then
               REASONING="high"
             fi
 
@@ -43,7 +44,7 @@ jobs:
                 },
                 {
                   'role': 'user',
-                  'content': f'Summarize this GitHub issue: Title: {os.environ[\"ISSUE_TITLE\"]}\n\nBody: {os.environ[\"ISSUE_BODY\"]}'
+                  'content': f'Summarize this GitHub issue: Title: {os.environ.get(\"ISSUE_TITLE\", \"\")}\n\nBody: {os.environ.get(\"ISSUE_BODY\", \"\")}'
                 }
               ],
               **({'reasoning_effort': sys.argv[2]} if sys.argv[2] else {})
@@ -84,7 +85,7 @@ except Exception:
                 },
                 {
                   'role': 'user',
-                  'content': f'Summarize this GitHub issue: Title: {os.environ[\"ISSUE_TITLE\"]}\n\nBody: {os.environ[\"ISSUE_BODY\"]}'
+                  'content': f'Summarize this GitHub issue: Title: {os.environ.get(\"ISSUE_TITLE\", \"\")}\n\nBody: {os.environ.get(\"ISSUE_BODY\", \"\")}'
                 }
               ],
               'include_reasoning': True
@@ -111,11 +112,12 @@ except Exception:
           fi
 
           if [ "$SUCCESS" = true ]; then
-            # Safe multiline output using heredoc
+            # Safe multiline output using randomized unique delimiter
+            DELIM="EOF_$(openssl rand -hex 16)"
             {
-              echo "summary<<EOF"
-              echo "$FINAL_SUMMARY"
-              echo "EOF"
+              echo "summary<<$DELIM"
+              printf '%s\n' "$FINAL_SUMMARY"
+              echo "$DELIM"
               echo "model_info=$USED_MODEL"
             } >> "$GITHUB_OUTPUT"
           else

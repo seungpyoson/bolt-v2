@@ -13,8 +13,8 @@ use nautilus_common::{
     messages::system::TradingStateChanged,
     msgbus::{
         publish_account_state, publish_any, publish_bar, publish_deltas, publish_depth10,
-        publish_funding_rate, publish_index_price, publish_mark_price, publish_order_event,
-        publish_position_event, publish_quote, publish_trade, switchboard,
+        publish_funding_rate, publish_index_price, publish_instrument, publish_mark_price,
+        publish_order_event, publish_position_event, publish_quote, publish_trade, switchboard,
     },
 };
 use nautilus_core::UUID4;
@@ -1491,7 +1491,7 @@ async fn captures_instrument_any_to_per_instrument_feather_spool() {
                     1.into(),
                 );
                 let instrument = InstrumentAny::BinaryOption(binary);
-                publish_any(
+                publish_instrument(
                     switchboard::get_instrument_topic(instrument_id),
                     &instrument,
                 );

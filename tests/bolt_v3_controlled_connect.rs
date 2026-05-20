@@ -116,7 +116,7 @@ fn builder_path_passes_explicit_data_engine_to_nt_build() {
     assert!(
         error
             .to_string()
-            .contains("invalid LiveDataEngineConfig.time_bars_origins"),
+            .contains("invalid LiveDataEngineConfig.time_bars_origin_offset"),
         "expected NT data-engine validation error, got: {error}"
     );
 }

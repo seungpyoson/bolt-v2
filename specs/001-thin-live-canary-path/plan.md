@@ -41,7 +41,7 @@ The central constraint is that canary mode is not a separate architecture. It is
 - `src/bolt_v3_live_node.rs:414-419` registers configured strategies during bolt-v3 build after client registration.
 - `src/bolt_v3_live_canary_gate.rs:32-38` exposes the report fields Phase 6 must consume: approval id, readiness path, readiness byte cap, order-count cap, canary notional cap, and root notional cap.
 - `src/bolt_v3_strategy_registration.rs:97-119` creates one `JsonlBoltV3DecisionEvidenceWriter` from the loaded config and passes cloned mandatory evidence handles into strategy registration contexts.
-- `src/strategies/binary_oracle_edge_taker.rs:2825-2834` contains the only direct strategy NT submit helper; it records decision evidence before calling `self.submit_order(order, None, Some(client_id))`.
+- `src/strategies/binary_oracle_edge_taker.rs` contains the only direct strategy NT submit helper; it records decision evidence before calling `self.submit_order(order, None, Some(client_id), None)`.
 - `rg -n "bolt_v3_submit_admission|SubmitAdmission|admission" src tests` found no Phase 6 admission module or tests on main.
 - `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md:167-180` defines Bolt as thin over NT and NT as owner of runtime adapter behavior, market data, execution, and constructed-client behavior.
 - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md:193-195` defines NT Portfolio/cache-derived state as the source for account/position/order/fill facts.

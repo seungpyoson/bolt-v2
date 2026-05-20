@@ -5,8 +5,8 @@ Status: approved doctrine
 Path: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`
 Last full NT doctrine audit rev: `56a438216442f079edf322a39cdc0d9e655ba6d8`
 Last full NT doctrine audit date: 2026-04-28
-Last NT pin compatibility verified rev: `38b912a8b0fe14e4046773973ff46a3b798b1e3e`
-Last NT pin compatibility verified date: 2026-04-30
+Last NT pin compatibility verified rev: `7c2aafb30fb143069c915a3f2057bb12174405f6`
+Last NT pin compatibility verified date: 2026-05-20
 Owner: Bolt-v3 maintainers
 
 This artifact records the current Bolt-v3 boundary doctrine for
@@ -122,10 +122,10 @@ Decision to repo-rule mapping:
 
 The following source anchors were verified before writing this doctrine:
 
-- `Cargo.toml` pins NT to release `v1.226.0`
-  (`38b912a8b0fe14e4046773973ff46a3b798b1e3e`). The 2026-04-30 pin slice
-  verified compile/test compatibility for that release; it did not re-audit all
-  NT-owned behaviors cited by this doctrine.
+- `Cargo.toml` pins NT to release `v1.227.0`
+  (`7c2aafb30fb143069c915a3f2057bb12174405f6`). The 2026-05-20 pin slice
+  verified focused compile/test compatibility for the no-submit readiness
+  blockers; it did not re-audit all NT-owned behaviors cited by this doctrine.
 - The NT pin-change audit and compatibility probe are recorded under
   `docs/bolt-v3/research/nt-pin-change/`; the CLOB V2 live-readiness gate
   remains open until live signing, order, fill, collateral, and fee behavior are

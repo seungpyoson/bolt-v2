@@ -206,6 +206,18 @@ surfaces:
     reason: "Subscribed via account_states_pattern() -> events.account.*; JSONL capture"
     suggested_capture_storage: jsonl
 
+  - nt_api: subscribe_portfolio_snapshot
+    nt_path: crates/common/src/msgbus/api.rs:470
+    message_type: PortfolioSnapshot
+    topic_pattern: "events.portfolio.{account_id}"
+    api_kind: passive_pubsub
+    bolt_status: safe_missing_passive_stream
+    publisher_evidence: "crates/portfolio/src/portfolio.rs:2597 -> msgbus::publish_portfolio_snapshot(format!(\"events.portfolio.{account_id}\").into(), &snapshot)"
+    subscriber_evidence: "crates/common/src/msgbus/api.rs:470 -> pub fn subscribe_portfolio_snapshot(pattern: MStr<Pattern>, handler: TypedHandler<PortfolioSnapshot>, priority: Option<u32>)"
+    reason: "Periodic account-wide equity/PnL snapshot stream added in pinned NT. Production-relevant for live portfolio observability, but Bolt does not subscribe yet and this #385 patch is limited to unblocking no-submit connectivity."
+    suggested_capture_storage: jsonl
+    storage_evidence: "PortfolioSnapshot (crates/model/src/events/portfolio/snapshot.rs:46) derives serde::Serialize + serde::Deserialize and no EncodeToRecordBatch impl was found; JSONL is the direct feasible storage."
+
   - nt_api: subscribe_positions
     nt_path: crates/common/src/msgbus/api.rs:451
     message_type: Position
@@ -742,13 +754,14 @@ surfaces:
 # Summary
 # ============================================================
 summary:
-  total_subscribe_apis: 25
+  total_subscribe_apis: 26
   captured_now: 14
   captured_now_includes:
     - 'subscribe_any("events.risk") -> TradingStateChanged'  # added in Bolt; JSONL capture risk/trading_state_changed.jsonl
   safe_missing_passive_stream:
     - subscribe_bars                    # Bar aggregation stream -- not part of the current class-directory stream contract
     - subscribe_book_snapshots          # OrderBook periodic snapshots -- publisher: data/src/engine/book.rs:170; requires Bolt boundary wrapper (no serde/Arrow on OrderBook)
+    - subscribe_portfolio_snapshot      # PortfolioSnapshot -- publisher: portfolio/src/portfolio.rs:2597; production-relevant JSONL stream, not captured yet
     - subscribe_greeks                  # GreeksData -- publisher: common/src/greeks.rs:634 (synthetic, not venue feed); not Polymarket-relevant
     - subscribe_option_greeks           # OptionGreeks -- publisher: data/src/engine/mod.rs:891; not Polymarket-relevant
     - subscribe_option_chain            # OptionChainSlice -- publisher: data/src/option_chains/manager.rs:736; not Polymarket-relevant
@@ -780,6 +793,7 @@ summary:
       - publish_index_price
       - publish_funding_rate
       - publish_account_state
+      - publish_portfolio_snapshot
       - publish_order_event
       - publish_position_event
       - publish_any
@@ -797,6 +811,12 @@ summary:
     before write -- not a direct Feather/JSONL append. Defer until a Polymarket use
     case actually demands them; today none of these streams are produced for Polymarket
     instruments by the Polymarket adapter.
+
+    subscribe_portfolio_snapshot is a separate safe-missing stream introduced by
+    the current pinned NT rev. It has a confirmed runtime publisher on
+    events.portfolio.{account_id} and PortfolioSnapshot is JSONL-feasible, so it
+    should be tracked as a production observability gap rather than hidden by the
+    no-submit connectivity fix.
 
     subscribe_positions is reclassified out of safe_missing_passive_stream: pinned NT
     has NO publisher on positions.snapshots.*, so subscribing would be a no-op on this

@@ -104,7 +104,7 @@ struct TypedHandlers {
 }
 
 struct AnyHandlers {
-    instruments: ShareableMessageHandler,
+    instruments: TypedHandler<InstrumentAny>,
     instrument_closes: ShareableMessageHandler,
     instrument_statuses: ShareableMessageHandler,
     trading_state_changed: ShareableMessageHandler,
@@ -863,15 +863,13 @@ pub fn wire_nt_runtime_capture(
 
     let instrument_sender = sender.clone();
     let instrument_failure_state = failure_state.clone();
-    let instruments = ShareableMessageHandler::from_any(move |message: &dyn std::any::Any| {
-        if let Some(instrument) = message.downcast_ref::<InstrumentAny>() {
-            send_capture_message(
-                &instrument_sender,
-                CaptureMessage::Instrument(Box::new(instrument.clone())),
-                INSTRUMENT_ANY_TYPE,
-                &instrument_failure_state,
-            );
-        }
+    let instruments = TypedHandler::from(move |instrument: &InstrumentAny| {
+        send_capture_message(
+            &instrument_sender,
+            CaptureMessage::Instrument(Box::new(instrument.clone())),
+            INSTRUMENT_ANY_TYPE,
+            &instrument_failure_state,
+        );
     });
     subscribe_instruments(instruments_pattern(), instruments.clone(), None);
 

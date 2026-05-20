@@ -778,7 +778,7 @@ mod tests {
             .expect("binance data config should downcast to NT config");
 
         assert_eq!(data.product_types, vec![NtBinanceProductType::Spot]);
-        assert_eq!(data.environment, NtBinanceEnvironment::Mainnet);
+        assert_eq!(data.environment, NtBinanceEnvironment::Live);
         // base_url_http and base_url_ws are now required bolt-v3
         // fields; the mapper must pass the configured values through to
         // NT as `Some(...)` rather than letting NT fall back to its

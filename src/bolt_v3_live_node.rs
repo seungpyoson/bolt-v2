@@ -728,7 +728,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         time_bars_build_delay: data.time_bars_build_delay,
         // Bolt stores this as a BTreeMap for deterministic config/debug output;
         // NT's live data config consumes the same aggregation/nanosecond pairs as a HashMap.
-        time_bars_origins: data.time_bars_origins.clone().into_iter().collect(),
+        time_bars_origin_offset: data.time_bars_origins.clone().into_iter().collect(),
         validate_data_sequence: data.validate_data_sequence,
         buffer_deltas: data.buffer_deltas,
         emit_quotes_from_book: data.emit_quotes_from_book,
@@ -1128,7 +1128,7 @@ mod tests {
             nautilus_model::enums::BarIntervalType::LeftOpen
         );
         assert_eq!(cfg.data_engine.time_bars_build_delay, 0);
-        assert!(cfg.data_engine.time_bars_origins.is_empty());
+        assert!(cfg.data_engine.time_bars_origin_offset.is_empty());
         assert!(!cfg.data_engine.validate_data_sequence);
         assert!(!cfg.data_engine.buffer_deltas);
         assert!(!cfg.data_engine.emit_quotes_from_book);

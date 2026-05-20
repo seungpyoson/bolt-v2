@@ -138,6 +138,16 @@ captured_streams:
     missing_assertions:
       - No coverage for AccountState with non-empty balances/margins vectors
 
+  - stream: portfolio_snapshot
+    nt_message_type: nautilus_model::events::PortfolioSnapshot
+    subscription_or_topic: subscribe_portfolio_snapshot("events.portfolio.*")
+    storage_path: live/<instance_id>/portfolio_snapshot/snapshots.jsonl
+    storage_format: JSONL
+    test_coverage:
+      - captures_broad_nt_runtime_jsonl_records_outside_hot_path
+    missing_assertions:
+      - No coverage for PortfolioSnapshot with non-empty account snapshots, balances, margins, positions, or Greeks vectors
+
   - stream: trading_state_changed
     nt_message_type: nautilus_common::messages::system::TradingStateChanged
     subscription_or_topic: subscribe_any("events.risk")

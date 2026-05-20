@@ -14,7 +14,8 @@ use nautilus_common::{
     msgbus::{
         publish_account_state, publish_any, publish_bar, publish_deltas, publish_depth10,
         publish_funding_rate, publish_index_price, publish_instrument, publish_mark_price,
-        publish_order_event, publish_position_event, publish_quote, publish_trade, switchboard,
+        publish_order_event, publish_portfolio_snapshot, publish_position_event, publish_quote,
+        publish_trade, switchboard,
     },
 };
 use nautilus_core::UUID4;
@@ -30,8 +31,8 @@ use nautilus_model::{
         TradingState,
     },
     events::{
-        AccountState, OrderEventAny, OrderFilled, OrderSubmitted, PositionAdjusted, PositionEvent,
-        PositionOpened,
+        AccountState, OrderEventAny, OrderFilled, OrderSubmitted, PortfolioSnapshot,
+        PositionAdjusted, PositionEvent, PositionOpened,
     },
     identifiers::{
         AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, Symbol, TradeId, TraderId,
@@ -363,6 +364,21 @@ async fn captures_broad_nt_runtime_jsonl_records_outside_hot_path() {
                 );
                 publish_funding_rate(switchboard::get_funding_rate_topic(instrument_id), &funding);
 
+                let portfolio = PortfolioSnapshot::new(
+                    AccountId::from("POLYMARKET-001"),
+                    AccountType::Betting,
+                    Some(Currency::USD()),
+                    vec![],
+                    vec![],
+                    vec![],
+                    vec![],
+                    vec![],
+                    UUID4::default(),
+                    5.into(),
+                    5.into(),
+                );
+                publish_portfolio_snapshot("events.portfolio.POLYMARKET-001".into(), &portfolio);
+
                 publisher_handle.stop();
             });
 
@@ -402,6 +418,19 @@ async fn captures_broad_nt_runtime_jsonl_records_outside_hot_path() {
             assert_eq!(funding_row["next_funding_ns"], 4);
             assert_eq!(funding_row["ts_event"], 4);
             assert_eq!(funding_row["ts_init"], 4);
+
+            let portfolio_rows = read_jsonl_values(
+                &spool_root
+                    .join("portfolio_snapshot")
+                    .join("snapshots.jsonl"),
+            );
+            assert_eq!(portfolio_rows.len(), 1);
+            let portfolio_row = &portfolio_rows[0];
+            assert_eq!(portfolio_row["account_id"], "POLYMARKET-001");
+            assert_eq!(portfolio_row["account_type"], "BETTING");
+            assert_eq!(portfolio_row["base_currency"], "USD");
+            assert_eq!(portfolio_row["ts_event"], 5);
+            assert_eq!(portfolio_row["ts_init"], 5);
         })
         .await;
 }

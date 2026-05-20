@@ -39,6 +39,8 @@ Checks:
      checkout path agree on the NautilusTrader revision.
  14. Every captured_now stream in bolt-current-capture.yaml is represented
      by nt-msgbus-surfaces.yaml and its listed tests exist.
+ 15. PortfolioSnapshot is either captured with source/current/spool proof or
+     explicitly waived with owner/expiry/tracking metadata.
 
 Run:
   python3 scripts/verify_runtime_capture_yaml.py
@@ -164,6 +166,12 @@ RISK_JSONL_PATH_RE = re.compile(
     re.DOTALL,
 )
 RISK_JSONL_FILENAME = "trading_state_changed.jsonl"
+PORTFOLIO_SNAPSHOT_JSONL_FILENAME = "snapshots.jsonl"
+PORTFOLIO_SNAPSHOT_JSONL_PATH_RE = re.compile(
+    r"\.join\(\s*(?:PORTFOLIO_SNAPSHOT_DIR|\"portfolio_snapshot\")\s*\)\s*"
+    r"\.join\(\s*(?:SNAPSHOTS_FILE|\"snapshots\.jsonl\")\s*\)",
+    re.DOTALL,
+)
 
 
 def read(path: Path) -> str:
@@ -180,6 +188,25 @@ def has_risk_jsonl_path(src_text: str) -> bool:
         and RISK_JSONL_FILENAME in path_text
         and RISK_JSONL_PATH_RE.search(path_text) is not None
     )
+
+
+def has_portfolio_snapshot_jsonl_path(src_text: str) -> bool:
+    path_text = strip_rust_comments_and_strings(
+        src_text,
+        preserve_string_literals={"portfolio_snapshot", PORTFOLIO_SNAPSHOT_JSONL_FILENAME},
+    )
+    return (
+        PORTFOLIO_SNAPSHOT_JSONL_FILENAME in path_text
+        and PORTFOLIO_SNAPSHOT_JSONL_PATH_RE.search(path_text) is not None
+    )
+
+
+def has_explicit_portfolio_snapshot_waiver(row: dict) -> bool:
+    waiver = row.get("explicit_capture_waiver")
+    if not isinstance(waiver, dict):
+        return False
+    required_fields = ("owner", "expires_utc", "tracking_issue", "reason")
+    return all(str(waiver.get(field, "")).strip() for field in required_fields)
 
 
 def has_pattern_helper_definition(src_text: str, helper: str) -> bool:
@@ -933,13 +960,73 @@ def collect_failures() -> list[tuple[str, str]]:
                     )
                 )
 
+    # Check 15: PortfolioSnapshot is production observability state. It may not
+    # sit in safe_missing_passive_stream without an explicit time-bound waiver,
+    # and captured docs must be backed by the source JSONL spool path.
+    portfolio_rows = [
+        row
+        for row in surfaces
+        if str(row.get("nt_api", "")).split("(")[0] == "subscribe_portfolio_snapshot"
+        or row.get("message_type") == "PortfolioSnapshot"
+    ]
+    for row in portfolio_rows:
+        if row.get("bolt_status") != "captured_now":
+            if not has_explicit_portfolio_snapshot_waiver(row):
+                findings.append(
+                    (
+                        "15.portfolio_snapshot_capture_or_waiver_missing",
+                        "PortfolioSnapshot must be captured_now or carry "
+                        "explicit_capture_waiver.owner/expires_utc/tracking_issue/reason",
+                    )
+                )
+            continue
+        if row.get("source_subscribe_fn") != "subscribe_portfolio_snapshot":
+            findings.append(
+                (
+                    "15.portfolio_snapshot_source_subscribe_mismatch",
+                    "captured PortfolioSnapshot row must declare "
+                    "source_subscribe_fn='subscribe_portfolio_snapshot'",
+                )
+            )
+        if row.get("bolt_pattern_helper") != "portfolio_snapshots_pattern":
+            findings.append(
+                (
+                    "15.portfolio_snapshot_pattern_helper_mismatch",
+                    "captured PortfolioSnapshot row must declare "
+                    "bolt_pattern_helper='portfolio_snapshots_pattern'",
+                )
+            )
+        if row.get("capture_stream") != "portfolio_snapshot":
+            findings.append(
+                (
+                    "15.portfolio_snapshot_stream_mismatch",
+                    "captured PortfolioSnapshot row must use "
+                    "capture_stream='portfolio_snapshot'",
+                )
+            )
+        if row.get("storage_format") != "JSONL":
+            findings.append(
+                (
+                    "15.portfolio_snapshot_storage_mismatch",
+                    "captured PortfolioSnapshot row must use storage_format='JSONL'",
+                )
+            )
+        if not has_portfolio_snapshot_jsonl_path(src_text):
+            findings.append(
+                (
+                    "15.portfolio_snapshot_jsonl_path_missing_in_src",
+                    "src/nt_runtime_capture.rs does not write to "
+                    "portfolio_snapshot/snapshots.jsonl",
+                )
+            )
+
     return findings
 
 
 def main() -> int:
     findings = collect_failures()
     if not findings:
-        print("OK: all 14 runtime-capture YAML checks passed.")
+        print("OK: all 15 runtime-capture YAML checks passed.")
         return 0
 
     by_check: dict[str, list[str]] = {}

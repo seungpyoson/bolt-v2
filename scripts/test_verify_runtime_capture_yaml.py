@@ -442,6 +442,89 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assert_collects("10.captured_now_storage_missing", mutate)
 
+    def test_collect_failures_rejects_unwaived_portfolio_snapshot_gap(self) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"].append(
+                {
+                    "nt_api": "subscribe_portfolio_snapshot",
+                    "nt_path": "crates/common/src/msgbus/api.rs:470",
+                    "message_type": "PortfolioSnapshot",
+                    "api_kind": "passive_pubsub",
+                    "bolt_status": "safe_missing_passive_stream",
+                    "publisher_evidence": "crates/portfolio/src/portfolio.rs:2597 -> publish_portfolio_snapshot",
+                    "subscriber_evidence": "crates/common/src/msgbus/api.rs:470 -> subscribe_portfolio_snapshot",
+                    "reason": "Documented but not captured.",
+                    "suggested_capture_storage": "jsonl",
+                }
+            )
+            fixture["feas"]["types"].append(
+                {
+                    "message_type": "PortfolioSnapshot",
+                    "nt_path": "crates/model/src/events/portfolio/snapshot.rs:46-68",
+                    "recommended_storage": "jsonl",
+                }
+            )
+            fixture["nt_api_text"] += (
+                "pub fn subscribe_portfolio_snapshot("
+                "pattern: Pattern, handler: Handler, priority: Option<u8>) {}\n"
+            )
+
+        self.assert_collects("15.portfolio_snapshot_capture_or_waiver_missing", mutate)
+
+    def test_collect_failures_rejects_captured_portfolio_snapshot_without_jsonl_spool_path(
+        self,
+    ) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"].append(
+                {
+                    "nt_api": "subscribe_portfolio_snapshot",
+                    "nt_path": "crates/common/src/msgbus/api.rs:470",
+                    "message_type": "PortfolioSnapshot",
+                    "api_kind": "passive_pubsub",
+                    "bolt_status": "captured_now",
+                    "source_subscribe_fn": "subscribe_portfolio_snapshot",
+                    "bolt_pattern_helper": "portfolio_snapshots_pattern",
+                    "capture_stream": "portfolio_snapshot",
+                    "storage_format": "JSONL",
+                    "suggested_capture_storage": "jsonl",
+                }
+            )
+            fixture["feas"]["types"].append(
+                {
+                    "message_type": "PortfolioSnapshot",
+                    "nt_path": "crates/model/src/events/portfolio/snapshot.rs:46-68",
+                    "recommended_storage": "jsonl",
+                }
+            )
+            fixture["current_capture"]["captured_streams"].append(
+                {
+                    "stream": "portfolio_snapshot",
+                    "storage_format": "JSONL",
+                    "test_coverage": [
+                        "captures_broad_nt_runtime_jsonl_records_outside_hot_path"
+                    ],
+                }
+            )
+            fixture["src_text"] += """
+                fn portfolio_snapshots_pattern() {}
+                fn subscribe_portfolio() {
+                    subscribe_portfolio_snapshot(
+                        portfolio_snapshots_pattern(),
+                        handler,
+                        None,
+                    );
+                }
+            """
+            fixture["test_text"] += (
+                "\nfn captures_broad_nt_runtime_jsonl_records_outside_hot_path() {}\n"
+            )
+            fixture["nt_api_text"] += (
+                "pub fn subscribe_portfolio_snapshot("
+                "pattern: Pattern, handler: Handler, priority: Option<u8>) {}\n"
+            )
+
+        self.assert_collects("15.portfolio_snapshot_jsonl_path_missing_in_src", mutate)
+
     def test_collect_failures_rejects_surface_storage_without_feasibility_row(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             fixture["surfaces"]["surfaces"][0]["message_type"] = "MissingType"

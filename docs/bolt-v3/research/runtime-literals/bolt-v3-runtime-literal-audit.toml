@@ -984,14 +984,6 @@ reason = "The gate reads one byte beyond the configured cap to detect oversized 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
-literal = '''"operator evidence read exceeds max_operator_evidence_file_bytes={max_bytes} bytes"'''
-context = '''"operator evidence read exceeds max_operator_evidence_file_bytes={max_bytes} bytes"'''
-classification = "live_canary_gate_diagnostic_template"
-reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
-
-[[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
-kind = "string"
 literal = '''"{} exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"'''
 context = '''"{} exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})",'''
 classification = "live_canary_gate_diagnostic_template"

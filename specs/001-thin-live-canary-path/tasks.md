@@ -184,6 +184,7 @@ blockers, not as deferred approval to trade.
 - [x] T085 [US5] Address Greptile post-`5a88275b` comments: remove redundant required-stage condition, avoid stale no-submit readiness metadata fixtures, and surface `readiness_report_max_age_seconds` on `BoltV3LiveCanaryGateReport`.
 - [x] T086 [US5] Address Greptile post-`ad4f2557` comments: move example approval-window timestamps into the future and document that the operator approval window must cover report validation plus late evidence re-read/re-hash latency.
 - [x] T087 [US5] Address Greptile post-`d9258272` style finding: remove dead `satisfied_stage_names` bookkeeping from no-submit readiness required-stage validation.
+- [x] T088 [US5] Address Greptile post-`ef72cd7b` style findings: clarify the standalone approval-consumption window guard and make bounded-read cap errors caller-neutral, then reply with the current `read_report_bytes_with_limit` call-path evidence.
 
 ## Out Of Scope For MVP
 

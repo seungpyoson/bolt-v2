@@ -890,6 +890,8 @@ async fn validate_operator_approval_consumption(
     }
 
     let approval_window_current = i128::from(approval_window_unix_seconds);
+    // Standalone guard for direct approval-consumption validation callers.
+    // The normal gate path checks the same window before delegation.
     if approval_window_current < not_before || approval_window_current > not_after {
         return Err(BoltV3LiveCanaryGateError::InactiveOperatorApprovalWindow {
             current_unix_seconds: approval_window_unix_seconds,
@@ -1043,9 +1045,7 @@ where
         if observed > max_bytes {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!(
-                    "operator evidence read exceeds max_operator_evidence_file_bytes={max_bytes} bytes"
-                ),
+                format!("read exceeds cap of {max_bytes} bytes"),
             ));
         }
         bytes.extend_from_slice(&buffer[..length]);
@@ -1475,10 +1475,7 @@ mod tests {
                 .expect_err("reader must fail closed once max plus one byte is observed")
         });
 
-        assert!(
-            error.to_string().contains("exceeds"),
-            "expected bounded read oversize error, got {error}"
-        );
+        assert_eq!(error.to_string(), "read exceeds cap of 8 bytes");
     }
 
     #[tokio::test(flavor = "current_thread")]

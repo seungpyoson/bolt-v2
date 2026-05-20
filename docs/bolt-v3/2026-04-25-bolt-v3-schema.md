@@ -696,7 +696,7 @@ These environment names belong to the ignored operator harness, not the producti
 
 ### `[live_canary.operator_evidence]`
 
-This section is required when `[live_canary]` is present. The production live canary gate treats `approval_envelope_path`, the sha256-bound pre-run artifacts, and `approval_consumption_path` as read-only operator evidence and rejects non-regular files, symlinks, directories, unreadable files, or files larger than `max_operator_evidence_file_bytes` before hashing or parsing. Relative paths resolve from the root TOML directory. Remaining output/result paths are required non-empty binding strings; later operator evidence validates their produced contents.
+This section is required when `[live_canary]` is present. The production live canary gate treats `approval_envelope_path`, the sha256-bound pre-run artifacts, and `approval_consumption_path` as read-only operator evidence and rejects non-regular files, symlinks, directories, unreadable files, or files larger than `max_operator_evidence_file_bytes` before hashing or parsing. Relative paths resolve from the root TOML directory. Remaining output/result paths are required non-empty binding strings; `strategy_cancel_path` is additionally bound by `strategy_cancel_path_hash` in approval-consumption proof when configured, and later operator evidence validates produced contents.
 
 Required control fields:
 
@@ -704,7 +704,7 @@ Required control fields:
 - `max_operator_evidence_file_bytes`: positive integer cap applied to every operator evidence file read by the gate: `approval_envelope_path`, sha256-bound pre-run artifacts, and `approval_consumption_path`
 - `approval_consumption_max_age_seconds`: positive integer maximum age between `consumed_unix_secs` and gate evaluation time
 
-The approval-consumption JSON at `approval_consumption_path` must be a JSON object with `schema_version = 1`, `record_kind = "phase8_operator_approval_consumption"`, `head_sha`, `root_toml_sha256`, all configured evidence sha256 fields including `approval_envelope_sha256`, `approval_id_hash`, `approval_not_before_unix_secs`, `approval_not_after_unix_secs`, `canary_evidence_path_hash`, `client_order_id_hash`, `venue_order_id_hash`, and `consumed_unix_secs`. The gate compares `head_sha` to both TOML operator evidence and the build-owned head captured at compile time. The gate computes `root_toml_sha256` from the loaded root TOML path at evaluation time and compares it to the proof; this value is not configured in TOML because hashing the file into itself would be circular.
+The approval-consumption JSON at `approval_consumption_path` must be a JSON object with `schema_version = 1`, `record_kind = "phase8_operator_approval_consumption"`, `head_sha`, `root_toml_sha256`, all configured evidence sha256 fields including `approval_envelope_sha256`, `approval_id_hash`, `approval_not_before_unix_secs`, `approval_not_after_unix_secs`, `canary_evidence_path_hash`, optional `strategy_cancel_path_hash` when `strategy_cancel_path` is configured, `client_order_id_hash`, `venue_order_id_hash`, and `consumed_unix_secs`. The gate compares `head_sha` to both TOML operator evidence and the build-owned head captured at compile time. The gate computes `root_toml_sha256` from the loaded root TOML path at evaluation time and compares it to the proof; this value is not configured in TOML because hashing the file into itself would be circular.
 
 #### Approval and preflight fields
 

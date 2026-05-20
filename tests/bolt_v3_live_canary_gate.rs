@@ -322,6 +322,52 @@ async fn live_canary_gate_rejects_approval_consumption_hash_mismatch() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_approval_consumption_strategy_cancel_path_hash_mismatch() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let operator_evidence = valid_operator_evidence();
+    assert!(
+        operator_evidence.strategy_cancel_path.is_some(),
+        "fixture must configure strategy_cancel_path to prove the optional path binding"
+    );
+    write_approval_consumption_proof_with_override(
+        &operator_evidence,
+        "strategy_cancel_path_hash",
+        serde_json::json!(sha256_hex(b"wrong-strategy-cancel-path")),
+    );
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("strategy_cancel_path_hash mismatch must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMismatch {
+                field: "strategy_cancel_path_hash",
+                ..
+            }
+        ),
+        "expected strategy_cancel_path_hash mismatch, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_approval_consumption_client_order_id_hash_mismatch() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -554,6 +600,25 @@ async fn live_canary_gate_rejects_malformed_operator_evidence_head_sha() {
             BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHeadShaShape { field: "head_sha" }
         ),
         "expected malformed head_sha rejection, got {error:?}"
+    );
+}
+
+#[test]
+fn live_canary_gate_hashes_root_toml_without_blocking_async_gate_thread() {
+    let source = support::repo_text("src/bolt_v3_live_canary_gate.rs");
+
+    assert!(
+        source.contains("async fn root_toml_sha256"),
+        "root_toml_sha256 must be async because it is called from the async gate"
+    );
+    assert!(
+        source.contains("bounded_config_read::read_to_string_async(root_path)")
+            && source.contains(".await"),
+        "root_toml_sha256 must use async bounded config I/O"
+    );
+    assert!(
+        !source.contains("bounded_config_read::read_to_string(root_path)"),
+        "async live canary gate must not call sync bounded_config_read::read_to_string"
     );
 }
 
@@ -894,12 +959,9 @@ async fn live_canary_gate_rejects_zero_readiness_report_max_age() {
 
 #[test]
 fn live_canary_gate_uses_named_approval_consumption_protocol_constants() {
-    let source = std::fs::read_to_string("src/bolt_v3_live_canary_gate.rs")
-        .expect("live canary gate source should exist");
-    let tiny_source = std::fs::read_to_string("src/bolt_v3_tiny_canary_evidence.rs")
-        .expect("tiny canary evidence source should exist");
-    let schema_source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness_schema.rs")
-        .expect("readiness schema source should exist");
+    let source = support::repo_text("src/bolt_v3_live_canary_gate.rs");
+    let tiny_source = support::repo_text("src/bolt_v3_tiny_canary_evidence.rs");
+    let schema_source = support::repo_text("src/bolt_v3_no_submit_readiness_schema.rs");
 
     assert!(
         schema_source.contains("pub const APPROVAL_CONSUMPTION_SCHEMA_VERSION"),
@@ -2205,7 +2267,7 @@ fn write_valid_approval_consumption_proof(evidence: &LiveCanaryOperatorEvidenceB
 }
 
 fn approval_consumption_proof(evidence: &LiveCanaryOperatorEvidenceBlock) -> serde_json::Value {
-    serde_json::json!({
+    let mut proof = serde_json::json!({
         "schema_version": APPROVAL_CONSUMPTION_SCHEMA_VERSION,
         "record_kind": APPROVAL_CONSUMPTION_RECORD_KIND,
         "head_sha": evidence.head_sha,
@@ -2224,7 +2286,17 @@ fn approval_consumption_proof(evidence: &LiveCanaryOperatorEvidenceBlock) -> ser
         "client_order_id_hash": evidence.client_order_id_hash,
         "venue_order_id_hash": evidence.venue_order_id_hash,
         "consumed_unix_secs": current_unix_seconds_for_test() as i64,
-    })
+    });
+    if let Some(strategy_cancel_path) = &evidence.strategy_cancel_path {
+        proof
+            .as_object_mut()
+            .expect("approval consumption proof should be an object")
+            .insert(
+                "strategy_cancel_path_hash".to_string(),
+                serde_json::json!(sha256_hex(strategy_cancel_path.as_bytes())),
+            );
+    }
+    proof
 }
 
 fn linked_report_object(

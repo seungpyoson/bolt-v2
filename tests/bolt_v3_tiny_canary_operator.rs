@@ -32,8 +32,7 @@ const PHASE8_VALIDATION_UNIX_SECS: i64 = 1_500;
 
 #[test]
 fn phase8_operator_harness_is_ignored_and_uses_production_runner_shape() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
 
     assert!(source.contains("#[ignore]"));
     assert!(source.contains("Phase8OperatorApprovalEnvelope::from_env"));
@@ -56,8 +55,7 @@ fn phase8_operator_harness_is_ignored_and_uses_production_runner_shape() {
 
 #[test]
 fn phase8_operator_harness_does_not_block_before_production_runner() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
 
     assert!(!source.contains(&format!("{}{}", "LiveProof", "CaptureUnavailable")));
     assert!(!source.contains(&format!(
@@ -68,8 +66,7 @@ fn phase8_operator_harness_does_not_block_before_production_runner() {
 
 #[test]
 fn phase8_operator_harness_derives_strategy_audit_from_evidence_file() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
 
     assert!(source.contains("envelope.approved_price_to_beat_source()?"));
     assert!(source.contains("Phase8StrategyInputSafetyAudit::from_evidence_file"));
@@ -100,8 +97,7 @@ fn phase8_operator_harness_derives_strategy_audit_from_evidence_file() {
 
 #[test]
 fn phase8_operator_harness_prevalidates_success_evidence_before_runner() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
     let start = source
         .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
         .expect("operator harness start should exist");
@@ -127,8 +123,7 @@ fn phase8_operator_harness_prevalidates_success_evidence_before_runner() {
 
 #[test]
 fn phase8_operator_harness_consumes_approval_after_entry_validation() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
     let start = source
         .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
         .expect("operator harness start should exist");
@@ -166,8 +161,7 @@ fn phase8_operator_harness_consumes_approval_after_entry_validation() {
 
 #[test]
 fn phase8_operator_harness_binds_live_proof_to_runtime_admission_and_spool() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
 
     assert!(source.contains("admitted_order_count()"));
     assert!(source.contains("spool_root_for_instance"));
@@ -186,8 +180,7 @@ fn phase8_operator_harness_binds_live_proof_to_runtime_admission_and_spool() {
 
 #[test]
 fn phase8_operator_harness_waits_for_post_run_proofs_after_runner() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
     let start = source
         .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
         .expect("operator harness start should exist");
@@ -345,9 +338,9 @@ impl Phase8OperatorEnvelopeFixture {
             .expect("approval nonce hash should compute");
         let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
         let root_toml_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+        let loaded = phase8_loaded_with_operator_canary("reports/no-submit-readiness.json");
 
         Self {
-            loaded: phase8_loaded_with_operator_canary("reports/no-submit-readiness.json"),
             envelope: Phase8OperatorApprovalEnvelope {
                 head_sha: PHASE8_VALIDATION_HEAD_SHA.to_string(),
                 root_toml_path: root_toml_path.to_string_lossy().to_string(),
@@ -374,9 +367,11 @@ impl Phase8OperatorEnvelopeFixture {
                     .join("phase8-canary-evidence.json")
                     .to_string_lossy()
                     .to_string(),
+                strategy_cancel_path: phase8_live_canary_strategy_cancel_path(&loaded),
                 client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
                 venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
             },
+            loaded,
             _temp: temp,
         }
     }
@@ -421,6 +416,15 @@ fn phase8_loaded_with_operator_canary(report_path: &str) -> LoadedBoltV3Config {
         max_notional_per_order: "0.25".to_string(),
     });
     loaded
+}
+
+fn phase8_live_canary_strategy_cancel_path(loaded: &LoadedBoltV3Config) -> Option<String> {
+    loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+        .and_then(|operator_evidence| operator_evidence.strategy_cancel_path.clone())
 }
 
 fn write_phase8_operator_strategy_input(path: &Path) {
@@ -1430,6 +1434,7 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
             let pre_run_snapshot = result_paths.snapshot_before_run()?;
             let live_runner_entry_unix_secs = phase8_current_unix_secs()?;
             envelope.consume_approval_after_live_runner_entry_validation(
+                &loaded,
                 live_runner_entry_unix_secs,
             )?;
             run_bolt_v3_live_node(&mut node, &loaded)

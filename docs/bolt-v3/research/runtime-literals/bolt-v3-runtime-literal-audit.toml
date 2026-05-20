@@ -912,6 +912,14 @@ reason = "This names a required approval-consumption proof field validated by th
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
+literal = '''"strategy_cancel_path_hash"'''
+context = '''"strategy_cancel_path_hash",'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names an approval-consumption proof field required when a strategy cancel artifact path is configured."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
 literal = '''"client_order_id_hash"'''
 context = '''"client_order_id_hash",'''
 classification = "phase8_approval_consumption_schema_field"
@@ -2359,6 +2367,14 @@ literal = '''"BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256"'''
 context = '''"BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256",'''
 classification = "phase8_canary_operator_envelope_env_name"
 reason = "This names the non-secret operator envelope field containing the strategy input evidence checksum."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH"'''
+context = '''strategy_cancel_path: optional_env("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the optional non-secret operator envelope field whose path hash is bound when a strategy cancel artifact is expected."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"

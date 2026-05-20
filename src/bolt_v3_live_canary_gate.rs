@@ -824,7 +824,7 @@ async fn validate_operator_approval_consumption(
     )?;
     let approval_id_hash = sha256_hex(approval_id.as_bytes());
     let canary_evidence_path_hash = sha256_hex(evidence.canary_evidence_path.as_bytes());
-    let root_toml_sha256 = root_toml_sha256(root_path)?;
+    let root_toml_sha256 = root_toml_sha256(root_path).await?;
     for (field, expected) in [
         ("head_sha", evidence.head_sha.as_str()),
         ("root_toml_sha256", root_toml_sha256.as_str()),
@@ -862,6 +862,15 @@ async fn validate_operator_approval_consumption(
         ("venue_order_id_hash", evidence.venue_order_id_hash.as_str()),
     ] {
         validate_consumption_string_field(&path, object, field, expected)?;
+    }
+    if let Some(strategy_cancel_path) = &evidence.strategy_cancel_path {
+        let strategy_cancel_path_hash = sha256_hex(strategy_cancel_path.as_bytes());
+        validate_consumption_string_field(
+            &path,
+            object,
+            "strategy_cancel_path_hash",
+            &strategy_cancel_path_hash,
+        )?;
     }
     validate_consumption_i64_field(
         &path,
@@ -1091,13 +1100,13 @@ fn validate_regular_file_type(path: &Path, metadata: &std::fs::Metadata) -> std:
     Ok(())
 }
 
-fn root_toml_sha256(root_path: &Path) -> Result<String, BoltV3LiveCanaryGateError> {
-    let root_text = crate::bounded_config_read::read_to_string(root_path).map_err(|source| {
-        BoltV3LiveCanaryGateError::RootTomlRead {
+async fn root_toml_sha256(root_path: &Path) -> Result<String, BoltV3LiveCanaryGateError> {
+    let root_text = crate::bounded_config_read::read_to_string_async(root_path)
+        .await
+        .map_err(|source| BoltV3LiveCanaryGateError::RootTomlRead {
             path: root_path.to_path_buf(),
             source: Box::new(source),
-        }
-    })?;
+        })?;
     Ok(sha256_hex(root_text.as_bytes()))
 }
 

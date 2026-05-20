@@ -119,8 +119,7 @@ fn no_submit_readiness_report_timestamp_is_injected_after_stage_results() {
 
 #[test]
 fn no_submit_readiness_runtime_stamps_report_after_controlled_stages() {
-    let source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness.rs")
-        .expect("no-submit readiness source should exist");
+    let source = support::repo_text("src/bolt_v3_no_submit_readiness.rs");
     let runtime_fn = source
         .split("pub async fn run_bolt_v3_no_submit_readiness_on_runtime")
         .nth(1)
@@ -555,8 +554,7 @@ async fn no_submit_readiness_rejects_sync_runner_inside_active_tokio_runtime() {
 #[test]
 fn no_submit_readiness_exposes_current_runtime_wrapper_without_node_mut() {
     let _wrapper = run_bolt_v3_no_submit_readiness_on_runtime;
-    let live_node_source =
-        std::fs::read_to_string("src/bolt_v3_live_node.rs").expect("live node source should exist");
+    let live_node_source = support::repo_text("src/bolt_v3_live_node.rs");
 
     assert!(
         live_node_source.contains("controlled_no_submit_readiness"),
@@ -570,8 +568,7 @@ fn no_submit_readiness_exposes_current_runtime_wrapper_without_node_mut() {
 
 #[test]
 fn no_submit_readiness_runtime_source_does_not_treat_connect_as_reference_readiness() {
-    let source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness.rs")
-        .expect("no-submit readiness source should exist");
+    let source = support::repo_text("src/bolt_v3_no_submit_readiness.rs");
 
     assert!(
         source.contains("reference_readiness_from_cached_instrument_ids"),
@@ -593,8 +590,7 @@ fn no_submit_readiness_runtime_source_does_not_treat_connect_as_reference_readin
 
 #[test]
 fn no_submit_readiness_runtime_uses_resolved_secret_redaction_values() {
-    let source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness.rs")
-        .expect("no-submit readiness source should exist");
+    let source = support::repo_text("src/bolt_v3_no_submit_readiness.rs");
 
     assert!(
         source.contains("runtime.redaction_values()"),
@@ -608,8 +604,7 @@ fn no_submit_readiness_runtime_uses_resolved_secret_redaction_values() {
 
 #[test]
 fn no_submit_readiness_executable_identity_uses_current_exe_async_file_io() {
-    let source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness.rs")
-        .expect("no-submit readiness source should exist");
+    let source = support::repo_text("src/bolt_v3_no_submit_readiness.rs");
 
     assert!(
         source.contains("std::env::current_exe()"),
@@ -627,8 +622,7 @@ fn no_submit_readiness_executable_identity_uses_current_exe_async_file_io() {
 
 #[test]
 fn no_submit_readiness_sync_runner_uses_localset_after_build() {
-    let source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness.rs")
-        .expect("no-submit readiness source should exist");
+    let source = support::repo_text("src/bolt_v3_no_submit_readiness.rs");
 
     assert!(
         source.contains("tokio::task::LocalSet::new()"),
@@ -677,8 +671,7 @@ fn no_submit_readiness_sync_runner_uses_localset_after_build() {
 
 #[test]
 fn no_submit_readiness_operator_approval_is_config_owned_not_env_owned() {
-    let source = std::fs::read_to_string("tests/bolt_v3_no_submit_readiness_operator.rs")
-        .expect("operator harness source should exist");
+    let source = support::repo_text("tests/bolt_v3_no_submit_readiness_operator.rs");
 
     for forbidden in [
         concat!("BOLT_V3_", "OPERATOR_APPROVAL_ID"),
@@ -799,10 +792,8 @@ fn sha256_hex(value: &str) -> String {
 
 #[test]
 fn no_submit_readiness_source_has_no_trade_or_runner_tokens() {
-    let source = std::fs::read_to_string("src/bolt_v3_no_submit_readiness.rs")
-        .expect("no-submit readiness source should exist");
-    let operator_source = std::fs::read_to_string("tests/bolt_v3_no_submit_readiness_operator.rs")
-        .expect("operator harness source should exist");
+    let source = support::repo_text("src/bolt_v3_no_submit_readiness.rs");
+    let operator_source = support::repo_text("tests/bolt_v3_no_submit_readiness_operator.rs");
     for (path, text) in [
         ("src/bolt_v3_no_submit_readiness.rs", source.as_str()),
         (

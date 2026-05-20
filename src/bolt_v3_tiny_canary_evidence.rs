@@ -1254,6 +1254,7 @@ pub struct Phase8OperatorApprovalEnvelope {
     pub approval_nonce_sha256: String,
     pub approval_consumption_path: String,
     pub canary_evidence_path: String,
+    pub strategy_cancel_path: Option<String>,
     pub client_order_id_hash: String,
     pub venue_order_id_hash: String,
 }
@@ -1292,6 +1293,7 @@ impl Phase8OperatorApprovalEnvelope {
             approval_nonce_sha256: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256")?,
             approval_consumption_path: required_env("BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH")?,
             canary_evidence_path: required_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,
+            strategy_cancel_path: optional_env("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH")?,
             client_order_id_hash: required_sha256_env("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH")?,
             venue_order_id_hash: required_sha256_env("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH")?,
         })
@@ -1349,7 +1351,7 @@ impl Phase8OperatorApprovalEnvelope {
             loaded,
             current_unix_secs,
         )?;
-        self.consume_approval_after_live_runner_entry_validation(current_unix_secs)
+        self.consume_approval_after_live_runner_entry_validation(loaded, current_unix_secs)
     }
 
     pub fn validate_approved_evidence_against(
@@ -1370,17 +1372,20 @@ impl Phase8OperatorApprovalEnvelope {
         self.validate_financial_envelope_against(loaded)?;
         self.validate_pre_run_state_against(loaded)?;
         self.validate_abort_plan_against(loaded)?;
+        self.validate_strategy_cancel_path_against(loaded)?;
         self.validate_approval_nonce()
     }
 
     pub fn consume_approval_after_live_runner_entry_validation(
         &self,
+        loaded: &LoadedBoltV3Config,
         current_unix_secs: i64,
     ) -> Result<()> {
         self.validate_approval_not_consumed()?;
         self.validate_approval_window(current_unix_secs)?;
         self.validate_approval_nonce()?;
-        self.write_approval_consumption_evidence(current_unix_secs)
+        let strategy_cancel_path = self.validate_strategy_cancel_path_against(loaded)?;
+        self.write_approval_consumption_evidence(current_unix_secs, strategy_cancel_path)
     }
 
     fn validate_financial_envelope_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
@@ -1422,6 +1427,31 @@ impl Phase8OperatorApprovalEnvelope {
             &approved_financial.strategy_instance_id,
         )?;
         approved.validate_matches_loaded(&loaded)
+    }
+
+    fn validate_strategy_cancel_path_against<'a>(
+        &self,
+        loaded: &'a LoadedBoltV3Config,
+    ) -> Result<Option<&'a str>> {
+        let configured = loaded
+            .root
+            .live_canary
+            .as_ref()
+            .and_then(|block| block.operator_evidence.as_ref())
+            .and_then(|evidence| evidence.strategy_cancel_path.as_deref());
+        match (self.strategy_cancel_path.as_deref(), configured) {
+            (None, None) => Ok(None),
+            (Some(approved), Some(configured)) if approved == configured => Ok(Some(configured)),
+            (None, Some(_)) => Err(anyhow!(
+                "phase8 operator approval strategy_cancel_path missing but `[live_canary].operator_evidence.strategy_cancel_path` is configured"
+            )),
+            (Some(_), None) => Err(anyhow!(
+                "phase8 operator approval strategy_cancel_path is set but `[live_canary].operator_evidence.strategy_cancel_path` is not configured"
+            )),
+            (Some(_), Some(_)) => Err(anyhow!(
+                "phase8 operator approval strategy_cancel_path does not match `[live_canary].operator_evidence.strategy_cancel_path`"
+            )),
+        }
     }
 
     fn read_financial_envelope(&self) -> Result<Phase8FinancialEnvelopeEvidenceFile> {
@@ -1482,7 +1512,11 @@ impl Phase8OperatorApprovalEnvelope {
         Ok(())
     }
 
-    fn write_approval_consumption_evidence(&self, current_unix_secs: i64) -> Result<()> {
+    fn write_approval_consumption_evidence(
+        &self,
+        current_unix_secs: i64,
+        strategy_cancel_path: Option<&str>,
+    ) -> Result<()> {
         let path = Path::new(&self.approval_consumption_path);
         if let Some(parent) = path
             .parent()
@@ -1511,6 +1545,7 @@ impl Phase8OperatorApprovalEnvelope {
             approval_not_before_unix_secs: self.approval_not_before_unix_secs,
             approval_not_after_unix_secs: self.approval_not_after_unix_secs,
             canary_evidence_path_hash: sha256_text(&self.canary_evidence_path),
+            strategy_cancel_path_hash: strategy_cancel_path.map(sha256_text),
             client_order_id_hash: &self.client_order_id_hash,
             venue_order_id_hash: &self.venue_order_id_hash,
             consumed_unix_secs: current_unix_secs,
@@ -2145,6 +2180,8 @@ struct Phase8ApprovalConsumptionEvidence<'a> {
     approval_not_before_unix_secs: i64,
     approval_not_after_unix_secs: i64,
     canary_evidence_path_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strategy_cancel_path_hash: Option<String>,
     client_order_id_hash: &'a str,
     venue_order_id_hash: &'a str,
     consumed_unix_secs: i64,
@@ -2157,6 +2194,21 @@ fn required_env(name: &str) -> Result<String> {
         return Err(anyhow!("required phase8 env `{name}` is empty"));
     }
     Ok(trimmed.to_string())
+}
+
+fn optional_env(name: &str) -> Result<Option<String>> {
+    match env::var(name) {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(anyhow!("failed to read phase8 env `{name}`: {error}")),
+    }
 }
 
 fn required_i64_env(name: &str) -> Result<i64> {

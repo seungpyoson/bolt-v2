@@ -71,6 +71,30 @@ pub(crate) fn read_to_string(path: &Path) -> Result<String, ConfigFileReadError>
             path: path.to_path_buf(),
             source,
         })?;
+    bytes_to_string(path, bytes)
+}
+
+pub(crate) async fn read_to_string_async(path: &Path) -> Result<String, ConfigFileReadError> {
+    use tokio::io::AsyncReadExt;
+
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|source| ConfigFileReadError::Open {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let mut bytes = Vec::new();
+    file.take(CONFIG_FILE_SIZE_LIMIT_BYTES.saturating_add(OVERSIZE_DETECTION_EXTRA_BYTE))
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|source| ConfigFileReadError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    bytes_to_string(path, bytes)
+}
+
+fn bytes_to_string(path: &Path, bytes: Vec<u8>) -> Result<String, ConfigFileReadError> {
     let length = bytes.len() as u64;
     if length > CONFIG_FILE_SIZE_LIMIT_BYTES {
         return Err(ConfigFileReadError::TooLarge {
@@ -83,4 +107,45 @@ pub(crate) fn read_to_string(path: &Path) -> Result<String, ConfigFileReadError>
         path: path.to_path_buf(),
         source,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CONFIG_FILE_SIZE_LIMIT_BYTES, ConfigFileReadError, read_to_string_async};
+
+    #[tokio::test]
+    async fn async_reader_rejects_config_over_size_limit() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let path = temp.path().join("oversized-root.toml");
+        std::fs::write(&path, vec![b'x'; CONFIG_FILE_SIZE_LIMIT_BYTES as usize + 1])
+            .expect("oversized config fixture should write");
+
+        let error = read_to_string_async(&path)
+            .await
+            .expect_err("async config reader must reject oversized config files");
+
+        match error {
+            ConfigFileReadError::TooLarge { length, limit, .. } => {
+                assert_eq!(limit, CONFIG_FILE_SIZE_LIMIT_BYTES);
+                assert_eq!(length, CONFIG_FILE_SIZE_LIMIT_BYTES + 1);
+            }
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn async_reader_rejects_invalid_utf8() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let path = temp.path().join("invalid-root.toml");
+        std::fs::write(&path, [0xff, 0xfe]).expect("invalid UTF-8 fixture should write");
+
+        let error = read_to_string_async(&path)
+            .await
+            .expect_err("async config reader must reject invalid UTF-8");
+
+        assert!(
+            matches!(error, ConfigFileReadError::Utf8 { .. }),
+            "expected Utf8, got {error:?}"
+        );
+    }
 }

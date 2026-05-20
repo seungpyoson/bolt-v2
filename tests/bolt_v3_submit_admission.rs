@@ -23,8 +23,7 @@ use std::{
 
 #[test]
 fn live_node_runtime_does_not_expose_manual_admission_or_raw_run_bypass() {
-    let source = std::fs::read_to_string("src/bolt_v3_live_node.rs")
-        .expect("bolt-v3 live node source should be readable");
+    let source = support::repo_text("src/bolt_v3_live_node.rs");
 
     assert!(
         !source.contains("pub submit_admission:"),

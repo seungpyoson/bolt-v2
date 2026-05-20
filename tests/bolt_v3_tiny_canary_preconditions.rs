@@ -1757,6 +1757,7 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
         approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        strategy_cancel_path: None,
         client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
         venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
@@ -1840,6 +1841,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
         client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
         venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
@@ -2046,17 +2048,105 @@ async fn operator_approval_consumption_writer_output_is_accepted_by_live_gate() 
         approval_nonce_sha256: operator_evidence.approval_nonce_sha256.clone(),
         approval_consumption_path: operator_evidence.approval_consumption_path.clone(),
         canary_evidence_path: operator_evidence.canary_evidence_path.clone(),
+        strategy_cancel_path: operator_evidence.strategy_cancel_path.clone(),
         client_order_id_hash: operator_evidence.client_order_id_hash.clone(),
         venue_order_id_hash: operator_evidence.venue_order_id_hash.clone(),
     };
 
     envelope
-        .consume_approval_after_live_runner_entry_validation(current_unix_seconds_for_test() as i64)
+        .consume_approval_after_live_runner_entry_validation(
+            &loaded,
+            current_unix_seconds_for_test() as i64,
+        )
         .expect("writer-created approval consumption proof should persist");
 
     check_bolt_v3_live_canary_gate(&loaded)
         .await
         .expect("live gate should accept writer-created approval consumption proof");
+}
+
+#[test]
+fn operator_approval_consumption_rejects_strategy_cancel_path_drift_before_spend() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let report_path = temp.path().join("no-submit-readiness.json");
+
+    let mut loaded = loaded_with_live_canary(&report_path.to_string_lossy());
+    let root_toml_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(&loaded.root_path)
+        .expect("root TOML hash should compute");
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("operator evidence should exist");
+    assert!(
+        operator_evidence.strategy_cancel_path.is_some(),
+        "fixture must configure strategy_cancel_path to prove env/TOML drift"
+    );
+
+    let base_envelope = Phase8OperatorApprovalEnvelope {
+        head_sha: operator_evidence.head_sha.clone(),
+        root_toml_path: loaded.root_path.to_string_lossy().to_string(),
+        root_toml_sha256,
+        approval_envelope_sha256: operator_evidence.approval_envelope_sha256.clone(),
+        ssm_manifest_path: operator_evidence.ssm_manifest_path.clone(),
+        ssm_manifest_sha256: operator_evidence.ssm_manifest_sha256.clone(),
+        strategy_input_evidence_path: operator_evidence.strategy_input_evidence_path.clone(),
+        strategy_input_evidence_sha256: operator_evidence.strategy_input_evidence_sha256.clone(),
+        financial_envelope_path: operator_evidence.financial_envelope_path.clone(),
+        financial_envelope_sha256: operator_evidence.financial_envelope_sha256.clone(),
+        pre_run_state_path: operator_evidence.pre_run_state_path.clone(),
+        pre_run_state_sha256: operator_evidence.pre_run_state_sha256.clone(),
+        abort_plan_path: operator_evidence.abort_plan_path.clone(),
+        abort_plan_sha256: operator_evidence.abort_plan_sha256.clone(),
+        operator_approval_id: "operator-approved-canary-001".to_string(),
+        approval_not_before_unix_secs: operator_evidence.approval_not_before_unix_seconds,
+        approval_not_after_unix_secs: operator_evidence.approval_not_after_unix_seconds,
+        approval_nonce_path: operator_evidence.approval_nonce_path.clone(),
+        approval_nonce_sha256: operator_evidence.approval_nonce_sha256.clone(),
+        approval_consumption_path: String::new(),
+        canary_evidence_path: operator_evidence.canary_evidence_path.clone(),
+        strategy_cancel_path: operator_evidence.strategy_cancel_path.clone(),
+        client_order_id_hash: operator_evidence.client_order_id_hash.clone(),
+        venue_order_id_hash: operator_evidence.venue_order_id_hash.clone(),
+    };
+
+    for (case, strategy_cancel_path) in [
+        ("missing", None),
+        (
+            "wrong",
+            Some(
+                temp.path()
+                    .join("wrong-strategy-cancel.json")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+        ),
+    ] {
+        let approval_consumption_path = temp
+            .path()
+            .join(format!("phase8-approval-consumed-{case}.json"));
+        let mut envelope = base_envelope.clone();
+        envelope.approval_consumption_path =
+            approval_consumption_path.to_string_lossy().to_string();
+        envelope.strategy_cancel_path = strategy_cancel_path;
+
+        let error = envelope
+            .consume_approval_after_live_runner_entry_validation(
+                &loaded,
+                current_unix_seconds_for_test() as i64,
+            )
+            .expect_err("strategy_cancel_path drift must fail before spending approval");
+
+        assert!(
+            error.to_string().contains("strategy_cancel_path"),
+            "error should mention strategy_cancel_path drift: {error}"
+        );
+        assert!(
+            !approval_consumption_path.exists(),
+            "strategy_cancel_path drift must not create approval consumption evidence"
+        );
+    }
 }
 
 #[test]
@@ -2100,6 +2190,7 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
         approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        strategy_cancel_path: None,
         client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
         venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
@@ -2168,6 +2259,7 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
         approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        strategy_cancel_path: None,
         client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
         venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
@@ -2298,6 +2390,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
         client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
         venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
@@ -2715,6 +2808,7 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
         client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
         venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
@@ -2894,6 +2988,7 @@ fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
         client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
         venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
@@ -2981,6 +3076,7 @@ fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
         client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
         venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
@@ -3060,6 +3156,15 @@ fn loaded_with_live_canary(report_path: &str) -> LoadedBoltV3Config {
         max_notional_per_order: "0.25".to_string(),
     });
     loaded
+}
+
+fn live_canary_strategy_cancel_path(loaded: &LoadedBoltV3Config) -> Option<String> {
+    loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+        .and_then(|operator_evidence| operator_evidence.strategy_cancel_path.clone())
 }
 
 fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {

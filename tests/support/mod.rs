@@ -163,6 +163,11 @@ pub fn repo_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
+pub fn repo_text(relative: &str) -> String {
+    fs::read_to_string(repo_path(relative))
+        .unwrap_or_else(|error| panic!("repo text `{relative}` should read: {error}"))
+}
+
 pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock {
     let case_dir = live_canary_operator_evidence_case_dir();
     let now = current_unix_seconds() as i64;
@@ -212,6 +217,10 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
     let abort_plan_sha256 = sha256_file(&abort_plan_path);
     let approval_nonce_sha256 = sha256_file(&approval_nonce_path);
     let canary_evidence_path = canary_evidence_path.to_string_lossy().to_string();
+    let strategy_cancel_path = case_dir
+        .join("strategy-cancel.json")
+        .to_string_lossy()
+        .to_string();
     let root_toml_sha256 = sha256_file(&repo_path("tests/fixtures/bolt_v3/root.toml"));
     let approval_envelope_sha256 = sha256_file(&approval_envelope_path);
     let client_order_id_hash = sha256_hex(b"client-order-id");
@@ -238,6 +247,7 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         "approval_not_before_unix_secs": approval_not_before_unix_seconds,
         "approval_not_after_unix_secs": approval_not_after_unix_seconds,
         "canary_evidence_path_hash": sha256_hex(canary_evidence_path.as_bytes()),
+        "strategy_cancel_path_hash": sha256_hex(strategy_cancel_path.as_bytes()),
         "client_order_id_hash": client_order_id_hash,
         "venue_order_id_hash": venue_order_id_hash,
         "consumed_unix_secs": now,
@@ -285,12 +295,7 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
             .join("venue-order-state.json")
             .to_string_lossy()
             .to_string(),
-        strategy_cancel_path: Some(
-            case_dir
-                .join("strategy-cancel.json")
-                .to_string_lossy()
-                .to_string(),
-        ),
+        strategy_cancel_path: Some(strategy_cancel_path),
         restart_reconciliation_path: case_dir
             .join("restart-reconciliation.json")
             .to_string_lossy()

@@ -1,6 +1,6 @@
 # Implementation Plan: NT-Matched Maker Order Scope
 
-**Branch**: `codex/maker-order-proof` | **Date**: 2026-05-20 | **Spec**: `specs/022-nt-maker-order-scope/spec.md`  
+**Branch**: `codex/maker-order-proof-clean` | **Date**: 2026-05-20 | **Spec**: `specs/022-nt-maker-order-scope/spec.md`
 **Input**: Feature specification from `specs/022-nt-maker-order-scope/spec.md`
 
 ## Summary
@@ -9,14 +9,14 @@ Evaluate and, only after review gates, accept or minimally refine NautilusTrader
 
 ## Technical Context
 
-**Language/Version**: Rust, repo toolchain as configured by current workspace  
-**Primary Dependencies**: NautilusTrader Rust crates pinned in `Cargo.toml`; `nautilus-polymarket` at rev `7c2aafb30fb143069c915a3f2057bb12174405f6`  
-**Storage**: TOML config, docs/spec files, existing test fixtures  
-**Testing**: `cargo test`, focused Rust integration/unit tests, `cargo fmt -- --check`, `git diff --check`  
-**Target Platform**: bolt-v3 pure Rust LiveNode path  
-**Project Type**: Rust trading runtime plus config/strategy tests  
-**Performance Goals**: No new hot-path polling or adapter simulation; use existing NT submit path  
-**Constraints**: No hardcoded runtime values, no alternate submit path, no secret display, no live submit without separate approval  
+**Language/Version**: Rust, repo toolchain as configured by current workspace
+**Primary Dependencies**: NautilusTrader Rust crates pinned in `Cargo.toml`; `nautilus-polymarket` at rev `7c2aafb30fb143069c915a3f2057bb12174405f6`
+**Storage**: TOML config, docs/spec files, existing test fixtures
+**Testing**: `cargo test`, focused Rust integration/unit tests, `cargo fmt -- --check`, `git diff --check`
+**Target Platform**: bolt-v3 pure Rust LiveNode path
+**Project Type**: Rust trading runtime plus config/strategy tests
+**Performance Goals**: No new hot-path polling or adapter simulation; use existing NT submit path
+**Constraints**: No hardcoded runtime values, no alternate submit path, no secret display, no live submit without separate approval
 **Scale/Scope**: One strategy archetype slice: `binary_oracle_edge_taker` Polymarket maker limit orders
 
 ## Constitution Check

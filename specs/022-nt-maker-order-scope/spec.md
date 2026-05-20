@@ -1,8 +1,8 @@
 # Feature Specification: NT-Matched Maker Order Scope
 
-**Feature Branch**: `codex/maker-order-proof`  
-**Created**: 2026-05-20  
-**Status**: Draft  
+**Feature Branch**: `codex/maker-order-proof-clean`
+**Created**: 2026-05-20
+**Status**: Draft
 **Input**: User request to enable maker orders only after evidence-based end-to-end investigation, matching NautilusTrader conventions and using Speckit task control.
 
 ## User Scenarios & Testing

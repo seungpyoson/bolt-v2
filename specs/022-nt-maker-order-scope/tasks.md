@@ -1,6 +1,6 @@
 # Tasks: NT-Matched Maker Order Scope
 
-**Input**: Design documents from `specs/022-nt-maker-order-scope/`  
+**Input**: Design documents from `specs/022-nt-maker-order-scope/`
 **Prerequisites**: `plan.md`, `spec.md`, `research.md`, `data-model.md`, `contracts/maker-order-config.md`, `quickstart.md`
 
 **Tests**: Required. TDD red/green evidence must be recorded before production behavior changes.

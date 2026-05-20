@@ -9387,6 +9387,11 @@ mod tests {
         strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
         strategy.config.entry_order.trigger_price = Some(0.52);
         strategy.config.entry_order.is_post_only = true;
+        strategy.config.exit_order.order_type = OrderType::StopLimit;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.exit_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+        strategy.config.exit_order.trigger_price = Some(0.48);
+        strategy.config.exit_order.is_post_only = true;
 
         let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
         let quantity = Quantity::new(2.0, 2);
@@ -9430,6 +9435,30 @@ mod tests {
             admission.notional,
             Decimal::from_str("0.800").expect("expected decimal should parse")
         );
+
+        let exit_price = Price::new(0.45, 2);
+        let exit_order = strategy
+            .build_configured_exit_order(
+                instrument_id,
+                OrderSide::Sell,
+                quantity,
+                exit_price,
+                ClientOrderId::from("O-19700101-000000-001-007-1"),
+            )
+            .expect("StopLimit exit order with explicit trigger price should build");
+
+        let OrderAny::StopLimit(exit_order) = exit_order else {
+            panic!("StopLimit exit config should build an NT stop-limit order");
+        };
+        assert_eq!(exit_order.order_side(), OrderSide::Sell);
+        assert_eq!(exit_order.order_type(), OrderType::StopLimit);
+        assert_eq!(exit_order.time_in_force(), TimeInForce::Gtd);
+        assert_eq!(exit_order.price(), Some(exit_price));
+        assert_eq!(exit_order.trigger_price(), Some(Price::new(0.48, 2)));
+        assert_eq!(exit_order.expire_time(), Some(expire_time));
+        assert!(exit_order.is_post_only());
+        assert!(!exit_order.is_reduce_only());
+        assert!(!exit_order.is_quote_quantity());
     }
 
     #[test]

@@ -323,9 +323,7 @@ fn bolt_v3_strategy_oms_type_uses_nt_canonical_enum() {
     // FINDING-1: `strategy.oms_type` is typed as `nautilus_model::enums::OmsType`
     // (not a bolt shadow enum). NT's enum_strum_serde! macro makes deserialize
     // case-insensitive, so the fixture's `oms_type = "netting"` (lowercase)
-    // continues to parse. Bolt's validator rejects non-Netting variants
-    // explicitly because the surrounding code only supports the Netting OMS
-    // model today.
+    // continues to parse.
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
     use nautilus_model::enums::OmsType;
 
@@ -337,10 +335,7 @@ fn bolt_v3_strategy_oms_type_uses_nt_canonical_enum() {
 }
 
 #[test]
-fn bolt_v3_strategy_oms_type_rejects_non_netting_variants() {
-    // FINDING-1: bolt only supports `OmsType::Netting`. Other NT variants
-    // (`Unspecified`, `Hedging`) must be rejected by the bolt validator
-    // because position/risk accounting elsewhere assumes Netting semantics.
+fn bolt_v3_strategy_oms_type_accepts_nt_variants() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -352,17 +347,17 @@ fn bolt_v3_strategy_oms_type_rejects_non_netting_variants() {
     )
     .expect("stable root should parse");
 
-    for unsupported_oms_type in ["hedging", "unspecified"] {
+    for supported_oms_type in ["hedging", "unspecified"] {
         let mutated_strategy = std::fs::read_to_string(support::repo_path(
             "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
         ))
         .expect("strategy fixture should be readable")
         .replace(
             "oms_type = \"netting\"",
-            &format!("oms_type = \"{unsupported_oms_type}\""),
+            &format!("oms_type = \"{supported_oms_type}\""),
         );
-        let strategy: BoltV3StrategyConfig = toml::from_str(&mutated_strategy)
-            .expect("unsupported oms_type should parse via NT enum");
+        let strategy: BoltV3StrategyConfig =
+            toml::from_str(&mutated_strategy).expect("oms_type should parse via NT enum");
         let loaded = vec![LoadedStrategy {
             config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
             relative_path: "strategies/binary_oracle.toml".to_string(),
@@ -370,10 +365,8 @@ fn bolt_v3_strategy_oms_type_rejects_non_netting_variants() {
         }];
         let messages = validate_strategies(&stable_root, &loaded);
         assert!(
-            messages
-                .iter()
-                .any(|m| m.contains("oms_type") && m.contains("Netting")),
-            "expected oms_type rejection citing supported Netting variant for {unsupported_oms_type}, got: {messages:#?}"
+            messages.iter().all(|message| !message.contains("oms_type")),
+            "NT oms_type variant {supported_oms_type} should not be narrowed by bolt validation: {messages:#?}"
         );
     }
 }
@@ -610,6 +603,32 @@ fn bolt_v3_archetype_order_params_use_nt_canonical_enums() {
 }
 
 #[test]
+fn bolt_v3_archetype_runtime_parameters_reject_unknown_fields() {
+    use bolt_v2::{
+        bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock,
+        bolt_v3_config::BoltV3StrategyConfig,
+    };
+
+    let strategy_toml = fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let mutated = strategy_toml.replace(
+        "lead_jitter_max_ms = 250",
+        "lead_jitter_max_ms = 250\nrisk_lambdaa = 0.5",
+    );
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&mutated).expect("strategy envelope should parse");
+    let parsed: Result<ParametersBlock, _> = strategy.parameters.try_into();
+    let err = parsed.expect_err("unknown fields inside [parameters.runtime] should fail parse");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("unknown field") && rendered.contains("risk_lambdaa"),
+        "runtime parameter rejection should come from deny_unknown_fields, got: {rendered}"
+    );
+}
+
+#[test]
 fn bolt_v3_archetype_accepts_post_only_gtc_entry_order() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
@@ -736,6 +755,94 @@ fn bolt_v3_archetype_accepts_mixed_maker_taker_order_configs() {
 }
 
 #[test]
+fn bolt_v3_archetype_accepts_coherent_short_side_order_contract() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let fixture = fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+
+    let short_strategy = fixture
+        .replacen("side = \"buy\"", "side = \"sell\"", 1)
+        .replacen("position_side = \"long\"", "position_side = \"short\"", 1);
+    let (before_exit, exit_block) = short_strategy
+        .split_once("[parameters.exit_order]")
+        .expect("fixture should include exit order block");
+    let short_strategy = format!(
+        "{before_exit}[parameters.exit_order]{}",
+        exit_block
+            .replacen("side = \"sell\"", "side = \"buy\"", 1)
+            .replacen("position_side = \"long\"", "position_side = \"short\"", 1)
+    );
+
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&short_strategy).expect("coherent short-side order contract should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.is_empty(),
+        "coherent short-side order contract should be accepted by binary_oracle_edge_taker validation: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_incoherent_order_position_contract() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let fixture = fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let (before_exit, exit_block) = fixture
+        .split_once("[parameters.exit_order]")
+        .expect("fixture should include exit order block");
+    let incoherent_strategy = format!(
+        "{before_exit}[parameters.exit_order]{}",
+        exit_block.replacen("side = \"sell\"", "side = \"buy\"", 1)
+    );
+
+    let strategy: BoltV3StrategyConfig = toml::from_str(&incoherent_strategy)
+        .expect("incoherent order position contract should still parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("position contract is not supported")
+                && message.contains("long requires entry side=buy, exit side=sell")
+                && message.contains("short requires entry side=sell, exit side=buy")
+        }),
+        "incoherent order position contract should be rejected with contract guidance: {messages:#?}"
+    );
+}
+
+#[test]
 fn polymarket_post_order_params_declares_camel_case_is_post_only_flag() {
     let query_source = include_str!("fixtures/nt_polymarket_query_post_order_params_7c2aafb.txt");
     let nt_field = ["post", "only"].join("_");
@@ -840,6 +947,42 @@ fn bolt_v3_archetype_rejects_gtd_time_in_force_until_expiry_policy_exists() {
                 && m.contains("time_in_force=gtc")
         }),
         "expected exit_order GTD rejection until an expiry policy exists, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_accepts_gtd_limit_order_with_expiry() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let fixture = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let gtd_strategy_source = fixture.replace(
+        "time_in_force = \"fok\"\nis_post_only = false",
+        "time_in_force = \"gtd\"\nexpire_time_unix_nanos = 4102444800000000000\nis_post_only = false",
+    );
+
+    let strategy: BoltV3StrategyConfig = toml::from_str(&gtd_strategy_source)
+        .expect("GTD expiry should parse through the typed order config");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&stable_root, &loaded);
+
+    assert!(
+        messages.is_empty(),
+        "GTD limit order with explicit expiry should validate: {messages:#?}"
     );
 }
 

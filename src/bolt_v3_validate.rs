@@ -491,16 +491,6 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             }
         }
 
-        // FINDING-1: NT's OmsType has Unspecified/Netting/Hedging. Bolt's
-        // position and risk accounting is only valid for Netting; reject
-        // other variants explicitly so support can be added deliberately.
-        if strategy.oms_type != nautilus_model::enums::OmsType::Netting {
-            errors.push(format!(
-                "{context}: oms_type `{:?}` is not supported by bolt-v3 (only Netting is implemented)",
-                strategy.oms_type
-            ));
-        }
-
         let (target_metadata, target_errors) =
             crate::bolt_v3_market_families::validate_strategy_target(&context, &strategy.target);
         if let Some(metadata) = target_metadata {

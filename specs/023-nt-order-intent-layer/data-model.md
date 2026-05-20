@@ -1,0 +1,128 @@
+# Data Model: NT Order Intent Layer
+
+## StrategyPositionContract
+
+Bolt-owned strategy semantics for how an entry and exit relate to a position.
+
+Fields:
+
+- `entry_position_side`: NT `PositionSide`
+- `exit_position_side`: NT `PositionSide`
+- `entry_order_side`: NT `OrderSide`
+- `exit_order_side`: NT `OrderSide`
+- `forced_exit_behavior`: configured behavior for urgent flattening
+
+Validation:
+
+- Long contract: entry buy, exit sell.
+- Short contract: entry sell, exit buy.
+- Forced exit cannot silently reuse passive maker behavior unless TOML explicitly configures it.
+
+Not included:
+
+- NT order lifecycle fields.
+- Venue position-side translation.
+
+## NtOrderTemplate
+
+Config-owned NT order semantics shared by maker and taker for the currently enabled slice.
+
+Fields:
+
+- `order_type`: NT `OrderType`
+- `time_in_force`: NT `TimeInForce`
+- `is_post_only`: bool
+- `is_reduce_only`: bool
+- `is_quote_quantity`: bool
+- `expire_after_ms` or `expire_time_unix_nanos` only when GTD is enabled by a reviewed slice
+- `trigger_type`, `trigger_price`, and `trigger_instrument_id` only when triggered order slices are enabled
+- `display_qty` only when an iceberg/display quantity slice is enabled
+- `trailing_offset` and related fields only when a trailing slice is enabled
+- `exec_algorithm_id`, `exec_algorithm_params`, and `tags` only when an execution algorithm slice is enabled
+
+Validation:
+
+- Validates schema readability and the generic NT model invariants needed by enabled variants.
+- Does not validate venue support.
+- Does not encode maker/taker as a separate enum.
+
+Factory-reachable order types in the pinned NT checkout. Listing here is not a support claim; each variant needs its own positive construction/admission test before Bolt claims support:
+
+- Market
+- Limit
+- StopMarket
+- StopLimit
+- MarketIfTouched
+- LimitIfTouched
+- TrailingStopMarket
+
+Factory gaps requiring separate approval:
+
+- MarketToLimit
+- TrailingStopLimit
+
+## OrderBuildInputs
+
+Runtime facts computed by strategy logic and market state.
+
+Fields:
+
+- `instrument_id`
+- `quantity`
+- `price` for limit-like orders
+- `trigger_price` for triggered orders
+- `activation_price` and offsets for trailing orders
+- `client_order_id`
+
+Source:
+
+- Strategy signal, target, market data, configured sizing, and NT order id generation.
+
+## SubmitContext
+
+Submit-level context passed to NT after order construction and admission.
+
+Fields:
+
+- `client_id`: optional NT `ClientId`
+- `position_id`: optional NT `PositionId`
+- `params`: optional NT submit params
+
+Validation:
+
+- Admission uses the compiled order and Bolt risk/admission config.
+- NT execution engine validates venue/client match, OMS/position compatibility, and instrument presence.
+- Provider bindings own any concrete submit param schema. The generic order layer only carries already-typed params to NT.
+
+## OrderIntentEvidence
+
+Bolt audit record for decision and admission.
+
+Fields:
+
+- strategy id
+- intent kind
+- instrument id
+- client order id
+- order side
+- admission price and quantity inputs derived from the compiled order
+- selected order fields needed to explain Bolt admission, without duplicating NT `OrderInitialized`
+- admission outcome
+
+Boundary:
+
+- Evidence records what Bolt decided and admitted.
+- NT order events remain the authoritative order lifecycle record.
+
+## AdapterProof
+
+Evidence for venue-specific claims.
+
+Fields:
+
+- adapter or venue
+- source file and line evidence
+- smoke command or canary artifact when available
+- exact git head
+- claim proven
+- residual claim not proven

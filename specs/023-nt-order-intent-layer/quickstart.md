@@ -1,0 +1,47 @@
+# Quickstart: NT Order Intent Layer
+
+## Evidence Commands
+
+```bash
+git status --short --branch
+git rev-parse HEAD
+rg -n "pub enum OrderType|pub enum TimeInForce" /Users/spson/.cargo/git/checkouts/nautilus_trader-*/7c2aafb/crates/model/src/enums.rs
+rg -n "pub fn (market|limit|stop_market|stop_limit|market_if_touched|limit_if_touched|trailing_stop_market)" /Users/spson/.cargo/git/checkouts/nautilus_trader-*/7c2aafb/crates/common/src/factories/order.rs
+rg -n "check_entry_order_combination|check_exit_order_combination|build_configured_order|parse_configured_time_in_force" src/bolt_v3_archetypes/binary_oracle_edge_taker.rs src/strategies/binary_oracle_edge_taker.rs
+```
+
+## TDD Commands
+
+Run the focused red test first, then implement, then rerun the same test:
+
+```bash
+cargo test bolt_v3_archetype_accepts_mixed_maker_taker_order_configs -- --nocapture
+cargo test forced_flat_exit_uses_market_exit_config_when_normal_exit_is_post_only -- --nocapture
+cargo test binary_oracle_edge_taker_exit_submit_threads_managed_position_id_to_nt -- --nocapture
+cargo test strategy_core_accepts_nt_hedging_oms_type -- --nocapture
+cargo test bolt_v3_strategy_oms_type_accepts_nt_variants -- --nocapture
+cargo test forced_flat_exit_order_object_preserves_market_reduce_only_config -- --nocapture
+```
+
+After a green focused slice:
+
+```bash
+cargo fmt -- --check
+git diff --check
+cargo test bolt_v3_archetype_accepts_mixed_maker_taker_order_configs -- --nocapture
+```
+
+Before completion claims:
+
+```bash
+cargo test
+no-mistakes status
+```
+
+## Proof Boundaries
+
+- Passing config tests prove parsing and validation only.
+- Passing strategy construction tests prove Bolt builds the expected NT `OrderAny` only.
+- Passing local tests do not prove adapter or live exchange execution.
+- no-mistakes output is useful only after confirming it is running for this branch and exact head.
+- Live/no-submit/canary proof requires explicit approval and exact-head artifacts.

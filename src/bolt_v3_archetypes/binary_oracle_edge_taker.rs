@@ -16,12 +16,11 @@
 //! 2. The archetype's bolt-v3 startup-validation policy:
 //!    - the required reference-data role
 //!      (`[reference_data.primary]`),
-//!    - the allowed `[parameters.entry_order]` combination
-//!      (`order_type=limit`, `time_in_force=fok`, all boolean flags
-//!      `false`),
-//!    - the allowed `[parameters.exit_order]` combination
-//!      (`order_type=market`, `time_in_force=ioc`, all boolean flags
-//!      `false`).
+//!    - the supported `[parameters.entry_order]` and
+//!      `[parameters.exit_order]` combinations: taker limit/FOK or
+//!      market/IOC where applicable, maker limit/GTC with
+//!      `is_post_only=true`, and limit/GTD with an explicit
+//!      `expire_time_unix_nanos`.
 //!
 //! Core startup validation in `crate::bolt_v3_validate` keeps target-
 //! shape and per-role reference-data structural checks structural and
@@ -112,6 +111,7 @@ pub struct OrderParams {
     pub position_side: PositionSide,
     pub order_type: OrderType,
     pub time_in_force: TimeInForce,
+    pub expire_time_unix_nanos: Option<u64>,
     pub is_post_only: bool,
     pub is_reduce_only: bool,
     pub is_quote_quantity: bool,
@@ -338,7 +338,7 @@ pub fn raw_taker_config(
         "order_id_tag",
         strategy.config.order_id_tag.clone(),
     );
-    insert_string(&mut table, "oms_type", oms_type_value(strategy).to_string());
+    insert_string(&mut table, "oms_type", oms_type_value(strategy));
     insert_bool(
         &mut table,
         "use_uuid_client_order_ids",
@@ -445,8 +445,18 @@ pub fn raw_taker_config(
         "reference_instrument_id",
         reference_data.instrument_id.to_string(),
     );
-    insert_order_config(&mut table, "entry_order", &parameters.entry_order);
-    insert_order_config(&mut table, "exit_order", &parameters.exit_order);
+    insert_order_config(
+        &mut table,
+        strategy_instance_id,
+        "entry_order",
+        &parameters.entry_order,
+    )?;
+    insert_order_config(
+        &mut table,
+        strategy_instance_id,
+        "exit_order",
+        &parameters.exit_order,
+    )?;
     insert_u64(
         &mut table,
         strategy_instance_id,
@@ -650,7 +660,12 @@ fn insert_string_array(table: &mut Map<String, Value>, key: &'static str, values
     );
 }
 
-fn insert_order_config(table: &mut Map<String, Value>, key: &'static str, order: &OrderParams) {
+fn insert_order_config(
+    table: &mut Map<String, Value>,
+    strategy_instance_id: &str,
+    key: &'static str,
+    order: &OrderParams,
+) -> Result<(), BinaryOracleEdgeTakerRuntimeConfigError> {
     let mut order_table = Map::new();
     insert_string(&mut order_table, "side", enum_variant_lowercase(order.side));
     insert_string(
@@ -668,6 +683,14 @@ fn insert_order_config(table: &mut Map<String, Value>, key: &'static str, order:
         "time_in_force",
         enum_variant_lowercase(order.time_in_force),
     );
+    if let Some(expire_time_unix_nanos) = order.expire_time_unix_nanos {
+        insert_u64(
+            &mut order_table,
+            strategy_instance_id,
+            "expire_time_unix_nanos",
+            expire_time_unix_nanos,
+        )?;
+    }
     insert_bool(&mut order_table, "is_post_only", order.is_post_only);
     insert_bool(&mut order_table, "is_reduce_only", order.is_reduce_only);
     insert_bool(
@@ -676,6 +699,7 @@ fn insert_order_config(table: &mut Map<String, Value>, key: &'static str, order:
         order.is_quote_quantity,
     );
     table.insert(key.to_string(), Value::Table(order_table));
+    Ok(())
 }
 
 fn enum_variant_lowercase<T: std::fmt::Debug>(value: T) -> String {
@@ -706,11 +730,8 @@ fn insert_float(table: &mut Map<String, Value>, key: &'static str, value: f64) {
     table.insert(key.to_string(), Value::Float(value));
 }
 
-fn oms_type_value(strategy: &LoadedStrategy) -> &'static str {
-    match strategy.config.oms_type {
-        nautilus_model::enums::OmsType::Netting => "netting",
-        _ => "unsupported",
-    }
+fn oms_type_value(strategy: &LoadedStrategy) -> String {
+    enum_variant_lowercase(strategy.config.oms_type)
 }
 
 fn configured_reference_data(
@@ -758,6 +779,7 @@ fn validate_order_parameters(
     exit: &OrderParams,
 ) -> Vec<String> {
     let mut errors = Vec::new();
+    errors.extend(check_strategy_position_contract(context, entry, exit));
     errors.extend(check_entry_order_combination(context, entry));
     errors.extend(check_exit_order_combination(context, exit));
     errors
@@ -803,37 +825,27 @@ fn validate_parameter_bounds(
 }
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
-    let taker_limit_fok = (
-        OrderSide::Buy,
-        PositionSide::Long,
-        OrderType::Limit,
-        TimeInForce::Fok,
-        false,
-        false,
-        false,
-    );
-    let maker_limit_gtc = (
-        OrderSide::Buy,
-        PositionSide::Long,
-        OrderType::Limit,
-        TimeInForce::Gtc,
-        true,
-        false,
-        false,
-    );
+    let taker_limit_fok = (OrderType::Limit, TimeInForce::Fok, false, false, false);
+    let maker_limit_gtc = (OrderType::Limit, TimeInForce::Gtc, true, false, false);
+    let gtd_limit = (OrderType::Limit, TimeInForce::Gtd, false, false);
     let actual = (
-        entry.side,
-        entry.position_side,
         entry.order_type,
         entry.time_in_force,
         entry.is_post_only,
         entry.is_reduce_only,
         entry.is_quote_quantity,
     );
-    if actual != taker_limit_fok && actual != maker_limit_gtc {
+    let is_gtd_limit = (
+        entry.order_type,
+        entry.time_in_force,
+        entry.is_reduce_only,
+        entry.is_quote_quantity,
+    ) == gtd_limit
+        && entry.expire_time_unix_nanos.is_some_and(|value| value > 0);
+    if actual != taker_limit_fok && actual != maker_limit_gtc && !is_gtd_limit {
         vec![format!(
             "{context}: parameters.entry_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only side=buy, position_side=long, order_type=limit with either time_in_force=fok, is_post_only=false or time_in_force=gtc, is_post_only=true is allowed; \
+             only order_type=limit with time_in_force=fok, time_in_force=gtc plus is_post_only=true, or time_in_force=gtd plus expire_time_unix_nanos is allowed; \
              is_reduce_only=false and is_quote_quantity=false are required"
         )]
     } else {
@@ -842,40 +854,72 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
 }
 
 fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {
-    let taker_market_ioc = (
-        OrderSide::Sell,
-        PositionSide::Long,
-        OrderType::Market,
-        TimeInForce::Ioc,
-        false,
-        false,
-        false,
-    );
-    let maker_limit_gtc = (
-        OrderSide::Sell,
-        PositionSide::Long,
-        OrderType::Limit,
-        TimeInForce::Gtc,
-        true,
-        false,
-        false,
-    );
+    let taker_market_ioc = (OrderType::Market, TimeInForce::Ioc, false, false, false);
+    let maker_limit_gtc = (OrderType::Limit, TimeInForce::Gtc, true, false, false);
+    let gtd_limit = (OrderType::Limit, TimeInForce::Gtd, false, false);
     let actual = (
-        exit.side,
-        exit.position_side,
         exit.order_type,
         exit.time_in_force,
         exit.is_post_only,
         exit.is_reduce_only,
         exit.is_quote_quantity,
     );
-    if actual != taker_market_ioc && actual != maker_limit_gtc {
+    let is_gtd_limit = (
+        exit.order_type,
+        exit.time_in_force,
+        exit.is_reduce_only,
+        exit.is_quote_quantity,
+    ) == gtd_limit
+        && exit.expire_time_unix_nanos.is_some_and(|value| value > 0);
+    if actual != taker_market_ioc && actual != maker_limit_gtc && !is_gtd_limit {
         vec![format!(
             "{context}: parameters.exit_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only side=sell, position_side=long with either order_type=market, time_in_force=ioc, is_post_only=false or order_type=limit, time_in_force=gtc, is_post_only=true is allowed; \
+             only order_type=market with time_in_force=ioc, or order_type=limit with time_in_force=gtc plus is_post_only=true, or order_type=limit with time_in_force=gtd plus expire_time_unix_nanos is allowed; \
              is_reduce_only=false and is_quote_quantity=false are required"
         )]
     } else {
         Vec::new()
     }
+}
+
+fn check_strategy_position_contract(
+    context: &str,
+    entry: &OrderParams,
+    exit: &OrderParams,
+) -> Vec<String> {
+    if expected_position_side_for_entry_order(entry.side)
+        .is_some_and(|side| side == entry.position_side)
+        && expected_exit_order_side_for_position(exit.position_side)
+            .is_some_and(|side| side == exit.side)
+        && entry.position_side == exit.position_side
+        && is_observed_open_side(entry.position_side)
+    {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{context}: parameters entry/exit order position contract is not supported for `binary_oracle_edge_taker`; \
+             long requires entry side=buy, exit side=sell, position_side=long; \
+             short requires entry side=sell, exit side=buy, position_side=short"
+        )]
+    }
+}
+
+fn expected_position_side_for_entry_order(order_side: OrderSide) -> Option<PositionSide> {
+    match order_side {
+        OrderSide::Buy => Some(PositionSide::Long),
+        OrderSide::Sell => Some(PositionSide::Short),
+        _ => None,
+    }
+}
+
+fn expected_exit_order_side_for_position(position_side: PositionSide) -> Option<OrderSide> {
+    match position_side {
+        PositionSide::Long => Some(OrderSide::Sell),
+        PositionSide::Short => Some(OrderSide::Buy),
+        _ => None,
+    }
+}
+
+fn is_observed_open_side(side: PositionSide) -> bool {
+    matches!(side, PositionSide::Long | PositionSide::Short)
 }

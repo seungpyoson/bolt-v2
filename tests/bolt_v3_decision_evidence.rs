@@ -89,8 +89,10 @@ fn binary_oracle_edge_taker_records_evidence_then_admission_before_only_direct_s
         .find(".submit_admission().admit(&request)")
         .expect("strategy wrapper must submit through admission");
     let submit_index = source
-        .find("self.submit_order(order, None, Some(client_id), None)")
-        .expect("strategy wrapper must own the only direct NT submit call");
+        .find(
+            "self.submit_order(\n            order,\n            submit_context.position_id,\n            submit_context.client_id,\n            submit_context.params,\n        )",
+        )
+        .expect("strategy wrapper must thread submit context into the only direct NT submit call");
 
     assert!(
         evidence_index < admission_index && admission_index < submit_index,
@@ -102,6 +104,18 @@ fn binary_oracle_edge_taker_records_evidence_then_admission_before_only_direct_s
         source.matches("self.submit_order(").count(),
         1,
         "direct NT submit calls must stay inside evidence wrapper only"
+    );
+}
+
+#[test]
+fn binary_oracle_edge_taker_exit_submit_threads_managed_position_id_to_nt() {
+    let source = include_str!("../src/strategies/binary_oracle_edge_taker.rs");
+
+    assert!(
+        source.contains(
+            "SubmitContext::with_client_id_and_position_id(\n                client_id,\n                managed_position.position.position_id,\n            )"
+        ),
+        "exit submits must pass the managed PositionId into NT submit_order"
     );
 }
 

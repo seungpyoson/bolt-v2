@@ -196,6 +196,104 @@ fn phase8_operator_harness_waits_for_post_run_proofs_after_runner() {
 }
 
 #[test]
+fn phase8_operator_harness_enters_runner_only_after_full_approval_surface_validation() {
+    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
+        .expect("operator harness source should be readable");
+    let harness = phase8_operator_harness_body(&source);
+
+    let full_validation_index = harness
+        .find("envelope.validate_approved_evidence_against")
+        .expect("operator harness must call full approval-envelope validation");
+    let preflight_index = harness
+        .find("evaluate_phase8_canary_preflight")
+        .expect("operator harness should evaluate preflight");
+    let consumption_index = harness
+        .find("envelope.consume_approval_after_live_runner_entry_validation")
+        .expect("operator harness should consume approval at runner entry");
+    let runner_index = harness
+        .find("run_bolt_v3_live_node")
+        .expect("operator harness should use production live runner");
+
+    assert!(full_validation_index < preflight_index);
+    assert!(preflight_index < consumption_index);
+    assert!(consumption_index < runner_index);
+    assert!(
+        !harness.contains("envelope.validate_against("),
+        "operator harness must not bypass approval window, nonce, financial, and pre-run checks"
+    );
+    assert!(
+        !harness.contains("envelope.validate_and_consume_against("),
+        "operator harness must not consume approval before production runner entry validation"
+    );
+}
+
+#[test]
+fn phase8_operator_full_validation_reaches_required_approval_envelope_surfaces() {
+    let source = std::fs::read_to_string("src/bolt_v3_tiny_canary_evidence.rs")
+        .expect("tiny canary evidence source should be readable");
+    let validate_against = phase8_source_between(
+        &source,
+        "pub fn validate_against",
+        "pub fn validate_and_consume_against",
+    );
+    let full_validation = phase8_source_between(
+        &source,
+        "pub fn validate_approved_evidence_against",
+        "pub fn consume_approval_after_live_runner_entry_validation",
+    );
+    let financial_reader = phase8_source_between(
+        &source,
+        "fn read_financial_envelope",
+        "pub fn approved_strategy_instance_id_hash",
+    );
+    let pre_run_validator = phase8_source_between(
+        &source,
+        "fn validate_pre_run_state_against",
+        "fn validate_abort_plan_against",
+    );
+    let nonce_validator = phase8_source_between(
+        &source,
+        "fn validate_approval_nonce",
+        "fn write_approval_consumption_evidence",
+    );
+
+    assert!(validate_against.contains("Self::sha256_file(&self.ssm_manifest_path)"));
+    assert!(validate_against.contains("self.ssm_manifest_sha256"));
+    assert!(validate_against.contains("Self::sha256_file(&self.strategy_input_evidence_path)"));
+    assert!(validate_against.contains("self.strategy_input_evidence_sha256"));
+    assert!(full_validation.contains("self.validate_approval_window(current_unix_secs)?;"));
+    assert!(full_validation.contains("self.validate_financial_envelope_against(loaded)?;"));
+    assert!(full_validation.contains("self.validate_pre_run_state_against(loaded)?;"));
+    assert!(full_validation.contains("self.validate_approval_nonce()"));
+    assert!(financial_reader.contains("&self.financial_envelope_sha256"));
+    assert!(pre_run_validator.contains("&self.pre_run_state_sha256"));
+    assert!(nonce_validator.contains("Self::sha256_file(&self.approval_nonce_path)?"));
+    assert!(nonce_validator.contains("self.approval_nonce_sha256"));
+}
+
+fn phase8_operator_harness_body(source: &str) -> &str {
+    let start = source
+        .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
+        .expect("operator harness start should exist");
+    let end = source[start..]
+        .find("\nfn phase8_current_checkout_head_sha")
+        .map(|offset| start + offset)
+        .expect("operator harness end should exist");
+    &source[start..end]
+}
+
+fn phase8_source_between<'a>(source: &'a str, start_marker: &str, end_marker: &str) -> &'a str {
+    let start = source
+        .find(start_marker)
+        .unwrap_or_else(|| panic!("{start_marker} should exist"));
+    let end = source[start..]
+        .find(end_marker)
+        .map(|offset| start + offset)
+        .unwrap_or_else(|| panic!("{end_marker} should exist after {start_marker}"));
+    &source[start..end]
+}
+
+#[test]
 fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let run_id = "phase8-live-run-001";

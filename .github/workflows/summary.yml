@@ -35,6 +35,13 @@ jobs:
           # they are never interpolated into this script.
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             number="$INPUT_NUMBER"
+            # Validate the dispatch input is purely numeric before it reaches
+            # gh or $GITHUB_OUTPUT — blocks newline/output injection via a
+            # crafted input and fails fast on a malformed issue number.
+            if [[ ! "$number" =~ ^[0-9]+$ ]]; then
+              echo "Invalid issue_number input (must be digits): $number" >&2
+              exit 1
+            fi
             title="$(gh issue view "$number" --json title --jq .title)"
             body="$(gh issue view "$number" --json body --jq .body)"
           else
@@ -92,16 +99,21 @@ jobs:
               **({'reasoning_effort': sys.argv[2]} if sys.argv[2] else {})
             }))" "$model" "$REASONING")
 
+            # `|| response=""` is required: the default runner shell is
+            # `bash -eo pipefail`, so an unguarded assignment whose command
+            # fails (curl transport error / timeout) would abort the whole
+            # step instead of falling through to the next model.
             response=$(curl -s --max-time 60 --retry 3 https://models.github.ai/inference/chat/completions \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer $GH_MODELS_TOKEN" \
-              -d "$REQUEST_BODY")
+              -d "$REQUEST_BODY") || response=""
 
-            # Extract the content with jq (preinstalled). `// empty` yields an
-            # empty string for missing choices / null content; malformed JSON
-            # makes jq fail and the suppressed stderr leaves summary empty, so
-            # the loop falls through to the next model.
-            summary=$(printf '%s' "$response" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+            # Extract content with jq (preinstalled). `select(type == "string")`
+            # yields the text only when content is a real string (drops null,
+            # numbers, objects, and missing choices -> empty). Malformed or
+            # non-object JSON makes jq exit non-zero; `|| summary=""` keeps the
+            # loop alive under `bash -eo pipefail` instead of aborting the step.
+            summary=$(printf '%s' "$response" | jq -r '.choices[0].message.content | select(type == "string")' 2>/dev/null) || summary=""
 
             if [ -n "$summary" ]; then
               FINAL_SUMMARY="$summary"
@@ -133,9 +145,9 @@ jobs:
             response=$(curl -s --max-time 60 --retry 3 https://openrouter.ai/api/v1/chat/completions \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer $OPENROUTER_API_KEY" \
-              -d "$REQUEST_BODY")
+              -d "$REQUEST_BODY") || response=""
 
-            summary=$(printf '%s' "$response" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+            summary=$(printf '%s' "$response" | jq -r '.choices[0].message.content | select(type == "string")' 2>/dev/null) || summary=""
 
             if [ -n "$summary" ]; then
               FINAL_SUMMARY="$summary"

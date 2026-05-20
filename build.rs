@@ -1,4 +1,8 @@
-use std::{env, fs, path::PathBuf, process::Command};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -32,7 +36,7 @@ fn main() {
     }
 }
 
-fn emit_git_head_rerun_paths(manifest_dir: &PathBuf) {
+fn emit_git_head_rerun_paths(manifest_dir: &Path) {
     let dot_git = manifest_dir.join(".git");
     let git_dir = if dot_git.is_dir() {
         dot_git

@@ -644,6 +644,36 @@ async fn live_canary_gate_rejects_zero_report_byte_cap() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_zero_readiness_report_max_age() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-read-before-max-age-check.json".to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: 0,
+            operator_evidence: Some(valid_operator_evidence()),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("zero readiness report max age must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::InvalidReadinessReportMaxAge { value: 0 }
+        ),
+        "expected readiness report max-age rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_invalid_canary_notional_values() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
 

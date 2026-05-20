@@ -100,6 +100,9 @@ pub enum BoltV3LiveCanaryGateError {
     InvalidReadinessReportSizeLimit {
         value: u64,
     },
+    InvalidReadinessReportMaxAge {
+        value: u64,
+    },
     InvalidOperatorEvidenceSizeLimit {
         value: u64,
     },
@@ -232,6 +235,10 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
             BoltV3LiveCanaryGateError::InvalidReadinessReportSizeLimit { value } => write!(
                 f,
                 "bolt-v3 live canary max_no_submit_readiness_report_bytes must be positive, got {value}"
+            ),
+            BoltV3LiveCanaryGateError::InvalidReadinessReportMaxAge { value } => write!(
+                f,
+                "bolt-v3 live canary readiness_report_max_age_seconds must be positive, got {value}"
             ),
             BoltV3LiveCanaryGateError::InvalidOperatorEvidenceSizeLimit { value } => write!(
                 f,
@@ -480,6 +487,11 @@ async fn check_bolt_v3_live_canary_gate_with_clock(
             value: block.max_no_submit_readiness_report_bytes,
         });
     }
+    if block.readiness_report_max_age_seconds == 0 {
+        return Err(BoltV3LiveCanaryGateError::InvalidReadinessReportMaxAge {
+            value: block.readiness_report_max_age_seconds,
+        });
+    }
 
     let max_notional_per_order = parse_positive_decimal(
         "max_notional_per_order",
@@ -640,12 +652,14 @@ async fn validate_operator_evidence(
         }
     }
     validate_operator_evidence_head_sha(evidence)?;
-    if let Some(strategy_cancel_path) = &evidence.strategy_cancel_path {
-        if strategy_cancel_path.trim().is_empty() {
-            return Err(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
-                field: "strategy_cancel_path",
-            });
-        }
+    if evidence
+        .strategy_cancel_path
+        .as_ref()
+        .is_some_and(|strategy_cancel_path| strategy_cancel_path.trim().is_empty())
+    {
+        return Err(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
+            field: "strategy_cancel_path",
+        });
     }
     for (field, value) in operator_evidence_hash_fields(evidence) {
         if !is_sha256_hex(value) {

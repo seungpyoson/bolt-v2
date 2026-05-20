@@ -303,6 +303,9 @@ pub fn run_bolt_v3_no_submit_readiness_from_stage_results(
     }
 }
 
+/// Audits required reference instrument cache membership as diagnostic evidence.
+/// Always returns `Err`: complete cache membership is still not live
+/// reference-data freshness proof.
 pub fn reference_readiness_from_cached_instrument_ids<I, S>(
     loaded: &LoadedBoltV3Config,
     cached_instrument_ids: I,

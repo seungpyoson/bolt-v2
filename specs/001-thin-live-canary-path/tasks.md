@@ -171,6 +171,10 @@ blockers, not as deferred approval to trade.
 - [ ] T072 Run final spec-compliance and code-quality reviews for the remediation diff before claiming readiness status.
 - [x] T073 [US5] Fix review-discovered quickstart evidence-binding drift in `specs/001-thin-live-canary-path/quickstart.md`: head binding must name `[live_canary.operator_evidence].head_sha` plus build-owned head, root TOML hash must be checked via `approval_consumption_path`, and `approval_envelope_path` must not be described as read by the production gate.
 - [x] T074 [US5] After T073, run `git diff --check` and `just source-fence`, then rerun scoped config/schema/docs re-review before push or external review.
+- [x] T075 [US5] Diagnose exact-head PR #388 CI clippy and gate failures with `gh pr checks 388 --repo seungpyoson/bolt-v2` plus failed job logs before editing `build.rs`.
+- [x] T076 [US5] Fix the exact clippy failures in `build.rs` and `src/bolt_v3_live_canary_gate.rs`, run `just clippy`, `git diff --check`, and `cargo test --test bolt_v3_live_canary_gate -- --nocapture`.
+- [ ] T077 [US5] Push the clippy-fix commit, re-check PR #388 exact-head CI is green, then start external quorum review.
+- [ ] T078 [US5] Review all Greptile PR #388 comments, then either patch and reply/resolve or disprove each comment with file/line and test evidence.
 
 ## Out Of Scope For MVP
 

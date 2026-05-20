@@ -522,6 +522,10 @@ fn no_submit_readiness_runtime_source_does_not_treat_connect_as_reference_readin
         "runtime path must use required reference instruments from NT cache"
     );
     assert!(
+        source.contains("Always returns `Err`"),
+        "cache-only reference helper must document its fail-closed contract"
+    );
+    assert!(
         !source.contains("current_main_reference_readiness"),
         "runtime path must not keep the current-main fail-closed placeholder"
     );

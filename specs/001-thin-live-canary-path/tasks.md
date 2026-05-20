@@ -183,6 +183,7 @@ blockers, not as deferred approval to trade.
 - [x] T084 [US5] Address local code-quality review follow-up: add a call-site regression test proving late live-canary gate revalidation still rejects an expired operator approval window without re-aging approval-consumption freshness.
 - [x] T085 [US5] Address Greptile post-`5a88275b` comments: remove redundant required-stage condition, avoid stale no-submit readiness metadata fixtures, and surface `readiness_report_max_age_seconds` on `BoltV3LiveCanaryGateReport`.
 - [x] T086 [US5] Address Greptile post-`ad4f2557` comments: move example approval-window timestamps into the future and document that the operator approval window must cover report validation plus late evidence re-read/re-hash latency.
+- [x] T087 [US5] Address Greptile post-`d9258272` style finding: remove dead `satisfied_stage_names` bookkeeping from no-submit readiness required-stage validation.
 
 ## Out Of Scope For MVP
 

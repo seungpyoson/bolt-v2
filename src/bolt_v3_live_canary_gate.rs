@@ -1283,7 +1283,6 @@ fn validate_no_submit_readiness_report(
             Some(stages) if stages.is_empty() => reasons.push("stages array is empty".to_string()),
             Some(stages) => {
                 let mut present_stage_names = std::collections::BTreeSet::new();
-                let mut satisfied_stage_names = std::collections::BTreeSet::new();
                 for stage in stages {
                     let name = stage
                         .get(STAGE_KEY)
@@ -1296,8 +1295,6 @@ fn validate_no_submit_readiness_report(
                             "stage `{name}` status is `{}`",
                             status.unwrap_or("<missing>")
                         ));
-                    } else {
-                        satisfied_stage_names.insert(name.to_string());
                     }
                 }
                 for required_stage in REQUIRED_NO_SUBMIT_READINESS_STAGES {

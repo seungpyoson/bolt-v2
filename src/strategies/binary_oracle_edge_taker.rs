@@ -9606,6 +9606,23 @@ mod tests {
             stop_limit_error.to_string().contains("expire_time"),
             "{stop_limit_error}"
         );
+
+        strategy.config.entry_order.order_type = OrderType::MarketIfTouched;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        let market_if_touched_error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-007-1"),
+            )
+            .expect_err("MarketIfTouched GTD without expire_time should fail before NT factory");
+        assert!(
+            market_if_touched_error.to_string().contains("expire_time"),
+            "{market_if_touched_error}"
+        );
     }
 
     #[test]

@@ -3027,6 +3027,14 @@ reason = "This is a stable NautilusTrader msgbus pattern for account-state captu
 [[allowed]]
 path = "src/nt_runtime_capture.rs"
 kind = "string"
+literal = '''"events.portfolio.*"'''
+context = '''const PORTFOLIO_SNAPSHOTS_PATTERN: &str = "events.portfolio.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for portfolio-snapshot capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
 literal = '''"events.order.*"'''
 context = '''const ORDER_EVENTS_PATTERN: &str = "events.order.*";'''
 classification = "nt_msgbus_subscription_pattern"
@@ -3053,6 +3061,14 @@ path = "src/nt_runtime_capture.rs"
 kind = "string"
 literal = '''"instrument_status.jsonl"'''
 context = '''const INSTRUMENT_STATUS_FILE: &str = "instrument_status.jsonl";'''
+classification = "runtime_capture_sidecar_schema"
+reason = "This is a stable runtime-capture sidecar filename consumed by lake conversion, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
+literal = '''"snapshots.jsonl"'''
+context = '''const SNAPSHOTS_FILE: &str = "snapshots.jsonl";'''
 classification = "runtime_capture_sidecar_schema"
 reason = "This is a stable runtime-capture sidecar filename consumed by lake conversion, not an operator runtime value."
 

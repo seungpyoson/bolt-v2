@@ -1,6 +1,11 @@
 name: Summarize new issues
 
 on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to summarize"
+        required: true
   issues:
     types: [opened]
 
@@ -10,7 +15,12 @@ permissions:
 
 jobs:
   summary:
-    runs-on: ubuntu-latest
+    runs-on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to summarize"
+        required: true ubuntu-latest
 
     steps:
       - name: Run AI Summarization Chain
@@ -52,7 +62,12 @@ jobs:
 
             response=$(curl -s --max-time 60 --retry 3 https://models.github.ai/inference/chat/completions \
               -H "Content-Type: application/json" \
-              -H "Authorization: Bearer $GH_MODELS_TOKEN" \
+              -H "Authorization:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to summarize"
+        required: true Bearer $GH_MODELS_TOKEN" \
               -d "$REQUEST_BODY")
 
             # Extract summary safely
@@ -62,6 +77,11 @@ try:
     content = data['choices'][0]['message']['content']
     if content: print(content)
 except Exception:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to summarize"
+        required: true
     pass" 2>/dev/null)
 
             if [ -n "$summary" ]; then
@@ -93,7 +113,12 @@ except Exception:
 
             response=$(curl -s --max-time 60 --retry 3 https://openrouter.ai/api/v1/chat/completions \
               -H "Content-Type: application/json" \
-              -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+              -H "Authorization:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to summarize"
+        required: true Bearer $OPENROUTER_API_KEY" \
               -d "$REQUEST_BODY")
 
             summary=$(echo "$response" | python3 -c "import sys, json; 
@@ -102,6 +127,11 @@ try:
     content = data['choices'][0]['message']['content']
     if content: print(content)
 except Exception:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to summarize"
+        required: true
     pass" 2>/dev/null)
             
             if [ -n "$summary" ]; then
@@ -127,8 +157,8 @@ except Exception:
         env:
           GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN || secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_TITLE: ${{ github.event.issue.title || "Manual Trigger" }}
+          ISSUE_BODY: ${{ github.event.issue.body || "Manual Trigger" }}
 
       - name: Comment with AI summary
         if: steps.ai_chain.outputs.summary != ''
@@ -141,10 +171,10 @@ except Exception:
             printf '%s\n\n' "$SUMMARY"
             printf -- '---\n*Summarized by: `%s`*' "$MODEL_INFO"
           } > "$body_file"
-          gh issue comment "$ISSUE_NUMBER" --body-file "$body_file" -R ${{ github.repository }} -R ${{ github.repository }}
+          gh issue comment "$ISSUE_NUMBER" --body-file "$body_file" -R ${{ github.repository }} -R ${{ github.repository }} -R ${{ github.repository }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number }}
           SUMMARY: ${{ steps.ai_chain.outputs.summary }}
           MODEL_INFO: ${{ steps.ai_chain.outputs.model_info }}
 

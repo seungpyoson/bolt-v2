@@ -27,7 +27,9 @@ jobs:
             
             # Prepare request body with reasoning if applicable
             REASONING_PART=""
-            if [[ "$model" == *"gpt-5"* || "$model" == *"o3"* || "$model" == *"o4-mini"* ]]; then
+            if [[ "$model" == *"gpt-5"* ]]; then
+              REASONING_PART=', "reasoning_effort": "xhigh"'
+            elif [[ "$model" == *"o3"* || "$model" == *"o4-mini"* ]]; then
               REASONING_PART=', "reasoning_effort": "high"'
             fi
 
@@ -37,7 +39,7 @@ jobs:
               "messages": [
                 {
                   "role": "system",
-                  "content": "You are a senior maintainer. Analyze this issue using deep reasoning to identify the core technical problem and impact. Return one concise high-impact paragraph."
+                  "content": "You are a senior maintainer. Analyze this issue using the deepest possible reasoning to identify the core technical problem and impact. Return one concise high-impact paragraph."
                 },
                 {
                   "role": "user",
@@ -49,7 +51,7 @@ jobs:
             EOF
             )
 
-            response=$(curl -s https://models.github.io/inference/chat/completions \
+            response=$(curl -s https://models.github.ai/inference/chat/completions \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer $GH_MODELS_TOKEN" \
               -d "$REQUEST_BODY")

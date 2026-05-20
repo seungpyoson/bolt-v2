@@ -73,9 +73,10 @@ Current source code contains the intended single bolt-v3 production path and loc
    - Trace meaning: strategy construction cannot be treated as live-ready unless decision evidence and admission state are wired into the registered strategy context.
 
 8. Live canary gate before runner entry
-   - `src/bolt_v3_live_node.rs:436-446`
-   - `src/bolt_v3_live_canary_gate.rs:259-430`
-   - `src/bolt_v3_live_canary_gate.rs:474-570`
+   - `src/bolt_v3_live_node.rs:454-464`
+   - `src/bolt_v3_live_canary_gate.rs:308-430`
+   - `src/bolt_v3_live_canary_gate.rs:474-585`
+   - `src/bolt_v3_live_canary_gate.rs:588-690`
    - The live runner checks `[live_canary].operator_evidence`, the no-submit readiness report, report freshness, approval hash, executable identity, config bundle checksum, configured caps, and required satisfied stages before arming submit admission.
    - The operator approval window is checked before report validation and again after report validation using the late gate timestamp. The same late timestamp validates `generated_at_unix_seconds` against TOML-owned `readiness_report_max_age_seconds`.
    - Trace meaning: missing operator evidence, expired approval, expired readiness report, or a report with failed, skipped, stale, or mismatched stages is not live-runner evidence.
@@ -89,7 +90,7 @@ Current source code contains the intended single bolt-v3 production path and loc
    - Trace meaning: decision evidence and admission must precede every live submit candidate; tests and source fences must catch alternate submit paths.
 
 10. NT runner
-    - `src/bolt_v3_live_node.rs:436-471`
+    - `src/bolt_v3_live_node.rs:454-470`
     - After gate/admission setup, `run_bolt_v3_live_node` starts runtime capture and calls `node.run()`.
     - Trace meaning: entering NT runner is only allowed after the gate and admission state are ready.
 
@@ -111,7 +112,7 @@ Current source code contains the intended single bolt-v3 production path and loc
    - Current reference readiness is fail-closed when NT cache evidence only proves configured instrument IDs. Instrument-ID cache membership is not treated as live reference-data freshness.
 
 4. Gate consumption
-   - `src/bolt_v3_live_canary_gate.rs:474-570`
+   - `src/bolt_v3_live_canary_gate.rs:588-690`
    - Gate requires all readiness stages to be present and satisfied, the generated timestamp to be fresh under `[live_canary].readiness_report_max_age_seconds`, and the report linkage fields to match the current approval, executable identity, and config bundle checksum.
 
 Current hard-evidence requirements:

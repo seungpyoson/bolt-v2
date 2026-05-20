@@ -69,6 +69,17 @@ T002 disposition: commit `97cbf828423578e09a604bf31bdaa91ec3573df3` is kept only
 - [x] T031 Commit with a scope-accurate message
 - [x] T032 Push `codex/maker-order-proof-clean`
 
+## Phase 7: PR CI Regression Repair
+
+**Purpose**: Keep exact PR-head CI green before any external audit gate.
+
+- [x] T033 Inspect exact PR #434 CI logs and identify the failing check and test
+- [x] T034 Replace the runtime NT source checkout read in `tests/config_parsing.rs` with compile-time embedded pinned NT source evidence
+- [x] T035 Re-run the focused failed test, `cargo fmt -- --check`, `git diff --check`, `just source-fence`, and full `cargo test`
+- [x] T036 Commit and push the CI regression fix before resuming external audits
+
+T033 evidence: PR #434 head `769135106989e521cbc5e507e67442b6a376b74e` failed `nextest shard 4 of 4` because `polymarket_post_order_params_declares_camel_case_is_post_only_flag` tried to read the pinned NT query source from a Cargo git checkout at test runtime, but shard runners execute a nextest archive without that source checkout.
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks all later phases.
@@ -78,6 +89,7 @@ T002 disposition: commit `97cbf828423578e09a604bf31bdaa91ec3573df3` is kept only
 - T022-T023 block commit/push.
 - T024-T029 are post-push audit gates and remain blocked until exact PR head CI is green, per the repository review bar.
 - Phase 6 happens after T023 so external reviewers can review an exact pushed head.
+- Phase 7 blocks T024-T029 whenever PR CI regresses after push.
 
 ## Parallel Opportunities
 

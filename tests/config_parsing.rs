@@ -1,6 +1,6 @@
 mod support;
 
-use std::{fs, path::PathBuf};
+use std::fs;
 
 #[test]
 fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
@@ -687,15 +687,10 @@ fn bolt_v3_archetype_accepts_post_only_gtc_exit_order() {
 
 #[test]
 fn polymarket_post_order_params_declares_camel_case_is_post_only_flag() {
-    let cargo_home = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
-        .expect("CARGO_HOME or HOME should locate cargo git checkout");
-    let query_source_path = cargo_home
-        .join("git/checkouts/nautilus_trader-3c6af4345b4d438b/7c2aafb")
-        .join("crates/adapters/polymarket/src/http/query.rs");
-    let query_source = fs::read_to_string(query_source_path)
-        .expect("pinned NT Polymarket query source should be readable");
+    let query_source = include_str!(concat!(
+        env!("HOME"),
+        "/.cargo/git/checkouts/nautilus_trader-3c6af4345b4d438b/7c2aafb/crates/adapters/polymarket/src/http/query.rs"
+    ));
     let nt_field = ["post", "only"].join("_");
 
     assert!(query_source.contains("pub struct PostOrderParams"));

@@ -711,6 +711,7 @@ The approval-consumption JSON at `approval_consumption_path` must be a JSON obje
 - `BOLT_V3_PHASE8_HEAD_SHA`: exact commit SHA approved for the attempt
 - `BOLT_V3_PHASE8_ROOT_TOML_PATH`: approved root TOML path
 - `BOLT_V3_PHASE8_ROOT_TOML_SHA256`: sha256 of the approved root TOML
+- `BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256`: sha256 of the configured approval envelope evidence
 - `BOLT_V3_PHASE8_SSM_MANIFEST_PATH`: redacted SSM path manifest evidence
 - `BOLT_V3_PHASE8_SSM_MANIFEST_SHA256`: sha256 of the redacted SSM manifest evidence
 - `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH`: strategy-input safety evidence path

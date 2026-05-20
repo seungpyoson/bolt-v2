@@ -21,6 +21,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
 const PHASE8_VALIDATION_HEAD_SHA: &str = "expected-head";
 const PHASE8_VALIDATION_ROOT_TOML_SHA256: &str = "expected-config-hash";
+const PHASE8_TEST_APPROVAL_ENVELOPE_SHA256: &str =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const PHASE8_TEST_CLIENT_ORDER_ID_HASH: &str =
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const PHASE8_TEST_VENUE_ORDER_ID_HASH: &str =
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 const PHASE8_OPERATOR_APPROVAL_ID: &str = "operator-approved-canary-001";
 const PHASE8_VALIDATION_UNIX_SECS: i64 = 1_500;
 
@@ -346,6 +352,7 @@ impl Phase8OperatorEnvelopeFixture {
                 head_sha: PHASE8_VALIDATION_HEAD_SHA.to_string(),
                 root_toml_path: root_toml_path.to_string_lossy().to_string(),
                 root_toml_sha256: PHASE8_VALIDATION_ROOT_TOML_SHA256.to_string(),
+                approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
                 ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
                 ssm_manifest_sha256: manifest_hash,
                 strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -367,6 +374,8 @@ impl Phase8OperatorEnvelopeFixture {
                     .join("phase8-canary-evidence.json")
                     .to_string_lossy()
                     .to_string(),
+                client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
+                venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
             },
             _temp: temp,
         }

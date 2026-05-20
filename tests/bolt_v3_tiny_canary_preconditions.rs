@@ -22,12 +22,19 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
+const PHASE8_TEST_APPROVAL_ENVELOPE_SHA256: &str =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const PHASE8_TEST_CLIENT_ORDER_ID_HASH: &str =
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const PHASE8_TEST_VENUE_ORDER_ID_HASH: &str =
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
-fn phase8_required_operator_artifact_terms() -> [&'static str; 27] {
+fn phase8_required_operator_artifact_terms() -> [&'static str; 28] {
     [
         "BOLT_V3_PHASE8_HEAD_SHA",
         "BOLT_V3_PHASE8_ROOT_TOML_PATH",
         "BOLT_V3_PHASE8_ROOT_TOML_SHA256",
+        "BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256",
         "BOLT_V3_PHASE8_SSM_MANIFEST_PATH",
         "BOLT_V3_PHASE8_SSM_MANIFEST_SHA256",
         "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH",
@@ -1731,6 +1738,7 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: "phase8-ssm-manifest.json".to_string(),
         ssm_manifest_sha256: "expected-ssm-hash".to_string(),
         strategy_input_evidence_path: "phase8-strategy-input-evidence.json".to_string(),
@@ -1748,6 +1756,8 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
         approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
+        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     let error = envelope
@@ -1811,6 +1821,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -1828,6 +1839,8 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
+        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     let too_early_error = envelope
@@ -1946,6 +1959,18 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     assert_eq!(consumption["approval_not_before_unix_secs"], 1_000);
     assert_eq!(consumption["approval_not_after_unix_secs"], 2_000);
     assert_eq!(consumption["consumed_unix_secs"], 1_500);
+    assert_eq!(
+        consumption["approval_envelope_sha256"],
+        PHASE8_TEST_APPROVAL_ENVELOPE_SHA256
+    );
+    assert_eq!(
+        consumption["client_order_id_hash"],
+        PHASE8_TEST_CLIENT_ORDER_ID_HASH
+    );
+    assert_eq!(
+        consumption["venue_order_id_hash"],
+        PHASE8_TEST_VENUE_ORDER_ID_HASH
+    );
 
     let expired_after_consumption_error = envelope
         .validate_and_consume_against(
@@ -2002,6 +2027,7 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -2019,6 +2045,8 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
         approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
+        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     envelope
@@ -2067,6 +2095,7 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -2084,6 +2113,8 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
         approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
+        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     envelope
@@ -2194,6 +2225,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -2211,6 +2243,8 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
+        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     let mut wrong_hash_envelope = envelope.clone();
@@ -2608,6 +2642,7 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -2625,6 +2660,8 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
+        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     let mut wrong_hash_envelope = envelope.clone();
@@ -2784,6 +2821,7 @@ fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -2801,6 +2839,8 @@ fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
+        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     let error = envelope
@@ -2868,6 +2908,7 @@ fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -2885,6 +2926,8 @@ fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
+        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     let mut wrong_hash_envelope = envelope.clone();

@@ -199,6 +199,8 @@ blockers, not as deferred approval to trade.
 - [ ] T100 [US5] Address Greptile current-head submit-lifecycle observation: investigate and either correct or formally constrain `ReplaceSubmit` counter semantics so replaces cannot inflate risk-reducing-exit budget in any supported multi-order configuration.
 - [ ] T101 [US5] Address Greptile current-head submit-admission serialization observation: investigate and either shorten the admission mutex critical section without weakening counter/evidence atomicity, or encode the serialization requirement with explicit tests and docs.
 - [ ] T102 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T099-T101 submit-admission/test-hardening slice.
+- [x] T103 [US5] Address Greptile current-head tiny-canary proof incompatibility: make the Phase 8 approval-consumption writer emit the gate-required `approval_envelope_sha256`, `client_order_id_hash`, and `venue_order_id_hash` fields, with writer-to-gate regression coverage.
+- [ ] T104 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T103 proof-compatibility slice.
 
 ## Out Of Scope For MVP
 

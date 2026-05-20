@@ -1236,6 +1236,7 @@ pub struct Phase8OperatorApprovalEnvelope {
     pub head_sha: String,
     pub root_toml_path: String,
     pub root_toml_sha256: String,
+    pub approval_envelope_sha256: String,
     pub ssm_manifest_path: String,
     pub ssm_manifest_sha256: String,
     pub strategy_input_evidence_path: String,
@@ -1253,6 +1254,8 @@ pub struct Phase8OperatorApprovalEnvelope {
     pub approval_nonce_sha256: String,
     pub approval_consumption_path: String,
     pub canary_evidence_path: String,
+    pub client_order_id_hash: String,
+    pub venue_order_id_hash: String,
 }
 
 impl Phase8OperatorApprovalEnvelope {
@@ -1261,6 +1264,9 @@ impl Phase8OperatorApprovalEnvelope {
             head_sha: required_env("BOLT_V3_PHASE8_HEAD_SHA")?,
             root_toml_path: required_env("BOLT_V3_PHASE8_ROOT_TOML_PATH")?,
             root_toml_sha256: required_env("BOLT_V3_PHASE8_ROOT_TOML_SHA256")?,
+            approval_envelope_sha256: required_sha256_env(
+                "BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256",
+            )?,
             ssm_manifest_path: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_PATH")?,
             ssm_manifest_sha256: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_SHA256")?,
             strategy_input_evidence_path: required_env(
@@ -1286,6 +1292,8 @@ impl Phase8OperatorApprovalEnvelope {
             approval_nonce_sha256: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256")?,
             approval_consumption_path: required_env("BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH")?,
             canary_evidence_path: required_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,
+            client_order_id_hash: required_sha256_env("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH")?,
+            venue_order_id_hash: required_sha256_env("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH")?,
         })
     }
 
@@ -1492,6 +1500,7 @@ impl Phase8OperatorApprovalEnvelope {
             record_kind: APPROVAL_CONSUMPTION_RECORD_KIND,
             head_sha: &self.head_sha,
             root_toml_sha256: &self.root_toml_sha256,
+            approval_envelope_sha256: &self.approval_envelope_sha256,
             ssm_manifest_sha256: &self.ssm_manifest_sha256,
             strategy_input_evidence_sha256: &self.strategy_input_evidence_sha256,
             financial_envelope_sha256: &self.financial_envelope_sha256,
@@ -1502,6 +1511,8 @@ impl Phase8OperatorApprovalEnvelope {
             approval_not_before_unix_secs: self.approval_not_before_unix_secs,
             approval_not_after_unix_secs: self.approval_not_after_unix_secs,
             canary_evidence_path_hash: sha256_text(&self.canary_evidence_path),
+            client_order_id_hash: &self.client_order_id_hash,
+            venue_order_id_hash: &self.venue_order_id_hash,
             consumed_unix_secs: current_unix_secs,
         };
         let bytes = serde_json::to_vec_pretty(&evidence).map_err(|source| {
@@ -2123,6 +2134,7 @@ struct Phase8ApprovalConsumptionEvidence<'a> {
     record_kind: &'static str,
     head_sha: &'a str,
     root_toml_sha256: &'a str,
+    approval_envelope_sha256: &'a str,
     ssm_manifest_sha256: &'a str,
     strategy_input_evidence_sha256: &'a str,
     financial_envelope_sha256: &'a str,
@@ -2133,6 +2145,8 @@ struct Phase8ApprovalConsumptionEvidence<'a> {
     approval_not_before_unix_secs: i64,
     approval_not_after_unix_secs: i64,
     canary_evidence_path_hash: String,
+    client_order_id_hash: &'a str,
+    venue_order_id_hash: &'a str,
     consumed_unix_secs: i64,
 }
 
@@ -2150,6 +2164,25 @@ fn required_i64_env(name: &str) -> Result<i64> {
     value
         .parse::<i64>()
         .map_err(|source| anyhow!("failed to parse phase8 env `{name}` as i64: {source}"))
+}
+
+fn required_sha256_env(name: &str) -> Result<String> {
+    let value = required_env(name)?;
+    if phase8_is_lowercase_sha256_hex(&value) {
+        Ok(value)
+    } else {
+        Err(anyhow!(
+            "required phase8 env `{name}` must be a sha256 hash"
+        ))
+    }
+}
+
+fn phase8_is_lowercase_sha256_hex(value: &str) -> bool {
+    let digest = Sha256::digest([]);
+    value.len() == digest.len() + digest.len()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 pub fn phase8_required_env(name: &str) -> Result<String> {

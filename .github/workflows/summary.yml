@@ -42,12 +42,22 @@ jobs:
               echo "Invalid issue_number input (must be digits): $number" >&2
               exit 1
             fi
-            title="$(gh issue view "$number" --json title --jq .title)"
-            body="$(gh issue view "$number" --json body --jq .body)"
+            title="$(gh issue view "$number" --json title --jq .title)" || {
+              echo "::error::Could not fetch issue #$number (nonexistent or inaccessible)"; exit 1; }
+            body="$(gh issue view "$number" --json body --jq .body)" || {
+              echo "::error::Could not fetch body for issue #$number"; exit 1; }
           else
             number="$EVENT_NUMBER"
             title="$EVENT_TITLE"
             body="$EVENT_BODY"
+          fi
+
+          # Cap the body to stay within the free-tier input limit (~8000 tokens).
+          # ~24000 chars ≈ 6000 tokens, leaving headroom for the system prompt
+          # and title; an oversized body would otherwise 400 every model.
+          max_body_chars=24000
+          if [ "${#body}" -gt "$max_body_chars" ]; then
+            body="${body:0:$max_body_chars}"$'\n\n_[issue body truncated for summarization]_'
           fi
 
           delim="EOF_$(openssl rand -hex 16)"
@@ -94,7 +104,7 @@ jobs:
                   'content': f'Summarize this GitHub issue: Title: {os.environ.get(\"ISSUE_TITLE\", \"\")}\n\nBody: {os.environ.get(\"ISSUE_BODY\", \"\")}'
                 }
               ]
-            }))" "$model")
+            }))" "$model") || REQUEST_BODY=""
 
             # `|| response=""` is required: the default runner shell is
             # `bash -eo pipefail`, so an unguarded assignment whose command
@@ -139,7 +149,7 @@ jobs:
                   'content': f'Summarize this GitHub issue: Title: {os.environ.get(\"ISSUE_TITLE\", \"\")}\n\nBody: {os.environ.get(\"ISSUE_BODY\", \"\")}'
                 }
               ]
-            }))")
+            }))") || REQUEST_BODY=""
 
             response=$(curl -s --max-time 60 --retry 3 https://openrouter.ai/api/v1/chat/completions \
               -H "Content-Type: application/json" \

@@ -139,10 +139,10 @@ blockers, not as deferred approval to trade.
 
 **Independent Test**: `cargo test --test bolt_v3_submit_admission -- --nocapture` proves entry, replace-submit, exit-submit, and cancel-only decisions follow configured lifecycle semantics and cannot bypass admission.
 
-- [ ] T057 [P] [US2] Write failing admission tests in `tests/bolt_v3_submit_admission.rs` for submit intent kind, risk-reducing exit after entry, cancel-only exclusion, and config-owned lifecycle policy.
-- [ ] T058 [US2] Add submit intent classification to `src/bolt_v3_submit_admission.rs` and `src/strategies/binary_oracle_edge_taker.rs` without adding venue, symbol, or strategy hardcodes.
-- [ ] T059 [US2] Update `specs/001-thin-live-canary-path/spec.md`, `specs/001-thin-live-canary-path/contracts/live-canary-gates.md`, and `specs/001-thin-live-canary-path/data-model.md` so FR-009 names the accepted lifecycle semantics.
-- [ ] T060 [US2] Run `cargo test --test bolt_v3_submit_admission -- --nocapture` and source-fence searches for direct `submit_order` bypasses in `src/strategies/` and `src/bolt_v3_archetypes/`.
+- [x] T057 [P] [US2] Write failing admission tests in `tests/bolt_v3_submit_admission.rs` for submit intent kind, risk-reducing exit after entry, cancel-only exclusion, and config-owned lifecycle policy.
+- [x] T058 [US2] Add submit intent classification to `src/bolt_v3_submit_admission.rs` and `src/strategies/binary_oracle_edge_taker.rs` without adding venue, symbol, or strategy hardcodes.
+- [x] T059 [US2] Update `specs/001-thin-live-canary-path/spec.md`, `specs/001-thin-live-canary-path/contracts/live-canary-gates.md`, and `specs/001-thin-live-canary-path/data-model.md` so FR-009 names the accepted lifecycle semantics.
+- [x] T060 [US2] Run `cargo test --test bolt_v3_submit_admission -- --nocapture` and source-fence searches for direct `submit_order` bypasses in `src/strategies/` and `src/bolt_v3_archetypes/`.
 
 ## Phase 12: Review Remediation - Observability, Secrets, and Ledger Hygiene (US3, US5)
 

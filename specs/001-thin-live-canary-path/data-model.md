@@ -105,6 +105,8 @@ Fields:
 - per-order cap copied from `BoltV3LiveCanaryGateReport.max_notional_per_order`
 - strategy/order/instrument labels for diagnostics
 - strategy-supplied positive order notional
+- explicit submit intent kind: entry, risk-reducing exit, or replace-submit
+- strategy config-derived lifecycle policy for risk-reducing exit and replace-submit admission
 
 Rules:
 - initialized only from a valid `BoltV3LiveCanaryGateReport`
@@ -112,14 +114,16 @@ Rules:
 - rejects admission while unarmed with a distinct `NotArmed` error
 - rejects a second arm attempt so validated bounds cannot change under a running canary
 - stale-arm means any arm attempt after one successful arm, including a different report; it rejects and does not mutate caps or count
-- rejects when order count is exhausted
+- rejects entry and replace-submit candidates when order count is exhausted
+- admits a risk-reducing exit after a prior admitted exposure-opening submit only when the strategy config-derived lifecycle policy explicitly permits it
 - rejects when proposed order notional exceeds cap; notional equal to cap admits
 - rejects non-positive proposed notional
 - decision evidence persistence must succeed before admission consumes order budget
 - must execute before NT submit
 - admitted order count means submit attempts accepted by admission, not venue accepts or fills
 - the budget is global across all registered strategies, with no per-strategy partition
-- entry submits, exit submits, and replace-submit paths consume the same count and notional budget
+- entry and replace-submit paths consume the configured count and notional budget
+- risk-reducing exit paths consume the configured notional budget and may exceed the count budget only under the explicit lifecycle policy above
 - plain cancel requests are not submits and do not consume admission budget
 - admission budget is consumed before NT submit and is not refunded on NT submit error unless a later reviewed requirement changes this fail-closed rule
 - decision evidence captures strategy intent before admission; an admission rejection can leave an intent record with no NT submit evidence

@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use crate::bolt_v3_config::LoadedBoltV3Config;
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 2;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 3;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
@@ -25,6 +25,14 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
 pub enum BoltV3OrderIntentKind {
     Entry,
     Exit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3SubmitIntentKind {
+    Entry,
+    RiskReducingExit,
+    ReplaceSubmit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -43,6 +51,7 @@ pub struct BoltV3OrderIntentEvidence {
 pub enum BoltV3AdmissionOutcome {
     Admitted,
     RejectedNotArmed,
+    RejectedSubmitLifecycleDisallowed,
     RejectedNonPositiveNotional,
     RejectedNotionalCapExceeded,
     RejectedCountCapExhausted,
@@ -54,6 +63,7 @@ pub struct BoltV3AdmissionDecisionEvidence {
     pub client_order_id: String,
     pub instrument_id: String,
     pub notional: String,
+    pub intent_kind: BoltV3SubmitIntentKind,
     pub outcome: BoltV3AdmissionOutcome,
 }
 
@@ -242,6 +252,7 @@ mod tests {
         for outcome in [
             BoltV3AdmissionOutcome::Admitted,
             BoltV3AdmissionOutcome::RejectedNotArmed,
+            BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed,
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
@@ -251,6 +262,7 @@ mod tests {
                 client_order_id: "client-order-one".to_string(),
                 instrument_id: "instrument-one".to_string(),
                 notional: "1.0".to_string(),
+                intent_kind: BoltV3SubmitIntentKind::Entry,
                 outcome: outcome.clone(),
             };
 
@@ -278,9 +290,13 @@ mod tests {
             let decision_field = &decoded["decision"];
             assert_eq!(decision_field["strategy_id"], "strategy-one");
             assert_eq!(decision_field["notional"], "1.0");
+            assert_eq!(decision_field["intent_kind"], "entry");
             let expected_outcome = match outcome {
                 BoltV3AdmissionOutcome::Admitted => "admitted",
                 BoltV3AdmissionOutcome::RejectedNotArmed => "rejected_not_armed",
+                BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
+                    "rejected_submit_lifecycle_disallowed"
+                }
                 BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
                     "rejected_non_positive_notional"
                 }

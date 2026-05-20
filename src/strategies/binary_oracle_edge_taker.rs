@@ -25,7 +25,9 @@ use toml::Value;
 use crate::{
     bolt_v3_decision_evidence::{BoltV3OrderIntentEvidence, BoltV3OrderIntentKind},
     bolt_v3_market_families::{self, MarketSelectionTarget},
-    bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest,
+    bolt_v3_submit_admission::{
+        BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+    },
     strategies::registry::{
         BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
     },
@@ -3428,9 +3430,19 @@ impl BinaryOracleEdgeTaker {
         self.context
             .decision_evidence()
             .record_order_intent(&intent)?;
-        let request = submit_admission_request_from_intent(&intent)?;
+        let request =
+            submit_admission_request_from_intent(&intent, self.submit_lifecycle_policy())?;
         let _permit = self.context.submit_admission().admit(&request)?;
         self.submit_order(order, None, Some(client_id), None)
+    }
+
+    fn submit_lifecycle_policy(&self) -> BoltV3SubmitLifecyclePolicy {
+        BoltV3SubmitLifecyclePolicy::new(
+            self.config.market_exit_reduce_only,
+            self.config.manage_contingent_orders
+                || self.config.manage_gtd_expiry
+                || self.config.manage_stop,
+        )
     }
 
     fn build_configured_entry_order(
@@ -5514,6 +5526,7 @@ fn evaluate_forced_flat_predicates(inputs: &ForcedFlatInputs) -> Vec<ForcedFlatR
 
 fn submit_admission_request_from_intent(
     intent: &BoltV3OrderIntentEvidence,
+    lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 ) -> Result<BoltV3SubmitAdmissionRequest> {
     let price = Decimal::from_str(intent.price.trim()).with_context(|| {
         format!(
@@ -5533,6 +5546,11 @@ fn submit_admission_request_from_intent(
         client_order_id: intent.client_order_id.clone(),
         instrument_id: intent.instrument_id.clone(),
         notional: price * quantity,
+        intent_kind: match intent.intent_kind {
+            BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
+            BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
+        },
+        lifecycle_policy,
     })
 }
 
@@ -5557,7 +5575,10 @@ mod tests {
     use rust_decimal::Decimal;
 
     use super::*;
-    use crate::strategies::{production_strategy_registry, registry::StrategyBuilder};
+    use crate::{
+        bolt_v3_submit_admission::BoltV3OrderLifecycleIntent,
+        strategies::{production_strategy_registry, registry::StrategyBuilder},
+    };
 
     fn find_error<'a>(
         errors: &'a [ValidationError],
@@ -5908,6 +5929,35 @@ mod tests {
 
         assert_eq!(strategy.core.config.order_id_tag.as_deref(), Some("001"));
         assert_eq!(strategy.core.config.oms_type, Some(NtOmsType::Netting));
+    }
+
+    #[test]
+    fn submit_lifecycle_policy_is_derived_from_strategy_config() {
+        let mut strategy = test_strategy();
+        strategy.config.market_exit_reduce_only = false;
+        strategy.config.manage_contingent_orders = false;
+        strategy.config.manage_gtd_expiry = false;
+        strategy.config.manage_stop = false;
+        let disabled = strategy.submit_lifecycle_policy();
+
+        assert_eq!(disabled, BoltV3SubmitLifecyclePolicy::new(false, false));
+        assert_eq!(
+            disabled.submit_intent_for(BoltV3OrderLifecycleIntent::RiskReducingExit),
+            Ok(Some(BoltV3SubmitIntentKind::RiskReducingExit))
+        );
+        assert_eq!(
+            disabled.submit_intent_for(BoltV3OrderLifecycleIntent::ReplaceSubmit),
+            Ok(None)
+        );
+
+        strategy.config.market_exit_reduce_only = true;
+        strategy.config.manage_contingent_orders = true;
+        let enabled = strategy.submit_lifecycle_policy();
+        assert_eq!(enabled, BoltV3SubmitLifecyclePolicy::new(true, true));
+        assert_eq!(
+            enabled.submit_intent_for(BoltV3OrderLifecycleIntent::ReplaceSubmit),
+            Ok(Some(BoltV3SubmitIntentKind::ReplaceSubmit))
+        );
     }
 
     #[test]
@@ -6290,6 +6340,11 @@ mod tests {
                     client_order_id: "client-order-0".to_string(),
                     instrument_id: "instrument-0".to_string(),
                     notional: Decimal::new(50, 2),
+                    intent_kind: crate::bolt_v3_submit_admission::BoltV3SubmitIntentKind::Entry,
+                    lifecycle_policy:
+                        crate::bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy::new(
+                            true, true,
+                        ),
                 },
             )
             .expect("first admission should consume the only slot");

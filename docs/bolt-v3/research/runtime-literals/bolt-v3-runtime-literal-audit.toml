@@ -575,10 +575,10 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''2'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 2;'''
+literal = '''3'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 3;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v2 added the recorded_at_utc_ns, gate_id, gate_version, and kind fields per the P4 round-1 fix. It is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v3 adds the submit intent kind to admission decision evidence. It is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -2060,9 +2060,41 @@ reason = "The submit admission counter starts empty for each fresh unarmed runti
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = "0"
+context = "admitted_entry_order_count: 0,"
+classification = "submit_admission_counter_identity"
+reason = "The exposure-opening admission counter starts empty for each fresh unarmed runtime state; the operator-provided cap comes from the validated live canary gate report."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = "admitted_risk_reducing_exit_order_count: 0,"
+classification = "submit_admission_counter_identity"
+reason = "The risk-reducing exit admission counter starts empty for each fresh unarmed runtime state; it is used only to enforce the explicit lifecycle policy."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
 context = "inner.admitted_order_count = 0;"
 classification = "submit_admission_counter_identity"
 reason = "Arming a fresh admission state resets the in-memory count to empty while preserving operator-provided caps from the validated gate report."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = "inner.admitted_entry_order_count = 0;"
+classification = "submit_admission_counter_identity"
+reason = "Arming a fresh admission state resets the exposure-opening count to empty while preserving operator-provided caps from the validated gate report."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = "inner.admitted_risk_reducing_exit_order_count = 0;"
+classification = "submit_admission_counter_identity"
+reason = "Arming a fresh admission state resets the risk-reducing exit count to empty so lifecycle policy starts from the validated report boundary."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -2071,6 +2103,30 @@ literal = "1"
 context = "inner.admitted_order_count += 1;"
 classification = "submit_admission_counter_increment"
 reason = "Each admitted live submit consumes exactly one order-count slot from the operator-provided gate cap."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = "inner.admitted_entry_order_count += 1;"
+classification = "submit_admission_counter_increment"
+reason = "Each admitted entry or replace-submit increments the exposure-opening counter used by the explicit lifecycle policy."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = "inner.admitted_risk_reducing_exit_order_count += 1;"
+classification = "submit_admission_counter_increment"
+reason = "Each admitted risk-reducing exit increments the lifecycle counter so one configured exit cannot be reused indefinitely."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt-v3 submit admission lifecycle policy disallows {intent:?} submit"'''
+context = '''"bolt-v3 submit admission lifecycle policy disallows {intent:?} submit"'''
+classification = "diagnostic_template"
+reason = "This is an error-display template for a submit lifecycle policy rejection; the rejected intent is computed from typed admission state, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"

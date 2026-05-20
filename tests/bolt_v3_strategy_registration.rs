@@ -5,7 +5,10 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
-    bolt_v3_submit_admission::{BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState},
+    bolt_v3_submit_admission::{
+        BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
+        BoltV3SubmitLifecyclePolicy,
+    },
     strategies::{
         binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder,
         registry::{StrategyBuilder, ValidationError},
@@ -132,6 +135,8 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         client_order_id: "client-order-1".to_string(),
         instrument_id: "instrument-1".to_string(),
         notional,
+        intent_kind: BoltV3SubmitIntentKind::Entry,
+        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true, true),
     }
 }
 

@@ -55,11 +55,13 @@ jobs:
           # Best-effort coarse cap on the body. This is a char heuristic, not a
           # hard token guarantee: English prose runs ~4 chars/token, but the
           # code, logs, and config this repo's issues tend to carry run ~2
-          # chars/token. 16000 chars keeps even those dense bodies under the
-          # ~8000-token free-tier input limit. Overflow is not fatal: an
-          # over-limit request 400s and the chain falls through to the next
-          # model (ultimately posting no summary), so the cap is an optimization
-          # to avoid burning the whole chain, not a correctness gate.
+          # chars/token — at which 16000 chars is already ~8000 body tokens,
+          # before the title, system prompt, and JSON framing. So 16000 aims to
+          # keep typical bodies near or below the ~8000-token free-tier input
+          # limit; it does not guarantee it. Overflow is not fatal: an over-limit
+          # request 400s and the chain falls through to the next model
+          # (ultimately posting no summary), so the cap is an optimization to
+          # avoid burning the whole chain, not a correctness gate.
           max_body_chars=16000
           if [ "${#body}" -gt "$max_body_chars" ]; then
             body="${body:0:$max_body_chars}"$'\n\n_[issue body truncated for summarization]_'

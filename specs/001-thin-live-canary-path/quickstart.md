@@ -74,7 +74,7 @@ Preconditions:
 - no-submit readiness report accepted
 - submit admission consumes live canary report
 - production `Run` rejects before runner entry unless `[live_canary].operator_evidence` is present and the approval window is active
-- no-submit readiness report includes `generated_at_unix_seconds`; production gate rejects missing or expired reports using `[live_canary].readiness_report_max_age_seconds`
+- no-submit readiness report includes `generated_at_unix_seconds`; production gate rejects missing or expired reports using `[live_canary].readiness_report_max_age_seconds` at the late timestamp after report read and parse, so operators must leave report I/O headroom
 - exact head bound by `[live_canary.operator_evidence].head_sha` matching the build-owned head; root TOML hash checked in the approval-consumption proof at `approval_consumption_path`; approval envelope content bound through `approval_envelope_path` and `approval_envelope_sha256`
 - redacted SSM manifest bound through `ssm_manifest_path` and `ssm_manifest_sha256`
 - strategy input evidence bound through `strategy_input_evidence_path` and `strategy_input_evidence_sha256`
@@ -84,7 +84,7 @@ Preconditions:
 - pre-run state evidence carries sha256 hashes for host clock, account state, market state, funding/margin, single-runner lock, egress identity, CLOB V2 signing/collateral/fee behavior, and release-manifest proofs
 - abort plan evidence bound through `abort_plan_path` and `abort_plan_sha256`
 - explicit operator approval id comes from `[live_canary].approval_id`
-- non-zero approval time window configured with `approval_not_before_unix_seconds` and `approval_not_after_unix_seconds`; `not_after` must be greater than `not_before` and wide enough to cover report validation plus the gate's late operator-evidence re-read/re-hash
+- non-zero approval time window configured with `approval_not_before_unix_seconds` and `approval_not_after_unix_seconds`; `not_after` must be greater than `not_before` and wide enough to cover two operator-evidence validation rounds plus report read, parse, and validation
 - production gate rechecks the approval window after readiness-report validation before returning a gate report for submit admission
 - approval nonce evidence at `approval_nonce_path` matches `approval_nonce_sha256`
 - `approval_consumption_path` does not exist before the attempt; the harness atomically creates it before live runner entry

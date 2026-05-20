@@ -574,6 +574,9 @@ async fn check_bolt_v3_live_canary_gate_with_clock(
             reasons,
         },
     )?;
+    // Re-read and re-hash operator evidence after report validation so any
+    // between-check artifact mutation fails closed. Operators must size the
+    // approval window to cover both evidence validation rounds plus report I/O.
     validate_operator_evidence(
         &loaded.root_path,
         block,

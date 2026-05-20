@@ -113,8 +113,8 @@ pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 abort_plan_path = "/var/lib/bolt/operator-evidence/abort-plan.json"
 abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 canary_evidence_path = "/var/lib/bolt/operator-evidence/canary-evidence.json"
-# Set this window immediately before an approved canary run. It must cover
-# report validation plus the gate's late operator-evidence re-read/re-hash.
+# Set this window immediately before an approved canary run. It must cover two
+# operator-evidence validation rounds plus report read, parse, and validation.
 approval_not_before_unix_seconds = 1893456000
 approval_not_after_unix_seconds = 1893456300
 approval_nonce_path = "/var/lib/bolt/operator-evidence/approval-nonce.json"

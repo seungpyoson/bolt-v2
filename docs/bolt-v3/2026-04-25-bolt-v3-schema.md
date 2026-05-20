@@ -211,8 +211,8 @@ pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 abort_plan_path = "operator-evidence/abort-plan.json"
 abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 canary_evidence_path = "operator-evidence/canary-evidence.json"
-# Set this window immediately before an approved canary run. It must cover
-# report validation plus the gate's late operator-evidence re-read/re-hash.
+# Set this window immediately before an approved canary run. It must cover two
+# operator-evidence validation rounds plus report read, parse, and validation.
 approval_not_before_unix_seconds = 1893456000
 approval_not_after_unix_seconds = 1893456300
 approval_nonce_path = "operator-evidence/approval-nonce.json"
@@ -669,8 +669,9 @@ This section is optional for parse/build-only checks and required before `run_bo
 
 - type: positive integer
 - required: yes when `[live_canary]` is present
-- maximum accepted age for the referenced no-submit readiness report at gate evaluation time
+- maximum accepted age for the referenced no-submit readiness report at late gate evaluation time, after report read and parse
 - reports older than this bound reject before live canary admission can arm
+- operators must leave headroom for report I/O and parse latency; effective headroom is lower than the raw cap by that latency
 
 #### `max_live_order_count`
 
@@ -1671,8 +1672,8 @@ pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 abort_plan_path = "operator-evidence/abort-plan.json"
 abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 canary_evidence_path = "operator-evidence/canary-evidence.json"
-# Set this window immediately before an approved canary run. It must cover
-# report validation plus the gate's late operator-evidence re-read/re-hash.
+# Set this window immediately before an approved canary run. It must cover two
+# operator-evidence validation rounds plus report read, parse, and validation.
 approval_not_before_unix_seconds = 1893456000
 approval_not_after_unix_seconds = 1893456300
 approval_nonce_path = "operator-evidence/approval-nonce.json"

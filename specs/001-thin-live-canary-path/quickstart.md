@@ -75,7 +75,7 @@ Preconditions:
 - submit admission consumes live canary report
 - production `Run` rejects before runner entry unless `[live_canary].operator_evidence` is present and the approval window is active
 - no-submit readiness report includes `generated_at_unix_seconds`; production gate rejects missing or expired reports using `[live_canary].readiness_report_max_age_seconds`
-- exact head bound by `[live_canary.operator_evidence].head_sha` matching the build-owned head; root TOML hash checked in the approval-consumption proof at `approval_consumption_path`; `approval_envelope_path` is a required binding string, not read by the production gate
+- exact head bound by `[live_canary.operator_evidence].head_sha` matching the build-owned head; root TOML hash checked in the approval-consumption proof at `approval_consumption_path`; approval envelope content bound through `approval_envelope_path` and `approval_envelope_sha256`
 - redacted SSM manifest bound through `ssm_manifest_path` and `ssm_manifest_sha256`
 - strategy input evidence bound through `strategy_input_evidence_path` and `strategy_input_evidence_sha256`
 - `next` strategy input evidence includes `market_selection_source_path` and `market_selection_source_sha256` for the NT runtime `market_selection_result` source artifact; nearest-next candidates come from that source artifact, not from the strategy evidence file alone

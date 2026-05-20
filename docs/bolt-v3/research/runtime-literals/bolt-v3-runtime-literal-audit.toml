@@ -840,6 +840,14 @@ reason = "This names a required approval-consumption proof field validated by th
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
+literal = '''"approval_envelope_sha256"'''
+context = '''"approval_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
 literal = '''"ssm_manifest_sha256"'''
 context = '''("ssm_manifest_sha256", evidence.ssm_manifest_sha256.as_str()),'''
 classification = "operator_evidence_schema_field"
@@ -898,6 +906,22 @@ path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
 literal = '''"canary_evidence_path_hash"'''
 context = '''"canary_evidence_path_hash",'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"client_order_id_hash"'''
+context = '''"client_order_id_hash",'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"venue_order_id_hash"'''
+context = '''("venue_order_id_hash", evidence.venue_order_id_hash.as_str()),'''
 classification = "phase8_approval_consumption_schema_field"
 reason = "This names a required approval-consumption proof field validated by the live canary gate."
 
@@ -976,8 +1000,8 @@ reason = "This is fail-closed diagnostic text; compared values come from TOML, b
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "number"
-literal = "23"
-context = ''') -> [(&'static str, &str); 23] {'''
+literal = "24"
+context = ''') -> [(&'static str, &str); 24] {'''
 classification = "operator_evidence_required_field_count"
 reason = "This is the compile-time size of the required operator evidence field table; field values are TOML-owned."
 
@@ -1168,18 +1192,26 @@ reason = "This is an operator evidence schema field name; the runtime value come
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "number"
-literal = "8"
-context = ''') -> [(&'static str, &str); 8] {'''
+literal = "9"
+context = ''') -> [(&'static str, &str); 9] {'''
 classification = "operator_evidence_hash_field_count"
 reason = "This is the compile-time size of the operator evidence hash field table; hash values are TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "number"
-literal = "6"
-context = ''') -> [OperatorEvidenceFileHashBinding<'_>; 6] {'''
+literal = "7"
+context = ''') -> [OperatorEvidenceFileHashBinding<'_>; 7] {'''
 classification = "operator_evidence_file_hash_binding_count"
 reason = "This is the compile-time size of the sha256-bound pre-run artifact table; paths and hashes are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_envelope_sha256"'''
+context = '''hash_field: "approval_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"

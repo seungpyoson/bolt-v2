@@ -101,6 +101,7 @@ head_sha = "0123456789abcdef0123456789abcdef01234567"
 max_operator_evidence_file_bytes = 65536
 approval_consumption_max_age_seconds = 60
 approval_envelope_path = "/var/lib/bolt/operator-evidence/approval-envelope.json"
+approval_envelope_sha256 = "9999999999999999999999999999999999999999999999999999999999999999"
 ssm_manifest_path = "/var/lib/bolt/operator-evidence/ssm-manifest.json"
 ssm_manifest_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 strategy_input_evidence_path = "/var/lib/bolt/operator-evidence/strategy-input.json"

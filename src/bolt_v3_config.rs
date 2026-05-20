@@ -195,6 +195,7 @@ pub struct LiveCanaryOperatorEvidenceBlock {
     pub max_operator_evidence_file_bytes: u64,
     pub approval_consumption_max_age_seconds: u64,
     pub approval_envelope_path: String,
+    pub approval_envelope_sha256: String,
     pub ssm_manifest_path: String,
     pub ssm_manifest_sha256: String,
     pub strategy_input_evidence_path: String,

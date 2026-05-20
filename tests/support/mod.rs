@@ -210,6 +210,9 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
     let approval_nonce_sha256 = sha256_file(&approval_nonce_path);
     let canary_evidence_path = canary_evidence_path.to_string_lossy().to_string();
     let root_toml_sha256 = sha256_file(&repo_path("tests/fixtures/bolt_v3/root.toml"));
+    let approval_envelope_sha256 = sha256_file(&approval_envelope_path);
+    let client_order_id_hash = sha256_hex(b"client-order-id");
+    let venue_order_id_hash = sha256_hex(b"venue-order-id");
     let head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA").unwrap_or_else(|| {
         panic!(
             "BOLT_V3_BUILD_HEAD_SHA is not compiled in; \
@@ -221,6 +224,7 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         "record_kind": "phase8_operator_approval_consumption",
         "head_sha": head_sha,
         "root_toml_sha256": root_toml_sha256,
+        "approval_envelope_sha256": approval_envelope_sha256,
         "ssm_manifest_sha256": ssm_manifest_sha256,
         "strategy_input_evidence_sha256": strategy_input_evidence_sha256,
         "financial_envelope_sha256": financial_envelope_sha256,
@@ -231,6 +235,8 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         "approval_not_before_unix_secs": approval_not_before_unix_seconds,
         "approval_not_after_unix_secs": approval_not_after_unix_seconds,
         "canary_evidence_path_hash": sha256_hex(canary_evidence_path.as_bytes()),
+        "client_order_id_hash": client_order_id_hash,
+        "venue_order_id_hash": venue_order_id_hash,
         "consumed_unix_secs": now,
     });
     fs::write(
@@ -245,6 +251,7 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         max_operator_evidence_file_bytes: 4096,
         approval_consumption_max_age_seconds: 300,
         approval_envelope_path: approval_envelope_path.to_string_lossy().to_string(),
+        approval_envelope_sha256,
         ssm_manifest_path: ssm_manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256,
         strategy_input_evidence_path: strategy_input_evidence_path.to_string_lossy().to_string(),
@@ -265,8 +272,8 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
             .join("decision-evidence.jsonl")
             .to_string_lossy()
             .to_string(),
-        client_order_id_hash: sha256_hex(b"client-order-id"),
-        venue_order_id_hash: sha256_hex(b"venue-order-id"),
+        client_order_id_hash,
+        venue_order_id_hash,
         nt_submit_event_path: case_dir
             .join("nt-submit-event.json")
             .to_string_lossy()

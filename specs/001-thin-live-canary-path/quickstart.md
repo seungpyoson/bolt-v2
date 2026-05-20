@@ -84,7 +84,7 @@ Preconditions:
 - pre-run state evidence carries sha256 hashes for host clock, account state, market state, funding/margin, single-runner lock, egress identity, CLOB V2 signing/collateral/fee behavior, and release-manifest proofs
 - abort plan evidence bound through `abort_plan_path` and `abort_plan_sha256`
 - explicit operator approval id comes from `[live_canary].approval_id`
-- non-zero approval time window configured with `approval_not_before_unix_seconds` and `approval_not_after_unix_seconds`; `not_after` must be greater than `not_before`
+- non-zero approval time window configured with `approval_not_before_unix_seconds` and `approval_not_after_unix_seconds`; `not_after` must be greater than `not_before` and wide enough to cover report validation plus the gate's late operator-evidence re-read/re-hash
 - production gate rechecks the approval window after readiness-report validation before returning a gate report for submit admission
 - approval nonce evidence at `approval_nonce_path` matches `approval_nonce_sha256`
 - `approval_consumption_path` does not exist before the attempt; the harness atomically creates it before live runner entry

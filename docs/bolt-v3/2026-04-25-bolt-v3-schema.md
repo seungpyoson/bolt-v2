@@ -211,8 +211,10 @@ pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 abort_plan_path = "operator-evidence/abort-plan.json"
 abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 canary_evidence_path = "operator-evidence/canary-evidence.json"
-approval_not_before_unix_seconds = 1770000000
-approval_not_after_unix_seconds = 1770000300
+# Set this window immediately before an approved canary run. It must cover
+# report validation plus the gate's late operator-evidence re-read/re-hash.
+approval_not_before_unix_seconds = 1893456000
+approval_not_after_unix_seconds = 1893456300
 approval_nonce_path = "operator-evidence/approval-nonce.json"
 approval_nonce_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 approval_consumption_path = "operator-evidence/approval-consumed.json"
@@ -1669,8 +1671,10 @@ pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 abort_plan_path = "operator-evidence/abort-plan.json"
 abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 canary_evidence_path = "operator-evidence/canary-evidence.json"
-approval_not_before_unix_seconds = 1770000000
-approval_not_after_unix_seconds = 1770000300
+# Set this window immediately before an approved canary run. It must cover
+# report validation plus the gate's late operator-evidence re-read/re-hash.
+approval_not_before_unix_seconds = 1893456000
+approval_not_after_unix_seconds = 1893456300
 approval_nonce_path = "operator-evidence/approval-nonce.json"
 approval_nonce_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 approval_consumption_path = "operator-evidence/approval-consumed.json"

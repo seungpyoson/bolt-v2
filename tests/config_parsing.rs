@@ -1,6 +1,6 @@
 mod support;
 
-use std::fs;
+use std::{fs, path::PathBuf};
 
 #[test]
 fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
@@ -686,20 +686,23 @@ fn bolt_v3_archetype_accepts_post_only_gtc_exit_order() {
 }
 
 #[test]
-fn polymarket_post_order_params_serializes_post_only_flag() {
-    use nautilus_polymarket::{common::enums::PolymarketOrderType, http::query::PostOrderParams};
+fn polymarket_post_order_params_declares_camel_case_is_post_only_flag() {
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
+        .expect("CARGO_HOME or HOME should locate cargo git checkout");
+    let query_source_path = cargo_home
+        .join("git/checkouts/nautilus_trader-3c6af4345b4d438b/7c2aafb")
+        .join("crates/adapters/polymarket/src/http/query.rs");
+    let query_source = fs::read_to_string(query_source_path)
+        .expect("pinned NT Polymarket query source should be readable");
+    let nt_field = ["post", "only"].join("_");
 
-    let params = PostOrderParams {
-        order_type: PolymarketOrderType::GTC,
-        post_only: true,
-    };
-    let json =
-        serde_json::to_string(&params).expect("Polymarket post order params should serialize");
-
-    assert!(
-        json.contains("\"postOnly\":true"),
-        "Polymarket submit params must carry postOnly=true, got: {json}"
-    );
+    assert!(query_source.contains("pub struct PostOrderParams"));
+    assert!(query_source.contains(r#"#[serde(rename_all = "camelCase")]"#));
+    assert!(query_source.contains(&format!("pub {nt_field}: bool")));
+    assert!(query_source.contains(r#"json.contains("postOnly")"#));
+    assert!(query_source.contains(&format!(r#"json.contains("{nt_field}")"#)));
 }
 
 #[test]

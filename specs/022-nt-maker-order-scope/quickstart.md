@@ -15,7 +15,7 @@ rg -n "TimeInForce::Gtc|TimeInForce::Gtd|post_only|postOnly|expire_time" \
 ```bash
 CARGO_TARGET_DIR=/tmp/bolt-v2-maker-commit-target /Users/spson/.cargo/bin/cargo test bolt_v3_archetype_accepts_post_only_gtc -- --nocapture
 CARGO_TARGET_DIR=/tmp/bolt-v2-maker-commit-target /Users/spson/.cargo/bin/cargo test binary_oracle_runtime_mapping_preserves_post_only_gtc -- --nocapture
-CARGO_TARGET_DIR=/tmp/bolt-v2-maker-commit-target /Users/spson/.cargo/bin/cargo test polymarket_post_order_params_serializes_post_only_flag -- --nocapture
+CARGO_TARGET_DIR=/tmp/bolt-v2-maker-commit-target /Users/spson/.cargo/bin/cargo test polymarket_post_order_params_declares_camel_case_is_post_only_flag -- --nocapture
 CARGO_TARGET_DIR=/tmp/bolt-v2-maker-commit-target /Users/spson/.cargo/bin/cargo test post_only -- --nocapture
 ```
 

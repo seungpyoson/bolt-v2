@@ -178,6 +178,7 @@ blockers, not as deferred approval to trade.
 - [x] T079 [US5] Fix external-review consensus safety hardening in `src/bolt_v3_live_canary_gate.rs`, `src/bolt_v3_live_node.rs`, `tests/bolt_v3_live_canary_gate.rs`, and `tests/bolt_v3_tiny_canary_operator.rs`: reject symlinked no-submit readiness reports, fail closed on no-submit timeout sum overflow, and remove duplicate JSON keys from the unapproved-strategy-hash test.
 - [ ] T080 [US5] Reconcile external-review docs/ledger concerns: Chainlink provider availability vs runtime contracts, Phase 8 harness-only `BOLT_V3_PHASE8_*` env vars, PR #331 historical-anchor wording, P5 cadence-table wording, and runtime-contract freshness wording.
 - [ ] T081 [US5] After pushing T079, re-check PR #388 exact-head CI and retry Kimi on narrowed exact-head shards because the prior full-diff Kimi run timed out.
+- [x] T082 [US5] Address Greptile post-`49d8ea3a` comments: remove broad `.git` build-script rerun trigger, align live-canary approval-consumption test fixture timestamps, and reply/resolve or disprove remaining review threads.
 
 ## Out Of Scope For MVP
 

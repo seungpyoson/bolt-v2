@@ -1989,7 +1989,7 @@ fn approval_consumption_proof(evidence: &LiveCanaryOperatorEvidenceBlock) -> ser
         "approval_not_before_unix_secs": evidence.approval_not_before_unix_seconds,
         "approval_not_after_unix_secs": evidence.approval_not_after_unix_seconds,
         "canary_evidence_path_hash": sha256_hex(evidence.canary_evidence_path.as_bytes()),
-        "consumed_unix_secs": evidence.approval_not_before_unix_seconds + 1,
+        "consumed_unix_secs": current_unix_seconds_for_test() as i64,
     })
 }
 

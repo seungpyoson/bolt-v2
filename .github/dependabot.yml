@@ -32,7 +32,7 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
-    rebase-strategy: "live"
+    rebase-strategy: "auto"
     groups:
       action-dependencies:
         patterns:

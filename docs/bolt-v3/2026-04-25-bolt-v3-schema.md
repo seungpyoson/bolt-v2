@@ -1364,7 +1364,7 @@ Meaning:
 
 To avoid hidden policy, the current archetype supports only these combinations:
 
-- `[parameters.entry_order]`
+- `[parameters.entry_order]` taker entry
   - `side = "buy"`
   - `position_side = "long"`
   - `order_type = "limit"`
@@ -1373,12 +1373,30 @@ To avoid hidden policy, the current archetype supports only these combinations:
   - `is_reduce_only = false`
   - `is_quote_quantity = false`
 
-- `[parameters.exit_order]`
+- `[parameters.entry_order]` maker entry
+  - `side = "buy"`
+  - `position_side = "long"`
+  - `order_type = "limit"`
+  - `time_in_force = "gtc"`
+  - `is_post_only = true`
+  - `is_reduce_only = false`
+  - `is_quote_quantity = false`
+
+- `[parameters.exit_order]` taker exit
   - `side = "sell"`
   - `position_side = "long"`
   - `order_type = "market"`
   - `time_in_force = "ioc"`
   - `is_post_only = false`
+  - `is_reduce_only = false`
+  - `is_quote_quantity = false`
+
+- `[parameters.exit_order]` maker exit
+  - `side = "sell"`
+  - `position_side = "long"`
+  - `order_type = "limit"`
+  - `time_in_force = "gtc"`
+  - `is_post_only = true`
   - `is_reduce_only = false`
   - `is_quote_quantity = false`
 

@@ -803,12 +803,21 @@ fn validate_parameter_bounds(
 }
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
-    let expected = (
+    let taker_limit_fok = (
         OrderSide::Buy,
         PositionSide::Long,
         OrderType::Limit,
         TimeInForce::Fok,
         false,
+        false,
+        false,
+    );
+    let maker_limit_gtc = (
+        OrderSide::Buy,
+        PositionSide::Long,
+        OrderType::Limit,
+        TimeInForce::Gtc,
+        true,
         false,
         false,
     );
@@ -821,10 +830,11 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
         entry.is_reduce_only,
         entry.is_quote_quantity,
     );
-    if actual != expected {
+    if actual != taker_limit_fok && actual != maker_limit_gtc {
         vec![format!(
             "{context}: parameters.entry_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only side=buy, position_side=long, order_type=limit, time_in_force=fok, is_post_only=false, is_reduce_only=false, is_quote_quantity=false is allowed"
+             only side=buy, position_side=long, order_type=limit with either time_in_force=fok, is_post_only=false or time_in_force=gtc, is_post_only=true is allowed; \
+             is_reduce_only=false and is_quote_quantity=false are required"
         )]
     } else {
         Vec::new()
@@ -832,12 +842,21 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
 }
 
 fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {
-    let expected = (
+    let taker_market_ioc = (
         OrderSide::Sell,
         PositionSide::Long,
         OrderType::Market,
         TimeInForce::Ioc,
         false,
+        false,
+        false,
+    );
+    let maker_limit_gtc = (
+        OrderSide::Sell,
+        PositionSide::Long,
+        OrderType::Limit,
+        TimeInForce::Gtc,
+        true,
         false,
         false,
     );
@@ -850,10 +869,11 @@ fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String
         exit.is_reduce_only,
         exit.is_quote_quantity,
     );
-    if actual != expected {
+    if actual != taker_market_ioc && actual != maker_limit_gtc {
         vec![format!(
             "{context}: parameters.exit_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only side=sell, position_side=long, order_type=market, time_in_force=ioc, is_post_only=false, is_reduce_only=false, is_quote_quantity=false is allowed"
+             only side=sell, position_side=long with either order_type=market, time_in_force=ioc, is_post_only=false or order_type=limit, time_in_force=gtc, is_post_only=true is allowed; \
+             is_reduce_only=false and is_quote_quantity=false are required"
         )]
     } else {
         Vec::new()

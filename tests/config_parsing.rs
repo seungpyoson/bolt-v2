@@ -610,6 +610,99 @@ fn bolt_v3_archetype_order_params_use_nt_canonical_enums() {
 }
 
 #[test]
+fn bolt_v3_archetype_accepts_post_only_gtc_entry_order() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+
+    let maker_strategy = fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace("time_in_force = \"fok\"", "time_in_force = \"gtc\"")
+    .replacen("is_post_only = false", "is_post_only = true", 1);
+    let strategy: BoltV3StrategyConfig = toml::from_str(&maker_strategy)
+        .expect("post-only GTC entry order should parse via NT order enums");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.is_empty(),
+        "post-only GTC entry order should be accepted by binary_oracle_edge_taker validation: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_accepts_post_only_gtc_exit_order() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+
+    let taker_strategy = fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let maker_exit_strategy = taker_strategy
+        .replace("order_type = \"market\"", "order_type = \"limit\"")
+        .replace("time_in_force = \"ioc\"", "time_in_force = \"gtc\"");
+    let (before_exit, exit_block) = maker_exit_strategy
+        .split_once("[parameters.exit_order]")
+        .expect("fixture should include exit order block");
+    let maker_exit_strategy = format!(
+        "{before_exit}[parameters.exit_order]{}",
+        exit_block.replacen("is_post_only = false", "is_post_only = true", 1)
+    );
+    let strategy: BoltV3StrategyConfig = toml::from_str(&maker_exit_strategy)
+        .expect("post-only GTC exit order should parse via NT order enums");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.is_empty(),
+        "post-only GTC exit order should be accepted by binary_oracle_edge_taker validation: {messages:#?}"
+    );
+}
+
+#[test]
+fn polymarket_post_order_params_serializes_post_only_flag() {
+    use nautilus_polymarket::{common::enums::PolymarketOrderType, http::query::PostOrderParams};
+
+    let params = PostOrderParams {
+        order_type: PolymarketOrderType::GTC,
+        post_only: true,
+    };
+    let json =
+        serde_json::to_string(&params).expect("Polymarket post order params should serialize");
+
+    assert!(
+        json.contains("\"postOnly\":true"),
+        "Polymarket submit params must carry postOnly=true, got: {json}"
+    );
+}
+
+#[test]
 fn bolt_v3_archetype_rejects_unsupported_nt_order_type_variants() {
     // FINDING-1: NT's OrderType has 9 variants; binary_oracle_edge_taker only
     // permits (Limit, Fok) on entry and (Market, Ioc) on exit. A

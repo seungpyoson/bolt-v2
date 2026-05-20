@@ -293,6 +293,104 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
 }
 
 #[test]
+fn binary_oracle_runtime_mapping_preserves_post_only_gtc_entry_order() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    let parameters = loaded.strategies[strategy_index]
+        .config
+        .parameters
+        .as_table_mut()
+        .expect("fixture parameters should be a TOML table");
+    let entry_order = parameters
+        .get_mut("entry_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include entry_order table");
+    entry_order.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    entry_order.insert("is_post_only".to_string(), toml::Value::Boolean(true));
+
+    let raw =
+        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
+            .expect("post-only GTC entry order should map into runtime config");
+    let entry = raw
+        .as_table()
+        .and_then(|table| table.get("entry_order"))
+        .and_then(toml::Value::as_table)
+        .expect("mapped runtime config should include entry_order");
+
+    assert_eq!(
+        entry.get("order_type").and_then(toml::Value::as_str),
+        Some("limit")
+    );
+    assert_eq!(
+        entry.get("time_in_force").and_then(toml::Value::as_str),
+        Some("gtc")
+    );
+    assert_eq!(
+        entry.get("is_post_only").and_then(toml::Value::as_bool),
+        Some(true)
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_mapping_preserves_post_only_gtc_exit_order() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    let parameters = loaded.strategies[strategy_index]
+        .config
+        .parameters
+        .as_table_mut()
+        .expect("fixture parameters should be a TOML table");
+    let exit_order = parameters
+        .get_mut("exit_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include exit_order table");
+    exit_order.insert(
+        "order_type".to_string(),
+        toml::Value::String("limit".to_string()),
+    );
+    exit_order.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    exit_order.insert("is_post_only".to_string(), toml::Value::Boolean(true));
+
+    let raw =
+        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
+            .expect("post-only GTC exit order should map into runtime config");
+    let exit = raw
+        .as_table()
+        .and_then(|table| table.get("exit_order"))
+        .and_then(toml::Value::as_table)
+        .expect("mapped runtime config should include exit_order");
+
+    assert_eq!(
+        exit.get("order_type").and_then(toml::Value::as_str),
+        Some("limit")
+    );
+    assert_eq!(
+        exit.get("time_in_force").and_then(toml::Value::as_str),
+        Some("gtc")
+    );
+    assert_eq!(
+        exit.get("is_post_only").and_then(toml::Value::as_bool),
+        Some(true)
+    );
+}
+
+#[test]
 fn binary_oracle_runtime_mapping_uses_configured_reference_data_role_key() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

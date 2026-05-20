@@ -427,6 +427,15 @@ impl OutcomeBookState {
         .filter(|value| is_positive_finite(*value))
     }
 
+    fn passive_price_for_order_side(&self, order_side: OrderSide) -> Option<f64> {
+        match order_side {
+            OrderSide::Buy => self.best_bid,
+            OrderSide::Sell => self.best_ask,
+            _ => None,
+        }
+        .filter(|value| is_positive_finite(*value))
+    }
+
     fn max_execution_within_vwap_slippage_bps(
         &self,
         order_side: OrderSide,
@@ -1084,8 +1093,16 @@ fn is_observed_open_side(side: PositionSide) -> bool {
     matches!(side, PositionSide::Long | PositionSide::Short)
 }
 
-fn order_price_for_side(book: &OutcomeBookState, order_side: OrderSide) -> Option<f64> {
-    book.executable_price_for_order_side(order_side)
+fn order_price_for_side(
+    book: &OutcomeBookState,
+    order_side: OrderSide,
+    is_post_only: bool,
+) -> Option<f64> {
+    if is_post_only {
+        book.passive_price_for_order_side(order_side)
+    } else {
+        book.executable_price_for_order_side(order_side)
+    }
 }
 
 fn infer_strategy_position_side_from_entry_fill(
@@ -1111,11 +1128,12 @@ fn managed_position_exit_order(
     position: &OpenPositionState,
     configured_order_side: OrderSide,
     configured_position_side: PositionSide,
+    is_post_only: bool,
 ) -> Option<(OrderSide, f64)> {
     (position.side == configured_position_side)
         .then_some((
             configured_order_side,
-            order_price_for_side(&position.book, configured_order_side)?,
+            order_price_for_side(&position.book, configured_order_side, is_post_only)?,
         ))
         .filter(|(_, price)| is_positive_finite(*price))
 }
@@ -1124,9 +1142,10 @@ fn managed_position_exit_value(
     position: &OpenPositionState,
     configured_order_side: OrderSide,
     configured_position_side: PositionSide,
+    is_post_only: bool,
 ) -> Option<f64> {
     let value = (position.side == configured_position_side)
-        .then(|| order_price_for_side(&position.book, configured_order_side))
+        .then(|| order_price_for_side(&position.book, configured_order_side, is_post_only))
         .flatten()?;
     Some(value).filter(|value| is_positive_finite(*value))
 }
@@ -2648,8 +2667,12 @@ impl BinaryOracleEdgeTaker {
 
     fn executable_entry_cost(&self, side: OutcomeSide) -> Option<f64> {
         let order_side = self.configured_entry_order_side().ok()?;
-        self.active_book_for_outcome(side)
-            .executable_price_for_order_side(order_side)
+        let book = self.active_book_for_outcome(side);
+        if self.config.entry_order.is_post_only {
+            book.passive_price_for_order_side(order_side)
+        } else {
+            book.executable_price_for_order_side(order_side)
+        }
     }
 
     fn submission_entry_price(&self, side: OutcomeSide) -> Option<f64> {
@@ -3003,6 +3026,7 @@ impl BinaryOracleEdgeTaker {
             open_position,
             contract.exit_order_side,
             contract.exit_position_side,
+            self.config.exit_order.is_post_only,
         )
     }
 
@@ -3013,6 +3037,7 @@ impl BinaryOracleEdgeTaker {
             open_position,
             contract.exit_order_side,
             contract.exit_position_side,
+            self.config.exit_order.is_post_only,
         )
     }
 
@@ -8428,6 +8453,63 @@ mod tests {
             strategy.executable_entry_cost(OutcomeSide::Down),
             Some(0.40)
         );
+    }
+
+    #[test]
+    fn post_only_entry_submission_price_uses_passive_book_price() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.config.entry_order.time_in_force = "gtc".to_string();
+        strategy.config.entry_order.is_post_only = true;
+        strategy.active.books.down.best_bid = Some(0.40);
+        strategy.active.books.down.best_ask = Some(0.41);
+
+        assert_eq!(
+            strategy.submission_entry_price(OutcomeSide::Down),
+            Some(0.40)
+        );
+        assert_eq!(
+            strategy.executable_entry_cost(OutcomeSide::Down),
+            Some(0.40)
+        );
+    }
+
+    #[test]
+    fn post_only_exit_submission_price_uses_passive_book_price() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.active.phase = SelectionPhase::Freeze;
+        strategy.config.exit_order.order_type = "limit".to_string();
+        strategy.config.exit_order.time_in_force = "gtc".to_string();
+        strategy.config.exit_order.is_post_only = true;
+        strategy.active.books.up.best_bid = Some(0.44);
+        strategy.active.books.up.best_ask = Some(0.45);
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let open_position = OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            position_id: PositionId::from("P-UP-001"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        };
+        let expected_passive_price = open_position.book.best_ask;
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        let decision = strategy.exit_submission_decision_at(1_200);
+
+        assert_eq!(decision.order_side, Some(OrderSide::Sell));
+        assert_eq!(decision.price, expected_passive_price);
     }
 
     #[test]

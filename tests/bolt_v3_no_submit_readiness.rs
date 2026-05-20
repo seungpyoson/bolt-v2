@@ -35,7 +35,7 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         },
     );
     let metadata = BoltV3NoSubmitReadinessReportMetadata::from_loaded(&loaded)
@@ -55,6 +55,21 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
     check_bolt_v3_live_canary_gate(&loaded)
         .await
         .expect("producer schema should satisfy live canary gate");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn no_submit_readiness_temp_live_canary_fixture_includes_operator_evidence() {
+    let (_tempdir, loaded, _metadata) = loaded_with_temp_live_canary().await;
+
+    assert!(
+        loaded
+            .root
+            .live_canary
+            .as_ref()
+            .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+            .is_some(),
+        "live canary gate fixtures must carry local operator evidence so report assertions reach the intended stage"
+    );
 }
 
 #[test]
@@ -452,7 +467,7 @@ fn no_submit_readiness_rejects_empty_configured_operator_approval_before_build()
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         },
     );
 
@@ -662,7 +677,7 @@ fn loaded_with_test_live_canary() -> LoadedBoltV3Config {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         },
     )
 }
@@ -685,7 +700,7 @@ async fn loaded_with_temp_live_canary() -> (
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: None,
+            operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         },
     );
     let metadata = BoltV3NoSubmitReadinessReportMetadata::from_loaded(&loaded)

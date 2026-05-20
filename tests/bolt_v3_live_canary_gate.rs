@@ -4,10 +4,7 @@ use bolt_v2::{
     bolt_v3_config::{
         LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, load_bolt_v3_config,
     },
-    bolt_v3_live_canary_gate::{
-        BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate,
-        check_bolt_v3_live_canary_gate_with_unix_seconds_for_test,
-    },
+    bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
@@ -132,6 +129,121 @@ async fn live_canary_gate_rejects_missing_operator_evidence_before_reading_repor
     assert!(
         matches!(error, BoltV3LiveCanaryGateError::MissingOperatorEvidence),
         "missing operator_evidence must fail before reading report, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_malformed_operator_evidence_hash_shape() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.client_order_id_hash = "not-a-sha256".to_string();
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-read-before-operator-evidence-hash-check.json"
+                .to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("malformed operator evidence hash must fail closed before report read");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape {
+                field: "client_order_id_hash"
+            }
+        ),
+        "expected malformed operator evidence hash rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_operator_evidence_file_hash_mismatch() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.ssm_manifest_sha256 = sha256_hex(b"wrong-ssm-manifest");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("operator evidence file hash mismatch must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch {
+                field: "ssm_manifest_sha256",
+                ..
+            }
+        ),
+        "expected operator evidence hash mismatch, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_approval_consumption_hash_mismatch() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let operator_evidence = valid_operator_evidence();
+    write_approval_consumption_proof_with_override(
+        &operator_evidence,
+        "canary_evidence_path_hash",
+        serde_json::json!(sha256_hex(b"wrong-canary-evidence-path")),
+    );
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("approval consumption proof mismatch must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMismatch {
+                field: "canary_evidence_path_hash",
+                ..
+            }
+        ),
+        "expected approval consumption mismatch, got {error:?}"
     );
 }
 
@@ -327,13 +439,16 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_report_expired_at_late_gate_timestamp() {
-    let initial_unix_seconds = 1_000;
-    let late_unix_seconds = 1_061;
+    let now = current_unix_seconds_for_test();
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report_at(&report_path, &[], initial_unix_seconds);
+    write_no_submit_report_at(
+        &report_path,
+        &[],
+        now - TEST_READINESS_REPORT_MAX_AGE_SECONDS - 1,
+    );
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -344,19 +459,15 @@ async fn live_canary_gate_rejects_report_expired_at_late_gate_timestamp() {
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: Some(valid_operator_evidence_for_window(
-                initial_unix_seconds as i64 - 10,
-                late_unix_seconds as i64 + 10,
+                now as i64 - 10,
+                now as i64 + 3600,
             )),
         },
     );
 
-    let error = check_bolt_v3_live_canary_gate_with_unix_seconds_for_test(
-        &loaded,
-        initial_unix_seconds,
-        late_unix_seconds,
-    )
-    .await
-    .expect_err("report expiring during gate validation must fail closed");
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("stale readiness report must fail closed");
 
     match error {
         BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
@@ -372,14 +483,13 @@ async fn live_canary_gate_rejects_report_expired_at_late_gate_timestamp() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn live_canary_gate_rejects_operator_window_expired_at_late_gate_timestamp() {
-    let initial_unix_seconds = 1_000;
-    let late_unix_seconds = 1_061;
+async fn live_canary_gate_rejects_operator_window_expired_at_gate_timestamp() {
+    let now = current_unix_seconds_for_test();
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report_at(&report_path, &[], initial_unix_seconds);
+    write_no_submit_report_at(&report_path, &[], now);
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -390,19 +500,15 @@ async fn live_canary_gate_rejects_operator_window_expired_at_late_gate_timestamp
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: 3_600,
             operator_evidence: Some(valid_operator_evidence_for_window(
-                initial_unix_seconds as i64 - 10,
-                initial_unix_seconds as i64 + 10,
+                now as i64 - 120,
+                now as i64 - 60,
             )),
         },
     );
 
-    let error = check_bolt_v3_live_canary_gate_with_unix_seconds_for_test(
-        &loaded,
-        initial_unix_seconds,
-        late_unix_seconds,
-    )
-    .await
-    .expect_err("operator window expiring during gate validation must fail closed");
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("expired operator approval window must fail closed");
 
     match error {
         BoltV3LiveCanaryGateError::InactiveOperatorApprovalWindow {
@@ -410,13 +516,10 @@ async fn live_canary_gate_rejects_operator_window_expired_at_late_gate_timestamp
             approval_not_after_unix_seconds,
             ..
         } => {
-            assert_eq!(current_unix_seconds, late_unix_seconds);
-            assert_eq!(
-                approval_not_after_unix_seconds,
-                initial_unix_seconds as i64 + 10
-            );
+            assert!(current_unix_seconds >= now);
+            assert_eq!(approval_not_after_unix_seconds, now as i64 - 60);
         }
-        other => panic!("expected late operator approval window rejection, got {other:?}"),
+        other => panic!("expected operator approval window rejection, got {other:?}"),
     }
 }
 
@@ -1320,6 +1423,7 @@ fn valid_operator_evidence_for_window(
     let mut evidence = valid_operator_evidence();
     evidence.approval_not_before_unix_seconds = approval_not_before_unix_seconds;
     evidence.approval_not_after_unix_seconds = approval_not_after_unix_seconds;
+    write_valid_approval_consumption_proof(&evidence);
     evidence
 }
 
@@ -1421,6 +1525,47 @@ fn write_linked_report_value(path: &std::path::Path, value: serde_json::Value) {
         object.entry(key).or_insert(value);
     }
     write_report_value(path, serde_json::Value::Object(object));
+}
+
+fn write_approval_consumption_proof_with_override(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    field: &'static str,
+    value: serde_json::Value,
+) {
+    let mut proof = approval_consumption_proof(evidence);
+    proof
+        .as_object_mut()
+        .expect("approval consumption proof should be an object")
+        .insert(field.to_string(), value);
+    write_report_value(
+        std::path::Path::new(&evidence.approval_consumption_path),
+        proof,
+    );
+}
+
+fn write_valid_approval_consumption_proof(evidence: &LiveCanaryOperatorEvidenceBlock) {
+    write_report_value(
+        std::path::Path::new(&evidence.approval_consumption_path),
+        approval_consumption_proof(evidence),
+    );
+}
+
+fn approval_consumption_proof(evidence: &LiveCanaryOperatorEvidenceBlock) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "phase8_operator_approval_consumption",
+        "ssm_manifest_sha256": evidence.ssm_manifest_sha256,
+        "strategy_input_evidence_sha256": evidence.strategy_input_evidence_sha256,
+        "financial_envelope_sha256": evidence.financial_envelope_sha256,
+        "pre_run_state_sha256": evidence.pre_run_state_sha256,
+        "abort_plan_sha256": evidence.abort_plan_sha256,
+        "approval_id_hash": sha256_hex("operator-approved-canary-001".as_bytes()),
+        "approval_nonce_sha256": evidence.approval_nonce_sha256,
+        "approval_not_before_unix_secs": evidence.approval_not_before_unix_seconds,
+        "approval_not_after_unix_secs": evidence.approval_not_after_unix_seconds,
+        "canary_evidence_path_hash": sha256_hex(evidence.canary_evidence_path.as_bytes()),
+        "consumed_unix_secs": evidence.approval_not_before_unix_seconds + 1,
+    })
 }
 
 fn linked_report_object(

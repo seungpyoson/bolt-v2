@@ -113,6 +113,41 @@ pub enum BoltV3LiveCanaryGateError {
     MissingOperatorEvidenceField {
         field: &'static str,
     },
+    InvalidOperatorEvidenceHashShape {
+        field: &'static str,
+    },
+    OperatorEvidenceRead {
+        field: &'static str,
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    OperatorEvidenceHashMismatch {
+        field: &'static str,
+        path: PathBuf,
+    },
+    OperatorApprovalConsumptionRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    OperatorApprovalConsumptionParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    OperatorApprovalConsumptionMalformed {
+        path: PathBuf,
+        reason: String,
+    },
+    OperatorApprovalConsumptionMismatch {
+        path: PathBuf,
+        field: &'static str,
+    },
+    OperatorApprovalConsumptionStale {
+        path: PathBuf,
+        consumed_unix_secs: i64,
+        approval_not_before_unix_seconds: i64,
+        approval_not_after_unix_seconds: i64,
+        current_unix_seconds: u64,
+    },
     InvalidOperatorApprovalWindow {
         approval_not_before_unix_seconds: i64,
         approval_not_after_unix_seconds: i64,
@@ -203,6 +238,59 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                 f,
                 "bolt-v3 live canary `[live_canary].operator_evidence.{field}` is empty"
             ),
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape { field } => write!(
+                f,
+                "bolt-v3 live canary `[live_canary].operator_evidence.{field}` must be a lowercase sha256 hex string"
+            ),
+            BoltV3LiveCanaryGateError::OperatorEvidenceRead {
+                field,
+                path,
+                source,
+            } => write!(
+                f,
+                "failed to read bolt-v3 live canary operator evidence for {field} at {}: {source}",
+                path.display()
+            ),
+            BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch { field, path } => write!(
+                f,
+                "bolt-v3 live canary `[live_canary].operator_evidence.{field}` does not match {}",
+                path.display()
+            ),
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionRead { path, source } => write!(
+                f,
+                "failed to read bolt-v3 live canary approval consumption proof {}: {source}",
+                path.display()
+            ),
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionParse { path, source } => write!(
+                f,
+                "failed to parse bolt-v3 live canary approval consumption proof {}: {source}",
+                path.display()
+            ),
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMalformed { path, reason } => {
+                write!(
+                    f,
+                    "bolt-v3 live canary approval consumption proof {} is malformed: {reason}",
+                    path.display()
+                )
+            }
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMismatch { path, field } => {
+                write!(
+                    f,
+                    "bolt-v3 live canary approval consumption proof {} field `{field}` does not match configured operator evidence",
+                    path.display()
+                )
+            }
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionStale {
+                path,
+                consumed_unix_secs,
+                approval_not_before_unix_seconds,
+                approval_not_after_unix_seconds,
+                current_unix_seconds,
+            } => write!(
+                f,
+                "bolt-v3 live canary approval consumption proof {} is stale: consumed_unix_secs={consumed_unix_secs}, current_unix_seconds={current_unix_seconds}, approval window [{approval_not_before_unix_seconds}, {approval_not_after_unix_seconds}]",
+                path.display()
+            ),
             BoltV3LiveCanaryGateError::InvalidOperatorApprovalWindow {
                 approval_not_before_unix_seconds,
                 approval_not_after_unix_seconds,
@@ -291,6 +379,13 @@ impl std::error::Error for BoltV3LiveCanaryGateError {
         match self {
             BoltV3LiveCanaryGateError::ReadinessReportRead { source, .. } => Some(source),
             BoltV3LiveCanaryGateError::ReadinessReportParse { source, .. } => Some(source),
+            BoltV3LiveCanaryGateError::OperatorEvidenceRead { source, .. } => Some(source),
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionRead { source, .. } => {
+                Some(source)
+            }
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionParse { source, .. } => {
+                Some(source)
+            }
             BoltV3LiveCanaryGateError::CurrentExecutablePath { source } => Some(source),
             BoltV3LiveCanaryGateError::ExecutableIdentityRead { source, .. } => Some(source),
             BoltV3LiveCanaryGateError::SystemTimeBeforeUnixEpoch { source } => Some(source),
@@ -309,24 +404,6 @@ pub async fn check_bolt_v3_live_canary_gate(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveCanaryGateReport, BoltV3LiveCanaryGateError> {
     check_bolt_v3_live_canary_gate_with_clock(loaded, current_unix_seconds).await
-}
-
-#[doc(hidden)]
-pub async fn check_bolt_v3_live_canary_gate_with_unix_seconds_for_test(
-    loaded: &LoadedBoltV3Config,
-    initial_unix_seconds: u64,
-    late_unix_seconds: u64,
-) -> Result<BoltV3LiveCanaryGateReport, BoltV3LiveCanaryGateError> {
-    let mut calls = 0_u8;
-    check_bolt_v3_live_canary_gate_with_clock(loaded, || {
-        calls = calls.saturating_add(1);
-        if calls == 1 {
-            Ok(initial_unix_seconds)
-        } else {
-            Ok(late_unix_seconds)
-        }
-    })
-    .await
 }
 
 async fn check_bolt_v3_live_canary_gate_with_clock(
@@ -374,7 +451,7 @@ async fn check_bolt_v3_live_canary_gate_with_clock(
     }
 
     let initial_unix_seconds = unix_seconds()?;
-    validate_operator_evidence(block, initial_unix_seconds)?;
+    validate_operator_evidence(&loaded.root_path, block, approval_id, initial_unix_seconds).await?;
 
     let report_path = resolve_report_path(&loaded.root_path, block);
     let report_bytes =
@@ -424,7 +501,7 @@ async fn check_bolt_v3_live_canary_gate_with_clock(
             reasons,
         },
     )?;
-    validate_operator_evidence(block, late_unix_seconds)?;
+    validate_operator_evidence(&loaded.root_path, block, approval_id, late_unix_seconds).await?;
 
     Ok(BoltV3LiveCanaryGateReport {
         approval_id: approval_id.to_string(),
@@ -498,8 +575,10 @@ fn parse_positive_decimal(
     Ok(decimal)
 }
 
-fn validate_operator_evidence(
+async fn validate_operator_evidence(
+    root_path: &Path,
     block: &LiveCanaryBlock,
+    approval_id: &str,
     current_unix_seconds: u64,
 ) -> Result<(), BoltV3LiveCanaryGateError> {
     let evidence = block
@@ -517,6 +596,11 @@ fn validate_operator_evidence(
             return Err(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
                 field: "strategy_cancel_path",
             });
+        }
+    }
+    for (field, value) in operator_evidence_hash_fields(evidence) {
+        if !is_sha256_hex(value) {
+            return Err(BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape { field });
         }
     }
 
@@ -538,7 +622,223 @@ fn validate_operator_evidence(
         });
     }
 
+    validate_operator_evidence_file_hashes(root_path, evidence).await?;
+    validate_operator_approval_consumption(root_path, evidence, approval_id, current_unix_seconds)
+        .await?;
+
     Ok(())
+}
+
+async fn validate_operator_evidence_file_hashes(
+    root_path: &Path,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    for binding in operator_evidence_file_hash_bindings(evidence) {
+        let path = resolve_configured_path(root_path, binding.path);
+        let actual = sha256_file(&path, binding.hash_field).await?;
+        if actual != binding.expected_sha256 {
+            return Err(BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch {
+                field: binding.hash_field,
+                path,
+            });
+        }
+    }
+    Ok(())
+}
+
+async fn validate_operator_approval_consumption(
+    root_path: &Path,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    approval_id: &str,
+    current_unix_seconds: u64,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let path = resolve_configured_path(root_path, &evidence.approval_consumption_path);
+    let bytes = tokio::fs::read(&path).await.map_err(|source| {
+        BoltV3LiveCanaryGateError::OperatorApprovalConsumptionRead {
+            path: path.clone(),
+            source,
+        }
+    })?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|source| {
+        BoltV3LiveCanaryGateError::OperatorApprovalConsumptionParse {
+            path: path.clone(),
+            source,
+        }
+    })?;
+    let object = value.as_object().ok_or_else(|| {
+        BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMalformed {
+            path: path.clone(),
+            reason: "proof must be a JSON object".to_string(),
+        }
+    })?;
+
+    validate_consumption_i64_field(&path, object, "schema_version", 1)?;
+    validate_consumption_string_field(
+        &path,
+        object,
+        "record_kind",
+        "phase8_operator_approval_consumption",
+    )?;
+    let approval_id_hash = sha256_hex(approval_id.as_bytes());
+    let canary_evidence_path_hash = sha256_hex(evidence.canary_evidence_path.as_bytes());
+    for (field, expected) in [
+        ("ssm_manifest_sha256", evidence.ssm_manifest_sha256.as_str()),
+        (
+            "strategy_input_evidence_sha256",
+            evidence.strategy_input_evidence_sha256.as_str(),
+        ),
+        (
+            "financial_envelope_sha256",
+            evidence.financial_envelope_sha256.as_str(),
+        ),
+        (
+            "pre_run_state_sha256",
+            evidence.pre_run_state_sha256.as_str(),
+        ),
+        ("abort_plan_sha256", evidence.abort_plan_sha256.as_str()),
+        (
+            "approval_nonce_sha256",
+            evidence.approval_nonce_sha256.as_str(),
+        ),
+        ("approval_id_hash", approval_id_hash.as_str()),
+        (
+            "canary_evidence_path_hash",
+            canary_evidence_path_hash.as_str(),
+        ),
+    ] {
+        validate_consumption_string_field(&path, object, field, expected)?;
+    }
+    validate_consumption_i64_field(
+        &path,
+        object,
+        "approval_not_before_unix_secs",
+        evidence.approval_not_before_unix_seconds,
+    )?;
+    validate_consumption_i64_field(
+        &path,
+        object,
+        "approval_not_after_unix_secs",
+        evidence.approval_not_after_unix_seconds,
+    )?;
+    let consumed_unix_secs = consumption_i64_field(&path, object, "consumed_unix_secs")?;
+    let consumed = i128::from(consumed_unix_secs);
+    let current = i128::from(current_unix_seconds);
+    let not_before = i128::from(evidence.approval_not_before_unix_seconds);
+    let not_after = i128::from(evidence.approval_not_after_unix_seconds);
+    if consumed < not_before || consumed > not_after || consumed > current {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionStale {
+                path,
+                consumed_unix_secs,
+                approval_not_before_unix_seconds: evidence.approval_not_before_unix_seconds,
+                approval_not_after_unix_seconds: evidence.approval_not_after_unix_seconds,
+                current_unix_seconds,
+            },
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_consumption_string_field(
+    path: &Path,
+    object: &Map<String, Value>,
+    field: &'static str,
+    expected: &str,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let Some(value) = object.get(field) else {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMalformed {
+                path: path.to_path_buf(),
+                reason: format!("field `{field}` is missing"),
+            },
+        );
+    };
+    let Some(actual) = value.as_str() else {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMalformed {
+                path: path.to_path_buf(),
+                reason: format!("field `{field}` must be a string"),
+            },
+        );
+    };
+    if actual != expected {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMismatch {
+                path: path.to_path_buf(),
+                field,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn validate_consumption_i64_field(
+    path: &Path,
+    object: &Map<String, Value>,
+    field: &'static str,
+    expected: i64,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let actual = consumption_i64_field(path, object, field)?;
+    if actual != expected {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMismatch {
+                path: path.to_path_buf(),
+                field,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn consumption_i64_field(
+    path: &Path,
+    object: &Map<String, Value>,
+    field: &'static str,
+) -> Result<i64, BoltV3LiveCanaryGateError> {
+    let Some(value) = object.get(field) else {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMalformed {
+                path: path.to_path_buf(),
+                reason: format!("field `{field}` is missing"),
+            },
+        );
+    };
+    value.as_i64().ok_or_else(
+        || BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMalformed {
+            path: path.to_path_buf(),
+            reason: format!("field `{field}` must be an integer"),
+        },
+    )
+}
+
+async fn sha256_file(
+    path: &Path,
+    field: &'static str,
+) -> Result<String, BoltV3LiveCanaryGateError> {
+    let mut file = tokio::fs::File::open(path).await.map_err(|source| {
+        BoltV3LiveCanaryGateError::OperatorEvidenceRead {
+            field,
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let length = file.read(&mut buffer).await.map_err(|source| {
+            BoltV3LiveCanaryGateError::OperatorEvidenceRead {
+                field,
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
+        if length == 0 {
+            break;
+        }
+        hasher.update(&buffer[..length]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn required_operator_evidence_fields(
@@ -583,6 +883,88 @@ fn required_operator_evidence_fields(
         ),
         ("post_run_hygiene_path", &evidence.post_run_hygiene_path),
     ]
+}
+
+fn operator_evidence_hash_fields(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> [(&'static str, &str); 8] {
+    [
+        ("ssm_manifest_sha256", &evidence.ssm_manifest_sha256),
+        (
+            "strategy_input_evidence_sha256",
+            &evidence.strategy_input_evidence_sha256,
+        ),
+        (
+            "financial_envelope_sha256",
+            &evidence.financial_envelope_sha256,
+        ),
+        ("pre_run_state_sha256", &evidence.pre_run_state_sha256),
+        ("abort_plan_sha256", &evidence.abort_plan_sha256),
+        ("approval_nonce_sha256", &evidence.approval_nonce_sha256),
+        ("client_order_id_hash", &evidence.client_order_id_hash),
+        ("venue_order_id_hash", &evidence.venue_order_id_hash),
+    ]
+}
+
+struct OperatorEvidenceFileHashBinding<'a> {
+    path: &'a str,
+    hash_field: &'static str,
+    expected_sha256: &'a str,
+}
+
+fn operator_evidence_file_hash_bindings(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> [OperatorEvidenceFileHashBinding<'_>; 6] {
+    [
+        OperatorEvidenceFileHashBinding {
+            path: &evidence.ssm_manifest_path,
+            hash_field: "ssm_manifest_sha256",
+            expected_sha256: &evidence.ssm_manifest_sha256,
+        },
+        OperatorEvidenceFileHashBinding {
+            path: &evidence.strategy_input_evidence_path,
+            hash_field: "strategy_input_evidence_sha256",
+            expected_sha256: &evidence.strategy_input_evidence_sha256,
+        },
+        OperatorEvidenceFileHashBinding {
+            path: &evidence.financial_envelope_path,
+            hash_field: "financial_envelope_sha256",
+            expected_sha256: &evidence.financial_envelope_sha256,
+        },
+        OperatorEvidenceFileHashBinding {
+            path: &evidence.pre_run_state_path,
+            hash_field: "pre_run_state_sha256",
+            expected_sha256: &evidence.pre_run_state_sha256,
+        },
+        OperatorEvidenceFileHashBinding {
+            path: &evidence.abort_plan_path,
+            hash_field: "abort_plan_sha256",
+            expected_sha256: &evidence.abort_plan_sha256,
+        },
+        OperatorEvidenceFileHashBinding {
+            path: &evidence.approval_nonce_path,
+            hash_field: "approval_nonce_sha256",
+            expected_sha256: &evidence.approval_nonce_sha256,
+        },
+    ]
+}
+
+fn resolve_configured_path(root_path: &Path, configured: &str) -> PathBuf {
+    let path = PathBuf::from(configured.trim());
+    if path.is_absolute() {
+        return path;
+    }
+    root_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(path)
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_no_submit_readiness_report(

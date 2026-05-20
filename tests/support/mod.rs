@@ -161,34 +161,147 @@ pub fn repo_path(relative: &str) -> PathBuf {
 }
 
 pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock {
+    let case_dir = live_canary_operator_evidence_case_dir();
     let now = current_unix_seconds() as i64;
+    let approval_not_before_unix_seconds = now - 60;
+    let approval_not_after_unix_seconds = now + 3600;
+    let approval_envelope_path = write_dummy_json(
+        &case_dir,
+        "approval-envelope.json",
+        serde_json::json!({"record_kind": "test_approval_envelope"}),
+    );
+    let ssm_manifest_path = write_dummy_json(
+        &case_dir,
+        "ssm-manifest.json",
+        serde_json::json!({"record_kind": "test_ssm_manifest"}),
+    );
+    let strategy_input_evidence_path = write_dummy_json(
+        &case_dir,
+        "strategy-input.json",
+        serde_json::json!({"record_kind": "test_strategy_input"}),
+    );
+    let financial_envelope_path = write_dummy_json(
+        &case_dir,
+        "financial-envelope.json",
+        serde_json::json!({"record_kind": "test_financial_envelope"}),
+    );
+    let pre_run_state_path = write_dummy_json(
+        &case_dir,
+        "pre-run-state.json",
+        serde_json::json!({"record_kind": "test_pre_run_state"}),
+    );
+    let abort_plan_path = write_dummy_json(
+        &case_dir,
+        "abort-plan.json",
+        serde_json::json!({"record_kind": "test_abort_plan"}),
+    );
+    let canary_evidence_path = case_dir.join("canary-evidence.json");
+    let approval_nonce_path = write_dummy_json(
+        &case_dir,
+        "approval-nonce.json",
+        serde_json::json!({"record_kind": "test_approval_nonce"}),
+    );
+    let approval_consumption_path = case_dir.join("approval-consumption.json");
+    let ssm_manifest_sha256 = sha256_file(&ssm_manifest_path);
+    let strategy_input_evidence_sha256 = sha256_file(&strategy_input_evidence_path);
+    let financial_envelope_sha256 = sha256_file(&financial_envelope_path);
+    let pre_run_state_sha256 = sha256_file(&pre_run_state_path);
+    let abort_plan_sha256 = sha256_file(&abort_plan_path);
+    let approval_nonce_sha256 = sha256_file(&approval_nonce_path);
+    let canary_evidence_path = canary_evidence_path.to_string_lossy().to_string();
+    let approval_consumption_proof = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "phase8_operator_approval_consumption",
+        "ssm_manifest_sha256": ssm_manifest_sha256,
+        "strategy_input_evidence_sha256": strategy_input_evidence_sha256,
+        "financial_envelope_sha256": financial_envelope_sha256,
+        "pre_run_state_sha256": pre_run_state_sha256,
+        "abort_plan_sha256": abort_plan_sha256,
+        "approval_id_hash": sha256_hex("operator-approved-canary-001".as_bytes()),
+        "approval_nonce_sha256": approval_nonce_sha256,
+        "approval_not_before_unix_secs": approval_not_before_unix_seconds,
+        "approval_not_after_unix_secs": approval_not_after_unix_seconds,
+        "canary_evidence_path_hash": sha256_hex(canary_evidence_path.as_bytes()),
+        "consumed_unix_secs": now,
+    });
+    fs::write(
+        &approval_consumption_path,
+        serde_json::to_vec(&approval_consumption_proof)
+            .expect("approval consumption proof JSON should encode"),
+    )
+    .expect("approval consumption proof should be written");
+
     LiveCanaryOperatorEvidenceBlock {
-        approval_envelope_path: "operator-evidence/approval-envelope.json".to_string(),
-        ssm_manifest_path: "operator-evidence/ssm-manifest.json".to_string(),
-        ssm_manifest_sha256: sha256_hex(b"ssm-manifest"),
-        strategy_input_evidence_path: "operator-evidence/strategy-input.json".to_string(),
-        strategy_input_evidence_sha256: sha256_hex(b"strategy-input"),
-        financial_envelope_path: "operator-evidence/financial-envelope.json".to_string(),
-        financial_envelope_sha256: sha256_hex(b"financial-envelope"),
-        pre_run_state_path: "operator-evidence/pre-run-state.json".to_string(),
-        pre_run_state_sha256: sha256_hex(b"pre-run-state"),
-        abort_plan_path: "operator-evidence/abort-plan.md".to_string(),
-        abort_plan_sha256: sha256_hex(b"abort-plan"),
-        canary_evidence_path: "operator-evidence/canary-evidence.json".to_string(),
-        approval_not_before_unix_seconds: now - 60,
-        approval_not_after_unix_seconds: now + 3600,
-        approval_nonce_path: "operator-evidence/approval-nonce.txt".to_string(),
-        approval_nonce_sha256: sha256_hex(b"approval-nonce"),
-        approval_consumption_path: "operator-evidence/approval-consumption.json".to_string(),
-        decision_evidence_path: "operator-evidence/decision-evidence.jsonl".to_string(),
+        approval_envelope_path: approval_envelope_path.to_string_lossy().to_string(),
+        ssm_manifest_path: ssm_manifest_path.to_string_lossy().to_string(),
+        ssm_manifest_sha256,
+        strategy_input_evidence_path: strategy_input_evidence_path.to_string_lossy().to_string(),
+        strategy_input_evidence_sha256,
+        financial_envelope_path: financial_envelope_path.to_string_lossy().to_string(),
+        financial_envelope_sha256,
+        pre_run_state_path: pre_run_state_path.to_string_lossy().to_string(),
+        pre_run_state_sha256,
+        abort_plan_path: abort_plan_path.to_string_lossy().to_string(),
+        abort_plan_sha256,
+        canary_evidence_path,
+        approval_not_before_unix_seconds,
+        approval_not_after_unix_seconds,
+        approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
+        approval_nonce_sha256,
+        approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
+        decision_evidence_path: case_dir
+            .join("decision-evidence.jsonl")
+            .to_string_lossy()
+            .to_string(),
         client_order_id_hash: sha256_hex(b"client-order-id"),
         venue_order_id_hash: sha256_hex(b"venue-order-id"),
-        nt_submit_event_path: "operator-evidence/nt-submit-event.json".to_string(),
-        venue_order_state_path: "operator-evidence/venue-order-state.json".to_string(),
-        strategy_cancel_path: Some("operator-evidence/strategy-cancel.json".to_string()),
-        restart_reconciliation_path: "operator-evidence/restart-reconciliation.json".to_string(),
-        post_run_hygiene_path: "operator-evidence/post-run-hygiene.json".to_string(),
+        nt_submit_event_path: case_dir
+            .join("nt-submit-event.json")
+            .to_string_lossy()
+            .to_string(),
+        venue_order_state_path: case_dir
+            .join("venue-order-state.json")
+            .to_string_lossy()
+            .to_string(),
+        strategy_cancel_path: Some(
+            case_dir
+                .join("strategy-cancel.json")
+                .to_string_lossy()
+                .to_string(),
+        ),
+        restart_reconciliation_path: case_dir
+            .join("restart-reconciliation.json")
+            .to_string_lossy()
+            .to_string(),
+        post_run_hygiene_path: case_dir
+            .join("post-run-hygiene.json")
+            .to_string_lossy()
+            .to_string(),
     }
+}
+
+fn live_canary_operator_evidence_case_dir() -> PathBuf {
+    static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
+    let root = ROOT
+        .get_or_init(|| tempfile::tempdir().expect("operator evidence tempdir should be created"));
+    let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let case_dir = root.path().join(format!("operator-evidence-{counter}"));
+    fs::create_dir_all(&case_dir).expect("operator evidence case dir should be created");
+    case_dir
+}
+
+fn write_dummy_json(dir: &Path, filename: &str, value: serde_json::Value) -> PathBuf {
+    let path = dir.join(filename);
+    fs::write(
+        &path,
+        serde_json::to_vec(&value).expect("dummy operator evidence JSON should encode"),
+    )
+    .expect("dummy operator evidence JSON should be written");
+    path
+}
+
+fn sha256_file(path: &Path) -> String {
+    sha256_hex(&fs::read(path).expect("dummy operator evidence should be readable"))
 }
 
 pub fn validated_bolt_v3_live_canary_gate_report(

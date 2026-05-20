@@ -48,9 +48,9 @@
 
 - [x] T011 [US2] Draft #374 Phase 1 cargo invocation enumeration in a follow-up #374 branch/PR.
 - [x] T012 [US2] Include no-mistakes command/env behavior, worktree-local target proof, and #404 wrapper residuals in #374 enumeration.
-- [ ] T013 [US2] Add failing verifier/test for #374 selected implementation seam before changing wrapper behavior.
-- [ ] T014 [US2] Add verifier coverage that blocks no-mistakes raw-Cargo drift and rejects any S3 active-target-cache path.
-- [ ] T015 [US2] Implement #374 only after T011/T012/T013/T014 and review gate pass.
+- [x] T013 [US2] Add failing verifier/test for #374 selected implementation seam before changing wrapper behavior.
+- [x] T014 [US2] Add verifier coverage that blocks no-mistakes raw-Cargo drift and rejects any S3 active-target-cache path.
+- [x] T015 [US2] Implement the scoped T013/T014/T015 #374 wrapper/verifier slice after T011/T012/T013/T014 and local review; Phase 7 PR/CI/external gates remain tracked in T027-T032.
 
 Explicit #374 residuals from #286 / PR #404 review:
 

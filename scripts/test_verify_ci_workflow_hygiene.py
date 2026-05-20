@@ -135,7 +135,7 @@ jobs:
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-
       - run: just clippy
@@ -174,7 +174,7 @@ jobs:
         if: needs.detector.outputs.build_required != 'true'
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-
       - if: needs.detector.outputs.build_required != 'true'
@@ -200,7 +200,7 @@ jobs:
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-
       - run: just source-fence
@@ -230,7 +230,7 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
       - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
@@ -247,7 +247,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -325,7 +325,7 @@ jobs:
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-
       - name: Install zig
@@ -1106,7 +1106,23 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
+            "env:\n  CARGO_TARGET_DIR: /tmp/raw",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "env:\n  \"CARGO_TARGET_DIR\": /tmp/raw",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
             "CARGO_BUILD_TARGET_DIR=/tmp/raw-target cargo check",
+            "CARGO_BUILD_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "env:\n  CARGO_BUILD_TARGET_DIR: /tmp/raw",
+            "CARGO_BUILD_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "env:\n  \"CARGO_BUILD_TARGET_DIR\": /tmp/raw",
             "CARGO_BUILD_TARGET_DIR raw target override must be classified",
         ),
         (
@@ -1118,6 +1134,22 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --config build.target-dir raw target override must be classified",
         ),
         (
+            "cargo --config 'build.target-dir=/tmp/raw-target' check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "cargo -C build.target-dir=/tmp/raw-target check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "cargo -Cbuild.target-dir=/tmp/raw-target check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "run: |\n  cargo check \\\n    --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
             "cargo check --target-dir /tmp/raw-target",
             "cargo --target-dir raw target override must be classified",
         ),
@@ -1126,11 +1158,39 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "CARGO_TARGET_TMPDIR raw target override must be classified",
         ),
         (
+            "env:\n  CARGO_TARGET_TMPDIR: /tmp/raw-tmp",
+            "CARGO_TARGET_TMPDIR raw target override must be classified",
+        ),
+        (
+            "env:\n  \"CARGO_TARGET_TMPDIR\": /tmp/raw-tmp",
+            "CARGO_TARGET_TMPDIR raw target override must be classified",
+        ),
+        (
             "CARGO_INCREMENTAL=1 cargo check",
             "CARGO_INCREMENTAL raw cache override must be classified",
         ),
         (
+            "CARGO_ENCODED_RUSTFLAGS='--out-dir\\x1f/tmp/raw-out' cargo check",
+            "CARGO_ENCODED_RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "env:\n  CARGO_ENCODED_RUSTFLAGS: '--out-dir\\x1f/tmp/raw-out'",
+            "CARGO_ENCODED_RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "env:\n  \"CARGO_ENCODED_RUSTFLAGS\": '--out-dir\\x1f/tmp/raw-out'",
+            "CARGO_ENCODED_RUSTFLAGS raw output override must be classified",
+        ),
+        (
             "CARGO_INSTALL_ROOT=/tmp/cargo-install cargo install ripgrep --locked",
+            "CARGO_INSTALL_ROOT install output override must be classified",
+        ),
+        (
+            "env:\n  CARGO_INSTALL_ROOT: /tmp/cargo-install",
+            "CARGO_INSTALL_ROOT install output override must be classified",
+        ),
+        (
+            "env:\n  \"CARGO_INSTALL_ROOT\": /tmp/cargo-install",
             "CARGO_INSTALL_ROOT install output override must be classified",
         ),
         (
@@ -1143,6 +1203,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "RUSTFLAGS='--out-dir /tmp/raw-out' cargo check",
+            "RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "env:\n  RUSTFLAGS: '--out-dir /tmp/raw-out'",
+            "RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "env:\n  \"RUSTFLAGS\": '--out-dir /tmp/raw-out'",
             "RUSTFLAGS raw output override must be classified",
         ),
         (
@@ -1166,6 +1234,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo install build target and install root ownership must be classified separately",
         ),
         (
+            "cargo --config=build.target-dir=/tmp/raw-target check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
             "no-mistakes run -- cargo check",
             "no-mistakes raw Cargo drift must be classified",
         ),
@@ -1175,6 +1247,106 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "aws s3 sync target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync target s3://some-bucket/linux-cache",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "run: |\n  aws s3 sync \\\n    target \\\n    s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync ./target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"$CARGO_TARGET_DIR\" s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${CARGO_TARGET_DIR}\" s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${CARGO_TARGET_DIR}/debug\" s3://bolt-v2-active-cache/target/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${CARGO_TARGET_DIR%/}/debug\" s3://bolt-v2-active-cache/target/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${{ steps.setup.outputs.managed_target_dir }}\" s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${{ steps.setup.outputs.managed_target_dir }}/debug\" s3://bolt-v2-active-cache/target/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${{ steps.setup.outputs.managed_target_dir_relative }}/debug\" s3://bolt-v2-active-cache/target/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 cp --recursive target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 mv --recursive target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws --profile prod s3 sync target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws --region us-east-1 s3 cp --recursive target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"$GITHUB_WORKSPACE/target\" s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"$GITHUB_WORKSPACE\"/target s3://some-bucket/linux-cache",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync s3://bolt-v2-active-cache/target \"$GITHUB_WORKSPACE/./target\"",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 cp --recursive s3://bolt-v2-active-cache/target \"${PWD}/./target\"",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 mv --recursive s3://bolt-v2-active-cache/target \"$PWD/./target\"",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${{ github.workspace }}/target\" s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${{ env.CARGO_TARGET_DIR }}/debug\" s3://bolt-v2-active-cache/target/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"$PWD/target\" s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"$PWD\"/target s3://some-bucket/linux-cache",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync s3://bolt-v2-active-cache/target \"$CARGO_TARGET_DIR\"",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync s3://bolt-v2-active-cache/target \"${{ steps.setup.outputs.managed_target_dir }}\"",
             "S3 active mutable target cache must be rejected",
         ),
     ]
@@ -1189,6 +1361,8 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
 
 
 def workflow_with_exact_head_governance_cache_inputs(workflow: str) -> str:
+    if all(cache_input in workflow for cache_input in EXACT_HEAD_GOVERNANCE_CACHE_INPUTS):
+        return workflow
     governance_inputs = ", " + ", ".join(EXACT_HEAD_GOVERNANCE_CACHE_INPUTS)
     return workflow.replace("'justfile') }}", f"'justfile'{governance_inputs}) }}").replace(
         "'specs/**/*.md') }}",
@@ -1239,6 +1413,22 @@ commands:
   shellcheck: bash -lc 'cargo test --all'
   wrapped: command cargo fmt --check
   hyphenated: cargo-clippy --workspace
+  rustup: rustup run stable cargo test
+  pyinline: python -c 'import os; os.system("cargo test")'
+  timeout: timeout 30 cargo test
+  chained: python3 scripts/rust_verification.py cargo --repo . -- test && cargo test
+  compact_and: python3 scripts/rust_verification.py cargo --repo . -- test&&cargo test
+  compact_semicolon: python3 scripts/rust_verification.py cargo --repo . -- test;cargo test
+  compact_pipe: python3 scripts/rust_verification.py cargo --repo . -- test|cargo test
+  compact_or: python3 scripts/rust_verification.py cargo --repo . -- test||cargo test
+  blockmanagedhidden: |
+    python3 scripts/rust_verification.py cargo --repo . -- test
+    cargo test
+  managedtarget: python3 scripts/rust_verification.py cargo --repo . -- test --target-dir /tmp/raw
+  managedconfig: python3 scripts/rust_verification.py cargo --repo . -- --config=build.target-dir=/tmp/raw test
+  managedshortconfig: python3 scripts/rust_verification.py cargo --repo . -- -C build.target-dir=/tmp/raw test
+  managedencodedrustflags: CARGO_ENCODED_RUSTFLAGS='--out-dir\\x1f/tmp/raw-out' python3 scripts/rust_verification.py cargo --repo . -- check
+  managedinstallroot: python3 scripts/rust_verification.py cargo --repo . -- install ripgrep --root /tmp/install-root
   docs: just docs
 """
     allowed_fixture = """
@@ -1247,6 +1437,13 @@ commands:
   lint: python3 scripts/rust_verification.py cargo --repo . -- clippy --all-targets -- -D warnings
   format: python3 scripts/rust_verification.py cargo --repo . -- fmt --check
   exact-head-ci: gh run view --repo seungpyoson/bolt-v2 --commit "$GITHUB_SHA" --json conclusion
+"""
+    commented_commands_fixture = """
+commands: # repo review commands
+  test: cargo test
+"""
+    inline_commands_fixture = """
+commands: { test: "cargo test" }
 """
     fixture_expected_raw_keys = [
         "test",
@@ -1258,6 +1455,20 @@ commands:
         "shellcheck",
         "wrapped",
         "hyphenated",
+        "rustup",
+        "pyinline",
+        "timeout",
+        "chained",
+        "compact_and",
+        "compact_semicolon",
+        "compact_pipe",
+        "compact_or",
+        "blockmanagedhidden",
+        "managedtarget",
+        "managedconfig",
+        "managedshortconfig",
+        "managedencodedrustflags",
+        "managedinstallroot",
     ]
     expected = [
         f".no-mistakes.yaml commands.{command_name} raw Cargo drift must be classified"
@@ -1271,8 +1482,22 @@ commands:
         error for error in allowed_errors.splitlines()
         if ".no-mistakes.yaml" in error and "raw Cargo drift" in error
     ]
+    commented_result, commented_errors = run_verifier_main_with_no_mistakes(commented_commands_fixture)
+    commented_expected = ".no-mistakes.yaml commands.test raw Cargo drift must be classified"
+    inline_result, inline_errors = run_verifier_main_with_no_mistakes(inline_commands_fixture)
+    inline_expected = ".no-mistakes.yaml commands section must use block mapping"
 
-    if fixture_result == 0 or missing_fixture or false_fixture or allowed_result != 0 or false_allowed:
+    if (
+        fixture_result == 0
+        or missing_fixture
+        or false_fixture
+        or allowed_result != 0
+        or false_allowed
+        or commented_result == 0
+        or commented_expected not in commented_errors
+        or inline_result == 0
+        or inline_expected not in inline_errors
+    ):
         raise AssertionError(
             "no-mistakes raw-Cargo drift must fail through verifier main() while managed-wrapper "
             "and exact-head CI evidence commands stay allowed: "
@@ -1280,7 +1505,9 @@ commands:
             f"false_fixture={false_fixture} fixture_errors={fixture_errors!r} "
             f"fixture_expected_raw_keys={fixture_expected_raw_keys!r} "
             f"allowed_result={allowed_result} false_allowed={false_allowed!r} "
-            f"allowed_errors={allowed_errors!r}"
+            f"allowed_errors={allowed_errors!r} "
+            f"commented_result={commented_result} commented_errors={commented_errors!r} "
+            f"inline_result={inline_result} inline_errors={inline_errors!r}"
         )
 
 
@@ -1310,7 +1537,54 @@ def assert_v6_red_workflow_policy_gaps() -> None:
         raise AssertionError("v6 RED workflow policy coverage failures: " + " | ".join(failures))
 
 
+def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
+    verifier = load_verifier()
+    advisory = BASE_ADVISORY_WORKFLOW.replace(
+        "        run: just deny-advisories",
+        "        run: |\n          aws s3 sync target s3://some-bucket/linux-cache",
+    )
+    advisory_errors = verifier.verify_workflows(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory},
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    action = BASE_ACTION.replace(
+        "      run: echo setup",
+        "      run: |\n        CARGO_TARGET_DIR=/tmp/raw cargo check",
+    )
+    action_errors = verifier.verify_workflows(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW},
+        action,
+        BASE_NEXTEST_CONFIG,
+    )
+    repo_errors = verifier.verify_repo_automation_texts(
+        {
+            "justfile": "check:\n    CARGO_TARGET_DIR=/tmp/raw cargo check\n",
+            "scripts/local.sh": "aws s3 sync \"$PWD\"/target s3://some-bucket/linux-cache\n",
+        }
+    )
+    expected = "S3 active mutable target cache must be rejected"
+    if not any(expected in error for error in advisory_errors):
+        raise AssertionError(f"advisory workflow raw-storage drift was silent: {advisory_errors!r}")
+    expected = "CARGO_TARGET_DIR raw target override must be classified"
+    if not any(expected in error for error in action_errors):
+        raise AssertionError(f"setup action raw-storage drift was silent: {action_errors!r}")
+    if not any("justfile" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"justfile raw-storage drift was silent: {repo_errors!r}")
+    expected = "S3 active mutable target cache must be rejected"
+    if not any("scripts/local.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script raw-storage drift was silent: {repo_errors!r}")
+
+
+def assert_ci_lint_runs_rust_verification_cache_retention_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_rust_verification_cache_retention.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run rust verification cache retention self-tests")
+
+
 def main() -> int:
+    assert_ci_lint_runs_rust_verification_cache_retention_tests()
     assert_clean()
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
     assert_pin_consistency_cross_file_mismatch_errors()
@@ -1324,6 +1598,7 @@ def main() -> int:
     assert_pin_consistency_accepts_single_quoted_sha()
     assert_pin_consistency_rejects_mismatched_quotes()
     assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action()
+    assert_v6_red_raw_storage_checks_all_ci_automation()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(
         "concurrency group must key pull_request runs by PR number",
@@ -1536,8 +1811,8 @@ def main() -> int:
         "check-aarch64 must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
-            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
         ),
     )
     assert_error(
@@ -1576,7 +1851,7 @@ def main() -> int:
         "clippy must use isolated managed target cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n",
+            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n",
             "",
         ),
     )
@@ -1737,8 +2012,8 @@ def main() -> int:
         "test-archive cache must not use restore-keys",
         replace_once(
             BASE_WORKFLOW,
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}\n      - name: Install cargo-nextest",
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
         ),
     )
     # #400: every managed-target cache must declare a restore-keys prefix fallback.
@@ -1746,32 +2021,32 @@ def main() -> int:
         "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - run: just clippy",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: just clippy",
         ),
     )
     assert_error(
         "check-aarch64 managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-\n      - if: needs.detector.outputs.build_required != 'true'",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - if: needs.detector.outputs.build_required != 'true'",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-\n      - if: needs.detector.outputs.build_required != 'true'",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - if: needs.detector.outputs.build_required != 'true'",
         ),
     )
     assert_error(
         "source-fence managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: just source-fence",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - run: just source-fence",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: just source-fence",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: just source-fence",
         ),
     )
     assert_error(
         "build managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-\n      - name: Install zig",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - name: Install zig",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-\n      - name: Install zig",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - name: Install zig",
         ),
     )
     # #400 parser tightness: the inline-scalar form of restore-keys is a valid
@@ -1836,8 +2111,8 @@ def main() -> int:
     assert_clean(
         workflow=replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
-            "      - uses: actions/cache@example\n        name: \"Cache with restore-keys: probe\"\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "      - uses: actions/cache@example\n        name: \"Cache with restore-keys: probe\"\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
         ),
     )
     assert_error(
@@ -2911,8 +3186,8 @@ def main() -> int:
         "clippy must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
-            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
         ),
     )
     assert_error(

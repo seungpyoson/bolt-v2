@@ -214,6 +214,9 @@ ci-lint-workflow:
     if ! python3 scripts/test_rust_verification_decoupling.py; then
         failed=1
     fi
+    if ! python3 scripts/test_rust_verification_cache_retention.py; then
+        failed=1
+    fi
     if ! python3 scripts/verify_ci_path_filters.py; then
         failed=1
     fi

@@ -34,11 +34,45 @@ SCRUB_ENV_KEYS = (
     "BOLT_RUST_VERIFICATION_ROOT",
     "CARGO_BUILD_TARGET",
     "CARGO_BUILD_TARGET_DIR",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "CARGO_HOME",
+    "CARGO_INCREMENTAL",
+    "CARGO_INSTALL_ROOT",
     "CARGO_TARGET_DIR",
+    "CARGO_TARGET_TMPDIR",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "RUSTC_WRAPPER",
+    "RUSTFLAGS",
+    "RUSTUP_HOME",
     "RUST_VERIFICATION_PRESERVE_ROUTING_ENV",
     "RUST_VERIFICATION_REAL_CARGO",
     "RUST_VERIFICATION_ROOT_BASE",
 )
+OPAQUE_RUST_LAUNCHERS = {
+    "bash",
+    "chrt",
+    "command",
+    "dash",
+    "docker",
+    "env",
+    "exec",
+    "fish",
+    "ionice",
+    "make",
+    "nohup",
+    "npm",
+    "python",
+    "python2",
+    "python3",
+    "rustup",
+    "setsid",
+    "sh",
+    "taskset",
+    "time",
+    "timeout",
+    "xargs",
+    "zsh",
+}
 
 
 class PolicyError(RuntimeError):
@@ -610,7 +644,7 @@ def rustup_run_tokens(tokens: list[str]) -> list[str]:
     if index >= len(tokens):
         return []
     index += 1
-    if index < len(tokens) and tokens[index] == "--":
+    while index < len(tokens) and tokens[index] == "--":
         index += 1
     return tokens[index:]
 
@@ -648,6 +682,46 @@ def command_process_names(command: str) -> set[str]:
     return process_names_from_tokens(tokens)
 
 
+def executable_is_rust_tool(executable: str) -> bool:
+    return (
+        executable in {"cargo", "clippy", "nextest", "rustc", "rustdoc", "rustup"}
+        or executable.startswith(("cargo-", "clippy-", "rust-"))
+    )
+
+
+def command_may_launch_rust(command: str) -> bool:
+    tokens = command_tokens(command)
+    if not tokens:
+        return False
+    executable = basename_token(tokens[0])
+    if executable_is_rust_tool(executable):
+        return True
+    names = process_names_from_tokens(tokens)
+    if any(executable_is_rust_tool(name) or name == "nextest" for name in names):
+        return True
+    cargo_specific_tokens = {"--manifest-path", "--workspace", "--all-targets", "--all-features"}
+    if any(token in cargo_specific_tokens for token in tokens):
+        if any(token in CARGO_PROCESS_SUBCOMMANDS for token in tokens):
+            return True
+    rustc_specific_tokens = {"--crate-name", "--emit", "--out-dir"}
+    if any(token in rustc_specific_tokens or token.startswith("--emit=") or token.startswith("--out-dir=") for token in tokens):
+        return True
+    if executable not in OPAQUE_RUST_LAUNCHERS:
+        return False
+    return any(
+        re.search(r"(^|[^A-Za-z0-9_-])(?:cargo|rustc|rustdoc|rustup|clippy|nextest)(?:[^A-Za-z0-9_-]|$)", token)
+        for token in tokens
+    )
+
+
+def command_may_launch_build(command: str) -> bool:
+    tokens = command_tokens(command)
+    if not tokens:
+        return False
+    executable = basename_token(tokens[0])
+    return executable in OPAQUE_RUST_LAUNCHERS and "build" in command.lower()
+
+
 def matching_process_pattern(command: str, patterns: list[str]) -> str | None:
     names = command_process_names(command)
     return next((pattern for pattern in patterns if basename_token(pattern) in names), None)
@@ -677,15 +751,42 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
         pid_text, _, command = stripped.partition(" ")
         if not pid_text.isdigit() or int(pid_text) == current_pid:
             continue
-        matched_pattern = matching_process_pattern(command, patterns)
-        if matched_pattern is None:
-            continue
         pid = int(pid_text)
-        cwd = process_cwd(pid)
         command_matches_scope = any(scope_text in command for scope_text in scope_texts)
+        matched_pattern = matching_process_pattern(command, patterns)
+        may_launch_rust = matched_pattern is None and command_may_launch_rust(command)
+        may_launch_build = matched_pattern is None and not may_launch_rust and command_may_launch_build(command)
+        if matched_pattern is None and not may_launch_rust and not may_launch_build and not command_matches_scope:
+            continue
+        if command_matches_scope:
+            if matched_pattern is None:
+                if may_launch_rust:
+                    matched_pattern = "unclassified Rust launch command"
+                elif may_launch_build:
+                    matched_pattern = "unclassified build launch command"
+                else:
+                    continue
+            entry = {
+                "command": command,
+                "pid": pid,
+                "reason": f"matched {matched_pattern} and referenced repo or target",
+            }
+            related.append(entry)
+            continue
+        cwd = process_cwd(pid)
         cwd_matches_scope = cwd is not None and (
             path_is_or_inside(cwd, repo_scope) or path_is_or_inside(cwd, target_scope)
         )
+        if matched_pattern is None:
+            if cwd_matches_scope and may_launch_rust:
+                matched_pattern = "unclassified Rust launch command"
+            elif cwd_matches_scope and may_launch_build:
+                matched_pattern = "unclassified build launch command"
+            elif may_launch_rust and cwd is None:
+                unscoped_match = True
+                continue
+            else:
+                continue
         if not command_matches_scope and not cwd_matches_scope:
             if cwd is not None:
                 continue
@@ -811,6 +912,143 @@ def refusal_payload(*, code: str, reason: str, dry_run: bool, target: str | None
     }
 
 
+def disk_preflight_refusal_payload(repo: pathlib.Path, policy: dict[str, Any]) -> dict[str, Any] | None:
+    status = cache_status_payload(repo)
+    if not status.get("pressure"):
+        return None
+    target = str(status["target_dir"])
+    return {
+        "candidates": [],
+        "dry_run": False,
+        "filesystem": status["filesystem"],
+        "legacy_target_dir": str(repo / "target"),
+        "managed_target_dir": target,
+        "pressure_reasons": status["pressure_reasons"],
+        "reclaimable_bytes": 0,
+        "refusal_code": "disk_pressure",
+        "refusal_reason": "managed Rust command refused before execution because free disk/cache pressure failed preflight",
+        "refused": True,
+        "target_dir": target,
+        "thresholds": status["thresholds"],
+    }
+
+
+def print_refusal(payload: dict[str, Any]) -> int:
+    print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+    return 2
+
+
+CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {
+    "--config",
+    "--color",
+    "--jobs",
+    "--target-dir",
+    "-C",
+    "-Z",
+}
+CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {
+    "--help",
+    "--list",
+    "--frozen",
+    "--locked",
+    "--offline",
+    "--quiet",
+    "--verbose",
+    "--version",
+    "-q",
+    "-v",
+    "-V",
+}
+CARGO_DISK_PREFLIGHT_SUBCOMMANDS = frozenset(
+    {"bench", "build", "check", "clippy", "doc", "fetch", "install", "nextest", "run", "rustc", "test"}
+)
+CARGO_PROCESS_SUBCOMMANDS = CARGO_DISK_PREFLIGHT_SUBCOMMANDS | {"clean", "fmt"}
+
+
+def cargo_subcommand_with_index(cargo_args: list[str]) -> tuple[int, str] | None:
+    index = 0
+    while index < len(cargo_args):
+        token = cargo_args[index]
+        if token.startswith("+"):
+            index += 1
+            continue
+        if token == "--":
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return index, token
+    return None
+
+
+def cargo_subcommand(cargo_args: list[str]) -> str | None:
+    subcommand = cargo_subcommand_with_index(cargo_args)
+    if subcommand is None:
+        return None
+    return subcommand[1]
+
+
+def cargo_args_need_disk_preflight(cargo_args: list[str]) -> bool:
+    return cargo_subcommand(cargo_args) in CARGO_DISK_PREFLIGHT_SUBCOMMANDS
+
+
+def cargo_args_for_target_routing_scan(cargo_args: list[str]) -> list[str]:
+    subcommand = cargo_subcommand_with_index(cargo_args)
+    if subcommand is None:
+        return cargo_args
+    subcommand_index, subcommand_name = subcommand
+    if subcommand_name not in {"bench", "run", "test"}:
+        return cargo_args
+    for index, token in enumerate(cargo_args):
+        if index > subcommand_index and token == "--":
+            return cargo_args[:index]
+    return cargo_args
+
+
+def cargo_target_routing_override(cargo_args: list[str]) -> str | None:
+    value_options = {"--artifact-dir", "--out-dir", "--root", "--target-dir"}
+    scan_args = cargo_args_for_target_routing_scan(cargo_args)
+    for index, token in enumerate(scan_args):
+        if token in value_options:
+            return token
+        for option in value_options:
+            if token.startswith(f"{option}="):
+                return option
+        if token == "--config" and index + 1 < len(scan_args) and "build.target-dir" in scan_args[index + 1]:
+            return "--config build.target-dir"
+        if token.startswith("--config=") and "build.target-dir" in token:
+            return "--config=build.target-dir"
+        if token == "-C" and index + 1 < len(scan_args) and "build.target-dir" in scan_args[index + 1]:
+            return "-C build.target-dir"
+        if token.startswith("-C") and "build.target-dir" in token:
+            return "-Cbuild.target-dir"
+    return None
+
+
+def target_routing_refusal_payload(repo: pathlib.Path, policy: dict[str, Any], option: str) -> dict[str, Any]:
+    target = str(target_dir(repo, policy))
+    return {
+        "candidates": [],
+        "dry_run": False,
+        "managed_target_dir": target,
+        "reclaimable_bytes": 0,
+        "refusal_code": "target_routing_override",
+        "refusal_reason": f"managed Cargo refused target/output routing override: {option}",
+        "refused": True,
+        "target_dir": target,
+    }
+
+
 def command_args(args: list[str]) -> list[str]:
     if args and args[0] == "--":
         return args[1:]
@@ -894,8 +1132,26 @@ def cmd_cargo(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     cargo = os.environ.get("RUST_VERIFICATION_REAL_CARGO", "cargo")
+    cargo_args = command_args(args.args)
+    override = cargo_target_routing_override(cargo_args)
+    if override is not None:
+        return print_refusal(target_routing_refusal_payload(repo, policy, override))
+    if cargo_subcommand(cargo_args) == "clean":
+        target = target_dir(repo, policy)
+        refusal = active_process_refusal_payload(repo, target, policy)
+        if refusal is not None:
+            return print_refusal(refusal)
+        with cache_lock(policy, exclusive=True):
+            refusal = active_process_refusal_payload(repo, target, policy)
+            if refusal is not None:
+                return print_refusal(refusal)
+            return run_process([cargo, *cargo_args], repo=repo, env=managed_env(repo, policy))
+    if cargo_args_need_disk_preflight(cargo_args):
+        refusal = disk_preflight_refusal_payload(repo, policy)
+        if refusal is not None:
+            return print_refusal(refusal)
     with cache_lock(policy, exclusive=False):
-        return run_process([cargo, *command_args(args.args)], repo=repo, env=managed_env(repo, policy))
+        return run_process([cargo, *cargo_args], repo=repo, env=managed_env(repo, policy))
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -911,6 +1167,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
     justfile = repo / "justfile"
     argv = ["just", "-f", str(justfile), "--working-directory", str(repo), "--", command["recipe"], *args.args]
+    override = cargo_target_routing_override(args.args)
+    if override is not None:
+        return print_refusal(target_routing_refusal_payload(repo, policy, override))
+    if args.command in {"build", "clippy", "test"}:
+        refusal = disk_preflight_refusal_payload(repo, policy)
+        if refusal is not None:
+            return print_refusal(refusal)
     with cache_lock(policy, exclusive=False):
         return run_process(argv, repo=repo, env=managed_env(repo, policy))
 

@@ -18,6 +18,12 @@ DEFAULT_WORKFLOWS = (
 )
 DEFAULT_SETUP_ACTION = REPO_ROOT / ".github" / "actions" / "setup-environment" / "action.yml"
 DEFAULT_NEXTEST_CONFIG = REPO_ROOT / ".config" / "nextest.toml"
+DEFAULT_NO_MISTAKES_CONFIG = REPO_ROOT / ".no-mistakes.yaml"
+DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / "justfile",)
+DEFAULT_REPO_AUTOMATION_GLOBS = (
+    (REPO_ROOT / "scripts", "*.sh"),
+    (REPO_ROOT / "tests", "*.sh"),
+)
 
 REQUIRED_JOBS = (
     "detector",
@@ -226,6 +232,11 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'examples/**'",
     "'crates/**'",
     "'specs/**/*.md'",
+)
+EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
+    "'.github/workflows/ci.yml'",
+    "'.github/actions/setup-environment/action.yml'",
+    "'.no-mistakes.yaml'",
 )
 TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst"
 TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
@@ -1004,6 +1015,28 @@ def cargo_token_is_command(tokens: list[str], index: int) -> bool:
     return command_prefix_allows_cargo(prefix)
 
 
+def command_tokens(command: str) -> list[str]:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|(){}!")
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return command.split()
+
+
+def shell_command(tokens: list[str]) -> str | None:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if index + 1 < len(tokens):
+            if token == "-c":
+                return tokens[index + 1]
+            if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+                return tokens[index + 1]
+        index += 1
+    return None
+
+
 def source_build_tool_from_token(token: str) -> str | None:
     token = token.rstrip("/")
     for tool in CI_SOURCE_BUILD_TOOLS:
@@ -1059,6 +1092,230 @@ def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
                 continue
             tools.update(cargo_install_source_build_tools(tokens, command_index))
     return tools
+
+
+def managed_rust_verification_tokens(tokens: list[str]) -> bool:
+    return (
+        len(tokens) >= 3
+        and pathlib.Path(tokens[0]).name.startswith("python")
+        and pathlib.Path(tokens[1]).name == "rust_verification.py"
+        and tokens[2] in {"cargo", "run"}
+    )
+
+
+def tokens_have_target_routing_override(tokens: list[str]) -> bool:
+    env_prefixes = (
+        "CARGO_BUILD_TARGET_DIR=",
+        "CARGO_ENCODED_RUSTFLAGS=",
+        "CARGO_HOME=",
+        "CARGO_INCREMENTAL=",
+        "CARGO_INSTALL_ROOT=",
+        "CARGO_TARGET_DIR=",
+        "CARGO_TARGET_TMPDIR=",
+        "RUSTFLAGS=",
+        "RUSTUP_HOME=",
+    )
+    value_options = {"--artifact-dir", "--out-dir", "--root", "--target-dir"}
+    for index, token in enumerate(tokens):
+        if token.startswith(env_prefixes):
+            return True
+        if token in value_options:
+            return True
+        if any(token.startswith(f"{option}=") for option in value_options):
+            return True
+        if token == "--config" and index + 1 < len(tokens) and "build.target-dir" in tokens[index + 1]:
+            return True
+        if token.startswith("--config=") and "build.target-dir" in token:
+            return True
+        if token == "-C" and index + 1 < len(tokens) and "build.target-dir" in tokens[index + 1]:
+            return True
+        if token.startswith("-C") and "build.target-dir" in token:
+            return True
+    return False
+
+
+def rustup_run_inner_tokens(tokens: list[str]) -> list[str]:
+    index = 2
+    while index < len(tokens) and tokens[index].startswith("-"):
+        index += 1
+    if index >= len(tokens):
+        return []
+    index += 1
+    while index < len(tokens) and tokens[index] == "--":
+        index += 1
+    return tokens[index:]
+
+
+def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
+    starters = {"bash", "cargo", "cargo-clippy", "cargo-fmt", "cargo-nextest", "python", "python3", "rustup", "sh", "zsh"}
+    for index, token in enumerate(tokens[1:], start=1):
+        if pathlib.Path(token).name in starters:
+            return tokens[index:]
+    return None
+
+
+def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
+    if not tokens:
+        return False
+    if depth > 6:
+        return True
+    if tokens_have_target_routing_override(tokens):
+        return True
+    if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
+        segment: list[str] = []
+        for token in tokens:
+            if token in SHELL_COMMAND_BOUNDARIES:
+                if segment and tokens_have_raw_cargo(segment, depth=depth + 1):
+                    return True
+                segment = []
+                continue
+            segment.append(token)
+        return bool(segment) and tokens_have_raw_cargo(segment, depth=depth + 1)
+    if managed_rust_verification_tokens(tokens):
+        return tokens_have_target_routing_override(tokens[3:])
+    executable = pathlib.Path(tokens[0]).name
+    if executable in ("bash", "dash", "fish", "sh", "zsh"):
+        nested = shell_command(tokens)
+        return nested is not None and tokens_have_raw_cargo(command_tokens(nested), depth=depth + 1)
+    if executable == "rustup" and len(tokens) >= 3 and tokens[1] == "run":
+        return tokens_have_raw_cargo(rustup_run_inner_tokens(tokens), depth=depth + 1)
+    if executable.startswith("python"):
+        for index, token in enumerate(tokens):
+            if token == "-c" and index + 1 < len(tokens) and "cargo" in tokens[index + 1]:
+                return True
+    if executable in {"chrt", "command", "exec", "ionice", "nohup", "setsid", "taskset", "timeout", "xargs"}:
+        inner = wrapper_inner_tokens(tokens)
+        if inner is not None:
+            return tokens_have_raw_cargo(inner, depth=depth + 1)
+    for index, token in enumerate(tokens):
+        name = pathlib.Path(token).name
+        if name == "cargo" and cargo_token_is_command(tokens, index):
+            return True
+        if name.startswith("cargo-") and command_prefix_allows_cargo(tokens[:index]):
+            return True
+    return False
+
+
+def command_has_raw_cargo(command: str) -> bool:
+    return tokens_have_raw_cargo(command_tokens(command))
+
+
+def no_mistakes_commands(config_text: str) -> dict[str, str]:
+    commands: dict[str, str] = {}
+    in_commands = False
+    current_name: str | None = None
+    current_indent = 0
+    current_lines: list[str] = []
+    for raw_line in config_text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent == 0:
+            if current_name is not None:
+                commands[current_name] = "\n".join(part.strip() for part in current_lines).strip()
+                current_name = None
+                current_lines = []
+            name, separator, value = stripped.partition(":")
+            in_commands = bool(separator) and name.strip() == "commands" and (
+                not value.strip() or value.strip().startswith("#")
+            )
+            continue
+        if not in_commands:
+            continue
+        if indent <= 2 and ":" in stripped:
+            if current_name is not None:
+                commands[current_name] = "\n".join(part.strip() for part in current_lines).strip()
+                current_name = None
+                current_lines = []
+            name, _, value = stripped.partition(":")
+            value = value.strip()
+            if value in ("|", ">") or value.startswith(("|", ">")):
+                current_name = name.strip()
+                current_indent = indent
+                continue
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            commands[name.strip()] = value
+            continue
+        if current_name is not None and indent > current_indent:
+            current_lines.append(stripped)
+    if current_name is not None:
+        commands[current_name] = "\n".join(part.strip() for part in current_lines).strip()
+    return commands
+
+
+def no_mistakes_command_section_errors(config_text: str, config_name: str) -> list[str]:
+    errors: list[str] = []
+    for raw_line in config_text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent != 0:
+            continue
+        name, separator, value = stripped.partition(":")
+        if not separator or name.strip() != "commands":
+            continue
+        value = value.strip()
+        if value and not value.startswith("#"):
+            errors.append(f"{config_name} commands section must use block mapping")
+    return errors
+
+
+def verify_no_mistakes_config(config_text: str, config_name: str = ".no-mistakes.yaml") -> list[str]:
+    errors: list[str] = no_mistakes_command_section_errors(config_text, config_name)
+    for command_name, command in no_mistakes_commands(config_text).items():
+        command_segments = [command, *command.splitlines()]
+        if any(command_has_raw_cargo(segment) for segment in command_segments if segment.strip()):
+            errors.append(f"{config_name} commands.{command_name} raw Cargo drift must be classified")
+    return errors
+
+
+def exact_head_governance_cache_errors(workflow_text: str) -> list[str]:
+    for line in workflow_text.splitlines():
+        clean = strip_comment(line)
+        if "hashFiles(" not in clean:
+            continue
+        if "managed-target-v1-" not in clean and "nextest-archive-v1-" not in clean:
+            continue
+        if any(cache_input not in clean for cache_input in EXACT_HEAD_GOVERNANCE_CACHE_INPUTS):
+            return ["cache keys must include exact-head CI/no-mistakes governance inputs"]
+    return []
+
+
+def raw_rust_storage_errors(workflow_text: str) -> list[str]:
+    text = re.sub(r"\\\s*\n\s*", " ", uncommented_text(workflow_text.splitlines()))
+    checks: tuple[tuple[str, str], ...] = (
+        (r"(^|[^A-Za-z0-9_])[\"']?CARGO_TARGET_DIR[\"']?\s*(?:=|:)", "CARGO_TARGET_DIR raw target override must be classified"),
+        (r"(^|[^A-Za-z0-9_])[\"']?CARGO_BUILD_TARGET_DIR[\"']?\s*(?:=|:)", "CARGO_BUILD_TARGET_DIR raw target override must be classified"),
+        (r"(?:target-dir|build\.target-dir)[^\n]*>\s*\.cargo/config\.toml|\.cargo/config\.toml[^\n]*(?:target-dir|build\.target-dir)", ".cargo/config.toml build.target-dir raw target override must be classified"),
+        (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[\"']?build\.target-dir", "cargo --config build.target-dir raw target override must be classified"),
+        (r"\bcargo\b[^\n;&|]*\s-C\s*[\"']?build\.target-dir", "cargo --config build.target-dir raw target override must be classified"),
+        (r"\bcargo\b[^\n;&|]*\s--target-dir\b", "cargo --target-dir raw target override must be classified"),
+        (r"(^|[^A-Za-z0-9_])[\"']?CARGO_TARGET_TMPDIR[\"']?\s*(?:=|:)", "CARGO_TARGET_TMPDIR raw target override must be classified"),
+        (r"(^|[^A-Za-z0-9_])[\"']?CARGO_INCREMENTAL[\"']?\s*(?:=|:)", "CARGO_INCREMENTAL raw cache override must be classified"),
+        (r"(^|[^A-Za-z0-9_])[\"']?CARGO_ENCODED_RUSTFLAGS[\"']?\s*(?:=|:).*(?:--out-dir|--artifact-dir)", "CARGO_ENCODED_RUSTFLAGS raw output override must be classified"),
+        (r"(^|[^A-Za-z0-9_])[\"']?CARGO_INSTALL_ROOT[\"']?\s*(?:=|:)", "CARGO_INSTALL_ROOT install output override must be classified"),
+        (r"(^|[^A-Za-z0-9_])[\"']?CARGO_HOME[\"']?\s*(?:=|:)", "CARGO_HOME raw cache override must be classified"),
+        (r"(^|[^A-Za-z0-9_])[\"']?RUSTUP_HOME[\"']?\s*(?:=|:)", "RUSTUP_HOME raw toolchain override must be classified"),
+        (r"(^|[^A-Za-z0-9_])[\"']?RUSTFLAGS[\"']?\s*(?:=|:).*--out-dir", "RUSTFLAGS raw output override must be classified"),
+        (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WRAPPER raw compiler wrapper must be classified"),
+        (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WORKSPACE_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified"),
+        (r"\bcargo\b[^\n;&|]*\brustc\b[^\n;&|]*\s--out-dir\b", "cargo rustc --out-dir raw output override must be classified"),
+        (r"\bcargo\b[^\n;&|]*\brustc\b[^\n;&|]*\s--artifact-dir\b", "cargo rustc --artifact-dir raw output override must be classified"),
+        (r"\bcargo\b[^\n;&|]*\binstall\b[^\n;&|]*\s--target-dir\b[^\n;&|]*\s--root\b", "cargo install build target and install root ownership must be classified separately"),
+        (r"\bno-mistakes\b[^\n]*\bcargo\b", "no-mistakes raw Cargo drift must be classified"),
+        (r"\bno-mistakes\b[^\n]*--worktree[^\n]*(?:--target-dir\s+target|\btarget\b)", "no-mistakes worktree-local target path evidence must be reported"),
+        (r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])(?:\.?/)?target(?:[\s/\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$CARGO_TARGET_DIR[\"']?|\$\{CARGO_TARGET_DIR[^}]*\})(?:/(?:\./)?[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$GITHUB_WORKSPACE[\"']?|\$\{GITHUB_WORKSPACE[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$PWD[\"']?|\$\{PWD[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])\$\{\{\s*(?:github\.workspace|env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}(?:/(?:\./)?(?:target(?:/[^\s\"']*)?|[^\s\"']*))?(?:[\s\"']|$))", "S3 active mutable target cache must be rejected"),
+    )
+    errors: list[str] = []
+    for pattern, message in checks:
+        if re.search(pattern, text):
+            errors.append(message)
+    return errors
 
 
 def consume_cargo_global_options(tokens: list[str], index: int) -> int:
@@ -1390,6 +1647,8 @@ def extract_action_output_block(action_text: str, output_name: str) -> list[str]
 def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
     jobs = parse_jobs(workflow_text)
+    errors.extend(raw_rust_storage_errors(workflow_text))
+    errors.extend(exact_head_governance_cache_errors(workflow_text))
 
     actual_pr_paths_ignore = extract_paths_ignore_for_trigger(workflow_text, "pull_request")
     if actual_pr_paths_ignore is None or tuple(sorted(actual_pr_paths_ignore)) != CI_PR_PATHS_IGNORE_BASELINE:
@@ -1792,14 +2051,24 @@ def verify_text(workflow_text: str, action_text: str, nextest_config_text: str) 
     return verify_workflows({"ci.yml": workflow_text}, action_text, nextest_config_text)
 
 
+def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
+    errors: list[str] = []
+    for file_name, text in texts.items():
+        errors.extend(f"{file_name}: {error}" for error in raw_rust_storage_errors(text))
+    return errors
+
+
 def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config_text: str) -> list[str]:
     errors: list[str] = []
     for workflow_name, workflow_text in workflows.items():
         if workflow_name == "ci.yml" or workflow_name.endswith("/ci.yml"):
             errors.extend(verify_workflow(workflow_text))
+        else:
+            errors.extend(raw_rust_storage_errors(workflow_text))
         errors.extend(verify_managed_workflow(workflow_text, workflow_name))
         errors.extend(verify_build_artifacts(workflow_text, workflow_name))
         errors.extend(verify_prebuilt_tool_installs(workflow_text, workflow_name))
+    errors.extend(raw_rust_storage_errors(action_text))
     errors.extend(verify_setup_action(action_text))
     errors.extend(verify_nextest_config(nextest_config_text))
     errors.extend(verify_install_action_pin_consistency(workflows))
@@ -1852,7 +2121,20 @@ def main() -> int:
     workflow_texts = {workflow.relative_to(REPO_ROOT).as_posix(): workflow.read_text() for workflow in DEFAULT_WORKFLOWS if workflow.exists()}
     action_text = DEFAULT_SETUP_ACTION.read_text()
     nextest_config_text = DEFAULT_NEXTEST_CONFIG.read_text()
+    repo_automation_texts = {
+        path.relative_to(REPO_ROOT).as_posix(): path.read_text()
+        for path in DEFAULT_REPO_AUTOMATION_FILES
+        if path.exists()
+    }
+    for directory, pattern in DEFAULT_REPO_AUTOMATION_GLOBS:
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob(pattern)):
+            repo_automation_texts[path.relative_to(REPO_ROOT).as_posix()] = path.read_text()
     errors = verify_workflows(workflow_texts, action_text, nextest_config_text)
+    errors.extend(verify_repo_automation_texts(repo_automation_texts))
+    if DEFAULT_NO_MISTAKES_CONFIG.exists():
+        errors.extend(verify_no_mistakes_config(DEFAULT_NO_MISTAKES_CONFIG.read_text()))
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

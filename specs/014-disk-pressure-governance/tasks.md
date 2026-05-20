@@ -58,6 +58,7 @@ Explicit #374 residuals from #286 / PR #404 review:
 - `rustup run stable -- -- cargo build`
 - depth-cap observability for deeply wrapped process detection
 - wrapper inventory for `timeout`, `xargs`, `setsid`, `taskset`, `ionice`, `chrt`, `make`, `python -c` / `os.system(...)`, and symlink-renamed `cargo` or `rustc`
+- destructive managed cargo subcommands, especially `cargo clean`, and required exclusive cache-clean/cache-reset behavior
 
 ---
 

@@ -24,6 +24,7 @@
 - `rustup run stable -- -- cargo build`
 - depth-cap observability for deeply wrapped process detection
 - wrapper inventory for `timeout`, `xargs`, `setsid`, `taskset`, `ionice`, `chrt`, `make`, `python -c` / `os.system(...)`, and symlink-renamed `cargo` or `rustc`
+- destructive managed cargo subcommands, especially `cargo clean`, because generic managed cargo passthrough currently shares the managed target root with ordinary build/test commands
 
 **Alternatives considered**:
 - Re-open #286 for wrapper inventory: rejected because #286 owns managed-cache retention, while #374 owns cargo invocation and wrapper hardening.

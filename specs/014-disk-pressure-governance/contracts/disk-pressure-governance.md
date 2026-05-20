@@ -43,6 +43,7 @@ Snapshot scope: operator `spson`, local machine, 2026-05-18.
 - `rustup run stable -- -- cargo build`
 - depth-cap observability for deeply wrapped process detection
 - broader wrapper inventory: `timeout`, `xargs`, `setsid`, `taskset`, `ionice`, `chrt`, `make`, `python -c` / `os.system(...)`, and symlink-renamed `cargo` or `rustc`
+- destructive managed cargo subcommands, especially `cargo clean`, which must not overlap with ordinary managed build/test/clippy/archive work on the shared target root
 
 ## Cleanup Safety Contract
 

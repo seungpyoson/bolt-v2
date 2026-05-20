@@ -935,6 +935,10 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
     assert_eq!(report.approval_id(), "operator-approved-canary-001");
     assert_eq!(report.max_live_order_count(), 1);
     assert_eq!(
+        report.readiness_report_max_age_seconds(),
+        TEST_READINESS_REPORT_MAX_AGE_SECONDS
+    );
+    assert_eq!(
         report.no_submit_readiness_report_path(),
         report_path.as_path(),
         "absolute report path should be preserved"

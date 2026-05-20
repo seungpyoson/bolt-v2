@@ -181,6 +181,7 @@ blockers, not as deferred approval to trade.
 - [x] T082 [US5] Address Greptile post-`49d8ea3a` comments: remove broad `.git` build-script rerun trigger, align live-canary approval-consumption test fixture timestamps, and reply/resolve or disprove remaining review threads.
 - [x] T083 [US5] Address Greptile post-`26c83db4` P1 comments: bind `approval_envelope_path` content via `approval_envelope_sha256`, bind client/venue order hashes into approval-consumption proof validation, and avoid re-aging approval consumption during late TOCTOU revalidation while still checking the approval window.
 - [x] T084 [US5] Address local code-quality review follow-up: add a call-site regression test proving late live-canary gate revalidation still rejects an expired operator approval window without re-aging approval-consumption freshness.
+- [x] T085 [US5] Address Greptile post-`5a88275b` comments: remove redundant required-stage condition, avoid stale no-submit readiness metadata fixtures, and surface `readiness_report_max_age_seconds` on `BoltV3LiveCanaryGateReport`.
 
 ## Out Of Scope For MVP
 

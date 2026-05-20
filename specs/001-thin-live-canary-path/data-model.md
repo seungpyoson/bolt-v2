@@ -78,6 +78,7 @@ Fields:
 - approval id
 - no-submit readiness report path
 - max no-submit readiness report bytes: byte cap used before reading and parsing the readiness report
+- readiness report max age seconds: freshness cap used to admit the readiness report
 - max live order count: the canary-local order-count budget from `[live_canary]`
 - max notional per order: the canary-local per-order cap from `[live_canary]`
 - root max notional per order: the root risk ceiling from `[risk]`
@@ -88,6 +89,7 @@ Rules:
 - not a substitute for submit-time counters
 - current source is `check_bolt_v3_live_canary_gate`; submit admission must not reparse `[live_canary]`
 - readiness report read is bounded by `max_no_submit_readiness_report_bytes` before JSON parse
+- readiness report freshness is bounded by `readiness_report_max_age_seconds`
 - canary-local notional must be less than or equal to the root risk ceiling
 - prose field names map one-to-one to the existing `BoltV3LiveCanaryGateReport` values exposed by read-only accessors
 - `max notional per order` is the canary-specific cap; `root max notional per order` is the global `[risk]` cap that bounds every canary cap

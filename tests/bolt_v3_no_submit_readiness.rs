@@ -727,8 +727,15 @@ fn test_report_metadata() -> BoltV3NoSubmitReadinessReportMetadata {
         approval_id_hash: sha256_hex("operator-approved-canary-001"),
         executable_identity: "test-executable-identity".to_string(),
         config_bundle_checksum: "test-config-bundle-checksum".to_string(),
-        generated_at_unix_seconds: 1_000,
+        generated_at_unix_seconds: current_unix_seconds_for_test(),
     }
+}
+
+fn current_unix_seconds_for_test() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("test clock should be after UNIX epoch")
+        .as_secs()
 }
 
 fn sha256_hex(value: &str) -> String {

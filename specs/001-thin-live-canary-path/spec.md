@@ -123,7 +123,7 @@ As the operator, I can approve one tiny live order with configured caps and get 
 - **ProviderBinding**: Provider-owned validation, secret resolution, adapter mapping, credential log filters, and supported market-family declaration.
 - **MarketFamilyBinding**: Market-family-owned validation, instrument trait requirements, and supported-provider compatibility declaration.
 - **StrategyBinding**: Strategy-owned validation, build, decision policy, reference-role declaration, and evidence requirement.
-- **BoltV3LiveCanaryGateReport**: Validated operator approval, readiness report path, readiness report byte cap, order count cap, notional cap, and root cap.
+- **BoltV3LiveCanaryGateReport**: Validated operator approval, readiness report path, readiness report byte cap, readiness report freshness cap, order count cap, notional cap, and root cap.
 - **SubmitAdmissionState**: Runtime counter and cap state consumed before each live submit.
 - **NoSubmitReadinessReport**: Redacted real-connectivity report consumed by the live canary gate.
 - **CanaryRunEvidence**: Redacted artifact proving config checksum, operator approval, strategy-input/source-bound market selection, financial envelope, pre-run state, abort plan, strategy-instance hash binding, NT submit, venue result, cancel if needed, restart reconciliation, and post-run hygiene.

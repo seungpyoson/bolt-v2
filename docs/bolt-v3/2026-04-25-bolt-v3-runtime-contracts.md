@@ -1417,7 +1417,7 @@ The gate also bounds `approval_envelope_path`, sha256-bound pre-run artifact rea
 
 The gate is read-only. It does not connect clients, subscribe to data, register strategies, select markets, construct orders, submit orders, cancel orders, or mutate NT state. The built `LiveNode` may already exist when the gate runs, but a gate rejection must occur before `LiveNode::run`.
 
-The gate validates canary bounds before the runner starts; it does not itself count orders or enforce per-order notional at submit time. Submit-admission code must independently consume the validated `BoltV3LiveCanaryGateReport` bounds before any live canary order is allowed.
+The gate validates canary bounds before the runner starts; it does not itself count orders or enforce per-order notional at submit time. Submit-admission code must independently consume the validated `BoltV3LiveCanaryGateReport` bounds before any live canary order is allowed. The report carries the TOML-owned no-submit readiness report byte and freshness caps so downstream evidence can reference the exact admitted bounds without reparsing `[live_canary]`.
 
 ## 12. Panic Gate: Issue `#239`
 

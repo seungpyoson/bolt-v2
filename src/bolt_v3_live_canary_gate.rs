@@ -44,6 +44,7 @@ pub struct BoltV3LiveCanaryGateReport {
     approval_id: String,
     no_submit_readiness_report_path: PathBuf,
     max_no_submit_readiness_report_bytes: u64,
+    readiness_report_max_age_seconds: u64,
     max_live_order_count: u32,
     max_notional_per_order: Decimal,
     root_max_notional_per_order: Decimal,
@@ -60,6 +61,10 @@ impl BoltV3LiveCanaryGateReport {
 
     pub fn max_no_submit_readiness_report_bytes(&self) -> u64 {
         self.max_no_submit_readiness_report_bytes
+    }
+
+    pub fn readiness_report_max_age_seconds(&self) -> u64 {
+        self.readiness_report_max_age_seconds
     }
 
     pub fn max_live_order_count(&self) -> u32 {
@@ -80,6 +85,7 @@ impl BoltV3LiveCanaryGateReport {
             approval_id: "operator-approved-canary-001".to_string(),
             no_submit_readiness_report_path: PathBuf::from("no-submit-readiness.json"),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: 60,
             max_live_order_count,
             max_notional_per_order,
             root_max_notional_per_order: max_notional_per_order,
@@ -581,6 +587,7 @@ async fn check_bolt_v3_live_canary_gate_with_clock(
         approval_id: approval_id.to_string(),
         no_submit_readiness_report_path: report_path,
         max_no_submit_readiness_report_bytes: block.max_no_submit_readiness_report_bytes,
+        readiness_report_max_age_seconds: block.readiness_report_max_age_seconds,
         max_live_order_count: block.max_live_order_count,
         max_notional_per_order,
         root_max_notional_per_order,
@@ -1294,12 +1301,8 @@ fn validate_no_submit_readiness_report(
                     }
                 }
                 for required_stage in REQUIRED_NO_SUBMIT_READINESS_STAGES {
-                    if !present_stage_names.contains(*required_stage)
-                        && !satisfied_stage_names.contains(*required_stage)
-                    {
-                        reasons.push(format!(
-                            "required stage `{required_stage}` is missing or unsatisfied"
-                        ));
+                    if !present_stage_names.contains(*required_stage) {
+                        reasons.push(format!("required stage `{required_stage}` is missing"));
                     }
                 }
             }

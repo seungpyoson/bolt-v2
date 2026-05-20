@@ -24,7 +24,7 @@ Authoritative issue: #374, live body verified 2026-05-20. Parent: #123. History 
 | Root checkout `target` reached 18 GiB on 2026-05-17 | #374 body | The same raw-Cargo target recurrence remained live after earlier fixes. |
 | `.no-mistakes.yaml` runs `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check` | `.no-mistakes.yaml` | no-mistakes is a live raw-Cargo producer until #374 changes it. |
 | no-mistakes daemon had no `CARGO_TARGET_DIR` in its environment and wrote under `USER_HOME_DIR/.no-mistakes/worktrees/.../target` | `research.md` | no-mistakes must be enumerated as a launcher and target class. |
-| `scripts/rust_verification.py cargo --repo ... -- clean` and managed `cargo test` ran concurrently against `/Users/spson/.cache/rust-verification/bolt-v2/target` | #374 body, 2026-05-20 | Destructive managed cargo subcommands must be separate from ordinary build/test commands. |
+| `scripts/rust_verification.py cargo --repo ... -- clean` and managed `cargo test` ran concurrently against `USER_HOME_DIR/.cache/rust-verification/bolt-v2/target` | #374 body, 2026-05-20 | Destructive managed cargo subcommands must be separate from ordinary build/test commands. |
 | `cmd_cargo` uses shared cache lock, while `cache_prune_payload` apply uses exclusive lock | `scripts/rust_verification.py` | Generic managed `cargo clean` can mutate the shared target without the cache-prune exclusive safety model. |
 | `cmd_cleanup` currently reports ok with no removals | `scripts/rust_verification.py` | Existing cleanup entrypoint does not enforce the #374 artifact lifecycle sweep. |
 | `env -iuLD_PRELOAD cargo build` parses to `{'env', '-iuLD_PRELOAD'}` on current main | local probe, 2026-05-20 | Current active-process parsing misses a listed wrapper residual. |
@@ -51,7 +51,7 @@ rustup run --install stable cargo build -> {'cargo', 'rustup'}
 
 | Launcher | Must enumerate | Current evidence / risk |
 |---|---|---|
-| zsh interactive and login shells | Whether `~/.zshenv` cargo wrapper or repo-local script path is active | Historic managed path worked only for zsh-launched cargo. |
+| zsh interactive and login shells | Whether `USER_HOME_DIR/.zshenv` cargo wrapper or repo-local script path is active | Historic managed path worked only for zsh-launched cargo. |
 | bash, sh, dash, fish, non-login shells | Whether wrapper is absent, PATH shim present, or `CARGO_TARGET_DIR` preserved | Gemini-shell bash created local `target/`; Codex/Claude/Aider bash shapes remain in #374 scope. |
 | shell aliases, shell functions, and builtins | alias/function `cargo`, `command cargo`, `exec cargo`, and builtin bypass forms | Must prove the selected route does not depend on one interactive-shell startup file. |
 | clean environment launchers | `env -i`, `env -u*`, `env -S`, scrubbed PATH, absent routing env | Current parser misses bundled `env` forms. |
@@ -68,7 +68,7 @@ rustup run --install stable cargo build -> {'cargo', 'rustup'}
 
 | State | Required classification |
 |---|---|
-| `CARGO_TARGET_DIR` set to managed target | Accept only if target resolves to `/Users/spson/.cache/rust-verification/bolt-v2/target` or reviewed namespace. |
+| `CARGO_TARGET_DIR` set to managed target | Accept only if target resolves to `USER_HOME_DIR/.cache/rust-verification/bolt-v2/target` or reviewed namespace. |
 | `CARGO_TARGET_DIR` unset | Unsafe for bolt-v2 Cargo unless another approved routing layer applies. |
 | `CARGO_TARGET_DIR` set to repo/worktree/tmp/no-mistakes path | Unmanaged target producer; #374 must block, route, or explicitly exclude. |
 | `CARGO_BUILD_TARGET_DIR` set | Must be classified as a target-dir override if supported by the pinned Cargo version. |
@@ -112,7 +112,7 @@ rustup run --install stable cargo build -> {'cargo', 'rustup'}
 
 | CWD | Target risk |
 |---|---|
-| canonical repo root | Raw Cargo creates `/Users/spson/Projects/Claude/bolt-v2/target`. |
+| canonical repo root | Raw Cargo creates `REPO_ROOT_PATH/target`. |
 | registered git worktree root | Raw Cargo creates `.worktrees/<name>/target` or temp worktree target. |
 | repo subdir | Cargo walks to repo root unless target overridden; must still route managed. |
 | no-mistakes worktree | Raw Cargo creates `USER_HOME_DIR/.no-mistakes/worktrees/.../target`. |
@@ -123,13 +123,13 @@ rustup run --install stable cargo build -> {'cargo', 'rustup'}
 
 | Destination | Owner / required action |
 |---|---|
-| `/Users/spson/.cache/rust-verification/bolt-v2/target` | managed cache, #286 retention plus #374 destructive-op safety. |
+| `USER_HOME_DIR/.cache/rust-verification/bolt-v2/target` | managed cache, #286 retention plus #374 destructive-op safety. |
 | repo-local `target/` | #374 unmanaged target class, must be prevented and lifecycle-swept. |
 | worktree-local `target/` | #374 unmanaged target class, must be prevented and lifecycle-swept. |
 | `/private/tmp/bolt-v2-*` target dirs | #374 lifecycle sweep when bolt-v2-owned review/build bundle. |
 | no-mistakes worktree `target/` | #374 no-mistakes raw Cargo drift. |
-| `~/.cargo/registry`, `~/.cargo/git` | #376 steady-state inventory, not #374 target routing. |
-| `~/.rustup/toolchains` | #375 toolchain hygiene, not #374 target routing. |
+| `USER_HOME_DIR/.cargo/registry`, `USER_HOME_DIR/.cargo/git` | #376 steady-state inventory, not #374 target routing. |
+| `USER_HOME_DIR/.rustup/toolchains` | #375 toolchain hygiene, not #374 target routing. |
 | S3 | not an active target cache; artifacts/evidence only. |
 
 ### 6. Cargo Target And Profile

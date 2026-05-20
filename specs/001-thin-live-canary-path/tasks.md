@@ -190,6 +190,8 @@ blockers, not as deferred approval to trade.
 - [x] T091 [US5] Add TDD regression coverage proving a missing operator evidence file fails closed as `OperatorEvidenceRead` before hashing.
 - [x] T092 [US5] Add TDD regression coverage proving Phase 8 sha256 helpers reject uppercase hex and align helper behavior with the production live-canary gate.
 - [ ] T093 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run external-review consensus for the T080/T090-T092 slice.
+- [x] T094 [US5] Address shared Kimi/DeepSeek external-review test gap by adding production live-canary gate regression coverage for 64-character uppercase operator-evidence hash rejection.
+- [ ] T095 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T094 coverage slice.
 
 ## Out Of Scope For MVP
 

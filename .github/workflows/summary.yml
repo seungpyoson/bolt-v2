@@ -141,7 +141,7 @@ except Exception:
             printf '%s\n\n' "$SUMMARY"
             printf -- '---\n*Summarized by: `%s`*' "$MODEL_INFO"
           } > "$body_file"
-          gh issue comment "$ISSUE_NUMBER" --body-file "$body_file" -R ${{ github.repository }}
+          gh issue comment "$ISSUE_NUMBER" --body-file "$body_file" -R ${{ github.repository }} -R ${{ github.repository }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}

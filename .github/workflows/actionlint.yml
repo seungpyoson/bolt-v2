@@ -1,8 +1,9 @@
 name: actionlint
 
 # Lints all GitHub Actions workflow files (schema + shellcheck on run: blocks)
-# on every PR and push to main, failing on findings. Guards against the class
-# of bug in #410, where an invalid workflow merged and silently never ran.
+# on every PR and push to main, failing the job on error-level findings.
+# Guards against the class of bug in #410, where an invalid workflow merged
+# and silently never ran.
 
 on:
   pull_request:
@@ -19,7 +20,6 @@ concurrency:
 
 permissions:
   contents: read
-  checks: write
 
 jobs:
   actionlint:
@@ -30,12 +30,17 @@ jobs:
       - uses: reviewdog/action-actionlint@6fb7acc99f4a1008869fa8a0f09cfca740837d9d # v1.72.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          reporter: github-check
-          # nofilter: report (and fail on) every finding in every workflow
-          # file, not just lines in the PR diff. reviewdog's default
-          # filter_mode is `added`, which evaluates fail_level *after*
-          # dropping findings outside changed lines — so a structural error
-          # anchored away from the edited line (the #410 class) could slip
-          # through. github-check fully supports nofilter.
+          # reporter=local prints findings to the job log; the job's exit code
+          # (governed by fail_level below) is the gate. We deliberately avoid
+          # the github-check / github-pr-check reporters: those post a check-run
+          # whose conclusion is `failure` on ANY annotated finding regardless of
+          # level, so an intentional info finding (e.g. SC2016) would red-flag
+          # the gate even though fail_level=error leaves the job green.
+          reporter: local
+          # nofilter: lint every finding in every workflow file, not just lines
+          # in the PR diff. reviewdog's default (file) and `added` would let a
+          # structural error anchored away from an edited line (the #410 class)
+          # slip past. fail_level then exits non-zero only on error-level
+          # findings, so info/warning notes are logged without failing the gate.
           filter_mode: nofilter
           fail_level: error

@@ -129,13 +129,16 @@ fn no_submit_readiness_runtime_stamps_report_after_controlled_stages() {
     let stage_index = runtime_fn
         .find("controlled_no_submit_readiness(runtime, loaded")
         .expect("runtime function should run controlled no-submit stages");
+    let timestamp_index = runtime_fn
+        .find("current_unix_seconds()?")
+        .expect("runtime function should stamp generated_at_unix_seconds");
     let report_index = runtime_fn
         .find("run_bolt_v3_no_submit_readiness_from_stage_results_at")
         .expect("runtime function should call post-stage timestamped report builder");
 
     assert!(
-        stage_index < report_index,
-        "generated_at_unix_seconds must be stamped after controlled connect/reference/disconnect stages so stage duration does not consume report freshness"
+        stage_index < timestamp_index && timestamp_index < report_index,
+        "generated_at_unix_seconds must be stamped between controlled connect/reference/disconnect stages and report construction so stage duration does not consume report freshness"
     );
 }
 

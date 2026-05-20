@@ -195,7 +195,7 @@ blockers, not as deferred approval to trade.
 - [x] T096 [US5] Address Greptile current-head P1: stamp no-submit readiness `generated_at_unix_seconds` after controlled connect/reference/disconnect stages, immediately before report creation/write.
 - [x] T097 [US5] Address Greptile current-head protocol-literal style finding: extract approval-consumption schema version and record-kind validation literals into named constants.
 - [x] T098 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T096-T097 Greptile slice.
-- [ ] T099 [US5] Address external-review T096 test-hardening note: make the no-submit freshness source-shape guard pin `current_unix_seconds()` after controlled stages, not only the final report-builder call.
+- [x] T099 [US5] Address external-review T096 test-hardening note: make the no-submit freshness source-shape guard pin `current_unix_seconds()` after controlled stages, not only the final report-builder call.
 - [ ] T100 [US5] Address Greptile current-head submit-lifecycle observation: investigate and either correct or formally constrain `ReplaceSubmit` counter semantics so replaces cannot inflate risk-reducing-exit budget in any supported multi-order configuration.
 - [ ] T101 [US5] Address Greptile current-head submit-admission serialization observation: investigate and either shorten the admission mutex critical section without weakening counter/evidence atomicity, or encode the serialization requirement with explicit tests and docs.
 - [ ] T102 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T099-T101 submit-admission/test-hardening slice.

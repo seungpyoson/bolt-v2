@@ -80,6 +80,7 @@ CI_PR_PATHS_IGNORE_BASELINE = (
     "GEMINI.md",
     "LICENSE",
     "REASONIX.md",
+    "SECURITY.md",
 )
 LIVE_NODE_TEST_GROUP = "live-node"
 LIVE_NODE_UNIT_TEST_FILTERS = (

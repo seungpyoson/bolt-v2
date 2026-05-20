@@ -24,6 +24,7 @@ on:
       - 'GEMINI.md'
       - 'REASONIX.md'
       - 'LICENSE'
+      - 'SECURITY.md'
       - '.github/ISSUE_TEMPLATE/**'
       - '.claude/**'
       - '.codex/**'
@@ -47,6 +48,7 @@ on:
       - 'GEMINI.md'
       - 'REASONIX.md'
       - 'LICENSE'
+      - 'SECURITY.md'
       - '.github/ISSUE_TEMPLATE/**'
       - '.claude/**'
       - '.codex/**'
@@ -89,6 +91,7 @@ DOCS_FIXTURE = """
 | Scenario | Example path | Classification | CI behavior |
 | --- | --- | --- | --- |
 | docs-only root agent doc | `AGENTS.md` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
+| root security policy | `SECURITY.md` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
 | workflow change | `.github/workflows/ci.yml` | full-ci | full CI runs; pass-stub does not trigger |
 | Rust source change | `src/lib.rs` | full-ci | full CI runs; pass-stub does not trigger |
 | managed rust-verification config | `ci/rust-verification.toml` | full-ci | full CI runs; pass-stub does not trigger |
@@ -131,6 +134,7 @@ def assert_extracts_ci_paths_ignore() -> None:
         "GEMINI.md",
         "REASONIX.md",
         "LICENSE",
+        "SECURITY.md",
         ".github/ISSUE_TEMPLATE/**",
         ".claude/**",
         ".codex/**",
@@ -148,6 +152,7 @@ def assert_classifies_changed_paths() -> None:
     safe = module.extract_ci_paths_ignore(CI_FIXTURE)
     cases = {
         ("AGENTS.md",): True,
+        ("SECURITY.md",): True,
         (".codex/settings.json", ".specify/feature.json"): True,
         (".claude/skills/speckit-plan/SKILL.md",): True,
         (".github/ISSUE_TEMPLATE/bug.yml",): True,
@@ -156,6 +161,7 @@ def assert_classifies_changed_paths() -> None:
         ("ci/rust-verification.toml",): False,
         ("Cargo.lock",): False,
         ("AGENTS.md", "src/lib.rs"): False,
+        ("SECURITY.md", "src/lib.rs"): False,
         ("docs/ci/paths-ignore-behavior.md",): False,
         ("specs/009-ci-residual-minute-work/spec.md",): False,
         (".codex_malicious/config.toml",): False,

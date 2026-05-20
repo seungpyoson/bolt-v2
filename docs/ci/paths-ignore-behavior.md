@@ -7,6 +7,7 @@ Push and tag events do not use `paths-ignore`; they always run CI.
 | Scenario | Example path | Classification | CI behavior |
 | --- | --- | --- | --- |
 | docs-only root agent doc | `AGENTS.md` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
+| root security policy | `SECURITY.md` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
 | workflow change | `.github/workflows/ci.yml` | full-ci | full CI runs; pass-stub does not trigger |
 | Rust source change | `src/lib.rs` | full-ci | full CI runs; pass-stub does not trigger |
 | managed rust-verification config | `ci/rust-verification.toml` | full-ci | full CI runs; pass-stub does not trigger |
@@ -25,6 +26,7 @@ Safe ignored paths are intentionally narrow:
 - `GEMINI.md`
 - `REASONIX.md`
 - `LICENSE`
+- `SECURITY.md`
 - `.github/ISSUE_TEMPLATE/**`
 - `.claude/**`
 - `.codex/**`

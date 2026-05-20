@@ -35,6 +35,7 @@ on:
       - 'GEMINI.md'
       - 'REASONIX.md'
       - 'LICENSE'
+      - 'SECURITY.md'
       - '.github/ISSUE_TEMPLATE/**'
       - '.claude/**'
       - '.codex/**'

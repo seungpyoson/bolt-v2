@@ -2,8 +2,12 @@
 
 Date: 2026-05-20
 
-Head traced: `b05d3c2980b1f14394a0c58b48953e8f95c61e00`
-Base traced: `origin/main` at `db935718fa69cc1a4013734a81ea6adaa127da37`
+Trace state: PR #388 branch after PR #408 was merged into `main`.
+Base traced: `origin/main` at `ddace92880c3126c3cb6c161c1c239f217d75a62`
+
+Exact pushed PR heads and verification runs are recorded in PR handoff comments
+and GitHub Actions. They are not embedded here because every metadata-only edit
+changes the document's containing commit SHA.
 
 Purpose: give reviewers and operators a concrete code-path map for live trade readiness. This is not a readiness claim. It separates source-code path evidence from approval-gated real SSM, venue, canary, and production-operation evidence.
 
@@ -108,12 +112,15 @@ Current source code contains the intended single bolt-v3 production path and loc
    - `src/bolt_v3_live_canary_gate.rs:422-474`
    - Gate requires all readiness stages to be present and satisfied.
 
-Current hard evidence:
+Current hard-evidence requirements:
 
-- `cargo test --test bolt_v3_no_submit_readiness -- --nocapture` passed at `b05d3c2980b1f14394a0c58b48953e8f95c61e00`: 21 passed.
-- `cargo test --test bolt_v3_live_canary_gate -- --nocapture` passed at `b05d3c2980b1f14394a0c58b48953e8f95c61e00`: 24 passed.
-- `cargo fmt --check` passed.
-- `git diff --check origin/main...HEAD` passed.
+- Before this trace is used as current PR evidence, rerun
+  `cargo test --test bolt_v3_no_submit_readiness -- --nocapture`,
+  `cargo test --test bolt_v3_live_canary_gate -- --nocapture`,
+  `cargo fmt --check`, and `git diff --check origin/main...HEAD` on the exact
+  pushed PR head.
+- A passing command on an older branch head is not production-readiness evidence
+  for a later rebased head.
 
 Current live-operator evidence:
 

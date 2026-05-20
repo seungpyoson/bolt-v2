@@ -19,6 +19,6 @@ I use GitHub's built-in **private vulnerability reporting** (already enabled on 
 - Please report vulnerabilities through the **"Report a vulnerability"** button in the Security tab.
 - I will receive the report privately.
 - Response time is best-effort (typically within a few days when I am actively working on the repo).
-- For anything extremely sensitive that you do not want to send through GitHub, you can reach me directly at [your preferred private channel].
+- For anything extremely sensitive that you do not want to send through GitHub, you can reach me directly at CONTACT_EMAIL_TO_BE_SHARED.
 
 No bug bounty program is offered.

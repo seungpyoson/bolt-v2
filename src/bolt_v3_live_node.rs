@@ -293,10 +293,12 @@ pub enum BoltV3LiveNodeError {
     NoSubmitStartTimeout {
         timeout_secs: u64,
     },
+    NoSubmitStartTimeoutOverflow,
     NoSubmitStartFailed(anyhow::Error),
     NoSubmitStopTimeout {
         timeout_secs: u64,
     },
+    NoSubmitStopTimeoutOverflow,
     NoSubmitStopFailed(anyhow::Error),
 }
 
@@ -377,6 +379,11 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 "bolt-v3 no-submit controlled-start exceeded configured \
                  live-node timeout bounds ({timeout_secs}s)"
             ),
+            BoltV3LiveNodeError::NoSubmitStartTimeoutOverflow => write!(
+                f,
+                "bolt-v3 no-submit controlled-start timeout sum overflowed \
+                 config-owned nautilus timeout fields"
+            ),
             BoltV3LiveNodeError::NoSubmitStartFailed(error) => {
                 write!(f, "bolt-v3 no-submit controlled-start failed: {error}")
             }
@@ -384,6 +391,11 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 f,
                 "bolt-v3 no-submit controlled-stop exceeded configured \
                  live-node timeout bounds ({timeout_secs}s)"
+            ),
+            BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow => write!(
+                f,
+                "bolt-v3 no-submit controlled-stop timeout sum overflowed \
+                 config-owned nautilus timeout fields"
             ),
             BoltV3LiveNodeError::NoSubmitStopFailed(error) => {
                 write!(f, "bolt-v3 no-submit controlled-stop failed: {error}")
@@ -415,7 +427,9 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::ConnectIncomplete
             | BoltV3LiveNodeError::DisconnectTimeout { .. }
             | BoltV3LiveNodeError::NoSubmitStartTimeout { .. }
-            | BoltV3LiveNodeError::NoSubmitStopTimeout { .. } => None,
+            | BoltV3LiveNodeError::NoSubmitStartTimeoutOverflow
+            | BoltV3LiveNodeError::NoSubmitStopTimeout { .. }
+            | BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow => None,
             BoltV3LiveNodeError::DisconnectFailed(error)
             | BoltV3LiveNodeError::NoSubmitStartFailed(error)
             | BoltV3LiveNodeError::NoSubmitStopFailed(error) => Some(error.as_ref()),
@@ -541,7 +555,7 @@ async fn start_bolt_v3_no_submit_readiness(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let timeout_secs = no_submit_start_timeout_secs(loaded);
+    let timeout_secs = no_submit_start_timeout_secs(loaded)?;
     let start = node.start();
     match tokio::time::timeout(Duration::from_secs(timeout_secs), start).await {
         Ok(Ok(())) => Ok(()),
@@ -554,7 +568,7 @@ async fn stop_bolt_v3_no_submit_readiness(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let timeout_secs = no_submit_stop_timeout_secs(loaded);
+    let timeout_secs = no_submit_stop_timeout_secs(loaded)?;
     let stop = node.stop();
     match tokio::time::timeout(Duration::from_secs(timeout_secs), stop).await {
         Ok(Ok(())) => Ok(()),
@@ -563,22 +577,24 @@ async fn stop_bolt_v3_no_submit_readiness(
     }
 }
 
-fn no_submit_start_timeout_secs(loaded: &LoadedBoltV3Config) -> u64 {
+fn no_submit_start_timeout_secs(loaded: &LoadedBoltV3Config) -> Result<u64, BoltV3LiveNodeError> {
     loaded
         .root
         .nautilus
         .timeout_connection_secs
-        .saturating_add(loaded.root.nautilus.timeout_reconciliation_secs)
-        .saturating_add(loaded.root.nautilus.timeout_portfolio_secs)
+        .checked_add(loaded.root.nautilus.timeout_reconciliation_secs)
+        .and_then(|sum| sum.checked_add(loaded.root.nautilus.timeout_portfolio_secs))
+        .ok_or(BoltV3LiveNodeError::NoSubmitStartTimeoutOverflow)
 }
 
-fn no_submit_stop_timeout_secs(loaded: &LoadedBoltV3Config) -> u64 {
+fn no_submit_stop_timeout_secs(loaded: &LoadedBoltV3Config) -> Result<u64, BoltV3LiveNodeError> {
     loaded
         .root
         .nautilus
         .timeout_disconnection_secs
-        .saturating_add(loaded.root.nautilus.delay_post_stop_secs)
-        .saturating_add(loaded.root.nautilus.timeout_shutdown_secs)
+        .checked_add(loaded.root.nautilus.delay_post_stop_secs)
+        .and_then(|sum| sum.checked_add(loaded.root.nautilus.timeout_shutdown_secs))
+        .ok_or(BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow)
 }
 
 fn classify_live_node_run_and_capture_shutdown(
@@ -1131,6 +1147,31 @@ mod tests {
         let loaded = fixture_loaded_config();
         let cfg = make_live_node_config(&loaded);
         assert_eq!(cfg.exec_engine.reconciliation_lookback_mins, None);
+    }
+
+    #[test]
+    fn no_submit_timeout_sums_fail_closed_on_overflow() {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.nautilus.timeout_connection_secs = u64::MAX;
+        loaded.root.nautilus.timeout_reconciliation_secs = 1;
+        let start_error = no_submit_start_timeout_secs(&loaded)
+            .expect_err("no-submit start timeout overflow must fail closed");
+        assert!(
+            matches!(
+                start_error,
+                BoltV3LiveNodeError::NoSubmitStartTimeoutOverflow
+            ),
+            "expected start timeout overflow rejection, got {start_error:?}"
+        );
+
+        loaded.root.nautilus.timeout_disconnection_secs = u64::MAX;
+        loaded.root.nautilus.delay_post_stop_secs = 1;
+        let stop_error = no_submit_stop_timeout_secs(&loaded)
+            .expect_err("no-submit stop timeout overflow must fail closed");
+        assert!(
+            matches!(stop_error, BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow),
+            "expected stop timeout overflow rejection, got {stop_error:?}"
+        );
     }
 
     #[test]

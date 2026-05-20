@@ -584,6 +584,48 @@ async fn live_canary_gate_rejects_non_regular_operator_evidence_path() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_symlinked_readiness_report_path() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let symlink = tempdir.path().join("no-submit-readiness-link.json");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&report_path, &symlink).expect("test symlink should be created");
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&report_path, &symlink)
+        .expect("test symlink should be created");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: symlink.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(valid_operator_evidence()),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("symlinked no-submit readiness report must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::ReadinessReportRead { path, source } => {
+            assert_eq!(path, symlink);
+            assert!(
+                source.to_string().contains("regular file"),
+                "expected non-regular report rejection, got {source}"
+            );
+        }
+        other => panic!("expected non-regular readiness report rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_zero_order_count() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

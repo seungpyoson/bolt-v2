@@ -1190,7 +1190,6 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "decision_evidence",
             "run_id": run_id,
-            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "strategy_instance_id_hash": unapproved_strategy_hash,
             "client_order_id_hash": client_order_id_hash
         }),
@@ -1200,7 +1199,6 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "nt_submit_event",
             "run_id": run_id,
-            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "strategy_instance_id_hash": unapproved_strategy_hash,
             "client_order_id_hash": client_order_id_hash
         }),
@@ -1210,7 +1208,6 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "venue_order_state",
             "run_id": run_id,
-            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "strategy_instance_id_hash": unapproved_strategy_hash,
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
@@ -1223,7 +1220,6 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "restart_reconciliation",
             "source_run_id": run_id,
-            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "strategy_instance_id_hash": unapproved_strategy_hash,
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,

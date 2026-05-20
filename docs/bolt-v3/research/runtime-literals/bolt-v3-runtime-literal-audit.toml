@@ -1295,6 +1295,24 @@ classification = "toml_zero_as_none_encoding"
 reason = "Schema documents zero as the TOML encoding for NT None on selected optional u32 fields."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"bolt-v3 no-submit controlled-start timeout sum overflowed \
+                 config-owned nautilus timeout fields"'''
+context = '''"bolt-v3 no-submit controlled-start timeout sum overflowed \'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "This is fail-closed diagnostic text emitted when config-owned no-submit start timeout fields overflow during checked addition."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"bolt-v3 no-submit controlled-stop timeout sum overflowed \
+                 config-owned nautilus timeout fields"'''
+context = '''"bolt-v3 no-submit controlled-stop timeout sum overflowed \'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "This is fail-closed diagnostic text emitted when config-owned no-submit stop timeout fields overflow during checked addition."
+
+[[allowed]]
 path = "src/bolt_v3_market_families/mod.rs"
 kind = "string"
 literal = "\"strategy `{}`\""

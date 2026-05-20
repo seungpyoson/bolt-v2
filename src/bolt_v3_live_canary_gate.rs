@@ -577,7 +577,7 @@ async fn read_report_bytes_with_limit(
     path: &Path,
     max_length: u64,
 ) -> Result<Vec<u8>, BoltV3LiveCanaryGateError> {
-    let file = tokio::fs::File::open(path).await.map_err(|source| {
+    let file = open_regular_file(path).await.map_err(|source| {
         BoltV3LiveCanaryGateError::ReadinessReportRead {
             path: path.to_path_buf(),
             source,
@@ -957,13 +957,20 @@ async fn open_regular_file_bounded(
     path: &Path,
     max_bytes: u64,
 ) -> std::io::Result<tokio::fs::File> {
-    let pre_open_metadata = tokio::fs::symlink_metadata(path).await?;
-    validate_regular_file_metadata(path, &pre_open_metadata, max_bytes)?;
-    let file = tokio::fs::File::open(path).await?;
+    let file = open_regular_file(path).await?;
     let opened_metadata = file.metadata().await?;
     validate_regular_file_metadata(path, &opened_metadata, max_bytes)?;
+    Ok(file)
+}
+
+async fn open_regular_file(path: &Path) -> std::io::Result<tokio::fs::File> {
+    let pre_open_metadata = tokio::fs::symlink_metadata(path).await?;
+    validate_regular_file_type(path, &pre_open_metadata)?;
+    let file = tokio::fs::File::open(path).await?;
+    let opened_metadata = file.metadata().await?;
+    validate_regular_file_type(path, &opened_metadata)?;
     let post_open_path_metadata = tokio::fs::symlink_metadata(path).await?;
-    validate_regular_file_metadata(path, &post_open_path_metadata, max_bytes)?;
+    validate_regular_file_type(path, &post_open_path_metadata)?;
     Ok(file)
 }
 
@@ -1004,12 +1011,7 @@ fn validate_regular_file_metadata(
     metadata: &std::fs::Metadata,
     max_bytes: u64,
 ) -> std::io::Result<()> {
-    if !metadata.file_type().is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("{} is not a regular file", path.display()),
-        ));
-    }
+    validate_regular_file_type(path, metadata)?;
     let length = metadata.len();
     if length > max_bytes {
         return Err(std::io::Error::new(
@@ -1018,6 +1020,16 @@ fn validate_regular_file_metadata(
                 "{} exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})",
                 path.display()
             ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_regular_file_type(path: &Path, metadata: &std::fs::Metadata) -> std::io::Result<()> {
+    if !metadata.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
         ));
     }
     Ok(())

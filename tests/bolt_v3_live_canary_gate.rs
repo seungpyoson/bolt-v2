@@ -4,7 +4,10 @@ use bolt_v2::{
     bolt_v3_config::{
         LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, load_bolt_v3_config,
     },
-    bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
+    bolt_v3_live_canary_gate::{
+        BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate,
+        check_bolt_v3_live_canary_gate_with_unix_seconds_for_test,
+    },
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
@@ -18,24 +21,6 @@ use sha2::{Digest, Sha256};
 use tokio::task::LocalSet;
 
 const TEST_READINESS_REPORT_MAX_AGE_SECONDS: u64 = 60;
-
-#[test]
-fn live_canary_gate_rechecks_operator_window_after_report_validation_before_return() {
-    let source = std::fs::read_to_string(support::repo_path("src/bolt_v3_live_canary_gate.rs"))
-        .expect("live canary gate source should be readable");
-    let report_validation = source
-        .find("validate_no_submit_readiness_report(")
-        .expect("gate should validate no-submit readiness report");
-    let report_return = source
-        .find("Ok(BoltV3LiveCanaryGateReport")
-        .expect("gate should return a validated report");
-    let final_section = &source[report_validation..report_return];
-
-    assert!(
-        final_section.contains("validate_operator_evidence(block, current_unix_seconds()?)?"),
-        "gate must recheck the operator approval window after report I/O/hash validation and before returning a report"
-    );
-}
 
 #[test]
 fn run_bolt_v3_live_node_rejects_missing_live_canary_before_nt_run() {
@@ -338,6 +323,101 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
     check_bolt_v3_live_canary_gate(&loaded)
         .await
         .expect("notional equal to root risk cap should pass");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_report_expired_at_late_gate_timestamp() {
+    let initial_unix_seconds = 1_000;
+    let late_unix_seconds = 1_061;
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report_at(&report_path, &[], initial_unix_seconds);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(valid_operator_evidence_for_window(
+                initial_unix_seconds as i64 - 10,
+                late_unix_seconds as i64 + 10,
+            )),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate_with_unix_seconds_for_test(
+        &loaded,
+        initial_unix_seconds,
+        late_unix_seconds,
+    )
+    .await
+    .expect_err("report expiring during gate validation must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+            assert!(
+                reasons
+                    .iter()
+                    .any(|reason| reason.contains("generated_at_unix_seconds expired")),
+                "expected generated_at expiry reason, got {reasons:?}"
+            );
+        }
+        other => panic!("expected expired readiness report rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_operator_window_expired_at_late_gate_timestamp() {
+    let initial_unix_seconds = 1_000;
+    let late_unix_seconds = 1_061;
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report_at(&report_path, &[], initial_unix_seconds);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: 3_600,
+            operator_evidence: Some(valid_operator_evidence_for_window(
+                initial_unix_seconds as i64 - 10,
+                initial_unix_seconds as i64 + 10,
+            )),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate_with_unix_seconds_for_test(
+        &loaded,
+        initial_unix_seconds,
+        late_unix_seconds,
+    )
+    .await
+    .expect_err("operator window expiring during gate validation must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::InactiveOperatorApprovalWindow {
+            current_unix_seconds,
+            approval_not_after_unix_seconds,
+            ..
+        } => {
+            assert_eq!(current_unix_seconds, late_unix_seconds);
+            assert_eq!(
+                approval_not_after_unix_seconds,
+                initial_unix_seconds as i64 + 10
+            );
+        }
+        other => panic!("expected late operator approval window rejection, got {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1231,6 +1311,16 @@ fn loaded_without_live_canary(loaded: LoadedBoltV3Config) -> LoadedBoltV3Config 
 
 fn valid_operator_evidence() -> bolt_v2::bolt_v3_config::LiveCanaryOperatorEvidenceBlock {
     support::valid_live_canary_operator_evidence()
+}
+
+fn valid_operator_evidence_for_window(
+    approval_not_before_unix_seconds: i64,
+    approval_not_after_unix_seconds: i64,
+) -> LiveCanaryOperatorEvidenceBlock {
+    let mut evidence = valid_operator_evidence();
+    evidence.approval_not_before_unix_seconds = approval_not_before_unix_seconds;
+    evidence.approval_not_after_unix_seconds = approval_not_after_unix_seconds;
+    evidence
 }
 
 async fn check_operator_evidence_rejection(

@@ -308,6 +308,31 @@ impl std::error::Error for BoltV3LiveCanaryGateError {
 pub async fn check_bolt_v3_live_canary_gate(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveCanaryGateReport, BoltV3LiveCanaryGateError> {
+    check_bolt_v3_live_canary_gate_with_clock(loaded, current_unix_seconds).await
+}
+
+#[doc(hidden)]
+pub async fn check_bolt_v3_live_canary_gate_with_unix_seconds_for_test(
+    loaded: &LoadedBoltV3Config,
+    initial_unix_seconds: u64,
+    late_unix_seconds: u64,
+) -> Result<BoltV3LiveCanaryGateReport, BoltV3LiveCanaryGateError> {
+    let mut calls = 0_u8;
+    check_bolt_v3_live_canary_gate_with_clock(loaded, || {
+        calls = calls.saturating_add(1);
+        if calls == 1 {
+            Ok(initial_unix_seconds)
+        } else {
+            Ok(late_unix_seconds)
+        }
+    })
+    .await
+}
+
+async fn check_bolt_v3_live_canary_gate_with_clock(
+    loaded: &LoadedBoltV3Config,
+    mut unix_seconds: impl FnMut() -> Result<u64, BoltV3LiveCanaryGateError>,
+) -> Result<BoltV3LiveCanaryGateReport, BoltV3LiveCanaryGateError> {
     let block = loaded
         .root
         .live_canary
@@ -348,7 +373,7 @@ pub async fn check_bolt_v3_live_canary_gate(
         });
     }
 
-    let initial_unix_seconds = current_unix_seconds()?;
+    let initial_unix_seconds = unix_seconds()?;
     validate_operator_evidence(block, initial_unix_seconds)?;
 
     let report_path = resolve_report_path(&loaded.root_path, block);
@@ -384,13 +409,14 @@ pub async fn check_bolt_v3_live_canary_gate(
     }
     let expected_approval_id_hash = sha256_hex(approval_id.as_bytes());
     let expected_executable_identity = executable_identity().await?;
+    let late_unix_seconds = unix_seconds()?;
     validate_no_submit_readiness_report(
         report_object,
         &expected_approval_id_hash,
         &expected_executable_identity,
         &loaded.config_bundle_checksum,
         block.readiness_report_max_age_seconds,
-        initial_unix_seconds,
+        late_unix_seconds,
     )
     .map_err(
         |reasons| BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport {
@@ -398,7 +424,7 @@ pub async fn check_bolt_v3_live_canary_gate(
             reasons,
         },
     )?;
-    validate_operator_evidence(block, current_unix_seconds()?)?;
+    validate_operator_evidence(block, late_unix_seconds)?;
 
     Ok(BoltV3LiveCanaryGateReport {
         approval_id: approval_id.to_string(),

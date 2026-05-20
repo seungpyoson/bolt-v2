@@ -19,7 +19,7 @@ use std::{
 use rust_decimal::Decimal;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
     bolt_v3_config::{LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
@@ -873,45 +873,79 @@ async fn sha256_file(
     field: &'static str,
     max_bytes: u64,
 ) -> Result<String, BoltV3LiveCanaryGateError> {
-    reject_non_regular_or_oversized_file(path, max_bytes)
+    let mut file = open_regular_file_bounded(path, max_bytes)
         .await
         .map_err(|source| BoltV3LiveCanaryGateError::OperatorEvidenceRead {
             field,
             path: path.to_path_buf(),
             source,
         })?;
-    let mut file = tokio::fs::File::open(path).await.map_err(|source| {
-        BoltV3LiveCanaryGateError::OperatorEvidenceRead {
+    let bytes = read_to_vec_with_cap(&mut file, max_bytes)
+        .await
+        .map_err(|source| BoltV3LiveCanaryGateError::OperatorEvidenceRead {
             field,
             path: path.to_path_buf(),
             source,
-        }
-    })?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 8192];
-    loop {
-        let length = file.read(&mut buffer).await.map_err(|source| {
-            BoltV3LiveCanaryGateError::OperatorEvidenceRead {
-                field,
-                path: path.to_path_buf(),
-                source,
-            }
         })?;
-        if length == 0 {
-            break;
-        }
-        hasher.update(&buffer[..length]);
-    }
-    Ok(hex::encode(hasher.finalize()))
+    Ok(sha256_hex(&bytes))
 }
 
 async fn read_regular_file_bounded(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
-    reject_non_regular_or_oversized_file(path, max_bytes).await?;
-    tokio::fs::read(path).await
+    let mut file = open_regular_file_bounded(path, max_bytes).await?;
+    read_to_vec_with_cap(&mut file, max_bytes).await
 }
 
-async fn reject_non_regular_or_oversized_file(path: &Path, max_bytes: u64) -> std::io::Result<()> {
-    let metadata = tokio::fs::symlink_metadata(path).await?;
+async fn open_regular_file_bounded(
+    path: &Path,
+    max_bytes: u64,
+) -> std::io::Result<tokio::fs::File> {
+    let pre_open_metadata = tokio::fs::symlink_metadata(path).await?;
+    validate_regular_file_metadata(path, &pre_open_metadata, max_bytes)?;
+    let file = tokio::fs::File::open(path).await?;
+    let opened_metadata = file.metadata().await?;
+    validate_regular_file_metadata(path, &opened_metadata, max_bytes)?;
+    let post_open_path_metadata = tokio::fs::symlink_metadata(path).await?;
+    validate_regular_file_metadata(path, &post_open_path_metadata, max_bytes)?;
+    Ok(file)
+}
+
+async fn read_to_vec_with_cap<R>(mut reader: R, max_bytes: u64) -> std::io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut bytes = Vec::new();
+    let mut observed = 0_u64;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let remaining_to_detect = max_bytes.saturating_sub(observed).saturating_add(1);
+        let read_len = if remaining_to_detect > buffer.len() as u64 {
+            buffer.len()
+        } else {
+            remaining_to_detect as usize
+        };
+        let length = reader.read(&mut buffer[..read_len]).await?;
+        if length == 0 {
+            break;
+        }
+        observed = observed.saturating_add(length as u64);
+        if observed > max_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "operator evidence read exceeds max_operator_evidence_file_bytes={max_bytes} bytes"
+                ),
+            ));
+        }
+        bytes.extend_from_slice(&buffer[..length]);
+    }
+    Ok(bytes)
+}
+
+fn validate_regular_file_metadata(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    max_bytes: u64,
+) -> std::io::Result<()> {
     if !metadata.file_type().is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -1256,7 +1290,10 @@ const REQUIRED_NO_SUBMIT_READINESS_STAGES: &[&str] = &[
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use crate::{bolt_v3_config::LiveCanaryBlock, bolt_v3_live_canary_gate::resolve_report_path};
+    use crate::{
+        bolt_v3_config::LiveCanaryBlock,
+        bolt_v3_live_canary_gate::{read_to_vec_with_cap, resolve_report_path},
+    };
 
     #[test]
     fn relative_report_path_without_root_parent_matches_config_loader_fallback() {
@@ -1273,6 +1310,25 @@ mod tests {
         assert_eq!(
             resolve_report_path(Path::new(""), &block),
             PathBuf::from(".").join("reports/no-submit-readiness.json")
+        );
+    }
+
+    #[test]
+    fn bounded_reader_rejects_when_actual_stream_exceeds_cap() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+        let error = runtime.block_on(async {
+            let reader = tokio::io::repeat(b'x');
+            read_to_vec_with_cap(reader, 8)
+                .await
+                .expect_err("reader must fail closed once max plus one byte is observed")
+        });
+
+        assert!(
+            error.to_string().contains("exceeds"),
+            "expected bounded read oversize error, got {error}"
         );
     }
 }

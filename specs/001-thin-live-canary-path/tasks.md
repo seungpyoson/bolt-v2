@@ -109,6 +109,67 @@ blockers, not as deferred approval to trade.
 - [ ] T045 [US5] Run local fail-closed tests, exact-head CI, no-mistakes triage, and external review after branch is clean and pushed.
 - [ ] T046 [US5] With explicit operator approval, run tiny-capital canary and store redacted artifact with exact SHA and config checksum.
 
+## Phase 9: Review Remediation - No-submit Evidence Freshness (US4)
+
+**Goal**: A no-submit readiness report is accepted only when it is fresh, exact-head, config-bound, and stage-complete.
+
+**Independent Test**: `cargo test --test bolt_v3_live_canary_gate -- --nocapture` rejects stale, missing-freshness, wrong-binary, wrong-config, and unsatisfied readiness reports before runner entry.
+
+- [ ] T047 [P] [US4] Write failing stale-report rejection tests in `tests/bolt_v3_live_canary_gate.rs` for missing `generated_at_unix_seconds`, expired report age, and report age above TOML-owned `[live_canary].readiness_report_max_age_seconds`.
+- [ ] T048 [US4] Add TOML-owned readiness report age config in `src/bolt_v3_config.rs`, `config/root.example.toml`, `src/bolt_v3_no_submit_readiness.rs`, and `src/bolt_v3_live_canary_gate.rs`.
+- [ ] T049 [P] [US4] Write failing no-submit stage-detail tests in `tests/bolt_v3_no_submit_readiness.rs` proving partial connect, skipped reference readiness, and stale reference cache cannot produce a gate-acceptable report.
+- [ ] T050 [US4] Extend no-submit readiness stage evidence in `src/bolt_v3_no_submit_readiness.rs` and `src/bolt_v3_live_node.rs` so failed NT client connect/reference states stay failed and redacted stage details are preserved.
+- [ ] T051 [US4] Run `cargo test --test bolt_v3_no_submit_readiness -- --nocapture` and `cargo test --test bolt_v3_live_canary_gate -- --nocapture`.
+
+## Phase 10: Review Remediation - Production Canary Approval Envelope (US5)
+
+**Goal**: Production `Run` enforces the same operator evidence envelope required by the tiny-canary contract, not only harness-local checks.
+
+**Independent Test**: `cargo test --test bolt_v3_live_canary_gate -- --nocapture` and `cargo test --test bolt_v3_tiny_canary_operator -- --nocapture` reject missing operator evidence, invalid approval windows, nonce mismatch, stale approval, SSM manifest mismatch, strategy-input mismatch, financial-envelope mismatch, and pre-run evidence mismatch.
+
+- [ ] T052 [P] [US5] Write failing production-gate tests in `tests/bolt_v3_live_canary_gate.rs` requiring `[live_canary].operator_evidence` for production `Run`.
+- [ ] T053 [P] [US5] Write failing operator-envelope regression tests in `tests/bolt_v3_tiny_canary_operator.rs` for approval window, nonce, SSM manifest hash, strategy-input hash, financial-envelope hash, and pre-run evidence hash.
+- [ ] T054 [US5] Validate `LiveCanaryOperatorEvidenceBlock` inside `src/bolt_v3_live_canary_gate.rs` before submit admission arms in `src/bolt_v3_live_node.rs`.
+- [ ] T055 [US5] Update `docs/bolt-v3/2026-05-20-production-readiness-end-to-end-trace.md`, `specs/001-thin-live-canary-path/checklists/production-readiness.md`, and `specs/001-thin-live-canary-path/quickstart.md` with the production-enforced operator evidence fields.
+- [ ] T056 [US5] Run `cargo test --test bolt_v3_live_canary_gate -- --nocapture` and `cargo test --test bolt_v3_tiny_canary_operator -- --nocapture`.
+
+## Phase 11: Review Remediation - Submit Lifecycle Safety (US2)
+
+**Goal**: The canary submit budget cannot strand exposure without an explicit config-owned lifecycle policy.
+
+**Independent Test**: `cargo test --test bolt_v3_submit_admission -- --nocapture` proves entry, replace-submit, exit-submit, and cancel-only decisions follow configured lifecycle semantics and cannot bypass admission.
+
+- [ ] T057 [P] [US2] Write failing admission tests in `tests/bolt_v3_submit_admission.rs` for submit intent kind, risk-reducing exit after entry, cancel-only exclusion, and config-owned lifecycle policy.
+- [ ] T058 [US2] Add submit intent classification to `src/bolt_v3_submit_admission.rs` and `src/strategies/binary_oracle_edge_taker.rs` without adding venue, symbol, or strategy hardcodes.
+- [ ] T059 [US2] Update `specs/001-thin-live-canary-path/spec.md`, `specs/001-thin-live-canary-path/contracts/live-canary-gates.md`, and `specs/001-thin-live-canary-path/data-model.md` so FR-009 names the accepted lifecycle semantics.
+- [ ] T060 [US2] Run `cargo test --test bolt_v3_submit_admission -- --nocapture` and source-fence searches for direct `submit_order` bypasses in `src/strategies/` and `src/bolt_v3_archetypes/`.
+
+## Phase 12: Review Remediation - Observability, Secrets, and Ledger Hygiene (US3, US5)
+
+**Goal**: Operator evidence is diagnostic, secret-safe, and tracked by open readiness work.
+
+**Independent Test**: Runtime-capture verification proves PortfolioSnapshot capture is represented, config parsing rejects ambiguous SSM paths, credential redaction tests still pass, and trace docs no longer imply closed issues prove live readiness.
+
+- [ ] T061 [P] [US5] Write failing runtime-capture test or verifier fixture in `scripts/test_verify_runtime_capture_yaml.py` for `PortfolioSnapshot` subscription and JSONL spool coverage.
+- [ ] T062 [US5] Implement PortfolioSnapshot capture or an explicit waiver gate in `src/nt_runtime_capture.rs`, `docs/bolt-v3/research/runtime-capture/nt-msgbus-surfaces.yaml`, and `docs/bolt-v3/research/runtime-capture/bolt-current-capture.yaml`.
+- [ ] T063 [P] [US3] Write failing SSM path hygiene tests in `tests/config_parsing.rs` rejecting leading/trailing whitespace in `*_ssm_path` TOML values.
+- [ ] T064 [US3] Reject ambiguous SSM paths in `src/bolt_v3_validate.rs` and keep `src/secrets.rs` byte-exact for resolved secret values.
+- [ ] T065 [P] [US3] Write or update credential redaction tests in `tests/bolt_v3_credential_log_suppression.rs` proving provider credentials remain redacted and never printed.
+- [ ] T066 [US3] Replace raw provider credential storage with redacted/zeroizing types in `src/bolt_v3_providers/polymarket.rs` and `src/bolt_v3_providers/binance.rs`, or update docs to stop claiming that hardening if it is intentionally deferred.
+- [ ] T067 [US5] Update `docs/bolt-v3/2026-05-20-production-readiness-end-to-end-trace.md`, `docs/bolt-v3/2026-05-18-production-readiness-contract.md`, and `specs/001-thin-live-canary-path/checklists/production-readiness.md` so #409 is explicit and #360 closure is not used as proof that T046 is complete.
+- [ ] T068 [US5] With explicit user approval only, update GitHub issue links or successor tracking for T046 and #409; otherwise record required issue mutation as a blocked operator action in `docs/bolt-v3/2026-05-20-production-readiness-end-to-end-trace.md`.
+- [ ] T069 [US3] Run `cargo test --test config_parsing -- --nocapture`, `cargo test --test bolt_v3_credential_log_suppression -- --nocapture`, `python3 scripts/test_verify_runtime_capture_yaml.py`, and `python3 scripts/verify_runtime_capture_yaml.py`.
+
+## Phase 13: AI Slop Cleanup and Final Verification
+
+**Goal**: Keep the remediation small, reviewable, TDD-proven, and free of stale AI-generated doc drift.
+
+**Independent Test**: The final diff is scoped to the remediation tasks, each touched behavior has a targeted regression test, and broad source/docs checks pass.
+
+- [ ] T070 [P] Run `rg -n "(?i:TODO|fix later|temporary|placeholder|AI|slop|stale|production-ready)" src tests specs/001-thin-live-canary-path docs/bolt-v3/2026-05-20-production-readiness-end-to-end-trace.md` and remove or justify stale prose in touched files.
+- [ ] T071 Run `cargo fmt --check`, `git diff --check`, all targeted cargo tests from T051/T056/T060/T069, and `just source-fence` if available.
+- [ ] T072 Run final spec-compliance and code-quality reviews for the remediation diff before claiming readiness status.
+
 ## Out Of Scope For MVP
 
 - Backtesting engine.
@@ -120,3 +181,5 @@ blockers, not as deferred approval to trade.
 ## Execution Order
 
 Phase 1 must merge first. Phases 2-8 are sequential because each removes a live-submit blocker from the prior phase. Do not begin live operations until Phases 2-7 are complete and verified.
+
+Review remediation phases 9-13 are source/test/doc tasks only unless T038, T046, or T068 receive explicit user approval. Implement in this order: Phase 9 freshness and no-submit truthfulness, Phase 10 production operator evidence, Phase 11 lifecycle safety, Phase 12 observability/secrets/ledger hygiene, Phase 13 cleanup and verification. T047, T049, T052, T053, T057, T061, T063, T065, and T070 are parallelizable only when workers touch disjoint files.

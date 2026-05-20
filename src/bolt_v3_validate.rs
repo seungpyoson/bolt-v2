@@ -428,15 +428,22 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
         errors.push(format!(
             "clients.{key}.secrets.{field} must be a non-empty SSM path"
         ));
-    } else if !trimmed.starts_with('/') {
-        // The Rust AWS SDK accepts both `name`-style and `/name`-style
-        // parameter references, but bolt-v3 standardizes on
-        // absolute-style hierarchical paths so an SSM resource layout
-        // like `/bolt/<venue>/<field>` is the only supported shape and
-        // typos that drop the leading slash fail closed at startup.
-        errors.push(format!(
+    } else {
+        if trimmed != value {
+            errors.push(format!(
+                "clients.{key}.secrets.{field} must not have leading or trailing whitespace"
+            ));
+        }
+        if !trimmed.starts_with('/') {
+            // The Rust AWS SDK accepts both `name`-style and `/name`-style
+            // parameter references, but bolt-v3 standardizes on
+            // absolute-style hierarchical paths so an SSM resource layout
+            // like `/bolt/<venue>/<field>` is the only supported shape and
+            // typos that drop the leading slash fail closed at startup.
+            errors.push(format!(
             "clients.{key}.secrets.{field} must be an absolute-style SSM parameter path starting with `/`: `{value}`"
         ));
+        }
     }
     errors
 }

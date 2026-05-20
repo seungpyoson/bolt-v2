@@ -1664,6 +1664,44 @@ fn rejects_ssm_paths_missing_leading_slash() {
 }
 
 #[test]
+fn rejects_ssm_paths_with_leading_or_trailing_whitespace() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for (field, original, replacement) in [
+        (
+            "clients.binance_reference.secrets.api_key_ssm_path",
+            "api_key_ssm_path = \"/bolt/binance_reference/api_key\"",
+            "api_key_ssm_path = \" /bolt/binance_reference/api_key\"",
+        ),
+        (
+            "clients.binance_reference.secrets.api_secret_ssm_path",
+            "api_secret_ssm_path = \"/bolt/binance_reference/api_secret\"",
+            "api_secret_ssm_path = \"/bolt/binance_reference/api_secret \"",
+        ),
+        (
+            "clients.polymarket_main.secrets.private_key_ssm_path",
+            "private_key_ssm_path = \"/bolt/polymarket_main/private_key\"",
+            "private_key_ssm_path = \" /bolt/polymarket_main/private_key\"",
+        ),
+        (
+            "clients.polymarket_main.secrets.api_secret_ssm_path",
+            "api_secret_ssm_path = \"/bolt/polymarket_main/api_secret\"",
+            "api_secret_ssm_path = \"/bolt/polymarket_main/api_secret \"",
+        ),
+    ] {
+        let mutated = replace_in_fixture_root(original, replacement);
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("ssm whitespace mutation should parse");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages.iter().any(|message| message.contains(field)
+                && message.contains("must not have leading or trailing whitespace")),
+            "expected SSM whitespace validation error for {field}, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_polymarket_funder_with_invalid_evm_syntax() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

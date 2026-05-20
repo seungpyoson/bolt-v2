@@ -65,22 +65,20 @@ jobs:
         id: ai_chain
         continue-on-error: true
         run: |
-          # 5-stage resilient chain (GPT-5 -> o3 -> Phi-4 -> o4-mini -> OpenRouter).
-          # Hand-rolled curl is used over actions/ai-inference to support the
-          # multi-model fallback and granular reasoning_effort control.
-          MODELS=("openai/gpt-5" "openai/o3" "microsoft/phi-4-reasoning" "openai/o4-mini")
+          # Fallback chain of free (low/high tier) GitHub Models, most capable
+          # first, then OpenRouter's free-models router as a cross-provider
+          # backstop. All four
+          # GitHub models are servable with the built-in GITHUB_TOKEN (verified
+          # HTTP 200); the custom-tier gpt-5/o3/o4-mini chosen in #410 were never
+          # available on this account (see #422). Hand-rolled curl is used over
+          # actions/ai-inference to support the multi-model fallback.
+          MODELS=("openai/gpt-4.1" "openai/gpt-4o" "openai/gpt-4.1-mini" "openai/gpt-4o-mini")
           SUCCESS=false
           FINAL_SUMMARY=""
           USED_MODEL=""
 
           for model in "${MODELS[@]}"; do
             echo "Attempting summarization with $model..."
-
-            # Determine reasoning effort (high is the documented max)
-            REASONING=""
-            if [[ "$model" == *"gpt-5"* || "$model" == *"o3"* || "$model" == *"o4-mini"* ]]; then
-              REASONING="high"
-            fi
 
             # Build the request body with Python's json.dumps so untrusted
             # title/body (read from env) are JSON-escaped, never shell-parsed.
@@ -95,9 +93,8 @@ jobs:
                   'role': 'user',
                   'content': f'Summarize this GitHub issue: Title: {os.environ.get(\"ISSUE_TITLE\", \"\")}\n\nBody: {os.environ.get(\"ISSUE_BODY\", \"\")}'
                 }
-              ],
-              **({'reasoning_effort': sys.argv[2]} if sys.argv[2] else {})
-            }))" "$model" "$REASONING")
+              ]
+            }))" "$model")
 
             # `|| response=""` is required: the default runner shell is
             # `bash -eo pipefail`, so an unguarded assignment whose command
@@ -124,11 +121,14 @@ jobs:
             echo "Failed with $model."
           done
 
-          # 2. OpenRouter fallback
+          # Final cross-provider backstop. Only fires if every GitHub Models
+          # stage above failed — e.g. the OpenAI/Azure backend is fully down.
+          # openrouter/free is OpenRouter's free-models router (no credit cost),
+          # gated on SUCCESS=false and a present key.
           if [ "$SUCCESS" = false ] && [ -n "$OPENROUTER_API_KEY" ]; then
-            echo "Attempting OpenRouter fallback..."
+            echo "Attempting OpenRouter fallback (openrouter/free)..."
             REQUEST_BODY=$(python3 -c "import sys, json, os; print(json.dumps({
-              'model': 'openrouter/auto',
+              'model': 'openrouter/free',
               'messages': [
                 {
                   'role': 'system',
@@ -138,8 +138,7 @@ jobs:
                   'role': 'user',
                   'content': f'Summarize this GitHub issue: Title: {os.environ.get(\"ISSUE_TITLE\", \"\")}\n\nBody: {os.environ.get(\"ISSUE_BODY\", \"\")}'
                 }
-              ],
-              'include_reasoning': True
+              ]
             }))")
 
             response=$(curl -s --max-time 60 --retry 3 https://openrouter.ai/api/v1/chat/completions \
@@ -151,7 +150,7 @@ jobs:
 
             if [ -n "$summary" ]; then
               FINAL_SUMMARY="$summary"
-              USED_MODEL="openrouter/auto (OpenRouter Fallback)"
+              USED_MODEL="openrouter/free (OpenRouter Fallback)"
               SUCCESS=true
             fi
           fi
@@ -170,7 +169,10 @@ jobs:
             exit 1
           fi
         env:
-          GH_MODELS_TOKEN: ${{ secrets.GH_MODELS_TOKEN || secrets.GITHUB_TOKEN }}
+          # The built-in GITHUB_TOKEN carries models:read (see permissions
+          # above) and serves the free-tier models. The prior GH_MODELS_TOKEN
+          # secret returned 401 on every model (#422) and is no longer used.
+          GH_MODELS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ISSUE_TITLE: ${{ steps.ctx.outputs.title }}
           ISSUE_BODY: ${{ steps.ctx.outputs.body }}

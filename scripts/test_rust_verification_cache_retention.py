@@ -986,7 +986,7 @@ def assert_cache_prune_apply_waits_for_managed_cargo_lock() -> None:
         tmp_path = pathlib.Path(tmp)
         repo = tmp_path / "repo"
         repo.mkdir()
-        write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=10**15)
+        write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=1, soft_limit_bytes=1)
 
         root_base = tmp_path / "rust-root"
         target = root_base / "bolt-v2" / "target"
@@ -1062,7 +1062,7 @@ def assert_cache_prune_apply_waits_for_managed_run_lock() -> None:
         tmp_path = pathlib.Path(tmp)
         repo = tmp_path / "repo"
         repo.mkdir()
-        write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=10**15)
+        write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=1, soft_limit_bytes=1)
         (repo / "justfile").write_text("", encoding="utf-8")
 
         root_base = tmp_path / "rust-root"
@@ -1587,6 +1587,277 @@ def assert_repo_policy_declares_cache_retention() -> None:
         raise AssertionError(f"missing cache policy fields: {missing}")
 
 
+def cache_prune_for_visible_command(command: str) -> tuple[subprocess.CompletedProcess[str], bool]:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, active_process_patterns=["cargo", "rustc", "rust_verification.py"])
+
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        debug_file = target / "debug" / "old.bin"
+        debug_file.parent.mkdir(parents=True)
+        debug_file.write_bytes(b"abc")
+        old_time = time.time() - (15 * 24 * 60 * 60)
+        os.utime(debug_file, (old_time, old_time))
+        os.utime(debug_file.parent, (old_time, old_time))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        escaped_command = command.replace("'", "'\\''")
+        write_executable(
+            bin_dir / "ps",
+            f"""#!/usr/bin/env bash
+printf '123 {escaped_command}\\n'
+""",
+        )
+        proc_dir = tmp_path / "proc" / "123"
+        proc_dir.mkdir(parents=True)
+        (proc_dir / "cwd").symlink_to(repo)
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "proc")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+        result = run_owner(["cache-prune", "--repo", str(repo), "--apply", "--json"], env=env)
+        return result, debug_file.exists()
+
+
+def assert_v6_red_active_process_parser_gaps() -> None:
+    commands = [
+        "env -iuLD_PRELOAD cargo build",
+        "env -iu LD_PRELOAD cargo build",
+        "rustup run stable -- -- cargo build",
+        "command cargo build",
+        "exec cargo build",
+        "nohup cargo build",
+        "time cargo build",
+        "timeout 30 cargo build",
+        "xargs cargo build",
+        "setsid cargo build",
+        "taskset -c 0 cargo build",
+        "ionice -c2 cargo build",
+        "chrt -r 10 cargo build",
+        "make build",
+        "python -c 'import os; os.system(\"cargo build\")'",
+        "bash -c 'alias c=cargo; c build'",
+        "bash -c 'cargo() { command cargo \"$@\"; }; cargo build'",
+        "bash -c 'builtin command cargo build'",
+        "/tmp/rust-build build",
+        "/tmp/repo/scripts/cargo-build-script",
+        "docker exec bolt-dev cargo build /tmp/repo",
+        "docker run -v /tmp/repo:/repo rust cargo build",
+        "npm run cargo-build",
+        "python scripts/build.py",
+        "bash -c 'bash -c \"bash -c \\'bash -c \\\\\\'bash -c \\\\\\\\\\\\\\'bash -c \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\'cargo build\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\'\\\\\\\\\\\\\\'\\'\"'",
+    ]
+    misses: list[str] = []
+    for command in commands:
+        result, debug_file_exists = cache_prune_for_visible_command(command)
+        refused = False
+        refusal_code = ""
+        if result.stdout:
+            try:
+                payload = json.loads(result.stdout)
+                refused = payload.get("refused") is True
+                refusal_code = str(payload.get("refusal_code", ""))
+            except json.JSONDecodeError:
+                pass
+        if result.returncode == 0 or not refused or refusal_code not in {
+            "active_process",
+            "process_parse_depth_exceeded",
+            "unsupported_process_wrapper",
+            "unclassified_process",
+            "containerized_process",
+            "script_launched_cargo",
+        } or not debug_file_exists:
+            misses.append(
+                f"{command!r}: returncode={result.returncode} refusal_code={refusal_code!r} "
+                f"target_preserved={debug_file_exists}"
+            )
+    if misses:
+        raise AssertionError("active-process parser silently missed v6 cargo launch forms: " + "; ".join(misses))
+
+
+def assert_v6_regression_cargo_process_names_stay_visible() -> None:
+    owner = load_owner_module()
+    commands = [
+        "cargo +stable build",
+        "cargo install cargo-nextest --locked",
+        "cargo-clippy --workspace",
+        "cargo-fmt --all",
+        "cargo-nextest run",
+        "nextest run",
+        "rustc --version",
+    ]
+    missing = [
+        (command, sorted(owner.command_process_names(command)))
+        for command in commands
+        if pathlib.Path(command.split()[0]).name not in owner.command_process_names(command)
+    ]
+    if missing:
+        raise AssertionError(f"direct Rust tool process names must stay visible: {missing!r}")
+
+
+def assert_managed_env_scrubs_build_target_dir_and_routes_target_dir() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        root_base = tmp_path / "rust-root"
+        old_build_target_dir = os.environ.get("CARGO_BUILD_TARGET_DIR")
+        old_target_dir = os.environ.get("CARGO_TARGET_DIR")
+        old_root_base = os.environ.get("RUST_VERIFICATION_ROOT_BASE")
+        try:
+            os.environ["CARGO_BUILD_TARGET_DIR"] = str(tmp_path / "leaked-build-target")
+            os.environ["CARGO_TARGET_DIR"] = str(tmp_path / "leaked-target")
+            os.environ["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            env = owner.managed_env(repo)
+        finally:
+            for key, value in (
+                ("CARGO_BUILD_TARGET_DIR", old_build_target_dir),
+                ("CARGO_TARGET_DIR", old_target_dir),
+                ("RUST_VERIFICATION_ROOT_BASE", old_root_base),
+            ):
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        expected_target = str(root_base / "bolt-v2" / "target")
+        if "CARGO_BUILD_TARGET_DIR" in env:
+            raise AssertionError("managed_env must scrub CARGO_BUILD_TARGET_DIR instead of routing it")
+        if env.get("CARGO_TARGET_DIR") != expected_target:
+            raise AssertionError((env.get("CARGO_TARGET_DIR"), expected_target))
+
+
+def assert_v6_red_managed_cargo_clean_refuses_active_process() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, active_process_patterns=["cargo", "rustc", "rust_verification.py"])
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        protected_file = target / "debug" / "protected.bin"
+        protected_file.parent.mkdir(parents=True)
+        protected_file.write_bytes(b"abc")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "fake-cargo",
+            """#!/usr/bin/env bash
+if [[ "$1" == "clean" ]]; then
+  rm -rf "$CARGO_TARGET_DIR/debug"
+fi
+exit 0
+""",
+        )
+        escaped_command = f"cargo build --manifest-path {repo / 'Cargo.toml'}"
+        write_executable(
+            bin_dir / "ps",
+            f"""#!/usr/bin/env bash
+printf '123 {escaped_command}\\n'
+""",
+        )
+        proc_dir = tmp_path / "proc" / "123"
+        proc_dir.mkdir(parents=True)
+        (proc_dir / "cwd").symlink_to(repo)
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_REAL_CARGO"] = str(bin_dir / "fake-cargo")
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "proc")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cargo", "--repo", str(repo), "--", "clean"], env=env)
+        if result.returncode == 0 or not protected_file.exists():
+            raise AssertionError(
+                "managed cargo clean must refuse before deletion when related Rust processes are active: "
+                f"returncode={result.returncode} protected_exists={protected_file.exists()} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
+def assert_v6_red_disk_preflight_before_managed_cargo_and_run() -> None:
+    failures: list[str] = []
+    for command_name in ("cargo", "run"):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            write_policy_with_cache(repo, min_free_bytes=10**18, soft_limit_bytes=1)
+            root_base = tmp_path / "rust-root"
+            target = root_base / "bolt-v2" / "target"
+            cache_file = target / "debug" / "large.bin"
+            cache_file.parent.mkdir(parents=True)
+            cache_file.write_bytes(b"abc")
+            legacy_root = repo / "target"
+            legacy_root.mkdir()
+            (legacy_root / "legacy.bin").write_bytes(b"legacy")
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            marker = tmp_path / "started"
+            write_executable(
+                bin_dir / "fake-runner",
+                f"""#!/usr/bin/env bash
+touch {marker}
+exit 0
+""",
+            )
+            write_executable(
+                bin_dir / "just",
+                f"""#!/usr/bin/env bash
+touch {marker}
+exit 0
+""",
+            )
+
+            env = os.environ.copy()
+            env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            env["RUST_VERIFICATION_REAL_CARGO"] = str(bin_dir / "fake-runner")
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            if command_name == "cargo":
+                args = ["cargo", "--repo", str(repo), "--", "build"]
+            else:
+                args = ["run", "--repo", str(repo), "build"]
+            result = run_owner(args, env=env)
+            combined = f"{result.stdout}\n{result.stderr}".lower()
+            if (
+                result.returncode == 0
+                or marker.exists()
+                or "free" not in combined
+                or "managed" not in combined
+                or "legacy" not in combined
+            ):
+                failures.append(
+                    f"{args!r}: returncode={result.returncode} runner_started={marker.exists()} "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+    if failures:
+        raise AssertionError("managed heavy Rust commands must run disk preflight before execution: " + "; ".join(failures))
+
+
+def assert_v6_red_policy_gaps() -> None:
+    checks = [
+        assert_v6_red_active_process_parser_gaps,
+        assert_v6_red_managed_cargo_clean_refuses_active_process,
+        assert_v6_red_disk_preflight_before_managed_cargo_and_run,
+    ]
+    failures: list[str] = []
+    for check in checks:
+        try:
+            check()
+        except AssertionError as exc:
+            failures.append(f"{check.__name__}: {exc}")
+    if failures:
+        raise AssertionError("v6 RED policy coverage failures: " + " | ".join(failures))
+
+
 def main() -> int:
     assert_cache_status_reports_managed_target_tree()
     assert_cache_commands_require_json_flag()
@@ -1624,6 +1895,9 @@ def main() -> int:
     assert_cache_prune_apply_preserves_subtree_when_scan_incomplete()
     assert_cache_prune_rejects_conflicting_modes()
     assert_repo_policy_declares_cache_retention()
+    assert_v6_regression_cargo_process_names_stay_visible()
+    assert_managed_env_scrubs_build_target_dir_and_routes_target_dir()
+    assert_v6_red_policy_gaps()
     print("OK: Rust verification cache retention self-tests passed.")
     return 0
 

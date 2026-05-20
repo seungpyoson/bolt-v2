@@ -3,19 +3,31 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import importlib.util
 import pathlib
+import re
 import sys
+import tempfile
+import textwrap
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]"
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
+EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
+    "'.github/workflows/ci.yml'",
+    "'.github/actions/setup-environment/action.yml'",
+    "'.no-mistakes.yaml'",
+)
 
 
-def load_verifier():
-    spec = importlib.util.spec_from_file_location("verify_ci_workflow_hygiene", VERIFIER_PATH)
+def load_verifier(
+    path: pathlib.Path = VERIFIER_PATH, module_name: str = "verify_ci_workflow_hygiene"
+):
+    spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise AssertionError("could not load verify_ci_workflow_hygiene.py")
     module = importlib.util.module_from_spec(spec)
@@ -1063,6 +1075,239 @@ def assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action() -> N
         raise AssertionError(
             f"uppercase SHA must be accepted as pinned, got: {pinning_errors!r}"
         )
+
+
+def workflow_with_detector_probe(script: str) -> str:
+    return replace_once(
+        BASE_WORKFLOW,
+        "      - run: echo detector",
+        "      - name: V6 raw Rust storage policy probe\n        run: |\n"
+        + textwrap.indent(script.strip(), "          "),
+    )
+
+
+def assert_v6_deploy_artifact_s3_stays_allowed() -> None:
+    verifier = load_verifier()
+    workflow = workflow_with_detector_probe(
+        """
+        mkdir -p dist
+        aws s3 cp dist/bolt-v2.tar.zst s3://bolt-v2-deploy-artifacts/bolt-v2.tar.zst
+        """
+    )
+    s3_errors = [error for error in verifier.verify_text(workflow, BASE_ACTION, BASE_NEXTEST_CONFIG) if "s3" in error.lower()]
+    if s3_errors:
+        raise AssertionError(f"deploy artifact S3 publication must stay allowed, got: {s3_errors!r}")
+
+
+def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
+    cases = [
+        (
+            "CARGO_TARGET_DIR=/tmp/raw-target cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "CARGO_BUILD_TARGET_DIR=/tmp/raw-target cargo check",
+            "CARGO_BUILD_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "mkdir -p .cargo && printf '[build]\\ntarget-dir = \"/tmp/raw-target\"\\n' > .cargo/config.toml && cargo check",
+            ".cargo/config.toml build.target-dir raw target override must be classified",
+        ),
+        (
+            "cargo --config build.target-dir=/tmp/raw-target check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "cargo check --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "CARGO_TARGET_TMPDIR=/tmp/raw-tmp cargo test",
+            "CARGO_TARGET_TMPDIR raw target override must be classified",
+        ),
+        (
+            "CARGO_INCREMENTAL=1 cargo check",
+            "CARGO_INCREMENTAL raw cache override must be classified",
+        ),
+        (
+            "CARGO_INSTALL_ROOT=/tmp/cargo-install cargo install ripgrep --locked",
+            "CARGO_INSTALL_ROOT install output override must be classified",
+        ),
+        (
+            "CARGO_HOME=/tmp/cargo-home cargo check",
+            "CARGO_HOME raw cache override must be classified",
+        ),
+        (
+            "RUSTUP_HOME=/tmp/rustup-home cargo check",
+            "RUSTUP_HOME raw toolchain override must be classified",
+        ),
+        (
+            "RUSTFLAGS='--out-dir /tmp/raw-out' cargo check",
+            "RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "RUSTC_WRAPPER=/tmp/wrapper cargo check",
+            "RUSTC_WRAPPER raw compiler wrapper must be classified",
+        ),
+        (
+            "RUSTC_WORKSPACE_WRAPPER=/tmp/workspace-wrapper cargo check",
+            "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified",
+        ),
+        (
+            "cargo rustc -- --out-dir /tmp/raw-out",
+            "cargo rustc --out-dir raw output override must be classified",
+        ),
+        (
+            "cargo rustc -- --artifact-dir /tmp/raw-artifacts",
+            "cargo rustc --artifact-dir raw output override must be classified",
+        ),
+        (
+            "cargo install ripgrep --target x86_64-unknown-linux-gnu --target-dir /tmp/install-build --root /tmp/install-root",
+            "cargo install build target and install root ownership must be classified separately",
+        ),
+        (
+            "no-mistakes run -- cargo check",
+            "no-mistakes raw Cargo drift must be classified",
+        ),
+        (
+            "no-mistakes run --worktree . -- cargo check --target-dir target",
+            "no-mistakes worktree-local target path evidence must be reported",
+        ),
+        (
+            "aws s3 sync target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+    ]
+    verifier = load_verifier()
+    misses: list[str] = []
+    for script, fragment in cases:
+        errors = verifier.verify_text(workflow_with_detector_probe(script), BASE_ACTION, BASE_NEXTEST_CONFIG)
+        if not any(fragment in error for error in errors):
+            misses.append(f"{fragment!r}: errors={errors!r}")
+    if misses:
+        raise AssertionError("raw/unmanaged Rust storage policy gaps were silent: " + "; ".join(misses))
+
+
+def workflow_with_exact_head_governance_cache_inputs(workflow: str) -> str:
+    governance_inputs = ", " + ", ".join(EXACT_HEAD_GOVERNANCE_CACHE_INPUTS)
+    return workflow.replace("'justfile') }}", f"'justfile'{governance_inputs}) }}").replace(
+        "'specs/**/*.md') }}",
+        f"'specs/**/*.md'{governance_inputs}) }}",
+    )
+
+
+def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        verifier_path = tmp_path / "scripts" / "verify_ci_workflow_hygiene.py"
+        verifier_path.parent.mkdir(parents=True)
+        verifier_path.write_text(VERIFIER_PATH.read_text())
+
+        workflow_dir = tmp_path / ".github" / "workflows"
+        workflow_dir.mkdir(parents=True)
+        (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+
+        action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
+        action_path.parent.mkdir(parents=True)
+        action_path.write_text(BASE_ACTION)
+
+        nextest_path = tmp_path / ".config" / "nextest.toml"
+        nextest_path.parent.mkdir(parents=True)
+        nextest_path.write_text(BASE_NEXTEST_CONFIG)
+
+        (tmp_path / ".no-mistakes.yaml").write_text(no_mistakes_text)
+
+        temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = temp_verifier.main()
+        return result, stdout.getvalue() + stderr.getvalue()
+
+
+def assert_v6_red_no_mistakes_raw_cargo_is_reported() -> None:
+    raw_fixture = """
+commands:
+  test: cargo test
+  lint: >
+    cargo clippy --all-targets -- -D warnings
+  format: "cargo fmt --check"
+  review: 'cargo test --all-targets'
+  ci: |
+    cargo clippy --workspace
+  envcheck: env CARGO_TARGET_DIR=target cargo test
+  shellcheck: bash -lc 'cargo test --all'
+  wrapped: command cargo fmt --check
+  hyphenated: cargo-clippy --workspace
+  docs: just docs
+"""
+    allowed_fixture = """
+commands:
+  test: python3 scripts/rust_verification.py cargo --repo . -- test
+  lint: python3 scripts/rust_verification.py cargo --repo . -- clippy --all-targets -- -D warnings
+  format: python3 scripts/rust_verification.py cargo --repo . -- fmt --check
+  exact-head-ci: gh run view --repo seungpyoson/bolt-v2 --commit "$GITHUB_SHA" --json conclusion
+"""
+    fixture_expected_raw_keys = [
+        "test",
+        "lint",
+        "format",
+        "review",
+        "ci",
+        "envcheck",
+        "shellcheck",
+        "wrapped",
+        "hyphenated",
+    ]
+    expected = [
+        f".no-mistakes.yaml commands.{command_name} raw Cargo drift must be classified"
+        for command_name in fixture_expected_raw_keys
+    ]
+    fixture_result, fixture_errors = run_verifier_main_with_no_mistakes(raw_fixture)
+    missing_fixture = [fragment for fragment in expected if fragment not in fixture_errors]
+    false_fixture = ".no-mistakes.yaml commands.docs raw Cargo drift must be classified" in fixture_errors
+    allowed_result, allowed_errors = run_verifier_main_with_no_mistakes(allowed_fixture)
+    false_allowed = [
+        error for error in allowed_errors.splitlines()
+        if ".no-mistakes.yaml" in error and "raw Cargo drift" in error
+    ]
+
+    if fixture_result == 0 or missing_fixture or false_fixture or allowed_result != 0 or false_allowed:
+        raise AssertionError(
+            "no-mistakes raw-Cargo drift must fail through verifier main() while managed-wrapper "
+            "and exact-head CI evidence commands stay allowed: "
+            f"fixture_result={fixture_result} missing_fixture={missing_fixture!r} "
+            f"false_fixture={false_fixture} fixture_errors={fixture_errors!r} "
+            f"fixture_expected_raw_keys={fixture_expected_raw_keys!r} "
+            f"allowed_result={allowed_result} false_allowed={false_allowed!r} "
+            f"allowed_errors={allowed_errors!r}"
+        )
+
+
+def assert_v6_red_exact_head_governance_inputs_are_cache_keyed() -> None:
+    governed_workflow = workflow_with_exact_head_governance_cache_inputs(BASE_WORKFLOW)
+    assert_clean(governed_workflow)
+    for cache_input in EXACT_HEAD_GOVERNANCE_CACHE_INPUTS:
+        assert_error(
+            "cache keys must include exact-head CI/no-mistakes governance inputs",
+            governed_workflow.replace(f", {cache_input}", ""),
+        )
+
+
+def assert_v6_red_workflow_policy_gaps() -> None:
+    checks = [
+        assert_v6_red_raw_rust_storage_overrides_are_reported,
+        assert_v6_red_no_mistakes_raw_cargo_is_reported,
+        assert_v6_red_exact_head_governance_inputs_are_cache_keyed,
+    ]
+    failures: list[str] = []
+    for check in checks:
+        try:
+            check()
+        except AssertionError as exc:
+            failures.append(f"{check.__name__}: {exc}")
+    if failures:
+        raise AssertionError("v6 RED workflow policy coverage failures: " + " | ".join(failures))
 
 
 def main() -> int:
@@ -2790,6 +3035,8 @@ def main() -> int:
             "      # if: ${{ inputs.include-managed-target-dir == 'true' }}",
         ),
     )
+    assert_v6_deploy_artifact_s3_stays_allowed()
+    assert_v6_red_workflow_policy_gaps()
     print("OK: CI workflow hygiene verifier self-tests passed.")
     return 0
 

@@ -52,9 +52,13 @@ jobs:
             body="$EVENT_BODY"
           fi
 
-          # Cap the body to stay within the free-tier input limit (~8000 tokens).
-          # ~24000 chars ≈ 6000 tokens, leaving headroom for the system prompt
-          # and title; an oversized body would otherwise 400 every model.
+          # Best-effort coarse cap on the body to avoid burning the whole model
+          # chain on an obviously oversized issue. This is a char heuristic, not
+          # a hard token guarantee: ~24000 chars ≈ 6000 tokens for English, but
+          # dense/CJK content can still exceed the ~8000-token free-tier limit.
+          # The real backstop is the API itself — an over-limit request 400s and
+          # the chain falls through to the next model (and ultimately posts no
+          # summary), so the cap only needs to handle the common case.
           max_body_chars=24000
           if [ "${#body}" -gt "$max_body_chars" ]; then
             body="${body:0:$max_body_chars}"$'\n\n_[issue body truncated for summarization]_'

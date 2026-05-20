@@ -31,14 +31,18 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           # reporter=local prints findings to the job log; the job's exit code
-          # (governed by fail_level below) is the gate. We avoid github-check /
-          # github-pr-check: in our run (commit 8624b66c, at the action's
-          # default level: error) those posted a check-run whose conclusion was
-          # `failure` on an info-level finding (the intentional SC2016 in
-          # summary.yml) even though fail_level=error left the job step green —
-          # the check-run conclusion tracks whether any annotation was posted,
-          # not the reviewdog exit code. (level: error was already the strictest
-          # report level, so no level tweak rescues the github-check variant.)
+          # (governed by fail_level below) is the single gate. We chose it over
+          # github-check to keep contents:read-only (no checks: write), avoid a
+          # second separately-concluded check-run, and behave identically on
+          # fork PRs. Trade-off: no inline PR annotations.
+          #
+          # A github-check variant also works and would keep annotations: with
+          # level: warning, reviewdog's conclusion() returns `neutral` (accepted
+          # by required checks) while fail_level=error still fails the job only
+          # on errors. We saw the action's *default* level: error instead post a
+          # `failure` conclusion on the intentional info-level SC2016 at commit
+          # 8624b66c (the job step stayed green). So local is a deliberate
+          # trade-off, not the only workable config.
           reporter: local
           # nofilter: lint every finding in every workflow file, not just lines
           # in the PR diff. reviewdog's default (file) and `added` would let a

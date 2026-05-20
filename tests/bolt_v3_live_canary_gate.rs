@@ -325,6 +325,81 @@ async fn live_canary_gate_rejects_approval_consumption_head_sha_mismatch() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_stale_self_consistent_head_sha() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.head_sha = "fedcba9876543210fedcba9876543210fedcba98".to_string();
+    write_valid_approval_consumption_proof(&operator_evidence);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("stale self-consistent head_sha must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::OperatorEvidenceHeadShaMismatch {
+                ref actual,
+                ..
+            } if actual == "fedcba9876543210fedcba9876543210fedcba98"
+        ),
+        "expected stale head_sha rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_malformed_operator_evidence_head_sha() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.head_sha = "ABCDEF".to_string();
+    write_valid_approval_consumption_proof(&operator_evidence);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("malformed operator evidence head_sha must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHeadShaShape { field: "head_sha" }
+        ),
+        "expected malformed head_sha rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_approval_consumption_root_toml_sha256_mismatch() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

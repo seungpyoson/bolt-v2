@@ -119,6 +119,14 @@ pub enum BoltV3LiveCanaryGateError {
     MissingOperatorEvidenceField {
         field: &'static str,
     },
+    InvalidOperatorEvidenceHeadShaShape {
+        field: &'static str,
+    },
+    BuildHeadShaUnavailable,
+    OperatorEvidenceHeadShaMismatch {
+        expected: &'static str,
+        actual: String,
+    },
     InvalidOperatorEvidenceHashShape {
         field: &'static str,
     },
@@ -257,6 +265,20 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                 f,
                 "bolt-v3 live canary `[live_canary].operator_evidence.{field}` is empty"
             ),
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHeadShaShape { field } => write!(
+                f,
+                "bolt-v3 live canary `[live_canary].operator_evidence.{field}` must be a 40-character lowercase git head sha"
+            ),
+            BoltV3LiveCanaryGateError::BuildHeadShaUnavailable => write!(
+                f,
+                "bolt-v3 live canary build head_sha is unavailable or invalid"
+            ),
+            BoltV3LiveCanaryGateError::OperatorEvidenceHeadShaMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "bolt-v3 live canary `[live_canary].operator_evidence.head_sha` ({actual}) does not match build head_sha ({expected})"
+                )
+            }
             BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape { field } => write!(
                 f,
                 "bolt-v3 live canary `[live_canary].operator_evidence.{field}` must be a lowercase sha256 hex string"
@@ -617,6 +639,7 @@ async fn validate_operator_evidence(
             return Err(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field });
         }
     }
+    validate_operator_evidence_head_sha(evidence)?;
     if let Some(strategy_cancel_path) = &evidence.strategy_cancel_path {
         if strategy_cancel_path.trim().is_empty() {
             return Err(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
@@ -665,6 +688,27 @@ async fn validate_operator_evidence(
     validate_operator_evidence_file_hashes(root_path, evidence).await?;
     validate_operator_approval_consumption(root_path, evidence, approval_id, current_unix_seconds)
         .await?;
+
+    Ok(())
+}
+
+fn validate_operator_evidence_head_sha(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    if !is_git_head_sha(&evidence.head_sha) {
+        return Err(
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHeadShaShape { field: "head_sha" },
+        );
+    }
+
+    let build_head_sha =
+        current_build_head_sha().ok_or(BoltV3LiveCanaryGateError::BuildHeadShaUnavailable)?;
+    if evidence.head_sha != build_head_sha {
+        return Err(BoltV3LiveCanaryGateError::OperatorEvidenceHeadShaMismatch {
+            expected: build_head_sha,
+            actual: evidence.head_sha.clone(),
+        });
+    }
 
     Ok(())
 }
@@ -1097,6 +1141,17 @@ fn resolve_configured_path(root_path: &Path, configured: &str) -> PathBuf {
 
 fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+pub(crate) fn current_build_head_sha() -> Option<&'static str> {
+    option_env!("BOLT_V3_BUILD_HEAD_SHA").filter(|value| is_git_head_sha(value))
+}
+
+fn is_git_head_sha(value: &str) -> bool {
+    value.len() == 40
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))

@@ -210,7 +210,8 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
     let approval_nonce_sha256 = sha256_file(&approval_nonce_path);
     let canary_evidence_path = canary_evidence_path.to_string_lossy().to_string();
     let root_toml_sha256 = sha256_file(&repo_path("tests/fixtures/bolt_v3/root.toml"));
-    let head_sha = "0123456789abcdef0123456789abcdef01234567";
+    let head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
+        .expect("BOLT_V3_BUILD_HEAD_SHA should be set by build.rs for live canary fixtures");
     let approval_consumption_proof = serde_json::json!({
         "schema_version": 1,
         "record_kind": "phase8_operator_approval_consumption",

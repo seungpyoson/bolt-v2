@@ -31,11 +31,14 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           # reporter=local prints findings to the job log; the job's exit code
-          # (governed by fail_level below) is the gate. We deliberately avoid
-          # the github-check / github-pr-check reporters: those post a check-run
-          # whose conclusion is `failure` on ANY annotated finding regardless of
-          # level, so an intentional info finding (e.g. SC2016) would red-flag
-          # the gate even though fail_level=error leaves the job green.
+          # (governed by fail_level below) is the gate. We avoid github-check /
+          # github-pr-check: in our run (commit 8624b66c, at the action's
+          # default level: error) those posted a check-run whose conclusion was
+          # `failure` on an info-level finding (the intentional SC2016 in
+          # summary.yml) even though fail_level=error left the job step green —
+          # the check-run conclusion tracks whether any annotation was posted,
+          # not the reviewdog exit code. (level: error was already the strictest
+          # report level, so no level tweak rescues the github-check variant.)
           reporter: local
           # nofilter: lint every finding in every workflow file, not just lines
           # in the PR diff. reviewdog's default (file) and `added` would let a

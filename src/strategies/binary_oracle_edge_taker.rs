@@ -9381,9 +9381,12 @@ mod tests {
     fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let _cache = register_test_strategy(&mut strategy);
+        let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
         strategy.config.entry_order.order_type = OrderType::StopLimit;
-        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
         strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.is_post_only = true;
 
         let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
         let quantity = Quantity::new(2.0, 2);
@@ -9416,10 +9419,11 @@ mod tests {
             panic!("StopLimit config should build an NT stop-limit order");
         };
         assert_eq!(order.order_type(), OrderType::StopLimit);
-        assert_eq!(order.time_in_force(), TimeInForce::Gtc);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtd);
         assert_eq!(order.price(), Some(price));
         assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
-        assert!(!order.is_post_only());
+        assert_eq!(order.expire_time(), Some(expire_time));
+        assert!(order.is_post_only());
         assert!(!order.is_reduce_only());
         assert!(!order.is_quote_quantity());
         assert_eq!(
@@ -9467,6 +9471,23 @@ mod tests {
                 .to_string()
                 .contains("GTD not supported for Market orders"),
             "{market_error}"
+        );
+
+        strategy.config.entry_order.order_type = OrderType::StopLimit;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        let stop_limit_error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-005-1"),
+            )
+            .expect_err("StopLimit GTD without expire_time should fail before NT factory");
+        assert!(
+            stop_limit_error.to_string().contains("expire_time"),
+            "{stop_limit_error}"
         );
     }
 

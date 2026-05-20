@@ -159,6 +159,17 @@
 - [x] T066 [US2] Add raw archetype-to-runtime strategy build round-trip for `order_type=stop_limit` in `tests/bolt_v3_strategy_registration.rs`
 - [x] T067 [US2] Verify StopLimit focused tests, runtime literal/source fences, full `cargo test`, branch cleanliness, and exact-head gate state
 
+## Phase 16: TDD Slice 12 Review Regression Coverage
+
+**Goal**: Close post-review StopLimit regression gaps without changing production behavior unless a test exposes a real defect.
+
+- [x] T068 [P] [US2] Run post-slice external adversarial review against the exact StopLimit diff and record usable findings in `research.md`
+- [x] T069 [US2] Add StopLimit construction coverage for GTD expiry and post-only factory fields in `src/strategies/binary_oracle_edge_taker.rs`
+- [x] T070 [US2] Add StopLimit exit-order archetype and runtime round-trip coverage in `tests/config_parsing.rs` and `tests/bolt_v3_strategy_registration.rs`
+- [x] T071 [US2] Add negative StopLimit archetype coverage for missing/non-positive `trigger_price` and unsupported strategy-scope flags
+- [x] T072 [US2] Verify focused tests, full local checks, and repo gates after the regression patch
+- [ ] T073 [US2] Verify post-push exact-head GitHub gate, no-mistakes state, and external review state for the regression patch head
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -176,6 +187,7 @@
 - Phase 13 is the first deferred Phase 7 factory-variant slice and blocks StopMarket support claims until verified.
 - Phase 14 blocks completion because Claude and Gemini both found post-Phase 13 StopMarket blockers.
 - Phase 15 is the next deferred Phase 7 factory-variant slice and blocks StopLimit support claims until verified and reviewed.
+- Phase 16 blocks StopLimit support claims because post-slice review found missing regression coverage.
 
 ## Parallel Opportunities
 

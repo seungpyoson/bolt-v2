@@ -170,7 +170,15 @@ End-to-end review:
 
 ## No-Mistakes Evidence
 
-- Current worktree branch: `codex/maker-order-proof-clean`.
-- Current worktree head: `5978dc1cde84210f1a293d0b5a667aaa577945b3`.
+- Prior TDD Slice 8 worktree branch: `codex/maker-order-proof-clean`.
+- Prior TDD Slice 8 worktree head: `5978dc1cde84210f1a293d0b5a667aaa577945b3`.
 - `no-mistakes status` is not proof for this branch/head. It reported active run `01KS04Q4BJ3HVN9T8580MK9N9E` on branch `refactor/386-bolt-v3-nt-vocab-alignment`, head `4d6f4ab0`, status `running`.
 - `no-mistakes rerun` is also not proof. It failed with `fatal: ambiguous argument 'refs/heads/codex/maker-order-proof-clean^{commit}'`, so the gate repo could not resolve the current worktree branch ref.
+
+## TDD Slice 9 Evidence
+
+- T048 RED: PR #434 exact pushed head `6ef656139b4f96275ac604b4ef535f417673fd98` had `fmt-check` and `source-fence` failures. Local `just fmt-check` and `just source-fence` reproduced the runtime-literal allowlist failure in `scripts/test_verify_bolt_v3_runtime_literals.py::test_allowlist_exactness`.
+- T048 RED follow-up: after the runtime-literal audit update, `just source-fence` reproduced the legacy-default fence failure on `src/strategies/binary_oracle_edge_taker.rs:114` because `SubmitContext` still derived `Default`.
+- T049 GREEN: runtime-literal classifications now cover the NT order-intent schema fields and GTD positive-expiry invariants, and `SubmitContext` no longer derives unused `Default`.
+- T050 verification: `python3 scripts/test_verify_bolt_v3_runtime_literals.py` passed; `python3 scripts/verify_bolt_v3_runtime_literals.py` passed; `just fmt-check` passed after rerunning outside the sandbox cache-lock restriction; `just source-fence` passed after rerunning outside the sandbox cache-lock restriction; `cargo test bolt_v3_archetype_accepts_mixed_maker_taker_order_configs -- --nocapture` passed; `cargo test bolt_v3_archetype_accepts_gtd_limit_order_with_expiry -- --nocapture` passed; `cargo test partial_exit_fill_then_expire_restores_managed_residual_position -- --nocapture` passed; `git diff --check` passed; full `cargo test` passed.
+- T051 no-mistakes state before this follow-up commit: `no-mistakes status` reported daemon running with active unrelated run `01KS2TFBX0R3XRM64Y027T9HZR` on branch `codex/374-t013-t014-red-tests`, head `9a504fa8`, status `running`. This is not proof for `codex/maker-order-proof-clean`; post-commit gate proof must use a new run for the pushed follow-up head.

@@ -119,6 +119,15 @@
 - [x] T046 [US3] Verify focused exit lifecycle tests, full `cargo test`, `cargo fmt -- --check`, and `git diff --check`
 - [x] T047 [US3] Record Claude/Gemini/Kimi post-review outcomes and the T044-T046 evidence in `research.md`
 
+## Phase 12: TDD Slice 9 - Exact-Head CI Source-Fence Follow-Up
+
+**Goal**: Resolve the PR #434 exact-head `fmt-check` and `source-fence` failures without changing order-intent behavior.
+
+- [x] T048 RED: Reproduce the exact runtime-literal allowlist failure with `just fmt-check` and `just source-fence`
+- [x] T049 GREEN: Update runtime-literal classifications in `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`
+- [x] T050 Verify `just fmt-check`, `just source-fence`, focused order-intent tests, and branch cleanliness
+- [x] T051 Record CI follow-up evidence and no-mistakes state in `research.md`
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -132,6 +141,7 @@
 - Phase 9 can run in parallel with later implementation planning but cannot claim live support.
 - Phase 10 blocks completion.
 - Phase 11 blocks completion because it resolves a post-implementation review blocker.
+- Phase 12 blocks completion because PR #434 exact-head CI failed after the pushed implementation.
 
 ## Parallel Opportunities
 

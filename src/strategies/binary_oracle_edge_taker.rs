@@ -111,7 +111,7 @@ struct BinaryOracleEdgeTakerOrderConfig {
     is_quote_quantity: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct SubmitContext {
     client_id: Option<ClientId>,
     position_id: Option<PositionId>,

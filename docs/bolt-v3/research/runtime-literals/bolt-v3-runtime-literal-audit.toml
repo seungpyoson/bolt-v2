@@ -96,9 +96,9 @@ reason = "This is an existing taker strategy config schema field name; the value
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"entry_order"'''
-context = '''insert_order_config(&mut table, "entry_order", &parameters.entry_order);'''
+context = '''"entry_order",'''
 classification = "strategy_runtime_schema_field"
-reason = "This is the nested existing taker strategy config table name, populated from bolt-v3 TOML [parameters.entry_order]."
+reason = "This is the nested strategy runtime config table name, populated from bolt-v3 TOML [parameters.entry_order]."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -112,9 +112,33 @@ reason = "This is an existing taker strategy config schema field name; the value
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"exit_order"'''
-context = '''insert_order_config(&mut table, "exit_order", &parameters.exit_order);'''
+context = '''"exit_order",'''
 classification = "strategy_runtime_schema_field"
-reason = "This is the nested existing taker strategy config table name, populated from bolt-v3 TOML [parameters.exit_order]."
+reason = "This is the nested strategy runtime config table name, populated from bolt-v3 TOML [parameters.exit_order]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"expire_time_unix_nanos"'''
+context = '''"expire_time_unix_nanos",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT order expiry timestamp field projected from TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0'''
+context = '''&& entry.expire_time_unix_nanos.is_some_and(|value| value > 0);'''
+classification = "nt_order_model_invariant"
+reason = "This enforces positive GTD expiry nanos before calling the NT order factory; the expiry value itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0'''
+context = '''&& exit.expire_time_unix_nanos.is_some_and(|value| value > 0);'''
+classification = "nt_order_model_invariant"
+reason = "This enforces positive GTD expiry nanos before calling the NT order factory; the expiry value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -277,18 +301,10 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = '''src/bolt_v3_archetypes/binary_oracle_edge_taker.rs'''
-kind = '''string'''
-literal = '''"netting"'''
-context = '''nautilus_model::enums::OmsType::Netting => "netting",'''
-classification = '''strategy_runtime_schema_enum_value'''
-reason = '''This is the NT OmsType::Netting enum variant rendered into the existing taker StrategyConfig table; the accepted OMS mode still comes from bolt-v3 TOML validation.'''
-
-[[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"oms_type"'''
-context = '''insert_string(&mut table, "oms_type", oms_type_value(strategy).to_string());'''
+context = '''insert_string(&mut table, "oms_type", oms_type_value(strategy));'''
 classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name, populated from bolt-v3 TOML oms_type."
 
@@ -2800,6 +2816,14 @@ reason = "This is a stable decision-evidence reason code, not an operator runtim
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"exit_order_config_invalid"'''
+context = '''const EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID: &str = "exit_order_config_invalid";'''
+classification = "strategy_exit_block_reason_code"
+reason = "This is a stable decision-evidence reason code for invalid TOML-owned exit order configuration."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"exit_hold"'''
 context = '''const EXIT_BLOCK_REASON_EXIT_HOLD: &str = "exit_hold";'''
 classification = "strategy_exit_block_reason_code"
@@ -2924,6 +2948,14 @@ literal = '''"oms_type"'''
 context = '''const CONFIG_FIELD_OMS_TYPE: &str = "oms_type";'''
 classification = "strategy_config_field_name"
 reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"expire_time_unix_nanos"'''
+context = '''const ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD: &str = "expire_time_unix_nanos";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT order expiry field label used in validation diagnostics; the timestamp value is TOML-owned."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"

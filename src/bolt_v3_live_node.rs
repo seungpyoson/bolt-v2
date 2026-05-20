@@ -50,6 +50,7 @@ use nautilus_model::{
     identifiers::{ClientId, StrategyId},
 };
 use ustr::Ustr;
+use zeroize::Zeroizing;
 
 use crate::{
     bolt_v3_adapters::{BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters},
@@ -79,7 +80,7 @@ use crate::{
 pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
-    redaction_values: Vec<String>,
+    redaction_values: Vec<Zeroizing<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,7 +111,7 @@ impl BoltV3LiveNodeRuntime {
     fn new(
         node: LiveNode,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
-        redaction_values: Vec<String>,
+        redaction_values: Vec<Zeroizing<String>>,
     ) -> Self {
         Self {
             node,
@@ -156,7 +157,7 @@ impl BoltV3LiveNodeRuntime {
         }
     }
 
-    pub fn redaction_values(&self) -> &[String] {
+    pub fn redaction_values(&self) -> &[Zeroizing<String>] {
         &self.redaction_values
     }
 
@@ -1052,6 +1053,17 @@ mod tests {
             root,
             strategies: Vec::new(),
         }
+    }
+
+    #[test]
+    fn runtime_redaction_value_buffers_zeroize_on_drop() {
+        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        fn redaction_values_field(runtime: &BoltV3LiveNodeRuntime) -> &Vec<Zeroizing<String>> {
+            &runtime.redaction_values
+        }
+
+        assert_zeroize_on_drop::<Vec<Zeroizing<String>>>();
+        let _ = redaction_values_field as fn(&BoltV3LiveNodeRuntime) -> &Vec<Zeroizing<String>>;
     }
 
     #[test]

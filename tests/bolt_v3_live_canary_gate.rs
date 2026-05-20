@@ -1160,9 +1160,11 @@ async fn live_canary_gate_rejects_operator_window_expired_at_gate_timestamp() {
     }
 }
 
+type OperatorEvidenceStringMutator = fn(&mut LiveCanaryOperatorEvidenceBlock);
+
 #[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_blank_operator_evidence_string_fields() {
-    let cases: &[(&str, fn(&mut LiveCanaryOperatorEvidenceBlock))] = &[
+    let cases: &[(&str, OperatorEvidenceStringMutator)] = &[
         ("approval_envelope_path", |e| {
             e.approval_envelope_path = blank_operator_evidence_value()
         }),

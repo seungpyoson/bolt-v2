@@ -525,6 +525,69 @@ class RuntimeCaptureYamlVerifierTests(unittest.TestCase):
 
         self.assert_collects("15.portfolio_snapshot_jsonl_path_missing_in_src", mutate)
 
+    def test_collect_failures_rejects_captured_portfolio_snapshot_without_write_branch(
+        self,
+    ) -> None:
+        def mutate(fixture: dict[str, Any]) -> None:
+            fixture["surfaces"]["surfaces"].append(
+                {
+                    "nt_api": "subscribe_portfolio_snapshot",
+                    "nt_path": "crates/common/src/msgbus/api.rs:470",
+                    "message_type": "PortfolioSnapshot",
+                    "api_kind": "passive_pubsub",
+                    "bolt_status": "captured_now",
+                    "source_subscribe_fn": "subscribe_portfolio_snapshot",
+                    "bolt_pattern_helper": "portfolio_snapshots_pattern",
+                    "capture_stream": "portfolio_snapshot",
+                    "storage_format": "JSONL",
+                    "suggested_capture_storage": "jsonl",
+                }
+            )
+            fixture["feas"]["types"].append(
+                {
+                    "message_type": "PortfolioSnapshot",
+                    "nt_path": "crates/model/src/events/portfolio/snapshot.rs:46-68",
+                    "recommended_storage": "jsonl",
+                }
+            )
+            fixture["current_capture"]["captured_streams"].append(
+                {
+                    "stream": "portfolio_snapshot",
+                    "storage_format": "JSONL",
+                    "test_coverage": [
+                        "captures_broad_nt_runtime_jsonl_records_outside_hot_path"
+                    ],
+                }
+            )
+            fixture["src_text"] += """
+                const PORTFOLIO_SNAPSHOT_DIR: &str = "portfolio_snapshot";
+                const SNAPSHOTS_FILE: &str = "snapshots.jsonl";
+
+                fn portfolio_snapshots_pattern() {}
+                fn subscribe_portfolio() {
+                    subscribe_portfolio_snapshot(
+                        portfolio_snapshots_pattern(),
+                        handler,
+                        None,
+                    );
+                }
+
+                fn build_jsonl_paths(spool_root_path: PathBuf) {
+                    let _path = spool_root_path
+                        .join(PORTFOLIO_SNAPSHOT_DIR)
+                        .join(SNAPSHOTS_FILE);
+                }
+            """
+            fixture["test_text"] += (
+                "\nfn captures_broad_nt_runtime_jsonl_records_outside_hot_path() {}\n"
+            )
+            fixture["nt_api_text"] += (
+                "pub fn subscribe_portfolio_snapshot("
+                "pattern: Pattern, handler: Handler, priority: Option<u8>) {}\n"
+            )
+
+        self.assert_collects("15.portfolio_snapshot_write_branch_missing_in_src", mutate)
+
     def test_collect_failures_rejects_surface_storage_without_feasibility_row(self) -> None:
         def mutate(fixture: dict[str, Any]) -> None:
             fixture["surfaces"]["surfaces"][0]["message_type"] = "MissingType"

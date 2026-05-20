@@ -172,6 +172,12 @@ PORTFOLIO_SNAPSHOT_JSONL_PATH_RE = re.compile(
     r"\.join\(\s*(?:SNAPSHOTS_FILE|\"snapshots\.jsonl\")\s*\)",
     re.DOTALL,
 )
+PORTFOLIO_SNAPSHOT_WRITE_BRANCH_RE = re.compile(
+    r"CaptureMessage::PortfolioSnapshot\(\s*(?P<snapshot>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*"
+    r"=>\s*jsonl_writers\s*\.\s*portfolio_snapshots\s*\.\s*append\(\s*"
+    r"&jsonl_paths\s*\.\s*portfolio_snapshots\s*,\s*&(?P=snapshot)\s*\)",
+    re.DOTALL,
+)
 
 
 def read(path: Path) -> str:
@@ -199,6 +205,11 @@ def has_portfolio_snapshot_jsonl_path(src_text: str) -> bool:
         PORTFOLIO_SNAPSHOT_JSONL_FILENAME in path_text
         and PORTFOLIO_SNAPSHOT_JSONL_PATH_RE.search(path_text) is not None
     )
+
+
+def has_portfolio_snapshot_write_branch(src_text: str) -> bool:
+    write_text = strip_rust_comments_and_strings(src_text)
+    return PORTFOLIO_SNAPSHOT_WRITE_BRANCH_RE.search(write_text) is not None
 
 
 def has_explicit_portfolio_snapshot_waiver(row: dict) -> bool:
@@ -1017,6 +1028,15 @@ def collect_failures() -> list[tuple[str, str]]:
                     "15.portfolio_snapshot_jsonl_path_missing_in_src",
                     "src/nt_runtime_capture.rs does not write to "
                     "portfolio_snapshot/snapshots.jsonl",
+                )
+            )
+        if not has_portfolio_snapshot_write_branch(src_text):
+            findings.append(
+                (
+                    "15.portfolio_snapshot_write_branch_missing_in_src",
+                    "src/nt_runtime_capture.rs does not append "
+                    "CaptureMessage::PortfolioSnapshot to "
+                    "jsonl_paths.portfolio_snapshots",
                 )
             )
 

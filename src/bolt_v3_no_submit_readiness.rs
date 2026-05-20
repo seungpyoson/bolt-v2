@@ -12,6 +12,7 @@ use std::{
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, resolve_root_relative_path},
@@ -27,6 +28,22 @@ use crate::{
 };
 
 const REFERENCE_CACHE_ONLY_LIMITATION_DETAIL: &str = "NT cache only proves required reference instrument IDs are present; no live reference-data freshness or timestamp surface is available";
+
+trait RedactionValue {
+    fn as_redaction_str(&self) -> &str;
+}
+
+impl RedactionValue for String {
+    fn as_redaction_str(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl RedactionValue for Zeroizing<String> {
+    fn as_redaction_str(&self) -> &str {
+        self.as_str()
+    }
+}
 
 #[derive(Debug)]
 pub enum BoltV3NoSubmitReadinessError {
@@ -279,6 +296,24 @@ pub fn run_bolt_v3_no_submit_readiness_from_stage_results_at(
     redacted_values: &[String],
     generated_at_unix_seconds: u64,
 ) -> BoltV3NoSubmitReadinessReport {
+    run_bolt_v3_no_submit_readiness_from_stage_results_at_impl(
+        metadata,
+        controlled_connect,
+        reference_readiness,
+        controlled_disconnect,
+        redacted_values,
+        generated_at_unix_seconds,
+    )
+}
+
+fn run_bolt_v3_no_submit_readiness_from_stage_results_at_impl<T: RedactionValue>(
+    metadata: BoltV3NoSubmitReadinessReportMetadata,
+    controlled_connect: Result<(), String>,
+    reference_readiness: Result<(), String>,
+    controlled_disconnect: Result<(), String>,
+    redacted_values: &[T],
+    generated_at_unix_seconds: u64,
+) -> BoltV3NoSubmitReadinessReport {
     let mut stages = Vec::new();
     push_satisfied_stage(&mut stages, OPERATOR_APPROVAL_STAGE);
     push_satisfied_stage(&mut stages, SECRET_RESOLUTION_STAGE);
@@ -377,7 +412,7 @@ pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
     metadata: BoltV3NoSubmitReadinessReportMetadata,
-    redacted_values: &[String],
+    redacted_values: &[Zeroizing<String>],
 ) -> Result<BoltV3NoSubmitReadinessReport, BoltV3NoSubmitReadinessError> {
     let (connect, reference, disconnect) =
         controlled_no_submit_readiness(runtime, loaded, |runtime| {
@@ -385,7 +420,7 @@ pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
         })
         .await;
     let generated_at_unix_seconds = current_unix_seconds()?;
-    Ok(run_bolt_v3_no_submit_readiness_from_stage_results_at(
+    Ok(run_bolt_v3_no_submit_readiness_from_stage_results_at_impl(
         metadata,
         connect.map_err(|error| error.to_string()),
         reference,
@@ -478,11 +513,11 @@ fn push_satisfied_stage(stages: &mut Vec<BoltV3NoSubmitReadinessStage>, stage: &
     });
 }
 
-fn push_result_stage(
+fn push_result_stage<T: RedactionValue>(
     stages: &mut Vec<BoltV3NoSubmitReadinessStage>,
     stage: &'static str,
     result: Result<(), String>,
-    redacted_values: &[String],
+    redacted_values: &[T],
 ) -> bool {
     match result {
         Ok(()) => {
@@ -504,10 +539,10 @@ fn push_result_stage(
     }
 }
 
-fn redact_detail(detail: &str, redacted_values: &[String]) -> String {
+fn redact_detail<T: RedactionValue>(detail: &str, redacted_values: &[T]) -> String {
     let mut values = redacted_values
         .iter()
-        .map(String::as_str)
+        .map(RedactionValue::as_redaction_str)
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>();
     values.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));

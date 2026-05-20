@@ -17,6 +17,8 @@
 
 use std::collections::BTreeMap;
 
+use zeroize::Zeroizing;
+
 use crate::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
     bolt_v3_providers::{
@@ -121,16 +123,16 @@ impl ResolvedBoltV3Secrets {
             .and_then(|secrets| secrets.as_any().downcast_ref())
     }
 
-    pub fn redaction_values(&self) -> Vec<String> {
+    pub fn redaction_values(&self) -> Vec<Zeroizing<String>> {
         let mut values = self
             .clients
             .values()
             .flat_map(|secrets| secrets.redaction_values())
             .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
+            .map(|value| Zeroizing::new(value.to_string()))
             .collect::<Vec<_>>();
-        values.sort();
-        values.dedup();
+        values.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        values.dedup_by(|left, right| left.as_str() == right.as_str());
         values
     }
 }

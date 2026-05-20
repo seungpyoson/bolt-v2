@@ -15,7 +15,11 @@ use bolt_v2::strategies::registry::StrategyBuildContext;
 use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_model::identifiers::InstrumentId;
 use rust_decimal::Decimal;
-use std::sync::Arc;
+use std::{
+    sync::{Arc, Condvar, Mutex, mpsc},
+    thread,
+    time::Duration,
+};
 
 #[test]
 fn live_node_runtime_does_not_expose_manual_admission_or_raw_run_bypass() {
@@ -275,6 +279,80 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
     }
 }
 
+#[derive(Debug, Default)]
+struct BlockingFirstAdmissionDecisionWriter {
+    state: Mutex<BlockingFirstAdmissionDecisionWriterState>,
+    entered: Condvar,
+    released: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct BlockingFirstAdmissionDecisionWriterState {
+    first_call_entered: bool,
+    release_first_call: bool,
+    admission_decisions: Vec<BoltV3AdmissionDecisionEvidence>,
+}
+
+impl BlockingFirstAdmissionDecisionWriter {
+    fn wait_until_first_call_entered(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("blocking writer mutex should not be poisoned");
+        while !state.first_call_entered {
+            state = self
+                .entered
+                .wait(state)
+                .expect("blocking writer condvar should not be poisoned");
+        }
+    }
+
+    fn release_first_call(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("blocking writer mutex should not be poisoned");
+        state.release_first_call = true;
+        self.released.notify_all();
+    }
+
+    fn admission_decisions(&self) -> Vec<BoltV3AdmissionDecisionEvidence> {
+        self.state
+            .lock()
+            .expect("blocking writer mutex should not be poisoned")
+            .admission_decisions
+            .clone()
+    }
+}
+
+impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        decision: &BoltV3AdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("blocking writer mutex should not be poisoned");
+        if !state.first_call_entered {
+            state.first_call_entered = true;
+            self.entered.notify_all();
+            while !state.release_first_call {
+                state = self
+                    .released
+                    .wait(state)
+                    .expect("blocking writer condvar should not be poisoned");
+            }
+        }
+        state.admission_decisions.push(decision.clone());
+        Ok(())
+    }
+}
+
 #[test]
 fn admit_records_admission_decision_evidence_on_admit_outcome() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
@@ -360,6 +438,64 @@ fn risk_reducing_exit_after_entry_is_admitted_by_explicit_policy() {
         BoltV3SubmitAdmissionError::CountCapExhausted
     ));
     assert_eq!(admission.admitted_order_count(), 2);
+}
+
+#[test]
+fn replace_submit_does_not_inflate_risk_reducing_exit_carveout() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            2,
+            Decimal::new(1, 0),
+        ))
+        .expect("valid gate report should arm admission");
+
+    admission
+        .admit(&submit_request_with_kind(
+            Decimal::new(1, 1),
+            BoltV3SubmitIntentKind::Entry,
+        ))
+        .expect("entry submit should consume one canary count slot");
+    admission
+        .admit(&submit_request_with_kind(
+            Decimal::new(1, 1),
+            BoltV3SubmitIntentKind::ReplaceSubmit,
+        ))
+        .expect("replace-submit should be admissible when lifecycle policy enables it");
+    admission
+        .admit(&submit_request_with_kind(
+            Decimal::new(1, 1),
+            BoltV3SubmitIntentKind::RiskReducingExit,
+        ))
+        .expect("one risk-reducing exit remains admissible for the real entry");
+
+    let second_exit = admission
+        .admit(&submit_request_with_kind(
+            Decimal::new(1, 1),
+            BoltV3SubmitIntentKind::RiskReducingExit,
+        ))
+        .expect_err("replace-submit must not mint another risk-reducing-exit allowance");
+
+    assert!(matches!(
+        second_exit,
+        BoltV3SubmitAdmissionError::CountCapExhausted
+    ));
+    let outcomes: Vec<BoltV3AdmissionOutcome> = writer
+        .admission_decisions()
+        .into_iter()
+        .map(|d| d.outcome)
+        .collect();
+    assert_eq!(
+        outcomes,
+        vec![
+            BoltV3AdmissionOutcome::Admitted,
+            BoltV3AdmissionOutcome::Admitted,
+            BoltV3AdmissionOutcome::Admitted,
+            BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+        ]
+    );
+    assert_eq!(admission.admitted_order_count(), 3);
 }
 
 #[test]
@@ -530,4 +666,74 @@ fn admit_surfaces_evidence_write_failure_as_typed_error_and_does_not_consume_cou
         0,
         "evidence-write failure must not consume an admission slot — the decision is not finalized until audit is durable"
     );
+}
+
+#[test]
+fn admit_serializes_while_admission_evidence_is_in_flight() {
+    let writer = Arc::new(BlockingFirstAdmissionDecisionWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer.clone()));
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(1, 0),
+        ))
+        .expect("valid gate report should arm admission");
+
+    let first_admission = admission.clone();
+    let first_handle =
+        thread::spawn(move || first_admission.admit(&submit_request(Decimal::new(1, 0))));
+    writer.wait_until_first_call_entered();
+
+    let (second_started_tx, second_started_rx) = mpsc::channel();
+    let (second_result_tx, second_result_rx) = mpsc::channel();
+    let second_admission = admission.clone();
+    let second_handle = thread::spawn(move || {
+        second_started_tx
+            .send(())
+            .expect("second admission start signal should send");
+        let result = second_admission.admit(&submit_request(Decimal::new(1, 0)));
+        second_result_tx
+            .send(result)
+            .expect("second admission result should send");
+    });
+
+    second_started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("second admission thread should start before first evidence write is released");
+    assert!(matches!(
+        second_result_rx.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    writer.release_first_call();
+    first_handle
+        .join()
+        .expect("first admission thread should not panic")
+        .expect("first admission should pass");
+    let second = second_result_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("second admission should complete after first evidence write is released");
+    let second_error = second.expect_err("second admission must observe the consumed count slot");
+    second_handle
+        .join()
+        .expect("second admission thread should not panic");
+
+    assert!(matches!(
+        second_error,
+        BoltV3SubmitAdmissionError::CountCapExhausted
+    ));
+    let outcomes: Vec<BoltV3AdmissionOutcome> = writer
+        .admission_decisions()
+        .into_iter()
+        .map(|d| d.outcome)
+        .collect();
+    assert_eq!(
+        outcomes,
+        vec![
+            BoltV3AdmissionOutcome::Admitted,
+            BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+        ],
+        "admission must serialize evaluate -> durable decision evidence -> counter mutation"
+    );
+    assert_eq!(admission.admitted_order_count(), 1);
 }

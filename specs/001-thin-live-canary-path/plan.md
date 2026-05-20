@@ -183,6 +183,7 @@ Integration sketch:
 - `run_bolt_v3_live_node` accepts `&mut BoltV3LiveNodeRuntime`, calls `check_bolt_v3_live_canary_gate`, arms the runtime's internal admission state with that exact report, then preserves the existing runtime-capture and shutdown sequence around the internal `LiveNode::run()`.
 - The admission `Arc` outlives `run_bolt_v3_live_node` so later Phase 8 evidence can inspect `admitted_order_count()` without adding lifecycle machinery.
 - Admission state uses one internal mutex for gate report, armed flag, and count mutation. No mixed atomic/mutex state.
+- Admission intentionally serializes evaluate -> durable admission-decision evidence -> counter mutation under that mutex; do not move persistence outside the critical section without an equivalent reservation or sequence mechanism.
 - Submit ordering remains strategy-enforced and source-fence-verified, not a new Bolt framework submit wrapper. The strategy-internal submit helper must require `BoltV3SubmitAdmissionPermit` before it calls NT `submit_order`.
 
 Likely files touched:

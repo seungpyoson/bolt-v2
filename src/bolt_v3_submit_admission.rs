@@ -78,12 +78,13 @@ impl BoltV3SubmitAdmissionState {
             BoltV3AdmissionOutcome::Admitted => {
                 inner.admitted_order_count += 1;
                 match request.intent_kind {
-                    BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit => {
+                    BoltV3SubmitIntentKind::Entry => {
                         inner.admitted_entry_order_count += 1;
                     }
                     BoltV3SubmitIntentKind::RiskReducingExit => {
                         inner.admitted_risk_reducing_exit_order_count += 1;
                     }
+                    BoltV3SubmitIntentKind::ReplaceSubmit => {}
                 }
                 Ok(BoltV3SubmitAdmissionPermit(()))
             }

@@ -2,6 +2,7 @@ mod support;
 
 use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_live_canary_gate::check_bolt_v3_live_canary_gate,
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY,
         CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY,
@@ -2002,6 +2003,60 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         error.to_string().contains("already consumed"),
         "error should mention consumed approval replay: {error}"
     );
+}
+
+#[tokio::test]
+async fn operator_approval_consumption_writer_output_is_accepted_by_live_gate() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let report_path = temp.path().join("no-submit-readiness.json");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+    write_satisfied_no_submit_readiness_report(&report_path);
+
+    let mut loaded = loaded_with_live_canary(&report_path.to_string_lossy());
+    let root_toml_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(&loaded.root_path)
+        .expect("root TOML hash should compute");
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("operator evidence should exist");
+    operator_evidence.approval_consumption_path =
+        approval_consumption_path.to_string_lossy().to_string();
+
+    let envelope = Phase8OperatorApprovalEnvelope {
+        head_sha: operator_evidence.head_sha.clone(),
+        root_toml_path: loaded.root_path.to_string_lossy().to_string(),
+        root_toml_sha256,
+        approval_envelope_sha256: operator_evidence.approval_envelope_sha256.clone(),
+        ssm_manifest_path: operator_evidence.ssm_manifest_path.clone(),
+        ssm_manifest_sha256: operator_evidence.ssm_manifest_sha256.clone(),
+        strategy_input_evidence_path: operator_evidence.strategy_input_evidence_path.clone(),
+        strategy_input_evidence_sha256: operator_evidence.strategy_input_evidence_sha256.clone(),
+        financial_envelope_path: operator_evidence.financial_envelope_path.clone(),
+        financial_envelope_sha256: operator_evidence.financial_envelope_sha256.clone(),
+        pre_run_state_path: operator_evidence.pre_run_state_path.clone(),
+        pre_run_state_sha256: operator_evidence.pre_run_state_sha256.clone(),
+        abort_plan_path: operator_evidence.abort_plan_path.clone(),
+        abort_plan_sha256: operator_evidence.abort_plan_sha256.clone(),
+        operator_approval_id: "operator-approved-canary-001".to_string(),
+        approval_not_before_unix_secs: operator_evidence.approval_not_before_unix_seconds,
+        approval_not_after_unix_secs: operator_evidence.approval_not_after_unix_seconds,
+        approval_nonce_path: operator_evidence.approval_nonce_path.clone(),
+        approval_nonce_sha256: operator_evidence.approval_nonce_sha256.clone(),
+        approval_consumption_path: operator_evidence.approval_consumption_path.clone(),
+        canary_evidence_path: operator_evidence.canary_evidence_path.clone(),
+        client_order_id_hash: operator_evidence.client_order_id_hash.clone(),
+        venue_order_id_hash: operator_evidence.venue_order_id_hash.clone(),
+    };
+
+    envelope
+        .consume_approval_after_live_runner_entry_validation(current_unix_seconds_for_test() as i64)
+        .expect("writer-created approval consumption proof should persist");
+
+    check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("live gate should accept writer-created approval consumption proof");
 }
 
 #[test]

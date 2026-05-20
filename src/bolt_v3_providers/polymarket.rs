@@ -28,6 +28,7 @@ mod fees;
 
 use std::{any::Any, sync::Arc, time::Duration};
 
+use nautilus_core::string::secret::REDACTED;
 use nautilus_model::identifiers::AccountId;
 use nautilus_network::websocket::TransportBackend;
 use nautilus_polymarket::{
@@ -39,6 +40,7 @@ use nautilus_polymarket::{
     http::clob::PolymarketClobHttpClient,
 };
 use serde::Deserialize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
     bolt_v3_adapters::{
@@ -159,7 +161,7 @@ pub struct PolymarketSecretsConfig {
     pub passphrase_ssm_path: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct ResolvedBoltV3PolymarketSecrets {
     pub private_key: String,
     pub api_key: String,
@@ -167,22 +169,13 @@ pub struct ResolvedBoltV3PolymarketSecrets {
     pub passphrase: String,
 }
 
-struct RedactedDebug;
-
-impl std::fmt::Debug for RedactedDebug {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("[REDACTED]")
-    }
-}
-
 impl std::fmt::Debug for ResolvedBoltV3PolymarketSecrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let redacted = RedactedDebug;
         f.debug_struct("ResolvedBoltV3PolymarketSecrets")
-            .field("private_key", &redacted)
-            .field("api_key", &redacted)
-            .field("api_secret", &redacted)
-            .field("passphrase", &redacted)
+            .field("private_key", &REDACTED)
+            .field("api_key", &REDACTED)
+            .field("api_secret", &REDACTED)
+            .field("passphrase", &REDACTED)
             .finish()
     }
 }

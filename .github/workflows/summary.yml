@@ -15,25 +15,25 @@ jobs:
     steps:
       - name: Run AI Summarization Chain
         id: ai_chain
+        continue-on-error: true
         run: |
           MODELS=("openai/gpt-5" "openai/o3" "microsoft/phi-4-reasoning" "openai/o4-mini")
           SUCCESS=false
           FINAL_SUMMARY=""
           USED_MODEL=""
-
-          # 1. Try GitHub Models
+          
           for model in "${MODELS[@]}"; do
             echo "Attempting summarization with $model..."
             
-            # Prepare request body with reasoning if applicable
-            REASONING_PART=""
+            # Determine reasoning effort
+            REASONING=""
             if [[ "$model" == *"gpt-5"* ]]; then
-              REASONING_PART=', "reasoning_effort": "xhigh"'
+              REASONING="xhigh"
             elif [[ "$model" == *"o3"* || "$model" == *"o4-mini"* ]]; then
-              REASONING_PART=', "reasoning_effort": "high"'
+              REASONING="high"
             fi
 
-            # Use python to safely create the JSON to avoid shell escape issues
+            # Safely construct JSON using Python
             REQUEST_BODY=$(python3 -c "import sys, json, os; print(json.dumps({
               'model': sys.argv[1],
               'messages': [
@@ -47,14 +47,21 @@ jobs:
                 }
               ],
               **({'reasoning_effort': sys.argv[2]} if sys.argv[2] else {})
-            }))" "$model" "${REASONING_PART#*, \"reasoning_effort\": \"}" "${REASONING_PART%\"*}")
+            }))" "$model" "$REASONING")
 
-            response=$(curl -s https://models.github.ai/inference/chat/completions \
+            response=$(curl -s --max-time 60 --retry 3 https://models.github.ai/inference/chat/completions \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer $GH_MODELS_TOKEN" \
               -d "$REQUEST_BODY")
 
-            summary=$(echo "$response" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['choices'][0]['message']['content']) if 'choices' in data else print('')" 2>/dev/null)
+            # Extract summary safely
+            summary=$(echo "$response" | python3 -c "import sys, json; 
+try:
+    data = json.load(sys.stdin)
+    content = data['choices'][0]['message']['content']
+    if content: print(content)
+except Exception:
+    pass" 2>/dev/null)
 
             if [ -n "$summary" ]; then
               FINAL_SUMMARY="$summary"
@@ -65,11 +72,11 @@ jobs:
             echo "Failed with $model."
           done
 
-          # 2. Try OpenRouter Fallback if needed
+          # 2. OpenRouter Fallback
           if [ "$SUCCESS" = false ] && [ -n "$OPENROUTER_API_KEY" ]; then
             echo "Attempting OpenRouter fallback..."
             REQUEST_BODY=$(python3 -c "import sys, json, os; print(json.dumps({
-              'model': 'openrouter/free',
+              'model': 'openrouter/auto',
               'messages': [
                 {
                   'role': 'system',
@@ -83,23 +90,34 @@ jobs:
               'include_reasoning': True
             }))")
 
-            response=$(curl -s https://openrouter.ai/api/v1/chat/completions \
+            response=$(curl -s --max-time 60 --retry 3 https://openrouter.ai/api/v1/chat/completions \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer $OPENROUTER_API_KEY" \
               -d "$REQUEST_BODY")
 
-            summary=$(echo "$response" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['choices'][0]['message']['content']) if 'choices' in data else print('')" 2>/dev/null)
+            summary=$(echo "$response" | python3 -c "import sys, json; 
+try:
+    data = json.load(sys.stdin)
+    content = data['choices'][0]['message']['content']
+    if content: print(content)
+except Exception:
+    pass" 2>/dev/null)
             
             if [ -n "$summary" ]; then
               FINAL_SUMMARY="$summary"
-              USED_MODEL="openrouter/free (OpenRouter Fallback)"
+              USED_MODEL="openrouter/auto (OpenRouter Fallback)"
               SUCCESS=true
             fi
           fi
 
           if [ "$SUCCESS" = true ]; then
-            echo "summary=$FINAL_SUMMARY" >> "$GITHUB_OUTPUT"
-            echo "model_info=$USED_MODEL" >> "$GITHUB_OUTPUT"
+            # Safe multiline output using heredoc
+            {
+              echo "summary<<EOF"
+              echo "$FINAL_SUMMARY"
+              echo "EOF"
+              echo "model_info=$USED_MODEL"
+            } >> "$GITHUB_OUTPUT"
           else
             echo "Error: All models in the chain failed." >&2
             exit 1
@@ -118,10 +136,17 @@ jobs:
           
           {
             printf '%s\n\n' "### AI issue summary"
-            printf '%s\n\n' "${{ steps.ai_chain.outputs.summary }}"
-            printf -- '---\n*Summarized by: `%s`*' "${{ steps.ai_chain.outputs.model_info }}"
+            printf '%s\n\n' "$SUMMARY"
+            printf -- '---\n*Summarized by: `%s`*' "$MODEL_INFO"
           } > "$body_file"
           gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          SUMMARY: ${{ steps.ai_chain.outputs.summary }}
+          MODEL_INFO: ${{ steps.ai_chain.outputs.model_info }}
+
+      - name: Note no AI summary posted
+        if: steps.ai_chain.outcome != 'success' || steps.ai_chain.outputs.summary == ''
+        run: |
+          echo "No AI summary posted. Skipping comment." >&2

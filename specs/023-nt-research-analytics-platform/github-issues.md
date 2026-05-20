@@ -84,6 +84,9 @@ Accepted scope:
 - Prove ordinary HIP-4 order flow uses NT standard order submission.
 - Prove settlement, reconciliation, and userOutcome surfaces on selected pointer.
 - Keep live adapter support separate from historical replay/data-fidelity proof.
+- If HIP-4 historical L2/fill coverage remains unproven, record the
+  forward-capture start or skip decision before any historical completeness
+  claim.
 
 Out of scope:
 
@@ -101,6 +104,8 @@ Acceptance evidence:
 - Lifecycle matrix: instrument load, order submit API, fill/report path,
   settlement, reconciliation, userOutcome.
 - Historical-data class marked `SOURCE_PROVEN`, `GAP`, or `DECISION_NEEDED`.
+- HIP-4 forward-capture trigger, owner, and start/skip rationale if historical
+  execution-quality data remains `FORWARD_CAPTURE_PENDING`.
 - Draft update/comment text for #115 that records current NT evidence without
   closing or deprecating #115 unless user approves.
 
@@ -177,6 +182,8 @@ Accepted scope:
 
 - Build all-in monthly run-rate table: provider subscription, AWS storage,
   compute, transfer, logs, query, dashboard, and reserve.
+- Refresh provider price, license, and usage-limit evidence during final
+  pre-selection; stale planning prices cannot be final acceptance evidence.
 - Build venue/source fidelity matrix for Polymarket, HIP-4, Kalshi, and
   selected perpetual-futures venues.
 - Treat `cost-model.md` and `fidelity-matrix.md` artifacts as acceptance
@@ -195,6 +202,9 @@ Accepted scope:
   path; checked unresolved venue examples are not special architecture paths.
 - Prove selected venues through generic TOML/registry binding keys; no provider
   or venue-specific source branches are accepted as part of this issue.
+- Define schema/contract tests proving venue/provider swaps are TOML/registry
+  data changes only, with no core runtime, admission, secret, runner, or
+  dashboard branch added for a venue name.
 - Keep Kalshi final fidelity classification provisional until Issue B adapter
   and data-surface proof is accepted.
 - Classify each source as `L2_REPLAY`, `TRADE_BAR_REPLAY`, `SIGNAL_ONLY`, or
@@ -213,9 +223,11 @@ Out of scope:
 Acceptance evidence:
 
 - Cost model artifact with source links and dated price evidence.
+- Final pre-selection price/license refresh with source date and cap math.
 - Fidelity matrix with allowed/forbidden claims per venue/source.
 - Evidence that venue/provider choices are represented as TOML-selected
   registry bindings, not hardcoded implementation branches.
+- Schema/contract test plan for config-only venue/provider swaps.
 - Selection or rejection rationale per provider.
 - Explicit waiver request if all-in cost exceeds cap.
 

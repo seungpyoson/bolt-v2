@@ -53,6 +53,18 @@ and dashboard must not branch on hardcoded venue names.
 - Official archives/APIs must be labeled by freshness and completeness.
 - Official API/archive capture is a `GAP` per venue until source-proven.
 - Forward capture cannot backfill historical L2 claims.
+- Final provider selection must refresh price, license, and usage-limit evidence
+  at selection time; planning-snapshot prices are not final acceptance evidence.
+
+## Binding Contract Tests
+
+- Venue/provider swaps must be represented by TOML and registry/binding data
+  changes only.
+- Contract tests must fail if core runtime, admission, secret resolution,
+  research runner, catalog projection, analytics read model, or dashboard code
+  branches on concrete venue or provider names.
+- The same test fixture must exercise at least two venue/provider bindings so a
+  single hardcoded happy path cannot satisfy the gate.
 
 ## Prohibited Claims
 

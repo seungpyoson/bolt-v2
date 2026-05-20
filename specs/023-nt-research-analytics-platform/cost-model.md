@@ -76,3 +76,5 @@ Do not select a provider from price alone. A source is eligible only if:
    backbone.
 6. Select dashboard/BI product path from source contract, security, query
    backend, operational burden, and all-in monthly cost before custom UI work.
+7. Refresh price, license, and usage-limit evidence at final provider
+   pre-selection; dated planning snapshots are not final acceptance evidence.

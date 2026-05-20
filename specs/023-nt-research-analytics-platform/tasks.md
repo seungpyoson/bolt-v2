@@ -39,7 +39,7 @@ surface classified as `SOURCE_PROVEN`, `USER_ASSUMPTION`, `GAP`, or
 `DECISION_NEEDED`.
 
 - [ ] T008 [US1] Prove HIP-4 upstream support on selected NT pointer in `specs/023-nt-research-analytics-platform/evidence.md`.
-- [ ] T009 [US1] Prove HIP-4 historical-data class separately from live adapter support in `specs/023-nt-research-analytics-platform/fidelity-matrix.md`.
+- [ ] T009 [US1] Prove HIP-4 historical-data class separately from live adapter support in `specs/023-nt-research-analytics-platform/fidelity-matrix.md`; if class remains `FORWARD_CAPTURE_PENDING`, record forward-capture start/skip trigger.
 - [ ] T010 [US1] Prove Kalshi adapter support from selected pointer/source in `specs/023-nt-research-analytics-platform/evidence.md`.
 - [ ] T011 [US1] Prove NT Polymarket support and public API cap behavior in `specs/023-nt-research-analytics-platform/evidence.md`.
 - [ ] T012 [US1] Prove selected perpetual-futures venues through generic venue gate in `specs/023-nt-research-analytics-platform/fidelity-matrix.md`.
@@ -55,7 +55,7 @@ proved.
 - [ ] T013 [US2] Model Tardis subscription plus AWS/dashboard reserve in `specs/023-nt-research-analytics-platform/cost-model.md`.
 - [ ] T014 [US2] Model Telonex personal/commercial license split in `specs/023-nt-research-analytics-platform/cost-model.md`.
 - [ ] T015 [US2] Model Goldsky metered subgraph/pipeline costs in `specs/023-nt-research-analytics-platform/cost-model.md`.
-- [ ] T016 [US2] Classify official archive/API capture per selected venue in `specs/023-nt-research-analytics-platform/fidelity-matrix.md`.
+- [ ] T016 [US2] Classify official archive/API capture per selected venue in `specs/023-nt-research-analytics-platform/fidelity-matrix.md`; include current price/license refresh and schema/contract test criteria proving venue/provider swaps are TOML/registry-only.
 - [ ] T017 [US2] Run one Tardis replay-to-NT-catalog prototype in `src/nt_research_provider_probe.rs` and `tests/nt_research_provider_probe.rs` only after T013-T016 pass; include Cargo manifest/module wiring and CI-covered tests in the same change.
 - [ ] T018 [US2] Run one Polymarket provider projection prototype in `src/nt_research_provider_probe.rs` and `tests/nt_research_provider_probe.rs` only after T017 lands or the probe is split into a separate file; include Cargo manifest/module wiring and CI-covered tests in the same change.
 

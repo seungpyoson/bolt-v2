@@ -66,7 +66,8 @@ jobs:
         continue-on-error: true
         run: |
           # Fallback chain of free (low/high tier) GitHub Models, most capable
-          # first, then a paid OpenRouter cross-provider backstop. All four
+          # first, then OpenRouter's free-models router as a cross-provider
+          # backstop. All four
           # GitHub models are servable with the built-in GITHUB_TOKEN (verified
           # HTTP 200); the custom-tier gpt-5/o3/o4-mini chosen in #410 were never
           # available on this account (see #422). Hand-rolled curl is used over
@@ -120,14 +121,14 @@ jobs:
             echo "Failed with $model."
           done
 
-          # Final cross-provider backstop. Only fires if every (free) GitHub
-          # Models stage above failed — e.g. the OpenAI/Azure backend is fully
-          # down. openrouter/auto routes to paid models and bills OpenRouter
-          # credits, so it is intentionally gated on SUCCESS=false.
+          # Final cross-provider backstop. Only fires if every GitHub Models
+          # stage above failed — e.g. the OpenAI/Azure backend is fully down.
+          # openrouter/free is OpenRouter's free-models router (no credit cost),
+          # gated on SUCCESS=false and a present key.
           if [ "$SUCCESS" = false ] && [ -n "$OPENROUTER_API_KEY" ]; then
-            echo "Attempting OpenRouter fallback (openrouter/auto)..."
+            echo "Attempting OpenRouter fallback (openrouter/free)..."
             REQUEST_BODY=$(python3 -c "import sys, json, os; print(json.dumps({
-              'model': 'openrouter/auto',
+              'model': 'openrouter/free',
               'messages': [
                 {
                   'role': 'system',
@@ -149,7 +150,7 @@ jobs:
 
             if [ -n "$summary" ]; then
               FINAL_SUMMARY="$summary"
-              USED_MODEL="openrouter/auto (OpenRouter Fallback)"
+              USED_MODEL="openrouter/free (OpenRouter Fallback)"
               SUCCESS=true
             fi
           fi

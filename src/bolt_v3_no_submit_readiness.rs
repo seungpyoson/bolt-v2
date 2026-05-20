@@ -16,8 +16,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, resolve_root_relative_path},
     bolt_v3_live_node::{
-        BoltV3LiveNodeError, BoltV3LiveNodeRuntime, build_bolt_v3_live_node,
-        controlled_no_submit_readiness,
+        BoltV3LiveNodeError, BoltV3LiveNodeRuntime, BoltV3NoSubmitReferenceCacheEvidence,
+        build_bolt_v3_live_node, controlled_no_submit_readiness,
     },
     bolt_v3_no_submit_readiness_schema::{
         CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
@@ -25,6 +25,8 @@ use crate::{
         REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SECRET_RESOLUTION_STAGE,
     },
 };
+
+const REFERENCE_CACHE_ONLY_LIMITATION_DETAIL: &str = "NT cache only proves required reference instrument IDs are present; no live reference-data freshness or timestamp surface is available";
 
 #[derive(Debug)]
 pub enum BoltV3NoSubmitReadinessError {
@@ -335,13 +337,20 @@ where
         .collect::<Vec<_>>();
 
     if missing.is_empty() {
-        Ok(())
+        Err(REFERENCE_CACHE_ONLY_LIMITATION_DETAIL.to_string())
     } else {
         Err(format!(
             "missing required reference instruments in NT cache: {}",
             missing.join(", ")
         ))
     }
+}
+
+pub fn reference_readiness_from_cache_evidence(
+    loaded: &LoadedBoltV3Config,
+    evidence: &BoltV3NoSubmitReferenceCacheEvidence,
+) -> Result<(), String> {
+    reference_readiness_from_cached_instrument_ids(loaded, evidence.cached_instrument_ids())
 }
 
 pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
@@ -352,7 +361,7 @@ pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
 ) -> BoltV3NoSubmitReadinessReport {
     let (connect, reference, disconnect) =
         controlled_no_submit_readiness(runtime, loaded, |runtime| {
-            reference_readiness_from_cached_instrument_ids(loaded, runtime.cached_instrument_ids())
+            reference_readiness_from_cache_evidence(loaded, &runtime.reference_cache_evidence())
         })
         .await;
     run_bolt_v3_no_submit_readiness_from_stage_results(

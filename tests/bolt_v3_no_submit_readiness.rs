@@ -4,9 +4,10 @@ use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_canary_gate::check_bolt_v3_live_canary_gate,
     bolt_v3_no_submit_readiness::{
-        BoltV3NoSubmitReadinessError, BoltV3NoSubmitReadinessReportMetadata,
-        BoltV3NoSubmitReadinessStatus, reference_readiness_from_cached_instrument_ids,
-        run_bolt_v3_no_submit_readiness, run_bolt_v3_no_submit_readiness_from_stage_results,
+        BoltV3NoSubmitReadinessError, BoltV3NoSubmitReadinessReport,
+        BoltV3NoSubmitReadinessReportMetadata, BoltV3NoSubmitReadinessStatus,
+        reference_readiness_from_cached_instrument_ids, run_bolt_v3_no_submit_readiness,
+        run_bolt_v3_no_submit_readiness_from_stage_results,
         run_bolt_v3_no_submit_readiness_on_runtime,
     },
     bolt_v3_no_submit_readiness_schema::{
@@ -218,6 +219,56 @@ fn no_submit_readiness_redaction_marker_survives_secret_values_inside_marker() {
     assert_eq!(detail, "connect rejected [redacted]");
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn no_submit_readiness_failed_connect_preserves_redacted_stage_details_and_rejects_gate() {
+    let (_tempdir, loaded, metadata) = loaded_with_temp_live_canary().await;
+    let secret = "stage-secret-4242";
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        metadata,
+        Err(format!("connect rejected token {secret}")),
+        Ok(()),
+        Err(format!("disconnect rejected token {secret}")),
+        &[secret.to_string()],
+    );
+
+    assert_eq!(
+        report.stage_status(CONTROLLED_CONNECT_STAGE),
+        vec![BoltV3NoSubmitReadinessStatus::Failed]
+    );
+    assert_eq!(
+        report.stage_status(REFERENCE_READINESS_STAGE),
+        vec![BoltV3NoSubmitReadinessStatus::Skipped]
+    );
+    assert_eq!(
+        report.stage_status(CONTROLLED_DISCONNECT_STAGE),
+        vec![BoltV3NoSubmitReadinessStatus::Failed]
+    );
+    assert_eq!(
+        stage_detail(&report, CONTROLLED_CONNECT_STAGE),
+        "connect rejected token [redacted]"
+    );
+    assert_eq!(
+        stage_detail(&report, REFERENCE_READINESS_STAGE),
+        "controlled connect failed"
+    );
+    assert_eq!(
+        stage_detail(&report, CONTROLLED_DISCONNECT_STAGE),
+        "disconnect rejected token [redacted]"
+    );
+
+    report
+        .write_configured_redacted_json(&loaded)
+        .expect("failed report should still be written as redacted evidence");
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("failed connect and skipped reference readiness must reject the gate");
+    let error = error.to_string();
+    assert!(error.contains("controlled_connect"));
+    assert!(error.contains("reference_readiness"));
+    assert!(error.contains("controlled_disconnect"));
+    assert!(!error.contains(secret), "gate error leaked stage secret");
+}
+
 #[test]
 fn no_submit_readiness_records_failed_connect_reference_skip_and_disconnect_failure() {
     let report = run_bolt_v3_no_submit_readiness_from_stage_results(
@@ -269,8 +320,54 @@ fn no_submit_readiness_fails_when_required_reference_instrument_missing_from_cac
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn no_submit_readiness_cache_only_reference_evidence_cannot_pass_live_canary_gate() {
+    let (_tempdir, loaded, metadata) = loaded_with_temp_live_canary().await;
+    let cached_instrument_ids = loaded
+        .strategies
+        .iter()
+        .flat_map(|strategy| strategy.config.reference_data.values())
+        .map(|reference| reference.instrument_id.to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        !cached_instrument_ids.is_empty(),
+        "fixture must carry required reference instruments for the cache-only case"
+    );
+    let reference_readiness =
+        reference_readiness_from_cached_instrument_ids(&loaded, cached_instrument_ids);
+    let report = run_bolt_v3_no_submit_readiness_from_stage_results(
+        metadata,
+        Ok(()),
+        reference_readiness,
+        Ok(()),
+        &[],
+    );
+
+    assert_eq!(
+        report.stage_status(REFERENCE_READINESS_STAGE),
+        vec![BoltV3NoSubmitReadinessStatus::Failed],
+        "instrument-id cache membership is not live reference-data freshness proof"
+    );
+    assert!(
+        stage_detail(&report, REFERENCE_READINESS_STAGE)
+            .contains("only proves required reference instrument IDs"),
+        "reference detail must name the cache-only limitation"
+    );
+
+    report
+        .write_configured_redacted_json(&loaded)
+        .expect("fail-closed cache-only report should still be written");
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("cache-only reference evidence must reject the gate");
+    assert!(
+        error.to_string().contains("reference_readiness"),
+        "gate rejection should name reference_readiness: {error}"
+    );
+}
+
 #[test]
-fn no_submit_readiness_satisfies_reference_when_required_instruments_are_cached() {
+fn no_submit_readiness_fails_closed_when_only_required_reference_instruments_are_cached() {
     let loaded = loaded_with_test_live_canary();
     let cached_instrument_ids = loaded
         .strategies
@@ -298,7 +395,12 @@ fn no_submit_readiness_satisfies_reference_when_required_instruments_are_cached(
     );
     assert_eq!(
         report.stage_status("reference_readiness"),
-        vec![BoltV3NoSubmitReadinessStatus::Satisfied]
+        vec![BoltV3NoSubmitReadinessStatus::Failed]
+    );
+    assert!(
+        stage_detail(&report, REFERENCE_READINESS_STAGE)
+            .contains("only proves required reference instrument IDs"),
+        "reference stage should explain the cache-only limitation"
     );
     assert_eq!(
         report.stage_status("controlled_disconnect"),
@@ -563,6 +665,42 @@ fn loaded_with_test_live_canary() -> LoadedBoltV3Config {
             operator_evidence: None,
         },
     )
+}
+
+async fn loaded_with_temp_live_canary() -> (
+    tempfile::TempDir,
+    LoadedBoltV3Config,
+    BoltV3NoSubmitReadinessReportMetadata,
+) {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: None,
+        },
+    );
+    let metadata = BoltV3NoSubmitReadinessReportMetadata::from_loaded(&loaded)
+        .await
+        .expect("report metadata should be derived from loaded config");
+    (tempdir, loaded, metadata)
+}
+
+fn stage_detail<'a>(report: &'a BoltV3NoSubmitReadinessReport, stage: &str) -> &'a str {
+    report
+        .stages
+        .iter()
+        .find(|item| item.stage == stage)
+        .and_then(|item| item.detail.as_deref())
+        .unwrap_or("")
 }
 
 fn test_report_metadata() -> BoltV3NoSubmitReadinessReportMetadata {

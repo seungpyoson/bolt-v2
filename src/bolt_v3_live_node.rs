@@ -82,6 +82,17 @@ pub struct BoltV3LiveNodeRuntime {
     redaction_values: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3NoSubmitReferenceCacheEvidence {
+    cached_instrument_ids: Vec<String>,
+}
+
+impl BoltV3NoSubmitReferenceCacheEvidence {
+    pub fn cached_instrument_ids(&self) -> &[String] {
+        &self.cached_instrument_ids
+    }
+}
+
 #[derive(Debug)]
 struct NoStrategyDecisionEvidenceWriter;
 
@@ -129,13 +140,20 @@ impl BoltV3LiveNodeRuntime {
     }
 
     pub fn cached_instrument_ids(&self) -> Vec<String> {
+        self.reference_cache_evidence().cached_instrument_ids
+    }
+
+    pub fn reference_cache_evidence(&self) -> BoltV3NoSubmitReferenceCacheEvidence {
         let cache = self.node.kernel().cache();
         let cache = cache.borrow();
-        cache
+        let cached_instrument_ids = cache
             .instrument_ids(None)
             .into_iter()
             .map(ToString::to_string)
-            .collect()
+            .collect();
+        BoltV3NoSubmitReferenceCacheEvidence {
+            cached_instrument_ids,
+        }
     }
 
     pub fn redaction_values(&self) -> &[String] {

@@ -135,21 +135,23 @@ Current live-operator evidence:
 ## Tiny-Canary Path
 
 1. Operator harness and preflight
-   - `tests/bolt_v3_tiny_canary_operator.rs:1070-1086`
+   - `tests/bolt_v3_tiny_canary_operator.rs:1366-1391`
    - `src/bolt_v3_tiny_canary_evidence.rs:483`
    - Preflight blocks before live runner if the approval/evidence envelope is incomplete.
    - Production `Run` also requires `[live_canary].operator_evidence` at the live canary gate. The gate validates required evidence fields and the active approval window before submit admission can arm.
 
 2. Live runner entry
-   - `tests/bolt_v3_tiny_canary_operator.rs:1109`
+   - `tests/bolt_v3_tiny_canary_operator.rs:1426-1430`
    - Harness uses `run_bolt_v3_live_node`, not a separate live architecture.
 
 3. Required artifact paths
-   - `tests/bolt_v3_tiny_canary_operator.rs:1236-1292`
+   - `tests/bolt_v3_tiny_canary_operator.rs:1552-1617`
+   - `tests/bolt_v3_tiny_canary_operator.rs:1620-1650`
    - Harness requires venue order state, optional strategy cancel, restart reconciliation, and other evidence paths.
 
 4. Evidence validation
-   - `tests/bolt_v3_tiny_canary_operator.rs:1339-1418`
+   - `tests/bolt_v3_tiny_canary_operator.rs:2036-2065`
+   - `tests/bolt_v3_tiny_canary_operator.rs:207-260`
    - Evidence hashes and references are bound before proof is accepted.
    - Operator-envelope regressions cover approval-window rejection, nonce hash mismatch, SSM manifest hash mismatch, strategy-input hash mismatch, financial-envelope hash mismatch, and pre-run evidence hash mismatch.
 

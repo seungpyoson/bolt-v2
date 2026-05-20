@@ -194,6 +194,32 @@ readiness_report_max_age_seconds = 300
 max_live_order_count = 1
 max_notional_per_order = "1.00"
 
+[live_canary.operator_evidence]
+approval_envelope_path = "operator-evidence/approval-envelope.json"
+ssm_manifest_path = "operator-evidence/ssm-manifest.json"
+ssm_manifest_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+strategy_input_evidence_path = "operator-evidence/strategy-input.json"
+strategy_input_evidence_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+financial_envelope_path = "operator-evidence/financial-envelope.json"
+financial_envelope_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+pre_run_state_path = "operator-evidence/pre-run-state.json"
+pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+abort_plan_path = "operator-evidence/abort-plan.json"
+abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+canary_evidence_path = "operator-evidence/canary-evidence.json"
+approval_not_before_unix_seconds = 1770000000
+approval_not_after_unix_seconds = 1770000300
+approval_nonce_path = "operator-evidence/approval-nonce.json"
+approval_nonce_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+approval_consumption_path = "operator-evidence/approval-consumed.json"
+decision_evidence_path = "operator-evidence/decision-evidence.jsonl"
+client_order_id_hash = "1111111111111111111111111111111111111111111111111111111111111111"
+venue_order_id_hash = "2222222222222222222222222222222222222222222222222222222222222222"
+nt_submit_event_path = "operator-evidence/nt-submit-event.json"
+venue_order_state_path = "operator-evidence/venue-order-state.json"
+restart_reconciliation_path = "operator-evidence/restart-reconciliation.json"
+post_run_hygiene_path = "operator-evidence/post-run-hygiene.json"
+
 [aws]
 region = "eu-west-1"
 
@@ -1609,6 +1635,32 @@ max_no_submit_readiness_report_bytes = 4096
 readiness_report_max_age_seconds = 300
 max_live_order_count = 1
 max_notional_per_order = "1.00"
+
+[live_canary.operator_evidence]
+approval_envelope_path = "operator-evidence/approval-envelope.json"
+ssm_manifest_path = "operator-evidence/ssm-manifest.json"
+ssm_manifest_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+strategy_input_evidence_path = "operator-evidence/strategy-input.json"
+strategy_input_evidence_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+financial_envelope_path = "operator-evidence/financial-envelope.json"
+financial_envelope_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+pre_run_state_path = "operator-evidence/pre-run-state.json"
+pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+abort_plan_path = "operator-evidence/abort-plan.json"
+abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+canary_evidence_path = "operator-evidence/canary-evidence.json"
+approval_not_before_unix_seconds = 1770000000
+approval_not_after_unix_seconds = 1770000300
+approval_nonce_path = "operator-evidence/approval-nonce.json"
+approval_nonce_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+approval_consumption_path = "operator-evidence/approval-consumed.json"
+decision_evidence_path = "operator-evidence/decision-evidence.jsonl"
+client_order_id_hash = "1111111111111111111111111111111111111111111111111111111111111111"
+venue_order_id_hash = "2222222222222222222222222222222222222222222222222222222222222222"
+nt_submit_event_path = "operator-evidence/nt-submit-event.json"
+venue_order_state_path = "operator-evidence/venue-order-state.json"
+restart_reconciliation_path = "operator-evidence/restart-reconciliation.json"
+post_run_hygiene_path = "operator-evidence/post-run-hygiene.json"
 
 [aws]
 region = "eu-west-1"

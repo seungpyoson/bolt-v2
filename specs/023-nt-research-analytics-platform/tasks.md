@@ -56,8 +56,8 @@ proved.
 - [ ] T014 [US2] Model Telonex personal/commercial license split in `specs/023-nt-research-analytics-platform/cost-model.md`.
 - [ ] T015 [US2] Model Goldsky metered subgraph/pipeline costs in `specs/023-nt-research-analytics-platform/cost-model.md`.
 - [ ] T016 [US2] Classify official archive/API capture per selected venue in `specs/023-nt-research-analytics-platform/fidelity-matrix.md`; include current price/license refresh and schema/contract test criteria proving venue/provider swaps are TOML/registry-only.
-- [ ] T017 [US2] Run one Tardis replay-to-NT-catalog prototype in `src/nt_research_provider_probe.rs` and `tests/nt_research_provider_probe.rs` only after T013-T016 pass; include Cargo manifest/module wiring and CI-covered tests in the same change.
-- [ ] T018 [US2] Run one Polymarket provider projection prototype in `src/nt_research_provider_probe.rs` and `tests/nt_research_provider_probe.rs` only after T017 lands or the probe is split into a separate file; include Cargo manifest/module wiring and CI-covered tests in the same change.
+- [ ] T017 [US2] Run one Tardis replay-to-NT-catalog prototype in `src/nt_research_provider_probe.rs` and `tests/nt_research_provider_probe.rs` only after T008 and T013-T016 pass; include Cargo manifest/module wiring and CI-covered tests in the same change.
+- [ ] T018 [US2] Run one Polymarket provider projection prototype in `src/nt_research_provider_probe.rs` and `tests/nt_research_provider_probe.rs` only after T008 and T017 land, or after T008 plus a separate-file probe split is accepted; include Cargo manifest/module wiring and CI-covered tests in the same change.
 
 ## Phase 5: User Story 3 - Research Runner And Analytics (Priority: P2)
 

@@ -1,7 +1,9 @@
 mod support;
 
 use bolt_v2::{
-    bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_config::{
+        LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, load_bolt_v3_config,
+    },
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness_schema::{
@@ -16,6 +18,24 @@ use sha2::{Digest, Sha256};
 use tokio::task::LocalSet;
 
 const TEST_READINESS_REPORT_MAX_AGE_SECONDS: u64 = 60;
+
+#[test]
+fn live_canary_gate_rechecks_operator_window_after_report_validation_before_return() {
+    let source = std::fs::read_to_string(support::repo_path("src/bolt_v3_live_canary_gate.rs"))
+        .expect("live canary gate source should be readable");
+    let report_validation = source
+        .find("validate_no_submit_readiness_report(")
+        .expect("gate should validate no-submit readiness report");
+    let report_return = source
+        .find("Ok(BoltV3LiveCanaryGateReport")
+        .expect("gate should return a validated report");
+    let final_section = &source[report_validation..report_return];
+
+    assert!(
+        final_section.contains("validate_operator_evidence(block, current_unix_seconds()?)?"),
+        "gate must recheck the operator approval window after report I/O/hash validation and before returning a report"
+    );
+}
 
 #[test]
 fn run_bolt_v3_live_node_rejects_missing_live_canary_before_nt_run() {
@@ -321,36 +341,91 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn live_canary_gate_rejects_blank_operator_evidence_required_field() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report(&report_path, &[]);
-    let mut operator_evidence = valid_operator_evidence();
-    operator_evidence.approval_envelope_path = "  ".to_string();
-    let loaded = loaded_with_live_canary(
-        loaded,
-        LiveCanaryBlock {
-            approval_id: "operator-approved-canary-001".to_string(),
-            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
-            max_live_order_count: 1,
-            max_notional_per_order: "1.00".to_string(),
-            max_no_submit_readiness_report_bytes: 4096,
-            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            operator_evidence: Some(operator_evidence),
-        },
-    );
+async fn live_canary_gate_rejects_blank_operator_evidence_string_fields() {
+    let cases: &[(&str, fn(&mut LiveCanaryOperatorEvidenceBlock))] = &[
+        ("approval_envelope_path", |e| {
+            e.approval_envelope_path = blank_operator_evidence_value()
+        }),
+        ("ssm_manifest_path", |e| {
+            e.ssm_manifest_path = blank_operator_evidence_value()
+        }),
+        ("ssm_manifest_sha256", |e| {
+            e.ssm_manifest_sha256 = blank_operator_evidence_value()
+        }),
+        ("strategy_input_evidence_path", |e| {
+            e.strategy_input_evidence_path = blank_operator_evidence_value()
+        }),
+        ("strategy_input_evidence_sha256", |e| {
+            e.strategy_input_evidence_sha256 = blank_operator_evidence_value()
+        }),
+        ("financial_envelope_path", |e| {
+            e.financial_envelope_path = blank_operator_evidence_value()
+        }),
+        ("financial_envelope_sha256", |e| {
+            e.financial_envelope_sha256 = blank_operator_evidence_value()
+        }),
+        ("pre_run_state_path", |e| {
+            e.pre_run_state_path = blank_operator_evidence_value()
+        }),
+        ("pre_run_state_sha256", |e| {
+            e.pre_run_state_sha256 = blank_operator_evidence_value()
+        }),
+        ("abort_plan_path", |e| {
+            e.abort_plan_path = blank_operator_evidence_value()
+        }),
+        ("abort_plan_sha256", |e| {
+            e.abort_plan_sha256 = blank_operator_evidence_value()
+        }),
+        ("canary_evidence_path", |e| {
+            e.canary_evidence_path = blank_operator_evidence_value()
+        }),
+        ("approval_nonce_path", |e| {
+            e.approval_nonce_path = blank_operator_evidence_value()
+        }),
+        ("approval_nonce_sha256", |e| {
+            e.approval_nonce_sha256 = blank_operator_evidence_value()
+        }),
+        ("approval_consumption_path", |e| {
+            e.approval_consumption_path = blank_operator_evidence_value()
+        }),
+        ("decision_evidence_path", |e| {
+            e.decision_evidence_path = blank_operator_evidence_value()
+        }),
+        ("client_order_id_hash", |e| {
+            e.client_order_id_hash = blank_operator_evidence_value()
+        }),
+        ("venue_order_id_hash", |e| {
+            e.venue_order_id_hash = blank_operator_evidence_value()
+        }),
+        ("nt_submit_event_path", |e| {
+            e.nt_submit_event_path = blank_operator_evidence_value()
+        }),
+        ("venue_order_state_path", |e| {
+            e.venue_order_state_path = blank_operator_evidence_value()
+        }),
+        ("strategy_cancel_path", |e| {
+            e.strategy_cancel_path = Some(blank_operator_evidence_value())
+        }),
+        ("restart_reconciliation_path", |e| {
+            e.restart_reconciliation_path = blank_operator_evidence_value()
+        }),
+        ("post_run_hygiene_path", |e| {
+            e.post_run_hygiene_path = blank_operator_evidence_value()
+        }),
+    ];
 
-    let error = check_bolt_v3_live_canary_gate(&loaded)
-        .await
-        .expect_err("blank operator evidence field must fail closed");
+    for &(expected_field, mutate) in cases {
+        let mut operator_evidence = valid_operator_evidence();
+        mutate(&mut operator_evidence);
 
-    match error {
-        BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field } => {
-            assert_eq!(field, "approval_envelope_path");
+        let error = check_operator_evidence_rejection(operator_evidence, expected_field).await;
+
+        match error {
+            BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field } => {
+                assert_eq!(field, expected_field);
+            }
+            other => panic!("expected {expected_field} rejection, got {other:?}"),
         }
-        other => panic!("expected approval_envelope_path rejection, got {other:?}"),
     }
 }
 
@@ -1156,6 +1231,36 @@ fn loaded_without_live_canary(loaded: LoadedBoltV3Config) -> LoadedBoltV3Config 
 
 fn valid_operator_evidence() -> bolt_v2::bolt_v3_config::LiveCanaryOperatorEvidenceBlock {
     support::valid_live_canary_operator_evidence()
+}
+
+async fn check_operator_evidence_rejection(
+    operator_evidence: LiveCanaryOperatorEvidenceBlock,
+    expected_field: &str,
+) -> BoltV3LiveCanaryGateError {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-read-before-operator-evidence-shape-check.json"
+                .to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    match check_bolt_v3_live_canary_gate(&loaded).await {
+        Ok(report) => panic!("{expected_field} must fail closed when blank, got {report:?}"),
+        Err(error) => error,
+    }
+}
+
+fn blank_operator_evidence_value() -> String {
+    " \t\n".to_string()
 }
 
 fn write_no_submit_report(path: &std::path::Path, stages: &[(&str, &str)]) {

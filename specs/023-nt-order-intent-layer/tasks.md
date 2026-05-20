@@ -170,6 +170,16 @@
 - [x] T072 [US2] Verify focused tests, full local checks, and repo gates after the regression patch
 - [x] T073 [US2] Verify post-push exact-head GitHub gate, no-mistakes state, and external review state for the regression patch head
 
+## Phase 17: TDD Slice 13 - MarketIfTouched Factory Variant
+
+**Goal**: Enable NT `OrderFactory::market_if_touched` through the same order-template path without adding venue policy or changing `LimitIfTouched`/trailing semantics.
+
+- [x] T074 [P] [US2] Run internal NT-source/Bolt-path/adversarial architecture reviews for the next variant slice and record the recommendation in `research.md`
+- [x] T075 [US2] RED: Add positive MarketIfTouched construction/admission/sizing coverage in `src/strategies/binary_oracle_edge_taker.rs`
+- [x] T076 [US2] GREEN: Thread TOML-owned MarketIfTouched trigger price through archetype/runtime order config into NT `OrderFactory::market_if_touched`
+- [x] T077 [US2] RED/GREEN: Add public archetype and runtime round-trip coverage for `order_type=market_if_touched`
+- [ ] T078 [US2] Verify focused MarketIfTouched tests, runtime literal/source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and external review state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -188,6 +198,7 @@
 - Phase 14 blocks completion because Claude and Gemini both found post-Phase 13 StopMarket blockers.
 - Phase 15 is the next deferred Phase 7 factory-variant slice and blocks StopLimit support claims until verified and reviewed.
 - Phase 16 blocks StopLimit support claims because post-slice review found missing regression coverage.
+- Phase 17 is the next deferred Phase 7 factory-variant slice and blocks MarketIfTouched support claims until verified and reviewed.
 
 ## Parallel Opportunities
 

@@ -431,6 +431,73 @@ fn binary_oracle_runtime_mapping_preserves_stop_market_entry_order_round_trip() 
 }
 
 #[test]
+fn binary_oracle_runtime_mapping_preserves_market_if_touched_entry_order_round_trip() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    let parameters = loaded.strategies[strategy_index]
+        .config
+        .parameters
+        .as_table_mut()
+        .expect("fixture parameters should be a TOML table");
+    let entry_order = parameters
+        .get_mut("entry_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include entry_order table");
+    entry_order.insert(
+        "order_type".to_string(),
+        toml::Value::String("market_if_touched".to_string()),
+    );
+    entry_order.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    entry_order.insert("trigger_price".to_string(), toml::Value::Float(0.52));
+    entry_order.insert("is_post_only".to_string(), toml::Value::Boolean(false));
+
+    let raw =
+        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
+            .expect("MarketIfTouched entry order should map into runtime config");
+    let entry = raw
+        .as_table()
+        .and_then(|table| table.get("entry_order"))
+        .and_then(toml::Value::as_table)
+        .expect("mapped runtime config should include entry_order");
+
+    assert_eq!(
+        entry.get("order_type").and_then(toml::Value::as_str),
+        Some("market_if_touched")
+    );
+    assert_eq!(
+        entry.get("trigger_price").and_then(toml::Value::as_float),
+        Some(0.52)
+    );
+
+    let mut errors: Vec<ValidationError> = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(
+        &raw,
+        "strategies.bitcoin_updown_main.parameters.runtime",
+        &mut errors,
+    );
+    assert!(
+        errors.is_empty(),
+        "MarketIfTouched runtime table should validate: {errors:?}"
+    );
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let context = StrategyBuildContext::new(
+        Arc::new(NoopFeeProvider),
+        writer.clone(),
+        Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+    );
+    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
+        .expect("MarketIfTouched runtime table should parse into the strategy config");
+}
+
+#[test]
 fn binary_oracle_runtime_mapping_preserves_stop_limit_entry_order_round_trip() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

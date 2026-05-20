@@ -841,6 +841,7 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
     let maker_limit_gtc = (OrderType::Limit, TimeInForce::Gtc, true, false, false);
     let gtd_limit = (OrderType::Limit, TimeInForce::Gtd, false, false);
     let stop_market = (OrderType::StopMarket, false, false, false);
+    let market_if_touched = (OrderType::MarketIfTouched, false, false, false);
     let stop_limit = (OrderType::StopLimit, false, false);
     let actual = (
         entry.order_type,
@@ -863,6 +864,13 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
         entry.is_quote_quantity,
     ) == stop_market
         && has_positive_trigger_and_valid_expiry(entry);
+    let is_market_if_touched = (
+        entry.order_type,
+        entry.is_post_only,
+        entry.is_reduce_only,
+        entry.is_quote_quantity,
+    ) == market_if_touched
+        && has_positive_trigger_and_valid_expiry(entry);
     let is_stop_limit = (
         entry.order_type,
         entry.is_reduce_only,
@@ -873,11 +881,12 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
         && actual != maker_limit_gtc
         && !is_gtd_limit
         && !is_stop_market
+        && !is_market_if_touched
         && !is_stop_limit
     {
         vec![format!(
             "{context}: parameters.entry_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only order_type=limit with time_in_force=fok, time_in_force=gtc plus is_post_only=true, time_in_force=gtd plus expire_time_unix_nanos, order_type=stop_market plus trigger_price, or order_type=stop_limit plus trigger_price is allowed; \
+             only order_type=limit with time_in_force=fok, time_in_force=gtc plus is_post_only=true, time_in_force=gtd plus expire_time_unix_nanos, order_type=stop_market plus trigger_price, order_type=market_if_touched plus trigger_price, or order_type=stop_limit plus trigger_price is allowed; \
              is_reduce_only=false and is_quote_quantity=false are required"
         )]
     } else {

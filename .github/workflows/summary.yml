@@ -196,6 +196,7 @@ jobs:
           {
             printf '%s\n\n' "### AI issue summary"
             printf '%s\n\n' "$SUMMARY"
+            # shellcheck disable=SC2016  # literal backticks are intended Markdown, not expansion
             printf -- '---\n*Summarized by: `%s`*' "$MODEL_INFO"
           } > "$body_file"
           gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"

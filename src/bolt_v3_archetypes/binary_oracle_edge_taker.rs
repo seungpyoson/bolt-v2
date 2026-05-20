@@ -714,8 +714,8 @@ fn insert_order_config(
     Ok(())
 }
 
-fn enum_variant_lowercase<T: std::fmt::Debug>(value: T) -> String {
-    format!("{value:?}").to_ascii_lowercase()
+fn enum_variant_lowercase<T: std::fmt::Display>(value: T) -> String {
+    value.to_string().to_ascii_lowercase()
 }
 
 fn insert_i64(table: &mut Map<String, Value>, key: &'static str, value: i64) {

@@ -2785,6 +2785,13 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn executable_entry_cost(&self, side: OutcomeSide) -> Option<f64> {
+        if self.config.entry_order.order_type == OrderType::StopMarket {
+            return self
+                .config
+                .entry_order
+                .trigger_price
+                .filter(|value| is_positive_finite(*value));
+        }
         let order_side = self.configured_entry_order_side().ok()?;
         let book = self.active_book_for_outcome(side);
         if self.config.entry_order.is_post_only {
@@ -5901,6 +5908,7 @@ fn submit_admission_request_from_order(
     let client_order_id = order.client_order_id().to_string();
     let price_source = order
         .price()
+        .or_else(|| order.trigger_price())
         .map(|price| price.to_string())
         .unwrap_or_else(|| intent.price.clone());
     let price = Decimal::from_str(price_source.trim()).with_context(|| {
@@ -9040,6 +9048,25 @@ mod tests {
     }
 
     #[test]
+    fn stop_market_entry_submission_price_uses_trigger_price_for_notional_sizing() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.config.entry_order.order_type = OrderType::StopMarket;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.active.books.down.best_bid = Some(0.40);
+        strategy.active.books.down.best_ask = Some(0.41);
+
+        assert_eq!(
+            strategy.submission_entry_price(OutcomeSide::Down),
+            Some(0.52)
+        );
+        assert_eq!(
+            strategy.executable_entry_cost(OutcomeSide::Down),
+            Some(0.52)
+        );
+    }
+
+    #[test]
     fn post_only_exit_submission_price_uses_passive_book_price() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.config.exit_order.order_type = OrderType::Limit;
@@ -9321,7 +9348,7 @@ mod tests {
         assert!(!order.is_quote_quantity());
         assert_eq!(
             admission.notional,
-            Decimal::from_str("0.800").expect("expected decimal should parse")
+            Decimal::from_str("1.040").expect("expected decimal should parse")
         );
     }
 

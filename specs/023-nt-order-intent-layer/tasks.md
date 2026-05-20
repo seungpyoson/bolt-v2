@@ -138,6 +138,16 @@
 - [x] T055 [US2] Verify focused StopMarket tests, runtime literal/source fences, full `cargo test`, and branch cleanliness
 - [x] T056 [US2] Record StopMarket evidence, exact-head gate state, and residual unsupported variants in `research.md`
 
+## Phase 14: TDD Slice 11 - StopMarket Review Blocker Fixes
+
+**Goal**: Resolve external-review blockers without adding venue policy or bypassing NT.
+
+- [x] T057 [US2] RED: Reproduce StopMarket admission/sizing underestimation when `Order::price()` is absent and trigger price is higher than the pre-trigger book price
+- [x] T058 [US2] GREEN: Use NT `Order::trigger_price()` for triggered-order admission fallback and StopMarket entry sizing price
+- [x] T059 [US2] RED/GREEN: Add raw archetype-to-runtime strategy build round-trip for `order_type=stop_market`
+- [x] T060 [US2] Verify post-review focused tests, runtime literal/source fences, full `cargo test`, and branch cleanliness
+- [x] T061 [US2] Record external-review findings, fixes, exact-head gate state, and residual risks in `research.md`
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -153,6 +163,7 @@
 - Phase 11 blocks completion because it resolves a post-implementation review blocker.
 - Phase 12 blocks completion because PR #434 exact-head CI failed after the pushed implementation.
 - Phase 13 is the first deferred Phase 7 factory-variant slice and blocks StopMarket support claims until verified.
+- Phase 14 blocks completion because Claude and Gemini both found post-Phase 13 StopMarket blockers.
 
 ## Parallel Opportunities
 

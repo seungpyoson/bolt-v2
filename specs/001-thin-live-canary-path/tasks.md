@@ -198,10 +198,10 @@ blockers, not as deferred approval to trade.
 - [x] T099 [US5] Address external-review T096 test-hardening note: make the no-submit freshness source-shape guard pin `current_unix_seconds()` after controlled stages, not only the final report-builder call.
 - [x] T100 [US5] Address Greptile current-head submit-lifecycle observation: investigate and either correct or formally constrain `ReplaceSubmit` counter semantics so replaces cannot inflate risk-reducing-exit budget in any supported multi-order configuration.
 - [x] T101 [US5] Address Greptile current-head submit-admission serialization observation: investigate and either shorten the admission mutex critical section without weakening counter/evidence atomicity, or encode the serialization requirement with explicit tests and docs.
-- [ ] T102 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T099-T101 submit-admission/test-hardening slice.
+- [x] T102 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T099-T101 submit-admission/test-hardening slice.
 - [x] T103 [US5] Address Greptile current-head tiny-canary proof incompatibility: make the Phase 8 approval-consumption writer emit the gate-required `approval_envelope_sha256`, `client_order_id_hash`, and `venue_order_id_hash` fields, with writer-to-gate regression coverage.
 - [x] T104 [US5] Address Gemini T103 test-gap finding: add regression coverage proving an approval-consumption proof written by the Phase 8 harness is accepted by the actual live-canary gate.
-- [ ] T105 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T103/T104 proof-compatibility slice.
+- [x] T105 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T103/T104 proof-compatibility slice.
 
 ## Out Of Scope For MVP
 

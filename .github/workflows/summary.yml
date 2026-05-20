@@ -66,10 +66,11 @@ jobs:
         continue-on-error: true
         run: |
           # Fallback chain of free (low/high tier) GitHub Models, most capable
-          # first. All four are servable with the built-in GITHUB_TOKEN
-          # (verified HTTP 200); the custom-tier gpt-5/o3/o4-mini chosen in #410
-          # were never available on this account (see #422). Hand-rolled curl is
-          # used over actions/ai-inference to support the multi-model fallback.
+          # first, then a paid OpenRouter cross-provider backstop. All four
+          # GitHub models are servable with the built-in GITHUB_TOKEN (verified
+          # HTTP 200); the custom-tier gpt-5/o3/o4-mini chosen in #410 were never
+          # available on this account (see #422). Hand-rolled curl is used over
+          # actions/ai-inference to support the multi-model fallback.
           MODELS=("openai/gpt-4.1" "openai/gpt-4o" "openai/gpt-4.1-mini" "openai/gpt-4o-mini")
           SUCCESS=false
           FINAL_SUMMARY=""
@@ -119,6 +120,40 @@ jobs:
             echo "Failed with $model."
           done
 
+          # Final cross-provider backstop. Only fires if every (free) GitHub
+          # Models stage above failed — e.g. the OpenAI/Azure backend is fully
+          # down. openrouter/auto routes to paid models and bills OpenRouter
+          # credits, so it is intentionally gated on SUCCESS=false.
+          if [ "$SUCCESS" = false ] && [ -n "$OPENROUTER_API_KEY" ]; then
+            echo "Attempting OpenRouter fallback (openrouter/auto)..."
+            REQUEST_BODY=$(python3 -c "import sys, json, os; print(json.dumps({
+              'model': 'openrouter/auto',
+              'messages': [
+                {
+                  'role': 'system',
+                  'content': 'You are a Staff Engineer and Senior Maintainer. Distill the issue into a high-density technical brief. Internally analyze: 1) Core Logic: Functional change/bug. 2) Blast Radius: Affected subsystems. 3) Risks: Breaking changes/security. 4) Actionability: Is it ready? OUTPUT: One cohesive paragraph focusing on [Functional Core] + [Technical Complexity] + [Maintainer Recommendation].'
+                },
+                {
+                  'role': 'user',
+                  'content': f'Summarize this GitHub issue: Title: {os.environ.get(\"ISSUE_TITLE\", \"\")}\n\nBody: {os.environ.get(\"ISSUE_BODY\", \"\")}'
+                }
+              ]
+            }))")
+
+            response=$(curl -s --max-time 60 --retry 3 https://openrouter.ai/api/v1/chat/completions \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+              -d "$REQUEST_BODY") || response=""
+
+            summary=$(printf '%s' "$response" | jq -r '.choices[0].message.content | select(type == "string")' 2>/dev/null) || summary=""
+
+            if [ -n "$summary" ]; then
+              FINAL_SUMMARY="$summary"
+              USED_MODEL="openrouter/auto (OpenRouter Fallback)"
+              SUCCESS=true
+            fi
+          fi
+
           if [ "$SUCCESS" = true ]; then
             # Multiline-safe output with a randomized unique delimiter.
             DELIM="EOF_$(openssl rand -hex 16)"
@@ -137,6 +172,7 @@ jobs:
           # above) and serves the free-tier models. The prior GH_MODELS_TOKEN
           # secret returned 401 on every model (#422) and is no longer used.
           GH_MODELS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ISSUE_TITLE: ${{ steps.ctx.outputs.title }}
           ISSUE_BODY: ${{ steps.ctx.outputs.body }}
 

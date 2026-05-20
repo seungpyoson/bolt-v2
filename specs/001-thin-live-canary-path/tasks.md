@@ -119,7 +119,7 @@ blockers, not as deferred approval to trade.
 - [x] T048 [US4] Add TOML-owned readiness report age config in `src/bolt_v3_config.rs`, `config/root.example.toml`, `src/bolt_v3_no_submit_readiness.rs`, and `src/bolt_v3_live_canary_gate.rs`.
 - [x] T049 [P] [US4] Write failing no-submit stage-detail tests in `tests/bolt_v3_no_submit_readiness.rs` proving partial connect, skipped reference readiness, and stale reference cache cannot produce a gate-acceptable report.
 - [x] T050 [US4] Extend no-submit readiness stage evidence in `src/bolt_v3_no_submit_readiness.rs` and `src/bolt_v3_live_node.rs` so failed NT client connect/reference states stay failed and redacted stage details are preserved.
-- [ ] T051 [US4] Run `cargo test --test bolt_v3_no_submit_readiness -- --nocapture` and `cargo test --test bolt_v3_live_canary_gate -- --nocapture`.
+- [x] T051 [US4] Run `cargo test --test bolt_v3_no_submit_readiness -- --nocapture` and `cargo test --test bolt_v3_live_canary_gate -- --nocapture`.
 
 ## Phase 10: Review Remediation - Production Canary Approval Envelope (US5)
 
@@ -169,6 +169,8 @@ blockers, not as deferred approval to trade.
 - [ ] T070 [P] Run `rg -n "(?i:TODO|fix later|temporary|placeholder|AI|slop|stale|production-ready)" src tests specs/001-thin-live-canary-path docs/bolt-v3/2026-05-20-production-readiness-end-to-end-trace.md` and remove or justify stale prose in touched files.
 - [ ] T071 Run `cargo fmt --check`, `git diff --check`, all targeted cargo tests from T051/T056/T060/T069, and `just source-fence` if available.
 - [ ] T072 Run final spec-compliance and code-quality reviews for the remediation diff before claiming readiness status.
+- [x] T073 [US5] Fix review-discovered quickstart evidence-binding drift in `specs/001-thin-live-canary-path/quickstart.md`: head binding must name `[live_canary.operator_evidence].head_sha` plus build-owned head, root TOML hash must be checked via `approval_consumption_path`, and `approval_envelope_path` must not be described as read by the production gate.
+- [ ] T074 [US5] After T073, run `git diff --check` and `just source-fence`, then rerun scoped config/schema/docs re-review before push or external review.
 
 ## Out Of Scope For MVP
 

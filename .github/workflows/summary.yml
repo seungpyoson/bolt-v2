@@ -42,12 +42,29 @@ jobs:
               echo "Invalid issue_number input (must be digits): $number" >&2
               exit 1
             fi
-            title="$(gh issue view "$number" --json title --jq .title)"
-            body="$(gh issue view "$number" --json body --jq .body)"
+            title="$(gh issue view "$number" --json title --jq .title)" || {
+              echo "::error::Could not fetch issue #$number (nonexistent or inaccessible)"; exit 1; }
+            body="$(gh issue view "$number" --json body --jq .body)" || {
+              echo "::error::Could not fetch body for issue #$number"; exit 1; }
           else
             number="$EVENT_NUMBER"
             title="$EVENT_TITLE"
             body="$EVENT_BODY"
+          fi
+
+          # Best-effort coarse cap on the body. This is a char heuristic, not a
+          # hard token guarantee: English prose runs ~4 chars/token, but the
+          # code, logs, and config this repo's issues tend to carry run ~2
+          # chars/token — at which 16000 chars is already ~8000 body tokens,
+          # before the title, system prompt, and JSON framing. So 16000 aims to
+          # keep typical bodies near or below the ~8000-token free-tier input
+          # limit; it does not guarantee it. Overflow is not fatal: an over-limit
+          # request 400s and the chain falls through to the next model
+          # (ultimately posting no summary), so the cap is an optimization to
+          # avoid burning the whole chain, not a correctness gate.
+          max_body_chars=16000
+          if [ "${#body}" -gt "$max_body_chars" ]; then
+            body="${body:0:$max_body_chars}"$'\n\n_[issue body truncated for summarization]_'
           fi
 
           delim="EOF_$(openssl rand -hex 16)"
@@ -94,7 +111,7 @@ jobs:
                   'content': f'Summarize this GitHub issue: Title: {os.environ.get(\"ISSUE_TITLE\", \"\")}\n\nBody: {os.environ.get(\"ISSUE_BODY\", \"\")}'
                 }
               ]
-            }))" "$model")
+            }))" "$model") || REQUEST_BODY=""
 
             # `|| response=""` is required: the default runner shell is
             # `bash -eo pipefail`, so an unguarded assignment whose command
@@ -139,7 +156,7 @@ jobs:
                   'content': f'Summarize this GitHub issue: Title: {os.environ.get(\"ISSUE_TITLE\", \"\")}\n\nBody: {os.environ.get(\"ISSUE_BODY\", \"\")}'
                 }
               ]
-            }))")
+            }))") || REQUEST_BODY=""
 
             response=$(curl -s --max-time 60 --retry 3 https://openrouter.ai/api/v1/chat/completions \
               -H "Content-Type: application/json" \
@@ -186,6 +203,7 @@ jobs:
           {
             printf '%s\n\n' "### AI issue summary"
             printf '%s\n\n' "$SUMMARY"
+            # shellcheck disable=SC2016  # literal backticks are intended Markdown, not expansion
             printf -- '---\n*Summarized by: `%s`*' "$MODEL_INFO"
           } > "$body_file"
           gh issue comment "$ISSUE_NUMBER" --body-file "$body_file"

@@ -766,6 +766,519 @@ classification = "live_canary_gate_diagnostic_template"
 reason = "This diagnostic distinguishes an empty no-submit readiness report from a malformed or unsatisfied report."
 
 [[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"bolt-v3 live canary `[live_canary].operator_evidence.{field}` is empty"'''
+context = '''"bolt-v3 live canary `[live_canary].operator_evidence.{field}` is empty"'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"bolt-v3 live canary approval consumption proof {} is malformed: {reason}"'''
+context = '''"bolt-v3 live canary approval consumption proof {} is malformed: {reason}",'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"bolt-v3 live canary approval consumption proof {} is stale: consumed_unix_secs={consumed_unix_secs}, current_unix_seconds={current_unix_seconds}, approval window [{approval_not_before_unix_seconds}, {approval_not_after_unix_seconds}], approval_consumption_max_age_seconds={approval_consumption_max_age_seconds}"'''
+context = '''"bolt-v3 live canary approval consumption proof {} is stale: consumed_unix_secs={consumed_unix_secs}, current_unix_seconds={current_unix_seconds}, approval window [{approval_not_before_unix_seconds}, {approval_not_after_unix_seconds}], approval_consumption_max_age_seconds={approval_consumption_max_age_seconds}",'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"schema_version"'''
+context = '''validate_consumption_i64_field(&path, object, "schema_version", 1)?;'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "1"
+context = '''validate_consumption_i64_field(&path, object, "schema_version", 1)?;'''
+classification = "phase8_approval_consumption_schema_version"
+reason = "This is the fixed schema version for Phase 8 approval-consumption evidence; values are validated against the evidence protocol, not used as an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"record_kind"'''
+context = '''"record_kind",'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"phase8_operator_approval_consumption"'''
+context = '''"phase8_operator_approval_consumption",'''
+classification = "phase8_approval_consumption_record_kind"
+reason = "This labels the Phase 8 approval-consumption evidence record that binds operator approval to a single canary attempt."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"head_sha"'''
+context = '''("head_sha", evidence.head_sha.as_str()),'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"root_toml_sha256"'''
+context = '''("root_toml_sha256", root_toml_sha256.as_str()),'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"ssm_manifest_sha256"'''
+context = '''("ssm_manifest_sha256", evidence.ssm_manifest_sha256.as_str()),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_sha256"'''
+context = '''"strategy_input_evidence_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"financial_envelope_sha256"'''
+context = '''"financial_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"pre_run_state_sha256"'''
+context = '''"pre_run_state_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"abort_plan_sha256"'''
+context = '''("abort_plan_sha256", evidence.abort_plan_sha256.as_str()),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_nonce_sha256"'''
+context = '''"approval_nonce_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_id_hash"'''
+context = '''("approval_id_hash", approval_id_hash.as_str()),'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"canary_evidence_path_hash"'''
+context = '''"canary_evidence_path_hash",'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_not_before_unix_secs"'''
+context = '''"approval_not_before_unix_secs",'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_not_after_unix_secs"'''
+context = '''"approval_not_after_unix_secs",'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"consumed_unix_secs"'''
+context = '''let consumed_unix_secs = consumption_i64_field(&path, object, "consumed_unix_secs")?;'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "0_u64"
+context = '''let mut observed = 0_u64;'''
+classification = "operator_evidence_bounded_read_buffer"
+reason = "This is bounded-read implementation state for enforcing the TOML-owned operator evidence byte cap during I/O."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "0_u8"
+context = '''let mut buffer = [0_u8; 8192];'''
+classification = "operator_evidence_bounded_read_buffer"
+reason = "This is bounded-read implementation state for enforcing the TOML-owned operator evidence byte cap during I/O."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "8192"
+context = '''let mut buffer = [0_u8; 8192];'''
+classification = "operator_evidence_bounded_read_buffer"
+reason = "This is bounded-read implementation state for enforcing the TOML-owned operator evidence byte cap during I/O."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "1"
+context = '''let remaining_to_detect = max_bytes.saturating_sub(observed).saturating_add(1);'''
+classification = "bounded_read_sentinel"
+reason = "The gate reads one byte beyond the configured cap to detect oversized operator evidence without unbounded reads."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"operator evidence read exceeds max_operator_evidence_file_bytes={max_bytes} bytes"'''
+context = '''"operator evidence read exceeds max_operator_evidence_file_bytes={max_bytes} bytes"'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"{} exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"'''
+context = '''"{} exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})",'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "23"
+context = ''') -> [(&'static str, &str); 23] {'''
+classification = "operator_evidence_required_field_count"
+reason = "This is the compile-time size of the required operator evidence field table; field values are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"head_sha"'''
+context = '''("head_sha", &evidence.head_sha),'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_envelope_path"'''
+context = '''("approval_envelope_path", &evidence.approval_envelope_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"ssm_manifest_path"'''
+context = '''("ssm_manifest_path", &evidence.ssm_manifest_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"ssm_manifest_sha256"'''
+context = '''("ssm_manifest_sha256", &evidence.ssm_manifest_sha256),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_path"'''
+context = '''"strategy_input_evidence_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_sha256"'''
+context = '''"strategy_input_evidence_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"financial_envelope_path"'''
+context = '''("financial_envelope_path", &evidence.financial_envelope_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"financial_envelope_sha256"'''
+context = '''"financial_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"pre_run_state_path"'''
+context = '''("pre_run_state_path", &evidence.pre_run_state_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"pre_run_state_sha256"'''
+context = '''("pre_run_state_sha256", &evidence.pre_run_state_sha256),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"abort_plan_path"'''
+context = '''("abort_plan_path", &evidence.abort_plan_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"abort_plan_sha256"'''
+context = '''("abort_plan_sha256", &evidence.abort_plan_sha256),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"canary_evidence_path"'''
+context = '''("canary_evidence_path", &evidence.canary_evidence_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_nonce_path"'''
+context = '''("approval_nonce_path", &evidence.approval_nonce_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_nonce_sha256"'''
+context = '''("approval_nonce_sha256", &evidence.approval_nonce_sha256),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_consumption_path"'''
+context = '''"approval_consumption_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"decision_evidence_path"'''
+context = '''("decision_evidence_path", &evidence.decision_evidence_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"client_order_id_hash"'''
+context = '''("client_order_id_hash", &evidence.client_order_id_hash),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"venue_order_id_hash"'''
+context = '''("venue_order_id_hash", &evidence.venue_order_id_hash),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"nt_submit_event_path"'''
+context = '''("nt_submit_event_path", &evidence.nt_submit_event_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"venue_order_state_path"'''
+context = '''("venue_order_state_path", &evidence.venue_order_state_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"restart_reconciliation_path"'''
+context = '''"restart_reconciliation_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"post_run_hygiene_path"'''
+context = '''("post_run_hygiene_path", &evidence.post_run_hygiene_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "8"
+context = ''') -> [(&'static str, &str); 8] {'''
+classification = "operator_evidence_hash_field_count"
+reason = "This is the compile-time size of the operator evidence hash field table; hash values are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "6"
+context = ''') -> [OperatorEvidenceFileHashBinding<'_>; 6] {'''
+classification = "operator_evidence_file_hash_binding_count"
+reason = "This is the compile-time size of the sha256-bound pre-run artifact table; paths and hashes are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"ssm_manifest_sha256"'''
+context = '''hash_field: "ssm_manifest_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_sha256"'''
+context = '''hash_field: "strategy_input_evidence_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"financial_envelope_sha256"'''
+context = '''hash_field: "financial_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"pre_run_state_sha256"'''
+context = '''hash_field: "pre_run_state_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"abort_plan_sha256"'''
+context = '''hash_field: "abort_plan_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_nonce_sha256"'''
+context = '''hash_field: "approval_nonce_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "64"
+context = '''value.len() == 64'''
+classification = "sha256_hex_shape_bound"
+reason = "This validates lowercase sha256 hex string shape for configured evidence hashes."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"BOLT_V3_BUILD_HEAD_SHA"'''
+context = '''option_env!("BOLT_V3_BUILD_HEAD_SHA").filter(|value| is_git_head_sha(value))'''
+classification = "build_head_env_name"
+reason = "This is a compile-time Cargo environment variable emitted by build.rs to bind operator approval to the built source head."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "40"
+context = '''value.len() == 40'''
+classification = "git_head_sha_shape_bound"
+reason = "This validates lowercase git commit SHA shape for build/operator head binding."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"{GENERATED_AT_UNIX_SECONDS_KEY} is in the future ({generated_at_unix_seconds} > {current_unix_seconds})"'''
+context = '''"{GENERATED_AT_UNIX_SECONDS_KEY} is in the future ({generated_at_unix_seconds} > {current_unix_seconds})"'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"{GENERATED_AT_UNIX_SECONDS_KEY} expired: age_seconds={age_seconds} exceeds \
+             [live_canary].readiness_report_max_age_seconds={readiness_report_max_age_seconds}"'''
+context = '''"{GENERATED_AT_UNIX_SECONDS_KEY} expired: age_seconds={age_seconds} exceeds \'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"generated_at_unix_seconds"'''
+context = '''pub const GENERATED_AT_UNIX_SECONDS_KEY: &str = "generated_at_unix_seconds";'''
+classification = "no_submit_readiness_report_schema_field"
+reason = "This is a no-submit readiness report schema field used for freshness validation."
+
+[[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "number"
 literal = "0"

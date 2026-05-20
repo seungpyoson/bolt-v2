@@ -90,6 +90,13 @@ types:
     recommended_storage: jsonl
     reason: derive(Serialize, Deserialize) present; no Arrow impl in NT; bolt currently writes JSONL capture (accounts/account_state.jsonl)
 
+  - message_type: PortfolioSnapshot
+    nt_path: crates/model/src/events/portfolio/snapshot.rs:46-68
+    serde_supported: true
+    feather_supported: false
+    recommended_storage: jsonl
+    reason: derive(Serialize, Deserialize) present and CatalogPathPrefix("portfolio_snapshot") exists, but no EncodeToRecordBatch impl was found in pinned NT; direct JSONL capture is feasible. The stream is exposed by subscribe_portfolio_snapshot (crates/common/src/msgbus/api.rs:470) and published on events.portfolio.{account_id} by Portfolio snapshot timers (crates/portfolio/src/portfolio.rs:2597). Bolt does not capture it yet.
+
   - message_type: OrderEventAny
     nt_path: crates/model/src/events/order/any.rs:36-53
     serde_supported: true

@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use nautilus_common::enums::Environment;
 use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_common::{
-    cache::Cache,
+    cache::CacheView,
     clients::{DataClient, ExecutionClient},
     clock::Clock,
     messages::data::{SubscribeInstrument, SubscribeQuotes, SubscribeTrades},
@@ -327,7 +327,7 @@ impl DataClientFactory for MockDataClientFactory {
         &self,
         _name: &str,
         config: &dyn ClientConfig,
-        _cache: Rc<RefCell<Cache>>,
+        _cache: CacheView,
         _clock: Rc<RefCell<dyn Clock>>,
     ) -> anyhow::Result<Box<dyn DataClient>> {
         let cfg = config
@@ -362,7 +362,7 @@ impl ExecutionClientFactory for MockExecutionClientFactory {
         &self,
         _name: &str,
         config: &dyn ClientConfig,
-        _cache: Rc<RefCell<Cache>>,
+        _cache: CacheView,
     ) -> anyhow::Result<Box<dyn ExecutionClient>> {
         let cfg = config
             .as_any()

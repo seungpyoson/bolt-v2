@@ -16,6 +16,8 @@ use nautilus_binance::common::enums::{
     BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
 };
 use nautilus_binance::config::BinanceDataClientConfig;
+use nautilus_binance::spot::sbe::SBE_SCHEMA_VERSION as NT_BINANCE_SPOT_SBE_SCHEMA_VERSION;
+use nautilus_network::transport::sockudo::SockudoTransport;
 use nautilus_network::websocket::TransportBackend;
 use nautilus_polymarket::{
     common::enums::SignatureType as NtPolymarketSignatureType,
@@ -49,6 +51,16 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         Arc::new(fixture_binance_secrets()),
     );
     ResolvedBoltV3Secrets { clients }
+}
+
+#[test]
+fn configured_sockudo_transport_backend_is_compiled_for_live_connectivity() {
+    let _ = std::any::type_name::<SockudoTransport<tokio::net::TcpStream>>();
+}
+
+#[test]
+fn nt_binance_spot_sbe_schema_matches_live_exchange_info_version() {
+    assert_eq!(NT_BINANCE_SPOT_SBE_SCHEMA_VERSION, 4);
 }
 
 #[test]
@@ -207,7 +219,7 @@ fn binance_data_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
         .expect("binance [data] should downcast to NT BinanceDataClientConfig");
 
     assert_eq!(data.product_types, vec![NtBinanceProductType::Spot]);
-    assert_eq!(data.environment, NtBinanceEnvironment::Mainnet);
+    assert_eq!(data.environment, NtBinanceEnvironment::Live);
     // The bolt-v3 binance data schema now requires explicit
     // base_url_http and base_url_ws so NT cannot silently fall back to
     // its compiled-in default Binance endpoints. Both must arrive at

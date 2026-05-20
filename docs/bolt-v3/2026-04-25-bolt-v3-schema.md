@@ -354,7 +354,7 @@ All pinned `LiveDataEngineConfig` fields are explicit in TOML and mapped into th
 Fields rejected by NautilusTrader's current Rust live runtime are still required in TOML at the only accepted value so upstream default drift cannot silently change the built node:
 
 - `graceful_shutdown_on_error = false`
-- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, currently `100000` at NT rev `38b912a8b0fe14e4046773973ff46a3b798b1e3e`
+- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, currently `100000` at NT rev `7c2aafb30fb143069c915a3f2057bb12174405f6`
 
 | Field | Type / Rule | Maps to |
 |---|---|---|
@@ -363,7 +363,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `time_bars_skip_first_non_full_bar` | boolean | `LiveDataEngineConfig.time_bars_skip_first_non_full_bar` |
 | `time_bars_interval_type` | valid NT `BarIntervalType` string; current baseline `LEFT_OPEN` | `LiveDataEngineConfig.time_bars_interval_type` |
 | `time_bars_build_delay` | non-negative integer microseconds | `LiveDataEngineConfig.time_bars_build_delay` |
-| `time_bars_origins` | TOML inline table mapping valid NT `BarAggregation` strings to origin offsets in nanoseconds | `LiveDataEngineConfig.time_bars_origins` |
+| `time_bars_origins` | TOML inline table mapping valid NT `BarAggregation` strings to origin offsets in nanoseconds | `LiveDataEngineConfig.time_bars_origin_offset` |
 | `validate_data_sequence` | boolean | `LiveDataEngineConfig.validate_data_sequence` |
 | `buffer_deltas` | boolean | `LiveDataEngineConfig.buffer_deltas` |
 | `emit_quotes_from_book` | boolean | `LiveDataEngineConfig.emit_quotes_from_book` |
@@ -371,7 +371,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `external_clients` | array of valid NT client IDs; empty maps to `None` | `LiveDataEngineConfig.external_clients` |
 | `debug` | boolean | `LiveDataEngineConfig.debug` |
 | `graceful_shutdown_on_error` | must be `false` | `LiveDataEngineConfig.graceful_shutdown_on_error` |
-| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, currently `100000` at NT rev `38b912a8b0fe14e4046773973ff46a3b798b1e3e` | `LiveDataEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, currently `100000` at NT rev `7c2aafb30fb143069c915a3f2057bb12174405f6` | `LiveDataEngineConfig.qsize` |
 
 ### `[nautilus.exec_engine]`
 
@@ -383,7 +383,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 - `snapshot_positions = false`
 - `purge_from_database = false`
 - `graceful_shutdown_on_error = false`
-- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, currently `100000` at NT rev `38b912a8b0fe14e4046773973ff46a3b798b1e3e`
+- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, currently `100000` at NT rev `7c2aafb30fb143069c915a3f2057bb12174405f6`
 
 #### `reconciliation_lookback_mins`
 
@@ -451,7 +451,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `purge_from_database` | must be `false` | `LiveExecEngineConfig.purge_from_database` |
 | `own_books_audit_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.own_books_audit_interval_secs` |
 | `graceful_shutdown_on_error` | must be `false` | `LiveExecEngineConfig.graceful_shutdown_on_error` |
-| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, currently `100000` at NT rev `38b912a8b0fe14e4046773973ff46a3b798b1e3e` | `LiveExecEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, currently `100000` at NT rev `7c2aafb30fb143069c915a3f2057bb12174405f6` | `LiveExecEngineConfig.qsize` |
 | `allow_overfills` | boolean | `LiveExecEngineConfig.allow_overfills` |
 | `manage_own_order_books` | boolean | `LiveExecEngineConfig.manage_own_order_books` |
 
@@ -513,7 +513,7 @@ This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTra
 - type: positive integer
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.qsize`
-- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, currently `100000` at NT rev `38b912a8b0fe14e4046773973ff46a3b798b1e3e`
+- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, currently `100000` at NT rev `7c2aafb30fb143069c915a3f2057bb12174405f6`
 
 ### `[logging]`
 

@@ -343,6 +343,6 @@ fn nt_product_type(value: BinanceProductType) -> NtBinanceProductType {
 
 fn nt_environment(value: BinanceEnvironment) -> NtBinanceEnvironment {
     match value {
-        BinanceEnvironment::Mainnet => NtBinanceEnvironment::Mainnet,
+        BinanceEnvironment::Mainnet => NtBinanceEnvironment::Live,
     }
 }

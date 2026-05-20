@@ -3430,7 +3430,7 @@ impl BinaryOracleEdgeTaker {
             .record_order_intent(&intent)?;
         let request = submit_admission_request_from_intent(&intent)?;
         let _permit = self.context.submit_admission().admit(&request)?;
-        self.submit_order(order, None, Some(client_id))
+        self.submit_order(order, None, Some(client_id), None)
     }
 
     fn build_configured_entry_order(

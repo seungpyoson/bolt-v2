@@ -89,7 +89,7 @@ fn binary_oracle_edge_taker_records_evidence_then_admission_before_only_direct_s
         .find(".submit_admission().admit(&request)")
         .expect("strategy wrapper must submit through admission");
     let submit_index = source
-        .find("self.submit_order(order, None, Some(client_id))")
+        .find("self.submit_order(order, None, Some(client_id), None)")
         .expect("strategy wrapper must own the only direct NT submit call");
 
     assert!(

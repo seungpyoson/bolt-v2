@@ -31,4 +31,11 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           reporter: github-check
+          # nofilter: report (and fail on) every finding in every workflow
+          # file, not just lines in the PR diff. reviewdog's default
+          # filter_mode is `added`, which evaluates fail_level *after*
+          # dropping findings outside changed lines — so a structural error
+          # anchored away from the edited line (the #410 class) could slip
+          # through. github-check fully supports nofilter.
+          filter_mode: nofilter
           fail_level: error

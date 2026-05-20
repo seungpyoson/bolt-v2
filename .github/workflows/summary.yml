@@ -27,7 +27,7 @@ jobs:
             
             # Prepare request body with reasoning if applicable
             REASONING_PART=""
-            if [[ "$model" == *"o3"* || "$model" == *"o4-mini"* ]]; then
+            if [[ "$model" == *"gpt-5"* || "$model" == *"o3"* || "$model" == *"o4-mini"* ]]; then
               REASONING_PART=', "reasoning_effort": "high"'
             fi
 
@@ -49,7 +49,7 @@ jobs:
             EOF
             )
 
-            response=$(curl -s https://models.github.ai/inference/chat/completions \
+            response=$(curl -s https://models.github.io/inference/chat/completions \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer $GH_MODELS_TOKEN" \
               -d "$REQUEST_BODY")
@@ -70,7 +70,7 @@ jobs:
             echo "Attempting OpenRouter fallback..."
             REQUEST_BODY=$(cat <<EOF
             {
-              "model": "openrouter/auto",
+              "model": "openrouter/free",
               "messages": [
                 {
                   "role": "system",
@@ -95,7 +95,7 @@ jobs:
             
             if [ -n "$summary" ]; then
               FINAL_SUMMARY="$summary"
-              USED_MODEL="openrouter/auto (OpenRouter Fallback)"
+              USED_MODEL="openrouter/free (OpenRouter Fallback)"
               SUCCESS=true
             fi
           fi

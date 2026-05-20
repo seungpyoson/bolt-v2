@@ -10,12 +10,14 @@ use bolt_v2::{
         run_bolt_v3_no_submit_readiness_on_runtime,
     },
     bolt_v3_no_submit_readiness_schema::{
-        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
-        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
-        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
+        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, GENERATED_AT_UNIX_SECONDS_KEY,
+        LIVE_NODE_BUILD_STAGE, NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE,
+        REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
     },
 };
 use sha2::{Digest, Sha256};
+
+const TEST_READINESS_REPORT_MAX_AGE_SECONDS: u64 = 60;
 
 #[tokio::test(flavor = "current_thread")]
 async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
@@ -31,6 +33,7 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -105,6 +108,7 @@ async fn no_submit_readiness_report_records_authenticated_fields_and_required_st
             "approval_id_hash",
             "config_bundle_checksum",
             "executable_identity",
+            "generated_at_unix_seconds",
             "schema_version",
             "stages"
         ]
@@ -112,6 +116,10 @@ async fn no_submit_readiness_report_records_authenticated_fields_and_required_st
         .collect()
     );
     assert_eq!(value["schema_version"], NO_SUBMIT_READINESS_SCHEMA_VERSION);
+    assert!(
+        value[GENERATED_AT_UNIX_SECONDS_KEY].as_u64().is_some(),
+        "generated_at_unix_seconds should serialize as unsigned seconds"
+    );
     assert_eq!(value["approval_id_hash"], approval_id_hash);
     assert_ne!(value["approval_id_hash"], "operator-approved-canary-001");
     assert_eq!(
@@ -341,6 +349,7 @@ fn no_submit_readiness_rejects_empty_configured_operator_approval_before_build()
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -550,6 +559,7 @@ fn loaded_with_test_live_canary() -> LoadedBoltV3Config {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     )
@@ -560,6 +570,7 @@ fn test_report_metadata() -> BoltV3NoSubmitReadinessReportMetadata {
         approval_id_hash: sha256_hex("operator-approved-canary-001"),
         executable_identity: "test-executable-identity".to_string(),
         config_bundle_checksum: "test-config-bundle-checksum".to_string(),
+        generated_at_unix_seconds: 1_000,
     }
 }
 

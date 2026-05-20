@@ -3,6 +3,7 @@ pub const SCHEMA_VERSION_KEY: &str = "schema_version";
 pub const APPROVAL_ID_HASH_KEY: &str = "approval_id_hash";
 pub const EXECUTABLE_IDENTITY_KEY: &str = "executable_identity";
 pub const CONFIG_BUNDLE_CHECKSUM_KEY: &str = "config_bundle_checksum";
+pub const GENERATED_AT_UNIX_SECONDS_KEY: &str = "generated_at_unix_seconds";
 pub const STAGES_KEY: &str = "stages";
 pub const STAGE_KEY: &str = "stage";
 pub const STATUS_KEY: &str = "status";

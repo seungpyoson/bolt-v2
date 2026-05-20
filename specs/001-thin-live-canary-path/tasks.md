@@ -115,8 +115,8 @@ blockers, not as deferred approval to trade.
 
 **Independent Test**: `cargo test --test bolt_v3_live_canary_gate -- --nocapture` rejects stale, missing-freshness, wrong-binary, wrong-config, and unsatisfied readiness reports before runner entry.
 
-- [ ] T047 [P] [US4] Write failing stale-report rejection tests in `tests/bolt_v3_live_canary_gate.rs` for missing `generated_at_unix_seconds`, expired report age, and report age above TOML-owned `[live_canary].readiness_report_max_age_seconds`.
-- [ ] T048 [US4] Add TOML-owned readiness report age config in `src/bolt_v3_config.rs`, `config/root.example.toml`, `src/bolt_v3_no_submit_readiness.rs`, and `src/bolt_v3_live_canary_gate.rs`.
+- [x] T047 [P] [US4] Write failing stale-report rejection tests in `tests/bolt_v3_live_canary_gate.rs` for missing `generated_at_unix_seconds`, expired report age, and report age above TOML-owned `[live_canary].readiness_report_max_age_seconds`.
+- [x] T048 [US4] Add TOML-owned readiness report age config in `src/bolt_v3_config.rs`, `config/root.example.toml`, `src/bolt_v3_no_submit_readiness.rs`, and `src/bolt_v3_live_canary_gate.rs`.
 - [ ] T049 [P] [US4] Write failing no-submit stage-detail tests in `tests/bolt_v3_no_submit_readiness.rs` proving partial connect, skipped reference readiness, and stale reference cache cannot produce a gate-acceptable report.
 - [ ] T050 [US4] Extend no-submit readiness stage evidence in `src/bolt_v3_no_submit_readiness.rs` and `src/bolt_v3_live_node.rs` so failed NT client connect/reference states stay failed and redacted stage details are preserved.
 - [ ] T051 [US4] Run `cargo test --test bolt_v3_no_submit_readiness -- --nocapture` and `cargo test --test bolt_v3_live_canary_gate -- --nocapture`.

@@ -7,6 +7,7 @@
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
+    time::{SystemTime, SystemTimeError, UNIX_EPOCH},
 };
 
 use serde::Serialize;
@@ -35,6 +36,9 @@ pub enum BoltV3NoSubmitReadinessError {
     ExecutableIdentityRead {
         path: PathBuf,
         source: std::io::Error,
+    },
+    SystemTimeBeforeUnixEpoch {
+        source: SystemTimeError,
     },
     ActiveTokioRuntime,
     RuntimeBuild {
@@ -81,6 +85,10 @@ impl std::fmt::Display for BoltV3NoSubmitReadinessError {
                 f,
                 "failed to read bolt-v3 no-submit readiness executable {}: {source}",
                 path.display()
+            ),
+            Self::SystemTimeBeforeUnixEpoch { source } => write!(
+                f,
+                "failed to timestamp bolt-v3 no-submit readiness report: {source}"
             ),
             Self::ActiveTokioRuntime => write!(
                 f,
@@ -130,6 +138,7 @@ impl std::error::Error for BoltV3NoSubmitReadinessError {
             Self::LiveNode { source } => Some(source),
             Self::CurrentExecutablePath { source } => Some(source),
             Self::ExecutableIdentityRead { source, .. } => Some(source),
+            Self::SystemTimeBeforeUnixEpoch { source } => Some(source),
             Self::ReportParentCreate { source, .. } | Self::ReportWrite { source, .. } => {
                 Some(source)
             }
@@ -163,6 +172,7 @@ pub struct BoltV3NoSubmitReadinessReportMetadata {
     pub approval_id_hash: String,
     pub executable_identity: String,
     pub config_bundle_checksum: String,
+    pub generated_at_unix_seconds: u64,
 }
 
 impl BoltV3NoSubmitReadinessReportMetadata {
@@ -174,6 +184,7 @@ impl BoltV3NoSubmitReadinessReportMetadata {
             approval_id_hash,
             executable_identity: executable_identity().await?,
             config_bundle_checksum: loaded.config_bundle_checksum.clone(),
+            generated_at_unix_seconds: current_unix_seconds()?,
         })
     }
 }
@@ -184,6 +195,7 @@ pub struct BoltV3NoSubmitReadinessReport {
     pub approval_id_hash: String,
     pub executable_identity: String,
     pub config_bundle_checksum: String,
+    pub generated_at_unix_seconds: u64,
     pub stages: Vec<BoltV3NoSubmitReadinessStage>,
 }
 
@@ -284,6 +296,7 @@ pub fn run_bolt_v3_no_submit_readiness_from_stage_results(
         approval_id_hash: metadata.approval_id_hash,
         executable_identity: metadata.executable_identity,
         config_bundle_checksum: metadata.config_bundle_checksum,
+        generated_at_unix_seconds: metadata.generated_at_unix_seconds,
         stages,
     }
 }
@@ -403,6 +416,13 @@ fn configured_operator_approval_hash(
 
 fn configured_report_path(loaded: &LoadedBoltV3Config, configured: &str) -> PathBuf {
     resolve_root_relative_path(&loaded.root_path, configured)
+}
+
+fn current_unix_seconds() -> Result<u64, BoltV3NoSubmitReadinessError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|source| BoltV3NoSubmitReadinessError::SystemTimeBeforeUnixEpoch { source })
 }
 
 async fn executable_identity() -> Result<String, BoltV3NoSubmitReadinessError> {

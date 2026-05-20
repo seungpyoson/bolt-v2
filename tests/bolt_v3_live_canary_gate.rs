@@ -6,14 +6,16 @@ use bolt_v2::{
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
-        CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, LIVE_NODE_BUILD_STAGE,
-        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
-        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
-        STATUS_KEY, STATUS_SATISFIED,
+        CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, GENERATED_AT_UNIX_SECONDS_KEY,
+        LIVE_NODE_BUILD_STAGE, NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE,
+        REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
+        STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
     },
 };
 use sha2::{Digest, Sha256};
 use tokio::task::LocalSet;
+
+const TEST_READINESS_REPORT_MAX_AGE_SECONDS: u64 = 60;
 
 #[test]
 fn run_bolt_v3_live_node_rejects_missing_live_canary_before_nt_run() {
@@ -58,6 +60,7 @@ async fn live_canary_gate_rejects_empty_approval_id() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -84,6 +87,7 @@ async fn live_canary_gate_rejects_empty_readiness_report_path() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -110,6 +114,7 @@ async fn live_canary_gate_rejects_zero_order_count() {
             max_live_order_count: 0,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -139,6 +144,7 @@ async fn live_canary_gate_rejects_zero_report_byte_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 0,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -170,6 +176,7 @@ async fn live_canary_gate_rejects_invalid_canary_notional_values() {
                 max_live_order_count: 1,
                 max_notional_per_order: candidate.to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
+                readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
                 operator_evidence: None,
             },
         );
@@ -204,6 +211,7 @@ async fn live_canary_gate_rejects_invalid_root_notional_values() {
                 max_live_order_count: 1,
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
+                readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
                 operator_evidence: None,
             },
         );
@@ -239,6 +247,7 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
             max_live_order_count: 1,
             max_notional_per_order: " 1.00 ".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -273,6 +282,7 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "10.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -303,6 +313,7 @@ async fn live_canary_gate_rejects_stale_no_submit_linkage_fields() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -310,6 +321,120 @@ async fn live_canary_gate_rejects_stale_no_submit_linkage_fields() {
     check_bolt_v3_live_canary_gate(&loaded)
         .await
         .expect_err("stale no-submit linkage must fail closed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_no_submit_report_missing_generated_at() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    let mut report = linked_report_object(complete_stage_values());
+    report.remove(GENERATED_AT_UNIX_SECONDS_KEY);
+    write_report_value(&report_path, serde_json::Value::Object(report));
+
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: None,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("missing generated_at_unix_seconds must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => assert!(
+            reasons
+                .iter()
+                .any(|reason| reason.contains("generated_at_unix_seconds")),
+            "missing generated_at_unix_seconds should be reported, got {reasons:?}"
+        ),
+        other => panic!("expected unsatisfied no-submit report rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_expired_no_submit_report() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    let generated_at =
+        current_unix_seconds_for_test().saturating_sub(TEST_READINESS_REPORT_MAX_AGE_SECONDS + 1);
+    write_no_submit_report_at(&report_path, &[], generated_at);
+
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: None,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("expired no-submit report must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => assert!(
+            reasons.iter().any(|reason| reason.contains("expired")),
+            "expired generated_at_unix_seconds should be reported, got {reasons:?}"
+        ),
+        other => panic!("expected unsatisfied no-submit report rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_uses_toml_owned_readiness_report_max_age_seconds() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    let configured_max_age_seconds = 4;
+    let generated_at =
+        current_unix_seconds_for_test().saturating_sub(configured_max_age_seconds + 1);
+    write_no_submit_report_at(&report_path, &[], generated_at);
+
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: configured_max_age_seconds,
+            operator_evidence: None,
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("report older than the configured max age must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => assert!(
+            reasons.iter().any(|reason| {
+                reason.contains("readiness_report_max_age_seconds")
+                    && reason.contains(&configured_max_age_seconds.to_string())
+            }),
+            "configured max age should be reported, got {reasons:?}"
+        ),
+        other => panic!("expected unsatisfied no-submit report rejection, got {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -347,6 +472,7 @@ async fn live_canary_gate_rejects_missing_wrong_or_non_string_schema_version() {
                 max_live_order_count: 1,
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
+                readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
                 operator_evidence: None,
             },
         );
@@ -381,6 +507,7 @@ async fn live_canary_gate_rejects_notional_above_root_risk_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "11.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -413,6 +540,7 @@ async fn live_canary_gate_rejects_empty_stage_report() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -447,6 +575,7 @@ async fn live_canary_gate_rejects_report_missing_stages_key() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -483,6 +612,7 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -519,6 +649,7 @@ async fn live_canary_gate_reports_each_unsatisfied_required_stage_once() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -556,6 +687,7 @@ async fn live_canary_gate_rejects_missing_no_submit_report() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -586,6 +718,7 @@ async fn live_canary_gate_rejects_malformed_no_submit_report_json() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -621,6 +754,7 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: report_len,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -645,6 +779,7 @@ async fn live_canary_gate_rejects_no_submit_report_above_configured_byte_cap() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 1,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -678,6 +813,7 @@ async fn live_canary_gate_distinguishes_non_object_report_from_missing_stages() 
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -720,6 +856,7 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -756,6 +893,7 @@ async fn live_canary_gate_rejects_name_only_stage_field() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -806,6 +944,7 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             operator_evidence: None,
         },
     );
@@ -836,6 +975,20 @@ fn write_no_submit_report(path: &std::path::Path, stages: &[(&str, &str)]) {
     write_no_submit_report_with_stage_field(path, STAGE_KEY, stages);
 }
 
+fn write_no_submit_report_at(
+    path: &std::path::Path,
+    stages: &[(&str, &str)],
+    generated_at_unix_seconds: u64,
+) {
+    let stages = complete_stage_values_with_overrides(stages, STAGE_KEY);
+    let mut report = linked_report_object(stages);
+    report.insert(
+        GENERATED_AT_UNIX_SECONDS_KEY.to_string(),
+        serde_json::json!(generated_at_unix_seconds),
+    );
+    write_report_value(path, serde_json::Value::Object(report));
+}
+
 fn write_no_submit_report_with_linkage(
     path: &std::path::Path,
     approval_id_hash: &str,
@@ -861,6 +1014,7 @@ fn write_no_submit_report_with_linkage(
             APPROVAL_ID_HASH_KEY: approval_id_hash,
             EXECUTABLE_IDENTITY_KEY: executable_identity,
             CONFIG_BUNDLE_CHECKSUM_KEY: config_bundle_checksum,
+            GENERATED_AT_UNIX_SECONDS_KEY: current_unix_seconds_for_test(),
             STAGES_KEY: stages,
         }),
     );
@@ -911,6 +1065,10 @@ fn linked_report_object(
                 .config_bundle_checksum
         ),
     );
+    object.insert(
+        GENERATED_AT_UNIX_SECONDS_KEY.to_string(),
+        serde_json::json!(current_unix_seconds_for_test()),
+    );
     object.insert(STAGES_KEY.to_string(), serde_json::Value::Array(stages));
     object
 }
@@ -930,11 +1088,10 @@ fn complete_stage_values() -> Vec<serde_json::Value> {
     .collect()
 }
 
-fn write_no_submit_report_with_stage_field(
-    path: &std::path::Path,
+fn complete_stage_values_with_overrides(
+    overrides: &[(&str, &str)],
     stage_field: &str,
-    stages: &[(&str, &str)],
-) {
+) -> Vec<serde_json::Value> {
     let mut complete_stages = [
         OPERATOR_APPROVAL_STAGE,
         SECRET_RESOLUTION_STAGE,
@@ -947,7 +1104,7 @@ fn write_no_submit_report_with_stage_field(
     .into_iter()
     .map(|stage| (stage, STATUS_SATISFIED))
     .collect::<Vec<_>>();
-    for &(stage, status) in stages {
+    for &(stage, status) in overrides {
         if let Some(existing) = complete_stages
             .iter_mut()
             .find(|(existing_stage, _)| *existing_stage == stage)
@@ -957,16 +1114,31 @@ fn write_no_submit_report_with_stage_field(
             complete_stages.push((stage, status));
         }
     }
-    let stages: Vec<_> = complete_stages
+    complete_stages
         .iter()
         .map(|(stage, status)| serde_json::json!({ stage_field: stage, STATUS_KEY: status }))
-        .collect();
+        .collect()
+}
+
+fn write_no_submit_report_with_stage_field(
+    path: &std::path::Path,
+    stage_field: &str,
+    stages: &[(&str, &str)],
+) {
+    let stages = complete_stage_values_with_overrides(stages, stage_field);
     write_linked_report_value(path, serde_json::json!({ STAGES_KEY: stages }));
 }
 
 fn current_executable_identity() -> String {
     let path = std::env::current_exe().expect("current test executable path should resolve");
     sha256_hex(&std::fs::read(path).expect("current test executable should be readable"))
+}
+
+fn current_unix_seconds_for_test() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("test system clock should be after UNIX_EPOCH")
+        .as_secs()
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

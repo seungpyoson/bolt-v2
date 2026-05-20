@@ -177,6 +177,7 @@ pub fn validated_bolt_v3_live_canary_gate_report(
         max_live_order_count,
         max_notional_per_order: max_notional_per_order.to_string(),
         max_no_submit_readiness_report_bytes: 4096,
+        readiness_report_max_age_seconds: 60,
         operator_evidence: None,
     });
 
@@ -191,9 +192,9 @@ pub fn validated_bolt_v3_live_canary_gate_report(
 
 fn write_satisfied_no_submit_readiness_report(path: &Path, config_bundle_checksum: &str) {
     use bolt_v2::bolt_v3_no_submit_readiness_schema::{
-        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
-        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
-        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
+        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, GENERATED_AT_UNIX_SECONDS_KEY,
+        LIVE_NODE_BUILD_STAGE, NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE,
+        REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
     };
 
     let report = serde_json::json!({
@@ -201,6 +202,7 @@ fn write_satisfied_no_submit_readiness_report(path: &Path, config_bundle_checksu
         "approval_id_hash": sha256_hex("operator-approved-canary-001".as_bytes()),
         "executable_identity": current_executable_identity(),
         "config_bundle_checksum": config_bundle_checksum,
+        GENERATED_AT_UNIX_SECONDS_KEY: current_unix_seconds(),
         "stages": [
             { "stage": OPERATOR_APPROVAL_STAGE, "status": "satisfied" },
             { "stage": SECRET_RESOLUTION_STAGE, "status": "satisfied" },
@@ -216,6 +218,13 @@ fn write_satisfied_no_submit_readiness_report(path: &Path, config_bundle_checksu
         serde_json::to_vec(&report).expect("report JSON should encode"),
     )
     .expect("readiness report should be written");
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test system clock should be after UNIX_EPOCH")
+        .as_secs()
 }
 
 fn current_executable_identity() -> String {

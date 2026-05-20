@@ -13,6 +13,7 @@
 use std::{
     path::{Path, PathBuf},
     str::FromStr,
+    time::{SystemTime, SystemTimeError, UNIX_EPOCH},
 };
 
 use rust_decimal::Decimal;
@@ -24,10 +25,10 @@ use crate::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config},
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
-        CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, LIVE_NODE_BUILD_STAGE,
-        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
-        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
-        STATUS_KEY, STATUS_SATISFIED,
+        CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, GENERATED_AT_UNIX_SECONDS_KEY,
+        LIVE_NODE_BUILD_STAGE, NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE,
+        REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
+        STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
     },
 };
 
@@ -133,6 +134,9 @@ pub enum BoltV3LiveCanaryGateError {
         path: PathBuf,
         source: std::io::Error,
     },
+    SystemTimeBeforeUnixEpoch {
+        source: SystemTimeError,
+    },
     UnsatisfiedNoSubmitReadinessReport {
         path: PathBuf,
         reasons: Vec<String>,
@@ -226,6 +230,10 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                 "failed to read bolt-v3 live canary gate executable {}: {source}",
                 path.display()
             ),
+            BoltV3LiveCanaryGateError::SystemTimeBeforeUnixEpoch { source } => write!(
+                f,
+                "failed to timestamp bolt-v3 live canary gate evaluation: {source}"
+            ),
             BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { path, reasons } => {
                 write!(
                     f,
@@ -245,6 +253,7 @@ impl std::error::Error for BoltV3LiveCanaryGateError {
             BoltV3LiveCanaryGateError::ReadinessReportParse { source, .. } => Some(source),
             BoltV3LiveCanaryGateError::CurrentExecutablePath { source } => Some(source),
             BoltV3LiveCanaryGateError::ExecutableIdentityRead { source, .. } => Some(source),
+            BoltV3LiveCanaryGateError::SystemTimeBeforeUnixEpoch { source } => Some(source),
             _ => None,
         }
     }
@@ -332,11 +341,14 @@ pub async fn check_bolt_v3_live_canary_gate(
     }
     let expected_approval_id_hash = sha256_hex(approval_id.as_bytes());
     let expected_executable_identity = executable_identity().await?;
+    let current_unix_seconds = current_unix_seconds()?;
     validate_no_submit_readiness_report(
         report_object,
         &expected_approval_id_hash,
         &expected_executable_identity,
         &loaded.config_bundle_checksum,
+        block.readiness_report_max_age_seconds,
+        current_unix_seconds,
     )
     .map_err(
         |reasons| BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport {
@@ -422,6 +434,8 @@ fn validate_no_submit_readiness_report(
     expected_approval_id_hash: &str,
     expected_executable_identity: &str,
     expected_config_bundle_checksum: &str,
+    readiness_report_max_age_seconds: u64,
+    current_unix_seconds: u64,
 ) -> Result<(), Vec<String>> {
     let mut reasons = Vec::new();
     validate_linkage_field(
@@ -441,6 +455,12 @@ fn validate_no_submit_readiness_report(
         report,
         CONFIG_BUNDLE_CHECKSUM_KEY,
         expected_config_bundle_checksum,
+    );
+    validate_report_generated_at(
+        &mut reasons,
+        report,
+        readiness_report_max_age_seconds,
+        current_unix_seconds,
     );
     match report.get(STAGES_KEY) {
         None => reasons.push("stages array is missing".to_string()),
@@ -483,6 +503,37 @@ fn validate_no_submit_readiness_report(
         Ok(())
     } else {
         Err(reasons)
+    }
+}
+
+fn validate_report_generated_at(
+    reasons: &mut Vec<String>,
+    report: &Map<String, Value>,
+    readiness_report_max_age_seconds: u64,
+    current_unix_seconds: u64,
+) {
+    let Some(value) = report.get(GENERATED_AT_UNIX_SECONDS_KEY) else {
+        reasons.push(format!("{GENERATED_AT_UNIX_SECONDS_KEY} is missing"));
+        return;
+    };
+    let Some(generated_at_unix_seconds) = value.as_u64() else {
+        reasons.push(format!(
+            "{GENERATED_AT_UNIX_SECONDS_KEY} must be an unsigned integer (got {})",
+            report_field_kind(value)
+        ));
+        return;
+    };
+    let Some(age_seconds) = current_unix_seconds.checked_sub(generated_at_unix_seconds) else {
+        reasons.push(format!(
+            "{GENERATED_AT_UNIX_SECONDS_KEY} is in the future ({generated_at_unix_seconds} > {current_unix_seconds})"
+        ));
+        return;
+    };
+    if age_seconds > readiness_report_max_age_seconds {
+        reasons.push(format!(
+            "{GENERATED_AT_UNIX_SECONDS_KEY} expired: age_seconds={age_seconds} exceeds \
+             [live_canary].readiness_report_max_age_seconds={readiness_report_max_age_seconds}"
+        ));
     }
 }
 
@@ -541,6 +592,13 @@ async fn executable_identity() -> Result<String, BoltV3LiveCanaryGateError> {
     Ok(sha256_hex(&bytes))
 }
 
+fn current_unix_seconds() -> Result<u64, BoltV3LiveCanaryGateError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|source| BoltV3LiveCanaryGateError::SystemTimeBeforeUnixEpoch { source })
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -567,6 +625,7 @@ mod tests {
             approval_id: "operator-approved-canary-001".to_string(),
             no_submit_readiness_report_path: "reports/no-submit-readiness.json".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: 60,
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             operator_evidence: None,

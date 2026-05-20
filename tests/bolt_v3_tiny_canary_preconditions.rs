@@ -4,10 +4,10 @@ use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
-        CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, LIVE_NODE_BUILD_STAGE,
-        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
-        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
-        STATUS_KEY, STATUS_SATISFIED,
+        CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, GENERATED_AT_UNIX_SECONDS_KEY,
+        LIVE_NODE_BUILD_STAGE, NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE,
+        REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
+        STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
     },
     bolt_v3_tiny_canary_evidence::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryOutcome,
@@ -2959,6 +2959,7 @@ fn loaded_with_live_canary(report_path: &str) -> LoadedBoltV3Config {
         approval_id: "operator-approved-canary-001".to_string(),
         no_submit_readiness_report_path: report_path.to_string(),
         max_no_submit_readiness_report_bytes: 4096,
+        readiness_report_max_age_seconds: 60,
         operator_evidence: None,
         max_live_order_count: 1,
         max_notional_per_order: "0.25".to_string(),
@@ -2974,6 +2975,7 @@ fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
         APPROVAL_ID_HASH_KEY: sha256_hex("operator-approved-canary-001".as_bytes()),
         EXECUTABLE_IDENTITY_KEY: current_executable_identity(),
         CONFIG_BUNDLE_CHECKSUM_KEY: loaded.config_bundle_checksum,
+        GENERATED_AT_UNIX_SECONDS_KEY: current_unix_seconds_for_test(),
         STAGES_KEY: [
             {STAGE_KEY: OPERATOR_APPROVAL_STAGE, STATUS_KEY: STATUS_SATISFIED},
             {STAGE_KEY: SECRET_RESOLUTION_STAGE, STATUS_KEY: STATUS_SATISFIED},
@@ -2996,6 +2998,13 @@ fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
 fn current_executable_identity() -> String {
     let path = std::env::current_exe().expect("current test executable path should resolve");
     sha256_hex(&std::fs::read(path).expect("current test executable should be readable"))
+}
+
+fn current_unix_seconds_for_test() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("test system clock should be after UNIX_EPOCH")
+        .as_secs()
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

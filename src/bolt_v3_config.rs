@@ -182,6 +182,7 @@ pub struct LiveCanaryBlock {
     pub approval_id: String,
     pub no_submit_readiness_report_path: String,
     pub max_no_submit_readiness_report_bytes: u64,
+    pub readiness_report_max_age_seconds: u64,
     pub max_live_order_count: u32,
     pub max_notional_per_order: String,
     pub operator_evidence: Option<LiveCanaryOperatorEvidenceBlock>,

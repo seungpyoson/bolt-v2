@@ -5573,9 +5573,10 @@ mod tests {
     use nautilus_common::{cache::Cache, clock::TestClock};
     use nautilus_core::{Params, UnixNanos};
     use nautilus_model::{
-        enums::AssetClass,
+        enums::{AssetClass, OrderType},
         identifiers::{Symbol, TraderId},
         instruments::BinaryOption,
+        orders::{Order, OrderAny},
         types::{Currency, Price, Quantity},
     };
     use nautilus_portfolio::portfolio::Portfolio;
@@ -8510,6 +8511,61 @@ mod tests {
 
         assert_eq!(decision.order_side, Some(OrderSide::Sell));
         assert_eq!(decision.price, expected_passive_price);
+    }
+
+    fn assert_limit_gtc_post_only_order(
+        order: OrderAny,
+        expected_side: OrderSide,
+        expected_price: Price,
+    ) {
+        let OrderAny::Limit(order) = order else {
+            panic!("maker order should be built as an NT limit order");
+        };
+        assert_eq!(order.order_side(), expected_side);
+        assert_eq!(order.order_type(), OrderType::Limit);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtc);
+        assert_eq!(order.price(), Some(expected_price));
+        assert!(order.is_post_only());
+        assert!(!order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
+        assert_eq!(order.expire_time(), None);
+    }
+
+    #[test]
+    fn post_only_maker_order_objects_preserve_nt_limit_gtc_fields() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        strategy.config.entry_order.time_in_force = "gtc".to_string();
+        strategy.config.entry_order.is_post_only = true;
+        strategy.config.exit_order.order_type = "limit".to_string();
+        strategy.config.exit_order.time_in_force = "gtc".to_string();
+        strategy.config.exit_order.is_post_only = true;
+
+        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let quantity = Quantity::new(1.0, 2);
+        let entry_price = Price::new(0.40, 2);
+        let entry_order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                entry_price,
+                ClientOrderId::from("O-19700101-000000-001-001-1"),
+            )
+            .expect("maker entry order should build");
+        assert_limit_gtc_post_only_order(entry_order, OrderSide::Buy, entry_price);
+
+        let exit_price = Price::new(0.45, 2);
+        let exit_order = strategy
+            .build_configured_exit_order(
+                instrument_id,
+                OrderSide::Sell,
+                quantity,
+                exit_price,
+                ClientOrderId::from("O-19700101-000000-001-002-1"),
+            )
+            .expect("maker exit order should build");
+        assert_limit_gtc_post_only_order(exit_order, OrderSide::Sell, exit_price);
     }
 
     #[test]

@@ -1399,8 +1399,11 @@ To avoid hidden policy, the current archetype supports only these combinations:
   - `is_post_only = true`
   - `is_reduce_only = false`
   - `is_quote_quantity = false`
+  - passive at the touch; not an immediate forced-flat guarantee
 
 Any other combination fails validation for this archetype.
+
+When maker exit is configured, freeze, stale-data, and thin-book exits still use the configured maker exit shape. Operators who require immediate flattening must configure the taker exit shape until a separate TOML-owned forced-exit override exists.
 
 ### `[parameters]`
 

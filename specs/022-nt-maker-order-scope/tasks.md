@@ -80,6 +80,23 @@ T002 disposition: commit `97cbf828423578e09a604bf31bdaa91ec3573df3` is kept only
 
 T033 evidence: PR #434 head `769135106989e521cbc5e507e67442b6a376b74e` failed `nextest shard 4 of 4` because `polymarket_post_order_params_declares_camel_case_is_post_only_flag` tried to read the pinned NT query source from a Cargo git checkout at test runtime, but shard runners execute a nextest archive without that source checkout.
 
+## Phase 8: Post-Audit Follow-Up From Exact Head `52ab7719`
+
+**Purpose**: Keep post-implementation audit follow-up task-driven, including provider file-size limits and brittle proof concerns.
+
+- [x] T037 Record Claude, DeepSeek, GLM, Kimi, and Gemini post-implementation audit verdicts or block reasons in `specs/022-nt-maker-order-scope/research.md`
+- [x] T038 Replace the `$HOME/.cargo/git/checkouts/...` NT source dependency in `tests/config_parsing.rs` with committed pinned NT evidence and provenance under `tests/fixtures/`
+- [x] T039 Run focused green checks for the hermetic NT evidence change and record commands in `specs/022-nt-maker-order-scope/research.md`
+- [x] T040 Run DeepSeek strategy packet audit for `src/strategies/binary_oracle_edge_taker.rs` despite provider full-file cap and record verdict or block reason
+- [x] T041 Run GLM strategy packet audit for `src/strategies/binary_oracle_edge_taker.rs` despite provider full-file cap and record verdict or block reason
+- [x] T042 Retry Kimi post-implementation audit with a usable source packet and record verdict or block reason
+- [x] T043 Retry Gemini post-implementation audit with a narrower source packet after branch-diff timeout and record verdict or block reason
+- [x] T044 Add a GTD-negative validation test proving `binary_oracle_edge_taker` still blocks GTD order configuration in `tests/config_parsing.rs`
+- [x] T045 Add a direct maker `OrderAny` construction test proving NT limit/GTC/post-only fields survive strategy order construction in `src/strategies/binary_oracle_edge_taker.rs`
+- [x] T046 Document maker-exit forced-flat semantics and passive-fill limits in `specs/022-nt-maker-order-scope/contracts/maker-order-config.md` and `docs/bolt-v3/2026-04-25-bolt-v3-schema.md`
+- [x] T047 Resolve or explicitly document every post-audit blocking and non-blocking finding in `specs/022-nt-maker-order-scope/research.md`
+- [ ] T048 Re-run required verification, commit follow-up changes, push, and confirm exact PR-head CI before closing T024-T029
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks all later phases.
@@ -88,6 +105,7 @@ T033 evidence: PR #434 head `769135106989e521cbc5e507e67442b6a376b74e` failed `n
 - Phase 4 must follow TDD red before green.
 - T022-T023 block commit/push.
 - T024-T029 are post-push audit gates and remain blocked until exact PR head CI is green, per the repository review bar.
+- T037-T048 are ordered follow-up tasks from exact-head post-implementation audits and must complete before T024-T029 can be checked off.
 - Phase 6 happens after T023 so external reviewers can review an exact pushed head.
 - Phase 7 blocks T024-T029 whenever PR CI regresses after push.
 

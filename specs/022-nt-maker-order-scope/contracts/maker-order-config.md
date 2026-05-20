@@ -43,6 +43,11 @@ Expected NT order:
 - `TimeInForce::Gtc`
 - `is_post_only=true`
 - `expire_time=None` for `gtc`
+- passive at the touch; not an immediate forced-flat guarantee
+
+## Forced-Flat Semantics
+
+If `[parameters.exit_order]` is configured as maker `limit`/`gtc`/`is_post_only=true`, freeze, stale-data, and thin-book exits use the same configured maker exit shape. The order may rest unfilled. Operators who require immediate flattening must configure the taker exit shape (`market`/`ioc`/`is_post_only=false`) until a separate TOML-owned forced-exit override exists.
 
 ## GTD Extension Contract
 

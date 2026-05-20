@@ -22,6 +22,7 @@ EXPECTED_SAFE_PATHS = (
     "GEMINI.md",
     "REASONIX.md",
     "LICENSE",
+    "SECURITY.md",
     ".github/ISSUE_TEMPLATE/**",
     ".claude/**",
     ".codex/**",
@@ -37,6 +38,7 @@ FORBIDDEN_IGNORED_BUILD_PATHS = frozenset(
 )
 REQUIRED_DOC_SCENARIOS = (
     "docs-only root agent doc",
+    "root security policy",
     "workflow change",
     "Rust source change",
     "managed rust-verification config",

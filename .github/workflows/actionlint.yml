@@ -1,0 +1,63 @@
+name: actionlint
+
+# Lints all GitHub Actions workflow files (schema + shellcheck on run: blocks)
+# on every PR and push to main, failing the job on error-level findings.
+# Guards against the class of bug in #410, where an invalid workflow merged
+# and silently never ran.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: >-
+    actionlint-${{ github.event_name == 'pull_request'
+      && format('pr-{0}', github.event.number)
+      || format('{0}-{1}', github.ref_name, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: reviewdog/action-actionlint@6fb7acc99f4a1008869fa8a0f09cfca740837d9d # v1.72.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # tool_name names reviewdog's separate, non-blocking annotation
+          # check-run (it concludes `success` when clean, `neutral` when it has
+          # findings — never `failure` at level: warning). It MUST differ from
+          # the job name ("actionlint", above):
+          # the job is the real gate (it carries the fail_level exit code),
+          # while this sidecar never blocks. Branch protection must require the
+          # "actionlint" job — requiring this annotation check would be a no-op
+          # gate. Two same-named checks would make that selection ambiguous.
+          tool_name: actionlint-annotations
+          # reporter=github-check posts findings as inline annotations (visible
+          # in the PR Checks tab). The real merge gate is the job's exit code,
+          # governed by fail_level: error — the job fails only on error-level
+          # findings (the #410 class).
+          #
+          # level: warning keeps the separate reviewdog check-run from
+          # false-failing on harmless notes: reviewdog's conclusion() returns
+          # `neutral` (accepted by required checks, does not block) whenever the
+          # configured level is info|warning and any annotation exists. At the
+          # action's *default* level: error that same path returns `failure` on
+          # ANY annotation, which red-flagged the intentional info-level SC2016
+          # in summary.yml at commit 8624b66c even though the job step was green.
+          reporter: github-check
+          level: warning
+          # nofilter: lint every finding in every workflow file, not just lines
+          # in the PR diff. reviewdog's default (file) and `added` would let a
+          # structural error anchored away from an edited line (the #410 class)
+          # slip past. fail_level then exits non-zero only on error-level
+          # findings, so info/warning notes are annotated without failing the job.
+          filter_mode: nofilter
+          fail_level: error

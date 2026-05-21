@@ -792,12 +792,6 @@ fn validate_order_parameters(
 ) -> Vec<String> {
     let mut errors = Vec::new();
     errors.extend(check_strategy_position_contract(context, entry, exit));
-    errors.extend(check_order_trigger_field_shape(
-        context,
-        "entry_order",
-        entry,
-    ));
-    errors.extend(check_order_trigger_field_shape(context, "exit_order", exit));
     errors.extend(check_entry_order_combination(context, entry));
     errors.extend(check_exit_order_combination(context, exit));
     errors
@@ -856,13 +850,16 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
         entry.is_reduce_only,
         entry.is_quote_quantity,
     );
-    let is_gtd_limit = (
+    let is_taker_limit_fok = actual == taker_limit_fok && entry.trigger_price.is_none();
+    let is_maker_limit_gtc = actual == maker_limit_gtc && entry.trigger_price.is_none();
+    let is_gtd_limit_with_expiry = (
         entry.order_type,
         entry.time_in_force,
         entry.is_reduce_only,
         entry.is_quote_quantity,
     ) == gtd_limit
         && entry.expire_time_unix_nanos.is_some_and(|value| value > 0);
+    let is_gtd_limit = is_gtd_limit_with_expiry && entry.trigger_price.is_none();
     let is_stop_market = (
         entry.order_type,
         entry.is_post_only,
@@ -883,8 +880,8 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
         entry.is_quote_quantity,
     ) == stop_limit
         && has_positive_trigger_and_valid_expiry(entry);
-    if actual != taker_limit_fok
-        && actual != maker_limit_gtc
+    if !is_taker_limit_fok
+        && !is_maker_limit_gtc
         && !is_gtd_limit
         && !is_stop_market
         && !is_market_if_touched
@@ -913,13 +910,16 @@ fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String
         exit.is_reduce_only,
         exit.is_quote_quantity,
     );
-    let is_gtd_limit = (
+    let is_taker_market_ioc = actual == taker_market_ioc && exit.trigger_price.is_none();
+    let is_maker_limit_gtc = actual == maker_limit_gtc && exit.trigger_price.is_none();
+    let is_gtd_limit_with_expiry = (
         exit.order_type,
         exit.time_in_force,
         exit.is_reduce_only,
         exit.is_quote_quantity,
     ) == gtd_limit
         && exit.expire_time_unix_nanos.is_some_and(|value| value > 0);
+    let is_gtd_limit = is_gtd_limit_with_expiry && exit.trigger_price.is_none();
     let is_stop_market = (
         exit.order_type,
         exit.is_post_only,
@@ -930,8 +930,8 @@ fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String
     let is_stop_limit = (exit.order_type, exit.is_reduce_only, exit.is_quote_quantity)
         == stop_limit
         && has_positive_trigger_and_valid_expiry(exit);
-    if actual != taker_market_ioc
-        && actual != maker_limit_gtc
+    if !is_taker_market_ioc
+        && !is_maker_limit_gtc
         && !is_gtd_limit
         && !is_stop_market
         && !is_stop_limit
@@ -952,19 +952,6 @@ fn has_positive_trigger_and_valid_expiry(order: &OrderParams) -> bool {
         .is_some_and(|value| value > Decimal::ZERO)
         && (order.time_in_force != TimeInForce::Gtd
             || order.expire_time_unix_nanos.is_some_and(|value| value > 0))
-}
-
-fn check_order_trigger_field_shape(
-    context: &str,
-    order_field: &str,
-    order: &OrderParams,
-) -> Vec<String> {
-    match order.order_type {
-        OrderType::Limit | OrderType::Market if order.trigger_price.is_some() => vec![format!(
-            "{context}: parameters.{order_field}.trigger_price is only supported for triggered NT order types"
-        )],
-        _ => Vec::new(),
-    }
 }
 
 fn check_strategy_position_contract(

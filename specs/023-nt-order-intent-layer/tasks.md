@@ -197,6 +197,14 @@
 - [x] T084 [US2] GREEN: Reject `trigger_price` on non-triggered `Limit`/`Market` entry and exit order configs in the archetype validator
 - [x] T085 [US2] Verify focused tests, nextest isolated tests, full local checks as possible, branch cleanliness, exact-head CI state, stale no-mistakes state, and reviewer state
 
+## Phase 20: TDD Slice 16 - Source-Fence Follow-Up
+
+**Goal**: Resolve the exact-head source-fence failure without adding hardcoded order-field literals or widening runtime literal policy.
+
+- [x] T086 [US2] RED: Reproduce `just source-fence` failure for the new inline `exit_order` production literal
+- [x] T087 [US2] GREEN: Fold non-triggered `trigger_price` rejection into the existing entry/exit order-combination predicates
+- [x] T088 [US2] Verify focused tests, source-fence, full local checks as possible, and archived nextest replay before push
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.

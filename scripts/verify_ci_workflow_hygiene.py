@@ -1857,6 +1857,40 @@ def path_invocation_has_cargo_subcommand(tokens: list[str]) -> bool:
     return command_index < len(tokens) and tokens[command_index] in CARGO_PROCESS_SUBCOMMANDS
 
 
+def shell_assignment_values_from_tokens(tokens: list[str]) -> tuple[dict[str, str], int]:
+    assignments: dict[str, str] = {}
+    cursor = 0
+    while cursor < len(tokens):
+        assignment = shell_assignment_from_tokens(tokens, cursor)
+        if assignment is None:
+            break
+        name, value, cursor = assignment
+        assignments[name] = storage_strip_quotes(value)
+    return assignments, cursor
+
+
+def shell_variable_reference_token(token: str) -> str | None:
+    clean = storage_strip_quotes(token)
+    match = re.fullmatch(r"\$([A-Za-z_][A-Za-z0-9_]*)", clean)
+    if match:
+        return match.group(1)
+    match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", clean)
+    if match:
+        return match.group(1)
+    return None
+
+
+def expand_known_shell_variables(tokens: list[str], variables: dict[str, str]) -> list[str]:
+    expanded: list[str] = []
+    for token in tokens:
+        variable = shell_variable_reference_token(token)
+        if variable is not None and variable in variables:
+            expanded.extend(command_tokens(variables[variable]))
+        else:
+            expanded.append(token)
+    return expanded
+
+
 def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_only: bool = True) -> bool:
     if not tokens:
         return False
@@ -1867,12 +1901,19 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
         cargo_aliases: set[str] = set()
+        shell_variables: dict[str, str] = {}
         for token in tokens:
             if token in SHELL_COMMAND_BOUNDARIES:
                 if segment and segment[0] == "alias":
                     cargo_aliases.update(simple_cargo_aliases(segment, cargo_aliases))
                     segment = []
                     continue
+                shell_assignments, assignment_index = shell_assignment_values_from_tokens(segment)
+                if shell_assignments and assignment_index == len(segment):
+                    shell_variables.update(shell_assignments)
+                    segment = []
+                    continue
+                segment = expand_known_shell_variables(segment, shell_variables)
                 segment = expand_cargo_aliases(segment, cargo_aliases)
                 if segment and tokens_have_raw_cargo(segment, depth=depth + 1, allow_storage_only=allow_storage_only):
                     return True
@@ -1881,6 +1922,10 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
             segment.append(token)
         if segment and segment[0] == "alias":
             return False
+        shell_assignments, assignment_index = shell_assignment_values_from_tokens(segment)
+        if shell_assignments and assignment_index == len(segment):
+            return False
+        segment = expand_known_shell_variables(segment, shell_variables)
         segment = expand_cargo_aliases(segment, cargo_aliases)
         return bool(segment) and tokens_have_raw_cargo(segment, depth=depth + 1, allow_storage_only=allow_storage_only)
     assignment_index = consume_assignment_words(tokens, 0)
@@ -2364,11 +2409,29 @@ def storage_strip_quotes(value: str) -> str:
     return value.strip().strip("\"'")
 
 
+def storage_without_trailing_current_dir(value: str) -> str:
+    normalized = storage_strip_quotes(value).replace('"', "").replace("'", "")
+    while normalized.endswith("/.") or normalized.endswith("/"):
+        normalized = normalized[:-2] if normalized.endswith("/.") else normalized[:-1]
+    return normalized
+
+
 def storage_variable_names(value: str) -> set[str]:
     names = {match.group(1) for match in re.finditer(r"\$([A-Za-z_][A-Za-z0-9_]*)\b", value)}
     names.update(match.group(1) for match in re.finditer(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:[^}]*)\}", value))
     names.update(match.group(1) for match in re.finditer(r"\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}", value))
     return names
+
+
+def storage_command_substitution_has_target(value: str) -> bool:
+    compact = storage_strip_quotes(value).replace('"', "").replace("'", "")
+    for match in re.finditer(r"`([^`]*)`", compact):
+        if re.search(r"(?:^|[\s/])target(?:[\s/]|$)", match.group(1)):
+            return True
+    return (
+        ("$(" in compact or compact.startswith("$ ("))
+        and re.search(r"(?:^|[\s/])target(?:[\s/]|$)", compact) is not None
+    )
 
 
 def storage_value_has_target_component(value: str) -> bool:
@@ -2386,32 +2449,31 @@ def storage_value_roles(
     cwd_is_active_target: bool = False,
 ) -> set[str]:
     compact = storage_strip_quotes(value).replace('"', "").replace("'", "")
+    root_compact = storage_without_trailing_current_dir(value)
     roles: set[str] = set()
     if "s3://" in compact:
         roles.add(STORAGE_ROLE_S3)
     if "rust_verification.py" in compact and "target-dir" in compact:
         roles.add(STORAGE_ROLE_ACTIVE_TARGET)
-    if ("$(" in compact or compact.startswith("$ (")) and re.search(r"(?:^|[\s/])target(?:[\s/]|$)", compact):
+    if storage_command_substitution_has_target(compact):
         roles.add(STORAGE_ROLE_ACTIVE_TARGET)
     for variable in storage_variable_names(compact):
         if variable in {"CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_TARGET_TMPDIR"}:
             roles.add(STORAGE_ROLE_ACTIVE_TARGET)
-        if variable in {"GITHUB_WORKSPACE", "PWD"} and compact in {
+        if variable in {"GITHUB_WORKSPACE", "PWD"} and root_compact in {
             f"${variable}",
             f"${{{variable}}}",
-            f"${variable}/",
-            f"${{{variable}}}/",
         }:
             roles.add(STORAGE_ROLE_ACTIVE_TARGET)
         roles.update(variable_roles.get(variable, set()))
     if re.search(r"\$\{\{\s*(?:env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}", compact):
         roles.add(STORAGE_ROLE_ACTIVE_TARGET)
-    if re.search(r"\$\{\{\s*github\.workspace\s*\}\}", compact) and (
-        re.fullmatch(r"\$\{\{\s*github\.workspace\s*\}\}", compact.strip()) is not None
+    if re.search(r"\$\{\{\s*github\.workspace\s*\}\}", root_compact) and (
+        re.fullmatch(r"\$\{\{\s*github\.workspace\s*\}\}", root_compact.strip()) is not None
         or storage_value_has_target_component(compact)
     ):
         roles.add(STORAGE_ROLE_ACTIVE_TARGET)
-    if compact in {".", "./", "*", "$PWD", "${PWD}", "$GITHUB_WORKSPACE", "${GITHUB_WORKSPACE}"}:
+    if root_compact in {".", "*", "$PWD", "${PWD}", "$GITHUB_WORKSPACE", "${GITHUB_WORKSPACE}"}:
         roles.add(STORAGE_ROLE_ACTIVE_TARGET)
     if storage_value_has_target_component(compact):
         roles.add(STORAGE_ROLE_ACTIVE_TARGET)
@@ -2467,16 +2529,28 @@ def storage_assignment_values(text: str) -> list[tuple[str, str]]:
         if match:
             assignments.append((match.group(1), match.group(2)))
             continue
-        match = re.search(r"\becho\s+[\"']([A-Za-z_][A-Za-z0-9_]*)=([^\"']+)[\"']\s*>>\s*[\"']?\$GITHUB_ENV[\"']?", clean)
-        if match:
-            assignments.append((match.group(1), match.group(2)))
+        line_tokens = command_tokens(clean)
+        if len(line_tokens) >= 4 and pathlib.Path(line_tokens[0]).name == "echo":
+            for redirect_index, token in enumerate(line_tokens):
+                if token != ">>":
+                    continue
+                target = storage_strip_quotes(line_tokens[redirect_index + 1]) if redirect_index + 1 < len(line_tokens) else ""
+                if target not in {"$GITHUB_ENV", "${GITHUB_ENV}"}:
+                    continue
+                payload = " ".join(line_tokens[1:redirect_index])
+                if "=" not in payload:
+                    continue
+                name, value = payload.split("=", 1)
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                    assignments.append((name, value))
+                break
     return assignments
 
 
 def storage_variable_roles(text: str) -> dict[str, set[str]]:
     assignments = storage_assignment_values(text)
     roles: dict[str, set[str]] = {}
-    for _ in range(4):
+    for _ in range(max(1, len(assignments))):
         changed = False
         for name, value in assignments:
             new_roles = storage_value_roles(value, roles)
@@ -2537,6 +2611,16 @@ def aws_s3_operands(tokens: list[str]) -> list[str]:
                 elif tokens[cursor] == ")":
                     depth -= 1
                 cursor += 1
+            operands.append(" ".join(parts))
+            continue
+        if token.startswith("`") and not token.endswith("`"):
+            parts = [token]
+            cursor += 1
+            while cursor < len(tokens):
+                parts.append(tokens[cursor])
+                cursor += 1
+                if parts[-1].endswith("`"):
+                    break
             operands.append(" ".join(parts))
             continue
         operands.append(token)
@@ -2636,15 +2720,45 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
         "CARGO_TARGET_TMPDIR": "CARGO_TARGET_TMPDIR raw target override must be classified",
     }
     assignments: dict[str, str] = {}
-    for match in re.finditer(
-        r"(?:^\s*|[;&|]\s*)([A-Za-z_][A-Za-z0-9_]*)=(CARGO_TARGET_DIR|CARGO_BUILD_TARGET_DIR|CARGO_TARGET_TMPDIR)\b",
-        text,
-        re.MULTILINE,
-    ):
-        assignments[match.group(1)] = match.group(2)
-    for variable, target_key in assignments.items():
-        if re.search(rf"\benv\b[^\n;&|]*(?:\${re.escape(variable)}\b|\$\{{{re.escape(variable)}\}})=", text):
-            messages.add(target_keys[target_key])
+    for line in text.splitlines():
+        line_tokens = command_tokens(strip_comment(line))
+        line_assignments, assignment_index = shell_assignment_values_from_tokens(line_tokens)
+        for name, value in line_assignments.items():
+            if value in target_keys and assignment_index == len(line_tokens):
+                assignments[name] = value
+    segment: list[str] = []
+    for token in command_tokens(text) + [";"]:
+        if token in SHELL_COMMAND_BOUNDARIES:
+            segment_assignments, assignment_index = shell_assignment_values_from_tokens(segment)
+            for name, value in segment_assignments.items():
+                if value in target_keys and assignment_index == len(segment):
+                    assignments[name] = value
+            segment = []
+            continue
+        segment.append(token)
+    tokens = command_tokens(text)
+    cursor = 0
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if token in SHELL_COMMAND_BOUNDARIES:
+            cursor += 1
+            continue
+        command = pathlib.Path(token).name
+        if command not in {"env", "export"}:
+            cursor += 1
+            continue
+        cursor += 1
+        while cursor < len(tokens) and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
+            argument = tokens[cursor]
+            cursor += 1
+            if "=" not in argument:
+                continue
+            name, _value = argument.split("=", 1)
+            variable = shell_variable_reference_token(name)
+            if variable is not None and variable in assignments:
+                messages.add(target_keys[assignments[variable]])
+            if command == "env" and variable is None and "=" not in argument and not argument.startswith("-"):
+                break
     return messages
 
 
@@ -2896,7 +3010,7 @@ GATE_TAG_REUSE_CONDITION = '"$tag_ref" == "true"'
 
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
     condition = f'"${{{{ needs.{job}.result }}}}" != "success"'
-    return branch_exits(gate_text, "if", condition)
+    return branch_exits_reachable(gate_text, "if", condition)
 
 
 def top_level_if_body_and_remainder(gate_text: str, condition: str) -> tuple[str, str] | None:
@@ -2945,7 +3059,7 @@ def gate_checks_build_result(gate_text: str) -> bool:
     return (
         'build_required="${{ needs.detector.outputs.build_required }}"' in gate_text
         and 'build_result="${{ needs.build.result }}"' in gate_text
-        and branch_exits(chain.get(("if", required_condition), ""), "if", true_result_condition)
+        and branch_exits_reachable(chain.get(("if", required_condition), ""), "if", true_result_condition)
         and body_exits(chain.get(("elif", optional_result_condition), ""))
     )
 
@@ -3001,14 +3115,14 @@ def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
         'tag_ref="${{ startsWith(github.ref, "refs/tags/v") }}"' not in gate_text
     ):
         errors.append("gate must compute tag_ref")
-    if not branch_exits(tag_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "success"'):
+    if not branch_exits_reachable(tag_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "success"'):
         errors.append("gate must check same-sha-main-evidence success")
-    if not branch_exits(standard_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "skipped"'):
+    if not branch_exits_reachable(standard_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "skipped"'):
         errors.append("gate must check same-sha-main-evidence skip on non-tag")
     for job in TAG_SKIPPED_JOBS:
-        if not branch_exits(tag_body, "if", f'"${{{{ needs.{job}.result }}}}" != "skipped"'):
+        if not branch_exits_reachable(tag_body, "if", f'"${{{{ needs.{job}.result }}}}" != "skipped"'):
             errors.append(f"gate must require {job} skipped on tag reuse")
-    if not branch_exits(tag_body, "if", '"${{ needs.check-aarch64.result }}" != "success"'):
+    if not branch_exits_reachable(tag_body, "if", '"${{ needs.check-aarch64.result }}" != "success"'):
         errors.append("gate must require check-aarch64 success on tag reuse")
     return errors
 
@@ -3069,6 +3183,36 @@ def branch_exits(gate_text: str, keyword: str, condition: str) -> bool:
     if body is None:
         return False
     return body_exits(body)
+
+
+def branch_is_reachable_before_top_level_exit(gate_text: str, keyword: str, condition: str) -> bool:
+    depth = 0
+    for line in gate_text.splitlines():
+        if FI_RE.match(line):
+            depth = max(0, depth - 1)
+            continue
+        branch_match = IF_OR_ELIF_RE.match(line)
+        if branch_match:
+            if (
+                depth == 0
+                and branch_match.group(1) == keyword
+                and branch_match.group("condition") == condition
+            ):
+                return True
+            if branch_match.group(1) == "if":
+                depth += 1
+            continue
+        if ELSE_RE.match(line):
+            continue
+        if depth == 0 and EXIT_RE.match(line):
+            return False
+    return False
+
+
+def branch_exits_reachable(gate_text: str, keyword: str, condition: str) -> bool:
+    if not branch_is_reachable_before_top_level_exit(gate_text, keyword, condition):
+        return False
+    return branch_exits(gate_text, keyword, condition)
 
 
 def body_exits(body: str) -> bool:

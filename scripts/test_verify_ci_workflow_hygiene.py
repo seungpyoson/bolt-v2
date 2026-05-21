@@ -1116,6 +1116,23 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
             TARGET=`python3 scripts/rust_verification.py target-dir --repo .`
             aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
         """,
+        "inline backtick target operand": """
+            aws s3 sync `echo target` s3://bolt-v2-active-cache/target
+        """,
+        "workspace root dot path": """
+            aws s3 sync "$PWD/." s3://bolt-v2-active-cache/workspace
+        """,
+        "github workspace root dot path": """
+            aws s3 sync "$GITHUB_WORKSPACE/." s3://bolt-v2-active-cache/workspace
+        """,
+        "github env unquoted assignment": """
+            echo TARGET=target >> $GITHUB_ENV
+            aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+        """,
+        "github env quoted value assignment": """
+            echo 'TARGET="target"' >> "$GITHUB_ENV"
+            aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+        """,
     }
     misses: list[str] = []
     for name, script in workflows.items():
@@ -1134,6 +1151,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "E=CARGO_TARGET_DIR; env $E=/tmp/raw-target cargo test",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "E=CARGO_TARGET_DIR\nexport $E=/tmp/raw-target\ncargo check",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
@@ -1701,6 +1722,7 @@ commands:
   evaldashdash: eval -- cargo test
   evalprefix: A=B eval cargo test
   evalprefixquoted: A=B eval "cargo test"
+  evalvar: 'CMD="cargo build --target-dir /tmp/raw"; eval "$CMD"'
   shellprefix: A=B bash -c "cargo test"
   shellevalraw: bash -lc 'eval "cargo test"'
   shellalias: bash -lc 'alias c=cargo; c test'
@@ -1783,6 +1805,7 @@ commands: { test: "cargo test" }
         "evaldashdash",
         "evalprefix",
         "evalprefixquoted",
+        "evalvar",
         "shellprefix",
         "shellevalraw",
         "shellalias",
@@ -2734,6 +2757,22 @@ def main() -> int:
             BASE_WORKFLOW,
             '"${{ needs.build.result }}" != "skipped"',
             '"${{ needs.build.result }}" != "success"',
+        ),
+    )
+    assert_error(
+        "gate must check same-sha-main-evidence success",
+        replace_once(
+            BASE_WORKFLOW,
+            '          if [[ "$tag_ref" == "true" ]]; then\n',
+            '          if [[ "$tag_ref" == "true" ]]; then\n            exit 0\n',
+        ),
+    )
+    assert_error(
+        "gate must check same-sha-main-evidence skip on non-tag",
+        replace_once(
+            BASE_WORKFLOW,
+            '          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
+            '          exit 0\n          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
         ),
     )
     check_aarch64_condition = '"${{ needs.check-aarch64.result }}" != "success"'

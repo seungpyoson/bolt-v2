@@ -1071,22 +1071,12 @@ fn check_trailing_stop_market_combination(
             "{context}: parameters.{field}.trigger_price or activation_price must be positive for order_type=trailing_stop_market"
         ));
     }
-    if order.trigger_type.is_none() {
-        errors.push(format!(
-            "{context}: parameters.{field}.trigger_type is required for order_type=trailing_stop_market"
-        ));
-    }
     if order
         .trailing_offset
         .is_none_or(|value| value <= Decimal::ZERO)
     {
         errors.push(format!(
             "{context}: parameters.{field}.trailing_offset must be positive for order_type=trailing_stop_market"
-        ));
-    }
-    if order.trailing_offset_type.is_none() {
-        errors.push(format!(
-            "{context}: parameters.{field}.trailing_offset_type is required for order_type=trailing_stop_market"
         ));
     }
     if order.time_in_force == TimeInForce::Gtd

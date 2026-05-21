@@ -143,6 +143,17 @@ def test_validate_docs_rejects_stale_contract_short_side_claim() -> None:
         raise AssertionError(f"expected contract short-side finding, got {findings!r}")
 
 
+def test_validate_docs_rejects_stale_spec_short_side_claim() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        spec="Given short-side entry and exit contracts, config validation does not reject the shape merely because it is short-side.",
+    )
+
+    if not any("spec" in finding and "short-side" in finding for finding in findings):
+        raise AssertionError(f"expected spec short-side finding, got {findings!r}")
+
+
 def test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA,
@@ -236,6 +247,17 @@ def test_validate_docs_allows_live_trading_config_value_without_support_claim() 
         raise AssertionError(f"expected no findings, got {findings!r}")
 
 
+def test_validate_docs_allows_spec_architecture_risk_context() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        spec="If the boundary is wrong, maker, taker, GTD, short-side, spot, binary option, perpetual, and option support will keep accreting hardcoded local policy instead of using NT.",
+    )
+
+    if findings:
+        raise AssertionError(f"expected no findings for guarded risk wording, got {findings!r}")
+
+
 def test_validate_docs_requires_all_enabled_and_factory_gap_order_types() -> None:
     missing_lit = CURRENT_SCHEMA.replace("- `limit_if_touched`\n", "")
     missing_gap = CURRENT_SCHEMA.replace("- `trailing_stop_limit`\n", "").replace(
@@ -258,11 +280,13 @@ def main() -> int:
         test_validate_docs_rejects_superseded_tuple_policy_and_netting_only_status,
         test_validate_docs_rejects_short_side_overclaims_in_scoped_docs,
         test_validate_docs_rejects_stale_contract_short_side_claim,
+        test_validate_docs_rejects_stale_spec_short_side_claim,
         test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere,
         test_validate_docs_rejects_gtd_broad_support_and_live_canary_overclaims,
         test_validate_docs_rejects_equivalent_live_canary_and_broad_venue_overclaims,
         test_validate_docs_rejects_short_and_exit_quote_overclaims_with_without_clause,
         test_validate_docs_allows_live_trading_config_value_without_support_claim,
+        test_validate_docs_allows_spec_architecture_risk_context,
         test_validate_docs_requires_all_enabled_and_factory_gap_order_types,
     ]
     for test in tests:

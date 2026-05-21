@@ -319,6 +319,24 @@
 - [x] T141 [US3] GREEN: Route exit EV pricing through configured exit-order pricing for triggered exit templates
 - [x] T142 [US3] Verify focused runtime tests, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
+## Phase 33: TDD Slice 29 - Spec Short-Side Boundary Consistency
+
+**Goal**: Resolve stale Speckit spec wording after Phase 28 restored short-side rejection for `binary_oracle_edge_taker`, and extend the active schema-current verifier so future spec overclaims are caught.
+
+- [x] T143 [P] [US3] Record source-backed evidence that the spec still claimed coherent short-side acceptance while current code/docs reject it until strategy-owned short economics exist
+- [x] T144 [US3] RED: Add a schema-current verifier regression proving stale spec short-side acceptance is not checked
+- [x] T145 [US3] GREEN: Include `spec.md` in the schema-current verifier and update the spec acceptance scenario to the current strategy-economics boundary
+- [x] T146 [US3] Verify schema-current tests, source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+
+## Phase 34: TDD Slice 30 - TrailingStopMarket NT Default Pass-Through
+
+**Goal**: Resolve multi-agent NT-source review finding that `TrailingStopMarket` over-validates fields NT already defaults; keep required strategy-owned trigger/activation and trailing offset inputs, but allow NT to default optional `trigger_type` and `trailing_offset_type`.
+
+- [x] T147 [P] [US2] Record pinned NT evidence that `OrderFactory::trailing_stop_market` defaults `trigger_type` and `trailing_offset_type`
+- [x] T148 [US2] RED: Add public config and runtime builder regressions for omitted optional TrailingStopMarket default fields
+- [x] T149 [US2] GREEN: Remove only the extra default-field requirements while preserving required trigger/activation, positive trailing offset, GTD expiry, and post-only rejection
+- [x] T150 [US2] Verify focused TrailingStopMarket tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -350,6 +368,8 @@
 - Phase 28 blocks completion because no-mistakes found tuple-policy removal admitted short-side and quote-quantity configurations beyond current strategy economics and sizing/admission proof.
 - Phase 31 blocks completion because no-mistakes found market order expiry configs were accepted even though the pinned NT market factory drops expiry.
 - Phase 32 blocks completion because no-mistakes found triggered exit EV was priced from the live book while the configured StopMarket exit order submits with trigger pricing.
+- Phase 33 blocks completion because source inspection found the Speckit spec still claimed short-side acceptance after Phase 28 restored current strategy-economics rejection.
+- Phase 34 blocks completion because multi-agent pinned-NT review found TrailingStopMarket validation still requires optional fields that NT defaults.
 
 ## Parallel Opportunities
 

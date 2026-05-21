@@ -14,6 +14,7 @@ STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
 RESEARCH_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/research.md"
 TASKS_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/tasks.md"
 CONTRACT_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/contracts/order-intent-layer.md"
+SPEC_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/spec.md"
 
 ENABLED_ORDER_TYPES = (
     "limit",
@@ -67,6 +68,9 @@ STALE_TASKS_PHRASES = (
 STALE_CONTRACT_PHRASES = (
     "Long and short position contracts are coherent.",
 )
+STALE_SPEC_PHRASES = (
+    "config validation does not reject the shape merely because it is short-side",
+)
 UNSUPPORTED_SCOPE_PATTERNS = (
     re.compile(
         r"\b(short[- ]side|short position contracts?|short contracts?|short entry|short exit)\b",
@@ -97,7 +101,7 @@ UNSUPPORTED_SCOPE_OVERCLAIM_PATTERN = re.compile(
 UNSUPPORTED_SCOPE_GUARD_PATTERN = re.compile(
     r"\b(rejects?|rejected|unsupported|historical|supersedes?|superseded|"
     r"not supported|cannot|blocks?|blocked|blockers?|missing|needs?|"
-    r"before|outside|beyond|fails?|failed)\b",
+    r"before|outside|beyond|fails?|failed|wrong|instead of)\b",
     re.IGNORECASE,
 )
 
@@ -134,6 +138,7 @@ def validate_docs(
     research: str = "",
     tasks: str = "",
     contract: str = "",
+    spec: str = "",
 ) -> list[str]:
     findings: list[str] = []
 
@@ -196,11 +201,16 @@ def validate_docs(
         if phrase in contract:
             findings.append(f"contract still contains stale phrase: {phrase}")
 
+    for phrase in STALE_SPEC_PHRASES:
+        if phrase in spec:
+            findings.append(f"spec still contains stale phrase: {phrase}")
+
     findings.extend(unsupported_scope_overclaims("schema", schema))
     findings.extend(unsupported_scope_overclaims("status map", status_map))
     findings.extend(unsupported_scope_overclaims("research", research))
     findings.extend(unsupported_scope_overclaims("tasks", tasks))
     findings.extend(unsupported_scope_overclaims("contract", contract))
+    findings.extend(unsupported_scope_overclaims("spec", spec))
 
     return findings
 
@@ -212,6 +222,7 @@ def main() -> int:
         RESEARCH_DOC.read_text(encoding="utf-8"),
         TASKS_DOC.read_text(encoding="utf-8"),
         CONTRACT_DOC.read_text(encoding="utf-8"),
+        SPEC_DOC.read_text(encoding="utf-8"),
     )
     if findings:
         for finding in findings:

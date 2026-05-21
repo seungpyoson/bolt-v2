@@ -5319,20 +5319,12 @@ fn validate_configured_order_against_nt_model(input: ConfiguredOrderValidation) 
             trigger_price.is_some() || activation_price.is_some(),
             "{prefix}_trigger_price or {prefix}_activation_price is required for TrailingStopMarket orders"
         );
-        anyhow::ensure!(
-            trigger_type.is_some(),
-            "{prefix}_trigger_type is required for TrailingStopMarket orders"
-        );
         let trailing_offset = trailing_offset.ok_or_else(|| {
             anyhow::anyhow!("{prefix}_trailing_offset is required for TrailingStopMarket orders")
         })?;
         anyhow::ensure!(
             trailing_offset > Decimal::ZERO,
             "{prefix}_trailing_offset must be positive"
-        );
-        anyhow::ensure!(
-            trailing_offset_type.is_some(),
-            "{prefix}_trailing_offset_type is required for TrailingStopMarket orders"
         );
     }
 
@@ -10626,6 +10618,36 @@ mod tests {
         assert!(!exit_order.is_post_only());
         assert!(!exit_order.is_reduce_only());
         assert!(!exit_order.is_quote_quantity());
+    }
+
+    #[test]
+    fn trailing_stop_market_order_objects_use_nt_default_types_when_omitted() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        strategy.config.entry_order.order_type = OrderType::TrailingStopMarket;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trailing_offset = Some(2.5);
+        strategy.config.entry_order.is_post_only = false;
+
+        let order = strategy
+            .build_configured_entry_order(
+                InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET"),
+                OrderSide::Buy,
+                Quantity::new(2.0, 2),
+                Price::new(0.40, 2),
+                ClientOrderId::from("O-19700101-000000-001-019-1"),
+            )
+            .expect("TrailingStopMarket should use NT defaults for omitted type fields");
+
+        let OrderAny::TrailingStopMarket(order) = order else {
+            panic!("TrailingStopMarket config should build an NT trailing-stop-market order");
+        };
+        assert_eq!(order.trigger_type(), Some(TriggerType::Default));
+        assert_eq!(
+            order.trailing_offset_type(),
+            Some(TrailingOffsetType::Price)
+        );
     }
 
     #[test]

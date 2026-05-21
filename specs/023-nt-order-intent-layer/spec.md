@@ -33,7 +33,7 @@ As a strategy author, I need entry and exit order configuration to describe NT o
 
 1. **Given** a maker limit entry and taker market exit, **When** config validates, **Then** the same normalized order template path handles both.
 2. **Given** a taker entry and maker limit exit, **When** config validates, **Then** the same normalized order template path handles both.
-3. **Given** short-side entry and exit contracts, **When** strategy coherence is valid, **Then** config validation does not reject the shape merely because it is short-side.
+3. **Given** short-side entry and exit contracts for `binary_oracle_edge_taker`, **When** current strategy economics lack short collateral and exit semantics, **Then** config validation rejects the shape with an explicit strategy-economics boundary instead of implying NT order construction support.
 4. **Given** a factory-supported NT order variant not yet enabled by Bolt, **When** the goal claims that variant is supported, **Then** there is a positive TDD construction/admission test for that variant.
 
 ### User Story 3 - Submit Placement Without Hidden Policy (Priority: P3)

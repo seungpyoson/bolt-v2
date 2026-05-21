@@ -1755,6 +1755,9 @@ def consume_cargo_global_options(tokens: list[str], index: int) -> int:
         if token in CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT:
             index += 1
             continue
+        if token.startswith("-"):
+            index += 1
+            continue
         break
     return index
 

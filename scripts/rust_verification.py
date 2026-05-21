@@ -628,6 +628,16 @@ def env_wrapped_tokens(tokens: list[str]) -> list[str]:
     return tokens[index:]
 
 
+def shell_assignment_word(token: str) -> bool:
+    return re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", token) is not None
+
+
+def consume_assignment_words(tokens: list[str], index: int) -> int:
+    while index < len(tokens) and shell_assignment_word(tokens[index]):
+        index += 1
+    return index
+
+
 def sudo_command_index(tokens: list[str]) -> int:
     argument_options = {
         "-u",
@@ -657,6 +667,40 @@ def sudo_command_index(tokens: list[str]) -> int:
         "-c",
         "--login-class",
     }
+    no_argument_options = {
+        "-A",
+        "-b",
+        "-E",
+        "-e",
+        "-H",
+        "-i",
+        "-K",
+        "-k",
+        "-l",
+        "-n",
+        "-P",
+        "-S",
+        "-s",
+        "-V",
+        "-v",
+        "--askpass",
+        "--background",
+        "--bell",
+        "--edit",
+        "--help",
+        "--ignore-ticket",
+        "--list",
+        "--login",
+        "--non-interactive",
+        "--remove-timestamp",
+        "--reset-timestamp",
+        "--stdin",
+        "--validate",
+        "--version",
+    }
+    optional_argument_options = {"--preserve-env"}
+    short_argument_options = {option for option in argument_options if re.fullmatch(r"-[A-Za-z0-9]", option)}
+    short_no_argument_options = {option for option in no_argument_options if re.fullmatch(r"-[A-Za-z0-9]", option)}
     index = 1
     while index < len(tokens):
         token = tokens[index]
@@ -664,6 +708,38 @@ def sudo_command_index(tokens: list[str]) -> int:
             return index + 1
         if token in argument_options and index + 1 < len(tokens):
             index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in argument_options if option.startswith("--")):
+            index += 1
+            continue
+        if any(token.startswith(f"{option}=") for option in optional_argument_options):
+            index += 1
+            continue
+        if token in optional_argument_options:
+            index += 1
+            continue
+        if token in no_argument_options:
+            index += 1
+            continue
+        if len(token) > 2 and token.startswith("-") and not token.startswith("--"):
+            offset = 1
+            while offset < len(token):
+                option = f"-{token[offset]}"
+                if option in short_no_argument_options:
+                    offset += 1
+                    continue
+                if option in short_argument_options:
+                    if offset + 1 < len(token):
+                        index += 1
+                    elif index + 1 < len(tokens):
+                        index += 2
+                    else:
+                        index += 1
+                    break
+                index += 1
+                break
+            else:
+                index += 1
             continue
         if "=" in token and not token.startswith("-"):
             index += 1
@@ -807,6 +883,11 @@ def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
     # reaches `cargo` at depth 5; cap 6 keeps one slot of safety margin.
     if not tokens or depth > 6:
         return set()
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index >= len(tokens):
+        return set()
+    if assignment_index:
+        tokens = tokens[assignment_index:]
     executable = basename_token(tokens[0])
     names = {executable}
     if executable == "env":
@@ -825,6 +906,11 @@ def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
         names.update(process_names_from_tokens(tokens[stdbuf_command_index(tokens) :], depth=depth + 1))
     elif executable == "catchsegv":
         names.update(process_names_from_tokens(tokens[1:], depth=depth + 1))
+    elif executable == "eval":
+        eval_index = 1
+        if eval_index < len(tokens) and tokens[eval_index] == "--":
+            eval_index += 1
+        names.update(process_names_from_tokens(command_tokens(" ".join(tokens[eval_index:])), depth=depth + 1))
     elif executable in ("bash", "dash", "fish", "sh", "zsh"):
         command = shell_command(tokens)
         if command is not None:

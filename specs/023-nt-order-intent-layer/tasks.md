@@ -367,6 +367,26 @@
 - [x] T164 [US3] Update data-model wording to make the pre-admission intent record and post-admission outcome record boundary explicit
 - [x] T165 [US3] Verify focused evidence tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
+## Phase 38: TDD Slice 34 - Submit Params Carry Boundary
+
+**Goal**: Prove the generic submit context can carry already-typed NT `Params` to NT `submit_order` without adding adapter-key policy, global venue capability tables, or order-template fields.
+
+- [x] T166 [P] [US3] Record pinned NT and local source evidence that `Strategy::submit_order` and adapters use optional `Params`, while current Bolt only ever builds `SubmitContext` with `params=None`
+- [x] T167 [US3] RED: Add a submit-boundary regression proving a non-empty NT `Params` map must reach the emitted NT `SubmitOrder`
+- [x] T168 [US3] GREEN: Add a minimal generic `SubmitContext` constructor path for already-typed params, without hardcoding adapter param keys or TOML schema
+- [x] T169 [US3] Record the architecture boundary that provider bindings own concrete param names and the order-intent layer only carries typed NT params
+- [x] T170 [US3] Verify focused submit-boundary tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+
+## Phase 39: TDD Slice 35 - Trigger Instrument Boundary
+
+**Goal**: Resolve the accepted triggered-order field gap found by pinned-NT review: enabled triggered order slices should either pass through NT `trigger_instrument_id` or explicitly residualize why the current strategy does not expose it yet. `emulation_trigger` remains a separate residual order-emulation slice unless positive tests enable it.
+
+- [ ] T171 [P] [US2] Record pinned NT and local source evidence for `trigger_instrument_id` and `emulation_trigger` against enabled factory variants
+- [ ] T172 [US2] RED: Add public/runtime regressions for the chosen `trigger_instrument_id` boundary before production code changes
+- [ ] T173 [US2] GREEN: Either pass TOML-owned `trigger_instrument_id` through the existing order-template path or update the contract to residualize it without claiming full triggered-field support
+- [ ] T174 [US2] Record `emulation_trigger` as an explicit deferred order-emulation slice unless it is enabled through TDD in this phase
+- [ ] T175 [US2] Verify focused triggered-order tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -403,6 +423,8 @@
 - Phase 35 blocks completion because no-mistakes produced a non-terminal blanket non-GTD expiry patch that conflicts with pinned NT Rust behavior and prior Speckit decisions.
 - Phase 36 blocks live/canary proof claims because no-mistakes and read-only reviewers found the Phase 8 financial envelope did not bind every currently TOML-owned order-shape field.
 - Phase 37 blocks completion because read-only audit found the pre-admission order-intent evidence did not include the compiled NT order fields needed to explain Bolt admission.
+- Phase 38 blocks submit-context completion claims because current source inspection found no path that can set non-empty NT submit params.
+- Phase 39 blocks triggered-order field-completeness claims because pinned-NT review found `trigger_instrument_id` is accepted by enabled NT factories but currently dropped by Bolt, and `emulation_trigger` is not listed as residual scope.
 
 ## Parallel Opportunities
 

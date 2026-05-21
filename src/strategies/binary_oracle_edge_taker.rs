@@ -130,20 +130,24 @@ struct SubmitContext {
 }
 
 impl SubmitContext {
-    fn with_client_id(client_id: ClientId) -> Self {
+    fn from_parts(
+        client_id: Option<ClientId>,
+        position_id: Option<PositionId>,
+        params: Option<Params>,
+    ) -> Self {
         Self {
-            client_id: Some(client_id),
-            position_id: None,
-            params: None,
+            client_id,
+            position_id,
+            params,
         }
     }
 
+    fn with_client_id(client_id: ClientId) -> Self {
+        Self::from_parts(Some(client_id), None, None)
+    }
+
     fn with_client_id_and_position_id(client_id: ClientId, position_id: PositionId) -> Self {
-        Self {
-            client_id: Some(client_id),
-            position_id: Some(position_id),
-            params: None,
-        }
+        Self::from_parts(Some(client_id), Some(position_id), None)
     }
 }
 
@@ -6440,7 +6444,12 @@ mod tests {
 
     use anyhow::Result;
     use futures_util::future::{BoxFuture, FutureExt};
-    use nautilus_common::{cache::Cache, clock::TestClock};
+    use nautilus_common::{
+        cache::Cache,
+        clock::TestClock,
+        messages::execution::TradingCommand,
+        msgbus::{self, MessagingSwitchboard, stubs::get_typed_into_message_saving_handler},
+    };
     use nautilus_core::{Params, UnixNanos};
     use nautilus_model::{
         enums::AssetClass,
@@ -7157,6 +7166,79 @@ mod tests {
             result.is_err(),
             "test strategy is intentionally not registered with NT; reaching NT submit should panic"
         );
+        assert_eq!(submit_admission.admitted_order_count(), 1);
+    }
+
+    #[test]
+    fn submit_context_routes_non_empty_nt_params_to_submit_order() {
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
+            .expect("valid gate report should arm submit admission");
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+        let _cache = register_test_strategy(&mut strategy);
+        let (risk_handler, risk_messages) =
+            get_typed_into_message_saving_handler::<TradingCommand>(None);
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::risk_engine_queue_execute(),
+            risk_handler,
+        );
+
+        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order_side = strategy
+            .configured_entry_order_side()
+            .expect("test config should carry an entry order side");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                order_side,
+                quantity,
+                price,
+                client_order_id,
+            )
+            .expect("entry order should build through NT OrderFactory");
+        let mut params = Params::new();
+        params.insert(
+            strategy.config.strategy_id.to_string(),
+            serde_json::Value::Bool(true),
+        );
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
+
+        strategy
+            .submit_order_with_decision_evidence(
+                intent,
+                order,
+                SubmitContext::from_parts(
+                    Some(ClientId::from("POLYMARKET")),
+                    None,
+                    Some(params.clone()),
+                ),
+            )
+            .expect("non-empty submit params should reach NT submit");
+
+        let messages = risk_messages.get_messages();
+        let Some(TradingCommand::SubmitOrder(command)) = messages.first() else {
+            panic!("expected one NT SubmitOrder command, got {messages:#?}");
+        };
+        assert_eq!(messages.len(), 1);
+        assert_eq!(command.params.as_ref(), Some(&params));
         assert_eq!(submit_admission.admitted_order_count(), 1);
     }
 

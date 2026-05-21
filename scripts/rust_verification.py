@@ -785,8 +785,7 @@ def nice_command_index(tokens: list[str]) -> int:
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
-            index += 1
-            continue
+            return index + 1
         if token == "-n" and index + 1 < len(tokens):
             index += 2
             continue
@@ -871,6 +870,8 @@ def timeout_command_index(tokens: list[str]) -> int:
         token = tokens[index]
         if token == "--":
             index += 1
+            if index < len(tokens):
+                index += 1
             break
         if token in ("-k", "--kill-after", "-s", "--signal") and index + 1 < len(tokens):
             index += 2

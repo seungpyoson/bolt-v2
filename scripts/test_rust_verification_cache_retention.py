@@ -1782,6 +1782,7 @@ def assert_v6_red_active_process_wrapper_options_expose_cargo_pattern() -> None:
         "env --block-signal=PIPE cargo build",
         "nice --adjustment 10 cargo build",
         "nice --adjustment=10 cargo build",
+        "timeout -- 30 cargo build",
         "stdbuf -oL cargo build",
         "catchsegv cargo test",
         "bash -c 'VAR=val cargo build'",
@@ -1801,6 +1802,15 @@ def assert_v6_red_active_process_wrapper_options_expose_cargo_pattern() -> None:
             misses.append(f"{command!r}: names={sorted(names)!r} matched={matched!r}")
     if misses:
         raise AssertionError("wrapper option parsing must expose wrapped cargo process names: " + "; ".join(misses))
+
+
+def assert_v6_red_wrapper_end_of_options_does_not_overconsume_command_words() -> None:
+    owner = load_owner_module()
+    command = "nice -- -5 cargo build"
+    names = owner.command_process_names(command)
+    matched = owner.matching_process_pattern(command, ["cargo"])
+    if "cargo" in names or matched == "cargo":
+        raise AssertionError(f"{command!r} treated post-separator command argument as nice adjustment: names={sorted(names)!r} matched={matched!r}")
 
 
 def assert_v6_red_wrapped_renamed_cargo_launches_are_classified() -> None:
@@ -2582,6 +2592,7 @@ def assert_v6_red_policy_gaps() -> None:
     checks = [
         assert_v6_red_active_process_parser_gaps,
         assert_v6_red_active_process_wrapper_options_expose_cargo_pattern,
+        assert_v6_red_wrapper_end_of_options_does_not_overconsume_command_words,
         assert_v6_red_wrapped_renamed_cargo_launches_are_classified,
         assert_v6_red_active_process_parser_resolves_relative_manifest_scope,
         assert_v6_red_active_process_parser_uses_command_scope_without_cwd,

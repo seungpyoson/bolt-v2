@@ -61,6 +61,8 @@ Official Binance docs classify `-2015` as invalid API key, IP, or permissions.
 Official Binance SBE docs say SBE market data requires an API key in
 `X-MBX-APIKEY`, only Ed25519 keys are allowed, no extra public-market-data
 permissions are needed, and IP whitelist restrictions still apply.
+Sources: <https://raw.githubusercontent.com/binance/binance-spot-api-docs/master/errors.md>
+and <https://raw.githubusercontent.com/binance/binance-spot-api-docs/master/sbe-market-data-streams.md>.
 
 Therefore the remaining blocker set is:
 

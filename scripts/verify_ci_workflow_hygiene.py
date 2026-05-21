@@ -1798,14 +1798,16 @@ def flock_command_option_tokens(tokens: list[str]) -> list[str] | None:
     return None
 
 
-def simple_cargo_aliases(tokens: list[str]) -> set[str]:
+def simple_cargo_aliases(tokens: list[str], known_aliases: set[str] | None = None) -> set[str]:
+    known_aliases = known_aliases or set()
     aliases: set[str] = set()
     for token in tokens[1:]:
         name, separator, value = token.partition("=")
+        name = name.strip("\"'")
         value_tokens = command_tokens(value) if separator else []
         value_names = {pathlib.Path(value_token).name for value_token in value_tokens}
         if separator and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name) and any(
-            raw_rust_tool_token(value_name) for value_name in value_names
+            raw_rust_tool_token(value_name) or value_name in known_aliases for value_name in value_names
         ):
             aliases.add(name)
     return aliases
@@ -1867,7 +1869,7 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
         for token in tokens:
             if token in SHELL_COMMAND_BOUNDARIES:
                 if segment and segment[0] == "alias":
-                    cargo_aliases.update(simple_cargo_aliases(segment))
+                    cargo_aliases.update(simple_cargo_aliases(segment, cargo_aliases))
                     segment = []
                     continue
                 segment = expand_cargo_aliases(segment, cargo_aliases)
@@ -2096,7 +2098,7 @@ def raw_cargo_storage_override_messages_from_tokens(
                     )
                 )
                 if segment and segment[0] == "alias":
-                    segment_aliases.update(simple_cargo_aliases(segment))
+                    segment_aliases.update(simple_cargo_aliases(segment, segment_aliases))
                 segment = []
                 continue
             segment.append(token)
@@ -2174,12 +2176,12 @@ def text_raw_cargo_storage_override_messages(text: str) -> set[str]:
         for token in tokens:
             if token in SHELL_COMMAND_BOUNDARIES:
                 if segment and segment[0] == "alias":
-                    aliases.update(simple_cargo_aliases(segment))
+                    aliases.update(simple_cargo_aliases(segment, aliases))
                 segment = []
                 continue
             segment.append(token)
         if segment and segment[0] == "alias":
-            aliases.update(simple_cargo_aliases(segment))
+            aliases.update(simple_cargo_aliases(segment, aliases))
     return messages
 
 
@@ -2427,6 +2429,26 @@ def text_has_s3_variable_active_target_sync(text: str) -> bool:
     return False
 
 
+def dynamic_env_target_override_messages(text: str) -> set[str]:
+    messages: set[str] = set()
+    target_keys = {
+        "CARGO_TARGET_DIR": "CARGO_TARGET_DIR raw target override must be classified",
+        "CARGO_BUILD_TARGET_DIR": "CARGO_BUILD_TARGET_DIR raw target override must be classified",
+        "CARGO_TARGET_TMPDIR": "CARGO_TARGET_TMPDIR raw target override must be classified",
+    }
+    assignments: dict[str, str] = {}
+    for match in re.finditer(
+        r"(?:^\s*|[;&|]\s*)([A-Za-z_][A-Za-z0-9_]*)=(CARGO_TARGET_DIR|CARGO_BUILD_TARGET_DIR|CARGO_TARGET_TMPDIR)\b",
+        text,
+        re.MULTILINE,
+    ):
+        assignments[match.group(1)] = match.group(2)
+    for variable, target_key in assignments.items():
+        if re.search(rf"\benv\b[^\n;&|]*(?:\${re.escape(variable)}\b|\$\{{{re.escape(variable)}\}})=", text):
+            messages.add(target_keys[target_key])
+    return messages
+
+
 def tokens_define_cargo_alias(tokens: list[str]) -> bool:
     segment: list[str] = []
     for token in tokens:
@@ -2449,7 +2471,7 @@ def text_has_alias_cargo_target_routing_override(text: str) -> bool:
         for token in tokens:
             if token in SHELL_COMMAND_BOUNDARIES:
                 if segment and segment[0] == "alias":
-                    cargo_aliases.update(simple_cargo_aliases(segment))
+                    cargo_aliases.update(simple_cargo_aliases(segment, cargo_aliases))
                 elif any(token in cargo_aliases for token in segment):
                     expanded = expand_cargo_aliases(segment, cargo_aliases)
                     if tokens_have_target_routing_override(expanded) and tokens_have_raw_cargo_launch(expanded):
@@ -2458,7 +2480,7 @@ def text_has_alias_cargo_target_routing_override(text: str) -> bool:
                 continue
             segment.append(token)
         if segment and segment[0] == "alias":
-            cargo_aliases.update(simple_cargo_aliases(segment))
+            cargo_aliases.update(simple_cargo_aliases(segment, cargo_aliases))
             continue
         if not any(token in cargo_aliases for token in segment):
             continue
@@ -2517,7 +2539,7 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_INSTALL_ROOT[\"']?\s*(?:=|:)", "CARGO_INSTALL_ROOT install output override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_HOME[\"']?\s*(?:=|:)", "CARGO_HOME raw cache override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTUP_HOME[\"']?\s*(?:=|:)", "RUSTUP_HOME raw toolchain override must be classified"),
-        (r"(^|[^A-Za-z0-9_])[\"']?RUSTFLAGS[\"']?\s*(?:=|:).*--out-dir", "RUSTFLAGS raw output override must be classified"),
+        (r"(^|[^A-Za-z0-9_])[\"']?RUSTFLAGS[\"']?\s*(?:=|:).*(?:--out-dir|--artifact-dir)", "RUSTFLAGS raw output override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WRAPPER raw compiler wrapper must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WORKSPACE_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified"),
         (r"\bcargo\b[^\n;&|]*\brustc\b[^\n;&|]*\s--out-dir\b", "cargo rustc --out-dir raw output override must be classified"),
@@ -2528,12 +2550,16 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         (r"\bno-mistakes\b[^\n]*\bcargo\b", "no-mistakes raw Cargo drift must be classified"),
         (r"\bno-mistakes\b[^\n]*--worktree[^\n]*(?:--target-dir\s+target|\btarget\b)", "no-mistakes worktree-local target path evidence must be reported"),
         (r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])(?:\.?/)?target(?:[\s/\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$CARGO_TARGET_DIR[\"']?|\$\{CARGO_TARGET_DIR[^}]*\})(?:/(?:\./)?[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$GITHUB_WORKSPACE[\"']?|\$\{GITHUB_WORKSPACE[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$PWD[\"']?|\$\{PWD[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])\$\{\{\s*(?:github\.workspace|env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}(?:/(?:\./)?(?:target(?:/[^\s\"']*)?|[^\s\"']*))?(?:[\s\"']|$))", "S3 active mutable target cache must be rejected"),
+        (r"\bcargo\b[^\n|]*\$@[^|]*\|\s*bash\b[^\n;&|]*\s-s\b[^\n;&|]*\s--target-dir\b", "cargo --target-dir raw target override must be classified"),
     )
     errors: list[str] = []
     for pattern, message in checks:
         if re.search(pattern, text):
             errors.append(message)
     for message in sorted(text_raw_cargo_storage_override_messages(text)):
+        if message not in errors:
+            errors.append(message)
+    for message in sorted(dynamic_env_target_override_messages(text)):
         if message not in errors:
             errors.append(message)
     config_file_message = "cargo --config file raw target override must be classified"
@@ -2569,6 +2595,7 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])/[^\s\"']*/target(?:/[^\s\"']*)?(?:[\s\"']|$))",
         r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])\$\(pwd\)/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$))",
         r"\bcd\s+[\"']?(?:\.?/)?target(?:/[^\s\"']*)?[\"']?\s*(?:&&|;|\|\|)[^\n]*\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)",
+        r"\b(?:cd|pushd)\s+[\"']?(?:\.?/)?target(?:/[^\s\"']*)?[\"']?\s*(?:(?:&&|;|\|\|)[^\n]*|\n\s*)\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)",
         r"\baws\b[^\n;&|]*\bs3\s+sync\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])(?:\.|\$GITHUB_WORKSPACE|\$\{GITHUB_WORKSPACE[^}]*\}|\$\{\{\s*github\.workspace\s*\}\}|\$PWD|\$\{PWD[^}]*\})(?:/(?:\./)?)?(?:[\s\"']|$))",
         r"\baws\b[^\n;&|]*\bs3api\b[^\n;&|]*(?:target(?:/|[\s\"']|$)|CARGO_TARGET_DIR|managed_target_dir|\$\{\{\s*(?:github\.workspace|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\})",
     )

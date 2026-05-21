@@ -1625,6 +1625,7 @@ CARGO_DISK_PREFLIGHT_SUBCOMMANDS = frozenset(
 )
 CARGO_PROCESS_SUBCOMMANDS = CARGO_DISK_PREFLIGHT_SUBCOMMANDS | {"clean", "fmt"}
 CARGO_ALIAS_SUBCOMMANDS = {"b", "c", "d", "r", "t"}
+CARGO_CONFIG_RELATIVE_PATHS = (pathlib.Path(".cargo/config.toml"), pathlib.Path(".cargo/config"))
 
 
 def cargo_subcommand_with_index(cargo_args: list[str]) -> tuple[int, str] | None:
@@ -1664,9 +1665,31 @@ def cargo_args_need_disk_preflight(cargo_args: list[str]) -> bool:
     return cargo_subcommand(cargo_args) in CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 
 
-def cargo_alias_subcommand(cargo_args: list[str]) -> str | None:
+def repo_cargo_aliases(repo: pathlib.Path) -> set[str]:
+    aliases: set[str] = set()
+    for relative_path in CARGO_CONFIG_RELATIVE_PATHS:
+        path = repo / relative_path
+        if not path.exists():
+            continue
+        try:
+            if _toml is None:
+                config = parse_minimal_toml(path)
+            else:
+                with path.open("rb") as handle:
+                    config = _toml.load(handle)
+        except (OSError, PolicyError, _toml.TOMLDecodeError if _toml is not None else ValueError) as exc:
+            raise PolicyError(f"unable to inspect Cargo alias config {relative_path}: {exc}") from exc
+        alias_table = config.get("alias")
+        if isinstance(alias_table, dict):
+            aliases.update(str(name) for name in alias_table)
+    return aliases
+
+
+def cargo_alias_subcommand(cargo_args: list[str], repo: pathlib.Path | None = None) -> str | None:
     subcommand = cargo_subcommand(cargo_args)
     if subcommand in CARGO_ALIAS_SUBCOMMANDS:
+        return subcommand
+    if repo is not None and subcommand is not None and subcommand in repo_cargo_aliases(repo):
         return subcommand
     return None
 
@@ -1847,7 +1870,10 @@ def cmd_cargo(args: argparse.Namespace) -> int:
         return 2
     cargo = "cargo"
     cargo_args = command_args(args.args)
-    alias = cargo_alias_subcommand(cargo_args)
+    try:
+        alias = cargo_alias_subcommand(cargo_args, repo)
+    except PolicyError as exc:
+        return print_refusal(refusal_payload(code="cargo_alias_config", reason=str(exc), dry_run=False))
     if alias is not None:
         return print_refusal(cargo_alias_refusal_payload(repo, policy, alias))
     override = cargo_target_routing_override(cargo_args)

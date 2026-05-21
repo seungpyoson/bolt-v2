@@ -1106,6 +1106,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
+            "E=CARGO_TARGET_DIR; env $E=/tmp/raw-target cargo test",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
             "env:\n  CARGO_TARGET_DIR: /tmp/raw",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
@@ -1170,6 +1174,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --target-dir raw target override must be classified",
         ),
         (
+            "echo 'cargo \"$@\"' | bash -s -- build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
             "CARGO_TARGET_TMPDIR=/tmp/raw-tmp cargo test",
             "CARGO_TARGET_TMPDIR raw target override must be classified",
         ),
@@ -1227,6 +1235,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "RUSTFLAGS='--out-dir /tmp/raw-out' cargo check",
+            "RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "RUSTFLAGS='--artifact-dir /tmp/raw-artifacts' cargo check",
             "RUSTFLAGS raw output override must be classified",
         ),
         (
@@ -1291,6 +1303,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "alias c=cargo\nc build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "alias mybuild=cargo; alias c=mybuild; c build --target-dir /tmp/raw-target",
             "cargo --target-dir raw target override must be classified",
         ),
         (
@@ -1503,6 +1519,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "cd target/debug && aws s3 sync * s3://bolt-v2-active-cache/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "pushd target/debug\naws s3 sync * s3://bolt-v2-active-cache/target/debug",
             "S3 active mutable target cache must be rejected",
         ),
         (

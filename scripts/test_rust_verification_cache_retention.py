@@ -2323,12 +2323,20 @@ exit 0
 
 def assert_managed_cargo_rejects_alias_subcommands() -> None:
     failures: list[str] = []
-    for alias in ["b", "c", "d", "r", "t"]:
+    cases: list[tuple[str, str | None]] = [(alias, None) for alias in ["b", "c", "d", "r", "t"]]
+    cases.append(("wipe", 'wipe = "clean"\n'))
+    for alias, cargo_config_aliases in cases:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
             repo = tmp_path / "repo"
             repo.mkdir()
             write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+            if cargo_config_aliases is not None:
+                (repo / ".cargo").mkdir()
+                (repo / ".cargo" / "config.toml").write_text(
+                    f"[alias]\n{cargo_config_aliases}",
+                    encoding="utf-8",
+                )
             root_base = tmp_path / "rust-root"
             (root_base / "bolt-v2" / "target").mkdir(parents=True)
 

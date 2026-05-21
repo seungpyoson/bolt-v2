@@ -846,7 +846,7 @@ def first_step_containing_literals_in_order(job_lines: list[str], literals: tupl
 
 
 def shell_assignment_word(token: str) -> bool:
-    return re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", token) is not None
+    return re.match(r"^[A-Za-z_][A-Za-z0-9_]*=[\s\S]*$", token) is not None
 
 
 SUDO_OPTIONS_WITH_ARGUMENT = {
@@ -1106,7 +1106,7 @@ def shell_quotes_are_balanced(text: str) -> bool:
 def shell_logical_lines(text: str) -> list[str]:
     lines: list[str] = []
     pending = ""
-    for line in shell_logical_lines(text):
+    for line in text.replace("\\\n", " ").splitlines():
         pending = f"{pending}\n{line}" if pending else line
         if shell_quotes_are_balanced(pending):
             lines.append(pending)
@@ -1966,6 +1966,25 @@ def expand_known_shell_variables(tokens: list[str], variables: dict[str, str]) -
     return expanded
 
 
+def expand_known_shell_assignment_names(tokens: list[str], variables: dict[str, str]) -> list[str]:
+    expanded: list[str] = []
+    for token in tokens:
+        if "=" not in token:
+            expanded.append(token)
+            continue
+        name, value = token.split("=", 1)
+        variable = shell_variable_reference_token(name)
+        if (
+            variable is not None
+            and variable in variables
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variables[variable])
+        ):
+            expanded.append(f"{variables[variable]}={value}")
+            continue
+        expanded.append(token)
+    return expanded
+
+
 def expand_known_shell_command_variables(tokens: list[str], variables: dict[str, str]) -> list[str]:
     if not tokens:
         return tokens
@@ -2012,6 +2031,7 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
                     shell_variables.update(shell_assignments)
                     segment = []
                     continue
+                segment = expand_known_shell_assignment_names(segment, shell_variables)
                 segment = expand_known_shell_command_variables(segment, shell_variables)
                 segment = expand_cargo_aliases(segment, cargo_aliases)
                 if segment and tokens_have_raw_cargo(segment, depth=depth + 1, allow_storage_only=allow_storage_only):
@@ -2024,6 +2044,7 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
         shell_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
         if is_persistent_assignment:
             return False
+        segment = expand_known_shell_assignment_names(segment, shell_variables)
         segment = expand_known_shell_command_variables(segment, shell_variables)
         segment = expand_cargo_aliases(segment, cargo_aliases)
         return bool(segment) and tokens_have_raw_cargo(segment, depth=depth + 1, allow_storage_only=allow_storage_only)
@@ -2158,7 +2179,7 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
     current_just_recipe = ""
     shell_variables: dict[str, str] = {}
     is_justfile = file_name == "justfile" or file_name.startswith("justfile.")
-    for line in text.replace("\\\n", " ").splitlines():
+    for line in shell_logical_lines(text):
         stripped = strip_comment(line).strip()
         if not stripped:
             continue
@@ -2185,6 +2206,7 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
         if is_persistent_assignment:
             shell_variables.update(assignments)
             continue
+        tokens = expand_known_shell_assignment_names(tokens, shell_variables)
         tokens = expand_known_shell_command_variables(tokens, shell_variables)
         if tokens_have_repo_automation_raw_cargo(tokens):
             errors.append("repo automation raw Cargo must use managed rust_verification wrapper")
@@ -2359,63 +2381,71 @@ def no_mistakes_commands(config_text: str) -> dict[str, str]:
     commands: dict[str, str] = {}
     anchors: dict[str, str] = {}
     in_commands = False
-    current_name: str | None = None
-    current_anchor: str | None = None
-    current_indent = 0
-    current_lines: list[str] = []
-    for raw_line in config_text.splitlines():
+    lines = config_text.splitlines()
+    index = 0
+    while index < len(lines):
+        raw_line = lines[index]
         line = raw_line.rstrip()
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
+            index += 1
             continue
         indent = len(line) - len(line.lstrip(" "))
         if indent == 0:
-            if current_name is not None:
-                command = "\n".join(part.strip() for part in current_lines).strip()
-                commands[current_name] = command
-                if current_anchor is not None:
-                    anchors[current_anchor] = command
-                current_name = None
-                current_anchor = None
-                current_lines = []
             name, separator, value = stripped.partition(":")
             in_commands = bool(separator) and name.strip() == "commands" and (
                 not value.strip() or value.strip().startswith("#")
             )
+            index += 1
             continue
         if not in_commands:
+            index += 1
             continue
         if indent <= 2 and ":" in stripped:
-            if current_name is not None:
-                command = "\n".join(part.strip() for part in current_lines).strip()
-                commands[current_name] = command
-                if current_anchor is not None:
-                    anchors[current_anchor] = command
-                current_name = None
-                current_anchor = None
-                current_lines = []
             name, _, value = stripped.partition(":")
             value = value.strip()
             anchor, stripped_value = strip_yaml_anchor(value)
             if anchor is not None:
                 value = stripped_value
             if value in ("|", ">") or value.startswith(("|", ">")):
-                current_name = name.strip()
-                current_anchor = anchor
-                current_indent = indent
+                block_lines: list[str] = []
+                index += 1
+                while index < len(lines):
+                    candidate = lines[index].rstrip()
+                    candidate_stripped = candidate.strip()
+                    if not candidate_stripped or candidate_stripped.startswith("#"):
+                        index += 1
+                        continue
+                    candidate_indent = len(candidate) - len(candidate.lstrip(" "))
+                    if candidate_indent <= indent:
+                        break
+                    block_lines.append(candidate_stripped)
+                    index += 1
+                command = "\n".join(block_lines).strip()
+                commands[name.strip()] = command
+                if anchor is not None:
+                    anchors[anchor] = command
                 continue
+            scalar_parts = [value]
+            index += 1
+            while index < len(lines):
+                candidate = lines[index].rstrip()
+                candidate_stripped = candidate.strip()
+                if not candidate_stripped or candidate_stripped.startswith("#"):
+                    index += 1
+                    continue
+                candidate_indent = len(candidate) - len(candidate.lstrip(" "))
+                if candidate_indent <= indent:
+                    break
+                scalar_parts.append(candidate_stripped)
+                index += 1
+            value = " ".join(part for part in scalar_parts if part).strip()
             value, scalar_anchor = resolve_no_mistakes_scalar(value if anchor is None else f"&{anchor} {value}", anchors)
             if scalar_anchor is not None:
                 anchors[scalar_anchor] = value
             commands[name.strip()] = value
             continue
-        if current_name is not None and indent > current_indent:
-            current_lines.append(stripped)
-    if current_name is not None:
-        command = "\n".join(part.strip() for part in current_lines).strip()
-        commands[current_name] = command
-        if current_anchor is not None:
-            anchors[current_anchor] = command
+        index += 1
     return commands
 
 
@@ -2844,6 +2874,125 @@ def target_env_key_alias(value: str, target_keys: dict[str, str]) -> str | None:
     return None
 
 
+def target_env_key_from_assignment_name(
+    name: str,
+    assignments: dict[str, str],
+    target_keys: dict[str, str],
+) -> str | None:
+    clean = storage_strip_quotes(name)
+    if clean in target_keys:
+        return clean
+    variable = shell_variable_reference_token(clean)
+    if variable is not None and variable in assignments:
+        return assignments[variable]
+    return None
+
+
+def dynamic_env_assignment_message(
+    token: str,
+    assignments: dict[str, str],
+    target_keys: dict[str, str],
+) -> str | None:
+    if "=" not in token:
+        return None
+    name, _value = token.split("=", 1)
+    target_key = target_env_key_from_assignment_name(name, assignments, target_keys)
+    return target_keys[target_key] if target_key is not None else None
+
+
+def dynamic_env_segment_messages(
+    segment: list[str],
+    assignments: dict[str, str],
+    target_keys: dict[str, str],
+    *,
+    depth: int = 0,
+) -> set[str]:
+    if not segment or depth > 4:
+        return set()
+    messages: set[str] = set()
+    expanded = expand_known_shell_assignment_names(segment, assignments)
+    cursor = 0
+    while cursor < len(expanded) and shell_assignment_word(expanded[cursor]):
+        message = dynamic_env_assignment_message(expanded[cursor], assignments, target_keys)
+        if message is not None:
+            messages.add(message)
+        cursor += 1
+    if cursor >= len(expanded):
+        return messages
+    command = pathlib.Path(expanded[cursor]).name
+    if command == "export":
+        for argument in expanded[cursor + 1 :]:
+            if argument in SHELL_COMMAND_BOUNDARIES:
+                break
+            message = dynamic_env_assignment_message(argument, assignments, target_keys)
+            if message is not None:
+                messages.add(message)
+        return messages
+    if command == "env":
+        index = cursor + 1
+        while index < len(expanded):
+            argument = expanded[index]
+            if argument in SHELL_COMMAND_BOUNDARIES:
+                break
+            if argument == "--":
+                index += 1
+                continue
+            if argument in ENV_OPTIONS_WITHOUT_ARGUMENT or argument in ENV_SIGNAL_OPTIONS:
+                index += 1
+                continue
+            if any(argument.startswith(f"{option}=") for option in ENV_SIGNAL_OPTIONS):
+                index += 1
+                continue
+            if argument in ENV_OPTIONS_WITH_ARGUMENT and index + 1 < len(expanded):
+                index += 2
+                continue
+            if any(
+                argument.startswith(f"{option}=")
+                for option in ENV_OPTIONS_WITH_ARGUMENT
+                if option.startswith("--")
+            ):
+                index += 1
+                continue
+            message = dynamic_env_assignment_message(argument, assignments, target_keys)
+            if message is None:
+                break
+            messages.add(message)
+            index += 1
+        return messages
+    if command == "eval":
+        inner = expanded[cursor + 1 :]
+        if inner and inner[0] == "--":
+            inner = inner[1:]
+        if inner:
+            messages.update(
+                dynamic_env_tokens_messages(
+                    command_tokens(" ".join(inner)),
+                    assignments,
+                    target_keys,
+                    depth=depth + 1,
+                )
+            )
+    return messages
+
+
+def dynamic_env_tokens_messages(
+    tokens: list[str],
+    assignments: dict[str, str],
+    target_keys: dict[str, str],
+    *,
+    depth: int = 0,
+) -> set[str]:
+    messages: set[str] = set()
+    segment: list[str] = []
+    for token in tokens + [";"]:
+        if token in SHELL_COMMAND_BOUNDARIES:
+            messages.update(dynamic_env_segment_messages(segment, assignments, target_keys, depth=depth))
+            segment = []
+            continue
+        segment.append(token)
+    return messages
+
+
 def dynamic_env_target_override_messages(text: str) -> set[str]:
     messages: set[str] = set()
     target_keys = {
@@ -2874,29 +3023,7 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
             segment = []
             continue
         segment.append(token)
-    tokens = command_tokens(text)
-    cursor = 0
-    while cursor < len(tokens):
-        token = tokens[cursor]
-        if token in SHELL_COMMAND_BOUNDARIES:
-            cursor += 1
-            continue
-        command = pathlib.Path(token).name
-        if command not in {"env", "export"}:
-            cursor += 1
-            continue
-        cursor += 1
-        while cursor < len(tokens) and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
-            argument = tokens[cursor]
-            cursor += 1
-            if "=" not in argument:
-                continue
-            name, _value = argument.split("=", 1)
-            variable = shell_variable_reference_token(name)
-            if variable is not None and variable in assignments:
-                messages.add(target_keys[assignments[variable]])
-            if command == "env" and variable is None and "=" not in argument and not argument.startswith("-"):
-                break
+    messages.update(dynamic_env_tokens_messages(command_tokens(text), assignments, target_keys))
     return messages
 
 
@@ -3328,18 +3455,43 @@ def shell_line_exit_codes(line: str) -> list[str | None]:
     tokens = command_tokens(line)
     cursor = 0
     at_command_start = True
+    previous_boundary: str | None = None
     while cursor < len(tokens):
         token = tokens[cursor]
         if token in SHELL_COMMAND_BOUNDARIES:
             at_command_start = True
+            previous_boundary = token
             cursor += 1
             continue
         if at_command_start and pathlib.Path(token).name == "exit":
-            code = tokens[cursor + 1] if cursor + 1 < len(tokens) and re.fullmatch(r"[0-9]+", tokens[cursor + 1]) else None
-            codes.append(code)
+            if previous_boundary != "||":
+                code = tokens[cursor + 1] if cursor + 1 < len(tokens) and re.fullmatch(r"[0-9]+", tokens[cursor + 1]) else None
+                codes.append(code)
         at_command_start = False
         cursor += 1
     return codes
+
+
+def shell_line_has_exit_command(line: str) -> bool:
+    tokens = command_tokens(line)
+    at_command_start = True
+    for token in tokens:
+        if token in SHELL_COMMAND_BOUNDARIES:
+            at_command_start = True
+            continue
+        if at_command_start and pathlib.Path(token).name == "exit":
+            return True
+        at_command_start = False
+    return False
+
+
+def shell_line_is_simple_exit(line: str) -> bool:
+    tokens = command_tokens(line)
+    if not tokens or pathlib.Path(tokens[0]).name != "exit":
+        return False
+    if len(tokens) == 1:
+        return True
+    return len(tokens) == 2 and re.fullmatch(r"[0-9]+", tokens[1]) is not None
 
 
 def branch_is_reachable_before_top_level_exit(gate_text: str, keyword: str, condition: str) -> bool:
@@ -3395,7 +3547,9 @@ def body_exits(body: str) -> bool:
         line_exit_codes = shell_line_exit_codes(clean)
         if depth != 0:
             continue
-        if line_exit_codes:
+        if shell_line_has_exit_command(clean):
+            if not shell_line_is_simple_exit(clean):
+                return False
             exit_codes.extend(line_exit_codes)
             continue
         if clean.startswith("echo "):

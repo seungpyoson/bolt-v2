@@ -1161,6 +1161,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
+            "E=CARGO_TARGET_DIR; eval \"export $E=/tmp/raw-target\"; cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "E=CARGO_TARGET_DIR; $E=/tmp/raw-target cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
             "E=$(echo CARGO_TARGET_DIR); export $E=/tmp/raw-target; cargo check",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
@@ -1732,6 +1740,11 @@ commands:
   evalvar: 'CMD="cargo build --target-dir /tmp/raw"; eval "$CMD"'
   evalexportvar: 'export CMD="cargo build"; eval "$CMD"'
   evalparam: 'export CMD="cargo build"; eval "${CMD:-}"'
+  evaldynamicenv: 'VAR=CARGO_TARGET_DIR; $VAR=/tmp/raw cargo check'
+  foldedplain: eval
+    cargo test
+  foldeddouble: "eval
+    cargo test"
   shellprefix: A=B bash -c "cargo test"
   shellevalraw: bash -lc 'eval "cargo test"'
   shellalias: bash -lc 'alias c=cargo; c test'
@@ -1817,6 +1830,9 @@ commands: { test: "cargo test" }
         "evalvar",
         "evalexportvar",
         "evalparam",
+        "evaldynamicenv",
+        "foldedplain",
+        "foldeddouble",
         "shellprefix",
         "shellevalraw",
         "shellalias",
@@ -2806,6 +2822,14 @@ def main() -> int:
             BASE_WORKFLOW,
             '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              exit 1\n',
             '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              echo "deny failed" && exit 0\n              exit 1\n',
+        ),
+    )
+    assert_error(
+        "gate must require deny skipped on tag reuse",
+        replace_once(
+            BASE_WORKFLOW,
+            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              exit 1\n',
+            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              true || exit 1\n',
         ),
     )
     assert_error(

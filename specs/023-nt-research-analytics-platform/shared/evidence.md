@@ -1,0 +1,203 @@
+# Evidence Ledger: NT-First Research Planning Package
+
+This file is the control surface for the plan. `spec.md`, `plan.md`,
+`research.md`, tasks, and issue payloads must not assert anything stronger than
+the status recorded here.
+
+## Source Anchors
+
+- Future implementation must use the NT version resolved by the target
+  `bolt-v2` implementation branch through its `Cargo.toml` and `Cargo.lock`.
+- This package intentionally does not hardcode an NT commit hash because
+  `bolt-v2` may version NT up before implementation starts.
+- Upstream NT `develop`/`master` references are drift checks only. They do not
+  override the NT version selected by the target `bolt-v2` branch.
+- User instruction: Kalshi adapter support is to be assumed. Treat that as a
+  planning assumption, not source proof from the checked upstream clone.
+- User instruction: do not build in this phase. This package is research and
+  planning only for three future projects: Backtesting Engine, Research
+  Analytics, and Dashboard.
+
+## Source Labels
+
+- `NT resolved by bolt-v2`: NT source version selected by the target
+  `bolt-v2` implementation branch's `Cargo.toml` and `Cargo.lock`.
+- `NT upstream develop`: remote `develop` ref checked only as drift evidence;
+  implementation still uses the NT version selected by `bolt-v2`.
+- `Tardis pricing`: `https://tardis.dev/`, fetched 2026-05-20, lines 271-363,
+  692-784.
+- `Tardis billing`: `https://docs.tardis.dev/faq/billing-and-subscriptions`,
+  fetched 2026-05-20, lines 229-247.
+- `Hyperliquid historical data`:
+  `https://hyperliquid.gitbook.io/hyperliquid-docs/historical-data`, fetched
+  2026-05-20, lines 67-69.
+- `Kalshi Historical Data`:
+  `https://docs.kalshi.com/getting_started/historical_data`, fetched
+  2026-05-20, lines 76-92 and 97-110.
+- `Kalshi Historical Trades`:
+  `https://docs.kalshi.com/api-reference/historical/get-historical-trades`,
+  fetched 2026-05-20, lines 157-188.
+- `Kalshi Historical Market Candlesticks`:
+  `https://docs.kalshi.com/api-reference/historical/get-historical-market-candlesticks`,
+  fetched 2026-05-20, lines 196-198.
+- `Kalshi Market Orderbook`:
+  `https://docs.kalshi.com/api-reference/market/get-market-orderbook`, fetched
+  2026-05-20, lines 191-193.
+- `Polymarket Introduction`: `https://docs.polymarket.com/api-reference`,
+  fetched 2026-05-20, lines 203-228.
+- `Telonex docs`: `https://telonex.io/docs/`, fetched 2026-05-20, lines 39-51.
+- `Telonex pricing`: `https://telonex.io/pricing`, fetched 2026-05-20, lines
+  21-43.
+- `Goldsky Pricing`: `https://docs.goldsky.com/pricing`, fetched 2026-05-20,
+  lines 79-92, 97-120, and 123-159.
+- `MarketLens docs`: `https://marketlens.trade/docs`, fetched 2026-05-21,
+  lines 27 and 90-102.
+- `PMXT archive`: `https://archive.pmxt.dev/Polymarket/v2`, fetched
+  2026-05-21, lines 4 and 19-24.
+- `PolyBackTest docs`: `https://docs.polybacktest.com/`,
+  `https://docs.polybacktest.com/data-retention`, and
+  `https://docs.polybacktest.com/available-data`, fetched 2026-05-21, intro
+  lines 46-59 and 63-72, retention lines 62-77 and 101-114, and coverage lines
+  57-79 and 82-95.
+- `PolymarketData`: `https://www.polymarketdata.co/`, fetched 2026-05-21,
+  lines 4-12 and 36-48.
+- `QuantConnect Lean`: `https://github.com/QuantConnect/Lean`, fetched
+  2026-05-21, lines 429-437 and 449-463.
+- `Microsoft Qlib`: `https://github.com/microsoft/qlib`, fetched 2026-05-21,
+  lines 375-378 and 552-594.
+- `Freqtrade lookahead analysis`:
+  `https://www.freqtrade.io/en/stable/lookahead-analysis/`, fetched
+  2026-05-21, lines 85-91 and 222-239.
+- `Feast docs`: `https://docs.feast.dev/`, fetched 2026-05-21,
+  lines 128-130.
+- `AWS S3 Pricing`: `https://aws.amazon.com/s3/pricing/`, fetched 2026-05-20,
+  lines 576-578 and 650-652.
+- `GitHub issues`: fetched/refreshed 2026-05-20 with `gh issue view`/`gh issue list` and
+  refreshed 2026-05-21 with
+  `gh issue list --repo seungpyoson/bolt-v2 --state all --limit 500 --json number,title,state` from
+  `https://github.com/seungpyoson/bolt-v2/issues/{number}` for #19, #20, #21,
+  #22, #23, #24, #34, #36, #39, #75, #77, #88, #112, #115, #127, #148, #158,
+  #176, #236, #254, #369, #385, #407, and #409.
+  `gh issue list` showed all of those issues open on 2026-05-21 except any
+  explicitly closed issues listed as historical context.
+
+## Status Vocabulary
+
+- `SOURCE_PROVEN`: exact source/doc/issue evidence exists.
+- `USER_ASSUMPTION`: user supplied the premise; build from it, but do not call
+  it source-proven.
+- `GAP`: evidence shows missing or incomplete coverage, or no source proof was
+  found.
+- `DECISION_NEEDED`: more than one valid path remains; user or follow-on gate
+  must choose.
+- Combined statuses are allowed when one row carries mixed facts, for example
+  `USER_ASSUMPTION + GAP`.
+
+## Claims
+
+| ID | Claim | Status | Evidence | Implication | Next proof |
+|---|---|---|---|---|---|
+| E-001 | Do not build a Bolt-owned backtest engine before using NT. | SOURCE_PROVEN | NT docs define `BacktestEngine` and recommend `BacktestNode` for production workflows and live transition; high-level API requires a Parquet catalog. `BacktestNode` connects `ParquetDataCatalog` to `BacktestEngine`. | Future Backtesting Engine should orchestrate NT runs, not simulate venue/order lifecycle. | Compile the NT version resolved by the target `bolt-v2` branch; prove Bolt manifest maps to `BacktestRunConfig`/`BacktestDataConfig`. |
+| E-002 | NT catalog is the replay/backtest projection target. | SOURCE_PROVEN | NT docs describe data catalog as Parquet central store for backtesting and live scenarios: upstream `docs/concepts/data.md:716-737`. `BacktestDataConfig` requires `catalog_path` and data class: upstream `docs/concepts/data.md:953-963`; Rust config carries catalog path, protocol/storage options, instrument filters, start/end, and filter expressions: upstream `crates/backtest/src/config.rs:595-635`. | Raw provider data can be retained, but canonical replay input should be deterministic NT catalog projection. | Define raw-evidence-to-NT-catalog lineage fields and hash checks. |
+| E-003 | Upstream NT `develop` supports Hyperliquid HIP-4 outcome markets for data and trading. | SOURCE_PROVEN | Release notes add HIP-4 instruments, reconciliation, userOutcome actions, and Settlement fill parsing: upstream `RELEASES.md:113-115`. Hyperliquid docs list HIP-4 Outcomes as data feed and trading supported: upstream `docs/integrations/hyperliquid.md:117-125`. | #115's older premise that NT lacks HIP-4 is stale relative to upstream `develop`; do not build a Bolt HIP-4 adapter first. | Update/select NT pointer and run compile/API proof. |
+| E-004 | HIP-4 ordinary outcome orders use NT's standard order path. | SOURCE_PROVEN | Docs state outcome side tokens trade through `SubmitOrder` and the same `Order` action, with no HIP-4-specific call for ordinary orders: upstream `docs/integrations/hyperliquid.md:377-383`. Smoke test states the same purpose: upstream `crates/adapters/hyperliquid/bin/http_outcome_order.rs:16-22`. | Strategy/order path should stay NT-native for ordinary buy/sell. | Prove one no-submit/testnet order lifecycle after pointer update. |
+| E-005 | HIP-4 instruments are modeled as USDH `BinaryOption` side tokens. | SOURCE_PROVEN | Docs: two `BinaryOption` instruments per outcome, USDH settlement/currency registration: upstream `docs/integrations/hyperliquid.md:361-375`. `HyperliquidProductType` includes `Outcome`: upstream `crates/adapters/hyperliquid/src/common/enums.rs:979-1008`. | Bolt config should reference NT instrument IDs and product type, not custom HIP-4 instrument names. | Verify exact Rust API for loading outcome product type from TOML-driven config. |
+| E-006 | HIP-4 settlement and userOutcome support exist upstream, but default settlement path nuance matters. | SOURCE_PROVEN | Docs say venue `Settlement` fills close side-token balances through standard user-fills stream: upstream `docs/integrations/hyperliquid.md:435-450`. Position reconciliation covers `+E`/`#E`: upstream `docs/integrations/hyperliquid.md:452-461`. UserOutcome action types exist: upstream `crates/adapters/hyperliquid/src/common/enums.rs:789-810`. Optional Rust-only settlement polling is disabled by default because venue fills drive settlement: upstream `crates/adapters/hyperliquid/src/config.rs:166-171` and `docs/integrations/hyperliquid.md:955-966`. | Do not write "settlement solved" as a blanket claim; prove chosen path and default behavior. | Lifecycle test matrix: instrument load, order submit, fill report, position report, settlement, userOutcome helper calls. |
+| E-007 | HIP-4 live adapter support is separate from HIP-4 historical backtest-data support. | GAP | Hyperliquid official historical data warns monthly uploads may be missing and only L2 book snapshots plus asset contexts are in the archive; other datasets must be recorded through API: Hyperliquid docs `historical-data` lines 67-69. | HIP-4 can be live-supported while historical execution-quality backtests remain unproven. | Determine whether HIP-4 outcome books/fills appear in official archive, Tardis, or require forward capture. |
+| E-008 | Kalshi adapter support is assumed by instruction; this package does not need to prove or build the adapter. | USER_ASSUMPTION | User instruction: assume the Kalshi adapter is ready because the user is thinking of building it separately. Existing #112 remains related history, but adapter implementation is out of scope for this research package. | Plan from a supported Kalshi adapter premise; spend this package's proof effort on Kalshi data source, historical-fidelity, schema, and source-contract evidence. | Future Kalshi implementation session should prove adapter crate/module, data client, exec client, instruments, account/fill/report surfaces. |
+| E-009 | Kalshi historical API covers markets/candles/trades/fills/orders, but historical L2 orderbook replay is not source-proven. | SOURCE_PROVEN + GAP | Kalshi docs list historical endpoints for cutoff, markets, market candlesticks, trades, fills, and orders: Kalshi Historical Data lines 76-92. Kalshi historical trades endpoint covers trades older than cutoff: Historical Trades lines 157-188. Historical candlesticks support 1m/1h/1d: Historical Market Candlesticks lines 196-198. Current orderbook endpoint is current book only: Market Orderbook lines 191-193. | Kalshi backtests must be labeled by fidelity. Candles/trades/fills are not the same as historical L2 execution replay. | Prove whether the assumed Kalshi adapter exposes archived orderbook deltas/snapshots; otherwise plan forward capture or lower-fidelity class. |
+| E-010 | NT Tardis replay can produce catalog-compatible Parquet for supported crypto venues. | SOURCE_PROVEN | NT Tardis docs map normalized book/trade/quote/bar/instrument/funding formats to NT data types: upstream `docs/integrations/tardis.md:37-52`. Venue mapping includes BYBIT and HYPERLIQUID: upstream `docs/integrations/tardis.md:117-138`. Replay docs write one Parquet per instrument/data/date in catalog-compatible format: upstream `docs/integrations/tardis.md:169-185`; source writes deltas/depths/quotes/trades/bars: upstream `crates/adapters/tardis/src/replay.rs:153-160`, `228-260`, `593-626`. | Tardis is a strong NT-native candidate for venue-agnostic crypto historical replay where venue support, cost, and data classes pass proof gates. | Cost gate plus small replay-to-catalog proof per selected venue. |
+| E-011 | Tardis Professional replay access is strong but expensive; cost is a review lever, not an architecture limiter in this phase. | SOURCE_PROVEN + DECISION_NEEDED | Tardis pricing page shows Perpetuals Professional at `$900/month` with raw replay/Tardis Machine APIs in the visible pricing matrix: Tardis pricing lines 271-363. Tardis docs show raw data replay API and Tardis Machine APIs are only on Professional/Business: Billing docs lines 229-247. | Select the best-fidelity architecture first, then model all-in recurring cost and flag any over-target mode for user review. All Exchanges Professional is materially higher at `$2200/month` before AWS. | Refresh price/license data at provider selection; estimate AWS/dashboard/log/query costs before implementation. |
+| E-012 | Bybit live market data/execution support exists in NT, but venue-specific data-class claims require proof. | SOURCE_PROVEN | NT Bybit docs list data client, execution client, and live factories: upstream `docs/integrations/bybit.md:14-24`. This row proves the live adapter surface, not exact Bybit perp data classes. | Treat Bybit as one venue instance under the same venue-proof contract, not as an architecture anchor. | Verify selected venue product types and exact data classes before venue-specific implementation claims. |
+| E-013 | Polymarket support exists in NT, but full historical coverage has a public API cap caveat. | SOURCE_PROVEN | Bolt pins `nautilus-polymarket`: [Cargo.toml](../../../Cargo.toml:31). Upstream provider loads instruments via Gamma API: upstream `crates/adapters/polymarket/src/providers.rs:35-42`. Execution submitter accepts Nautilus-native types and posts to CLOB: upstream `crates/adapters/polymarket/src/execution/submitter.rs:101-109`. Loader docs source trades from Polymarket Data API and warn high-activity pagination cap can require another historical source: upstream `docs/integrations/polymarket.md:1101-1108`. | Use NT Polymarket first; use third-party historical data only for proven cap/depth gaps. | Decide Telonex/Goldsky/official forward capture after cost/license/fidelity gate. |
+| E-014 | Polymarket official APIs split discovery, data, and CLOB orderbook/pricing/trading. | SOURCE_PROVEN | Polymarket docs list Gamma API for markets/events, Data API for positions/trades/activity/open interest, and CLOB API for orderbook/pricing/price history plus trading: Polymarket Introduction lines 203-228. | Raw evidence store may need multiple Polymarket source families; NT projection must preserve provenance. | Define source-family metadata in raw evidence and lineage. |
+| E-015 | Telonex is a cheap Polymarket historical data candidate for individual use; team/commercial license is not the same price. | SOURCE_PROVEN + DECISION_NEEDED | Telonex docs say Polymarket is active with trades, quotes, book snapshots, onchain fills, crypto prices: Telonex docs lines 39-51. Pricing shows Plus at `$79/month` with personal use license, Enterprise custom with commercial use license: Telonex pricing lines 21-43. | Telonex may fit cap for personal research, but license gate is mandatory before team/production use. | Decide whether personal research is acceptable or request enterprise/commercial quote. |
+| E-016 | Goldsky can support Polymarket on-chain/provenance indexing but is usage-metered. | SOURCE_PROVEN + DECISION_NEEDED | Goldsky docs: Starter free and Scale pay-as-you-go: Goldsky Pricing lines 79-92. Subgraph compute/storage and Mirror/Turbo billing are metered: lines 97-120 and 123-159. | Goldsky is not a blanket "free data lake"; use only when on-chain provenance is needed and run-rate is modeled. | Estimate events/subgraphs/pipelines/storage for selected Polymarket scope. |
+| E-017 | Current live/dashboard truth can start from NT events, reports, and portfolio snapshots. | SOURCE_PROVEN | NT reports generate DataFrames from orders/fills/positions/account states for analysis and visualization: upstream `docs/concepts/reports.md:3-19`, `426-428`. `PortfolioSnapshot` carries mark-to-market totals, unrealized PnL, realized PnL, and total equity: upstream `crates/model/src/events/portfolio/snapshot.rs:31-65`. NT msgbus exposes subscribe/publish portfolio snapshot: upstream `crates/common/src/msgbus/api.rs:469-480`, `1087-1093`. | Dashboard should be read-only and derived from NT reports/events/snapshots, not recompute trading truth independently. | Implement/track capture gap for `PortfolioSnapshot` before claiming dashboard PnL completeness. |
+| E-018 | Bolt currently knows `PortfolioSnapshot` capture is missing. | SOURCE_PROVEN | #409 says `subscribe_portfolio_snapshot` publishes on `events.portfolio.{account_id}`, Bolt does not currently subscribe, and acceptance requires runtime-capture subscription/persistence. Repo YAML also marks `PortfolioSnapshot` JSONL-feasible but not captured: [storage-feasibility.yaml](../../../docs/bolt-v3/research/runtime-capture/storage-feasibility.yaml:93). | Dashboard/current-trade work depends on #409 or an equivalent slice. | Either implement #409 first or make dashboard explicitly omit account-wide MTM until captured. |
+| E-019 | Runtime capture is already local-catalog constrained and covers selected stream classes, but expanding capture has operational risk. | SOURCE_PROVEN | `wire_nt_runtime_capture` ensures local catalog path and creates spool/jsonl paths: [src/nt_runtime_capture.rs](../../../src/nt_runtime_capture.rs:662). Per-instrument stream classes include quotes, trades, order book deltas/depths, index/mark prices, instrument closes, instruments: [src/nt_runtime_capture.rs](../../../src/nt_runtime_capture.rs:353). #148 records inline capture failure can stop the live node and sidecar extraction is deferred. | Comprehensive capture should not be casually expanded inside live trading without failure-mode review. | Decide per-stream whether inline capture is acceptable, sidecar is needed, or provider batch replay is safer. |
+| E-020 | Existing issue coverage is real but not sufficient for a single broad "research platform" issue. | SOURCE_PROVEN | `issue-audit.md` records live issue checks. #24 covers NT-first data lake follow-ons and folds #19, #20, #21, #22, and #23. #34, #75, #88, and #39 cover related strategy/research consumers. #36, #77, #369, and #409 cover PnL/live observability dependencies. #112 covers Kalshi venue integration. #115 covers HIP-4. #127, #254, and #407 constrain Polymarket data/readiness. #148 and #158 constrain capture expansion. #236 is the thin-NT hard-reset epic. | Proposed follow-on issues should be split into shared evidence gates plus future Backtesting Engine, Research Analytics, and Dashboard spec/plan payloads. Runtime runner, read-model, and dashboard implementation issues are deferred until the user approves the relevant vertical plan. | Keep issue map refreshed before any issue mutation. |
+| E-021 | Hyperliquid live data/trading support covers perps in upstream NT docs. | SOURCE_PROVEN | Hyperliquid docs list Perpetual Futures as data feed and trading supported, alongside HIP-3, spot, and HIP-4 outcomes: upstream `docs/integrations/hyperliquid.md:117-125`. | Hyperliquid perps should use NT adapter for live surfaces; historical replay still needs provider/fidelity gate. | Verify exact product-type config and target `bolt-v2` branch support. |
+| E-022 | Official API/archive capture must be source-proven per venue; Bybit is currently not source-proven in this ledger. | GAP | This pass collected NT Bybit adapter evidence and NT Tardis replay evidence, but no official Bybit API/archive source label. | Do not claim official archive/API suitability for any venue until an official-source check is added for that venue. Bybit remains one unresolved instance, not a special architecture path. | Fetch current official API/archive docs for each selected venue before selecting an official capture path. |
+| E-023 | Dashboard "outlook" and strategy-state sources are not yet source-proven as trading truth. | DECISION_NEEDED | User requested current outlook in the dashboard. E-017 proves NT reports/events/snapshots for orders, fills, positions, account state, portfolio state, and PnL, but this ledger has no source proving a dedicated outlook feed or strategy-state event contract. | Dashboard source contract may include an outlook slot only as a read-only derived/decision-needed source until proven. UI MVP must omit it or label it as non-trading-truth if no accepted source exists. | Define source contract and source proof for strategy state/outlook before UI completeness claims. |
+| E-024 | Cost must be modeled all-in, but this research package should not weaken architecture to fit a preliminary budget. | USER_ASSUMPTION + DECISION_NEEDED | User objective originally named a `$1000/month` all-in target, then clarified to first produce the best solution and let the user cut costs later if needed. | Provider selection must expose provider, AWS, dashboard, logs, query, transfer, and reserve components, then mark over-target modes for explicit review instead of silently rejecting stronger data sources. | Produce best-fidelity provider shortlist plus cost scenarios and cut levers. |
+| E-025 | Python/Jupyter is research-only and cannot become the production trading runtime. | SOURCE_PROVEN | Repo rules require a pure Rust binary with no Python layer: [AGENTS.md](../../../AGENTS.md:25). Constitution Principle VII allows research notebooks only as research surfaces and requires productionized strategy behavior to graduate into the production runtime contract: [.specify/memory/constitution.md](../../../.specify/memory/constitution.md:58). | Notebooks may analyze catalogs/results, but they cannot submit, mutate credentials, own strategy truth, or become the live node. | Define promotion gate from notebook finding to typed TOML/NT runtime config before any production use. |
+| E-026 | Venue/product/provider identity is configuration and registry data, not core code. | SOURCE_PROVEN | Constitution Principle II requires venue-agnostic core and says provider keys, market-family keys, strategy archetypes, and NT adapter bindings live only in registry or binding modules selected by TOML: [.specify/memory/constitution.md](../../../.specify/memory/constitution.md:26). Repo rules forbid hardcoded runtime values and require one coherent config section for changing a venue: [AGENTS.md](../../../AGENTS.md:21), [AGENTS.md](../../../AGENTS.md:27). | Research/backtest/dashboard slices must use generic venue gates and TOML-selected bindings. Concrete venue rows are evidence instances, not architecture branches. | Add schema/contract tests that switching a selected venue changes TOML/registry entries only, not core runtime, admission, secret, or dashboard logic. |
+| E-027 | Bolt's selected NT version and manifest enablement are separate gates. | SOURCE_PROVEN + DECISION_NEEDED | The target `bolt-v2` implementation branch selects its NT version through `Cargo.toml` and `Cargo.lock`. That branch's selected NT source may expose crates such as `nautilus-backtest`, `nautilus-hyperliquid`, `nautilus-tardis`, and perps adapters, but Bolt manifest/feature enablement must still be proved in the implementation branch. | Upstream NT support should be used, but each planned surface needs the `bolt-v2`-selected NT version plus manifest/feature proof before implementation. Missing manifest dependency is a build/config gate, not permission to build a Bolt-owned duplicate engine or adapter. | Prove the target branch's selected NT version and direct/indirect crate enablement for `nautilus-backtest`, `nautilus-hyperliquid`, `nautilus-tardis`, and any selected perps adapter before coding. |
+| E-028 | Dashboard/analytics should evaluate existing products before custom UI. | SOURCE_PROVEN + DECISION_NEEDED | Grafana Cloud visualization has free and Pro active-user pricing: https://grafana.com/pricing/ lines 1097-1159. Metabase has Open Source, Starter, Pro, and Enterprise pricing: https://www.metabase.com/pricing-plans/ lines 78-139. Preset Cloud has free Starter, paid Professional, and embedded-dashboard add-on pricing: https://preset.io/pricing/ lines 24-61, 89-141. Apache Superset is an open-source data exploration/dashboard platform: https://superset.apache.org/ lines 44-60. Retool official pricing lists Free/Team/Business/Enterprise tiers for internal app/workflow builders/users and Business controls such as audit logging and permissions: https://retool.com/pricing. Plotly Cloud/Dash pricing includes free, Pro, and custom Enterprise tiers: https://plotly.com/pricing/ lines 34-60, 390-399. | Future Dashboard plan must run a product-fit gate before choosing bespoke UI. Source truth still comes from NT-derived read model; products are view/query surfaces only. | Select Grafana/Metabase/Preset/Superset/Retool/Plotly/custom from source contract, query backend, security, cost, and UX proof. |
+| E-029 | Live credentials must remain AWS SSM-only. | SOURCE_PROVEN | Repo rules require SSM as the single secret source with Rust AWS SDK resolution: [AGENTS.md](../../../AGENTS.md:26). Constitution Principle III says credentials resolve only from AWS SSM through the Rust AWS SDK: [.specify/memory/constitution.md](../../../.specify/memory/constitution.md:32). | Research/backtest/dashboard config may reference credential keys, but live credential resolution must stay in the production Rust SSM path. | Schema and runtime tests must reject environment-variable fallbacks, API-key literals, or alternate secret backends before any live credential use. |
+| E-030 | Additional prediction-market data products are real candidates, but not canonical until schema, license, sample, retention, and NT mapping proof pass. | SOURCE_PROVEN + DECISION_NEEDED | MarketLens docs claim historical order book data/trades/signals plus L2 reconstruction/replay and Parquet exports. PMXT archive claims free hourly Polymarket/Kalshi Parquet orderbook snapshots and shows current hourly files. PolyBackTest docs claim prediction-market data, crypto feeds, historical snapshots, and sub-second backtesting snapshots. PolymarketData claims full historical bids/asks depth, API access, and exports/direct delivery. | These sources expand the candidate set beyond official APIs, Telonex, and Goldsky, but none is selected by prose alone. | Fetch sample data, inspect schema, prove license, prove retention/freshness, and map one sample into NT-compatible classes before selection. |
+| E-031 | Mature OSS quant/research systems separate backtest/live execution, research workflows, and leakage controls; use them as prior art, not implementation dependencies. | SOURCE_PROVEN | Lean exposes research, backtest, optimize, and live CLI modes. Qlib covers data processing, model training, backtesting, alpha seeking, risk modeling, portfolio optimization, and analysis. Freqtrade documents lookahead-bias detection and bias examples. Feast documents point-in-time correct feature sets to avoid leakage. | Future Backtesting Engine, Research Analytics, and Dashboard plans should preserve separate lifecycle gates, reproducible workflows, and point-in-time correctness. | Convert only the relevant patterns into Bolt/NT contracts; do not add these systems as dependencies without a separate decision. |
+| E-032 | NT backtesting exposes enough configurable surfaces that Bolt must classify extension choices instead of blindly accepting or hiding defaults. | SOURCE_PROVEN + DECISION_NEEDED | The NT version selected by the target `bolt-v2` branch must be inspected for `BacktestEngineConfig`, `SimulatedVenueConfig`, `BacktestVenueConfig`, and `BacktestRunConfig` surfaces covering engine, venue simulation, run, data, streaming, state, fill, fee, latency, margin, leverage, routing, liquidity, queue, settlement, and order behavior. | Future Backtesting Engine must be NT-first but not NT-default-only. Each relevant NT/custom surface needs explicit classification as defaulted, pass-through, custom-owned, or unsupported-for-now, with resolved defaults recorded in the run manifest. | Future implementation proof should map one fixture each for a defaulted surface, a pass-through NT config surface, and a custom-owned or unsupported surface; compile the `bolt-v2`-selected NT version before coding. |
+| E-033 | Kimchi premium must be included as a cross-market data-source family. | USER_ASSUMPTION + DECISION_NEEDED | User instruction: include kimchi premium from Korean spot token price data such as Upbit and Bithumb. | Model it as TOML/registry-selected Korean spot price source(s), reference spot/perps price source(s), and FX/quote conversion source(s), not hardcoded venue branches. Treat premium outputs as signal/feature data unless underlying sources prove stronger replay fidelity. | Prove official/free source availability first, then vendor options if needed; record schema, sample, license, event time, availability time, token mapping, FX/reference source, NT/catalog or analytics mapping, fidelity class, and forbidden claims. |
+| E-034 | Canonical raw data, NT catalog, source proofs, and backtest outputs share one S3 artifact root. | USER_ASSUMPTION + DECISION_NEEDED | User decision: raw provider/API/archive payloads and NT `ParquetDataCatalog` are heavy and must be in S3; backtest outputs should use the same storage root instead of separate roots. | Use one TOML/config-owned `artifact_root` S3 URI with typed subpaths such as `raw/`, `nt-catalog/`, `source-proofs/`, and `backtests/`. Do not add separate canonical root knobs for each artifact type. | Define artifact-root schema, typed subpath rules, URI validation, retention/cost assumptions, and tests rejecting hidden local/cwd/temp/sibling-project fallback paths. |
+| E-035 | Artifact lifecycle defaults to retain forever with no automatic deletion. | USER_ASSUMPTION + DECISION_NEEDED | User decision: do not delete canonical artifacts by default; if not needed, archive them to cheaper S3 storage. Treat archive storage under `$5/month` as zero for planning, while restore, minimum-duration, metadata, and retrieval caveats remain explicit. | Configure lifecycle by artifact tags/profiles: `active`, `archive`, and `deep_archive`. Default retention is forever. No lifecycle rule may delete canonical artifacts unless a future explicit manual purge policy is approved. | Define lifecycle tags, transition windows, restore expectations, planning-zero threshold, and cost caveats; tests must reject default delete/expiration rules. |
+| E-036 | `inactive` artifact status is based on configured quiet window, not ad hoc judgment. | USER_ASSUMPTION + DECISION_NEEDED | User decision: keep lifecycle simple: active, quiet window, after quiet window inactive. Future implementation session should define more specific mechanics. | Every canonical artifact starts as `active`. After the configured quiet window passes, it becomes `inactive`. Inactive means eligible for archive/deep-archive transition, not deletion. | Define quiet-window config, timestamp basis, and active-to-inactive transition tests in the future implementation session. |
+| E-038 | Artifact discovery must use a thin manifest/index layer, not recursive S3 listing on the read path. | SOURCE_PROVEN + DECISION_NEEDED | AWS S3 ListObjectsV2 is paginated and returns up to 1,000 keys per request; AWS documents strong read-after-write consistency for S3 operations and conditional writes with `If-None-Match`/`If-Match`. S3 Inventory is an audit/reporting mechanism, not the live discovery path. Iceberg/Delta prior art also uses metadata/snapshot logs to identify files rather than treating object listing as the query interface. | Use artifact-local manifests, immutable index events, committed snapshots, and a generated latest pointer under the same `artifact_root`. JSON/Parquet/`latest.json` are candidate implementation choices, not final format decisions before proof. The layer is a table of contents only, not a warehouse or replacement for NT catalog truth. | Prove configured artifact store supports required conditional-write semantics or select a commit coordinator/table format; define commit point, staged/orphan recovery, hash rules, lifecycle pinning, exact formats, and tests before implementation relies on the index. |
+| E-039 | Artifact Index write ownership follows artifact production; consumers are read-only for upstream artifact records. | USER_ASSUMPTION + DECISION_NEEDED | User decision: Backtesting Engine/source-proof/catalog/backtest producers write index records for artifacts they create; Research Analytics and Dashboard consume upstream artifact records read-only. If Research Analytics later produces derived research artifacts, it may write only those RA-owned artifact records. | The index is a shared table of contents with producer-owned write authority, not a shared mutable registry where consumers can repair or invent upstream records. | Define artifact-kind ownership, producer id, write-authority checks, and tests that reject RA/Dashboard mutation of upstream raw/catalog/source-proof/backtest records. |
+| E-040 | `SourceProofReport` is a Bolt-owned thin gate required before data becomes canonical NT catalog or backtest input. | USER_ASSUMPTION + DECISION_NEEDED | User decision: use `SourceProofReport`, keep it thin, and treat it as ours rather than an NT-provided object. Backtesting Engine/source-proof implementation owns acceptance for catalog/backtest use; acceptance may be automated only when robust schema, sample, license, time/freshness, NT mapping, fidelity, and forbidden-claim checks pass. Accepted reports are immutable and superseded by new proof versions. Old backtests remain historical artifacts; normal new runs use the latest accepted proof; non-latest pins require non-normal `run_purpose` plus structured reason fields. | Require accepted source proof before catalog projection/backtest selection. RA and Dashboard consume the proof pointer, fidelity class, and claim limits rather than re-proving source truth or upgrading fidelity. | Define exact schema during Backtesting Engine implementation and add tests that reject catalog/backtest inputs without accepted source proof, reject unauthorized acceptance, reject downstream proof upgrades, keep ambiguous/failed checks pending or rejected, reject mutation of accepted proof records, enforce latest-proof default for normal runs, and require non-normal purpose plus allowed pin reason code for non-latest proof pins. |
+| E-041 | Backtest results should remain objective evidence; strategy promotion is a separate review workflow. | SOURCE_PROVEN + DECISION_NEEDED | NT `BacktestResult` contains completed-run facts and stats; NT reports generate analytical DataFrames for evaluation. QuantConnect backtest results expose equity, trades, logs, statistics, result files, and separate live deployment/paper-trading workflow. Freqtrade exports backtest reports, strategy/config copies, and further-analysis artifacts. Qlib/MLflow record metrics, params, artifacts, tags, aliases, and registry status as separate lifecycle metadata. | `BacktestResultContract` may carry lookup fields, metrics/report pointers, hashes, fidelity, claim limits, and mechanical blockers. It must not contain a subjective "use/escalate this strategy" recommendation. Research Analytics owns `PromotionPackage` or later review artifacts that decide whether a strategy becomes a candidate. | Define exact objective result fields during Backtesting Engine implementation and exact promotion/review status fields during Research Analytics implementation. Add validation that BTE result contracts do not encode promotion decisions. |
+
+## Immediate Conclusions
+
+1. HIP-4 should be planned as "NT upstream-supported; pointer/update proof needed."
+2. Kalshi should be planned as "adapter supported by user assumption; fidelity
+   proof still required."
+3. Tardis is technically strong for source-proven crypto/perps replay; model
+   its all-in cost after the fidelity case is documented.
+4. Historical-data fidelity must be per venue and per source. Live adapter support
+   does not prove historical L2 replay.
+5. Future Dashboard scope depends on NT-derived capture first, especially #409,
+   #77, and any #36 redemption-realized-PnL scope it chooses to show.
+6. Concrete venues are selected through config/registry gates. Evidence examples
+   must not become hardcoded branches in core runtime, research, or dashboard code.
+7. Future Dashboard UI should use existing BI/observability products when they fit;
+   custom UI requires explicit rejection of product candidates.
+8. Future Backtesting Engine must classify NT/custom extension surfaces before
+   coding; implicit NT defaults are allowed only when materialized in the run
+   manifest with claim limits.
+9. Kimchi premium is a cross-market data-source family for `perps/spot`
+   research/backtesting inputs, but selected Korean spot, reference price, and
+   FX sources remain TOML/registry bindings.
+10. Canonical data and backtest artifacts live under one configured S3
+    `artifact_root` with typed subpaths; local paths are cache only, not source
+    of truth.
+11. Canonical artifacts are retained forever by default. Lifecycle may move them
+    to colder S3 classes, but must not delete them by default.
+12. Artifact lifecycle is simple by default: `active` until the configured quiet
+    window passes, then `inactive`; inactive allows archive transition, not
+    deletion.
+13. Artifact discovery uses a thin manifest/index contract. Normal readers do
+    not recursively list S3 to find artifacts; they use the committed artifact
+    index snapshot reachable from the generated latest pointer.
+14. Artifact Index writes are producer-owned. Consumers may read upstream
+    artifact records and use direct handoff handles, but they must not mutate
+    upstream index truth.
+15. `SourceProofReport` is a thin Bolt-owned proof gate, not an NT object or
+    data store. It is mandatory before canonical catalog/backtest use.
+16. Source proof acceptance for catalog/backtest use belongs to Backtesting
+    Engine/source-proof implementation. RA and Dashboard are read-only proof
+    consumers and cannot upgrade fidelity or forbidden claims.
+17. Accepted source proof records are immutable; changed facts create a new
+    source proof version that supersedes the prior accepted proof.
+18. Superseded proof does not invalidate historical backtests that pinned it.
+    New runs use the latest accepted proof unless the manifest explicitly pins
+    an older accepted proof for reproducibility with an allowed
+    `proof_pin_reason_code`.
+19. `normal` runs cannot pin non-latest proof. Older proof pins are allowed only
+    for `reproduction`, `audit`, `regression`, or `migration` run purpose.
+20. Backtest results are objective evidence artifacts. Strategy escalation
+    decisions belong to Research Analytics promotion/review artifacts, not the
+    `BacktestResultContract`.
+
+## Project Trace
+
+| Project / requirement area | Evidence rows | Status for planning |
+|---|---|---|
+| Root shared evidence and claim classification | This ledger | SOURCE_PROVEN process requirement |
+| Root cost review and provider fidelity gates | E-007, E-009, E-010, E-011, E-013, E-015, E-016, E-021, E-022, E-024, E-028, E-030 | SOURCE_PROVEN need; GAP/DECISION_NEEDED per venue/provider |
+| Root TOML/registry identity and SSM live-secret boundary | E-026, E-027, E-029 | SOURCE_PROVEN repo rule and constitution boundary; manifest proof pending |
+| `1-backtesting-engine` project evidence table | E-001, E-002, E-003, E-004, E-005, E-006, E-007, E-008, E-009, E-010, E-011, E-012, E-013, E-015, E-016, E-021, E-022, E-024, E-026, E-027, E-029, E-030, E-032, E-033, E-034, E-035, E-036, E-038, E-039, E-040, E-041 | SOURCE_PROVEN NT basis; GAP/DECISION_NEEDED for target `bolt-v2` NT version, source fidelity, provider, execution model, artifact storage schema, lifecycle policy, artifact index commit semantics, producer-owned index writes, mandatory thin source proof, and objective result contracts |
+| `2-research-analytics` project evidence table | E-002, E-014, E-015, E-016, E-017, E-020, E-024, E-025, E-026, E-029, E-030, E-031, E-033, E-034, E-035, E-036, E-038, E-039, E-040, E-041 | SOURCE_PROVEN boundary and prior-art pattern; DECISION_NEEDED for selected data products, cost refresh, cross-market feature source proof, storage pointers, lifecycle policy, artifact index consumption/write boundaries, source-proof consumption, promotion review ownership, and query/read-model tooling |
+| `3-dashboard` project evidence table | E-017, E-018, E-019, E-020, E-023, E-024, E-026, E-028, E-029, E-031, E-034, E-035, E-036, E-038, E-039, E-040, E-041 | SOURCE_PROVEN source basis; DECISION_NEEDED for product path, artifact pointers, lifecycle display/restore status, source-proof/claim-limit display, read-only artifact index consumption, promotion-status display boundaries, and PnL completeness prerequisites |
+| Existing issue lookup before mutation | E-020 | SOURCE_PROVEN |

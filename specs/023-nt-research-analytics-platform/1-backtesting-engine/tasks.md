@@ -1,0 +1,44 @@
+# Tasks: Backtesting Engine
+
+- [ ] BTE-001 Use the NT version resolved by the target `bolt-v2` branch and prove required `nautilus-backtest` crate/feature enablement.
+- [ ] BTE-002 Define `BacktestingRunManifest` obligations and validation rules, including source proof id/version, `run_purpose`, latest accepted proof default for `normal`, explicit older-proof pin for non-normal reproducibility/audit/comparison runs with required `proof_pin_reason_code` and conditional `proof_pin_reason_detail`, and deferred future currentness-rule slots for NT version, strategy config hash, catalog hash, manifest schema, and execution model.
+- [ ] BTE-003 Define `binary option` and `perps/spot` proof fixtures, with concrete venue/provider selected only through TOML/registry bindings.
+- [ ] BTE-004 Define one S3 `artifact_root` config with typed subpaths `raw/`, `nt-catalog/`, `source-proofs/`, `backtests/`, and `artifact-index/`; reject separate canonical root knobs.
+- [ ] BTE-005 Define the thin Artifact Index Contract for artifact-local manifests, immutable index events, committed snapshots, generated latest pointer, producer-owned write authority, read-only consumers, staged/orphan state, content hashes, and no recursive S3 discovery on the normal read path; treat JSON, Parquet, and `latest.json` as candidate implementation choices until proof selects exact formats and names.
+- [ ] BTE-006 Prove the configured artifact store supports create-only writes and conditional latest-pointer updates required by the Artifact Index commit path, or select an approved commit coordinator/table format before relying on the index.
+- [ ] BTE-007 Prove the resolved `bolt-v2` NT dependency can read/write/query a small multi-instrument `ParquetDataCatalog` fixture from the configured S3 `artifact_root`, including required `nautilus-persistence` crate features and storage options; if not supported, document the supported staging path before implementation relies on direct S3 catalog access.
+- [ ] BTE-008 Define artifact lifecycle config with retain-forever default, disabled delete/expiration, `active`/`archive`/`deep_archive` storage profiles, quiet window, active-to-inactive transition, and active storage for the hot Artifact Index pointer/current snapshot path.
+- [ ] BTE-009 Map manifest obligations to NT `BacktestRunConfig`, `BacktestDataConfig`, and `BacktestVenueConfig`.
+- [ ] BTE-010 Build `BacktestExtensionSurface` matrix covering `defaulted`, `pass_through`, `custom_owned`, and `unsupported_for_now`.
+- [ ] BTE-011 Record classification for engine, venue simulation, run, catalog, strategy, actor/execution-algorithm, risk, portfolio, execution, cache, message bus, streaming, fill, fee, latency, margin, leverage, queue, liquidity, settlement, and order-behavior surfaces.
+- [ ] BTE-012 Implement resolved-default materialization into the run manifest.
+- [ ] BTE-013 Define strategy source validation for existing compiled Rust strategies, human-written typed config, and future Research Analytics promotion packages.
+- [ ] BTE-014 Reject inline strategy code, notebook runtime code, Python strategy paths, and untracked config blobs.
+- [ ] BTE-015 Define thin `SourceProofReport` schema for each market-structure fixture: official/free candidates checked first, paid/vendor candidates checked only after insufficient fidelity, forward-capture status when no usable history exists, historical order-book snapshot/delta availability, retention/freshness, schema, sample pointer, license, NT data-class mapping, cross-market reference/FX proof when applicable, fidelity class, forbidden claims, cost, source_proof_version, supersedes_source_proof_id, selection status, accepted_by/accepted_at, acceptance_mode, required-check results, immutable accepted records, and no heavy raw/catalog/result payload storage.
+- [ ] BTE-016 Populate `SourceProofReport` for the `binary option` fixture before selecting any provider.
+- [ ] BTE-017 Populate `SourceProofReport` for the `perps/spot` fixture before selecting any provider, including kimchi-premium Korean spot/reference/FX source proof when that signal family is selected.
+- [ ] BTE-018 Shortlist candidate sources from completed source-proof reports only; do not select a provider from prose or venue examples.
+- [ ] BTE-019 Reject canonical NT catalog input and backtest input unless an accepted `SourceProofReport` exists for the source binding, fixture, fidelity class, claim limits, Backtesting Engine/source-proof acceptance authority, and passing required-check results; default `normal` runs to latest accepted proof and allow non-latest pins only for non-normal `run_purpose` with allowed `proof_pin_reason_code` and required detail for `audit_or_investigation`.
+- [ ] BTE-020 Prove license and commercial/personal-use boundary for each shortlisted source.
+- [ ] BTE-021 Fetch or inspect representative sample data for each shortlisted source.
+- [ ] BTE-022 Prove shortlisted source samples map to NT-compatible catalog classes and `ParquetDataCatalog` input path.
+- [ ] BTE-023 Verify Kalshi historical endpoints and confirm whether archived orderbook snapshots/deltas exist or downgrade to `TRADE_BAR_REPLAY`/`SIGNAL_ONLY`.
+- [ ] BTE-024 Assign fidelity class and forbidden claims for each shortlisted source.
+- [ ] BTE-025 Use L2 order-book data when source proof passes, and cap weaker-data results with explicit non-execution-quality claim limits.
+- [ ] BTE-026 Estimate subscription, AWS storage/compute/transfer, query/log, and reserve costs for backtesting data and replay.
+- [ ] BTE-027 Select source only after source proof, license, sample, NT mapping, fidelity, and cost proof are recorded.
+- [ ] BTE-028 Present cost-cut levers only after fidelity and source-contract claims are explicit.
+- [ ] BTE-029 Implement NT `BacktestNode` orchestration without custom simulation behavior.
+- [ ] BTE-030 Emit objective `BacktestResultContract` with NT pointer, source hashes, source proof id/version, run purpose, fidelity, claim limits, warnings/mechanical blockers, and final artifact URIs, without strategy promotion or escalation recommendations.
+- [ ] BTE-031 Finalize exact `BacktestResultContract` field schema after inspecting selected NT output shape, and add validation that BTE result contracts cannot encode subjective strategy-promotion decisions.
+- [ ] BTE-032 Add tests for TOML-only venue/provider swaps.
+- [ ] BTE-033 Add tests that reject lower-fidelity execution-quality claims, unauthorized source-proof acceptance/upgrades, accepted proof mutation, and automated acceptance when any required schema/sample/license/time/fidelity/mapping/forbidden-claim check is missing, ambiguous, expired, or failed.
+- [ ] BTE-034 Add tests for unsupported extension-surface fail-fast behavior.
+- [ ] BTE-035 Add tests for S3 `artifact_root` typed-subpath resolution, same-root backtest output prefix override, unsupported scheme rejection, hidden local fallback rejection, and direct NT S3 catalog access only after crate-feature proof passes.
+- [ ] BTE-036 Add Artifact Index tests for conditional pointer update retry/rebase, stale or hash-invalid latest pointer, staged/orphan event recovery, immutable idempotent producer-owned events, rejection of consumer mutation for upstream records, no recursive S3 discovery on the normal read path, and active storage for the hot index path.
+- [ ] BTE-037 Add tests that artifact lifecycle config rejects default delete/expiration rules and follows configured quiet-window active-to-inactive transition.
+- [ ] BTE-038 Add tests that kimchi-premium source proof rejects hardcoded Korean venue names and future-leaking reference/FX joins.
+- [ ] BTE-039 Link/update issue dependencies named in `spec.md` before implementation review.
+- [ ] BTE-040 Run Rust fmt, clippy/build/test checks required by the future implementation branch.
+- [ ] BTE-041 Finalize exact manifest TOML schema after every manifest obligation maps to NT config fields, including the deferred currentness rules for NT version, strategy config hash, catalog hash, manifest schema, and execution model.
+- [ ] BTE-042 Add tests that fail when manifest-to-NT mapping omits a required field.

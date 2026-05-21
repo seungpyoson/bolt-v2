@@ -1,6 +1,6 @@
-# Existing Issue Audit: NT-First Research Analytics Platform
+# Existing Issue Audit: NT-First Research Planning Package
 
-Date: 2026-05-20
+Date: 2026-05-21
 Remote: `https://github.com/seungpyoson/bolt-v2.git`
 
 Purpose: prove existing GitHub issue state before proposing new
@@ -9,6 +9,8 @@ create, close, or mutate issues.
 
 ## Live Checks Run
 
+- `gh issue list --repo seungpyoson/bolt-v2 --state all --limit 500 --json number,title,state`
+  refreshed the issue-state map on 2026-05-21.
 - `gh issue view 19 --repo seungpyoson/bolt-v2`
 - `gh issue view 20 --repo seungpyoson/bolt-v2`
 - `gh issue view 21 --repo seungpyoson/bolt-v2`
@@ -45,16 +47,16 @@ create, close, or mutate issues.
 
 | Issue | State | Relation |
 |---|---:|---|
-| #19 Data lake lineage metadata | OPEN | Raw evidence/catalog lineage. Research runner should reuse or link. |
+| #19 Data lake lineage metadata | OPEN | Raw evidence/catalog lineage. Future vertical plans should reuse or link. |
 | #20 Canonical normalized lake layout | OPEN | Athena/DuckDB layout. Provider gate must not redefine layout. |
 | #21 Normalized resolutions with provenance | OPEN | Resolution history source for analytics and redemption/PnL context. |
 | #22 Versioned normalized markets dimension | OPEN | Market dimension lineage. Provider gate must not duplicate. |
 | #23 NT instrument stream spool bridge | OPEN | Instrument/catalog completeness dependency. |
 | #24 NT-first data lake follow-on epic | OPEN | Parent data-lake scope. |
-| #34 Flexible Polymarket strategy platform | OPEN | Strategy consumer; research runner must not silently broaden it. |
+| #34 Flexible Polymarket strategy platform | OPEN | Strategy consumer; future Backtesting Engine and Research Analytics plans must not silently broaden it. |
 | #36 Auto redemption with realized PnL updates | OPEN | Dashboard must include or explicitly exclude redemption-realized-PnL. |
 | #39 Adaptive venue weighting | OPEN | Future analytics consumer, not baseline platform prerequisite. |
-| #75 Offline verified allowlist/research participation | OPEN | Related research workflow; do not fold into generic research runner without explicit scope. |
+| #75 Offline verified allowlist/research participation | OPEN | Related research workflow; do not fold into a generic analytics plan without explicit scope. |
 | #77 Trade-history/PnL durable path | OPEN | Historical PnL dashboard dependency. |
 | #88 Deferred Phase 1 strategy-platform reconciliation | OPEN | PnL/strategy reconciliation context; dashboard must not claim to close it. |
 | #112 Kalshi venue integration | OPEN | Kalshi proof payload should update or depend on it. |
@@ -82,15 +84,18 @@ create, close, or mutate issues.
 | `Tardis` | none | Provider cost/fidelity gate appears new; still link #158/#24 if capture/data-lake scope overlaps. |
 | `Telonex` | none | Provider cost/fidelity gate appears new; still link Polymarket data/fidelity issues if selected. |
 | `Goldsky` | none | Provider cost/fidelity gate appears new; still link resolution/provenance and on-chain data issues if selected. |
-| `backtest` | no direct backtesting-platform issue | NT backtest/research runner payload appears new; must depend on existing data-lake and provider gates. |
-| `dashboard` | no direct dashboard MVP issue | Dashboard source contract and MVP payloads appear new; must depend on #409/#77/#36 decisions and link #369 as production-readiness non-closure context. |
-| `research analytics` | #158, #24, #176 | Confirms market-data collector and data-lake overlap; no direct NT research-platform issue found. |
+| `backtest` | no direct backtesting-platform issue | Future Backtesting Engine spec/plan appears new; implementation runner is deferred until that vertical is approved. |
+| `dashboard` | no direct dashboard implementation issue | Future Dashboard spec/plan and source contract appear new; implementation is deferred and must depend on #409/#77/#36 decisions plus #369 non-closure context. |
+| `research analytics` | #158, #24, #176 | Confirms market-data collector and data-lake overlap; no direct Research Analytics spec/plan issue found. |
 
 ## Required Adjustments Before Issue Creation
 
 - Add #158 to provider/source capture relations.
 - Add #407, #127, and #254 to Polymarket data/fidelity relations.
-- Keep Tardis, Telonex, Goldsky, generic backtest runner, and dashboard payloads
-  as proposed new slices unless later issue search finds direct duplicates.
+- Keep Tardis, Telonex, Goldsky, shared source-contract gates, Backtesting
+  Engine spec/plan, Research Analytics spec/plan, and Dashboard spec/plan as
+  proposed new slices unless later issue search finds direct duplicates.
+- Do not propose runtime runner, analytics read-model, or dashboard
+  implementation issues until the user approves the relevant vertical plan.
 - Do not mutate #112, #115, #158, #407, #409, or any other issue without
   explicit user approval.

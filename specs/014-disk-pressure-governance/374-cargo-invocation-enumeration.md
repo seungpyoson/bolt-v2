@@ -186,6 +186,6 @@ These are not implementation steps yet. They are the minimum red-test seams impl
 #374 implementation remains blocked until:
 
 1. This enumeration is reviewed for gaps and overlaps.
-2. The live #374 body contains or links to the pinned enumeration, per #374 acceptance update.
+2. T012 records that the live #374 body contains or links to the pinned enumeration, per #374 acceptance update.
 3. External/adversarial reviewers agree it covers the newly added `cargo clean` residual.
 4. No implementation code has been changed before T013/T014 RED.

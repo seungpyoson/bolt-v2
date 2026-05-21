@@ -1792,14 +1792,19 @@ def assert_v6_red_wrapped_renamed_cargo_launches_are_classified() -> None:
     owner = load_owner_module()
     commands = [
         "time /tmp/c build",
+        "time -apv /tmp/c test",
         "command /tmp/c test",
         "exec /tmp/c clean",
         "nohup /tmp/c build",
         "setsid /tmp/c build",
+        "setsid -fw /tmp/c build",
         "taskset -c 0 /tmp/c build",
         "ionice -c2 /tmp/c build",
+        "ionice -tc2 /tmp/c build",
         "chrt -r 10 /tmp/c build",
         "xargs /tmp/c build",
+        "bash -c 'sleep 10 && /tmp/c test'",
+        "bash -c 'echo ok ; /tmp/c build'",
     ]
     misses: list[str] = []
     for command in commands:
@@ -1857,9 +1862,39 @@ def assert_v6_red_active_process_parser_fails_closed_for_unscoped_wrapped_rust_w
         )
 
 
+def assert_v6_red_active_process_fails_closed_for_attached_semicolon_shell_chains() -> None:
+    owner = load_owner_module()
+    original_run = owner.subprocess.run
+    original_process_cwd = owner.process_cwd
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="424242 bash -c 'if true; then /tmp/c build; fi'\n",
+            stderr="",
+        )
+
+    owner.subprocess.run = fake_run
+    owner.process_cwd = lambda pid: None
+    try:
+        try:
+            owner.active_related_processes(
+                pathlib.Path("/tmp/repo"),
+                pathlib.Path("/tmp/repo/target"),
+                {"cache": {"active_process_patterns": ["cargo", "rustc", "rust_verification.py"]}},
+            )
+        except owner.ProcessVisibilityError:
+            return
+        raise AssertionError("attached-semicolon renamed Cargo shell chain returned clean process visibility")
+    finally:
+        owner.subprocess.run = original_run
+        owner.process_cwd = original_process_cwd
+
+
 def assert_v6_red_active_process_parser_ignores_unscoped_opaque_build_without_cwd() -> None:
     failures: list[str] = []
-    for command in ("make build", "python -m build"):
+    for command in ("make build", "python -m build", "/usr/bin/make build", "/tmp/build-tool test"):
         result, debug_file_exists = cache_prune_for_visible_command(command, expose_cwd=False)
         if result.returncode != 0 or debug_file_exists:
             failures.append(
@@ -2481,6 +2516,7 @@ def assert_v6_red_policy_gaps() -> None:
         assert_v6_red_wrapped_renamed_cargo_launches_are_classified,
         assert_v6_red_active_process_parser_uses_command_scope_without_cwd,
         assert_v6_red_active_process_parser_fails_closed_for_unscoped_wrapped_rust_without_cwd,
+        assert_v6_red_active_process_fails_closed_for_attached_semicolon_shell_chains,
         assert_v6_red_active_process_parser_ignores_unscoped_opaque_build_without_cwd,
         assert_v6_red_active_process_parser_does_not_treat_trustd_as_rust,
         assert_v6_red_managed_cargo_clean_refuses_active_process,

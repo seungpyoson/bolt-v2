@@ -1266,6 +1266,30 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo install S3 install root must be classified",
         ),
         (
+            "/tmp/c build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "timeout 30 /tmp/c build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "/tmp/c install cargo-deny --root s3://bolt-v2-active-cache/install-root",
+            "cargo install S3 install root must be classified",
+        ),
+        (
+            "/tmp/c --config build.target-dir=/tmp/raw-target check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "alias c=cargo; c build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "alias c=cargo\nc build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
             "cargo --config=build.target-dir=/tmp/raw-target check",
             "cargo --config build.target-dir raw target override must be classified",
         ),
@@ -1315,6 +1339,26 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "aws s3 sync target s3://some-bucket/linux-cache",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'env:\n  DEST: s3://bucket/cache\nsteps:\n  - run: aws s3 sync target "$DEST"',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'env:\n  DEST: s3://bucket/cache\nsteps:\n  - run: aws s3 sync target "${{ env.DEST }}"',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'echo "DEST=s3://bucket/cache" >> "$GITHUB_ENV"\naws s3 sync target "$DEST"',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'DEST="s3://bolt-v2-active-cache/target"\naws s3 sync target "$DEST"',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'SRC="s3://bolt-v2-active-cache/target"\naws s3 sync "$SRC" target',
             "S3 active mutable target cache must be rejected",
         ),
         (
@@ -1472,8 +1516,34 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         errors = verifier.verify_text(workflow_with_detector_probe(script), BASE_ACTION, BASE_NEXTEST_CONFIG)
         if not any(fragment in error for error in errors):
             misses.append(f"{fragment!r}: errors={errors!r}")
+    false_positive = "alias c=cargo; echo c build --target-dir /tmp/raw-target"
+    errors = verifier.raw_rust_storage_errors(false_positive)
+    if "cargo --target-dir raw target override must be classified" in errors:
+        misses.append(f"non-executed alias text was classified: errors={errors!r}")
+    for false_positive in ("/usr/bin/make build", "/tmp/build-tool test"):
+        errors = verifier.raw_rust_storage_errors(false_positive)
+        if any("raw target override" in error or "raw Cargo drift" in error for error in errors):
+            misses.append(f"path command was classified as raw cargo: {false_positive!r} errors={errors!r}")
     if misses:
         raise AssertionError("raw/unmanaged Rust storage policy gaps were silent: " + "; ".join(misses))
+
+
+def assert_v6_red_renamed_path_cargo_source_builds_are_reported() -> None:
+    verifier = load_verifier()
+    cases = [
+        (
+            "/tmp/c install cargo-deny --root s3://bolt-v2-active-cache/install-root",
+            "repo automation must not compile cargo-deny from source",
+        ),
+        (
+            "timeout 30 /tmp/c install cargo-nextest --version 0.9.132 --locked",
+            "repo automation must not compile cargo-nextest from source",
+        ),
+    ]
+    for text, expected in cases:
+        errors = verifier.repo_automation_source_build_errors(text)
+        if expected not in errors:
+            raise AssertionError(f"{text!r}: expected {expected!r}, got {errors!r}")
 
 
 def workflow_with_exact_head_governance_cache_inputs(workflow: str) -> str:
@@ -1541,6 +1611,11 @@ commands:
   shellaliasclippy: bash -lc 'alias c=clippy; c --all-targets'
   shellaliasnextest: bash -lc 'alias c=nextest; c run'
   shellaliasrustc: bash -lc 'alias c=rustc; c --crate-name bolt_v2'
+  shellaliastime: bash -lc 'alias c=cargo; time c test'
+  shellaliasnice: bash -lc 'alias c=clippy; nice c --all-targets'
+  renamedcargo: /tmp/c build
+  timerenamedcargo: time /tmp/c build
+  xargsrenamedcargo: xargs /tmp/c build
   wrapped: command cargo fmt --check
   stdbufwrap: stdbuf -oL cargo build
   catchsegvwrap: catchsegv cargo test
@@ -1617,6 +1692,11 @@ commands: { test: "cargo test" }
         "shellaliasclippy",
         "shellaliasnextest",
         "shellaliasrustc",
+        "shellaliastime",
+        "shellaliasnice",
+        "renamedcargo",
+        "timerenamedcargo",
+        "xargsrenamedcargo",
         "wrapped",
         "stdbufwrap",
         "catchsegvwrap",
@@ -1707,6 +1787,7 @@ def assert_v6_red_exact_head_governance_inputs_are_cache_keyed() -> None:
 def assert_v6_red_workflow_policy_gaps() -> None:
     checks = [
         assert_v6_red_raw_rust_storage_overrides_are_reported,
+        assert_v6_red_renamed_path_cargo_source_builds_are_reported,
         assert_v6_red_no_mistakes_raw_cargo_is_reported,
         assert_v6_red_exact_head_governance_inputs_are_cache_keyed,
     ]
@@ -1745,6 +1826,8 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "justfile": "check:\n    CARGO_TARGET_DIR=/tmp/raw cargo check\n",
             "justfile.setup": "setup:\n    cargo install cargo-nextest --version 0.9.132 --locked\n",
             "justfile.setup.absolute": "setup:\n    /usr/bin/cargo install cargo-nextest --version 0.9.132 --locked\n",
+            "justfile.setup.timeout": "setup:\n    timeout 30 cargo install cargo-deny --version 0.18.2\n",
+            "justfile.setup.xargs": "setup:\n    xargs cargo install cargo-nextest\n",
             "scripts/local.sh": "aws s3 sync \"$PWD\"/target s3://some-bucket/linux-cache\n",
             "scripts/workspace.sh": "aws s3 sync \"$GITHUB_WORKSPACE\" s3://some-bucket/workspace\n",
             "scripts/s3api.sh": "aws s3api put-object --bucket b --key target/debug/lib --body target/debug/lib\n",
@@ -1764,6 +1847,12 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"justfile cargo-install drift was silent: {repo_errors!r}")
     if not any("justfile.setup.absolute" in error and expected in error for error in repo_errors):
         raise AssertionError(f"absolute cargo-install drift was silent: {repo_errors!r}")
+    expected = "repo automation must not compile cargo-deny from source"
+    if not any("justfile.setup.timeout" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"wrapped cargo-deny install drift was silent: {repo_errors!r}")
+    expected = "repo automation must not compile cargo-nextest from source"
+    if not any("justfile.setup.xargs" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"wrapped cargo-nextest install drift was silent: {repo_errors!r}")
     expected = "S3 active mutable target cache must be rejected"
     if not any("scripts/local.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script raw-storage drift was silent: {repo_errors!r}")

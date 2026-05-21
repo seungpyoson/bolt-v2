@@ -928,6 +928,21 @@ ENV_OPTIONS_WITHOUT_ARGUMENT = {
 TIME_OPTIONS_WITH_ARGUMENT = {"-f", "-o", "--format", "--output"}
 TIME_OPTIONS_WITHOUT_ARGUMENT = {"-a", "-p", "-v", "--append", "--portability", "--verbose"}
 SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")"}
+CARGO_PROCESS_SUBCOMMANDS = {
+    "bench",
+    "build",
+    "check",
+    "clean",
+    "clippy",
+    "doc",
+    "fetch",
+    "fmt",
+    "install",
+    "nextest",
+    "run",
+    "rustc",
+    "test",
+}
 
 
 def consume_assignment_words(tokens: list[str], index: int) -> int:
@@ -1022,6 +1037,11 @@ def command_prefix_allows_cargo(prefix: list[str]) -> bool:
             index += 1
             if index < len(prefix) and prefix[index] == "--":
                 index += 1
+        elif token in {"catchsegv", "chrt", "exec", "ionice", "nohup", "setsid", "stdbuf", "taskset", "timeout", "xargs"}:
+            inner = wrapper_inner_tokens(prefix[index:])
+            if inner is None:
+                return False
+            index = len(prefix) - len(inner)
         else:
             return False
         if index is None:
@@ -1098,10 +1118,65 @@ def cargo_install_source_build_tools(tokens: list[str], command_index: int) -> s
     return tools
 
 
+def cargo_install_source_build_tools_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
+    if not tokens or depth > 6:
+        return set()
+    tools: set[str] = set()
+    if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
+        segment: list[str] = []
+        for token in tokens:
+            if token in SHELL_COMMAND_BOUNDARIES:
+                tools.update(cargo_install_source_build_tools_from_tokens(segment, depth=depth + 1))
+                segment = []
+                continue
+            segment.append(token)
+        tools.update(cargo_install_source_build_tools_from_tokens(segment, depth=depth + 1))
+        return tools
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index:
+        return cargo_install_source_build_tools_from_tokens(tokens[assignment_index:], depth=depth + 1)
+    executable = pathlib.Path(tokens[0]).name
+    if executable in ("bash", "dash", "fish", "sh", "zsh"):
+        nested = shell_command(tokens)
+        if nested is None:
+            return tools
+        return cargo_install_source_build_tools_from_tokens(command_tokens(nested), depth=depth + 1)
+    if executable in {
+        "catchsegv",
+        "chrt",
+        "command",
+        "doas",
+        "exec",
+        "ionice",
+        "nice",
+        "nohup",
+        "setsid",
+        "stdbuf",
+        "sudo",
+        "taskset",
+        "time",
+        "timeout",
+        "xargs",
+    }:
+        inner = wrapper_inner_tokens(tokens)
+        if inner is not None:
+            return cargo_install_source_build_tools_from_tokens(inner, depth=depth + 1)
+        return tools
+    if executable == "cargo":
+        command_index = consume_cargo_global_options(tokens, 1)
+        if command_index < len(tokens) and tokens[command_index] == "install":
+            tools.update(cargo_install_source_build_tools(tokens, command_index))
+    elif path_invocation_has_cargo_subcommand(tokens):
+        command_index = consume_cargo_global_options(tokens, 1)
+        if command_index < len(tokens) and tokens[command_index] == "install":
+            tools.update(cargo_install_source_build_tools(tokens, command_index))
+    return tools
+
+
 def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
     tools: set[str] = set()
     for line in text.replace("\\\n", " ").splitlines():
-        if "cargo" not in line or "install" not in line:
+        if "install" not in line:
             continue
         lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
@@ -1109,6 +1184,7 @@ def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
             tokens = list(lexer)
         except ValueError:
             continue
+        tools.update(cargo_install_source_build_tools_from_tokens(tokens))
         for index, token in enumerate(tokens[:-1]):
             if executable_name(token) != "cargo":
                 continue
@@ -1206,6 +1282,19 @@ def rustup_run_inner_tokens(tokens: list[str]) -> list[str]:
 
 def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
     executable = pathlib.Path(tokens[0]).name if tokens else ""
+    if executable == "command":
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                return tokens[index + 1 :]
+            if token == "-p":
+                index += 1
+                continue
+            if token in ("-v", "-V"):
+                return []
+            return tokens[index:]
+        return []
     if executable in {"sudo", "doas"}:
         index = consume_option_prefix(
             tokens,
@@ -1249,8 +1338,133 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
                 continue
             return tokens[index:]
         return []
-    if executable == "catchsegv":
+    if executable in {"catchsegv", "exec", "nohup"}:
         return tokens[1:]
+    if executable == "time":
+        index = consume_option_prefix(tokens, 1, TIME_OPTIONS_WITH_ARGUMENT, TIME_OPTIONS_WITHOUT_ARGUMENT)
+        return tokens[index:] if index is not None else None
+    if executable == "setsid":
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                return tokens[index + 1 :]
+            if token in ("-c", "--ctty", "-f", "--fork", "-w", "--wait"):
+                index += 1
+                continue
+            if token.startswith("-") and not token.startswith("--") and set(token[1:]) <= {"c", "f", "w"}:
+                index += 1
+                continue
+            return tokens[index:]
+        return []
+    if executable == "taskset":
+        index = 1
+        cpu_list_mode = False
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                return tokens[index + 1 :]
+            if token in ("-c", "--cpu-list") and index + 1 < len(tokens):
+                index += 2
+                cpu_list_mode = True
+                continue
+            if token.startswith("--cpu-list=") or re.fullmatch(r"-c.+", token):
+                index += 1
+                cpu_list_mode = True
+                continue
+            if token in ("-a", "--all-tasks"):
+                index += 1
+                continue
+            if token in ("-p", "--pid"):
+                return []
+            if token.startswith("-"):
+                index += 1
+                continue
+            if not cpu_list_mode:
+                index += 1
+            return tokens[index:]
+        return []
+    if executable == "ionice":
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                return tokens[index + 1 :]
+            if token in ("-c", "--class", "-n", "--classdata") and index + 1 < len(tokens):
+                index += 2
+                continue
+            if token.startswith(("--class=", "--classdata=")) or re.fullmatch(r"-[cn].+", token):
+                index += 1
+                continue
+            if token in ("-p", "--pid"):
+                return []
+            if token in ("-t", "--ignore"):
+                index += 1
+                continue
+            if token.startswith("-") and not token.startswith("--"):
+                cluster = token[1:]
+                if cluster and (set(cluster) <= {"t"} or re.fullmatch(r"t*[cn].+", cluster)):
+                    index += 1
+                    continue
+            return tokens[index:]
+        return []
+    if executable == "chrt":
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                index += 1
+                break
+            if token in ("-p", "--pid"):
+                return []
+            if token in ("-T", "--sched-runtime", "-P", "--sched-period", "-D", "--sched-deadline") and index + 1 < len(tokens):
+                index += 2
+                continue
+            if token.startswith(("--sched-runtime=", "--sched-period=", "--sched-deadline=")):
+                index += 1
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            break
+        if index < len(tokens):
+            index += 1
+        return tokens[index:]
+    if executable == "xargs":
+        options_with_argument = {
+            "-a",
+            "--arg-file",
+            "-d",
+            "--delimiter",
+            "-E",
+            "-I",
+            "-L",
+            "-n",
+            "--max-args",
+            "-P",
+            "--max-procs",
+            "-s",
+            "--max-chars",
+        }
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                return tokens[index + 1 :]
+            if token in options_with_argument and index + 1 < len(tokens):
+                index += 2
+                continue
+            if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
+                index += 1
+                continue
+            if re.fullmatch(r"-(?:a|d|E|I|L|n|P|s).+", token):
+                index += 1
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            return tokens[index:]
+        return []
     starters = {
         "bash",
         "catchsegv",
@@ -1465,6 +1679,12 @@ def simple_cargo_aliases(tokens: list[str]) -> set[str]:
     return aliases
 
 
+def expand_cargo_aliases(tokens: list[str], aliases: set[str]) -> list[str]:
+    if not aliases:
+        return tokens
+    return ["cargo" if token in aliases else token for token in tokens]
+
+
 def no_mistakes_inner_tokens(tokens: list[str]) -> list[str] | None:
     for index, token in enumerate(tokens):
         if token == "--":
@@ -1478,12 +1698,23 @@ def raw_rust_tool_token(name: str) -> bool:
     )
 
 
-def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
+def path_executable_looks_like_cargo(token: str) -> bool:
+    return "/" in token and (pathlib.Path(token).name == "c" or raw_rust_tool_token(pathlib.Path(token).name))
+
+
+def path_invocation_has_cargo_subcommand(tokens: list[str]) -> bool:
+    if not tokens or not path_executable_looks_like_cargo(tokens[0]):
+        return False
+    command_index = consume_cargo_global_options(tokens, 1)
+    return command_index < len(tokens) and tokens[command_index] in CARGO_PROCESS_SUBCOMMANDS
+
+
+def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_only: bool = True) -> bool:
     if not tokens:
         return False
     if depth > 6:
         return True
-    if tokens_have_target_routing_override(tokens):
+    if allow_storage_only and tokens_have_target_routing_override(tokens):
         return True
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
@@ -1494,44 +1725,60 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
                     cargo_aliases.update(simple_cargo_aliases(segment))
                     segment = []
                     continue
-                if segment and segment[0] in cargo_aliases:
-                    segment = ["cargo", *segment[1:]]
-                if segment and tokens_have_raw_cargo(segment, depth=depth + 1):
+                segment = expand_cargo_aliases(segment, cargo_aliases)
+                if segment and tokens_have_raw_cargo(segment, depth=depth + 1, allow_storage_only=allow_storage_only):
                     return True
                 segment = []
                 continue
             segment.append(token)
         if segment and segment[0] == "alias":
             return False
-        if segment and segment[0] in cargo_aliases:
-            segment = ["cargo", *segment[1:]]
-        return bool(segment) and tokens_have_raw_cargo(segment, depth=depth + 1)
+        segment = expand_cargo_aliases(segment, cargo_aliases)
+        return bool(segment) and tokens_have_raw_cargo(segment, depth=depth + 1, allow_storage_only=allow_storage_only)
     assignment_index = consume_assignment_words(tokens, 0)
     if assignment_index:
-        return assignment_index < len(tokens) and tokens_have_raw_cargo(tokens[assignment_index:], depth=depth + 1)
+        return assignment_index < len(tokens) and tokens_have_raw_cargo(
+            tokens[assignment_index:],
+            depth=depth + 1,
+            allow_storage_only=allow_storage_only,
+        )
     if managed_rust_verification_tokens(tokens):
         return tokens_have_target_routing_override(tokens[3:])
     executable = pathlib.Path(tokens[0]).name
+    if path_invocation_has_cargo_subcommand(tokens):
+        return True
     if executable in ("bash", "dash", "fish", "sh", "zsh"):
         nested = shell_command(tokens)
-        return nested is not None and tokens_have_raw_cargo(command_tokens(nested), depth=depth + 1)
+        return nested is not None and tokens_have_raw_cargo(
+            command_tokens(nested),
+            depth=depth + 1,
+            allow_storage_only=allow_storage_only,
+        )
     if executable == "eval":
         inner = tokens[1:]
         if inner and inner[0] == "--":
             inner = inner[1:]
-        return bool(inner) and tokens_have_raw_cargo(command_tokens(" ".join(inner)), depth=depth + 1)
+        return bool(inner) and tokens_have_raw_cargo(
+            command_tokens(" ".join(inner)),
+            depth=depth + 1,
+            allow_storage_only=allow_storage_only,
+        )
     if executable == "no-mistakes":
         inner = no_mistakes_inner_tokens(tokens)
         if inner is None:
             return False
         if inner and raw_rust_tool_token(pathlib.Path(inner[0]).name):
             return True
-        return tokens_have_raw_cargo(inner, depth=depth + 1)
+        return tokens_have_raw_cargo(inner, depth=depth + 1, allow_storage_only=allow_storage_only)
     if executable == "env":
         inner = env_inner_tokens(tokens)
-        return inner is not None and tokens_have_raw_cargo(inner, depth=depth + 1)
+        return inner is not None and tokens_have_raw_cargo(inner, depth=depth + 1, allow_storage_only=allow_storage_only)
     if executable == "rustup" and len(tokens) >= 3 and tokens[1] == "run":
-        return tokens_have_raw_cargo(rustup_run_inner_tokens(tokens), depth=depth + 1)
+        return tokens_have_raw_cargo(
+            rustup_run_inner_tokens(tokens),
+            depth=depth + 1,
+            allow_storage_only=allow_storage_only,
+        )
     if executable.startswith("python"):
         for index, token in enumerate(tokens):
             if token == "-c" and index + 1 < len(tokens) and "cargo" in tokens[index + 1]:
@@ -1539,7 +1786,7 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
     if executable == "flock":
         inner = flock_inner_tokens(tokens)
         if inner is not None:
-            return tokens_have_raw_cargo(inner, depth=depth + 1)
+            return tokens_have_raw_cargo(inner, depth=depth + 1, allow_storage_only=allow_storage_only)
     if executable in {
         "catchsegv",
         "chrt",
@@ -1559,7 +1806,7 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
     }:
         inner = wrapper_inner_tokens(tokens)
         if inner is not None:
-            return tokens_have_raw_cargo(inner, depth=depth + 1)
+            return tokens_have_raw_cargo(inner, depth=depth + 1, allow_storage_only=allow_storage_only)
     for index, token in enumerate(tokens):
         name = pathlib.Path(token).name
         if name == "cargo" and cargo_token_is_command(tokens, index):
@@ -1573,6 +1820,155 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
 
 def command_has_raw_cargo(command: str) -> bool:
     return tokens_have_raw_cargo(command_tokens(command))
+
+
+def tokens_have_raw_cargo_launch(tokens: list[str]) -> bool:
+    return tokens_have_raw_cargo(tokens, allow_storage_only=False)
+
+
+def cargo_config_storage_override_message(tokens: list[str]) -> str | None:
+    for index, token in enumerate(tokens):
+        if token == "--config" and index + 1 < len(tokens) and cargo_config_has_storage_override(tokens[index + 1]):
+            if cargo_config_looks_like_path(tokens[index + 1]):
+                return "cargo --config file raw target override must be classified"
+            return "cargo --config build.target-dir raw target override must be classified"
+        if token.startswith("--config="):
+            config = token.split("=", 1)[1]
+            if cargo_config_has_storage_override(config):
+                if cargo_config_looks_like_path(config):
+                    return "cargo --config file raw target override must be classified"
+                return "cargo --config build.target-dir raw target override must be classified"
+        if token == "-C" and index + 1 < len(tokens) and cargo_config_has_storage_override(tokens[index + 1]):
+            if cargo_config_looks_like_path(tokens[index + 1]):
+                return "cargo --config file raw target override must be classified"
+            return "cargo --config build.target-dir raw target override must be classified"
+        if token.startswith("-C") and cargo_config_has_storage_override(token[2:]):
+            if cargo_config_looks_like_path(token[2:]):
+                return "cargo --config file raw target override must be classified"
+            return "cargo --config build.target-dir raw target override must be classified"
+    return None
+
+
+def raw_cargo_storage_override_messages_from_tokens(
+    tokens: list[str],
+    *,
+    aliases: set[str] | None = None,
+    depth: int = 0,
+) -> set[str]:
+    if not tokens or depth > 6:
+        return set()
+    aliases = aliases or set()
+    messages: set[str] = set()
+    if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
+        segment: list[str] = []
+        segment_aliases = set(aliases)
+        for token in tokens:
+            if token in SHELL_COMMAND_BOUNDARIES:
+                messages.update(
+                    raw_cargo_storage_override_messages_from_tokens(
+                        segment,
+                        aliases=segment_aliases,
+                        depth=depth + 1,
+                    )
+                )
+                if segment and segment[0] == "alias":
+                    segment_aliases.update(simple_cargo_aliases(segment))
+                segment = []
+                continue
+            segment.append(token)
+        messages.update(
+            raw_cargo_storage_override_messages_from_tokens(
+                segment,
+                aliases=segment_aliases,
+                depth=depth + 1,
+            )
+        )
+        return messages
+    if tokens and tokens[0] == "alias":
+        return messages
+    expanded = expand_cargo_aliases(tokens, aliases)
+    assignment_index = consume_assignment_words(expanded, 0)
+    if assignment_index:
+        return raw_cargo_storage_override_messages_from_tokens(
+            expanded[assignment_index:],
+            aliases=aliases,
+            depth=depth + 1,
+        )
+    executable = pathlib.Path(expanded[0]).name
+    if executable in ("bash", "dash", "fish", "sh", "zsh"):
+        nested = shell_command(expanded)
+        if nested is not None:
+            messages.update(
+                raw_cargo_storage_override_messages_from_tokens(
+                    command_tokens(nested),
+                    aliases=aliases,
+                    depth=depth + 1,
+                )
+            )
+        return messages
+    if executable in {
+        "catchsegv",
+        "chrt",
+        "command",
+        "doas",
+        "exec",
+        "ionice",
+        "nice",
+        "nohup",
+        "setsid",
+        "stdbuf",
+        "sudo",
+        "taskset",
+        "time",
+        "timeout",
+        "xargs",
+    }:
+        inner = wrapper_inner_tokens(expanded)
+        if inner is not None:
+            messages.update(
+                raw_cargo_storage_override_messages_from_tokens(
+                    inner,
+                    aliases=aliases,
+                    depth=depth + 1,
+                )
+            )
+        return messages
+    if not tokens_have_raw_cargo_launch(expanded):
+        return messages
+    if any(token == "--target-dir" or token.startswith("--target-dir=") for token in expanded):
+        messages.add("cargo --target-dir raw target override must be classified")
+    config_message = cargo_config_storage_override_message(expanded)
+    if config_message is not None:
+        messages.add(config_message)
+    if executable == "cargo" or path_invocation_has_cargo_subcommand(expanded):
+        command_index = consume_cargo_global_options(expanded, 1)
+        if command_index < len(expanded) and expanded[command_index] == "install":
+            if any(token == "--root" and index + 1 < len(expanded) and expanded[index + 1].startswith("s3://") for index, token in enumerate(expanded)):
+                messages.add("cargo install S3 install root must be classified")
+            if any(token.startswith("--root=s3://") for token in expanded):
+                messages.add("cargo install S3 install root must be classified")
+    return messages
+
+
+def text_raw_cargo_storage_override_messages(text: str) -> set[str]:
+    messages: set[str] = set()
+    aliases: set[str] = set()
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        tokens = command_tokens(line)
+        messages.update(raw_cargo_storage_override_messages_from_tokens(tokens, aliases=aliases))
+        segment: list[str] = []
+        for token in tokens:
+            if token in SHELL_COMMAND_BOUNDARIES:
+                if segment and segment[0] == "alias":
+                    aliases.update(simple_cargo_aliases(segment))
+                segment = []
+                continue
+            segment.append(token)
+        if segment and segment[0] == "alias":
+            aliases.update(simple_cargo_aliases(segment))
+    return messages
 
 
 def no_mistakes_commands(config_text: str) -> dict[str, str]:
@@ -1683,6 +2079,105 @@ def text_has_path_style_cargo_config(text: str) -> bool:
     return False
 
 
+def s3_uri_variables(text: str) -> set[str]:
+    variables: set[str] = set()
+    patterns = (
+        re.compile(
+            r"(?:^|[;&|]\s*)(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)="
+            r"(?:\"s3://[^\"]+\"|'s3://[^']+'|s3://[^\s;&|]+)",
+            re.MULTILINE,
+        ),
+        re.compile(
+            r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"
+            r"(?:\"s3://[^\"]+\"|'s3://[^']+'|s3://[^\s#]+)",
+            re.MULTILINE,
+        ),
+        re.compile(
+            r"\becho\s+[\"']([A-Za-z_][A-Za-z0-9_]*)="
+            r"s3://[^\"']+[\"']\s*>>\s*[\"']?\$GITHUB_ENV[\"']?",
+            re.MULTILINE,
+        ),
+    )
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            variables.add(match.group(1))
+    return variables
+
+
+def shell_line_references_variable(line: str, variable: str) -> bool:
+    escaped = re.escape(variable)
+    return re.search(rf"\$(?:{escaped}\b|\{{{escaped}[^}}]*\}})", line) is not None or re.search(
+        rf"\$\{{\{{\s*env\.{escaped}\s*\}}\}}",
+        line,
+    ) is not None
+
+
+def aws_s3_line_mentions_active_target(line: str) -> bool:
+    active_target_patterns = (
+        r"(?:^|[\s\"'])(?:\.?/)?target(?:[\s/\"']|$)",
+        r"(?:^|[\s\"'])(?:[\"']?\$CARGO_TARGET_DIR[\"']?|\$\{CARGO_TARGET_DIR[^}]*\})(?:/(?:\./)?[^\s\"']*)?(?:[\s\"']|$)",
+        r"(?:^|[\s\"'])(?:[\"']?\$GITHUB_WORKSPACE[\"']?|\$\{GITHUB_WORKSPACE[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)",
+        r"(?:^|[\s\"'])(?:[\"']?\$PWD[\"']?|\$\{PWD[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)",
+        r"(?:^|[\s\"'])\$\{\{\s*(?:github\.workspace|env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}(?:/(?:\./)?(?:target(?:/[^\s\"']*)?|[^\s\"']*))?(?:[\s\"']|$)",
+    )
+    return any(re.search(pattern, line) for pattern in active_target_patterns)
+
+
+def text_has_s3_variable_active_target_sync(text: str) -> bool:
+    variables = s3_uri_variables(text)
+    if not variables:
+        return False
+    for line in text.splitlines():
+        if not re.search(r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b", line):
+            continue
+        if not aws_s3_line_mentions_active_target(line):
+            continue
+        if any(shell_line_references_variable(line, variable) for variable in variables):
+            return True
+    return False
+
+
+def tokens_define_cargo_alias(tokens: list[str]) -> bool:
+    segment: list[str] = []
+    for token in tokens:
+        if token in SHELL_COMMAND_BOUNDARIES:
+            if segment and segment[0] == "alias" and simple_cargo_aliases(segment):
+                return True
+            segment = []
+            continue
+        segment.append(token)
+    return bool(segment and segment[0] == "alias" and simple_cargo_aliases(segment))
+
+
+def text_has_alias_cargo_target_routing_override(text: str) -> bool:
+    cargo_aliases: set[str] = set()
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        tokens = command_tokens(line)
+        segment: list[str] = []
+        for token in tokens:
+            if token in SHELL_COMMAND_BOUNDARIES:
+                if segment and segment[0] == "alias":
+                    cargo_aliases.update(simple_cargo_aliases(segment))
+                elif any(token in cargo_aliases for token in segment):
+                    expanded = expand_cargo_aliases(segment, cargo_aliases)
+                    if tokens_have_target_routing_override(expanded) and tokens_have_raw_cargo_launch(expanded):
+                        return True
+                segment = []
+                continue
+            segment.append(token)
+        if segment and segment[0] == "alias":
+            cargo_aliases.update(simple_cargo_aliases(segment))
+            continue
+        if not any(token in cargo_aliases for token in segment):
+            continue
+        expanded = expand_cargo_aliases(segment, cargo_aliases)
+        if tokens_have_target_routing_override(expanded) and tokens_have_raw_cargo_launch(expanded):
+            return True
+    return False
+
+
 def raw_rust_storage_errors(workflow_text: str) -> list[str]:
     text = re.sub(r"\\\s*\n\s*", " ", uncommented_text(workflow_text.splitlines()))
     checks: tuple[tuple[str, str], ...] = (
@@ -1719,12 +2214,26 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
     for pattern, message in checks:
         if re.search(pattern, text):
             errors.append(message)
+    for message in sorted(text_raw_cargo_storage_override_messages(text)):
+        if message not in errors:
+            errors.append(message)
     config_file_message = "cargo --config file raw target override must be classified"
     if text_has_path_style_cargo_config(text) and config_file_message not in errors:
         errors.append(config_file_message)
+    target_override_message = "cargo --target-dir raw target override must be classified"
+    if (
+        text_has_alias_cargo_target_routing_override(text)
+        and target_override_message not in errors
+    ):
+        errors.append(target_override_message)
     if (
         re.search(r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)", text)
         and re.search(r"\$\([^)\n]*\brust_verification\.py\s+target-dir\b[^)\n]*\)", text)
+        and "S3 active mutable target cache must be rejected" not in errors
+    ):
+        errors.append("S3 active mutable target cache must be rejected")
+    if (
+        text_has_s3_variable_active_target_sync(text)
         and "S3 active mutable target cache must be rejected" not in errors
     ):
         errors.append("S3 active mutable target cache must be rejected")

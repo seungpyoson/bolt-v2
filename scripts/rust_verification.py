@@ -78,6 +78,8 @@ OPAQUE_RUST_LAUNCHERS = {
     "xargs",
     "zsh",
 }
+SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")"}
+SHELL_BOUNDARY_TOKEN_RE = re.compile(r"([;&|(){}!]+)")
 
 
 class PolicyError(RuntimeError):
@@ -503,6 +505,31 @@ def basename_token(token: str) -> str:
     return pathlib.Path(token).name
 
 
+def shell_normalized_tokens(tokens: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for raw_token in tokens:
+        if re.search(r"\s", raw_token):
+            normalized.append(raw_token)
+            continue
+        normalized.extend(part for part in SHELL_BOUNDARY_TOKEN_RE.split(raw_token) if part)
+    return normalized
+
+
+def shell_command_segments(tokens: list[str]) -> list[list[str]]:
+    segments: list[list[str]] = []
+    segment: list[str] = []
+    for token in shell_normalized_tokens(tokens):
+        if token in SHELL_COMMAND_BOUNDARIES:
+            if segment:
+                segments.append(segment)
+                segment = []
+            continue
+        segment.append(token)
+    if segment:
+        segments.append(segment)
+    return segments if len(segments) > 1 else []
+
+
 def python_script_name(tokens: list[str], start: int) -> str | None:
     for token in tokens[start:]:
         if token in ("-c", "-m"):
@@ -916,6 +943,9 @@ def setsid_command_index(tokens: list[str]) -> int:
         if token in ("-c", "--ctty", "-f", "--fork", "-w", "--wait"):
             index += 1
             continue
+        if token.startswith("-") and not token.startswith("--") and set(token[1:]) <= {"c", "f", "w"}:
+            index += 1
+            continue
         return index
     return index
 
@@ -933,6 +963,9 @@ def time_command_index(tokens: list[str]) -> int:
             index += 1
             continue
         if token in ("-a", "--append", "-p", "--portability", "-v", "--verbose"):
+            index += 1
+            continue
+        if token.startswith("-") and not token.startswith("--") and set(token[1:]) <= {"a", "p", "v"}:
             index += 1
             continue
         return index
@@ -985,6 +1018,11 @@ def ionice_command_index(tokens: list[str]) -> int:
         if token in ("-t", "--ignore"):
             index += 1
             continue
+        if token.startswith("-") and not token.startswith("--"):
+            cluster = token[1:]
+            if cluster and (set(cluster) <= {"t"} or re.fullmatch(r"t*[cn].+", cluster)):
+                index += 1
+                continue
         return index
     return index
 
@@ -1089,6 +1127,12 @@ def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
         return set()
     if assignment_index:
         tokens = tokens[assignment_index:]
+    segments = shell_command_segments(tokens)
+    if segments:
+        names: set[str] = set()
+        for segment in segments:
+            names.update(process_names_from_tokens(segment, depth=depth + 1))
+        return names
     executable = basename_token(tokens[0])
     names = {executable}
     wrapped_tokens = process_wrapper_tokens(tokens)
@@ -1120,6 +1164,13 @@ def executable_is_rust_tool(executable: str) -> bool:
         executable in {"cargo", "clippy", "nextest", "rustc", "rustdoc", "rustup"}
         or executable.startswith(("cargo-", "clippy-", "rust-"))
     )
+
+
+def path_executable_looks_like_cargo(token: str) -> bool:
+    if "/" not in token:
+        return False
+    executable = basename_token(token)
+    return executable == "c" or executable_is_rust_tool(executable)
 
 
 def command_may_launch_rust(command: str) -> bool:
@@ -1170,7 +1221,10 @@ def tokens_may_be_renamed_cargo(tokens: list[str], *, depth: int = 0) -> bool:
         return False
     if assignment_index:
         return tokens_may_be_renamed_cargo(tokens[assignment_index:], depth=depth + 1)
-    if "/" in tokens[0] and cargo_subcommand(tokens[1:]) in CARGO_PROCESS_SUBCOMMANDS:
+    segments = shell_command_segments(tokens)
+    if segments:
+        return any(tokens_may_be_renamed_cargo(segment, depth=depth + 1) for segment in segments)
+    if path_executable_looks_like_cargo(tokens[0]) and cargo_subcommand(tokens[1:]) in CARGO_PROCESS_SUBCOMMANDS:
         return True
     wrapped_tokens = process_wrapper_tokens(tokens)
     if wrapped_tokens is None:

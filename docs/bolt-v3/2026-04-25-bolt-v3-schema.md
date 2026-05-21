@@ -1448,7 +1448,7 @@ Current validation rejects:
 - `limit_if_touched` templates whose trigger/limit relationship violates the pinned NT side invariant
 - `trailing_stop_market` templates without positive trigger or activation input, explicit trigger type, positive trailing offset, and trailing offset type
 
-When maker exit is configured, freeze, stale-data, and thin-book exits still use the configured maker exit shape. Operators who require immediate flattening must configure the taker exit shape until a separate TOML-owned forced-exit override exists.
+Normal exits use the configured `exit_order` maker/taker shape. Forced-flat exits from freeze, stale-data, and thin-book predicates use the separate market-exit TOML fields: `market_exit_time_in_force` and `market_exit_reduce_only`.
 
 ### `[parameters]`
 

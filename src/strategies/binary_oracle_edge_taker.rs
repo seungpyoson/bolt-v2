@@ -6090,16 +6090,11 @@ fn should_report_one_position_gate_violation(occupancy: ExposureOccupancy) -> bo
     )
 }
 
-const NO_OPEN_POSITION_REASON: &str = stringify!(no_open_position);
-const EXIT_ALREADY_PENDING_REASON: &str = stringify!(exit_already_pending);
-const ENTRY_ORDER_STILL_WORKING_REASON: &str = stringify!(entry_order_still_working);
-const EXIT_HOLD_REASON: &str = stringify!(exit_hold);
-
 fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
-    !matches!(reason, Some(reason) if reason == NO_OPEN_POSITION_REASON
-        || reason == EXIT_ALREADY_PENDING_REASON
-        || reason == ENTRY_ORDER_STILL_WORKING_REASON
-        || reason == EXIT_HOLD_REASON)
+    !matches!(reason, Some(reason) if reason == EXIT_BLOCK_REASON_NO_OPEN_POSITION
+        || reason == EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING
+        || reason == EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING
+        || reason == EXIT_BLOCK_REASON_EXIT_HOLD)
 }
 
 fn evaluate_exit_decision(
@@ -13173,17 +13168,19 @@ mod tests {
     #[test]
     fn expected_exit_submission_blocks_do_not_warn() {
         assert!(!should_warn_on_exit_submission_block(Some(
-            "no_open_position"
+            EXIT_BLOCK_REASON_NO_OPEN_POSITION
         )));
         assert!(!should_warn_on_exit_submission_block(Some(
-            "exit_already_pending"
+            EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING
         )));
         assert!(!should_warn_on_exit_submission_block(Some(
-            "entry_order_still_working"
+            EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING
         )));
-        assert!(!should_warn_on_exit_submission_block(Some("exit_hold")));
+        assert!(!should_warn_on_exit_submission_block(Some(
+            EXIT_BLOCK_REASON_EXIT_HOLD
+        )));
         assert!(should_warn_on_exit_submission_block(Some(
-            "exit_price_missing"
+            EXIT_BLOCK_REASON_EXIT_PRICE_MISSING
         )));
     }
 

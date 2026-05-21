@@ -106,7 +106,7 @@ blockers, not as deferred approval to trade.
 - [x] T042 [US5] Implement canary operator harness using the production bolt-v3 path and NT adapter submit only.
 - [x] T043 [US5] Add strategy-driven cancel path evidence capture for open canary orders.
 - [x] T044 [US5] Add restart reconciliation evidence capture through NT adapter state.
-- [ ] T045 [US5] Run local fail-closed tests, exact-head CI, no-mistakes triage, and external review after branch is clean and pushed.
+- [x] T045 [US5] Run local fail-closed tests, exact-head CI, no-mistakes triage, and external review after branch is clean and pushed.
 - [ ] T046 [US5] With explicit operator approval, run tiny-capital canary and store redacted artifact with exact SHA and config checksum.
 
 ## Phase 9: Review Remediation - No-submit Evidence Freshness (US4)
@@ -168,7 +168,7 @@ blockers, not as deferred approval to trade.
 
 - [x] T070 [P] Run `rg -n "(?i:TODO|fix later|temporary|placeholder|AI|slop|stale|production-ready)" src tests specs/001-thin-live-canary-path docs/bolt-v3/2026-05-20-production-readiness-end-to-end-trace.md` and remove or justify stale prose in touched files.
 - [x] T071 Run `cargo fmt --check`, `git diff --check`, all targeted cargo tests from T051/T056/T060/T069, and `just source-fence` if available.
-- [ ] T072 Run final spec-compliance and code-quality reviews for the remediation diff before claiming readiness status.
+- [x] T072 Run final spec-compliance and code-quality reviews for the remediation diff before claiming readiness status.
 - [x] T073 [US5] Fix review-discovered quickstart evidence-binding drift in `specs/001-thin-live-canary-path/quickstart.md`: head binding must name `[live_canary.operator_evidence].head_sha` plus build-owned head, root TOML hash must be checked via `approval_consumption_path`, and `approval_envelope_path` must not be described as read by the production gate.
 - [x] T074 [US5] After T073, run `git diff --check` and `just source-fence`, then rerun scoped config/schema/docs re-review before push or external review.
 - [x] T075 [US5] Diagnose exact-head PR #388 CI clippy and gate failures with `gh pr checks 388 --repo seungpyoson/bolt-v2` plus failed job logs before editing `build.rs`.
@@ -189,9 +189,9 @@ blockers, not as deferred approval to trade.
 - [x] T090 [US5] Address external-review checksum/docs drift: align `config_hash` prose with the actual framed `config_bundle_checksum`, clarify Chainlink provider availability vs runtime-contract target, mark `BOLT_V3_PHASE8_*` values as harness-only, clarify accepted updown cadence-table semantics, and align live-canary byte-cap examples.
 - [x] T091 [US5] Add TDD regression coverage proving a missing operator evidence file fails closed as `OperatorEvidenceRead` before hashing.
 - [x] T092 [US5] Add TDD regression coverage proving Phase 8 sha256 helpers reject uppercase hex and align helper behavior with the production live-canary gate.
-- [ ] T093 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run external-review consensus for the T080/T090-T092 slice.
+- [x] T093 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run external-review consensus for the T080/T090-T092 slice.
 - [x] T094 [US5] Address shared Kimi/DeepSeek external-review test gap by adding production live-canary gate regression coverage for 64-character uppercase operator-evidence hash rejection.
-- [ ] T095 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T094 coverage slice.
+- [x] T095 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T094 coverage slice.
 - [x] T096 [US5] Address Greptile current-head P1: stamp no-submit readiness `generated_at_unix_seconds` after controlled connect/reference/disconnect stages, immediately before report creation/write.
 - [x] T097 [US5] Address Greptile current-head protocol-literal style finding: extract approval-consumption schema version and record-kind validation literals into named constants.
 - [x] T098 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T096-T097 Greptile slice.

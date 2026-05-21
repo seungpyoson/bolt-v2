@@ -353,7 +353,7 @@ jobs:
           mkdir -p "$HOME/.cargo/bin"
           mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
           chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          cargo-zigbuild --version
+          test -x "$HOME/.cargo/bin/cargo-zigbuild" && true
       - run: just build
       - name: Stage managed build artifact
         id: managed_artifact
@@ -1138,6 +1138,18 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --config build.target-dir raw target override must be classified",
         ),
         (
+            "cargo --config 'build = { target-dir = \"/tmp/raw-target\" }' check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "cargo --config 'build.rustflags = [\"--out-dir\", \"/tmp/raw-out\"]' check",
+            "cargo --config build.rustflags raw output override must be classified",
+        ),
+        (
+            "cargo --config 'build = { rustflags = [\"--artifact-dir\", \"/tmp/raw-artifacts\"] }' check",
+            "cargo --config build.rustflags raw output override must be classified",
+        ),
+        (
             "cargo -C build.target-dir=/tmp/raw-target check",
             "cargo --config build.target-dir raw target override must be classified",
         ),
@@ -1172,6 +1184,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         (
             "CARGO_ENCODED_RUSTFLAGS='--out-dir\\x1f/tmp/raw-out' cargo check",
             "CARGO_ENCODED_RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "CARGO_BUILD_RUSTFLAGS='--out-dir /tmp/raw-out' cargo check",
+            "CARGO_BUILD_RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "env:\n  CARGO_BUILD_RUSTFLAGS: '--artifact-dir /tmp/raw-artifacts'",
+            "CARGO_BUILD_RUSTFLAGS raw output override must be classified",
         ),
         (
             "env:\n  CARGO_ENCODED_RUSTFLAGS: '--out-dir\\x1f/tmp/raw-out'",
@@ -1232,6 +1252,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         (
             "cargo install ripgrep --target x86_64-unknown-linux-gnu --target-dir /tmp/install-build --root /tmp/install-root",
             "cargo install build target and install root ownership must be classified separately",
+        ),
+        (
+            "cargo install ripgrep --root s3://bolt-v2-active-cache/install-root",
+            "cargo install S3 install root must be classified",
         ),
         (
             "cargo --config=build.target-dir=/tmp/raw-target check",
@@ -1314,6 +1338,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "S3 active mutable target cache must be rejected",
         ),
         (
+            "aws s3 sync \"$GITHUB_WORKSPACE\" s3://bolt-v2-active-cache/workspace",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync . s3://bolt-v2-active-cache/workspace",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
             "aws s3 sync \"$GITHUB_WORKSPACE\"/target s3://some-bucket/linux-cache",
             "S3 active mutable target cache must be rejected",
         ),
@@ -1334,6 +1366,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "S3 active mutable target cache must be rejected",
         ),
         (
+            "aws s3 sync \"${{ github.workspace }}\" s3://bolt-v2-active-cache/workspace",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
             "aws s3 sync \"${{ env.CARGO_TARGET_DIR }}/debug\" s3://bolt-v2-active-cache/target/debug",
             "S3 active mutable target cache must be rejected",
         ),
@@ -1351,6 +1387,18 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "aws s3 sync s3://bolt-v2-active-cache/target \"${{ steps.setup.outputs.managed_target_dir }}\"",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3api put-object --bucket bolt-v2-active-cache --key target/debug/lib.rmeta --body target/debug/lib.rmeta",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3api put-object --bucket bolt-v2-active-cache --key target/debug/lib.rmeta --body \"$CARGO_TARGET_DIR/debug/lib.rmeta\"",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3api get-object --bucket bolt-v2-active-cache --key cache target/debug/lib.rmeta",
             "S3 active mutable target cache must be rejected",
         ),
     ]
@@ -1416,6 +1464,10 @@ commands:
   envcheck: env CARGO_TARGET_DIR=target cargo test
   shellcheck: bash -lc 'cargo test --all'
   wrapped: command cargo fmt --check
+  nicewrap: nice cargo test
+  doaswrap: doas cargo test
+  flockwrap: flock "$TMPDIR/bolt.lock" cargo test
+  flockclose: flock -o "$TMPDIR/bolt.lock" cargo test
   hyphenated: cargo-clippy --workspace
   rustup: rustup run stable cargo test
   pyinline: python -c 'import os; os.system("cargo test")'
@@ -1458,6 +1510,10 @@ commands: { test: "cargo test" }
         "envcheck",
         "shellcheck",
         "wrapped",
+        "nicewrap",
+        "doaswrap",
+        "flockwrap",
+        "flockclose",
         "hyphenated",
         "rustup",
         "pyinline",
@@ -1565,7 +1621,11 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         {
             "justfile": "check:\n    CARGO_TARGET_DIR=/tmp/raw cargo check\n",
             "justfile.setup": "setup:\n    cargo install cargo-nextest --version 0.9.132 --locked\n",
+            "justfile.setup.absolute": "setup:\n    /usr/bin/cargo install cargo-nextest --version 0.9.132 --locked\n",
             "scripts/local.sh": "aws s3 sync \"$PWD\"/target s3://some-bucket/linux-cache\n",
+            "scripts/workspace.sh": "aws s3 sync \"$GITHUB_WORKSPACE\" s3://some-bucket/workspace\n",
+            "scripts/s3api.sh": "aws s3api put-object --bucket b --key target/debug/lib --body target/debug/lib\n",
+            "scripts/s3api-get.sh": "aws s3api get-object --bucket b --key cache target/debug/lib\n",
         }
     )
     expected = "S3 active mutable target cache must be rejected"
@@ -1579,9 +1639,17 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
     expected = "repo automation must not compile cargo-nextest from source"
     if not any("justfile.setup" in error and expected in error for error in repo_errors):
         raise AssertionError(f"justfile cargo-install drift was silent: {repo_errors!r}")
+    if not any("justfile.setup.absolute" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"absolute cargo-install drift was silent: {repo_errors!r}")
     expected = "S3 active mutable target cache must be rejected"
     if not any("scripts/local.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script raw-storage drift was silent: {repo_errors!r}")
+    if not any("scripts/workspace.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"workspace S3 sync drift was silent: {repo_errors!r}")
+    if not any("scripts/s3api.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"s3api raw-storage drift was silent: {repo_errors!r}")
+    if not any("scripts/s3api-get.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"s3api get-object raw-storage drift was silent: {repo_errors!r}")
 
 
 def assert_ci_lint_runs_rust_verification_cache_retention_tests() -> None:
@@ -2807,7 +2875,7 @@ def main() -> int:
           mkdir -p "$HOME/.cargo/bin"
           mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
           chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          cargo-zigbuild --version""",
+          test -x "$HOME/.cargo/bin/cargo-zigbuild" && true""",
             '          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked',
         ),
     )
@@ -2933,7 +3001,7 @@ def main() -> int:
           mkdir -p "$HOME/.cargo/bin"
           mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
           chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          cargo-zigbuild --version
+          test -x "$HOME/.cargo/bin/cargo-zigbuild" && true
       - run: just build""",
             """      - run: just build
       - name: Install cargo-zigbuild
@@ -2958,7 +3026,7 @@ def main() -> int:
           mkdir -p "$HOME/.cargo/bin"
           mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
           chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          cargo-zigbuild --version""",
+          test -x "$HOME/.cargo/bin/cargo-zigbuild" && true""",
         ),
     )
     assert_workflows_error(

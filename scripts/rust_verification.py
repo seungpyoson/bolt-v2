@@ -32,6 +32,7 @@ MAX_POLICY_BYTES = 1024 * 1024
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SCRUB_ENV_KEYS = (
     "BOLT_RUST_VERIFICATION_ROOT",
+    "CARGO_BUILD_RUSTFLAGS",
     "CARGO_BUILD_TARGET",
     "CARGO_BUILD_TARGET_DIR",
     "CARGO_ENCODED_RUSTFLAGS",
@@ -57,6 +58,7 @@ OPAQUE_RUST_LAUNCHERS = {
     "env",
     "exec",
     "fish",
+    "flock",
     "ionice",
     "make",
     "nohup",
@@ -637,6 +639,30 @@ def nice_command_index(tokens: list[str]) -> int:
     return index
 
 
+def flock_wrapped_tokens(tokens: list[str]) -> list[str]:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in ("-c", "--command") and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        if token.startswith("--command="):
+            return command_tokens(token.split("=", 1)[1])
+        if token in ("-E", "--conflict-exit-code", "-w", "--wait") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--conflict-exit-code=", "--wait=")):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return tokens[index + 1 :]
+    return tokens[index:]
+
+
 def rustup_run_tokens(tokens: list[str]) -> list[str]:
     index = 2
     while index < len(tokens) and tokens[index].startswith("-"):
@@ -664,6 +690,8 @@ def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
         names.update(process_names_from_tokens(tokens[sudo_command_index(tokens) :], depth=depth + 1))
     elif executable == "nice":
         names.update(process_names_from_tokens(tokens[nice_command_index(tokens) :], depth=depth + 1))
+    elif executable == "flock":
+        names.update(process_names_from_tokens(flock_wrapped_tokens(tokens), depth=depth + 1))
     elif executable == "rustup" and len(tokens) >= 4 and tokens[1] == "run":
         names.update(process_names_from_tokens(rustup_run_tokens(tokens), depth=depth + 1))
     elif executable in ("bash", "dash", "fish", "sh", "zsh"):
@@ -963,6 +991,7 @@ CARGO_DISK_PREFLIGHT_SUBCOMMANDS = frozenset(
     {"bench", "build", "check", "clippy", "doc", "fetch", "install", "nextest", "run", "rustc", "test"}
 )
 CARGO_PROCESS_SUBCOMMANDS = CARGO_DISK_PREFLIGHT_SUBCOMMANDS | {"clean", "fmt"}
+CARGO_ALIAS_SUBCOMMANDS = {"b", "c", "d", "r", "t"}
 
 
 def cargo_subcommand_with_index(cargo_args: list[str]) -> tuple[int, str] | None:
@@ -1002,6 +1031,13 @@ def cargo_args_need_disk_preflight(cargo_args: list[str]) -> bool:
     return cargo_subcommand(cargo_args) in CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 
 
+def cargo_alias_subcommand(cargo_args: list[str]) -> str | None:
+    subcommand = cargo_subcommand(cargo_args)
+    if subcommand in CARGO_ALIAS_SUBCOMMANDS:
+        return subcommand
+    return None
+
+
 def cargo_args_for_target_routing_scan(cargo_args: list[str]) -> list[str]:
     subcommand = cargo_subcommand_with_index(cargo_args)
     if subcommand is None:
@@ -1024,14 +1060,30 @@ def cargo_target_routing_override(cargo_args: list[str]) -> str | None:
         for option in value_options:
             if token.startswith(f"{option}="):
                 return option
-        if token == "--config" and index + 1 < len(scan_args) and "build.target-dir" in scan_args[index + 1]:
-            return "--config build.target-dir"
-        if token.startswith("--config=") and "build.target-dir" in token:
-            return "--config=build.target-dir"
-        if token == "-C" and index + 1 < len(scan_args) and "build.target-dir" in scan_args[index + 1]:
-            return "-C build.target-dir"
-        if token.startswith("-C") and "build.target-dir" in token:
-            return "-Cbuild.target-dir"
+        if token == "--config" and index + 1 < len(scan_args):
+            override = cargo_config_storage_override(scan_args[index + 1])
+            if override is not None:
+                return f"--config {override}"
+        if token.startswith("--config="):
+            override = cargo_config_storage_override(token.split("=", 1)[1])
+            if override is not None:
+                return f"--config={override}"
+        if token == "-C" and index + 1 < len(scan_args):
+            override = cargo_config_storage_override(scan_args[index + 1])
+            if override is not None:
+                return f"-C {override}"
+        if token.startswith("-C"):
+            override = cargo_config_storage_override(token[2:])
+            if override is not None:
+                return f"-C{override}"
+    return None
+
+
+def cargo_config_storage_override(config: str) -> str | None:
+    if "target-dir" in config and ("build" in config or "[build]" in config):
+        return "build.target-dir"
+    if "rustflags" in config and ("--out-dir" in config or "--artifact-dir" in config):
+        return "build.rustflags"
     return None
 
 
@@ -1044,6 +1096,20 @@ def target_routing_refusal_payload(repo: pathlib.Path, policy: dict[str, Any], o
         "reclaimable_bytes": 0,
         "refusal_code": "target_routing_override",
         "refusal_reason": f"managed Cargo refused target/output routing override: {option}",
+        "refused": True,
+        "target_dir": target,
+    }
+
+
+def cargo_alias_refusal_payload(repo: pathlib.Path, policy: dict[str, Any], alias: str) -> dict[str, Any]:
+    target = str(target_dir(repo, policy))
+    return {
+        "candidates": [],
+        "dry_run": False,
+        "managed_target_dir": target,
+        "reclaimable_bytes": 0,
+        "refusal_code": "cargo_alias_subcommand",
+        "refusal_reason": f"managed Cargo refused alias subcommand: {alias}",
         "refused": True,
         "target_dir": target,
     }
@@ -1133,6 +1199,9 @@ def cmd_cargo(args: argparse.Namespace) -> int:
         return 2
     cargo = "cargo"
     cargo_args = command_args(args.args)
+    alias = cargo_alias_subcommand(cargo_args)
+    if alias is not None:
+        return print_refusal(cargo_alias_refusal_payload(repo, policy, alias))
     override = cargo_target_routing_override(cargo_args)
     if override is not None:
         return print_refusal(target_routing_refusal_payload(repo, policy, override))
@@ -1175,7 +1244,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         if refusal is not None:
             return print_refusal(refusal)
     with cache_lock(policy, exclusive=False):
-        return run_process(argv, repo=repo, env=managed_env(repo, policy))
+        env = managed_env(repo, policy)
+        env["BOLT_MANAGED_JUST"] = "1"
+        return run_process(argv, repo=repo, env=env)
 
 
 def cmd_scrub_env_keys(_args: argparse.Namespace) -> int:

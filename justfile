@@ -98,14 +98,17 @@ deny-advisories: check-workspace require-rust-verification-owner
 
 [private]
 managed-clippy: check-workspace
+    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-clippy must run through scripts/rust_verification.py run"; exit 2; fi
     cargo clippy --locked -- -D warnings
 
 [private]
 managed-test *args: check-workspace
+    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-test must run through scripts/rust_verification.py run"; exit 2; fi
     cargo nextest run --locked {{args}}
 
 [private]
 managed-build: check-workspace
+    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-build must run through scripts/rust_verification.py run"; exit 2; fi
     cargo zigbuild --release --target {{target}} --locked
 
 clippy: check-workspace require-rust-verification-owner
@@ -192,7 +195,7 @@ ci-lint-workflow:
     fi
 
     failed=0
-    pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
+    pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(audit|bench|build|check|clean|clippy|deny|doc|fetch|fmt|install|nextest|run|rustc|test|version|zigbuild)([^[:alnum:]_]|$)'
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
     just_target='{{target}}'
     managed_build_profile='release'

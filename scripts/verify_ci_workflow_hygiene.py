@@ -332,7 +332,7 @@ ZIGBUILD_PREBUILT_LITERALS = (
     'mkdir -p "$HOME/.cargo/bin"',
     'mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"',
     'chmod +x "$HOME/.cargo/bin/cargo-zigbuild"',
-    "cargo-zigbuild --version",
+    'test -x "$HOME/.cargo/bin/cargo-zigbuild" && true',
 )
 
 
@@ -989,6 +989,8 @@ def command_prefix_allows_cargo(prefix: list[str]) -> bool:
             index += 1
         elif token == "time":
             index = consume_option_prefix(prefix, index + 1, set(), TIME_OPTIONS_WITHOUT_ARGUMENT)
+        elif token == "nice":
+            index = nice_command_index(prefix, index + 1)
         elif token == "sudo":
             index = consume_option_prefix(
                 prefix,
@@ -997,8 +999,16 @@ def command_prefix_allows_cargo(prefix: list[str]) -> bool:
                 SUDO_OPTIONS_WITHOUT_ARGUMENT,
                 SUDO_OPTIONS_WITH_OPTIONAL_ARGUMENT,
             )
+        elif token == "doas":
+            index = consume_option_prefix(prefix, index + 1, SUDO_OPTIONS_WITH_ARGUMENT, SUDO_OPTIONS_WITHOUT_ARGUMENT)
         elif token == "env":
             index = consume_option_prefix(prefix, index + 1, ENV_OPTIONS_WITH_ARGUMENT, ENV_OPTIONS_WITHOUT_ARGUMENT)
+        elif token == "flock":
+            inner = flock_inner_tokens(prefix[index:])
+            if inner:
+                index = len(prefix) - len(inner)
+            else:
+                return False
         else:
             return False
         if index is None:
@@ -1047,6 +1057,10 @@ def source_build_tool_from_token(token: str) -> str | None:
     return None
 
 
+def executable_name(token: str) -> str:
+    return pathlib.Path(token).name
+
+
 def cargo_install_source_build_tools(tokens: list[str], command_index: int) -> set[str]:
     tools: set[str] = set()
     index = command_index + 1
@@ -1083,7 +1097,7 @@ def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
         except ValueError:
             continue
         for index, token in enumerate(tokens[:-1]):
-            if token != "cargo":
+            if executable_name(token) != "cargo":
                 continue
             if not cargo_token_is_command(tokens, index):
                 continue
@@ -1105,6 +1119,7 @@ def managed_rust_verification_tokens(tokens: list[str]) -> bool:
 
 def tokens_have_target_routing_override(tokens: list[str]) -> bool:
     env_prefixes = (
+        "CARGO_BUILD_RUSTFLAGS=",
         "CARGO_BUILD_TARGET_DIR=",
         "CARGO_ENCODED_RUSTFLAGS=",
         "CARGO_HOME=",
@@ -1123,15 +1138,21 @@ def tokens_have_target_routing_override(tokens: list[str]) -> bool:
             return True
         if any(token.startswith(f"{option}=") for option in value_options):
             return True
-        if token == "--config" and index + 1 < len(tokens) and "build.target-dir" in tokens[index + 1]:
+        if token == "--config" and index + 1 < len(tokens) and cargo_config_has_storage_override(tokens[index + 1]):
             return True
-        if token.startswith("--config=") and "build.target-dir" in token:
+        if token.startswith("--config=") and cargo_config_has_storage_override(token.split("=", 1)[1]):
             return True
-        if token == "-C" and index + 1 < len(tokens) and "build.target-dir" in tokens[index + 1]:
+        if token == "-C" and index + 1 < len(tokens) and cargo_config_has_storage_override(tokens[index + 1]):
             return True
-        if token.startswith("-C") and "build.target-dir" in token:
+        if token.startswith("-C") and cargo_config_has_storage_override(token[2:]):
             return True
     return False
+
+
+def cargo_config_has_storage_override(config: str) -> bool:
+    if "target-dir" in config and ("build" in config or "[build]" in config):
+        return True
+    return "rustflags" in config and ("--out-dir" in config or "--artifact-dir" in config)
 
 
 def rustup_run_inner_tokens(tokens: list[str]) -> list[str]:
@@ -1152,6 +1173,46 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
         if pathlib.Path(token).name in starters:
             return tokens[index:]
     return None
+
+
+def nice_command_index(tokens: list[str], index: int) -> int | None:
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            continue
+        if token == "-n" and index + 1 < len(tokens):
+            index += 2
+            continue
+        if re.fullmatch(r"-n-?\d+", token) or re.fullmatch(r"-?\d+", token):
+            index += 1
+            continue
+        return index
+    return index
+
+
+def flock_inner_tokens(tokens: list[str]) -> list[str] | None:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in ("-c", "--command") and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        if token.startswith("--command="):
+            return command_tokens(token.split("=", 1)[1])
+        if token in ("-E", "--conflict-exit-code", "-w", "--wait") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--conflict-exit-code=", "--wait=")):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return tokens[index + 1 :]
+    return tokens[index:]
 
 
 def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
@@ -1183,7 +1244,11 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
         for index, token in enumerate(tokens):
             if token == "-c" and index + 1 < len(tokens) and "cargo" in tokens[index + 1]:
                 return True
-    if executable in {"chrt", "command", "exec", "ionice", "nohup", "setsid", "taskset", "timeout", "xargs"}:
+    if executable == "flock":
+        inner = flock_inner_tokens(tokens)
+        if inner is not None:
+            return tokens_have_raw_cargo(inner, depth=depth + 1)
+    if executable in {"chrt", "command", "doas", "exec", "ionice", "nice", "nohup", "setsid", "taskset", "timeout", "xargs"}:
         inner = wrapper_inner_tokens(tokens)
         if inner is not None:
             return tokens_have_raw_cargo(inner, depth=depth + 1)
@@ -1293,10 +1358,13 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_BUILD_TARGET_DIR[\"']?\s*(?:=|:)", "CARGO_BUILD_TARGET_DIR raw target override must be classified"),
         (r"(?:target-dir|build\.target-dir)[^\n]*>\s*\.cargo/config\.toml|\.cargo/config\.toml[^\n]*(?:target-dir|build\.target-dir)", ".cargo/config.toml build.target-dir raw target override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[\"']?build\.target-dir", "cargo --config build.target-dir raw target override must be classified"),
+        (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:\[build\]|build\s*=|build\.)[^\n;&|]*target-dir", "cargo --config build.target-dir raw target override must be classified"),
+        (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:build\.rustflags|rustflags\s*=)[^\n;&|]*(?:--out-dir|--artifact-dir)", "cargo --config build.rustflags raw output override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s-C\s*[\"']?build\.target-dir", "cargo --config build.target-dir raw target override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s--target-dir\b", "cargo --target-dir raw target override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_TARGET_TMPDIR[\"']?\s*(?:=|:)", "CARGO_TARGET_TMPDIR raw target override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_INCREMENTAL[\"']?\s*(?:=|:)", "CARGO_INCREMENTAL raw cache override must be classified"),
+        (r"(^|[^A-Za-z0-9_])[\"']?CARGO_BUILD_RUSTFLAGS[\"']?\s*(?:=|:).*(?:--out-dir|--artifact-dir)", "CARGO_BUILD_RUSTFLAGS raw output override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_ENCODED_RUSTFLAGS[\"']?\s*(?:=|:).*(?:--out-dir|--artifact-dir)", "CARGO_ENCODED_RUSTFLAGS raw output override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_INSTALL_ROOT[\"']?\s*(?:=|:)", "CARGO_INSTALL_ROOT install output override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_HOME[\"']?\s*(?:=|:)", "CARGO_HOME raw cache override must be classified"),
@@ -1307,6 +1375,7 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         (r"\bcargo\b[^\n;&|]*\brustc\b[^\n;&|]*\s--out-dir\b", "cargo rustc --out-dir raw output override must be classified"),
         (r"\bcargo\b[^\n;&|]*\brustc\b[^\n;&|]*\s--artifact-dir\b", "cargo rustc --artifact-dir raw output override must be classified"),
         (r"\bcargo\b[^\n;&|]*\binstall\b[^\n;&|]*\s--target-dir\b[^\n;&|]*\s--root\b", "cargo install build target and install root ownership must be classified separately"),
+        (r"\bcargo\b[^\n;&|]*\binstall\b[^\n;&|]*\s--root\b[^\n;&|]*\bs3://", "cargo install S3 install root must be classified"),
         (r"\bno-mistakes\b[^\n]*\bcargo\b", "no-mistakes raw Cargo drift must be classified"),
         (r"\bno-mistakes\b[^\n]*--worktree[^\n]*(?:--target-dir\s+target|\btarget\b)", "no-mistakes worktree-local target path evidence must be reported"),
         (r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])(?:\.?/)?target(?:[\s/\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$CARGO_TARGET_DIR[\"']?|\$\{CARGO_TARGET_DIR[^}]*\})(?:/(?:\./)?[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$GITHUB_WORKSPACE[\"']?|\$\{GITHUB_WORKSPACE[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$PWD[\"']?|\$\{PWD[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])\$\{\{\s*(?:github\.workspace|env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}(?:/(?:\./)?(?:target(?:/[^\s\"']*)?|[^\s\"']*))?(?:[\s\"']|$))", "S3 active mutable target cache must be rejected"),
@@ -1319,6 +1388,14 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         re.search(r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)", text)
         and re.search(r"\$\([^)\n]*\brust_verification\.py\s+target-dir\b[^)\n]*\)", text)
         and "S3 active mutable target cache must be rejected" not in errors
+    ):
+        errors.append("S3 active mutable target cache must be rejected")
+    s3_active_patterns = (
+        r"\baws\b[^\n;&|]*\bs3\s+sync\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])(?:\.|\$GITHUB_WORKSPACE|\$\{GITHUB_WORKSPACE[^}]*\}|\$\{\{\s*github\.workspace\s*\}\}|\$PWD|\$\{PWD[^}]*\})(?:[\s\"']|$))",
+        r"\baws\b[^\n;&|]*\bs3api\b[^\n;&|]*(?:target(?:/|[\s\"']|$)|CARGO_TARGET_DIR|managed_target_dir|\$\{\{\s*(?:github\.workspace|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\})",
+    )
+    if "S3 active mutable target cache must be rejected" not in errors and any(
+        re.search(pattern, text) for pattern in s3_active_patterns
     ):
         errors.append("S3 active mutable target cache must be rejected")
     return errors

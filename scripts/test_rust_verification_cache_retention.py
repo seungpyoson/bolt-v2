@@ -1687,6 +1687,9 @@ def assert_v6_red_active_process_parser_gaps() -> None:
         "nohup cargo build",
         "time cargo build",
         "timeout 30 cargo build",
+        "flock /tmp/bolt.lock cargo build",
+        "flock -o /tmp/bolt.lock cargo build",
+        "flock -c 'cargo build' /tmp/bolt.lock",
         "xargs cargo build",
         "setsid cargo build",
         "taskset -c 0 cargo build",
@@ -1844,6 +1847,7 @@ def assert_managed_env_scrubs_build_target_dir_and_routes_target_dir() -> None:
         root_base = tmp_path / "rust-root"
         leaky_env = {
             "CARGO_BUILD_TARGET_DIR": str(tmp_path / "leaked-build-target"),
+            "CARGO_BUILD_RUSTFLAGS": "--out-dir /tmp/raw-out",
             "CARGO_ENCODED_RUSTFLAGS": "--out-dir\x1f/tmp/raw-out",
             "CARGO_HOME": str(tmp_path / "leaked-cargo-home"),
             "CARGO_INCREMENTAL": "1",
@@ -2049,6 +2053,42 @@ exit 0
         raise AssertionError("managed heavy Rust commands must run disk preflight before execution: " + "; ".join(failures))
 
 
+def assert_managed_cargo_rejects_alias_subcommands() -> None:
+    failures: list[str] = []
+    for alias in ["b", "c", "d", "r", "t"]:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+            root_base = tmp_path / "rust-root"
+            (root_base / "bolt-v2" / "target").mkdir(parents=True)
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            marker = tmp_path / "started"
+            write_executable(
+                bin_dir / "cargo",
+                f"""#!/usr/bin/env bash
+touch {marker}
+exit 0
+""",
+            )
+
+            env = os.environ.copy()
+            env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            result = run_owner(["cargo", "--repo", str(repo), "--", alias], env=env)
+            combined = f"{result.stdout}\n{result.stderr}".lower()
+            if result.returncode == 0 or marker.exists() or "alias" not in combined or "managed" not in combined:
+                failures.append(
+                    f"{alias!r}: returncode={result.returncode} cargo_started={marker.exists()} "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+    if failures:
+        raise AssertionError("managed cargo must reject alias subcommands before invoking Cargo: " + "; ".join(failures))
+
+
 def assert_v6_red_managed_cargo_rejects_target_routing_overrides() -> None:
     failures: list[str] = []
     cases = [
@@ -2056,6 +2096,10 @@ def assert_v6_red_managed_cargo_rejects_target_routing_overrides() -> None:
         ["test", "--target-dir=/tmp/raw-target"],
         ["test", "--config", "build.target-dir=/tmp/raw-target"],
         ["test", "--config=build.target-dir=/tmp/raw-target"],
+        ["test", "--config", 'build = { target-dir = "/tmp/raw-target" }'],
+        ["test", "--config", '[build]\ntarget-dir = "/tmp/raw-target"'],
+        ["test", "--config", 'build.rustflags = ["--out-dir", "/tmp/raw-out"]'],
+        ["test", "--config", 'build = { rustflags = ["--artifact-dir", "/tmp/raw-artifacts"] }'],
         ["-C", "build.target-dir=/tmp/raw-target", "test"],
         ["rustc", "--", "--out-dir", "/tmp/raw-out"],
         ["rustc", "--", "--artifact-dir", "/tmp/raw-artifacts"],
@@ -2106,6 +2150,9 @@ def assert_v6_red_managed_run_rejects_target_routing_overrides() -> None:
         ["test", "--target-dir", "/tmp/raw-target"],
         ["test", "--target-dir=/tmp/raw-target"],
         ["test", "--config", "build.target-dir=/tmp/raw-target"],
+        ["test", "--config", 'build = { target-dir = "/tmp/raw-target" }'],
+        ["test", "--config", '[build]\ntarget-dir = "/tmp/raw-target"'],
+        ["test", "--config", 'build.rustflags = ["--out-dir", "/tmp/raw-out"]'],
         ["clippy", "-C", "build.target-dir=/tmp/raw-target"],
     ]
     for run_args in cases:
@@ -2140,6 +2187,83 @@ exit 0
                 )
     if failures:
         raise AssertionError("managed run must reject target/output routing overrides before invoking just: " + "; ".join(failures))
+
+
+def assert_managed_run_authorizes_private_just_recipes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+        root_base = tmp_path / "rust-root"
+        (root_base / "bolt-v2" / "target").mkdir(parents=True)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker = tmp_path / "managed-just-env"
+        write_executable(
+            bin_dir / "just",
+            f"""#!/usr/bin/env bash
+printf '%s\\n' "${{BOLT_MANAGED_JUST:-}}" > {marker}
+exit 0
+""",
+        )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["run", "--repo", str(repo), "clippy"], env=env)
+        if result.returncode != 0 or marker.read_text(encoding="utf-8").strip() != "1":
+            raise AssertionError(
+                "managed run must mark private just recipes as wrapper-authorized: "
+                f"returncode={result.returncode} env={marker.read_text(encoding='utf-8') if marker.exists() else '<missing>'!r} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
+def assert_direct_private_managed_just_recipes_require_wrapper_env() -> None:
+    failures: list[str] = []
+    recipes = ["managed-clippy", "managed-test", "managed-build"]
+    for recipe in recipes:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            marker = tmp_path / "cargo-started"
+            write_executable(
+                bin_dir / "cargo",
+                f"""#!/usr/bin/env bash
+touch {marker}
+exit 0
+""",
+            )
+            env = os.environ.copy()
+            env.pop("BOLT_MANAGED_JUST", None)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            result = subprocess.run(
+                [
+                    "just",
+                    "-f",
+                    str(REPO_ROOT / "justfile"),
+                    "--working-directory",
+                    str(REPO_ROOT),
+                    recipe,
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            combined = f"{result.stdout}\n{result.stderr}".lower()
+            if result.returncode == 0 or marker.exists() or "managed" not in combined or "rust_verification.py" not in combined:
+                failures.append(
+                    f"{recipe}: returncode={result.returncode} cargo_started={marker.exists()} "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+    if failures:
+        raise AssertionError("direct private managed just recipes must refuse outside the wrapper: " + "; ".join(failures))
 
 
 def assert_v6_red_managed_cargo_allows_post_separator_binary_args() -> None:
@@ -2194,8 +2318,11 @@ def assert_v6_red_policy_gaps() -> None:
         assert_v6_red_active_process_parser_does_not_treat_trustd_as_rust,
         assert_v6_red_managed_cargo_clean_refuses_active_process,
         assert_v6_red_disk_preflight_before_managed_cargo_and_run,
+        assert_managed_cargo_rejects_alias_subcommands,
         assert_v6_red_managed_cargo_rejects_target_routing_overrides,
         assert_v6_red_managed_run_rejects_target_routing_overrides,
+        assert_managed_run_authorizes_private_just_recipes,
+        assert_direct_private_managed_just_recipes_require_wrapper_env,
         assert_v6_red_managed_cargo_allows_post_separator_binary_args,
         assert_managed_cargo_ignores_real_cargo_env_override,
     ]

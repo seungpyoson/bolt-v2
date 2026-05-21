@@ -91,10 +91,10 @@ Explicit #374 residuals from #286 / PR #404 review:
 
 **Purpose**: Prove any implementation PR is ready for external review, not merely locally plausible.
 
-- [ ] T023 Record why any local Cargo command is necessary; skip broad local Cargo when CI can provide the signal.
-- [ ] T024 Run relevant managed local red/green test command for the slice only when T023 justifies it.
-- [ ] T025 Run `git diff --check`.
-- [ ] T026 Open draft PR early enough for exact-head CI to run.
+- [x] T023 Record why any local Cargo command is necessary; skip broad local Cargo when CI can provide the signal. Decision: no broad local Cargo run for this wrapper/verifier-only slice; exact-head CI remains the Cargo authority.
+- [x] T024 Run relevant managed local red/green test command for the slice only when T023 justifies it. Relevant local gates are the Python verifier suites plus `just ci-lint-workflow`.
+- [x] T025 Run `git diff --check`.
+- [x] T026 Open draft PR early enough for exact-head CI to run. Draft PR #436 is the exact-head CI surface for this slice.
 - [ ] T027 Push branch and verify exact-head CI green.
 - [x] T028 Record explicit no-mistakes skip/CI-evidence policy for this PR slice: do not use no-mistakes per operator instruction; T027 exact-head CI remains required before review/ready.
 - [ ] T029 Get Claude review and Claude adversarial review.

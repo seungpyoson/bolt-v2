@@ -35,10 +35,12 @@ Live-readiness blockers:
 
 ## T038 Current-Head Evidence Update
 
-- 2026-05-21 current-head metadata audit at `7dcda025f987d80f261500ca3094fb42ab9ce9de`: `secrets check` and `secrets resolve` passed against the ignored worktree config without printing secret values.
+- 2026-05-21 metadata audit executed at pre-doc-commit head `7dcda025f987d80f261500ca3094fb42ab9ce9de`: `secrets check` and `secrets resolve` passed against the ignored worktree config without printing secret values.
 - Two local ignored configs differ: the worktree config SHA-256 is `85fe8e17f2ffe813d464e8f5fe1908604060b5af9c5fd79f7b22ffe770b25289` and the root repo config SHA-256 is `62e6b2dd793753e77f7042376adf6be1c9245969393c695a50e5de65946bacc7`. Future no-submit evidence must pin the absolute config path, raw config SHA, resulting `config_bundle_checksum`, exact head, and report hash.
 - Metadata-only SSM inspection showed the Binance API-key SecureString at version `1` last modified `2026-04-19T18:47:41.113000+09:00` and the Binance API-secret SecureString at version `2` last modified `2026-05-20T09:12:33.893000+09:00`. This strengthens key-secret pairing/state as the lead hypothesis, but it does not rule out IP whitelist, permissions, account, environment, or Binance-side key state.
+- 2026-05-21 non-secret auth probe executed at pre-doc-commit head `dfd60bd5d10779ec6ea48c39a7a066b2cf382a48` derived only the configured Ed25519 public-key fingerprint (`sha256=1d29db2eb2abf9f63afc99dd580125d83c9966a94e38d875f7adf0e5581c3df9`, derived public key length `32` bytes) and still received HTTP `401` / Binance code `-2015` on signed read-only `/api/v3/account`; this is blocker evidence, not no-submit readiness evidence.
 - Five-reviewer consensus on this slice approved the blocker classification and rejected code changes: Gemini `60d5d717-8c75-4224-8469-5d42ff67a2bf`, Claude `7d37939d-55da-43cc-9860-5d7441e03d2c`, GLM `job_fe2699da-d790-4d74-ba3a-03217b6b09b5`, DeepSeek `job_76cdd847-8126-4ae2-83a7-b322c23427a6`, and Kimi `da8ccf8d-3931-4f1c-b5f2-174fe3330e81`.
+- Follow-up selected-source review of the auth-probe wording approved the same evidence-safety classification with no blockers: Gemini `e236bc8a-2465-40ea-bf4f-52490a2ded3c`, Claude `190343b2-065f-4470-84b3-a8596bce16c4`, GLM `job_450b4d53-fb29-4f3e-8f60-d28c8f30ecb8`, DeepSeek `job_967b9d7a-3b23-48ca-b379-14997b6350d5`, and Kimi `2380be2e-60ad-48d7-8c5d-c48a95a824c8`.
 
 ## Positive Evidence
 

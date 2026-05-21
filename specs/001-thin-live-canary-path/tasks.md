@@ -208,7 +208,7 @@ blockers, not as deferred approval to trade.
 - [x] T109 [US5] Address T108 external-review hardening notes: align Phase 8 SHA-256 shape validation with the live gate lowercase-only policy, add sync bounded config reader regression coverage, and reject parent-directory traversal in live-canary gate configured paths.
 - [x] T110 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T109 hardening slice.
 - [x] T111 [US5] Address T110 external-review hardening notes: consolidate duplicate Phase 8 SHA-256 shape helpers, reject parent-directory traversal in Phase 8 env-owned paths including optional `strategy_cancel_path`, add exact-limit bounded config reader coverage, add direct `strategy_cancel_path` traversal coverage, and regular-file-check bounded config reads.
-- [ ] T112 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T111 hardening slice.
+- [x] T112 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T111 hardening slice.
 
 ## Out Of Scope For MVP
 

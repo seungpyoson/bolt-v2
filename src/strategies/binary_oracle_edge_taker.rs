@@ -9180,6 +9180,38 @@ mod tests {
     }
 
     #[test]
+    fn market_if_touched_gtd_order_objects_preserve_nt_expire_time() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
+        strategy.config.entry_order.order_type = OrderType::MarketIfTouched;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+
+        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let quantity = Quantity::new(2.0, 2);
+        let fallback_price = Price::new(0.40, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                fallback_price,
+                ClientOrderId::from("O-19700101-000000-001-008-1"),
+            )
+            .expect("MarketIfTouched GTD order with explicit expiry should build");
+
+        let OrderAny::MarketIfTouched(order) = order else {
+            panic!("MarketIfTouched GTD config should build an NT market-if-touched order");
+        };
+        assert_eq!(order.order_type(), OrderType::MarketIfTouched);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtd);
+        assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
+        assert_eq!(order.expire_time(), Some(expire_time));
+    }
+
+    #[test]
     fn post_only_exit_submission_price_uses_passive_book_price() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.config.exit_order.order_type = OrderType::Limit;

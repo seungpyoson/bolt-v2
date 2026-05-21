@@ -12,6 +12,7 @@ use nautilus_model::{
     orders::{Order, OrderAny},
     types::{Price, Quantity},
 };
+use rust_decimal::Decimal;
 
 fn generic_order_factory() -> OrderFactory {
     let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
@@ -51,6 +52,17 @@ fn base_inputs(order_side: OrderSide) -> NtOrderBuildInputs {
         price: Price::new(10.0, 2),
         client_order_id: ClientOrderId::from("O-19700101-000000-001-001-1"),
     }
+}
+
+fn assert_build_error_contains(
+    factory: &mut OrderFactory,
+    template: &NtOrderTemplate,
+    order_side: OrderSide,
+    expected: &str,
+) {
+    let error = build_nt_order(factory, "generic_order", template, base_inputs(order_side))
+        .expect_err("invalid generic template should fail before NT factory construction");
+    assert!(error.to_string().contains(expected), "{error}");
 }
 
 #[test]
@@ -106,35 +118,40 @@ fn shared_nt_order_template_builds_sell_limit_if_touched_without_position_policy
 fn shared_nt_order_template_rejects_non_positive_trigger_inputs_before_nt_factory() {
     let mut factory = generic_order_factory();
 
-    let mut stop_market = base_template(OrderType::StopMarket);
-    stop_market.trigger_price = Some(Price::new(0.0, 2));
-    let error = build_nt_order(
+    for order_type in [
+        OrderType::StopMarket,
+        OrderType::StopLimit,
+        OrderType::MarketIfTouched,
+        OrderType::LimitIfTouched,
+    ] {
+        let mut template = base_template(order_type);
+        template.trigger_price = Some(Price::new(0.0, 2));
+        assert_build_error_contains(
+            &mut factory,
+            &template,
+            OrderSide::Buy,
+            "trigger_price must be positive",
+        );
+    }
+
+    let mut trailing_stop_trigger = base_template(OrderType::TrailingStopMarket);
+    trailing_stop_trigger.trigger_price = Some(Price::new(0.0, 2));
+    trailing_stop_trigger.trailing_offset = Some(Decimal::new(1, 1));
+    assert_build_error_contains(
         &mut factory,
-        "generic_order",
-        &stop_market,
-        base_inputs(OrderSide::Buy),
-    )
-    .expect_err("zero trigger price must fail before NT factory construction");
-    assert!(
-        error.to_string().contains("trigger_price must be positive"),
-        "{error}"
+        &trailing_stop_trigger,
+        OrderSide::Sell,
+        "trigger_price must be positive",
     );
 
     let mut trailing_stop = base_template(OrderType::TrailingStopMarket);
     trailing_stop.activation_price = Some(Price::new(0.0, 2));
-    trailing_stop.trailing_offset = Some(rust_decimal::Decimal::new(1, 1));
-    let error = build_nt_order(
+    trailing_stop.trailing_offset = Some(Decimal::new(1, 1));
+    assert_build_error_contains(
         &mut factory,
-        "generic_order",
         &trailing_stop,
-        base_inputs(OrderSide::Sell),
-    )
-    .expect_err("zero activation price must fail before NT factory construction");
-    assert!(
-        error
-            .to_string()
-            .contains("activation_price must be positive"),
-        "{error}"
+        OrderSide::Sell,
+        "activation_price must be positive",
     );
 }
 

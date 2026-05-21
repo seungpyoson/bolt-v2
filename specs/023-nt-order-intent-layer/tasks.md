@@ -417,6 +417,14 @@
 - [x] T189 [US2] GREEN: Mirror trigger and activation positivity validation in `validate_nt_order_template(...)` before `OrderFactory` calls
 - [x] T190 [US2] Verify focused order-template tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
+## Phase 43: TDD Slice 39 - Latest-Head Review Coverage Closure
+
+**Goal**: Close Claude latest-head NB3 by making the direct shared-builder regression cover every enabled triggered NT factory variant affected by the Phase 42 runtime validation gap. This is regression coverage only unless the expanded test exposes a production behavior gap.
+
+- [x] T191 [P] [US2] Record exact-head Claude NB3 that shared-builder direct coverage only exercised StopMarket zero-trigger and TrailingStopMarket zero-activation
+- [x] T192 [US2] REGRESSION: Expand direct shared-builder coverage for StopLimit, MarketIfTouched, LimitIfTouched, and TrailingStopMarket zero-trigger rejection
+- [x] T193 [US2] Verify focused order-template tests, source fences, formatting, branch cleanliness, and latest-head reviewer state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -458,6 +466,7 @@
 - Phase 40 blocks completion because Greptile found forced-flat exit submission was still blocked behind a resting managed pending-entry remainder.
 - Phase 41 blocks completion because multi-agent review found generic NT order-template mechanics still housed in `binary_oracle_edge_taker`; extraction must remain submission-agnostic, venue-agnostic, market-agnostic, and strategy-agnostic.
 - Phase 42 blocks completion because latest-head external review exposed a public shared-builder validation asymmetry after Phase 41 extraction.
+- Phase 43 blocks completion because latest-head Claude review found the Phase 42 direct shared-builder regression did not enumerate every affected triggered factory variant.
 
 ## Parallel Opportunities
 

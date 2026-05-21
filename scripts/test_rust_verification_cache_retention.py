@@ -709,6 +709,20 @@ test "$actual" = '-ax|-o|pid=|-o|command='
 
 
 def assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd() -> None:
+    failures: list[AssertionError] = []
+    for _ in range(3):
+        try:
+            assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd_once()
+            return
+        except AssertionError as exc:
+            failures.append(exc)
+            if "insufficient_process_visibility" not in str(exc):
+                raise
+            time.sleep(0.05)
+    raise failures[-1]
+
+
+def assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd_once() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         repo = tmp_path / "repo"
@@ -1719,6 +1733,7 @@ def assert_v6_red_active_process_parser_gaps() -> None:
         "docker run -v /tmp/repo:/repo rust cargo build",
         "npm run cargo-build",
         "python scripts/build.py",
+        "sudo sudo sudo sudo sudo sudo sudo cargo test",
         "bash -c 'bash -c \"bash -c \\'bash -c \\\\\\'bash -c \\\\\\\\\\\\\\'bash -c \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\'cargo build\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\'\\\\\\\\\\\\\\'\\'\"'",
     ]
     misses: list[str] = []

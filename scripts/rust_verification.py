@@ -78,6 +78,8 @@ OPAQUE_RUST_LAUNCHERS = {
     "xargs",
     "zsh",
 }
+PROCESS_PARSE_DEPTH_LIMIT = 6
+PROCESS_PARSE_DEPTH_EXCEEDED = "__process_parse_depth_exceeded__"
 SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")"}
 SHELL_BOUNDARY_TOKEN_RE = re.compile(r"([;&|(){}!]+)")
 
@@ -1119,9 +1121,11 @@ def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
     # Depth cap guards against pathological re-tokenisation loops while
     # leaving headroom for realistic legitimate wrapper stacks. A supported
     # chain like `sudo nice env -i bash -c 'rustup run stable cargo test'`
-    # reaches `cargo` at depth 5; cap 6 keeps one slot of safety margin.
-    if not tokens or depth > 6:
+    # reaches `cargo` at depth 5; the cap keeps one slot of safety margin.
+    if not tokens:
         return set()
+    if depth > PROCESS_PARSE_DEPTH_LIMIT:
+        return {PROCESS_PARSE_DEPTH_EXCEEDED}
     assignment_index = consume_assignment_words(tokens, 0)
     if assignment_index >= len(tokens):
         return set()
@@ -1190,8 +1194,10 @@ def tokens_have_rustc_specific_flags(tokens: list[str]) -> bool:
 
 
 def tokens_may_be_renamed_rustc(tokens: list[str], *, depth: int = 0) -> bool:
-    if not tokens or depth > 6:
+    if not tokens:
         return False
+    if depth > PROCESS_PARSE_DEPTH_LIMIT:
+        return True
     assignment_index = consume_assignment_words(tokens, 0)
     if assignment_index >= len(tokens):
         return False
@@ -1220,6 +1226,8 @@ def command_may_launch_rust(command: str) -> bool:
     if executable_is_rust_tool(executable):
         return True
     names = process_names_from_tokens(tokens)
+    if PROCESS_PARSE_DEPTH_EXCEEDED in names:
+        return True
     if any(executable_is_rust_tool(name) or name == "nextest" for name in names):
         return True
     cargo_specific_tokens = {"--manifest-path", "--workspace", "--all-targets", "--all-features"}
@@ -1248,8 +1256,10 @@ def command_may_be_renamed_cargo(command: str) -> bool:
 
 
 def tokens_may_be_renamed_cargo(tokens: list[str], *, depth: int = 0) -> bool:
-    if not tokens or depth > 6:
+    if not tokens:
         return False
+    if depth > PROCESS_PARSE_DEPTH_LIMIT:
+        return True
     assignment_index = consume_assignment_words(tokens, 0)
     if assignment_index >= len(tokens):
         return False

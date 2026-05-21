@@ -1082,10 +1082,12 @@ def shell_command(tokens: list[str]) -> str | None:
 
 def source_build_tool_from_token(token: str) -> str | None:
     token = token.rstrip("/")
+    lower_token = token.lower()
     for tool in CI_SOURCE_BUILD_TOOLS:
-        if token == tool or token.startswith(f"{tool}@"):
+        lower_tool = tool.lower()
+        if lower_token == lower_tool or lower_token.startswith(f"{lower_tool}@"):
             return tool
-        if token.endswith(f"/{tool}") or token.endswith(f"/{tool}.git"):
+        if lower_token.endswith(f"/{lower_tool}") or lower_token.endswith(f"/{lower_tool}.git"):
             return tool
     return None
 
@@ -1145,14 +1147,30 @@ def cargo_install_source_build_tools(
     return tools
 
 
+def source_build_tools_from_depth_exceeded_tokens(
+    tokens: list[str],
+    source_path_tools: dict[str, str] | None,
+) -> set[str]:
+    if "install" not in tokens:
+        return set()
+    tools: set[str] = set()
+    for token in tokens:
+        tool = source_build_tool_for_path(token, source_path_tools)
+        if tool is not None:
+            tools.add(tool)
+    return tools
+
+
 def cargo_install_source_build_tools_from_tokens(
     tokens: list[str],
     *,
     depth: int = 0,
     source_path_tools: dict[str, str] | None = None,
 ) -> set[str]:
-    if not tokens or depth > 6:
+    if not tokens:
         return set()
+    if depth > 6:
+        return source_build_tools_from_depth_exceeded_tokens(tokens, source_path_tools)
     tools: set[str] = set()
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
@@ -2265,11 +2283,11 @@ def shell_line_references_variable(line: str, variable: str) -> bool:
 
 def aws_s3_line_mentions_active_target(line: str) -> bool:
     active_target_patterns = (
-        r"(?:^|[\s\"'])(?:\.?/)?target(?:[\s/\"']|$)",
-        r"(?:^|[\s\"'])(?:[\"']?\$CARGO_TARGET_DIR[\"']?|\$\{CARGO_TARGET_DIR[^}]*\})(?:/(?:\./)?[^\s\"']*)?(?:[\s\"']|$)",
-        r"(?:^|[\s\"'])(?:[\"']?\$GITHUB_WORKSPACE[\"']?|\$\{GITHUB_WORKSPACE[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)",
-        r"(?:^|[\s\"'])(?:[\"']?\$PWD[\"']?|\$\{PWD[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)",
-        r"(?:^|[\s\"'])\$\{\{\s*(?:github\.workspace|env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}(?:/(?:\./)?(?:target(?:/[^\s\"']*)?|[^\s\"']*))?(?:[\s\"']|$)",
+        r"(?:^|[\s\"'])(?:\.?/)?target(?:[\s/\"');&|{}]|$)",
+        r"(?:^|[\s\"'])(?:[\"']?\$CARGO_TARGET_DIR[\"']?|\$\{CARGO_TARGET_DIR[^}]*\})(?:/(?:\./)?[^\s\"']*)?(?:[\s\"');&|{}]|$)",
+        r"(?:^|[\s\"'])(?:[\"']?\$GITHUB_WORKSPACE[\"']?|\$\{GITHUB_WORKSPACE[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"');&|{}]|$)",
+        r"(?:^|[\s\"'])(?:[\"']?\$PWD[\"']?|\$\{PWD[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"');&|{}]|$)",
+        r"(?:^|[\s\"'])\$\{\{\s*(?:github\.workspace|env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}(?:/(?:\./)?(?:target(?:/[^\s\"']*)?|[^\s\"']*))?(?:[\s\"');&|{}]|$)",
     )
     return any(re.search(pattern, line) for pattern in active_target_patterns)
 
@@ -2385,6 +2403,15 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         and "S3 active mutable target cache must be rejected" not in errors
     ):
         errors.append("S3 active mutable target cache must be rejected")
+    if "S3 active mutable target cache must be rejected" not in errors:
+        for line in text.splitlines():
+            if (
+                re.search(r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b", line)
+                and "s3://" in line
+                and aws_s3_line_mentions_active_target(line)
+            ):
+                errors.append("S3 active mutable target cache must be rejected")
+                break
     if (
         text_has_s3_variable_active_target_sync(text)
         and "S3 active mutable target cache must be rejected" not in errors

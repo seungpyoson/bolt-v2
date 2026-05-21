@@ -1326,6 +1326,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "S3 active mutable target cache must be rejected",
         ),
         (
+            "aws s3 sync $(echo target) s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
             'SRC_DIR=target/debug\naws s3 sync "$SRC_DIR" s3://bolt-v2-active-cache/target/debug',
             "S3 active mutable target cache must be rejected",
         ),
@@ -1533,6 +1537,18 @@ def assert_v6_red_renamed_path_cargo_source_builds_are_reported() -> None:
         ),
         (
             "git clone https://github.com/EmbarkStudios/cargo-deny /tmp/my-deny\ncargo install --path /tmp/my-deny",
+            "repo automation must not compile cargo-deny from source",
+        ),
+        (
+            "cargo install --git https://github.com/EmbarkStudios/Cargo-Deny --locked",
+            "repo automation must not compile cargo-deny from source",
+        ),
+        (
+            "cargo install --git https://github.com/nextest-rs/cargo-NeXtEsT --package cargo-nextest --locked",
+            "repo automation must not compile cargo-nextest from source",
+        ),
+        (
+            "sudo sudo sudo sudo sudo sudo sudo cargo install cargo-deny --locked",
             "repo automation must not compile cargo-deny from source",
         ),
     ]

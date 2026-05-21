@@ -1109,7 +1109,8 @@ def shell_logical_lines(text: str) -> list[str]:
     normalized = text.replace("\\\r\n", " ").replace("\\\n", " ")
     for line in normalized.splitlines():
         pending = f"{pending}\n{line}" if pending else line
-        if shell_quotes_are_balanced(pending):
+        balance_text = "\n".join(strip_comment(pending_line) for pending_line in pending.splitlines())
+        if shell_quotes_are_balanced(balance_text):
             lines.append(pending)
             pending = ""
     if pending:
@@ -2052,9 +2053,22 @@ def expand_known_shell_command_variables(tokens: list[str], variables: dict[str,
     return tokens
 
 
-def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_only: bool = True) -> bool:
+def tokens_have_raw_cargo(
+    tokens: list[str],
+    *,
+    depth: int = 0,
+    allow_storage_only: bool = True,
+    variables: dict[str, str] | None = None,
+) -> bool:
     if not tokens:
         return False
+    variables = variables or {}
+    if variables:
+        tokens = merge_split_shell_parameter_assignment_tokens(tokens)
+        tokens = expand_known_shell_assignment_names(tokens, variables)
+        tokens = expand_known_shell_command_variables(tokens, variables)
+        if not tokens:
+            return False
     if depth > 6:
         return True
     if allow_storage_only and tokens_have_target_routing_override(tokens):
@@ -2063,7 +2077,7 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
         segment: list[str] = []
         cargo_aliases: set[str] = set()
         cargo_alias_payloads: dict[str, str] = {}
-        shell_variables: dict[str, str] = {}
+        shell_variables: dict[str, str] = dict(variables)
         for token in tokens:
             if token in SHELL_COMMAND_BOUNDARIES:
                 if segment and segment[0] == "alias":
@@ -2073,6 +2087,7 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
                             command_tokens(payload),
                             depth=depth + 1,
                             allow_storage_only=allow_storage_only,
+                            variables=shell_variables,
                         ):
                             return True
                     cargo_alias_payloads.update(alias_payloads)
@@ -2092,17 +2107,28 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
                         alias_tokens,
                         depth=depth + 1,
                         allow_storage_only=allow_storage_only,
+                        variables=shell_variables,
                     ):
                         return True
                 segment = expand_cargo_aliases(segment, cargo_aliases)
-                if segment and tokens_have_raw_cargo(segment, depth=depth + 1, allow_storage_only=allow_storage_only):
+                if segment and tokens_have_raw_cargo(
+                    segment,
+                    depth=depth + 1,
+                    allow_storage_only=allow_storage_only,
+                    variables=shell_variables,
+                ):
                     return True
                 segment = []
                 continue
             segment.append(token)
         if segment and segment[0] == "alias":
             return any(
-                tokens_have_raw_cargo(command_tokens(payload), depth=depth + 1, allow_storage_only=allow_storage_only)
+                tokens_have_raw_cargo(
+                    command_tokens(payload),
+                    depth=depth + 1,
+                    allow_storage_only=allow_storage_only,
+                    variables=shell_variables,
+                )
                 for payload in shell_alias_payloads(segment).values()
             )
         shell_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
@@ -2112,15 +2138,28 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
         segment = expand_known_shell_command_variables(segment, shell_variables)
         if segment and segment[0] in cargo_alias_payloads:
             alias_tokens = command_tokens(cargo_alias_payloads[segment[0]]) + segment[1:]
-            return tokens_have_raw_cargo(alias_tokens, depth=depth + 1, allow_storage_only=allow_storage_only)
+            return tokens_have_raw_cargo(
+                alias_tokens,
+                depth=depth + 1,
+                allow_storage_only=allow_storage_only,
+                variables=shell_variables,
+            )
         segment = expand_cargo_aliases(segment, cargo_aliases)
-        return bool(segment) and tokens_have_raw_cargo(segment, depth=depth + 1, allow_storage_only=allow_storage_only)
+        return bool(segment) and tokens_have_raw_cargo(
+            segment,
+            depth=depth + 1,
+            allow_storage_only=allow_storage_only,
+            variables=shell_variables,
+        )
     assignment_index = consume_assignment_words(tokens, 0)
     if assignment_index:
+        prefix_assignments, _assignment_cursor = shell_assignment_values_from_tokens(tokens[:assignment_index])
+        local_variables = {**variables, **prefix_assignments}
         return assignment_index < len(tokens) and tokens_have_raw_cargo(
             tokens[assignment_index:],
             depth=depth + 1,
             allow_storage_only=allow_storage_only,
+            variables=local_variables,
         )
     if managed_rust_verification_tokens(tokens):
         return tokens_have_target_routing_override(tokens[3:])
@@ -2133,6 +2172,7 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
             command_tokens(nested),
             depth=depth + 1,
             allow_storage_only=allow_storage_only,
+            variables=variables,
         )
     if executable == "eval":
         inner = tokens[1:]
@@ -2142,6 +2182,7 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
             command_tokens(" ".join(inner)),
             depth=depth + 1,
             allow_storage_only=allow_storage_only,
+            variables=variables,
         )
     if executable == "no-mistakes":
         inner = no_mistakes_inner_tokens(tokens)
@@ -2149,15 +2190,26 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
             return False
         if inner and raw_rust_tool_token(pathlib.Path(inner[0]).name):
             return True
-        return tokens_have_raw_cargo(inner, depth=depth + 1, allow_storage_only=allow_storage_only)
+        return tokens_have_raw_cargo(
+            inner,
+            depth=depth + 1,
+            allow_storage_only=allow_storage_only,
+            variables=variables,
+        )
     if executable == "env":
         inner = env_inner_tokens(tokens)
-        return inner is not None and tokens_have_raw_cargo(inner, depth=depth + 1, allow_storage_only=allow_storage_only)
+        return inner is not None and tokens_have_raw_cargo(
+            inner,
+            depth=depth + 1,
+            allow_storage_only=allow_storage_only,
+            variables=variables,
+        )
     if executable == "rustup" and len(tokens) >= 3 and tokens[1] == "run":
         return tokens_have_raw_cargo(
             rustup_run_inner_tokens(tokens),
             depth=depth + 1,
             allow_storage_only=allow_storage_only,
+            variables=variables,
         )
     if executable.startswith("python"):
         for index, token in enumerate(tokens):
@@ -2166,7 +2218,12 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
     if executable == "flock":
         inner = flock_inner_tokens(tokens)
         if inner is not None:
-            return tokens_have_raw_cargo(inner, depth=depth + 1, allow_storage_only=allow_storage_only)
+            return tokens_have_raw_cargo(
+                inner,
+                depth=depth + 1,
+                allow_storage_only=allow_storage_only,
+                variables=variables,
+            )
     if executable in {
         "catchsegv",
         "chrt",
@@ -2186,7 +2243,12 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
     }:
         inner = wrapper_inner_tokens(tokens)
         if inner is not None:
-            return tokens_have_raw_cargo(inner, depth=depth + 1, allow_storage_only=allow_storage_only)
+            return tokens_have_raw_cargo(
+                inner,
+                depth=depth + 1,
+                allow_storage_only=allow_storage_only,
+                variables=variables,
+            )
     for index, token in enumerate(tokens):
         name = pathlib.Path(token).name
         if name == "cargo" and cargo_token_is_command(tokens, index):
@@ -2202,8 +2264,8 @@ def command_has_raw_cargo(command: str) -> bool:
     return tokens_have_raw_cargo(command_tokens(command))
 
 
-def tokens_have_raw_cargo_launch(tokens: list[str]) -> bool:
-    return tokens_have_raw_cargo(tokens, allow_storage_only=False)
+def tokens_have_raw_cargo_launch(tokens: list[str], *, variables: dict[str, str] | None = None) -> bool:
+    return tokens_have_raw_cargo(tokens, allow_storage_only=False, variables=variables)
 
 
 def tokens_are_rust_version_probe(tokens: list[str]) -> bool:
@@ -2222,22 +2284,33 @@ def tokens_are_rust_version_probe(tokens: list[str]) -> bool:
     return False
 
 
-def tokens_have_repo_automation_raw_cargo(tokens: list[str]) -> bool:
+def tokens_have_repo_automation_raw_cargo(
+    tokens: list[str],
+    *,
+    variables: dict[str, str] | None = None,
+) -> bool:
     if not tokens:
         return False
+    variables = variables or {}
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
+        segment_variables = dict(variables)
         for token in tokens:
             if token in SHELL_COMMAND_BOUNDARIES:
-                if tokens_have_repo_automation_raw_cargo(segment):
+                assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
+                if is_persistent_assignment:
+                    segment_variables.update(assignments)
+                    segment = []
+                    continue
+                if tokens_have_repo_automation_raw_cargo(segment, variables=segment_variables):
                     return True
                 segment = []
                 continue
             segment.append(token)
-        return tokens_have_repo_automation_raw_cargo(segment)
+        return tokens_have_repo_automation_raw_cargo(segment, variables=segment_variables)
     if tokens_are_rust_version_probe(tokens):
         return False
-    return tokens_have_raw_cargo_launch(tokens)
+    return tokens_have_raw_cargo_launch(tokens, variables=variables)
 
 
 def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
@@ -2275,7 +2348,7 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
             continue
         tokens = expand_known_shell_assignment_names(tokens, shell_variables)
         tokens = expand_known_shell_command_variables(tokens, shell_variables)
-        if tokens_have_repo_automation_raw_cargo(tokens):
+        if tokens_have_repo_automation_raw_cargo(tokens, variables=shell_variables):
             errors.append("repo automation raw Cargo must use managed rust_verification wrapper")
             break
     return errors
@@ -2971,6 +3044,11 @@ def shell_assignment_alias_value(value: str, target_keys: dict[str, str]) -> str
     target_key = target_env_key_alias(value, target_keys)
     if target_key is not None:
         return target_key
+    clean = storage_strip_quotes(value)
+    for pattern in (r"\$\(\s*echo\s+([A-Za-z_][A-Za-z0-9_]*)\s*\)", r"`\s*echo\s+([A-Za-z_][A-Za-z0-9_]*)\s*`"):
+        match = re.fullmatch(pattern, clean)
+        if match and match.group(1) in target_keys:
+            return match.group(1)
     return shell_identifier_fragment(value)
 
 
@@ -3150,14 +3228,35 @@ def dynamic_env_tokens_messages(
     depth: int = 0,
 ) -> set[str]:
     messages: set[str] = set()
+    for segment in shell_command_segments_from_tokens(tokens):
+        messages.update(dynamic_env_segment_messages(segment, assignments, target_keys, depth=depth))
+    return messages
+
+
+def shell_command_segments_from_tokens(tokens: list[str]) -> list[list[str]]:
+    segments: list[list[str]] = []
     segment: list[str] = []
-    for token in merge_split_shell_parameter_assignment_tokens(tokens) + [";"]:
+    expanded = merge_split_shell_parameter_assignment_tokens(tokens)
+    index = 0
+    while index < len(expanded):
+        assignment = shell_assignment_from_tokens(expanded, index)
+        if assignment is not None:
+            _name, _value, next_index = assignment
+            segment.extend(expanded[index:next_index])
+            index = next_index
+            continue
+        token = expanded[index]
         if token in SHELL_COMMAND_BOUNDARIES:
-            messages.update(dynamic_env_segment_messages(segment, assignments, target_keys, depth=depth))
+            if segment:
+                segments.append(segment)
             segment = []
+            index += 1
             continue
         segment.append(token)
-    return messages
+        index += 1
+    if segment:
+        segments.append(segment)
+    return segments
 
 
 def dynamic_env_target_override_messages(text: str) -> set[str]:
@@ -3168,37 +3267,20 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
         "CARGO_TARGET_TMPDIR": "CARGO_TARGET_TMPDIR raw target override must be classified",
     }
     assignments: dict[str, str] = {}
-    for name, value in storage_assignment_values(text):
-        assignments[name] = shell_assignment_tracking_value(value, target_keys)
-    for line in shell_logical_lines(text):
-        line_tokens = command_tokens(strip_comment(line))
-        line_assignments, is_persistent_assignment = persistent_shell_assignment_values(line_tokens)
-        for name, value in line_assignments.items():
-            if is_persistent_assignment:
-                alias_value = shell_assignment_alias_value(value, target_keys)
-                if alias_value is not None:
-                    assignments[name] = alias_value
-                elif name not in assignments:
-                    assignments[name] = storage_strip_quotes(value)
     for line in shell_logical_lines(text):
         stripped = strip_comment(line).strip()
         if not stripped:
             continue
-        segment: list[str] = []
-        for token in command_tokens(stripped) + [";"]:
-            if token in SHELL_COMMAND_BOUNDARIES:
-                segment_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
-                for name, value in segment_assignments.items():
-                    if is_persistent_assignment:
-                        alias_value = shell_assignment_alias_value(value, target_keys)
-                        if alias_value is not None:
-                            assignments[name] = alias_value
-                        elif name not in assignments:
-                            assignments[name] = storage_strip_quotes(value)
-                segment = []
-                continue
-            segment.append(token)
-        messages.update(dynamic_env_tokens_messages(command_tokens(stripped), assignments, target_keys))
+        for segment in shell_command_segments_from_tokens(command_tokens(stripped)):
+            messages.update(dynamic_env_segment_messages(segment, assignments, target_keys))
+            segment_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
+            for name, value in segment_assignments.items():
+                if is_persistent_assignment:
+                    alias_value = shell_assignment_alias_value(value, target_keys)
+                    if alias_value is not None:
+                        assignments[name] = alias_value
+                    else:
+                        assignments[name] = shell_assignment_tracking_value(value, target_keys)
     return messages
 
 

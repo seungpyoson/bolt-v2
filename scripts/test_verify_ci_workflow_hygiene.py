@@ -1217,6 +1217,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --target-dir raw target override must be classified",
         ),
         (
+            'VAR=CARGO; eval "${VAR}_TARGET_DIR=/tmp/raw cargo check"; VAR=BENIGN',
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
             "E=$(echo CARGO_TARGET_DIR); export $E=/tmp/raw-target; cargo check",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
@@ -2052,6 +2056,8 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "scripts/raw.sh": "#!/usr/bin/env bash\ncargo build\n",
             "scripts/multiline-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo build\"\nbash -c \"$CMD\"\n",
             "scripts/multiline-quoted-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo\nbuild --target-dir /tmp/raw\"\nbash -c \"$CMD\"\n",
+            "scripts/comment-blind.sh": "# comment with unbalanced quote '\ncargo build\necho 'closing quote'\n",
+            "scripts/nested-var-eval.sh": "CMD=\"cargo build\"\nbash -c \"echo benign; eval $CMD\"\n",
             "scripts/raw-guard-text.sh": '#!/usr/bin/env bash\necho "Missing BOLT_MANAGED_JUST, exit 1"\ncargo build\n',
             "scripts/symlink-cargo.sh": "ln -s $(which cargo) /tmp/mycargo\n/tmp/mycargo build --target-dir /tmp/raw\n",
             "scripts/copy-cargo.sh": "cp $(which cargo) /tmp/mycargo\n/tmp/mycargo build\n",
@@ -2084,6 +2090,10 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"script multiline eval raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/multiline-quoted-eval.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script multiline quoted eval raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/comment-blind.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script comment-blinded raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/nested-var-eval.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script nested variable eval raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-guard-text.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script guard-text raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/symlink-cargo.sh" in error and "cargo --target-dir raw target override" in error for error in repo_errors):

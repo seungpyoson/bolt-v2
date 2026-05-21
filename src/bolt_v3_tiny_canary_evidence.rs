@@ -11,7 +11,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
+    bolt_v3_live_canary_gate::{
+        BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_pre_consumption_gate,
+    },
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
     },
@@ -496,7 +498,8 @@ pub async fn evaluate_phase8_canary_preflight(
         }
     };
 
-    let no_submit_report_status = match check_bolt_v3_live_canary_gate(loaded).await {
+    let no_submit_report_status = match check_bolt_v3_live_canary_pre_consumption_gate(loaded).await
+    {
         Ok(_) => Phase8CanaryPreflightStatus::AcceptedByGate,
         Err(BoltV3LiveCanaryGateError::ReadinessReportRead { .. }) => {
             block_reasons.push(Phase8CanaryBlockReason::MissingNoSubmitReadinessReport);
@@ -1234,6 +1237,17 @@ fn phase8_reject_parent_dir(path: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn phase8_resolve_configured_path(root_path: &Path, configured: &str) -> PathBuf {
+    let path = PathBuf::from(configured.trim());
+    if path.is_absolute() {
+        return path;
+    }
+    root_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(path)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phase8OperatorApprovalEnvelope {
     pub head_sha: String,
@@ -1372,7 +1386,8 @@ impl Phase8OperatorApprovalEnvelope {
             current_root_toml_sha256,
             live_canary_approval_id,
         )?;
-        self.validate_approval_not_consumed()?;
+        let approval_consumption_path = self.approval_consumption_path_against(loaded)?;
+        self.validate_approval_not_consumed(&approval_consumption_path)?;
         self.validate_approval_window(current_unix_secs)?;
         self.validate_financial_envelope_against(loaded)?;
         self.validate_pre_run_state_against(loaded)?;
@@ -1386,11 +1401,16 @@ impl Phase8OperatorApprovalEnvelope {
         loaded: &LoadedBoltV3Config,
         current_unix_secs: i64,
     ) -> Result<()> {
-        self.validate_approval_not_consumed()?;
+        let approval_consumption_path = self.approval_consumption_path_against(loaded)?;
+        self.validate_approval_not_consumed(&approval_consumption_path)?;
         self.validate_approval_window(current_unix_secs)?;
         self.validate_approval_nonce()?;
         let strategy_cancel_path = self.validate_strategy_cancel_path_against(loaded)?;
-        self.write_approval_consumption_evidence(current_unix_secs, strategy_cancel_path)
+        self.write_approval_consumption_evidence(
+            current_unix_secs,
+            strategy_cancel_path,
+            &approval_consumption_path,
+        )
     }
 
     fn validate_financial_envelope_against(&self, loaded: &LoadedBoltV3Config) -> Result<()> {
@@ -1459,6 +1479,49 @@ impl Phase8OperatorApprovalEnvelope {
         }
     }
 
+    fn approval_consumption_path_against(&self, loaded: &LoadedBoltV3Config) -> Result<PathBuf> {
+        let configured = loaded
+            .root
+            .live_canary
+            .as_ref()
+            .and_then(|block| block.operator_evidence.as_ref())
+            .map(|evidence| evidence.approval_consumption_path.as_str())
+            .ok_or_else(|| {
+                anyhow!(
+                    "phase8 operator approval approval_consumption_path cannot be validated because `[live_canary].operator_evidence.approval_consumption_path` is not configured"
+                )
+            })?;
+        phase8_reject_parent_dir(
+            &self.approval_consumption_path,
+            "operator approval approval_consumption_path",
+        )?;
+        phase8_reject_parent_dir(
+            configured,
+            "`[live_canary].operator_evidence.approval_consumption_path`",
+        )?;
+        let approved_path =
+            phase8_resolve_configured_path(&loaded.root_path, &self.approval_consumption_path);
+        let configured_path = phase8_resolve_configured_path(&loaded.root_path, configured);
+        if approved_path != configured_path {
+            return Err(anyhow!(
+                "phase8 operator approval approval_consumption_path does not match `[live_canary].operator_evidence.approval_consumption_path`"
+            ));
+        }
+        Ok(configured_path)
+    }
+
+    fn validate_approval_not_consumed(&self, path: &Path) -> Result<()> {
+        if path.try_exists().map_err(|source| {
+            anyhow!(
+                "failed to inspect phase8 operator approval consumption `{}`: {source}",
+                path.display()
+            )
+        })? {
+            return Err(self.approval_already_consumed_error(path));
+        }
+        Ok(())
+    }
+
     fn read_financial_envelope(&self) -> Result<Phase8FinancialEnvelopeEvidenceFile> {
         let path = Path::new(&self.financial_envelope_path);
         Self::read_json_file_with_expected_sha256(
@@ -1494,19 +1557,6 @@ impl Phase8OperatorApprovalEnvelope {
         Ok(())
     }
 
-    fn validate_approval_not_consumed(&self) -> Result<()> {
-        let path = Path::new(&self.approval_consumption_path);
-        if path.try_exists().map_err(|source| {
-            anyhow!(
-                "failed to inspect phase8 operator approval consumption `{}`: {source}",
-                path.display()
-            )
-        })? {
-            return Err(self.approval_already_consumed_error());
-        }
-        Ok(())
-    }
-
     fn validate_approval_nonce(&self) -> Result<()> {
         let current_nonce_sha256 = Self::sha256_file(&self.approval_nonce_path)?;
         if self.approval_nonce_sha256 != current_nonce_sha256 {
@@ -1521,8 +1571,8 @@ impl Phase8OperatorApprovalEnvelope {
         &self,
         current_unix_secs: i64,
         strategy_cancel_path: Option<&str>,
+        path: &Path,
     ) -> Result<()> {
-        let path = Path::new(&self.approval_consumption_path);
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -1563,7 +1613,7 @@ impl Phase8OperatorApprovalEnvelope {
             .create_new(true)
             .open(path)
             .map_err(|source| match source.kind() {
-                std::io::ErrorKind::AlreadyExists => self.approval_already_consumed_error(),
+                std::io::ErrorKind::AlreadyExists => self.approval_already_consumed_error(path),
                 _ => anyhow!(
                     "failed to create phase8 operator approval consumption `{}`: {source}",
                     path.display()
@@ -1586,10 +1636,10 @@ impl Phase8OperatorApprovalEnvelope {
         Ok(())
     }
 
-    fn approval_already_consumed_error(&self) -> anyhow::Error {
+    fn approval_already_consumed_error(&self, path: &Path) -> anyhow::Error {
         anyhow!(
             "phase8 operator approval consumption `{}` already consumed; refusing to replay",
-            self.approval_consumption_path
+            path.display()
         )
     }
 

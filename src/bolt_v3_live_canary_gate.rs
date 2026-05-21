@@ -168,6 +168,9 @@ pub enum BoltV3LiveCanaryGateError {
         path: PathBuf,
         source: std::io::Error,
     },
+    OperatorApprovalConsumptionAlreadyExistsBeforeRunner {
+        path: PathBuf,
+    },
     OperatorApprovalConsumptionParse {
         path: PathBuf,
         source: serde_json::Error,
@@ -349,6 +352,13 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                 "failed to read bolt-v3 live canary approval consumption proof {}: {source}",
                 path.display()
             ),
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionAlreadyExistsBeforeRunner {
+                path,
+            } => write!(
+                f,
+                "bolt-v3 live canary approval consumption proof {} already exists before live runner entry validation",
+                path.display()
+            ),
             BoltV3LiveCanaryGateError::OperatorApprovalConsumptionParse { path, source } => write!(
                 f,
                 "failed to parse bolt-v3 live canary approval consumption proof {}: {source}",
@@ -501,9 +511,39 @@ pub async fn check_bolt_v3_live_canary_gate(
     check_bolt_v3_live_canary_gate_with_clock(loaded, current_unix_seconds).await
 }
 
+pub async fn check_bolt_v3_live_canary_pre_consumption_gate(
+    loaded: &LoadedBoltV3Config,
+) -> Result<BoltV3LiveCanaryGateReport, BoltV3LiveCanaryGateError> {
+    check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
+        loaded,
+        current_unix_seconds,
+        ApprovalConsumptionExpectation::DeferredUntilLiveRunnerEntry,
+    )
+    .await
+}
+
 async fn check_bolt_v3_live_canary_gate_with_clock(
     loaded: &LoadedBoltV3Config,
     mut unix_seconds: impl FnMut() -> Result<u64, BoltV3LiveCanaryGateError>,
+) -> Result<BoltV3LiveCanaryGateReport, BoltV3LiveCanaryGateError> {
+    check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
+        loaded,
+        &mut unix_seconds,
+        ApprovalConsumptionExpectation::MustExistAndBeValid,
+    )
+    .await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalConsumptionExpectation {
+    MustExistAndBeValid,
+    DeferredUntilLiveRunnerEntry,
+}
+
+async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
+    loaded: &LoadedBoltV3Config,
+    mut unix_seconds: impl FnMut() -> Result<u64, BoltV3LiveCanaryGateError>,
+    approval_consumption_expectation: ApprovalConsumptionExpectation,
 ) -> Result<BoltV3LiveCanaryGateReport, BoltV3LiveCanaryGateError> {
     let block = loaded
         .root
@@ -586,6 +626,7 @@ async fn check_bolt_v3_live_canary_gate_with_clock(
         approval_id,
         initial_unix_seconds,
         initial_unix_seconds,
+        approval_consumption_expectation,
     )
     .await?;
 
@@ -646,6 +687,7 @@ async fn check_bolt_v3_live_canary_gate_with_clock(
         approval_id,
         late_unix_seconds,
         initial_unix_seconds,
+        approval_consumption_expectation,
     )
     .await?;
 
@@ -735,6 +777,7 @@ async fn validate_operator_evidence(
     approval_id: &str,
     approval_window_unix_seconds: u64,
     approval_consumption_freshness_unix_seconds: u64,
+    approval_consumption_expectation: ApprovalConsumptionExpectation,
 ) -> Result<(), BoltV3LiveCanaryGateError> {
     let evidence = block
         .operator_evidence
@@ -802,6 +845,7 @@ async fn validate_operator_evidence(
         approval_id,
         approval_window_unix_seconds,
         approval_consumption_freshness_unix_seconds,
+        approval_consumption_expectation,
     )
     .await?;
 
@@ -857,20 +901,39 @@ async fn validate_operator_approval_consumption(
     approval_id: &str,
     approval_window_unix_seconds: u64,
     approval_consumption_freshness_unix_seconds: u64,
+    approval_consumption_expectation: ApprovalConsumptionExpectation,
 ) -> Result<(), BoltV3LiveCanaryGateError> {
     let path = resolve_configured_path(
         root_path,
         "approval_consumption_path",
         &evidence.approval_consumption_path,
     )?;
-    let bytes = read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes)
-        .await
-        .map_err(
-            |source| BoltV3LiveCanaryGateError::OperatorApprovalConsumptionRead {
-                path: path.clone(),
-                source,
+    let bytes =
+        match read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes).await {
+            Ok(bytes) => bytes,
+            Err(source)
+                if approval_consumption_expectation
+                    == ApprovalConsumptionExpectation::DeferredUntilLiveRunnerEntry
+                    && source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return Ok(());
+            }
+            Err(source) => {
+                return Err(BoltV3LiveCanaryGateError::OperatorApprovalConsumptionRead {
+                    path: path.clone(),
+                    source,
+                });
+            }
+        };
+    if approval_consumption_expectation
+        == ApprovalConsumptionExpectation::DeferredUntilLiveRunnerEntry
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionAlreadyExistsBeforeRunner {
+                path,
             },
-        )?;
+        );
+    }
     let value: Value = serde_json::from_slice(&bytes).map_err(|source| {
         BoltV3LiveCanaryGateError::OperatorApprovalConsumptionParse {
             path: path.clone(),
@@ -1597,9 +1660,9 @@ mod tests {
         },
         bolt_v3_live_canary_gate::{
             APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
-            APPROVAL_ID_HASH_KEY, BoltV3LiveCanaryGateError, CONFIG_BUNDLE_CHECKSUM_KEY,
-            CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY,
-            GENERATED_AT_UNIX_SECONDS_KEY, LIVE_NODE_BUILD_STAGE,
+            APPROVAL_ID_HASH_KEY, ApprovalConsumptionExpectation, BoltV3LiveCanaryGateError,
+            CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE,
+            EXECUTABLE_IDENTITY_KEY, GENERATED_AT_UNIX_SECONDS_KEY, LIVE_NODE_BUILD_STAGE,
             NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
             REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
             STATUS_KEY, STATUS_SATISFIED, check_bolt_v3_live_canary_gate_with_clock,
@@ -1801,6 +1864,7 @@ mod tests {
             approval_id,
             late_unix_seconds,
             initial_unix_seconds,
+            ApprovalConsumptionExpectation::MustExistAndBeValid,
         )
         .await
         .expect("late revalidation must not re-age an initially fresh approval consumption proof");

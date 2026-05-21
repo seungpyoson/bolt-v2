@@ -157,6 +157,12 @@ impl TempCaseDir {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    pub fn persist(self) -> PathBuf {
+        let path = self.path.clone();
+        std::mem::forget(self);
+        path
+    }
 }
 
 pub fn repo_path(relative: &str) -> PathBuf {
@@ -331,17 +337,18 @@ fn sha256_file(path: &Path) -> String {
     sha256_hex(&fs::read(path).expect("dummy operator evidence should be readable"))
 }
 
-pub fn validated_bolt_v3_live_canary_gate_report(
+pub fn loaded_bolt_v3_live_canary_with_satisfied_report(
     max_live_order_count: u32,
     max_notional_per_order: rust_decimal::Decimal,
-) -> bolt_v2::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport {
+) -> bolt_v2::bolt_v3_config::LoadedBoltV3Config {
     let root_path = repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded =
         bolt_v2::bolt_v3_config::load_bolt_v3_config(&root_path).expect("fixture should load");
     let temp = TempCaseDir::new("bolt-v3-validated-gate-report");
-    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    let temp_path = temp.persist();
+    loaded.root.persistence.catalog_directory = temp_path.to_string_lossy().to_string();
     loaded.root.risk.default_max_notional_per_order = max_notional_per_order.to_string();
-    let report_path = temp.path().join("no-submit-readiness.json");
+    let report_path = temp_path.join("no-submit-readiness.json");
     write_satisfied_no_submit_readiness_report(&report_path, &loaded.config_bundle_checksum);
     loaded.root.live_canary = Some(bolt_v2::bolt_v3_config::LiveCanaryBlock {
         approval_id: "operator-approved-canary-001".to_string(),
@@ -357,6 +364,17 @@ pub fn validated_bolt_v3_live_canary_gate_report(
         reference_quote_probe_log_commands: true,
         operator_evidence: Some(valid_live_canary_operator_evidence()),
     });
+    loaded
+}
+
+pub fn validated_bolt_v3_live_canary_gate_report(
+    max_live_order_count: u32,
+    max_notional_per_order: rust_decimal::Decimal,
+) -> bolt_v2::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport {
+    let loaded = loaded_bolt_v3_live_canary_with_satisfied_report(
+        max_live_order_count,
+        max_notional_per_order,
+    );
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

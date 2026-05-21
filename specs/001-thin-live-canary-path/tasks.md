@@ -221,6 +221,18 @@ trade.
 - [x] T111 [US5] Address T110 external-review hardening notes: consolidate duplicate Phase 8 SHA-256 shape helpers, reject parent-directory traversal in Phase 8 env-owned paths including optional `strategy_cancel_path`, add exact-limit bounded config reader coverage, add direct `strategy_cancel_path` traversal coverage, and regular-file-check bounded config reads.
 - [x] T112 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T111 hardening slice.
 
+## Phase 14: T046 Pre-run Gate Alignment (US5)
+
+**Goal**: Remove the T046 approval-consumption ordering blocker without weakening production submit admission.
+
+**Independent Test**: Local tests prove preflight accepts a missing approval-consumption proof only before live runner entry after all other gate inputs validate, production gate still requires the proof, an already-present proof fails closed before runner entry, and env/TOML approval-consumption path drift fails closed.
+
+- [x] T113 [US5] Address the T046 approval-consumption ordering blocker: preflight may defer only the missing consumption proof before live runner entry, production gate must still require a valid proof, existing pre-run consumption proof must fail closed, invalid readiness reports must still fail closed, and env/TOML `approval_consumption_path` drift must fail closed.
+  - 2026-05-22 local evidence on uncommitted current diff: `cargo test --test bolt_v3_tiny_canary_operator -- --nocapture` passed `28 passed; 0 failed; 1 ignored`; `cargo test --test bolt_v3_live_canary_gate -- --nocapture` passed `66 passed; 0 failed`; `cargo test --test bolt_v3_no_submit_readiness -- --nocapture` passed `33 passed; 0 failed`; `cargo fmt --check` and `git diff --check` passed; new-line slop scan found no `TODO`, `fix later`, `AI slop`, `temporary`, or `placeholder` hits in added lines.
+- [ ] T114 [US5] Verify T113 with targeted local suites, formatting, diff/slop scans, exact-head PR state, and five-reviewer consensus from Gemini, Claude subscription/OAuth, GLM, DeepSeek, and Kimi on the final current diff.
+- [ ] T115 [US5] After T113/T114 are committed and pushed, prepare a fresh exact-head T046 operator packet binding current binary identity, root config SHA, config bundle checksum, EC2/EIP no-submit report, SSM manifest, strategy-input evidence, financial envelope, pre-run state, abort plan, nonce, and approval envelope.
+- [ ] T116 [US5] With explicit operator approval, execute T046 tiny-capital canary and store the redacted artifact with exact SHA and config checksum; keep production-readiness checklist unchecked until staged-live and production gates have independent proof.
+
 ## Out Of Scope For MVP
 
 - Backtesting engine.

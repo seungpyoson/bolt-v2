@@ -987,6 +987,35 @@ async fn live_canary_gate_rejects_oversized_approval_consumption_before_reading_
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_missing_approval_consumption_proof() {
+    let loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(
+        1,
+        rust_decimal::Decimal::new(25, 2),
+    );
+    let approval_consumption_path = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|block| block.operator_evidence.as_ref())
+        .expect("fixture should include operator evidence")
+        .approval_consumption_path
+        .clone();
+    std::fs::remove_file(&approval_consumption_path)
+        .expect("fixture should start with removable approval consumption proof");
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("production gate must reject missing approval consumption proof");
+
+    match error {
+        BoltV3LiveCanaryGateError::OperatorApprovalConsumptionRead { source, .. } => {
+            assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+        }
+        other => panic!("expected missing approval consumption proof rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_missing_operator_evidence_file_before_hashing() {
     let mut operator_evidence = valid_operator_evidence();
     let missing = std::path::Path::new(&operator_evidence.ssm_manifest_path)

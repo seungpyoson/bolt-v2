@@ -7,7 +7,8 @@ use bolt_v2::{
         PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
         Phase8EvidenceRef, Phase8LiveCanaryResultRefs, Phase8LiveOrderRef,
         Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef, Phase8StrategyInputSafetyAudit,
-        evaluate_phase8_canary_preflight, phase8_required_env, phase8_sha256_text,
+        Phase8StrategyInputSafetyInputs, evaluate_phase8_canary_preflight, phase8_required_env,
+        phase8_sha256_text,
     },
     nt_runtime_capture::spool_root_for_instance,
 };
@@ -265,6 +266,27 @@ fn phase8_operator_envelope_rejects_pre_run_state_hash_mismatch() {
     );
 }
 
+#[test]
+fn phase8_operator_envelope_rejects_approval_consumption_path_drift() {
+    let fixture = Phase8OperatorEnvelopeFixture::new();
+    fixture.assert_valid_baseline();
+
+    let mut envelope = fixture.envelope.clone();
+    envelope.approval_consumption_path = fixture
+        ._temp
+        .path()
+        .join("phase8-drifted-approval-consumed.json")
+        .to_string_lossy()
+        .to_string();
+
+    let error = fixture
+        .validate(&envelope, PHASE8_VALIDATION_UNIX_SECS)
+        .expect_err("approval consumption env/TOML path drift must fail closed");
+
+    assert_error_contains(&error, "approval_consumption_path");
+    fixture.assert_not_consumed();
+}
+
 fn assert_invalid_phase8_operator_envelope(
     mutate: impl FnOnce(&mut Phase8OperatorApprovalEnvelope),
     expected_error: &str,
@@ -338,7 +360,14 @@ impl Phase8OperatorEnvelopeFixture {
             .expect("approval nonce hash should compute");
         let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
         let root_toml_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-        let loaded = phase8_loaded_with_operator_canary("reports/no-submit-readiness.json");
+        let mut loaded = phase8_loaded_with_operator_canary("reports/no-submit-readiness.json");
+        loaded
+            .root
+            .live_canary
+            .as_mut()
+            .and_then(|block| block.operator_evidence.as_mut())
+            .expect("fixture should include operator evidence")
+            .approval_consumption_path = approval_consumption_path.to_string_lossy().to_string();
 
         Self {
             envelope: Phase8OperatorApprovalEnvelope {
@@ -421,6 +450,108 @@ fn phase8_loaded_with_operator_canary(report_path: &str) -> LoadedBoltV3Config {
         max_notional_per_order: "0.25".to_string(),
     });
     loaded
+}
+
+fn phase8_approved_strategy_audit() -> Phase8StrategyInputSafetyAudit {
+    Phase8StrategyInputSafetyAudit::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
+        realized_volatility: Decimal::new(1, 0),
+        seconds_to_market_end: 60,
+        spot_price: Decimal::new(1, 0),
+        price_to_beat_value: Decimal::new(1, 0),
+        expected_edge_basis_points: Decimal::new(1, 0),
+        worst_case_edge_basis_points: Decimal::new(1, 0),
+        theta_scaled_min_edge_bps: Decimal::new(1, 0),
+        fee_rate_basis_points: Decimal::ZERO,
+        price_to_beat_source: PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+        expected_price_to_beat_source: PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+        reference_quote_ts_event: 1,
+        pricing_kurtosis: Decimal::ZERO,
+        theta_decay_factor: Decimal::ZERO,
+    })
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn phase8_preflight_accepts_valid_gate_inputs_before_approval_consumption() {
+    let loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(1, Decimal::new(25, 2));
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+        .expect("fixture should include operator evidence");
+    std::fs::remove_file(&operator_evidence.approval_consumption_path)
+        .expect("fixture should start with removable approval consumption proof");
+
+    let preflight = evaluate_phase8_canary_preflight(
+        &loaded,
+        option_env!("BOLT_V3_BUILD_HEAD_SHA").expect("build head should be embedded"),
+        phase8_approved_strategy_audit(),
+    )
+    .await;
+
+    assert!(
+        preflight.can_enter_live_runner(),
+        "valid pre-consumption inputs should enter live runner preflight: {preflight:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn phase8_preflight_rejects_invalid_report_before_approval_consumption() {
+    let loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(1, Decimal::new(25, 2));
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should include live canary config");
+    let operator_evidence = live_canary
+        .operator_evidence
+        .as_ref()
+        .expect("fixture should include operator evidence");
+    std::fs::remove_file(&operator_evidence.approval_consumption_path)
+        .expect("fixture should start with removable approval consumption proof");
+    std::fs::write(&live_canary.no_submit_readiness_report_path, "{}")
+        .expect("fixture readiness report should be writable");
+
+    let preflight = evaluate_phase8_canary_preflight(
+        &loaded,
+        option_env!("BOLT_V3_BUILD_HEAD_SHA").expect("build head should be embedded"),
+        phase8_approved_strategy_audit(),
+    )
+    .await;
+
+    assert!(
+        !preflight.can_enter_live_runner(),
+        "invalid report must still block pre-consumption preflight"
+    );
+    assert!(
+        preflight.block_reasons.contains(
+            &bolt_v2::bolt_v3_tiny_canary_evidence::Phase8CanaryBlockReason::LiveCanaryGateRejected,
+        ),
+        "invalid report should reject through the live canary gate: {preflight:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn phase8_preflight_rejects_existing_approval_consumption_before_runner_entry() {
+    let loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(1, Decimal::new(25, 2));
+
+    let preflight = evaluate_phase8_canary_preflight(
+        &loaded,
+        option_env!("BOLT_V3_BUILD_HEAD_SHA").expect("build head should be embedded"),
+        phase8_approved_strategy_audit(),
+    )
+    .await;
+
+    assert!(
+        !preflight.can_enter_live_runner(),
+        "pre-consumption preflight must reject an already consumed approval: {preflight:?}"
+    );
+    assert!(
+        preflight.block_reasons.contains(
+            &bolt_v2::bolt_v3_tiny_canary_evidence::Phase8CanaryBlockReason::LiveCanaryGateRejected,
+        ),
+        "existing consumption proof should reject through the live canary gate: {preflight:?}"
+    );
 }
 
 fn phase8_live_canary_strategy_cancel_path(loaded: &LoadedBoltV3Config) -> Option<String> {

@@ -33,6 +33,13 @@ Live-readiness blockers:
 | P9-HIGH-002 | high | Operator claim language | Any broad "live ready" or "production ready" claim would overstate evidence. | Production-readiness contract requires claim levels and says the narrowest true claim wins. | Use the contract recommendation vocabulary for final disposition: ready for no-submit only, ready for tiny live order approval, blocked with exact blockers, or stop. |
 | P9-MED-001 | medium | Stale artifact risk | Older Phase 9 artifacts referenced retired paths, retired PR state, and stale head claims as current evidence. | This sync removes those references from current-claim artifacts and requires exact-head injection at review time. | Keep P9 review scoped to this directory plus current supporting docs. |
 
+## T038 Current-Head Evidence Update
+
+- 2026-05-21 current-head metadata audit at `7dcda025f987d80f261500ca3094fb42ab9ce9de`: `secrets check` and `secrets resolve` passed against the ignored worktree config without printing secret values.
+- Two local ignored configs differ: the worktree config SHA-256 is `85fe8e17f2ffe813d464e8f5fe1908604060b5af9c5fd79f7b22ffe770b25289` and the root repo config SHA-256 is `62e6b2dd793753e77f7042376adf6be1c9245969393c695a50e5de65946bacc7`. Future no-submit evidence must pin the absolute config path, raw config SHA, resulting `config_bundle_checksum`, exact head, and report hash.
+- Metadata-only SSM inspection showed the Binance API-key SecureString at version `1` last modified `2026-04-19T18:47:41.113000+09:00` and the Binance API-secret SecureString at version `2` last modified `2026-05-20T09:12:33.893000+09:00`. This strengthens key-secret pairing/state as the lead hypothesis, but it does not rule out IP whitelist, permissions, account, environment, or Binance-side key state.
+- Five-reviewer consensus on this slice approved the blocker classification and rejected code changes: Gemini `60d5d717-8c75-4224-8469-5d42ff67a2bf`, Claude `7d37939d-55da-43cc-9860-5d7441e03d2c`, GLM `job_fe2699da-d790-4d74-ba3a-03217b6b09b5`, DeepSeek `job_76cdd847-8126-4ae2-83a7-b322c23427a6`, and Kimi `da8ccf8d-3931-4f1c-b5f2-174fe3330e81`.
+
 ## Positive Evidence
 
 - P7 local proof passed on the previously recorded source-review head: no-submit readiness 21/21, live-canary gate 32/32, CLI no-submit command exposure 1/1.

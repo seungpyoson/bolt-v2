@@ -1136,6 +1136,10 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
             echo 'TARGET="target"' >> "$GITHUB_ENV"
             aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
         """,
+        "s3 destination hidden behind printf github env": """
+            printf 'DEST=%s\\n' "s3://bolt-v2-active-cache/target" >> "$GITHUB_ENV"
+            aws s3 sync target "$DEST"
+        """,
     }
     misses: list[str] = []
     for name, script in workflows.items():
@@ -1298,6 +1302,20 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
                 steps:
                   - run: |
                       echo -e "E=CARGO_TARGET_DIR" >> $GITHUB_ENV
+                  - run: |
+                      env $E=/tmp/raw cargo check
+            """,
+            target_expected,
+            True,
+        ),
+        (
+            "github env printf must persist target key alias into later cargo step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'E=%s\\n' CARGO_TARGET_DIR >> "$GITHUB_ENV"
                   - run: |
                       env $E=/tmp/raw cargo check
             """,
@@ -3395,6 +3413,16 @@ def main() -> int:
             BASE_WORKFLOW,
             "      - run: just deny",
             """      - run: |
+          rustup run stable cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
           RUSTFLAGS= cargo install cargo-deny --locked
           just deny""",
         ),
@@ -3466,6 +3494,46 @@ def main() -> int:
             "      - run: just deny",
             """      - run: |
           flock -o /tmp/bolt.lock cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          flock -c 'cargo install cargo-deny --locked' /tmp/bolt.lock
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          su user -c 'cargo install cargo-deny --locked'
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          runuser -u user -- cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sg group -c 'cargo install cargo-deny --locked'
           just deny""",
         ),
     )

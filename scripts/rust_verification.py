@@ -1525,12 +1525,42 @@ def command_references_scope_path(command: str, cwd: pathlib.Path | None, scopes
     return False
 
 
+def ps_process_entry(line: str) -> tuple[int, int | None, str] | None:
+    stripped = line.strip()
+    pid_text, _, rest = stripped.partition(" ")
+    if not pid_text.isdigit():
+        return None
+    rest = rest.lstrip()
+    ppid_text, _, command = rest.partition(" ")
+    if ppid_text.isdigit() and command:
+        return int(pid_text), int(ppid_text), command
+    return int(pid_text), None, rest
+
+
+def current_process_family_pids(entries: list[tuple[int, int | None, str]], current_pid: int) -> set[int]:
+    ignored = {current_pid}
+    parent = os.getppid()
+    if parent > 0:
+        ignored.add(parent)
+    parent_by_pid = {pid: ppid for pid, ppid, _command in entries if ppid is not None}
+    cursor = parent
+    for _ in range(64):
+        if cursor <= 0:
+            break
+        next_parent = parent_by_pid.get(cursor)
+        if next_parent is None or next_parent in ignored:
+            break
+        ignored.add(next_parent)
+        cursor = next_parent
+    return ignored
+
+
 def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: dict[str, Any]) -> list[dict[str, Any]]:
     patterns = active_process_patterns(policy)
     if not patterns:
         return []
     result = subprocess.run(
-        ["ps", "-ax", "-o", "pid=", "-o", "command="],
+        ["ps", "-ww", "-ax", "-o", "pid=", "-o", "ppid=", "-o", "command="],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1539,18 +1569,17 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
     if result.returncode != 0:
         raise ProcessVisibilityError("unable to inspect active processes")
     current_pid = os.getpid()
+    entries = [entry for line in result.stdout.splitlines() if (entry := ps_process_entry(line)) is not None]
+    ignored_pids = current_process_family_pids(entries, current_pid)
     related: list[dict[str, Any]] = []
     repo_scope = repo.resolve()
     target_scope = target.resolve()
     path_scopes = (repo_scope, target_scope)
     scope_texts = {str(repo), str(target), str(repo_scope), str(target_scope)}
     unscoped_match = False
-    for line in result.stdout.splitlines():
-        stripped = line.strip()
-        pid_text, _, command = stripped.partition(" ")
-        if not pid_text.isdigit() or int(pid_text) == current_pid:
+    for pid, _ppid, command in entries:
+        if pid in ignored_pids:
             continue
-        pid = int(pid_text)
         command_matches_scope = any(scope_text in command for scope_text in scope_texts)
         matched_pattern = matching_process_pattern(command, patterns)
         may_launch_renamed_cargo = matched_pattern is None and command_may_be_renamed_cargo(command)
@@ -1731,7 +1760,19 @@ def refusal_payload(*, code: str, reason: str, dry_run: bool, target: str | None
 
 
 def disk_preflight_refusal_payload(repo: pathlib.Path, policy: dict[str, Any]) -> dict[str, Any] | None:
-    status = cache_status_payload(repo)
+    try:
+        status = cache_status_payload(repo)
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        try:
+            target = str(target_dir(repo, policy))
+        except (KeyError, OSError, PolicyError):
+            target = None
+        return refusal_payload(
+            code="preflight_error",
+            reason=f"unable to inspect disk preflight: {exc}",
+            dry_run=False,
+            target=target,
+        )
     if not status.get("pressure"):
         return None
     target = str(status["target_dir"])

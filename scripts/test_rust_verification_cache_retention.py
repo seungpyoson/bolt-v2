@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import importlib.util
 import os
@@ -690,9 +692,9 @@ def assert_cache_prune_active_process_scan_uses_portable_ps_columns() -> None:
         write_executable(
             bin_dir / "ps",
             """#!/usr/bin/env bash
-actual="$1|$2|$3|$4|$5"
+actual="$1|$2|$3|$4|$5|$6|$7|$8"
 printf '%s' "$actual" > "$ARG_FILE"
-test "$actual" = '-ax|-o|pid=|-o|command='
+test "$actual" = '-ww|-ax|-o|pid=|-o|ppid=|-o|command='
 """,
         )
 
@@ -1908,6 +1910,78 @@ def assert_v6_red_active_process_parser_resolves_relative_manifest_scope() -> No
         raise AssertionError("relative --manifest-path cargo process outside repo cwd was ignored")
 
 
+def assert_v6_red_active_process_scan_ignores_current_process_ancestor() -> None:
+    owner = load_owner_module()
+    original_run = owner.subprocess.run
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "bolt-v2"
+        target = repo / "target"
+        repo.mkdir()
+        target.mkdir()
+        ancestor_pid = os.getppid()
+        external_pid = ancestor_pid + 100000
+
+        def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout=(
+                    f"{ancestor_pid} bash -c 'python3 scripts/rust_verification.py cargo --repo {repo} -- cargo clean'\n"
+                    f"{external_pid} cargo test --manifest-path {repo / 'Cargo.toml'}\n"
+                ),
+                stderr="",
+            )
+
+        owner.subprocess.run = fake_run
+        try:
+            related = owner.active_related_processes(
+                repo,
+                target,
+                {"cache": {"active_process_patterns": ["cargo", "rustc", "rust_verification.py"]}},
+            )
+        finally:
+            owner.subprocess.run = original_run
+
+    ancestor_entries = [entry for entry in related if entry.get("pid") == ancestor_pid]
+    if ancestor_entries:
+        raise AssertionError(f"current process ancestor was reported as active related process: {ancestor_entries!r}")
+    if not any(entry.get("pid") == external_pid for entry in related):
+        raise AssertionError(f"external cargo process was not reported: {related!r}")
+
+
+def assert_managed_cargo_preflight_errors_are_structured() -> None:
+    owner = load_owner_module()
+    original_cache_status_payload = owner.cache_status_payload
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp)
+        write_policy_with_cache(repo)
+
+        def failing_cache_status(_repo: pathlib.Path) -> dict[str, object]:
+            raise OSError("disk preflight unavailable")
+
+        args = type("Args", (), {"repo": str(repo), "args": ["build"]})()
+        stderr = io.StringIO()
+        owner.cache_status_payload = failing_cache_status
+        try:
+            with contextlib.redirect_stderr(stderr):
+                result = owner.cmd_cargo(args)
+        except OSError as exc:
+            raise AssertionError(f"managed cargo preflight leaked exception: {exc}") from exc
+        finally:
+            owner.cache_status_payload = original_cache_status_payload
+
+    if result != 2:
+        raise AssertionError(f"preflight error should refuse with exit 2, got {result}")
+    try:
+        payload = json.loads(stderr.getvalue())
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"preflight error did not emit structured JSON: {stderr.getvalue()!r}") from exc
+    if payload.get("refusal_code") != "preflight_error" or payload.get("refused") is not True:
+        raise AssertionError(f"unexpected preflight refusal payload: {payload!r}")
+
+
 def assert_v6_red_active_process_parser_resolves_config_target_scope() -> None:
     owner = load_owner_module()
     original_run = owner.subprocess.run
@@ -2788,6 +2862,7 @@ def assert_v6_red_policy_gaps() -> None:
         assert_v6_red_wrapper_end_of_options_does_not_overconsume_command_words,
         assert_v6_red_wrapped_renamed_cargo_launches_are_classified,
         assert_v6_red_active_process_parser_resolves_relative_manifest_scope,
+        assert_v6_red_active_process_scan_ignores_current_process_ancestor,
         assert_v6_red_active_process_parser_resolves_config_target_scope,
         assert_v6_red_active_process_parser_resolves_nested_shell_manifest_scope,
         assert_v6_red_active_process_parser_uses_command_scope_without_cwd,
@@ -2837,6 +2912,7 @@ def main() -> int:
     assert_cache_prune_apply_refuses_active_related_process()
     assert_cache_prune_apply_refuses_active_related_process_by_cwd()
     assert_cache_prune_active_process_scan_uses_portable_ps_columns()
+    assert_managed_cargo_preflight_errors_are_structured()
     assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd()
     assert_cache_prune_skips_unrelated_process_before_cwd_lookup()
     assert_cache_prune_apply_ignores_visible_unrelated_process_by_cwd()

@@ -951,6 +951,29 @@ TIME_OPTIONS_WITH_ARGUMENT = {"-f", "-o", "--format", "--output"}
 TIME_OPTIONS_WITHOUT_ARGUMENT = {"-a", "-p", "-v", "--append", "--portability", "--verbose"}
 SHELL_PUNCTUATION_CHARS = ";&|(){}!"
 SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")", "}"}
+RECURSIVE_WRAPPER_EXECUTABLES = {
+    "catchsegv",
+    "chrt",
+    "command",
+    "doas",
+    "env",
+    "exec",
+    "flock",
+    "ionice",
+    "nice",
+    "nohup",
+    "runuser",
+    "rustup",
+    "setsid",
+    "sg",
+    "stdbuf",
+    "su",
+    "sudo",
+    "taskset",
+    "time",
+    "timeout",
+    "xargs",
+}
 CARGO_PROCESS_SUBCOMMANDS = {
     "bench",
     "build",
@@ -1415,23 +1438,7 @@ def cargo_install_source_build_tools_from_tokens(
             source_path_tools=source_path_tools,
             cwd_source_tool=cwd_source_tool,
         )
-    if executable in {
-        "catchsegv",
-        "chrt",
-        "command",
-        "doas",
-        "exec",
-        "ionice",
-        "nice",
-        "nohup",
-        "setsid",
-        "stdbuf",
-        "sudo",
-        "taskset",
-        "time",
-        "timeout",
-        "xargs",
-    }:
+    if executable in RECURSIVE_WRAPPER_EXECUTABLES:
         inner = wrapper_inner_tokens(tokens)
         if inner is not None:
             return cargo_install_source_build_tools_from_tokens(
@@ -1612,6 +1619,8 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
             SUDO_OPTIONS_WITH_OPTIONAL_ARGUMENT if executable == "sudo" else None,
         )
         return tokens[index:] if index is not None else None
+    if executable == "flock":
+        return flock_inner_tokens(tokens)
     if executable == "timeout":
         index = 1
         while index < len(tokens):
@@ -2661,23 +2670,7 @@ def raw_cargo_storage_override_messages_from_tokens(
                 )
             )
         return messages
-    if executable in {
-        "catchsegv",
-        "chrt",
-        "command",
-        "doas",
-        "exec",
-        "ionice",
-        "nice",
-        "nohup",
-        "setsid",
-        "stdbuf",
-        "sudo",
-        "taskset",
-        "time",
-        "timeout",
-        "xargs",
-    }:
+    if executable in RECURSIVE_WRAPPER_EXECUTABLES:
         inner = wrapper_inner_tokens(expanded)
         if inner is not None:
             messages.update(
@@ -3043,24 +3036,10 @@ def storage_assignment_values(text: str) -> list[tuple[str, str]]:
         if match:
             assignments.append((match.group(1), match.group(2)))
             continue
-        line_tokens = command_tokens(clean)
-        if len(line_tokens) >= 4 and pathlib.Path(line_tokens[0]).name == "echo":
-            for redirect_index, token in enumerate(line_tokens):
-                if token != ">>":
-                    continue
-                target = storage_strip_quotes(line_tokens[redirect_index + 1]) if redirect_index + 1 < len(line_tokens) else ""
-                if target not in {"$GITHUB_ENV", "${GITHUB_ENV}"}:
-                    continue
-                payload_start = 1
-                while payload_start < redirect_index and re.fullmatch(r"-[neE]+", line_tokens[payload_start]):
-                    payload_start += 1
-                payload = " ".join(line_tokens[payload_start:redirect_index])
-                if "=" not in payload:
-                    continue
-                name, value = payload.split("=", 1)
-                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-                    assignments.append((name, value))
-                break
+        github_env_assignment = github_env_assignment_line(clean)
+        if github_env_assignment is not None:
+            name, value = github_env_assignment.split("=", 1)
+            assignments.append((name, value))
     return assignments
 
 
@@ -3192,10 +3171,7 @@ def aws_s3_transfer_touches_active_target(
         storage_value_roles(endpoint, variable_roles, cwd_is_active_target=cwd_is_active_target)
         for endpoint in operands
     ]
-    return (
-        any(STORAGE_ROLE_S3 in roles for roles in endpoint_roles)
-        and any(STORAGE_ROLE_ACTIVE_TARGET in roles for roles in endpoint_roles)
-    )
+    return any(STORAGE_ROLE_ACTIVE_TARGET in roles for roles in endpoint_roles)
 
 
 def storage_transfer_policy_errors(text: str) -> list[str]:
@@ -3405,23 +3381,7 @@ def dynamic_env_segment_messages(
                     depth=depth + 1,
                 )
             )
-    if command in {
-        "catchsegv",
-        "chrt",
-        "command",
-        "doas",
-        "exec",
-        "ionice",
-        "nice",
-        "nohup",
-        "setsid",
-        "stdbuf",
-        "sudo",
-        "taskset",
-        "time",
-        "timeout",
-        "xargs",
-    }:
+    if command in RECURSIVE_WRAPPER_EXECUTABLES:
         inner = wrapper_inner_tokens(expanded[cursor:])
         if inner is not None:
             messages.update(
@@ -3644,13 +3604,47 @@ def github_env_assignment_from_echo_tokens(tokens: list[str]) -> str | None:
     return None
 
 
+def github_env_assignment_from_printf_tokens(tokens: list[str]) -> str | None:
+    if len(tokens) < 4 or pathlib.Path(tokens[0]).name != "printf":
+        return None
+    for redirect_index, token in enumerate(tokens):
+        if token != ">>":
+            continue
+        target = storage_strip_quotes(tokens[redirect_index + 1]) if redirect_index + 1 < len(tokens) else ""
+        if target not in {"$GITHUB_ENV", "${GITHUB_ENV}"}:
+            continue
+        payload_tokens = tokens[1:redirect_index]
+        if not payload_tokens:
+            return None
+        if payload_tokens[0] == "--":
+            payload_tokens = payload_tokens[1:]
+        if not payload_tokens:
+            return None
+        payload = storage_strip_quotes(payload_tokens[0])
+        for value in payload_tokens[1:]:
+            if "%s" not in payload:
+                break
+            payload = payload.replace("%s", storage_strip_quotes(value), 1)
+        if "%s" in payload:
+            return None
+        payload = payload.replace("\\n", "\n").splitlines()[0].strip()
+        if "=" not in payload:
+            return None
+        name, value = payload.split("=", 1)
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            return f"{name}={shlex.quote(storage_strip_quotes(value))}"
+        return None
+    return None
+
+
 def github_env_assignment_line(line: str) -> str | None:
     clean = strip_comment(line).strip()
     tokens = command_tokens(clean)
     for segment in shell_command_segments_from_tokens(tokens):
-        assignment = github_env_assignment_from_echo_tokens(segment)
-        if assignment is not None:
-            return assignment
+        for extractor in (github_env_assignment_from_echo_tokens, github_env_assignment_from_printf_tokens):
+            assignment = extractor(segment)
+            if assignment is not None:
+                return assignment
     return None
 
 

@@ -73,6 +73,12 @@ STALE_RESEARCH_PHRASES = (
 )
 STALE_TASKS_PHRASES = (
     "Allow coherent short-side contracts while keeping incoherent long/short contracts rejected",
+    "Phase 47 blocks completion because current-head multi-agent review found forced-flat exit order semantics still synthesized as Market/TIF/reduce-only fields in strategy code rather than carried as a TOML-owned NT order template.",
+    "Phase 48 blocks completion because latest-head multi-agent review found active schema docs still describe removed market-exit fields and `manage_stop=true` can silently route non-market `forced_exit_order` configs through NT's built-in market close path.",
+    "Phase 50 blocks completion because current-head PR-body/Greptile evidence and source inspection found maker entry sizing still uses taker-side book depth and external Managed close still drops a resting pending entry without NT cancel.",
+)
+REQUIRED_TASKS_PHRASES = (
+    "Phase 51 closes the TrailingStopMarket schema-default drift and equivalent-wording verifier gap; only terminal reviewer/no-mistakes state remains open in T228.",
 )
 STALE_CONTRACT_PHRASES = (
     "Long and short position contracts are coherent.",
@@ -246,6 +252,11 @@ def validate_docs(
     for phrase in STALE_TASKS_PHRASES:
         if phrase in tasks:
             findings.append(f"tasks still contains stale phrase: {phrase}")
+
+    if tasks:
+        for phrase in REQUIRED_TASKS_PHRASES:
+            if phrase not in tasks:
+                findings.append(f"tasks missing current phrase: {phrase}")
 
     for phrase in STALE_CONTRACT_PHRASES:
         if phrase in contract:

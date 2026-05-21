@@ -502,6 +502,14 @@
 - [x] T229 [US2] RED: Add schema-current verifier regression for equivalent required/default-field wording that does not reuse the exact stale line
 - [x] T230 [US2] GREEN: Generalize the verifier to reject equivalent TrailingStopMarket default-field requirement wording without flagging optional/default-pass-through wording
 
+## Phase 52: TDD Slice 48 - Speckit Dependency Note Closure
+
+**Goal**: Resolve current-head Speckit drift where dependency notes still describe completed Phase 47, Phase 48, and Phase 50 findings as active completion blockers and omit the Phase 51 dependency note. The fix is docs/verifier-only and must not change runtime order construction or reset source/unit support boundaries.
+
+- [x] T231 [US3] RED: Add schema-current verifier regressions proving stale completed-phase dependency wording and missing Phase 51 tracking are not caught in `tasks.md`
+- [x] T232 [US3] GREEN: Update the verifier and Speckit dependency notes so completed Phase 47/48/50/51 slices are recorded as closed or pending only terminal evidence
+- [ ] T233 [US3] Verify schema-current tests, active verifier, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -547,10 +555,12 @@
 - Phase 44 blocks completion because latest-head Claude review found more direct shared-builder invariants still covered only indirectly through strategy/config paths.
 - Phase 45 blocks completion because latest-head Claude review found remaining direct-builder validation arms and order-arm post-only fail-closed checks without direct shared-builder coverage.
 - Phase 46 closes the latest-head Claude review disposition because the real triggered-factory test gap is covered directly and the proposed price validation change was rejected against pinned NT evidence.
-- Phase 47 blocks completion because current-head multi-agent review found forced-flat exit order semantics still synthesized as Market/TIF/reduce-only fields in strategy code rather than carried as a TOML-owned NT order template.
-- Phase 48 blocks completion because latest-head multi-agent review found active schema docs still describe removed market-exit fields and `manage_stop=true` can silently route non-market `forced_exit_order` configs through NT's built-in market close path.
+- Phase 47 closes the forced-exit order-template synthesis finding by routing forced-flat order semantics through TOML-owned `forced_exit_order` and the shared NT builder path.
+- Phase 48 closes the removed market-exit schema drift and `manage_stop=true` non-market forced-exit gap with active schema/verifier coverage and fail-closed config validation.
 - Phase 49 blocks broad "all NT order model surface" claims until pinned NT builder-vs-factory evidence and a TDD slice resolve or explicitly scope the remaining model-surface and runtime-price findings.
-- Phase 50 blocks completion because current-head PR-body/Greptile evidence and source inspection found maker entry sizing still uses taker-side book depth and external Managed close still drops a resting pending entry without NT cancel.
+- Phase 50 closes the current-head maker lifecycle/sizing review findings; only terminal reviewer/no-mistakes state remains open in T224.
+- Phase 51 closes the TrailingStopMarket schema-default drift and equivalent-wording verifier gap; only terminal reviewer/no-mistakes state remains open in T228.
+- Phase 52 remains open until T233 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.
 
 ## Parallel Opportunities
 

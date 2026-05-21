@@ -256,6 +256,70 @@ def test_validate_docs_rejects_equivalent_trailing_stop_market_default_field_req
             )
 
 
+def test_validate_docs_rejects_completed_phase50_blocker_wording() -> None:
+    stale_tasks = """
+- [x] T221 [US3] RED: Add regression proving post-only entry book-impact cap derives depth from the passive book side
+- [x] T222 [US3] RED: Add regression proving Managed external position close cancels a resting pending entry before flattening
+- [x] T223 [US3] GREEN: Fix strategy-owned sizing and lifecycle paths without changing shared NT order construction
+- Phase 50 blocks completion because current-head PR-body/Greptile evidence and source inspection found maker entry sizing still uses taker-side book depth and external Managed close still drops a resting pending entry without NT cancel.
+"""
+
+    findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP, tasks=stale_tasks)
+    expected_fragments = [
+        "Phase 50",
+        "taker-side book depth",
+        "without NT cancel",
+    ]
+    for fragment in expected_fragments:
+        if not any(fragment in finding for finding in findings):
+            raise AssertionError(
+                f"expected stale completed-Phase-50 fragment {fragment!r}, got {findings!r}"
+            )
+
+
+def test_validate_docs_rejects_completed_phase47_and_phase48_blocker_wording() -> None:
+    stale_tasks = """
+- [x] T209 [US3] GREEN: Add a single TOML-owned forced-exit order template path and remove the hardcoded forced-flat market-order synthesis
+- [x] T214 [US3] GREEN: Update active schema docs/verifier and add the NT manage-stop compatibility guard without adding venue or maker/taker policy
+- Phase 47 blocks completion because current-head multi-agent review found forced-flat exit order semantics still synthesized as Market/TIF/reduce-only fields in strategy code rather than carried as a TOML-owned NT order template.
+- Phase 48 blocks completion because latest-head multi-agent review found active schema docs still describe removed market-exit fields and `manage_stop=true` can silently route non-market `forced_exit_order` configs through NT's built-in market close path.
+"""
+
+    findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP, tasks=stale_tasks)
+    expected_fragments = [
+        "Phase 47",
+        "synthesized as Market/TIF/reduce-only fields",
+        "Phase 48",
+        "manage_stop=true",
+    ]
+    for fragment in expected_fragments:
+        if not any(fragment in finding for finding in findings):
+            raise AssertionError(
+                f"expected stale completed dependency fragment {fragment!r}, got {findings!r}"
+            )
+
+
+def test_validate_docs_requires_phase51_dependency_note_when_tasks_are_checked() -> None:
+    tasks_without_phase51_dependency = """
+## Phase 51: TDD Slice 47 - TrailingStopMarket Schema Default Drift
+
+- [x] T225 [P] [US2] Record current-head multi-agent and pinned NT evidence for optional `TrailingStopMarket` default fields
+- [x] T230 [US2] GREEN: Generalize the verifier to reject equivalent TrailingStopMarket default-field requirement wording without flagging optional/default-pass-through wording
+
+## Dependencies & Execution Order
+
+- Phase 50 closes the current-head maker lifecycle/sizing review findings; only terminal reviewer/no-mistakes state remains open in T224.
+"""
+
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        tasks=tasks_without_phase51_dependency,
+    )
+    if not any("Phase 51" in finding for finding in findings):
+        raise AssertionError(f"expected missing Phase 51 dependency finding, got {findings!r}")
+
+
 def test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA,
@@ -387,6 +451,9 @@ def main() -> int:
         test_validate_docs_rejects_removed_market_exit_fields_and_requires_forced_exit_order,
         test_validate_docs_rejects_trailing_stop_market_required_default_field_claims,
         test_validate_docs_rejects_equivalent_trailing_stop_market_default_field_requirements,
+        test_validate_docs_rejects_completed_phase50_blocker_wording,
+        test_validate_docs_rejects_completed_phase47_and_phase48_blocker_wording,
+        test_validate_docs_requires_phase51_dependency_note_when_tasks_are_checked,
         test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere,
         test_validate_docs_rejects_gtd_broad_support_and_live_canary_overclaims,
         test_validate_docs_rejects_equivalent_live_canary_and_broad_venue_overclaims,

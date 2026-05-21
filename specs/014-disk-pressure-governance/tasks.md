@@ -47,7 +47,7 @@
 **Independent Test**: #374 cannot proceed until Phase 1 MECE cargo invocation enumeration is present and reviewed.
 
 - [x] T011 [US2] Draft #374 Phase 1 cargo invocation enumeration in a follow-up #374 branch/PR.
-- [x] T012 [US2] Include no-mistakes command/env behavior, worktree-local target proof, and #404 wrapper residuals in #374 enumeration.
+- [x] T012 [US2] Include no-mistakes command/env behavior, worktree-local target proof, #404 wrapper residuals, and live #374 body pin/link evidence in #374 enumeration.
 - [x] T013 [US2] Add failing verifier/test for #374 selected implementation seam before changing wrapper behavior.
 - [x] T014 [US2] Add verifier coverage that blocks no-mistakes raw-Cargo drift and rejects any S3 active-target-cache path.
 - [x] T015 [US2] Implement the scoped T013/T014/T015 #374 wrapper/verifier slice after T011/T012/T013/T014 and local review; Phase 7 PR/CI/external gates remain tracked in T027-T032.

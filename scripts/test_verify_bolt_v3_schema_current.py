@@ -62,6 +62,9 @@ Short-side position contracts are parsed but rejected until strategy-owned short
 - `trailing_offset`
 - `trailing_offset_type`
 
+`trigger_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TriggerType::Default`.
+`trailing_offset_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TrailingOffsetType::Price`.
+
 Entry `is_quote_quantity = true` is supported by sizing the entry quantity as quote notional.
 Exit `is_quote_quantity = true` is rejected because exits are sized from held base position quantity.
 Forced-flat exits use the configured `forced_exit_order` template.
@@ -198,6 +201,35 @@ Normal exits use the configured `exit_order` maker/taker shape. Forced-flat exit
         raise AssertionError(f"expected missing forced_exit_order finding, got {missing_findings!r}")
 
 
+def test_validate_docs_rejects_trailing_stop_market_required_default_field_claims() -> None:
+    stale_schema = (
+        CURRENT_SCHEMA
+        + """
+#### `trigger_type`
+
+- required for `trailing_stop_market`
+
+#### `trailing_offset_type`
+
+- required for `trailing_stop_market`
+
+Current validation rejects:
+
+- `trailing_stop_market` templates without positive trigger or activation input, explicit trigger type, positive trailing offset, and trailing offset type
+"""
+    )
+
+    findings = VERIFIER.validate_docs(stale_schema, CURRENT_STATUS_MAP)
+    expected_fragments = [
+        "trigger_type",
+        "trailing_offset_type",
+        "explicit trigger type",
+    ]
+    for fragment in expected_fragments:
+        if not any(fragment in finding for finding in findings):
+            raise AssertionError(f"expected stale TrailingStopMarket fragment {fragment!r}, got {findings!r}")
+
+
 def test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA,
@@ -327,6 +359,7 @@ def main() -> int:
         test_validate_docs_rejects_stale_spec_short_side_claim,
         test_validate_docs_rejects_blanket_non_gtd_expiry_claim,
         test_validate_docs_rejects_removed_market_exit_fields_and_requires_forced_exit_order,
+        test_validate_docs_rejects_trailing_stop_market_required_default_field_claims,
         test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere,
         test_validate_docs_rejects_gtd_broad_support_and_live_canary_overclaims,
         test_validate_docs_rejects_equivalent_live_canary_and_broad_venue_overclaims,

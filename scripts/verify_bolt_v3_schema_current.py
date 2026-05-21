@@ -57,6 +57,8 @@ REQUIRED_SCHEMA_PHRASES = (
     "Exit `is_quote_quantity = true` is rejected because exits are sized from held base position quantity",
     "Forced-flat exits use the configured `forced_exit_order` template",
     "When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders",
+    "`trigger_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TriggerType::Default`",
+    "`trailing_offset_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TrailingOffsetType::Price`",
 )
 STALE_STATUS_MAP_PHRASES = (
     "Single-value enums (`RuntimeMode::Live`, `OmsType::Netting`, `CatalogFsProtocol::File`, `RotationKind::None`)",
@@ -160,6 +162,24 @@ def validate_docs(
     for phrase in REQUIRED_SCHEMA_PHRASES:
         if phrase not in schema:
             findings.append(f"schema missing current phrase: {phrase}")
+
+    trigger_type_section = extract_section(schema, "`trigger_type`")
+    if "- required for `trailing_stop_market`" in trigger_type_section:
+        findings.append("schema trigger_type section still requires TrailingStopMarket NT-defaulted field")
+
+    trailing_offset_type_section = extract_section(schema, "`trailing_offset_type`")
+    if "- required for `trailing_stop_market`" in trailing_offset_type_section:
+        findings.append(
+            "schema trailing_offset_type section still requires TrailingStopMarket NT-defaulted field"
+        )
+
+    if (
+        "trailing_stop_market` templates without positive trigger or activation input, "
+        "explicit trigger type, positive trailing offset, and trailing offset type"
+    ) in schema:
+        findings.append(
+            "schema still requires explicit trigger type and trailing offset type for TrailingStopMarket"
+        )
 
     order_type_section = extract_section(schema, "`order_type`")
     if not order_type_section:

@@ -491,6 +491,15 @@
 - [x] T223 [US3] GREEN: Fix strategy-owned sizing and lifecycle paths without changing shared NT order construction
 - [ ] T224 [US3] Verify focused strategy tests, source fences, formatting, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
 
+## Phase 51: TDD Slice 47 - TrailingStopMarket Schema Default Drift
+
+**Goal**: Resolve current-head multi-agent evidence that active schema docs still require `trigger_type` and `trailing_offset_type` for `trailing_stop_market` even though pinned NT and current code default those optional fields. The fix is docs/verifier-only and must not change runtime order construction, add venue policy, or narrow NT order-template support.
+
+- [x] T225 [P] [US2] Record current-head multi-agent and pinned NT evidence for optional `TrailingStopMarket` default fields
+- [x] T226 [US2] RED: Add schema-current verifier regression proving stale required default-field wording is not caught
+- [x] T227 [US2] GREEN: Update the verifier and active schema docs to describe NT default pass-through for omitted `trigger_type` and `trailing_offset_type`
+- [ ] T228 [US2] Verify schema-current tests, active schema verifier, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.

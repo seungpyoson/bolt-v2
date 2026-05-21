@@ -1396,8 +1396,8 @@ GTD order templates require `expire_time_unix_nanos` when the selected NT order 
 #### `trigger_type`
 
 - type: string enum backed by NautilusTrader `TriggerType`
-- required for `trailing_stop_market`
-- optional for the other triggered order types supported by the current archetype
+- optional for triggered order types supported by the current archetype
+- `trigger_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TriggerType::Default`
 - forbidden on non-triggered `limit` and `market` order templates
 - maps to the NT order factory `trigger_type` argument
 
@@ -1418,7 +1418,8 @@ GTD order templates require `expire_time_unix_nanos` when the selected NT order 
 #### `trailing_offset_type`
 
 - type: string enum backed by NautilusTrader `TrailingOffsetType`
-- required for `trailing_stop_market`
+- optional for `trailing_stop_market`
+- `trailing_offset_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TrailingOffsetType::Price`
 - forbidden on other order types
 - maps to the NT order factory `trailing_offset_type` argument
 
@@ -1464,7 +1465,7 @@ Current validation rejects:
 - non-triggered `limit` and `market` order templates with trigger or trailing fields
 - triggered order templates without a positive `trigger_price`
 - `limit_if_touched` templates whose trigger/limit relationship violates the pinned NT side invariant
-- `trailing_stop_market` templates without positive trigger or activation input, explicit trigger type, positive trailing offset, and trailing offset type
+- `trailing_stop_market` templates without positive trigger or activation input or positive trailing offset
 
 Forced-flat exits from freeze, stale-data, and thin-book predicates use the configured `forced_exit_order` template.
 

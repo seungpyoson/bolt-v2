@@ -2948,6 +2948,11 @@ def shell_assignment_alias_value(value: str, target_keys: dict[str, str]) -> str
     return shell_identifier_fragment(value)
 
 
+def shell_assignment_tracking_value(value: str, target_keys: dict[str, str]) -> str:
+    alias_value = shell_assignment_alias_value(value, target_keys)
+    return alias_value if alias_value is not None else storage_strip_quotes(value)
+
+
 def target_env_key_from_assignment_name(
     name: str,
     assignments: dict[str, str],
@@ -2996,21 +3001,33 @@ def dynamic_env_segment_messages(
         if message is not None:
             messages.add(message)
         name, value = current.split("=", 1)
-        alias_value = shell_assignment_alias_value(value, target_keys)
-        if alias_value is not None:
-            local_assignments[name] = alias_value
+        local_assignments[name] = shell_assignment_tracking_value(value, target_keys)
         cursor += 1
     if cursor >= len(expanded):
         return messages
     expanded = expanded[:cursor] + expand_known_shell_assignment_names(expanded[cursor:], local_assignments)
     command = pathlib.Path(expanded[cursor]).name
+    if command == "alias":
+        for payload in shell_alias_payloads(expanded[cursor:]).values():
+            messages.update(
+                dynamic_env_tokens_messages(
+                    command_tokens(payload),
+                    local_assignments,
+                    target_keys,
+                    depth=depth + 1,
+                )
+            )
+        return messages
     if command == "export":
         for argument in expanded[cursor + 1 :]:
             if argument in SHELL_COMMAND_BOUNDARIES:
                 break
-            message = dynamic_env_assignment_message(argument, assignments, target_keys)
+            message = dynamic_env_assignment_message(argument, local_assignments, target_keys)
             if message is not None:
                 messages.add(message)
+            if shell_assignment_word(argument):
+                name, value = argument.split("=", 1)
+                local_assignments[name] = shell_assignment_tracking_value(value, target_keys)
         return messages
     if command == "env":
         index = cursor + 1
@@ -3048,6 +3065,7 @@ def dynamic_env_segment_messages(
         if inner and inner[0] == "--":
             inner = inner[1:]
         if inner:
+            inner = expand_known_shell_variables(inner, local_assignments)
             messages.update(
                 dynamic_env_tokens_messages(
                     command_tokens(" ".join(inner)),
@@ -3059,9 +3077,37 @@ def dynamic_env_segment_messages(
     if command in ("bash", "dash", "fish", "sh", "zsh"):
         nested = shell_command(expanded[cursor:])
         if nested is not None:
+            nested_tokens = expand_known_shell_variables(command_tokens(nested), local_assignments)
             messages.update(
                 dynamic_env_tokens_messages(
-                    command_tokens(nested),
+                    nested_tokens,
+                    local_assignments,
+                    target_keys,
+                    depth=depth + 1,
+                )
+            )
+    if command in {
+        "catchsegv",
+        "chrt",
+        "command",
+        "doas",
+        "exec",
+        "ionice",
+        "nice",
+        "nohup",
+        "setsid",
+        "stdbuf",
+        "sudo",
+        "taskset",
+        "time",
+        "timeout",
+        "xargs",
+    }:
+        inner = wrapper_inner_tokens(expanded[cursor:])
+        if inner is not None:
+            messages.update(
+                dynamic_env_tokens_messages(
+                    inner,
                     local_assignments,
                     target_keys,
                     depth=depth + 1,
@@ -3097,24 +3143,28 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
     }
     assignments: dict[str, str] = {}
     for name, value in storage_assignment_values(text):
-        alias_value = shell_assignment_alias_value(value, target_keys)
-        if alias_value is not None:
-            assignments[name] = alias_value
+        assignments[name] = shell_assignment_tracking_value(value, target_keys)
     for line in text.splitlines():
         line_tokens = command_tokens(strip_comment(line))
         line_assignments, is_persistent_assignment = persistent_shell_assignment_values(line_tokens)
         for name, value in line_assignments.items():
-            alias_value = shell_assignment_alias_value(value, target_keys)
-            if alias_value is not None and is_persistent_assignment:
-                assignments[name] = alias_value
+            if is_persistent_assignment:
+                alias_value = shell_assignment_alias_value(value, target_keys)
+                if alias_value is not None:
+                    assignments[name] = alias_value
+                elif name not in assignments:
+                    assignments[name] = storage_strip_quotes(value)
     segment: list[str] = []
     for token in command_tokens(text) + [";"]:
         if token in SHELL_COMMAND_BOUNDARIES:
             segment_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
             for name, value in segment_assignments.items():
-                alias_value = shell_assignment_alias_value(value, target_keys)
-                if alias_value is not None and is_persistent_assignment:
-                    assignments[name] = alias_value
+                if is_persistent_assignment:
+                    alias_value = shell_assignment_alias_value(value, target_keys)
+                    if alias_value is not None:
+                        assignments[name] = alias_value
+                    elif name not in assignments:
+                        assignments[name] = storage_strip_quotes(value)
             segment = []
             continue
         segment.append(token)

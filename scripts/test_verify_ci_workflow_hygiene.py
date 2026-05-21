@@ -1181,6 +1181,26 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
+            "V=CARGO; sudo ${V}_TARGET_DIR=/tmp/raw cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "V=CARGO; time ${V}_TARGET_DIR=/tmp/raw cargo test",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "V=CARGO; CMD=\"${V}_TARGET_DIR=/tmp/raw cargo check\"; eval \"$CMD\"",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "V=CARGO; export CMD=\"${V}_TARGET_DIR=/tmp/raw cargo check\"; bash -c \"$CMD\"",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "V=CARGO; alias c='${V}_TARGET_DIR=/tmp/raw cargo'; c build",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
             "E=$(echo CARGO_TARGET_DIR); export $E=/tmp/raw-target; cargo check",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
@@ -1758,6 +1778,11 @@ commands:
   evalinlinecomposedeval: 'VAR=CARGO eval "${VAR}_TARGET_DIR=/tmp/raw cargo check"'
   shellccomposedenv: 'VAR=CARGO; bash -c "${VAR}_TARGET_DIR=/tmp/raw cargo test"'
   aliaspayload: 'alias c='\''V=CARGO; eval "${V}_TARGET_DIR=/tmp/raw cargo"'\''; c build'
+  sudocomposedenv: 'VAR=CARGO; sudo ${VAR}_TARGET_DIR=/tmp/raw cargo check'
+  timecomposedenv: 'VAR=CARGO; time ${VAR}_TARGET_DIR=/tmp/raw cargo test'
+  evalcmdpayload: 'VAR=CARGO; CMD="${VAR}_TARGET_DIR=/tmp/raw cargo check"; eval "$CMD"'
+  shellcmdpayload: 'VAR=CARGO; export CMD="${VAR}_TARGET_DIR=/tmp/raw cargo check"; bash -c "$CMD"'
+  aliasouterpayload: 'VAR=CARGO; alias c='\''${VAR}_TARGET_DIR=/tmp/raw cargo'\''; c build'
   foldedplain: eval
     cargo test
   foldeddouble: "eval
@@ -1853,6 +1878,11 @@ commands: { test: "cargo test" }
         "evalinlinecomposedeval",
         "shellccomposedenv",
         "aliaspayload",
+        "sudocomposedenv",
+        "timecomposedenv",
+        "evalcmdpayload",
+        "shellcmdpayload",
+        "aliasouterpayload",
         "foldedplain",
         "foldeddouble",
         "shellprefix",

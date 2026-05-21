@@ -1162,6 +1162,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --target-dir raw target override must be classified",
         ),
         (
+            "run: >\n  cargo check\n  --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
             "cargo check --target-dir /tmp/raw-target",
             "cargo --target-dir raw target override must be classified",
         ),
@@ -1322,6 +1326,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "no-mistakes raw Cargo drift must be classified",
         ),
         (
+            "run: >\n  no-mistakes run --\n  cargo check",
+            "no-mistakes raw Cargo drift must be classified",
+        ),
+        (
             "no-mistakes run --worktree . -- cargo check --target-dir target",
             "no-mistakes worktree-local target path evidence must be reported",
         ),
@@ -1363,6 +1371,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "run: |\n  aws s3 sync \\\n    target \\\n    s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "run: >\n  aws s3 sync\n  target\n  s3://bolt-v2-active-cache/target",
             "S3 active mutable target cache must be rejected",
         ),
         (
@@ -1435,6 +1447,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "aws s3 sync \"$GITHUB_WORKSPACE\"/target s3://some-bucket/linux-cache",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'TARGET_DIR="$GITHUB_WORKSPACE"/target\nDEST=s3://bucket/cache\naws s3 sync "$TARGET_DIR" "$DEST"',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'TARGET_DIR="$PWD"/target\nDEST=s3://bucket/cache\naws s3 sync "$TARGET_DIR" "$DEST"',
             "S3 active mutable target cache must be rejected",
         ),
         (

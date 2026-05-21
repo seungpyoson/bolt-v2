@@ -1294,13 +1294,61 @@ def matching_process_pattern(command: str, patterns: list[str]) -> str | None:
     return next((pattern for pattern in patterns if basename_token(pattern) in names), None)
 
 
-def command_scope_path_values(tokens: list[str]) -> list[str]:
+def cargo_config_scope_path_values(config: str) -> list[str]:
+    stripped = decode_toml_unicode_escapes(config).strip().strip("\"'")
+    if not stripped:
+        return []
+    if cargo_config_looks_like_path(stripped):
+        return [stripped]
+    values: list[str] = []
+    for pattern in (
+        r"(?:^|[\s,{])build\.target-dir\s*=\s*[\"']?([^\"'\s,}\]]+)",
+        r"(?:^|[\s,{])target-dir\s*=\s*[\"']?([^\"'\s,}\]]+)",
+    ):
+        for match in re.finditer(pattern, stripped):
+            values.append(match.group(1))
+    return values
+
+
+def command_scope_path_values(tokens: list[str], *, depth: int = 0) -> list[str]:
+    if not tokens:
+        return []
+    if depth > PROCESS_PARSE_DEPTH_LIMIT:
+        return []
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index >= len(tokens):
+        return []
+    if assignment_index:
+        return command_scope_path_values(tokens[assignment_index:], depth=depth + 1)
+    segments = shell_command_segments(tokens)
+    if segments:
+        values: list[str] = []
+        for segment in segments:
+            values.extend(command_scope_path_values(segment, depth=depth + 1))
+        return values
     values: list[str] = []
     for index, token in enumerate(tokens):
         if token in {"--manifest-path", "--target-dir"} and index + 1 < len(tokens):
             values.append(tokens[index + 1])
         elif token.startswith("--manifest-path=") or token.startswith("--target-dir="):
             values.append(token.split("=", 1)[1])
+        elif token == "--config" and index + 1 < len(tokens):
+            values.extend(cargo_config_scope_path_values(tokens[index + 1]))
+        elif token.startswith("--config="):
+            values.extend(cargo_config_scope_path_values(token.split("=", 1)[1]))
+    executable = basename_token(tokens[0])
+    wrapped_tokens = process_wrapper_tokens(tokens)
+    if wrapped_tokens is not None:
+        values.extend(command_scope_path_values(wrapped_tokens, depth=depth + 1))
+    elif executable == "eval":
+        eval_index = 1
+        if eval_index < len(tokens) and tokens[eval_index] == "--":
+            eval_index += 1
+        values.extend(command_scope_path_values(command_tokens(" ".join(tokens[eval_index:])), depth=depth + 1))
+    elif executable in ("bash", "dash", "fish", "sh", "zsh"):
+        command = shell_command(tokens)
+        if command is not None:
+            values.extend(command_scope_path_values(command_tokens(command), depth=depth + 1))
     return values
 
 

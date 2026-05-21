@@ -2329,7 +2329,7 @@ def s3_uri_variables(text: str) -> set[str]:
     variables: set[str] = set()
     patterns = (
         re.compile(
-            r"(?:^|[;&|]\s*)(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)="
+            r"(?:^\s*|[;&|]\s*)(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)="
             r"(?:\"s3://[^\"]+\"|'s3://[^']+'|s3://[^\s;&|]+)",
             re.MULTILINE,
         ),
@@ -2352,10 +2352,11 @@ def s3_uri_variables(text: str) -> set[str]:
 
 def active_target_value(value: str) -> bool:
     stripped = value.strip().strip("\"'")
+    quote_joined = stripped.replace('"', "").replace("'", "")
     if stripped.startswith("s3://"):
         return False
     return any(
-        re.search(pattern, stripped)
+        re.search(pattern, quote_joined)
         for pattern in (
             r"(?:^|[/.])target(?:/|$)",
             r"\$CARGO_TARGET_DIR|\$\{CARGO_TARGET_DIR[^}]*\}",
@@ -2369,8 +2370,8 @@ def active_target_variables(text: str) -> set[str]:
     variables: set[str] = set()
     patterns = (
         re.compile(
-            r"(?:^|[;&|]\s*)(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)="
-            r"(\"[^\"]+\"|'[^']+'|[^\s;&|]+)",
+            r"(?:^\s*|[;&|]\s*)(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)="
+            r"((?:\"[^\"]*\"|'[^']*'|[^\s;&|])*)",
             re.MULTILINE,
         ),
         re.compile(
@@ -2467,8 +2468,38 @@ def text_has_alias_cargo_target_routing_override(text: str) -> bool:
     return False
 
 
+def folded_yaml_run_commands(text: str) -> list[str]:
+    lines = text.splitlines()
+    commands: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = re.match(r"^(\s*)(?:-\s*)?run:\s*>[+-]?\s*(?:#.*)?$", line)
+        if match is None:
+            index += 1
+            continue
+        base_indent = len(match.group(1))
+        block: list[str] = []
+        index += 1
+        while index < len(lines):
+            candidate = lines[index]
+            if not candidate.strip():
+                index += 1
+                continue
+            indent = len(candidate) - len(candidate.lstrip(" "))
+            if indent <= base_indent:
+                break
+            block.append(candidate.strip())
+            index += 1
+        if block:
+            commands.append(" ".join(block))
+    return commands
+
+
 def raw_rust_storage_errors(workflow_text: str) -> list[str]:
-    text = re.sub(r"\\\s*\n\s*", " ", uncommented_text(workflow_text.splitlines()))
+    uncommented = uncommented_text(workflow_text.splitlines())
+    folded_commands = "\n".join(folded_yaml_run_commands(uncommented))
+    text = re.sub(r"\\\s*\n\s*", " ", "\n".join(part for part in (uncommented, folded_commands) if part))
     checks: tuple[tuple[str, str], ...] = (
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_TARGET_DIR[\"']?\s*(?:=|:)", "CARGO_TARGET_DIR raw target override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_BUILD_TARGET_DIR[\"']?\s*(?:=|:)", "CARGO_BUILD_TARGET_DIR raw target override must be classified"),

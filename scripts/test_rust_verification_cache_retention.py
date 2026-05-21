@@ -1894,6 +1894,82 @@ def assert_v6_red_active_process_parser_resolves_relative_manifest_scope() -> No
         raise AssertionError("relative --manifest-path cargo process outside repo cwd was ignored")
 
 
+def assert_v6_red_active_process_parser_resolves_config_target_scope() -> None:
+    owner = load_owner_module()
+    original_run = owner.subprocess.run
+    original_process_cwd = owner.process_cwd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        repo = root / "bolt-v2"
+        sibling = root / "runner"
+        target = repo / "target"
+        repo.mkdir()
+        sibling.mkdir()
+        target.mkdir()
+
+        def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="424242 cargo build --config build.target-dir=../bolt-v2/target\n",
+                stderr="",
+            )
+
+        owner.subprocess.run = fake_run
+        owner.process_cwd = lambda pid: sibling
+        try:
+            related = owner.active_related_processes(
+                repo,
+                target,
+                {"cache": {"active_process_patterns": ["cargo", "rustc", "rust_verification.py"]}},
+            )
+        finally:
+            owner.subprocess.run = original_run
+            owner.process_cwd = original_process_cwd
+
+    if not related:
+        raise AssertionError("relative --config build.target-dir cargo process outside repo cwd was ignored")
+
+
+def assert_v6_red_active_process_parser_resolves_nested_shell_manifest_scope() -> None:
+    owner = load_owner_module()
+    original_run = owner.subprocess.run
+    original_process_cwd = owner.process_cwd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        repo = root / "bolt-v2"
+        sibling = root / "runner"
+        target = repo / "target"
+        repo.mkdir()
+        sibling.mkdir()
+        target.mkdir()
+
+        def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="424242 bash -c 'cargo build --manifest-path ../bolt-v2/Cargo.toml'\n",
+                stderr="",
+            )
+
+        owner.subprocess.run = fake_run
+        owner.process_cwd = lambda pid: sibling
+        try:
+            related = owner.active_related_processes(
+                repo,
+                target,
+                {"cache": {"active_process_patterns": ["cargo", "rustc", "rust_verification.py"]}},
+            )
+        finally:
+            owner.subprocess.run = original_run
+            owner.process_cwd = original_process_cwd
+
+    if not related:
+        raise AssertionError("nested shell relative --manifest-path cargo process outside repo cwd was ignored")
+
+
 def assert_v6_red_active_process_parser_uses_command_scope_without_cwd() -> None:
     result, debug_file_exists = cache_prune_for_visible_command(
         "timeout 30 cargo build --manifest-path {repo}/Cargo.toml",
@@ -2595,6 +2671,8 @@ def assert_v6_red_policy_gaps() -> None:
         assert_v6_red_wrapper_end_of_options_does_not_overconsume_command_words,
         assert_v6_red_wrapped_renamed_cargo_launches_are_classified,
         assert_v6_red_active_process_parser_resolves_relative_manifest_scope,
+        assert_v6_red_active_process_parser_resolves_config_target_scope,
+        assert_v6_red_active_process_parser_resolves_nested_shell_manifest_scope,
         assert_v6_red_active_process_parser_uses_command_scope_without_cwd,
         assert_v6_red_active_process_parser_fails_closed_for_unscoped_wrapped_rust_without_cwd,
         assert_v6_red_active_process_fails_closed_for_attached_semicolon_shell_chains,

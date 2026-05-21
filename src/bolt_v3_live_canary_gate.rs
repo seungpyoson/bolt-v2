@@ -11,7 +11,7 @@
 //! order submission is enabled.
 
 use std::{
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     str::FromStr,
     time::{SystemTime, SystemTimeError, UNIX_EPOCH},
 };
@@ -101,6 +101,10 @@ pub enum BoltV3LiveCanaryGateError {
     MissingConfig,
     MissingApprovalId,
     MissingReadinessReportPath,
+    InvalidConfiguredPath {
+        field: &'static str,
+        value: String,
+    },
     InvalidMaxLiveOrderCount {
         value: u32,
     },
@@ -235,6 +239,10 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                     "bolt-v3 live canary no_submit_readiness_report_path is empty"
                 )
             }
+            BoltV3LiveCanaryGateError::InvalidConfiguredPath { field, value } => write!(
+                f,
+                "bolt-v3 live canary configured path `{field}` must not contain parent directory traversal: `{value}`"
+            ),
             BoltV3LiveCanaryGateError::InvalidMaxLiveOrderCount { value } => write!(
                 f,
                 "bolt-v3 live canary max_live_order_count must be positive, got {value}"
@@ -527,7 +535,7 @@ async fn check_bolt_v3_live_canary_gate_with_clock(
     )
     .await?;
 
-    let report_path = resolve_report_path(&loaded.root_path, block);
+    let report_path = resolve_report_path(&loaded.root_path, block)?;
     let report_bytes =
         read_report_bytes_with_limit(&report_path, block.max_no_submit_readiness_report_bytes)
             .await?;
@@ -627,15 +635,22 @@ async fn read_report_bytes_with_limit(
     Ok(bytes)
 }
 
-fn resolve_report_path(root_path: &Path, block: &LiveCanaryBlock) -> PathBuf {
+fn resolve_report_path(
+    root_path: &Path,
+    block: &LiveCanaryBlock,
+) -> Result<PathBuf, BoltV3LiveCanaryGateError> {
+    validate_configured_path_shape(
+        "no_submit_readiness_report_path",
+        &block.no_submit_readiness_report_path,
+    )?;
     let configured = PathBuf::from(&block.no_submit_readiness_report_path);
     if configured.is_absolute() {
-        return configured;
+        return Ok(configured);
     }
-    root_path
+    Ok(root_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
-        .join(&configured)
+        .join(&configured))
 }
 
 fn parse_positive_decimal(
@@ -687,6 +702,7 @@ async fn validate_operator_evidence(
             field: "strategy_cancel_path",
         });
     }
+    validate_operator_evidence_paths(evidence)?;
     for (field, value) in operator_evidence_hash_fields(evidence) {
         if !is_sha256_hex(value) {
             return Err(BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape { field });
@@ -764,7 +780,7 @@ async fn validate_operator_evidence_file_hashes(
     evidence: &LiveCanaryOperatorEvidenceBlock,
 ) -> Result<(), BoltV3LiveCanaryGateError> {
     for binding in operator_evidence_file_hash_bindings(evidence) {
-        let path = resolve_configured_path(root_path, binding.path);
+        let path = resolve_configured_path(root_path, binding.path_field, binding.path)?;
         let actual = sha256_file(
             &path,
             binding.hash_field,
@@ -788,7 +804,11 @@ async fn validate_operator_approval_consumption(
     approval_window_unix_seconds: u64,
     approval_consumption_freshness_unix_seconds: u64,
 ) -> Result<(), BoltV3LiveCanaryGateError> {
-    let path = resolve_configured_path(root_path, &evidence.approval_consumption_path);
+    let path = resolve_configured_path(
+        root_path,
+        "approval_consumption_path",
+        &evidence.approval_consumption_path,
+    )?;
     let bytes = read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes)
         .await
         .map_err(
@@ -1159,6 +1179,48 @@ fn required_operator_evidence_fields(
     ]
 }
 
+fn validate_operator_evidence_paths(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    for (field, value) in operator_evidence_path_fields(evidence) {
+        validate_configured_path_shape(field, value)?;
+    }
+    if let Some(strategy_cancel_path) = evidence.strategy_cancel_path.as_deref() {
+        validate_configured_path_shape("strategy_cancel_path", strategy_cancel_path)?;
+    }
+    Ok(())
+}
+
+fn operator_evidence_path_fields(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> [(&'static str, &str); 14] {
+    [
+        ("approval_envelope_path", &evidence.approval_envelope_path),
+        ("ssm_manifest_path", &evidence.ssm_manifest_path),
+        (
+            "strategy_input_evidence_path",
+            &evidence.strategy_input_evidence_path,
+        ),
+        ("financial_envelope_path", &evidence.financial_envelope_path),
+        ("pre_run_state_path", &evidence.pre_run_state_path),
+        ("abort_plan_path", &evidence.abort_plan_path),
+        ("canary_evidence_path", &evidence.canary_evidence_path),
+        ("approval_nonce_path", &evidence.approval_nonce_path),
+        (
+            "approval_consumption_path",
+            &evidence.approval_consumption_path,
+        ),
+        ("decision_evidence_path", &evidence.decision_evidence_path),
+        ("nt_submit_event_path", &evidence.nt_submit_event_path),
+        ("venue_order_state_path", &evidence.venue_order_state_path),
+        (
+            "restart_reconciliation_path",
+            &evidence.restart_reconciliation_path,
+        ),
+        ("post_run_hygiene_path", &evidence.post_run_hygiene_path),
+    ]
+}
+
 fn operator_evidence_hash_fields(
     evidence: &LiveCanaryOperatorEvidenceBlock,
 ) -> [(&'static str, &str); 9] {
@@ -1185,6 +1247,7 @@ fn operator_evidence_hash_fields(
 }
 
 struct OperatorEvidenceFileHashBinding<'a> {
+    path_field: &'static str,
     path: &'a str,
     hash_field: &'static str,
     expected_sha256: &'a str,
@@ -1195,36 +1258,43 @@ fn operator_evidence_file_hash_bindings(
 ) -> [OperatorEvidenceFileHashBinding<'_>; 7] {
     [
         OperatorEvidenceFileHashBinding {
+            path_field: "approval_envelope_path",
             path: &evidence.approval_envelope_path,
             hash_field: "approval_envelope_sha256",
             expected_sha256: &evidence.approval_envelope_sha256,
         },
         OperatorEvidenceFileHashBinding {
+            path_field: "ssm_manifest_path",
             path: &evidence.ssm_manifest_path,
             hash_field: "ssm_manifest_sha256",
             expected_sha256: &evidence.ssm_manifest_sha256,
         },
         OperatorEvidenceFileHashBinding {
+            path_field: "strategy_input_evidence_path",
             path: &evidence.strategy_input_evidence_path,
             hash_field: "strategy_input_evidence_sha256",
             expected_sha256: &evidence.strategy_input_evidence_sha256,
         },
         OperatorEvidenceFileHashBinding {
+            path_field: "financial_envelope_path",
             path: &evidence.financial_envelope_path,
             hash_field: "financial_envelope_sha256",
             expected_sha256: &evidence.financial_envelope_sha256,
         },
         OperatorEvidenceFileHashBinding {
+            path_field: "pre_run_state_path",
             path: &evidence.pre_run_state_path,
             hash_field: "pre_run_state_sha256",
             expected_sha256: &evidence.pre_run_state_sha256,
         },
         OperatorEvidenceFileHashBinding {
+            path_field: "abort_plan_path",
             path: &evidence.abort_plan_path,
             hash_field: "abort_plan_sha256",
             expected_sha256: &evidence.abort_plan_sha256,
         },
         OperatorEvidenceFileHashBinding {
+            path_field: "approval_nonce_path",
             path: &evidence.approval_nonce_path,
             hash_field: "approval_nonce_sha256",
             expected_sha256: &evidence.approval_nonce_sha256,
@@ -1232,15 +1302,36 @@ fn operator_evidence_file_hash_bindings(
     ]
 }
 
-fn resolve_configured_path(root_path: &Path, configured: &str) -> PathBuf {
+fn resolve_configured_path(
+    root_path: &Path,
+    field: &'static str,
+    configured: &str,
+) -> Result<PathBuf, BoltV3LiveCanaryGateError> {
+    validate_configured_path_shape(field, configured)?;
     let path = PathBuf::from(configured.trim());
     if path.is_absolute() {
-        return path;
+        return Ok(path);
     }
-    root_path
+    Ok(root_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
-        .join(path)
+        .join(path))
+}
+
+fn validate_configured_path_shape(
+    field: &'static str,
+    configured: &str,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    if Path::new(configured.trim())
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(BoltV3LiveCanaryGateError::InvalidConfiguredPath {
+            field,
+            value: configured.to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn is_sha256_hex(value: &str) -> bool {
@@ -1476,7 +1567,8 @@ mod tests {
         };
 
         assert_eq!(
-            resolve_report_path(Path::new(""), &block),
+            resolve_report_path(Path::new(""), &block)
+                .expect("relative report path should resolve"),
             PathBuf::from(".").join("reports/no-submit-readiness.json")
         );
     }

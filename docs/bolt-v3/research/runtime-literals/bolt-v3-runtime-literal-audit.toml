@@ -1008,6 +1008,30 @@ reason = "This is the compile-time size of the required operator evidence field 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
+literal = '''"no_submit_readiness_report_path"'''
+context = '''"no_submit_readiness_report_path",'''
+classification = "live_canary_config_path_field"
+reason = "This names the TOML-owned no-submit readiness report path while validating configured path shape; the path value remains config-owned and is rejected fail-closed if it contains parent-directory traversal."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"strategy_cancel_path"'''
+context = '''validate_configured_path_shape("strategy_cancel_path", strategy_cancel_path)?;'''
+classification = "operator_evidence_schema_field"
+reason = "This names an optional TOML-owned operator evidence path while validating configured path shape; the path value remains config-owned and is rejected fail-closed if it contains parent-directory traversal."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "14"
+context = ''') -> [(&'static str, &str); 14] {'''
+classification = "operator_evidence_path_field_count"
+reason = "This is the compile-time size of the operator evidence path field table; path values are TOML-owned and validated fail-closed before resolution."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
 literal = '''"head_sha"'''
 context = '''("head_sha", &evidence.head_sha),'''
 classification = "phase8_approval_consumption_schema_field"
@@ -1204,6 +1228,62 @@ literal = "7"
 context = ''') -> [OperatorEvidenceFileHashBinding<'_>; 7] {'''
 classification = "operator_evidence_file_hash_binding_count"
 reason = "This is the compile-time size of the sha256-bound pre-run artifact table; paths and hashes are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_envelope_path"'''
+context = '''path_field: "approval_envelope_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"ssm_manifest_path"'''
+context = '''path_field: "ssm_manifest_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_path"'''
+context = '''path_field: "strategy_input_evidence_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"financial_envelope_path"'''
+context = '''path_field: "financial_envelope_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"pre_run_state_path"'''
+context = '''path_field: "pre_run_state_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"abort_plan_path"'''
+context = '''path_field: "abort_plan_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_nonce_path"'''
+context = '''path_field: "approval_nonce_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"

@@ -204,7 +204,9 @@ blockers, not as deferred approval to trade.
 - [x] T105 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T103/T104 proof-compatibility slice.
 - [x] T106 [US5] Address Greptile current-head gate hardening findings: move approval-consumption root TOML checksum to async bounded I/O and bind configured `strategy_cancel_path` into approval-consumption proof with regression coverage.
 - [x] T107 [US5] Address T106 read-only review findings: prevent Phase 8 `strategy_cancel_path` env/TOML drift from spending approval, add async bounded-reader behavior coverage, and make source-shape tests repo-root anchored.
-- [ ] T108 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, reply to Greptile inline findings, and run targeted external-review consensus for the T106/T107 gate-hardening slice.
+- [x] T108 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, reply to Greptile inline findings, and run targeted external-review consensus for the T106/T107 gate-hardening slice.
+- [x] T109 [US5] Address T108 external-review hardening notes: align Phase 8 SHA-256 shape validation with the live gate lowercase-only policy, add sync bounded config reader regression coverage, and reject parent-directory traversal in live-canary gate configured paths.
+- [ ] T110 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T109 hardening slice.
 
 ## Out Of Scope For MVP
 

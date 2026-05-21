@@ -1216,7 +1216,10 @@ fn validate_phase8_sha256_field(field: &str, value: &str) -> Result<()> {
 
 fn phase8_is_sha256_hex(value: &str) -> bool {
     let digest = Sha256::digest([]);
-    value.len() == digest.len() + digest.len() && value.chars().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == digest.len() + digest.len()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn phase8_reject_parent_dir(path: &str, label: &str) -> Result<()> {
@@ -2252,4 +2255,23 @@ pub fn phase8_sha256_text(value: &str) -> String {
 fn sha256_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     format!("{digest:x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{phase8_is_sha256_hex, validate_phase8_sha256_field};
+
+    #[test]
+    fn phase8_sha256_shape_rejects_uppercase_hex() {
+        let uppercase = "A".repeat(64);
+
+        assert!(
+            !phase8_is_sha256_hex(&uppercase),
+            "phase8 approval evidence must use the same lowercase sha256 policy as the live gate"
+        );
+        assert!(
+            validate_phase8_sha256_field("test_hash", &uppercase).is_err(),
+            "uppercase sha256 fields must fail before live-gate consumption"
+        );
+    }
 }

@@ -111,7 +111,43 @@ fn bytes_to_string(path: &Path, bytes: Vec<u8>) -> Result<String, ConfigFileRead
 
 #[cfg(test)]
 mod tests {
-    use super::{CONFIG_FILE_SIZE_LIMIT_BYTES, ConfigFileReadError, read_to_string_async};
+    use super::{
+        CONFIG_FILE_SIZE_LIMIT_BYTES, ConfigFileReadError, read_to_string, read_to_string_async,
+    };
+
+    #[test]
+    fn sync_reader_rejects_config_over_size_limit() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let path = temp.path().join("oversized-root.toml");
+        std::fs::write(&path, vec![b'x'; CONFIG_FILE_SIZE_LIMIT_BYTES as usize + 1])
+            .expect("oversized config fixture should write");
+
+        let error = read_to_string(&path)
+            .expect_err("sync config reader must reject oversized config files");
+
+        match error {
+            ConfigFileReadError::TooLarge { length, limit, .. } => {
+                assert_eq!(limit, CONFIG_FILE_SIZE_LIMIT_BYTES);
+                assert_eq!(length, CONFIG_FILE_SIZE_LIMIT_BYTES + 1);
+            }
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sync_reader_rejects_invalid_utf8() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let path = temp.path().join("invalid-root.toml");
+        std::fs::write(&path, [0xff, 0xfe]).expect("invalid UTF-8 fixture should write");
+
+        let error =
+            read_to_string(&path).expect_err("sync config reader must reject invalid UTF-8");
+
+        assert!(
+            matches!(error, ConfigFileReadError::Utf8 { .. }),
+            "expected Utf8, got {error:?}"
+        );
+    }
 
     #[tokio::test]
     async fn async_reader_rejects_config_over_size_limit() {

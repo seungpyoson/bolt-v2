@@ -2856,6 +2856,14 @@ reason = "This is a stable decision-evidence reason code, not an operator runtim
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"entry_order_still_working"'''
+context = '''const EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING: &str = "entry_order_still_working";'''
+classification = "strategy_exit_block_reason_code"
+reason = "This is a stable decision-evidence reason code for suppressing exits while a resting entry can still fill."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"exit_decision_unavailable"'''
 context = '''const EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE: &str = "exit_decision_unavailable";'''
 classification = "strategy_exit_block_reason_code"

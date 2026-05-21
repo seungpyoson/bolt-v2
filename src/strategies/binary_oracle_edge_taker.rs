@@ -1207,20 +1207,6 @@ fn managed_position_effective_entry_cost(
         .filter(|effective_cost| is_positive_finite(*effective_cost))
 }
 
-fn managed_position_exit_order(
-    position: &OpenPositionState,
-    configured_order_side: OrderSide,
-    configured_position_side: PositionSide,
-    is_post_only: bool,
-) -> Option<(OrderSide, f64)> {
-    (position.side == configured_position_side)
-        .then_some((
-            configured_order_side,
-            order_price_for_side(&position.book, configured_order_side, is_post_only)?,
-        ))
-        .filter(|(_, price)| is_positive_finite(*price))
-}
-
 fn managed_position_exit_value(
     position: &OpenPositionState,
     configured_order_side: OrderSide,
@@ -2067,6 +2053,13 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn entry_order_may_remain_working(&self, client_order_id: &ClientOrderId) -> bool {
+        if !matches!(
+            self.config.entry_order.time_in_force,
+            TimeInForce::Gtc | TimeInForce::Gtd
+        ) {
+            return false;
+        }
+
         let cached_closed = if self.is_registered() {
             self.cache()
                 .order(client_order_id)
@@ -2077,10 +2070,7 @@ impl BinaryOracleEdgeTaker {
 
         match cached_closed {
             Some(closed) => !closed,
-            None => matches!(
-                self.config.entry_order.time_in_force,
-                TimeInForce::Gtc | TimeInForce::Gtd
-            ),
+            None => true,
         }
     }
 
@@ -3188,18 +3178,26 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn current_exit_order_for_open_position_with_post_only(
+    fn current_exit_order_for_open_position_with_config(
         &self,
-        is_post_only: bool,
+        order_config: &ExitOrderExecutionConfig,
     ) -> Option<(OrderSide, f64)> {
         let open_position = &self.managed_position()?.position;
         let contract = self.configured_position_contract().ok()?;
-        managed_position_exit_order(
-            open_position,
-            contract.exit_order_side,
-            contract.exit_position_side,
-            is_post_only,
-        )
+        if open_position.side != contract.exit_position_side {
+            return None;
+        }
+
+        let order_side = contract.exit_order_side;
+        let price = match order_config.order_type {
+            OrderType::StopMarket | OrderType::MarketIfTouched => order_config.trigger_price,
+            OrderType::TrailingStopMarket => {
+                order_config.trigger_price.or(order_config.activation_price)
+            }
+            _ => order_price_for_side(&open_position.book, order_side, order_config.is_post_only),
+        }?;
+
+        Some((order_side, price)).filter(|(_, price)| is_positive_finite(*price))
     }
 
     fn current_exit_value_for_open_position(&self) -> Option<f64> {
@@ -3365,6 +3363,14 @@ impl BinaryOracleEdgeTaker {
             evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING);
             return evaluation;
         }
+        if self
+            .managed_position()
+            .and_then(|managed| managed.pending_entry.as_ref())
+            .is_some()
+        {
+            evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING);
+            return evaluation;
+        }
 
         if !evaluation.forced_flat_reasons.is_empty() {
             evaluation.exit_decision = Some(ExitDecision::Exit);
@@ -3410,6 +3416,10 @@ impl BinaryOracleEdgeTaker {
             forced_flat_reasons: evaluation.forced_flat_reasons.clone(),
         };
 
+        if evaluation.blocked_reason == Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING) {
+            return decision;
+        }
+
         let Some(exit_decision) = evaluation.exit_decision else {
             decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE);
             return decision;
@@ -3430,7 +3440,7 @@ impl BinaryOracleEdgeTaker {
             return decision;
         };
         let Some((order_side, price)) =
-            self.current_exit_order_for_open_position_with_post_only(order_config.is_post_only)
+            self.current_exit_order_for_open_position_with_config(&order_config)
         else {
             decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_PRICE_MISSING);
             return decision;
@@ -5550,6 +5560,7 @@ const ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED: &str =
     "entry_position_contract_unsupported";
 const EXIT_BLOCK_REASON_NO_OPEN_POSITION: &str = "no_open_position";
 const EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING: &str = "exit_already_pending";
+const EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING: &str = "entry_order_still_working";
 const EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE: &str = "exit_decision_unavailable";
 const EXIT_BLOCK_REASON_EXIT_HOLD: &str = "exit_hold";
 const EXIT_BLOCK_REASON_OPEN_POSITION_MISSING: &str = "open_position_missing";
@@ -6191,11 +6202,13 @@ fn should_report_one_position_gate_violation(occupancy: ExposureOccupancy) -> bo
 
 const NO_OPEN_POSITION_REASON: &str = stringify!(no_open_position);
 const EXIT_ALREADY_PENDING_REASON: &str = stringify!(exit_already_pending);
+const ENTRY_ORDER_STILL_WORKING_REASON: &str = stringify!(entry_order_still_working);
 const EXIT_HOLD_REASON: &str = stringify!(exit_hold);
 
 fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
     !matches!(reason, Some(reason) if reason == NO_OPEN_POSITION_REASON
         || reason == EXIT_ALREADY_PENDING_REASON
+        || reason == ENTRY_ORDER_STILL_WORKING_REASON
         || reason == EXIT_HOLD_REASON)
 }
 
@@ -10862,6 +10875,151 @@ mod tests {
     }
 
     #[test]
+    fn managed_partial_entry_blocks_exit_until_entry_order_resolves() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.is_post_only = true;
+        strategy.active.phase = SelectionPhase::Freeze;
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let entry_client_order_id = ClientOrderId::from("ENTRY-WORKING");
+        let position_id = PositionId::from("P-WORKING");
+        let pending = pending_entry_state(
+            &strategy,
+            entry_client_order_id,
+            instrument_id,
+            OutcomeSide::Up,
+            strategy.active.books.up.clone(),
+        );
+        strategy.exposure = ExposureState::Managed(ManagedPositionState {
+            position: OpenPositionState {
+                market_id: Some("MKT-1".to_string()),
+                instrument_id,
+                position_id,
+                outcome_side: Some(OutcomeSide::Up),
+                outcome_fees: strategy.active.outcome_fees.clone(),
+                historical_entry_fee_bps: Some(0.0),
+                entry_order_side: OrderSide::Buy,
+                side: PositionSide::Long,
+                quantity: Quantity::new(4.0, 2),
+                avg_px_open: 0.450,
+                interval_open: Some(3_100.0),
+                selection_published_at_ms: Some(1_000),
+                seconds_to_expiry_at_selection: Some(300),
+                book: strategy.active.books.up.clone(),
+            },
+            origin: ManagedPositionOrigin::StrategyEntry,
+            pending_entry: Some(pending),
+        });
+
+        let decision = strategy.exit_submission_decision_at(1_200);
+
+        assert_eq!(decision.blocked_reason, Some("entry_order_still_working"));
+        assert_eq!(
+            decision.evaluation.blocked_reason,
+            Some("entry_order_still_working")
+        );
+        assert_eq!(decision.instrument_id, None);
+        assert_eq!(decision.order_side, None);
+        assert_eq!(decision.quantity, None);
+        assert_eq!(decision.forced_flat_reasons, vec![ForcedFlatReason::Freeze]);
+    }
+
+    #[test]
+    fn non_resting_entry_fill_does_not_keep_pending_entry_from_cache_state() {
+        let mut strategy = ready_to_trade_strategy();
+        let cache = register_test_strategy(&mut strategy);
+        strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let entry_client_order_id = ClientOrderId::from("ENTRY-IOC");
+        let position_id = PositionId::from("P-IOC");
+        let pending = pending_entry_state(
+            &strategy,
+            entry_client_order_id,
+            instrument_id,
+            OutcomeSide::Up,
+            strategy.active.books.up.clone(),
+        );
+        set_pending_entry(&mut strategy, pending);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                Quantity::new(10.0, 2),
+                Price::new(0.45, 2),
+                entry_client_order_id,
+            )
+            .expect("IOC entry order should build");
+        cache
+            .borrow_mut()
+            .add_order(order, None, Some(ClientId::from("POLYMARKET")), true)
+            .expect("test cache should accept entry order");
+
+        strategy
+            .on_order_filled(&order_filled_event(
+                entry_client_order_id,
+                instrument_id,
+                position_id,
+            ))
+            .expect("IOC entry fill should materialize a managed position");
+
+        assert_eq!(
+            strategy
+                .managed_position()
+                .and_then(|managed| managed.pending_entry.as_ref()),
+            None
+        );
+        assert_eq!(
+            strategy.exit_submission_decision_at(1_200).blocked_reason,
+            None
+        );
+    }
+
+    #[test]
+    fn stop_market_exit_submission_uses_trigger_price_without_book_liquidity() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.config.exit_order.order_type = OrderType::StopMarket;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.exit_order.trigger_price = Some(0.40);
+        strategy.config.exit_order.trigger_type = Some(TriggerType::LastPrice);
+        strategy.config.exit_order.is_post_only = false;
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let mut book = strategy.active.books.up.clone();
+        book.bid_levels.clear();
+        book.ask_levels.clear();
+        book.best_bid = None;
+        book.best_ask = None;
+        book.liquidity_available = Some(500.0);
+        strategy.exposure = ExposureState::Managed(ManagedPositionState {
+            position: OpenPositionState {
+                market_id: Some("MKT-1".to_string()),
+                instrument_id,
+                position_id: PositionId::from("P-STOP-EXIT"),
+                outcome_side: Some(OutcomeSide::Up),
+                outcome_fees: strategy.active.outcome_fees.clone(),
+                historical_entry_fee_bps: Some(0.0),
+                entry_order_side: OrderSide::Buy,
+                side: PositionSide::Long,
+                quantity: Quantity::new(4.0, 2),
+                avg_px_open: 0.450,
+                interval_open: Some(3_100.0),
+                selection_published_at_ms: Some(1_000),
+                seconds_to_expiry_at_selection: Some(300),
+                book,
+            },
+            origin: ManagedPositionOrigin::StrategyEntry,
+            pending_entry: None,
+        });
+
+        let decision = strategy.exit_submission_decision_at(1_200);
+
+        assert_eq!(decision.blocked_reason, None);
+        assert_eq!(decision.order_type, Some(OrderType::StopMarket));
+        assert_eq!(decision.order_side, Some(OrderSide::Sell));
+        assert_eq!(decision.price, Some(0.40));
+        assert_eq!(decision.quantity, Some(Quantity::new(4.0, 2)));
+    }
+
+    #[test]
     fn entry_fill_without_position_id_stays_fail_closed_until_position_event_arrives() {
         let mut strategy = ready_to_trade_strategy();
         let instrument_id = strategy.active.books.up.instrument_id.unwrap();
@@ -12311,6 +12469,9 @@ mod tests {
         )));
         assert!(!should_warn_on_exit_submission_block(Some(
             "exit_already_pending"
+        )));
+        assert!(!should_warn_on_exit_submission_block(Some(
+            "entry_order_still_working"
         )));
         assert!(!should_warn_on_exit_submission_block(Some("exit_hold")));
         assert!(should_warn_on_exit_submission_block(Some(

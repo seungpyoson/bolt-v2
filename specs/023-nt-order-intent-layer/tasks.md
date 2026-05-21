@@ -256,6 +256,15 @@
 - [x] T113 [US2] Refactor or retire tests that asserted old tuple policy while preserving negative coverage for real NT model invariants
 - [ ] T114 [US2] Verify focused config/runtime tests, source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and reviewer state
 
+## Phase 26: TDD Slice 22 - No-Mistakes Runtime Exit Follow-Up
+
+**Goal**: Resolve proven no-mistakes runtime findings without widening the generic order-intent layer: block exits while a resting entry can still fill, do not keep IOC/FOK entries pending after a fill, and use triggered exit config prices for triggered-market exit submission.
+
+- [x] T115 [P] [US3] Record no-mistakes review commit evidence and local triage for pending-entry exit blocking, non-resting entry liveness, and triggered-market exit pricing
+- [x] T116 [US3] RED: Add focused behavior regressions for resting pending-entry exit blocking, IOC entry fill cleanup, and triggered-market exit submission without book liquidity
+- [x] T117 [US3] GREEN: Apply minimal strategy fixes on the existing exit decision and NT `OrderFactory` construction path
+- [ ] T118 [US3] Verify focused runtime tests, source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -282,6 +291,7 @@
 - Phase 23 blocks TrailingStopMarket source/unit support claims until explicit trailing fields are tested, constructed, and reviewed.
 - Phase 24 blocks completion because post-review found `trigger_type` pass-through was broader than the TrailingStopMarket task text documented.
 - Phase 25 blocks completion until focused/local checks, reviewer findings, branch cleanliness, and post-push exact-head gate state are recorded for the tuple-policy removal.
+- Phase 26 blocks completion because no-mistakes produced runtime exit findings on top of the current branch.
 
 ## Parallel Opportunities
 

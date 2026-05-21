@@ -272,7 +272,7 @@
 - [x] T119 [P] [US3] Record source-backed evidence for stale active docs: `oms_type`, enabled order templates, factory-gap order types, and status-map single-value enum wording
 - [x] T120 [US3] RED: Add a docs consistency verifier proving the active schema/status docs still contain superseded netting-only and tuple-policy claims
 - [x] T121 [US3] GREEN: Update active docs to reflect current NT-backed order template scope while preserving live/no-submit/canary proof boundaries
-- [ ] T122 [US3] Verify the docs verifier, source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
+- [x] T122 [US3] Verify the docs verifier, source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
 
 ## Phase 28: TDD Slice 24 - Strategy Economics Boundary After Order Template Widening
 
@@ -281,7 +281,7 @@
 - [x] T123 [P] [US3] Record no-mistakes and pinned-NT evidence for short-side economics and quote-quantity sizing/admission
 - [x] T124 [US3] RED: Add public/runtime regressions for short-side rejection, exit quote-quantity rejection, entry quote-quantity sizing, quote-quantity admission notional, NT market quote/trade fallback, and active-doc overclaim detection
 - [x] T125 [US3] GREEN: Apply minimal strategy fixes on the existing config validation, entry sizing, submit-admission path, and active-doc verifier
-- [ ] T126 [US3] Verify focused runtime/config tests, docs/source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
+- [x] T126 [US3] Verify focused runtime/config tests, docs/source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
 
 ## Phase 29: TDD Slice 25 - Trailing Stop Companion Price Validation
 
@@ -290,7 +290,7 @@
 - [x] T127 [P] [US3] Record no-mistakes review commit evidence and NT/Bolt boundary for TrailingStopMarket companion prices
 - [x] T128 [US3] RED: Add config validation regressions for non-positive TrailingStopMarket trigger and activation companion prices
 - [x] T129 [US3] GREEN: Apply minimal archetype validation fix on the existing order-template validation path
-- [ ] T130 [US3] Verify focused config tests, docs/source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
+- [x] T130 [US3] Verify focused config tests, docs/source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
 
 ## Phase 30: TDD Slice 26 - Entry Reduce-Only Rejection
 
@@ -299,7 +299,7 @@
 - [x] T131 [P] [US3] Record no-mistakes and pinned-NT evidence for reduce-only entry semantics
 - [x] T132 [US3] RED: Add public config and runtime builder regressions for reduce-only entry rejection
 - [x] T133 [US3] GREEN: Reject reduce-only entry orders on the existing strategy/archetype validation paths
-- [ ] T134 [US3] Verify focused config/runtime tests, source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
+- [x] T134 [US3] Verify focused config/runtime tests, source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
 
 ## Phase 31: TDD Slice 27 - Market Expiry Rejection
 
@@ -308,7 +308,7 @@
 - [x] T135 [P] [US3] Record no-mistakes evidence for market expiry being accepted and silently dropped
 - [x] T136 [US3] RED: Add public config and runtime builder regressions for market order expiry rejection
 - [x] T137 [US3] GREEN: Reject market order expiry on the existing strategy/archetype validation paths and update active contract/docs verifier coverage
-- [ ] T138 [US3] Verify focused config/runtime tests, docs/source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
+- [x] T138 [US3] Verify focused config/runtime tests, docs/source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
 
 ## Phase 32: TDD Slice 28 - Triggered Exit EV Pricing
 
@@ -317,7 +317,7 @@
 - [x] T139 [P] [US3] Record no-mistakes evidence for triggered exit EV using live-book pricing while StopMarket submission uses trigger pricing
 - [x] T140 [US3] RED: Add a StopMarket exit EV regression proving the EV source is not the configured trigger price
 - [x] T141 [US3] GREEN: Route exit EV pricing through configured exit-order pricing for triggered exit templates
-- [ ] T142 [US3] Verify focused runtime tests, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+- [x] T142 [US3] Verify focused runtime tests, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
 ## Dependencies & Execution Order
 

@@ -1830,17 +1830,21 @@ def raw_rust_tool_token(name: str) -> bool:
     )
 
 
+def path_name_looks_like_renamed_cargo(name: str) -> bool:
+    return name == "c" or name.endswith("cargo") or raw_rust_tool_token(name)
+
+
 def path_executable_looks_like_cargo(token: str) -> bool:
     if "/" not in token:
         return False
     path = pathlib.Path(token)
-    if path.name == "c" or raw_rust_tool_token(path.name):
+    if path_name_looks_like_renamed_cargo(path.name):
         return True
     try:
         resolved = path.expanduser().resolve(strict=True)
     except (OSError, RuntimeError):
         return False
-    return raw_rust_tool_token(resolved.name)
+    return path_name_looks_like_renamed_cargo(resolved.name)
 
 
 def path_invocation_has_cargo_subcommand(tokens: list[str]) -> bool:
@@ -2004,6 +2008,7 @@ def tokens_have_repo_automation_raw_cargo(tokens: list[str]) -> bool:
 def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
     errors: list[str] = []
     managed_just_recipe = False
+    current_just_recipe = ""
     is_justfile = file_name == "justfile" or file_name.startswith("justfile.")
     for line in text.replace("\\\n", " ").splitlines():
         stripped = strip_comment(line).strip()
@@ -2013,8 +2018,16 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
             if stripped.startswith("["):
                 continue
             if ":" in stripped:
+                recipe = stripped.split(":", 1)[0].strip()
+                current_just_recipe = recipe.split()[0] if recipe else ""
                 managed_just_recipe = False
-        if is_justfile and "BOLT_MANAGED_JUST" in stripped and "exit" in stripped:
+        if (
+            is_justfile
+            and current_just_recipe in {"managed-build", "managed-clippy", "managed-test"}
+            and "BOLT_MANAGED_JUST" in stripped
+            and "rust_verification.py run" in stripped
+            and "exit 2" in stripped
+        ):
             managed_just_recipe = True
             continue
         if is_justfile and managed_just_recipe:

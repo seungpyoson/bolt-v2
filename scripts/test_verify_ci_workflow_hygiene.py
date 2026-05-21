@@ -1266,6 +1266,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --target-dir raw target override must be classified",
         ),
         (
+            "/tmp/mycargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
             "sudo sudo sudo sudo sudo sudo sudo /tmp/c build --target-dir /tmp/raw-target",
             "cargo --target-dir raw target override must be classified",
         ),
@@ -1851,8 +1855,11 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         {
             "justfile": "check:\n    CARGO_TARGET_DIR=/tmp/raw cargo check\n",
             "justfile.raw": "test:\n    cargo test\n",
+            "justfile.spoof": 'bad:\n    echo "BOLT_MANAGED_JUST exit"\n    cargo build\n',
             "scripts/raw.sh": "#!/usr/bin/env bash\ncargo build\n",
             "scripts/raw-guard-text.sh": '#!/usr/bin/env bash\necho "Missing BOLT_MANAGED_JUST, exit 1"\ncargo build\n',
+            "scripts/symlink-cargo.sh": "ln -s $(which cargo) /tmp/mycargo\n/tmp/mycargo build --target-dir /tmp/raw\n",
+            "scripts/copy-cargo.sh": "cp $(which cargo) /tmp/mycargo\n/tmp/mycargo build\n",
             "justfile.setup": "setup:\n    cargo install cargo-nextest --version 0.9.132 --locked\n",
             "justfile.setup.absolute": "setup:\n    /usr/bin/cargo install cargo-nextest --version 0.9.132 --locked\n",
             "justfile.setup.timeout": "setup:\n    timeout 30 cargo install cargo-deny --version 0.18.2\n",
@@ -1874,10 +1881,16 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
     expected = "repo automation raw Cargo must use managed rust_verification wrapper"
     if not any("justfile.raw" in error and expected in error for error in repo_errors):
         raise AssertionError(f"justfile raw-cargo drift was silent: {repo_errors!r}")
+    if not any("justfile.spoof" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"spoofed justfile managed-guard drift was silent: {repo_errors!r}")
     if not any("scripts/raw.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-guard-text.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script guard-text raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/symlink-cargo.sh" in error and "cargo --target-dir raw target override" in error for error in repo_errors):
+        raise AssertionError(f"symlinked cargo raw-storage drift was silent: {repo_errors!r}")
+    if not any("scripts/copy-cargo.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"copied cargo raw-cargo drift was silent: {repo_errors!r}")
     expected = "repo automation must not compile cargo-nextest from source"
     if not any("justfile.setup" in error and expected in error for error in repo_errors):
         raise AssertionError(f"justfile cargo-install drift was silent: {repo_errors!r}")

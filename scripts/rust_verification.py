@@ -1170,17 +1170,21 @@ def executable_is_rust_tool(executable: str) -> bool:
     )
 
 
+def path_name_looks_like_renamed_cargo(executable: str) -> bool:
+    return executable == "c" or executable.endswith("cargo") or executable_is_rust_tool(executable)
+
+
 def path_executable_looks_like_cargo(token: str) -> bool:
     if "/" not in token:
         return False
     executable = basename_token(token)
-    if executable == "c" or executable_is_rust_tool(executable):
+    if path_name_looks_like_renamed_cargo(executable):
         return True
     try:
         resolved = pathlib.Path(token).expanduser().resolve(strict=True)
     except (OSError, RuntimeError):
         return False
-    return executable_is_rust_tool(resolved.name)
+    return path_name_looks_like_renamed_cargo(resolved.name)
 
 
 RUSTC_SPECIFIC_TOKENS = {"--crate-name", "--emit", "--out-dir"}
@@ -1289,6 +1293,32 @@ def matching_process_pattern(command: str, patterns: list[str]) -> str | None:
     return next((pattern for pattern in patterns if basename_token(pattern) in names), None)
 
 
+def command_scope_path_values(tokens: list[str]) -> list[str]:
+    values: list[str] = []
+    for index, token in enumerate(tokens):
+        if token in {"--manifest-path", "--target-dir"} and index + 1 < len(tokens):
+            values.append(tokens[index + 1])
+        elif token.startswith("--manifest-path=") or token.startswith("--target-dir="):
+            values.append(token.split("=", 1)[1])
+    return values
+
+
+def command_references_scope_path(command: str, cwd: pathlib.Path | None, scopes: tuple[pathlib.Path, ...]) -> bool:
+    if cwd is None:
+        return False
+    for value in command_scope_path_values(command_tokens(command)):
+        path = pathlib.Path(value)
+        if not path.is_absolute():
+            path = cwd / path
+        try:
+            resolved = path.resolve()
+        except (OSError, RuntimeError):
+            resolved = path
+        if any(path_is_or_inside(resolved, scope) for scope in scopes):
+            return True
+    return False
+
+
 def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: dict[str, Any]) -> list[dict[str, Any]]:
     patterns = active_process_patterns(policy)
     if not patterns:
@@ -1306,6 +1336,7 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
     related: list[dict[str, Any]] = []
     repo_scope = repo.resolve()
     target_scope = target.resolve()
+    path_scopes = (repo_scope, target_scope)
     scope_texts = {str(repo), str(target), str(repo_scope), str(target_scope)}
     unscoped_match = False
     for line in result.stdout.splitlines():
@@ -1319,6 +1350,10 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
         may_launch_renamed_cargo = matched_pattern is None and command_may_be_renamed_cargo(command)
         may_launch_rust = matched_pattern is None and (command_may_launch_rust(command) or may_launch_renamed_cargo)
         may_launch_build = matched_pattern is None and not may_launch_rust and command_may_launch_build(command)
+        cwd: pathlib.Path | None = None
+        if not command_matches_scope and (matched_pattern is not None or may_launch_rust or may_launch_build):
+            cwd = process_cwd(pid)
+            command_matches_scope = command_references_scope_path(command, cwd, path_scopes)
         if matched_pattern is None and not may_launch_rust and not may_launch_build and not command_matches_scope:
             continue
         if command_matches_scope:
@@ -1338,9 +1373,12 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
                 "pid": pid,
                 "reason": f"matched {matched_pattern} and referenced repo or target",
             }
+            if cwd is not None:
+                entry["cwd"] = str(cwd)
             related.append(entry)
             continue
-        cwd = process_cwd(pid)
+        if cwd is None:
+            cwd = process_cwd(pid)
         cwd_matches_scope = cwd is not None and (
             path_is_or_inside(cwd, repo_scope) or path_is_or_inside(cwd, target_scope)
         )

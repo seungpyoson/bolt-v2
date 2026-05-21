@@ -1290,6 +1290,20 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
             target_expected,
             True,
         ),
+        (
+            "github env echo flags must persist target key alias into later cargo step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo -e "E=CARGO_TARGET_DIR" >> $GITHUB_ENV
+                  - run: |
+                      env $E=/tmp/raw cargo check
+            """,
+            target_expected,
+            True,
+        ),
     ]
     failures: list[str] = []
     for name, workflow_text, expected, should_find in cases:
@@ -1633,6 +1647,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         (
             "aws s3 sync $(echo target) s3://bolt-v2-active-cache/target",
             "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'aws s3 sync "$(echo target)" s3://bolt-v2-active-cache/target',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'export E=CARGO_TARGET_DIR; env FOO=bar bash -c "$E=/tmp/raw cargo check"',
+            "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
             'SRC_DIR=target/debug\naws s3 sync "$SRC_DIR" s3://bolt-v2-active-cache/target/debug',
@@ -2214,7 +2236,11 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "justfile.spoof": 'bad:\n    echo "BOLT_MANAGED_JUST exit"\n    cargo build\n',
             "scripts/raw.sh": "#!/usr/bin/env bash\ncargo build\n",
             "scripts/raw-substitution-dollar.sh": "#!/usr/bin/env bash\nx=$(cargo build)\n",
+            "scripts/raw-substitution-quoted.sh": "#!/usr/bin/env bash\nx=\"$(cargo build)\"\n",
             "scripts/raw-substitution-backtick.sh": "#!/usr/bin/env bash\nx=`cargo build`\n",
+            "scripts/raw-find-exec.sh": "#!/usr/bin/env bash\nfind . -name Cargo.toml -exec cargo build \\;\n",
+            "scripts/raw-su.sh": "#!/usr/bin/env bash\nsu user -c 'cargo build'\n",
+            "scripts/raw-runuser.sh": "#!/usr/bin/env bash\nrunuser -u user -- cargo build\n",
             "scripts/multiline-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo build\"\nbash -c \"$CMD\"\n",
             "scripts/multiline-quoted-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo\nbuild --target-dir /tmp/raw\"\nbash -c \"$CMD\"\n",
             "scripts/comment-blind.sh": "# comment with unbalanced quote '\ncargo build\necho 'closing quote'\n",
@@ -2249,8 +2275,16 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"script raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-substitution-dollar.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script command-substitution raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-substitution-quoted.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script quoted command-substitution raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-substitution-backtick.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script backtick raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-find-exec.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script find-exec raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-su.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script su raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-runuser.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script runuser raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/multiline-eval.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script multiline eval raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/multiline-quoted-eval.sh" in error and expected in error for error in repo_errors):

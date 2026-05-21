@@ -1147,8 +1147,42 @@ def backtick_command_payloads(tokens: list[str]) -> list[list[str]]:
     return payloads
 
 
+def inline_command_substitution_payloads(token: str) -> list[list[str]]:
+    payloads: list[list[str]] = []
+    index = 0
+    while index + 1 < len(token):
+        if token[index : index + 2] not in {"$(", "<("}:
+            index += 1
+            continue
+        cursor = index + 2
+        depth = 1
+        payload_chars: list[str] = []
+        while cursor < len(token) and depth:
+            char = token[cursor]
+            if char == "(":
+                depth += 1
+                payload_chars.append(char)
+            elif char == ")":
+                depth -= 1
+                if depth:
+                    payload_chars.append(char)
+            else:
+                payload_chars.append(char)
+            cursor += 1
+        if depth == 0:
+            payload = "".join(payload_chars).strip()
+            if payload:
+                payloads.append(command_tokens(payload))
+            index = cursor
+            continue
+        index += 1
+    return payloads
+
+
 def shell_command_substitution_payloads(tokens: list[str]) -> list[list[str]]:
     payloads = backtick_command_payloads(tokens)
+    for token in tokens:
+        payloads.extend(inline_command_substitution_payloads(token))
     index = 0
     while index + 1 < len(tokens):
         token = tokens[index]
@@ -1739,6 +1773,33 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
                 continue
             return tokens[index:]
         return []
+    if executable in {"su", "sg"}:
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token in {"-c", "--command"} and index + 1 < len(tokens):
+                return command_tokens(tokens[index + 1])
+            index += 1
+        return None
+    if executable == "runuser":
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                return tokens[index + 1 :]
+            if token in {"-c", "--command"} and index + 1 < len(tokens):
+                return command_tokens(tokens[index + 1])
+            if token in {"-u", "--user", "-g", "--group", "-G", "--supp-group", "-s", "--shell"} and index + 1 < len(tokens):
+                index += 2
+                continue
+            if token.startswith(("--user=", "--group=", "--supp-group=", "--shell=")):
+                index += 1
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            index += 1
+        return None
     starters = {
         "bash",
         "catchsegv",
@@ -1761,6 +1822,23 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
         if pathlib.Path(token).name in starters:
             return tokens[index:]
     return None
+
+
+def find_exec_payloads(tokens: list[str]) -> list[list[str]]:
+    payloads: list[list[str]] = []
+    index = 1
+    while index < len(tokens):
+        if tokens[index] not in {"-exec", "-execdir"}:
+            index += 1
+            continue
+        index += 1
+        payload: list[str] = []
+        while index < len(tokens) and tokens[index] not in {";", "+"}:
+            payload.append(tokens[index])
+            index += 1
+        if payload:
+            payloads.append(payload)
+    return payloads
 
 
 def env_short_cluster_next_index(tokens: list[str], index: int, cluster: str) -> int | None:
@@ -2323,6 +2401,16 @@ def tokens_have_raw_cargo(
                 allow_storage_only=allow_storage_only,
                 variables=variables,
             )
+    if executable == "find":
+        return any(
+            tokens_have_raw_cargo(
+                payload,
+                depth=depth + 1,
+                allow_storage_only=allow_storage_only,
+                variables=variables,
+            )
+            for payload in find_exec_payloads(tokens)
+        )
     if executable in {
         "catchsegv",
         "chrt",
@@ -2333,11 +2421,14 @@ def tokens_have_raw_cargo(
         "nice",
         "nohup",
         "setsid",
+        "sg",
         "stdbuf",
         "sudo",
         "taskset",
         "time",
         "timeout",
+        "runuser",
+        "su",
         "xargs",
     }:
         inner = wrapper_inner_tokens(tokens)
@@ -2864,6 +2955,9 @@ def storage_value_roles(
         roles.add(STORAGE_ROLE_ACTIVE_TARGET)
     if storage_command_substitution_has_target(compact):
         roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+    for payload in shell_command_substitution_payloads(command_tokens(compact)):
+        if any(storage_value_has_target_component(token) for token in payload):
+            roles.add(STORAGE_ROLE_ACTIVE_TARGET)
     for variable in storage_variable_names(compact):
         if variable in {"CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_TARGET_TMPDIR"}:
             roles.add(STORAGE_ROLE_ACTIVE_TARGET)
@@ -2957,7 +3051,10 @@ def storage_assignment_values(text: str) -> list[tuple[str, str]]:
                 target = storage_strip_quotes(line_tokens[redirect_index + 1]) if redirect_index + 1 < len(line_tokens) else ""
                 if target not in {"$GITHUB_ENV", "${GITHUB_ENV}"}:
                     continue
-                payload = " ".join(line_tokens[1:redirect_index])
+                payload_start = 1
+                while payload_start < redirect_index and re.fullmatch(r"-[neE]+", line_tokens[payload_start]):
+                    payload_start += 1
+                payload = " ".join(line_tokens[payload_start:redirect_index])
                 if "=" not in payload:
                     continue
                 name, value = payload.split("=", 1)
@@ -3263,11 +3360,24 @@ def dynamic_env_segment_messages(
             ):
                 index += 1
                 continue
-            message = dynamic_env_assignment_message(argument, assignments, target_keys)
+            message = dynamic_env_assignment_message(argument, local_assignments, target_keys)
             if message is None:
                 break
             messages.add(message)
+            if shell_assignment_word(argument):
+                name, value = argument.split("=", 1)
+                local_assignments[name] = shell_assignment_tracking_value(value, target_keys)
             index += 1
+        if index < len(expanded) and expanded[index] not in SHELL_COMMAND_BOUNDARIES:
+            inner = expand_known_shell_variables(expanded[index:], local_assignments)
+            messages.update(
+                dynamic_env_tokens_messages(
+                    inner,
+                    local_assignments,
+                    target_keys,
+                    depth=depth + 1,
+                )
+            )
         return messages
     if command == "eval":
         inner = expanded[cursor + 1 :]
@@ -3521,7 +3631,10 @@ def github_env_assignment_from_echo_tokens(tokens: list[str]) -> str | None:
         target = storage_strip_quotes(tokens[redirect_index + 1]) if redirect_index + 1 < len(tokens) else ""
         if target not in {"$GITHUB_ENV", "${GITHUB_ENV}"}:
             continue
-        payload = " ".join(tokens[1:redirect_index])
+        payload_start = 1
+        while payload_start < redirect_index and re.fullmatch(r"-[neE]+", tokens[payload_start]):
+            payload_start += 1
+        payload = " ".join(tokens[payload_start:redirect_index])
         if "=" not in payload:
             return None
         name, value = payload.split("=", 1)

@@ -1719,7 +1719,12 @@ def assert_v6_red_active_process_parser_gaps() -> None:
         "bash -c 'VAR=val cargo build'",
         "bash -c 'eval cargo build'",
         "bash -c 'x=$(cargo build)'",
+        "bash -c 'x=\"$(cargo build)\"'",
         "bash -c 'x=`cargo build`'",
+        "find . -name Cargo.toml -exec cargo build \\;",
+        "su user -c 'cargo build'",
+        "runuser -u user -- cargo build",
+        "sg staff -c 'cargo build'",
         "sudo -EHu root cargo build",
         "/tmp/c clean",
         "/tmp/c test",
@@ -1790,7 +1795,12 @@ def assert_v6_red_active_process_wrapper_options_expose_cargo_pattern() -> None:
         "bash -c 'VAR=val cargo build'",
         "bash -c 'eval cargo build'",
         "bash -c 'x=$(cargo build)'",
+        "bash -c 'x=\"$(cargo build)\"'",
         "bash -c 'x=`cargo build`'",
+        "find . -name Cargo.toml -exec cargo build \\;",
+        "su user -c 'cargo build'",
+        "runuser -u user -- cargo build",
+        "sg staff -c 'cargo build'",
         "sudo -EHu root cargo build",
         "flock --timeout 5 /tmp/bolt.lock cargo build",
         "flock --timeout=5 /tmp/bolt.lock cargo build",
@@ -2417,6 +2427,7 @@ def assert_managed_cargo_rejects_alias_subcommands() -> None:
     failures: list[str] = []
     cases: list[tuple[str, str | None]] = [(alias, None) for alias in ["b", "c", "d", "r", "t"]]
     cases.append(("wipe", 'wipe = "clean"\n'))
+    cases.append(("global-wipe", None))
     for alias, cargo_config_aliases in cases:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -2429,6 +2440,10 @@ def assert_managed_cargo_rejects_alias_subcommands() -> None:
                     f"[alias]\n{cargo_config_aliases}",
                     encoding="utf-8",
                 )
+            cargo_home = tmp_path / "cargo-home"
+            if alias == "global-wipe":
+                cargo_home.mkdir()
+                (cargo_home / "config.toml").write_text('[alias]\nglobal-wipe = "clean"\n', encoding="utf-8")
             root_base = tmp_path / "rust-root"
             (root_base / "bolt-v2" / "target").mkdir(parents=True)
 
@@ -2446,6 +2461,8 @@ exit 0
             env = os.environ.copy()
             env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
             env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            if alias == "global-wipe":
+                env["CARGO_HOME"] = str(cargo_home)
             result = run_owner(["cargo", "--repo", str(repo), "--", alias], env=env)
             combined = f"{result.stdout}\n{result.stderr}".lower()
             if result.returncode == 0 or marker.exists() or "alias" not in combined or "managed" not in combined:

@@ -61,6 +61,7 @@ OPAQUE_RUST_LAUNCHERS = {
     "exec",
     "fish",
     "flock",
+    "find",
     "ionice",
     "make",
     "nohup",
@@ -71,10 +72,13 @@ OPAQUE_RUST_LAUNCHERS = {
     "rustup",
     "setsid",
     "sh",
+    "sg",
     "stdbuf",
+    "su",
     "taskset",
     "time",
     "timeout",
+    "runuser",
     "xargs",
     "zsh",
 }
@@ -557,9 +561,43 @@ def backtick_command_payloads(tokens: list[str]) -> list[list[str]]:
     return payloads
 
 
+def inline_command_substitution_payloads(token: str) -> list[list[str]]:
+    payloads: list[list[str]] = []
+    index = 0
+    while index + 1 < len(token):
+        if token[index : index + 2] not in {"$(", "<("}:
+            index += 1
+            continue
+        cursor = index + 2
+        depth = 1
+        payload_chars: list[str] = []
+        while cursor < len(token) and depth:
+            char = token[cursor]
+            if char == "(":
+                depth += 1
+                payload_chars.append(char)
+            elif char == ")":
+                depth -= 1
+                if depth:
+                    payload_chars.append(char)
+            else:
+                payload_chars.append(char)
+            cursor += 1
+        if depth == 0:
+            payload = "".join(payload_chars).strip()
+            if payload:
+                payloads.append(command_tokens(payload))
+            index = cursor
+            continue
+        index += 1
+    return payloads
+
+
 def shell_command_substitution_payloads(tokens: list[str]) -> list[list[str]]:
     normalized = shell_normalized_tokens(tokens)
     payloads = backtick_command_payloads(normalized)
+    for token in normalized:
+        payloads.extend(inline_command_substitution_payloads(token))
     index = 0
     while index + 1 < len(normalized):
         token = normalized[index]
@@ -1148,6 +1186,46 @@ def xargs_command_index(tokens: list[str]) -> int:
     return index
 
 
+def su_wrapped_tokens(tokens: list[str]) -> list[str] | None:
+    executable = basename_token(tokens[0]) if tokens else ""
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-c", "--command"} and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        if executable == "runuser":
+            if token == "--":
+                return tokens[index + 1 :]
+            if token in {"-u", "--user", "-g", "--group", "-G", "--supp-group", "-s", "--shell"} and index + 1 < len(tokens):
+                index += 2
+                continue
+            if token.startswith(("--user=", "--group=", "--supp-group=", "--shell=")):
+                index += 1
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+        index += 1
+    return None
+
+
+def find_exec_payloads(tokens: list[str]) -> list[list[str]]:
+    payloads: list[list[str]] = []
+    index = 1
+    while index < len(tokens):
+        if tokens[index] not in {"-exec", "-execdir"}:
+            index += 1
+            continue
+        index += 1
+        payload: list[str] = []
+        while index < len(tokens) and tokens[index] not in {";", "+"}:
+            payload.append(tokens[index])
+            index += 1
+        if payload:
+            payloads.append(payload)
+    return payloads
+
+
 def process_wrapper_tokens(tokens: list[str]) -> list[str] | None:
     if not tokens:
         return None
@@ -1186,6 +1264,8 @@ def process_wrapper_tokens(tokens: list[str]) -> list[str] | None:
         return tokens[chrt_command_index(tokens) :]
     if executable == "xargs":
         return tokens[xargs_command_index(tokens) :]
+    if executable in {"runuser", "sg", "su"}:
+        return su_wrapped_tokens(tokens)
     return None
 
 
@@ -1230,6 +1310,9 @@ def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
         script_name = python_script_name(tokens, 1)
         if script_name is not None:
             names.add(script_name)
+    elif executable == "find":
+        for payload in find_exec_payloads(tokens):
+            names.update(process_names_from_tokens(payload, depth=depth + 1))
     return names
 
 
@@ -1703,6 +1786,7 @@ CARGO_DISK_PREFLIGHT_SUBCOMMANDS = frozenset(
 CARGO_PROCESS_SUBCOMMANDS = CARGO_DISK_PREFLIGHT_SUBCOMMANDS | {"clean", "fmt"}
 CARGO_ALIAS_SUBCOMMANDS = {"b", "c", "d", "r", "t"}
 CARGO_CONFIG_RELATIVE_PATHS = (pathlib.Path(".cargo/config.toml"), pathlib.Path(".cargo/config"))
+CARGO_HOME_CONFIG_NAMES = ("config.toml", "config")
 
 
 def cargo_subcommand_with_index(cargo_args: list[str]) -> tuple[int, str] | None:
@@ -1744,8 +1828,11 @@ def cargo_args_need_disk_preflight(cargo_args: list[str]) -> bool:
 
 def repo_cargo_aliases(repo: pathlib.Path) -> set[str]:
     aliases: set[str] = set()
-    for relative_path in CARGO_CONFIG_RELATIVE_PATHS:
-        path = repo / relative_path
+    config_paths = [(repo / relative_path, relative_path) for relative_path in CARGO_CONFIG_RELATIVE_PATHS]
+    cargo_home = os.environ.get("CARGO_HOME")
+    cargo_home_path = pathlib.Path(cargo_home).expanduser() if cargo_home else pathlib.Path.home() / ".cargo"
+    config_paths.extend((cargo_home_path / name, pathlib.Path(f"$CARGO_HOME/{name}")) for name in CARGO_HOME_CONFIG_NAMES)
+    for path, display_path in config_paths:
         if not path.exists():
             continue
         try:
@@ -1755,7 +1842,7 @@ def repo_cargo_aliases(repo: pathlib.Path) -> set[str]:
                 with path.open("rb") as handle:
                     config = _toml.load(handle)
         except (OSError, PolicyError, _toml.TOMLDecodeError if _toml is not None else ValueError) as exc:
-            raise PolicyError(f"unable to inspect Cargo alias config {relative_path}: {exc}") from exc
+            raise PolicyError(f"unable to inspect Cargo alias config {display_path}: {exc}") from exc
         alias_table = config.get("alias")
         if isinstance(alias_table, dict):
             aliases.update(str(name) for name in alias_table)

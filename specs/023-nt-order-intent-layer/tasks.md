@@ -385,7 +385,7 @@
 - [x] T172 [US2] RED: Add public/runtime regressions for the chosen `trigger_instrument_id` boundary before production code changes
 - [x] T173 [US2] GREEN: Either pass TOML-owned `trigger_instrument_id` through the existing order-template path or update the contract to residualize it without claiming full triggered-field support
 - [x] T174 [US2] Record `emulation_trigger` as an explicit deferred order-emulation slice unless it is enabled through TDD in this phase
-- [ ] T175 [US2] Verify focused triggered-order tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+- [x] T175 [US2] Verify focused triggered-order tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
 ## Phase 40: TDD Slice 36 - Forced-Flat Pending Entry Review Blocker
 
@@ -396,7 +396,7 @@
 - [x] T178 [US3] GREEN: Give forced-flat exit precedence over the managed pending-entry guard without changing the normal-exit guard
 - [x] T179 [US3] RED: Add a forced-flat submit lifecycle regression proving NT cancel emission for the resting entry and residual recovery if an entry fill races while exit is pending
 - [x] T180 [US3] GREEN: Use NT `cancel_order(...)` for forced-flat pending-entry cancellation and recover raced fills as residual managed exposure
-- [ ] T181 [US3] Verify focused exit lifecycle tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+- [x] T181 [US3] Verify focused exit lifecycle tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
 ## Phase 41: TDD Slice 37 - Strategy/Venue/Market Agnostic NT Order Template
 
@@ -407,6 +407,15 @@
 - [x] T184 [US2] GREEN: Move NT order-template fields, validation, and `OrderFactory` construction into a shared module that accepts typed NT inputs and an NT `OrderFactory`
 - [x] T185 [US2] Wire `binary_oracle_edge_taker` to the shared builder while leaving position-contract checks, entry reduce-only rejection, exit quote-quantity sizing, forced-flat behavior, evidence, admission, and submit context in the strategy-owned path
 - [x] T186 [US2] Verify generic order-template tests, focused strategy regressions, source fences for forbidden coupling, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+
+## Phase 42: TDD Slice 38 - Latest-Head External Review Runtime Guard
+
+**Goal**: Record exact-head external review state after the shared extraction, and harden the public shared builder against direct callers that bypass config-time validation. The fix must remain pure NT model validation and must not add venue, market, strategy, maker-only, or taker-only policy.
+
+- [x] T187 [P] [US2] Run latest-head external reviews against PR #434 head `f7e873bb3906cf4c9842107f941e7dd728a4031a` and record clean, failed, and non-transmitted review slots separately
+- [x] T188 [US2] RED: Add a direct shared-builder regression proving non-positive trigger or activation inputs can reach NT factory construction
+- [x] T189 [US2] GREEN: Mirror trigger and activation positivity validation in `validate_nt_order_template(...)` before `OrderFactory` calls
+- [x] T190 [US2] Verify focused order-template tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
 ## Dependencies & Execution Order
 
@@ -448,6 +457,7 @@
 - Phase 39 blocks triggered-order field-completeness claims because pinned-NT review found `trigger_instrument_id` is accepted by enabled NT factories but currently dropped by Bolt, and `emulation_trigger` is not listed as residual scope.
 - Phase 40 blocks completion because Greptile found forced-flat exit submission was still blocked behind a resting managed pending-entry remainder.
 - Phase 41 blocks completion because multi-agent review found generic NT order-template mechanics still housed in `binary_oracle_edge_taker`; extraction must remain submission-agnostic, venue-agnostic, market-agnostic, and strategy-agnostic.
+- Phase 42 blocks completion because latest-head external review exposed a public shared-builder validation asymmetry after Phase 41 extraction.
 
 ## Parallel Opportunities
 

@@ -354,8 +354,25 @@ pub fn validate_nt_order_template(
             !template.is_post_only,
             "{prefix}_is_post_only must be false for TrailingStopMarket orders"
         );
+        if let Some(trigger_price) = template.trigger_price {
+            anyhow::ensure!(
+                trigger_price.is_positive(),
+                "{prefix}_trigger_price must be positive"
+            );
+        }
+        if let Some(activation_price) = template.activation_price {
+            anyhow::ensure!(
+                activation_price.is_positive(),
+                "{prefix}_activation_price must be positive"
+            );
+        }
         anyhow::ensure!(
-            template.trigger_price.is_some() || template.activation_price.is_some(),
+            template
+                .trigger_price
+                .is_some_and(|price| price.is_positive())
+                || template
+                    .activation_price
+                    .is_some_and(|price| price.is_positive()),
             "{prefix}_trigger_price or {prefix}_activation_price is required for TrailingStopMarket orders"
         );
         let trailing_offset = template.trailing_offset.ok_or_else(|| {
@@ -370,6 +387,18 @@ pub fn validate_nt_order_template(
     let Some(trigger_price) = template.trigger_price else {
         return Ok(());
     };
+    if matches!(
+        template.order_type,
+        OrderType::StopMarket
+            | OrderType::StopLimit
+            | OrderType::MarketIfTouched
+            | OrderType::LimitIfTouched
+    ) {
+        anyhow::ensure!(
+            trigger_price.is_positive(),
+            "{prefix}_trigger_price must be positive"
+        );
+    }
     match (template.order_type, inputs.order_side) {
         (OrderType::LimitIfTouched, OrderSide::Buy) if trigger_price > inputs.price => {
             anyhow::bail!(

@@ -103,6 +103,42 @@ fn shared_nt_order_template_builds_sell_limit_if_touched_without_position_policy
 }
 
 #[test]
+fn shared_nt_order_template_rejects_non_positive_trigger_inputs_before_nt_factory() {
+    let mut factory = generic_order_factory();
+
+    let mut stop_market = base_template(OrderType::StopMarket);
+    stop_market.trigger_price = Some(Price::new(0.0, 2));
+    let error = build_nt_order(
+        &mut factory,
+        "generic_order",
+        &stop_market,
+        base_inputs(OrderSide::Buy),
+    )
+    .expect_err("zero trigger price must fail before NT factory construction");
+    assert!(
+        error.to_string().contains("trigger_price must be positive"),
+        "{error}"
+    );
+
+    let mut trailing_stop = base_template(OrderType::TrailingStopMarket);
+    trailing_stop.activation_price = Some(Price::new(0.0, 2));
+    trailing_stop.trailing_offset = Some(rust_decimal::Decimal::new(1, 1));
+    let error = build_nt_order(
+        &mut factory,
+        "generic_order",
+        &trailing_stop,
+        base_inputs(OrderSide::Sell),
+    )
+    .expect_err("zero activation price must fail before NT factory construction");
+    assert!(
+        error
+            .to_string()
+            .contains("activation_price must be positive"),
+        "{error}"
+    );
+}
+
+#[test]
 fn shared_nt_order_template_source_has_no_strategy_venue_market_or_submit_coupling() {
     let source = std::fs::read_to_string("src/bolt_v3_order_intent.rs")
         .expect("shared order-intent module should exist");

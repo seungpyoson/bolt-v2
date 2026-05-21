@@ -2799,11 +2799,7 @@ impl BinaryOracleEdgeTaker {
         }
         let order_side = self.configured_entry_order_side().ok()?;
         let book = self.active_book_for_outcome(side);
-        if self.config.entry_order.is_post_only {
-            book.passive_price_for_order_side(order_side)
-        } else {
-            book.executable_price_for_order_side(order_side)
-        }
+        order_price_for_side(book, order_side, self.config.entry_order.is_post_only)
     }
 
     fn submission_entry_price(&self, side: OutcomeSide) -> Option<f64> {

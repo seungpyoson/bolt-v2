@@ -283,6 +283,15 @@
 - [x] T125 [US3] GREEN: Apply minimal strategy fixes on the existing config validation, entry sizing, submit-admission path, and active-doc verifier
 - [ ] T126 [US3] Verify focused runtime/config tests, docs/source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
 
+## Phase 29: TDD Slice 25 - Trailing Stop Companion Price Validation
+
+**Goal**: Resolve no-mistakes trailing-stop validation finding without adding venue policy: any provided TrailingStopMarket `trigger_price` or `activation_price` must be positive, and at least one of them must be present.
+
+- [x] T127 [P] [US3] Record no-mistakes review commit evidence and NT/Bolt boundary for TrailingStopMarket companion prices
+- [x] T128 [US3] RED: Add config validation regressions for non-positive TrailingStopMarket trigger and activation companion prices
+- [x] T129 [US3] GREEN: Apply minimal archetype validation fix on the existing order-template validation path
+- [ ] T130 [US3] Verify focused config tests, docs/source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.

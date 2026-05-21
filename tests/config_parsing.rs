@@ -1535,6 +1535,16 @@ fn bolt_v3_archetype_rejects_trailing_stop_market_invalid_combinations() {
             "trigger_price",
         ),
         (
+            "non_positive_trigger_with_activation",
+            "time_in_force = \"gtc\"\ntrigger_price = -0.01\nactivation_price = 0.48\ntrigger_type = \"last_price\"\ntrailing_offset = 1.0\ntrailing_offset_type = \"price\"\nis_post_only = false",
+            "trigger_price",
+        ),
+        (
+            "non_positive_activation_with_trigger",
+            "time_in_force = \"gtc\"\ntrigger_price = 0.52\nactivation_price = 0.0\ntrigger_type = \"last_price\"\ntrailing_offset = 1.0\ntrailing_offset_type = \"price\"\nis_post_only = false",
+            "activation_price",
+        ),
+        (
             "missing_trigger_type",
             "time_in_force = \"gtc\"\ntrigger_price = 0.52\ntrailing_offset = 1.0\ntrailing_offset_type = \"price\"\nis_post_only = false",
             "trigger_type",

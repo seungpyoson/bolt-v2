@@ -1037,7 +1037,21 @@ fn check_trailing_stop_market_combination(
     }
     if order
         .trigger_price
-        .is_none_or(|value| value <= Decimal::ZERO)
+        .is_some_and(|value| value <= Decimal::ZERO)
+    {
+        errors.push(format!(
+            "{context}: parameters.{field}.trigger_price must be positive for order_type=trailing_stop_market"
+        ));
+    }
+    if order
+        .activation_price
+        .is_some_and(|value| value <= Decimal::ZERO)
+    {
+        errors.push(format!(
+            "{context}: parameters.{field}.activation_price must be positive for order_type=trailing_stop_market"
+        ));
+    }
+    if order.trigger_price.is_none()
         && order
             .activation_price
             .is_none_or(|value| value <= Decimal::ZERO)

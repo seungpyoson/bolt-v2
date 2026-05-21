@@ -2044,6 +2044,47 @@ def assert_v6_red_active_process_fails_closed_for_attached_semicolon_shell_chain
         owner.process_cwd = original_process_cwd
 
 
+def assert_active_process_parser_uses_single_cwd_snapshot_per_pid() -> None:
+    owner = load_owner_module()
+    original_run = owner.subprocess.run
+    original_getpid = owner.os.getpid
+    original_process_cwd = owner.process_cwd
+    calls: list[int] = []
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="424242 cargo build\n",
+            stderr="",
+        )
+
+    def fake_process_cwd(pid: int) -> pathlib.Path | None:
+        calls.append(pid)
+        return None
+
+    owner.subprocess.run = fake_run
+    owner.os.getpid = lambda: 999999
+    owner.process_cwd = fake_process_cwd
+    try:
+        try:
+            owner.active_related_processes(
+                pathlib.Path("/tmp/repo"),
+                pathlib.Path("/tmp/repo/target"),
+                {"cache": {"active_process_patterns": ["cargo", "rustc", "rust_verification.py"]}},
+            )
+        except owner.ProcessVisibilityError:
+            pass
+        else:
+            raise AssertionError("unscoped cargo without cwd must fail closed")
+    finally:
+        owner.subprocess.run = original_run
+        owner.os.getpid = original_getpid
+        owner.process_cwd = original_process_cwd
+    if calls != [424242]:
+        raise AssertionError(f"process_cwd must be sampled once per pid, got {calls!r}")
+
+
 def assert_v6_red_active_process_parser_ignores_unscoped_opaque_build_without_cwd() -> None:
     failures: list[str] = []
     for command in (
@@ -2319,6 +2360,53 @@ exit 0
                 )
     if failures:
         raise AssertionError("managed heavy Rust commands must run disk preflight before execution: " + "; ".join(failures))
+
+
+def assert_managed_cargo_clean_keeps_disk_pressure_escape_hatch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(
+            repo,
+            active_process_patterns=["cache-prune-sentinel-never-present"],
+            min_free_bytes=10**18,
+            soft_limit_bytes=1,
+        )
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        (target / "debug").mkdir(parents=True)
+        (target / "debug" / "large.bin").write_bytes(b"abc")
+        legacy_root = repo / "target"
+        legacy_root.mkdir()
+        (legacy_root / "legacy.bin").write_bytes(b"legacy")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker = tmp_path / "started-clean"
+        write_executable(
+            bin_dir / "cargo",
+            f"""#!/usr/bin/env bash
+touch {marker}
+exit 0
+""",
+        )
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+exit 0
+""",
+        )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cargo", "--repo", str(repo), "--", "clean"], env=env)
+        if result.returncode != 0 or not marker.exists():
+            raise AssertionError(
+                "managed cargo clean must remain available under disk/cache pressure when no related process is active: "
+                f"returncode={result.returncode} started={marker.exists()} stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
 
 
 def assert_managed_cargo_rejects_alias_subcommands() -> None:
@@ -2684,10 +2772,12 @@ def assert_v6_red_policy_gaps() -> None:
         assert_v6_red_active_process_parser_uses_command_scope_without_cwd,
         assert_v6_red_active_process_parser_fails_closed_for_unscoped_wrapped_rust_without_cwd,
         assert_v6_red_active_process_fails_closed_for_attached_semicolon_shell_chains,
+        assert_active_process_parser_uses_single_cwd_snapshot_per_pid,
         assert_v6_red_active_process_parser_ignores_unscoped_opaque_build_without_cwd,
         assert_v6_red_active_process_parser_does_not_treat_trustd_as_rust,
         assert_v6_red_managed_cargo_clean_refuses_active_process,
         assert_v6_red_disk_preflight_before_managed_cargo_and_run,
+        assert_managed_cargo_clean_keeps_disk_pressure_escape_hatch,
         assert_managed_cargo_rejects_alias_subcommands,
         assert_v6_red_managed_cargo_rejects_target_routing_overrides,
         assert_managed_cargo_rejects_config_file_target_routing_override,

@@ -1400,8 +1400,10 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
         may_launch_rust = matched_pattern is None and (command_may_launch_rust(command) or may_launch_renamed_cargo)
         may_launch_build = matched_pattern is None and not may_launch_rust and command_may_launch_build(command)
         cwd: pathlib.Path | None = None
+        cwd_sampled = False
         if not command_matches_scope and (matched_pattern is not None or may_launch_rust or may_launch_build):
             cwd = process_cwd(pid)
+            cwd_sampled = True
             command_matches_scope = command_references_scope_path(command, cwd, path_scopes)
         if matched_pattern is None and not may_launch_rust and not may_launch_build and not command_matches_scope:
             continue
@@ -1426,8 +1428,9 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
                 entry["cwd"] = str(cwd)
             related.append(entry)
             continue
-        if cwd is None:
+        if not cwd_sampled:
             cwd = process_cwd(pid)
+            cwd_sampled = True
         cwd_matches_scope = cwd is not None and (
             path_is_or_inside(cwd, repo_scope) or path_is_or_inside(cwd, target_scope)
         )

@@ -1146,6 +1146,104 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         raise AssertionError("storage-transfer policy did not classify semantic active-cache flows: " + "; ".join(misses))
 
 
+def assert_v6_workflow_run_steps_reset_shell_state() -> None:
+    verifier = load_verifier()
+    s3_expected = "S3 active mutable target cache must be rejected"
+    target_expected = "CARGO_TARGET_DIR raw target override must be classified"
+    cases = [
+        (
+            "same run step cwd must classify active-target S3",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cd target
+                      aws s3 cp s3://bolt-v2-cache/file artifact.bin
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "separate run step cwd must not leak into later S3 step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cd target
+                  - run: |
+                      aws s3 cp s3://bolt-v2-cache/file artifact.bin
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "same run step target env alias must classify raw target override",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      E=CARGO_TARGET_DIR
+                      env $E=/tmp/raw cargo check
+            """,
+            target_expected,
+            True,
+        ),
+        (
+            "separate run step target env alias must not leak into later cargo step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      E=CARGO_TARGET_DIR
+                  - run: |
+                      env $E=/tmp/raw cargo check
+            """,
+            target_expected,
+            False,
+        ),
+        (
+            "github env target must persist into later S3 step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo TARGET=target >> $GITHUB_ENV
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env target key alias must persist into later cargo step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo E=CARGO_TARGET_DIR >> $GITHUB_ENV
+                  - run: |
+                      env $E=/tmp/raw cargo check
+            """,
+            target_expected,
+            True,
+        ),
+    ]
+    failures: list[str] = []
+    for name, workflow_text, expected, should_find in cases:
+        errors = verifier.raw_rust_storage_errors(textwrap.dedent(workflow_text))
+        found = expected in errors
+        if found != should_find:
+            failures.append(f"{name}: expected found={should_find}, got {errors!r}")
+    if failures:
+        raise AssertionError("workflow run step shell state handling failed: " + "; ".join(failures))
+
+
 def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
     cases = [
         (
@@ -2013,6 +2111,7 @@ def assert_shell_logical_lines_handles_crlf_continuations() -> None:
 def assert_v6_red_workflow_policy_gaps() -> None:
     checks = [
         assert_v6_red_s3_storage_transfer_policy_is_semantic,
+        assert_v6_workflow_run_steps_reset_shell_state,
         assert_v6_red_raw_rust_storage_overrides_are_reported,
         assert_v6_red_renamed_path_cargo_source_builds_are_reported,
         assert_v6_red_no_mistakes_raw_cargo_is_reported,

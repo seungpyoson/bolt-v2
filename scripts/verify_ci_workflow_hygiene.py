@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import pathlib
 import re
 import shlex
@@ -3369,10 +3370,103 @@ def folded_yaml_run_commands(text: str) -> list[str]:
     return commands
 
 
+def step_run_command(block: list[str]) -> str | None:
+    for index, line in enumerate(block):
+        clean = strip_comment(line).rstrip()
+        match = re.match(r"^(\s*)(?:-\s*)?run:\s*(.*?)\s*$", clean)
+        if match is None:
+            continue
+        value = match.group(2).strip()
+        if not value:
+            return ""
+        if value[0] not in {"|", ">"}:
+            return unquote_yaml_scalar(value)
+        folded = value[0] == ">"
+        base_indent = len(match.group(1))
+        command_lines: list[str] = []
+        for nested in block[index + 1 :]:
+            nested_clean = strip_comment(nested).rstrip()
+            if not nested_clean.strip():
+                continue
+            indent = len(nested_clean) - len(nested_clean.lstrip(" "))
+            if indent <= base_indent:
+                break
+            command_lines.append(nested_clean.strip())
+        if folded:
+            return " ".join(command_lines)
+        return "\n".join(command_lines)
+    return None
+
+
+def workflow_run_commands(workflow_text: str) -> list[str]:
+    commands: list[str] = []
+    for job_lines in parse_jobs(workflow_text).values():
+        for block in step_blocks(job_lines):
+            command = step_run_command(block)
+            if command is not None:
+                commands.append(command)
+    return commands
+
+
+def github_env_assignment_line(line: str) -> str | None:
+    clean = strip_comment(line).strip()
+    tokens = command_tokens(clean)
+    if len(tokens) < 4 or pathlib.Path(tokens[0]).name != "echo":
+        return None
+    for redirect_index, token in enumerate(tokens):
+        if token != ">>":
+            continue
+        target = storage_strip_quotes(tokens[redirect_index + 1]) if redirect_index + 1 < len(tokens) else ""
+        if target not in {"$GITHUB_ENV", "${GITHUB_ENV}"}:
+            continue
+        payload = " ".join(tokens[1:redirect_index])
+        if "=" not in payload:
+            return None
+        name, value = payload.split("=", 1)
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            return f"{name}={value}"
+        return None
+    return None
+
+
+def github_env_assignment_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    for line in text.splitlines():
+        assignment = github_env_assignment_line(line)
+        if assignment is not None:
+            lines.append(assignment)
+    return lines
+
+
+def workflow_run_shell_texts(workflow_text: str) -> list[str]:
+    commands = workflow_run_commands(workflow_text)
+    if not commands:
+        return []
+    texts: list[str] = []
+    persisted_env: list[str] = []
+    for command in commands:
+        parts = [*persisted_env]
+        if command.strip():
+            parts.append(command)
+        texts.append("\n".join(parts))
+        persisted_env.extend(github_env_assignment_lines(command))
+    return texts
+
+
+def add_unique_errors(errors: list[str], messages: Iterable[str]) -> None:
+    for message in messages:
+        if message not in errors:
+            errors.append(message)
+
+
 def raw_rust_storage_errors(workflow_text: str, *, alias_depth: int = 0) -> list[str]:
     uncommented = uncommented_text(workflow_text.splitlines())
     folded_commands = "\n".join(folded_yaml_run_commands(uncommented))
     text = re.sub(r"\\\s*\n\s*", " ", "\n".join(part for part in (uncommented, folded_commands) if part))
+    shell_texts = workflow_run_shell_texts(uncommented)
+    if not shell_texts:
+        shell_texts = [uncommented]
+    shell_texts = [re.sub(r"\\\s*\n\s*", " ", shell_text) for shell_text in shell_texts]
     checks: tuple[tuple[str, str], ...] = (
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_TARGET_DIR[\"']?\s*(?:=|:)", "CARGO_TARGET_DIR raw target override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_BUILD_TARGET_DIR[\"']?\s*(?:=|:)", "CARGO_BUILD_TARGET_DIR raw target override must be classified"),
@@ -3406,27 +3500,21 @@ def raw_rust_storage_errors(workflow_text: str, *, alias_depth: int = 0) -> list
     for pattern, message in checks:
         if re.search(pattern, text):
             errors.append(message)
-    for message in sorted(text_raw_cargo_storage_override_messages(text)):
-        if message not in errors:
-            errors.append(message)
-    for message in sorted(dynamic_env_target_override_messages(text)):
-        if message not in errors:
-            errors.append(message)
-    for message in sorted(alias_payload_storage_messages(text, depth=alias_depth)):
-        if message not in errors:
-            errors.append(message)
+    for shell_text in shell_texts:
+        add_unique_errors(errors, sorted(text_raw_cargo_storage_override_messages(shell_text)))
+        add_unique_errors(errors, sorted(dynamic_env_target_override_messages(shell_text)))
+        add_unique_errors(errors, sorted(alias_payload_storage_messages(shell_text, depth=alias_depth)))
     config_file_message = "cargo --config file raw target override must be classified"
-    if text_has_path_style_cargo_config(text) and config_file_message not in errors:
-        errors.append(config_file_message)
-    target_override_message = "cargo --target-dir raw target override must be classified"
     if (
-        text_has_alias_cargo_target_routing_override(text)
-        and target_override_message not in errors
+        text_has_path_style_cargo_config(text)
+        or any(text_has_path_style_cargo_config(shell_text) for shell_text in shell_texts)
     ):
-        errors.append(target_override_message)
-    for message in storage_transfer_policy_errors(text):
-        if message not in errors:
-            errors.append(message)
+        add_unique_errors(errors, [config_file_message])
+    target_override_message = "cargo --target-dir raw target override must be classified"
+    if any(text_has_alias_cargo_target_routing_override(shell_text) for shell_text in shell_texts):
+        add_unique_errors(errors, [target_override_message])
+    for shell_text in shell_texts:
+        add_unique_errors(errors, storage_transfer_policy_errors(shell_text))
     return errors
 
 

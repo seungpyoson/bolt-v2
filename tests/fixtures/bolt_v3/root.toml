@@ -153,7 +153,7 @@ venue = "BINANCE"
 product_types = ["spot"]
 environment = "mainnet"
 base_url_http = "https://api.binance.com" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http
-base_url_ws = "wss://stream.binance.com:9443/ws" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws
+base_url_ws = "wss://stream-sbe.binance.com/ws" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws
 instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 transport_backend = "sockudo"
 

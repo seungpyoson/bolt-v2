@@ -789,7 +789,7 @@ mod tests {
         );
         assert_eq!(
             data.base_url_ws.as_deref(),
-            Some("wss://stream.binance.com:9443/ws")
+            Some("wss://stream-sbe.binance.com/ws")
         );
         assert_eq!(data.api_key.as_deref(), Some("fixture-binance-api-key"));
         assert_eq!(

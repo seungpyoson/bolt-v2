@@ -85,7 +85,7 @@ All code tasks use TDD. For each behavior: write failing test, run it and captur
 **Independent Test**: Local tests cover report schema and zero-order guard. Ignored operator test produces real artifact only with explicit approval.
 
 Live-readiness evidence note: T038 and T046 stay unchecked until explicit
-operator-run evidence exists. PR #331 P9 cites those unchecked tasks only as
+operator-run evidence produces satisfied readiness/canary artifacts. PR #331 P9 cites those unchecked tasks only as
 blockers, not as deferred approval to trade.
 
 - [x] T034 [US4] Write failing schema tests for no-submit readiness report producer and gate consumer compatibility.
@@ -93,6 +93,7 @@ blockers, not as deferred approval to trade.
 - [x] T036 [US4] Implement minimal no-submit readiness runner using existing bolt-v3 build and controlled-connect/disconnect boundaries.
 - [x] T037 [US4] Run local readiness tests with mock SSM resolver and no network.
 - [ ] T038 [US4] With explicit operator approval, run ignored real SSM/venue no-submit readiness and store redacted report path outside tracked secrets.
+  - 2026-05-21 18:34:44 KST evidence attempt at head `3190803c5cb51ffeaebbd80a029c4a65bf3291c4`: `cargo run --bin bolt-v2 -- no-submit-readiness --config config/live.local.toml` wrote `/Users/spson/Projects/Claude/bolt-v2/var/bolt-v3-live/reports/no-submit-readiness.json` outside tracked secrets with mode `-rw-------`, but readiness remains blocked because `controlled_connect` failed after Binance reference data did not connect/produce the configured quote within `[live_canary].reference_quote_wait_timeout_seconds=20`; `reference_readiness` was skipped because controlled connect failed.
 - [x] T039 [US4] Run `cargo test --test bolt_v3_live_canary_gate` against the redacted report fixture shape.
 
 ## Phase 8: Tiny-capital Live Canary (US5)

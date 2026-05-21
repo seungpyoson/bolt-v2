@@ -27,9 +27,12 @@
 use std::{any::Any, sync::Arc};
 
 use nautilus_binance::{
-    common::credential::Ed25519Credential,
-    common::enums::{
-        BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
+    common::{
+        consts::BINANCE_SPOT_WS_URL,
+        credential::Ed25519Credential,
+        enums::{
+            BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
+        },
     },
     config::BinanceDataClientConfig,
     factories::BinanceDataClientFactory,
@@ -37,6 +40,7 @@ use nautilus_binance::{
 use nautilus_core::string::secret::REDACTED;
 use nautilus_network::websocket::TransportBackend;
 use serde::Deserialize;
+use url::Url;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
@@ -175,6 +179,12 @@ fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
             ));
         }
     }
+    if !data.base_url_ws.trim().is_empty() {
+        errors.extend(validate_not_known_spot_json_websocket_endpoint(
+            key,
+            data.base_url_ws.as_str(),
+        ));
+    }
     // The bolt-v3 schema deliberately rejects `0` rather than treating
     // it as "polling disabled": NT's `BinanceDataClientConfig` consumes
     // this as a poll interval and a missing/zero value would leave NT
@@ -183,6 +193,41 @@ fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
     if data.instrument_status_poll_secs == 0 {
         errors.push(format!(
             "clients.{key}.data.instrument_status_poll_secs must be a positive integer"
+        ));
+    }
+    errors
+}
+
+fn validate_not_known_spot_json_websocket_endpoint(key: &str, value: &str) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Ok(configured) = Url::parse(value) else {
+        errors.push(format!(
+            "clients.{key}.data.base_url_ws must be a valid Binance Spot WebSocket URL for NT subscribe_quotes"
+        ));
+        return errors;
+    };
+    if !matches!(configured.scheme(), "ws" | "wss") {
+        errors.push(format!(
+            "clients.{key}.data.base_url_ws must be a valid Binance Spot WebSocket URL for NT subscribe_quotes"
+        ));
+        return errors;
+    }
+    if !value[configured.scheme().len()..].starts_with("://") || !configured.has_host() {
+        errors.push(format!(
+            "clients.{key}.data.base_url_ws must be a valid Binance Spot WebSocket URL for NT subscribe_quotes"
+        ));
+        return errors;
+    }
+    let Ok(json_endpoint) = Url::parse(BINANCE_SPOT_WS_URL) else {
+        errors.push(
+            "nautilus_binance Spot JSON WebSocket URL constant failed URL parsing".to_string(),
+        );
+        return errors;
+    };
+
+    if configured.host_str() == json_endpoint.host_str() {
+        errors.push(format!(
+            "clients.{key}.data.base_url_ws must not use the Binance Spot JSON WebSocket host for NT subscribe_quotes (<symbol>@bestBidAsk); configure a Binance Spot SBE WebSocket endpoint or compatible SBE proxy so no-submit reference quote readiness can observe QuoteTick data"
         ));
     }
     errors

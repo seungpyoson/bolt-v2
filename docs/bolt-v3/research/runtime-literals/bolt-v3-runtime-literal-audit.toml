@@ -1945,6 +1945,30 @@ classification = "validation_field_label"
 reason = "This label names the Binance data config URL field being validated for non-empty input."
 
 [[allowed]]
+path = '''src/bolt_v3_providers/binance.rs'''
+kind = '''string'''
+literal = '''"ws"'''
+context = '''if !matches!(configured.scheme(), "ws" | "wss") {'''
+classification = '''websocket_url_scheme_protocol'''
+reason = '''This is the URL scheme token required to recognize WebSocket config URLs before NT mapping, not an operator-owned endpoint, venue, id, quantity, timeout, or path value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/binance.rs'''
+kind = '''string'''
+literal = '''"wss"'''
+context = '''if !matches!(configured.scheme(), "ws" | "wss") {'''
+classification = '''websocket_url_scheme_protocol'''
+reason = '''This is the TLS WebSocket URL scheme token required to recognize WebSocket config URLs before NT mapping, not an operator-owned endpoint, venue, id, quantity, timeout, or path value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/binance.rs'''
+kind = '''string'''
+literal = '''"://"'''
+context = '''if !value[configured.scheme().len()..].starts_with("://") || !configured.has_host() {'''
+classification = '''url_authority_separator_protocol'''
+reason = '''This is the URL authority separator required to reject hostless WebSocket config URLs before NT mapping, not an operator-owned endpoint, venue, id, quantity, timeout, or path value.'''
+
+[[allowed]]
 path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
 literal = "\"nautilus_binance::common::credential\""

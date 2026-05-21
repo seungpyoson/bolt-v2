@@ -452,6 +452,9 @@ pub enum BoltV3LiveNodeError {
         client_venues: Vec<String>,
     },
     NoSubmitReferenceProbeSetup(anyhow::Error),
+    NoSubmitReferenceProbeFailed {
+        reason: String,
+    },
     NoSubmitStartFailed(anyhow::Error),
     NoSubmitStopTimeout {
         timeout_secs: u64,
@@ -557,6 +560,10 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 f,
                 "bolt-v3 no-submit reference quote probe setup failed: {error}"
             ),
+            BoltV3LiveNodeError::NoSubmitReferenceProbeFailed { reason } => write!(
+                f,
+                "bolt-v3 no-submit controlled-run reached NT Running but live reference quote evidence was not observed; engine connectivity cannot be treated as proven: {reason}"
+            ),
             BoltV3LiveNodeError::NoSubmitStartFailed(error) => {
                 write!(f, "bolt-v3 no-submit controlled-start failed: {error}")
             }
@@ -603,6 +610,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::NoSubmitStartTimeoutOverflow
             | BoltV3LiveNodeError::NoSubmitStartIncomplete
             | BoltV3LiveNodeError::NoSubmitExecutionAccountsMissing { .. }
+            | BoltV3LiveNodeError::NoSubmitReferenceProbeFailed { .. }
             | BoltV3LiveNodeError::NoSubmitStopTimeout { .. }
             | BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow => None,
             BoltV3LiveNodeError::DisconnectFailed(error)
@@ -706,16 +714,30 @@ where
 {
     let (run, reference_quote_evidence, reference_quote_probe, stop) =
         run_bolt_v3_no_submit_readiness_until_observed(&mut runtime.node, loaded).await;
-    let connect = match run {
+    let execution_accounts = match run {
         Ok(()) => no_submit_required_execution_accounts_registered(runtime, loaded),
         Err(error) => Err(error),
     };
+    let connect = no_submit_controlled_connect_result(execution_accounts, &reference_quote_probe);
     let reference = if connect.is_ok() {
         reference_quote_probe.and_then(|()| reference_readiness(runtime, &reference_quote_evidence))
     } else {
         Err("controlled connect failed".to_string())
     };
     (connect, reference, stop)
+}
+
+fn no_submit_controlled_connect_result(
+    execution_accounts: Result<(), BoltV3LiveNodeError>,
+    reference_quote_probe: &Result<(), String>,
+) -> Result<(), BoltV3LiveNodeError> {
+    execution_accounts?;
+    match reference_quote_probe {
+        Ok(()) => Ok(()),
+        Err(reason) => Err(BoltV3LiveNodeError::NoSubmitReferenceProbeFailed {
+            reason: reason.clone(),
+        }),
+    }
 }
 
 async fn run_bolt_v3_no_submit_readiness_until_observed(
@@ -1421,6 +1443,22 @@ mod tests {
 
         assert_zeroize_on_drop::<Vec<Zeroizing<String>>>();
         let _ = redaction_values_field as fn(&BoltV3LiveNodeRuntime) -> &Vec<Zeroizing<String>>;
+    }
+
+    #[test]
+    fn no_submit_controlled_connect_rejects_unobserved_reference_probe() {
+        let error = no_submit_controlled_connect_result(
+            Ok(()),
+            &Err("reference quote probe timed out".to_string()),
+        )
+        .expect_err("controlled connect must not be satisfied when reference quote evidence was not observed");
+
+        match error {
+            BoltV3LiveNodeError::NoSubmitReferenceProbeFailed { reason } => {
+                assert_eq!(reason, "reference quote probe timed out");
+            }
+            other => panic!("expected NoSubmitReferenceProbeFailed, got {other}"),
+        }
     }
 
     #[test]

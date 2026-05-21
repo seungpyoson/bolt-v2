@@ -471,7 +471,7 @@ fn bolt_v3_reference_data_client_id_rejects_execution_only_client_with_client_vo
         bolt_v3_validate::validate_strategies,
     };
 
-    let data_block = "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n";
+    let data_block = "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream-sbe.binance.com/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n";
     let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(data_block, ""))
         .expect("execution-only binance fixture should parse");
     let strategy: BoltV3StrategyConfig = toml::from_str(
@@ -1093,7 +1093,7 @@ venue = "BINANCE"
 product_types = ["spot"]
 environment = "mainnet"
 base_url_http = "https://binance.test.invalid/http"
-base_url_ws = "wss://binance.test.invalid/ws"
+base_url_ws = "wss://stream-sbe.binance.com/ws"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 "#;
@@ -1112,6 +1112,159 @@ transport_backend = "sockudo"
     assert!(!rendered.contains("Binance reference-data venue"));
     assert!(rendered.contains("(provider=BINANCE)"));
     assert!(!rendered.contains("(venue="));
+}
+
+#[test]
+fn rejects_binance_spot_json_websocket_endpoint_for_reference_quotes() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+    use nautilus_binance::common::consts::BINANCE_SPOT_WS_URL;
+
+    let mutated = replace_in_fixture_root(
+        "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
+        &format!("base_url_ws = \"{BINANCE_SPOT_WS_URL}\""),
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("json-websocket binance fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("base_url_ws")
+            && m.contains("SBE")
+            && m.contains("subscribe_quotes")),
+        "expected Binance Spot SBE websocket validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binance_spot_json_websocket_endpoint_with_trailing_slash() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+    use nautilus_binance::common::consts::BINANCE_SPOT_WS_URL;
+
+    let json_endpoint_with_trailing_slash =
+        format!("{}/", BINANCE_SPOT_WS_URL.trim_end_matches('/'));
+    let mutated = replace_in_fixture_root(
+        "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
+        &format!("base_url_ws = \"{json_endpoint_with_trailing_slash}\""),
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("json-websocket binance fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("base_url_ws")
+            && m.contains("SBE")
+            && m.contains("subscribe_quotes")),
+        "expected trailing-slash Binance Spot JSON websocket validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binance_spot_json_websocket_endpoint_with_plain_ws_scheme() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+    use nautilus_binance::common::consts::BINANCE_SPOT_WS_URL;
+
+    let plain_ws_json_endpoint = BINANCE_SPOT_WS_URL.replacen("wss://", "ws://", 1);
+    let mutated = replace_in_fixture_root(
+        "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
+        &format!("base_url_ws = \"{plain_ws_json_endpoint}\""),
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("plain-ws json-websocket binance fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("base_url_ws")
+            && m.contains("SBE")
+            && m.contains("subscribe_quotes")),
+        "expected plain-ws Binance Spot JSON websocket validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_binance_spot_json_websocket_host_with_different_path() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
+        "base_url_ws = \"wss://stream.binance.com:9443/stream\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("json-websocket host binance fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("binance_reference")
+            && m.contains("base_url_ws")
+            && m.contains("SBE")
+            && m.contains("subscribe_quotes")),
+        "expected Binance Spot JSON websocket host validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_invalid_binance_reference_websocket_urls_before_nt_mapping() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let cases = [
+        ("", "non-empty URL"),
+        ("   ", "non-empty URL"),
+        ("not a url", "valid Binance Spot WebSocket URL"),
+        (
+            "http://stream-sbe.binance.com/ws",
+            "valid Binance Spot WebSocket URL",
+        ),
+        (
+            "https://stream-sbe.binance.com/ws",
+            "valid Binance Spot WebSocket URL",
+        ),
+        (
+            "ws:stream-sbe.binance.com/ws",
+            "valid Binance Spot WebSocket URL",
+        ),
+        (
+            "wss:/stream-sbe.binance.com/ws",
+            "valid Binance Spot WebSocket URL",
+        ),
+    ];
+    for (value, expected) in cases {
+        let mutated = replace_in_fixture_root(
+            "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
+            &format!("base_url_ws = \"{value}\""),
+        );
+        let root: BoltV3RootConfig = toml::from_str(&mutated)
+            .expect("invalid-url binance fixture should still parse as TOML");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages.iter().any(|m| m.contains("binance_reference")
+                && m.contains("base_url_ws")
+                && m.contains(expected)),
+            "expected Binance websocket URL validation error containing {expected:?} for {value:?}, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn accepts_binance_spot_sbe_and_proxy_websocket_endpoints() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for value in [
+        "wss://stream-sbe.binance.com/ws",
+        "ws://binance-sbe-proxy.test.invalid/ws",
+        "wss://binance-sbe-proxy.test.invalid/ws",
+    ] {
+        let mutated = replace_in_fixture_root(
+            "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
+            &format!("base_url_ws = \"{value}\""),
+        );
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("sbe/proxy binance fixture should parse");
+        let messages = validate_root_only(&root);
+        assert!(
+            !messages
+                .iter()
+                .any(|m| m.contains("binance_reference") && m.contains("base_url_ws")),
+            "expected {value:?} to avoid Binance websocket endpoint validation errors, got: {messages:#?}"
+        );
+    }
 }
 
 #[test]
@@ -1664,7 +1817,7 @@ fn rejects_orphan_secrets_block_without_data_or_execution() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream.binance.com:9443/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n",
+        "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream-sbe.binance.com/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n",
         "",
     );
     let root: BoltV3RootConfig =

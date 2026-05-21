@@ -134,9 +134,17 @@ Current hard-evidence requirements:
 
 Current live-operator evidence:
 
-- A local no-submit command was run with explicit approval against local operator config and real SSM/venue surfaces.
-- It reached SSM resolution, NT LiveNode build, client registration, strategy registration, and NT startup.
-- It did not prove readiness: live connectivity/reference readiness still failed. Do not treat command exit status as readiness proof.
+- 2026-05-21 18:34:44 KST: a local no-submit command was run with explicit approval against local operator config and real SSM/venue surfaces at head `3190803c5cb51ffeaebbd80a029c4a65bf3291c4`.
+- Command: `cargo run --bin bolt-v2 -- no-submit-readiness --config config/live.local.toml`.
+- Report path: `/Users/spson/Projects/Claude/bolt-v2/var/bolt-v3-live/reports/no-submit-readiness.json`; mode observed as `-rw-------`, size `1283` bytes.
+- Report fields: schema `bolt-v3.no-submit-readiness.v2`, generated timestamp `1779356084`, config bundle checksum `a6f0f1d1e472c88d848b8505dc138e136a55314ec89d80dbb6be926ab7b88639`, executable identity `ec913e9f98ab11d60b8a2dd921e92d99163cc0e959f124e0bd9c3199fb31c601`.
+- Satisfied stages: `operator_approval`, `secret_resolution`, `live_node_build`, `controlled_disconnect`, and `report_write`.
+- Failed stage: `controlled_connect`, with report detail `bolt-v3 no-submit controlled-run reached NT Running but live reference quote evidence was not observed; engine connectivity cannot be treated as proven: reference quote probe did not observe all configured reference_data quotes within [live_canary].reference_quote_wait_timeout_seconds=20`.
+- Skipped stage: `reference_readiness`, with report detail `controlled connect failed`.
+- Runtime log evidence showed `polymarket_main` data and execution connected, `binance_reference` data did not connect, `DataEngine.check_connected() == false`, `ExecEngine.check_connected() == true`, and NT refused to start the trader.
+- The observed Binance reference failure was a WebSocket handshake rejection from `stream-sbe.binance.com/ws` with HTTP 400 and `Invalid X-MBX-APIKEY header`; no credential value was printed.
+- Approved local SSM probe confirmed the configured Binance SecureString parameters resolve as non-empty; credential values and account/parameter metadata remain in untracked operator evidence. This does not prove the Binance API key is active, paired to the private key, or allowed from this host's IP.
+- This does not prove no-submit live connectivity readiness and does not complete T038. Do not treat command exit status or partial Polymarket connectivity as readiness proof.
 - Detailed secret-management mutation metadata is intentionally not committed here.
 
 ## Tiny-Canary Path
@@ -164,7 +172,7 @@ Current live-operator evidence:
 
 Current hard evidence:
 
-- T046 remains unchecked in `specs/001-thin-live-canary-path/tasks.md:110`.
+- T046 remains unchecked in `specs/001-thin-live-canary-path/tasks.md`.
 - Issue #360 is closed, but that closure is only historical tracking state and
   is not accepted as T046 evidence.
 - No tiny-capital canary artifact was produced in this trace.

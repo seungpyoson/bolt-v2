@@ -8,15 +8,15 @@ Live-readiness recommendation: blocked with exact blockers. P9 source-review clo
 
 Current source-review state:
 
-- P7 source/review gate is closed for PR #331 source review. No real SSM/venue operator run was executed or claimed.
+- P7 source/review gate is closed for PR #331 source review. A real SSM/venue no-submit operator attempt was executed later on 2026-05-21, but it produced a failed report and is not no-submit readiness evidence.
 - P8 source/review gate is closed for PR #331 source review. No tiny live canary run was executed or claimed.
 - P9 artifacts are synchronized here for current review. Exact PR head must be injected at review time and recorded in PR evidence comments.
 
 Live-readiness blockers:
 
-- No approved real SSM/venue no-submit run evidence exists from this checkout.
+- No approved real SSM/venue no-submit run from this checkout produced a satisfied report.
 - No approved tiny-capital canary run evidence exists from this checkout.
-- No active untracked operator root TOML is present in this worktree.
+- Ignored local operator root TOML is present in this worktree, but its approved no-submit attempt did not produce a satisfied report.
 - Staged/production live runbooks, monitoring, deploy provenance, panic/service policy, restart reconciliation, and order-lifecycle evidence remain missing.
 - Source-grounded status-map live-readiness gaps remain open.
 
@@ -24,9 +24,9 @@ Live-readiness blockers:
 
 | ID | Severity | Category | Finding | Evidence | Recommendation |
 | --- | --- | --- | --- | --- | --- |
-| P9-BLOCKER-001 | blocker | No-submit live evidence | P7 source review is accepted for PR #331, but the real SSM/venue no-submit operator run is not executed. | PR #331 P7 closure comment records no live operator run; `specs/001-thin-live-canary-path/tasks.md` leaves T038 unchecked. | Do not claim no-submit live readiness until an explicitly approved real run produces redacted evidence. |
+| P9-BLOCKER-001 | blocker | No-submit live evidence | P7 source review is accepted for PR #331, and a 2026-05-21 approved real SSM/venue no-submit attempt ran, but the report failed `controlled_connect` because the Binance reference quote probe did not observe configured live quote evidence; `reference_readiness` was skipped. | `docs/bolt-v3/2026-05-20-production-readiness-end-to-end-trace.md` records the failed Binance reference controlled-connect attempt; `specs/001-thin-live-canary-path/tasks.md` leaves T038 unchecked. | Do not claim no-submit live readiness until an explicitly approved real run produces a satisfied redacted report. |
 | P9-BLOCKER-002 | blocker | Tiny canary evidence | P8 source review is accepted for PR #331, but no tiny-capital live canary was run. | PR #331 P8 closure comment records no tiny canary run; `specs/001-thin-live-canary-path/tasks.md` leaves T046 unchecked. | Do not claim tiny-canary completion until explicit operator approval names exact head and command and evidence is stored. |
-| P9-BLOCKER-003 | blocker | Active config | This worktree has no active untracked operator config. | `ls -l config/live.local{.example,}.toml config/root.example.toml config/strategies/binary_oracle.example.toml` shows both live-local paths absent and tracked examples present. | No live/no-submit operator claim from this checkout without approved root TOML evidence and checksum. |
+| P9-BLOCKER-003 | blocker | Active config | This worktree has an ignored local operator config, but its approved no-submit attempt did not pass readiness. | `ls -l config/live.local.toml config/root.example.toml config/strategies/binary_oracle.example.toml` shows ignored `config/live.local.toml` plus tracked examples; `git check-ignore -v config/live.local.toml` shows it is ignored; the readiness report failed `controlled_connect` and skipped `reference_readiness`. | No live/no-submit operator claim from this checkout until the ignored operator config produces a satisfied approved report and checksum-bound evidence. |
 | P9-BLOCKER-004 | blocker | Strategy/live inputs | The tracked example strategy is BTC updown sample config, not approved live-capital input evidence. | `config/strategies/binary_oracle.example.toml` names `underlying_asset = "BTC"` and `instrument_id = "BTCUSDT.BINANCE"`; P8 live canary T046 remains unchecked. | Keep live action blocked until strategy-input safety evidence is exact-head, source-bound, and approved. |
 | P9-BLOCKER-005 | blocker | Staged/production ops | Staged and production live readiness gates remain missing. | `docs/bolt-v3/2026-05-18-production-readiness-contract.md` requires runbooks and lists missing order lifecycle, restart reconciliation, single-runner, approval replay, monitoring, and deploy provenance gates. | Keep staged/production claims blocked until required gates are implemented or explicitly waived. |
 | P9-HIGH-001 | high | Source-grounded live gaps | Status-map rows 6, 21, 22, 25, 27, 34-38, 40, 42, 44-48, 50, and 51 remain missing or partial. | `docs/bolt-v3/2026-04-28-source-grounded-status-map.md` lists missing canonical `just check`, activated-scope evidence, catalog round-trip, NT readiness, Chainlink anchor, lifecycle, reconciliation, observability, dry-run, shadow, deploy trust, panic gate, CLOB V2 readiness, tiny live canary, production live trading, cost/fee facts, and broad discovery activation. | Treat these as live-readiness blockers, not PR #331 source-review blockers unless P9 external review proves otherwise. |
@@ -49,11 +49,11 @@ Live-readiness blockers:
 | Dual paths | P6/P7/P8 gates close stale readiness/gate linkage paths for PR #331 source review; live proof remains blocked. |
 | Debt markers | P9 artifact sync must pass debt-marker and stale-reference scans before review. |
 | Brittle architecture | Provider and archetype boundaries have current module interfaces; status-map rows still name live-readiness architecture gaps. |
-| AI slop | Cleanup is bounded to stale artifact repair and review evidence; no runtime refactor is performed here. |
+| AI slop | Cleanup is bounded to stale artifact repair, review evidence, report-truthfulness hardening, and Binance reference endpoint validation. |
 | NT boundary violations | Current runner enters NT only after live-canary gate acceptance; lifecycle/reconciliation proof remains a live-readiness gap. |
-| SSM-only secret source | Current providers use Rust AWS SDK SSM only; P7 real run evidence remains unexecuted. |
+| SSM-only secret source | Current providers use Rust AWS SDK SSM only; the 2026-05-21 approved no-submit attempt reached SSM resolution but failed controlled connect. |
 | Pure Rust runtime | Current source-scan gate implemented; Python remains verifier tooling only. |
-| Runtime config grouping | Current root/strategy TOML owns runtime values; active operator config is absent from this checkout. |
+| Runtime config grouping | Current root/strategy TOML owns runtime values; ignored local operator config is present but did not produce a satisfied no-submit report. |
 | Stale docs/specs/tasks | This artifact sync removes known stale P9 current-claim text before review. |
 | Source fences | `just source-fence` was green before this artifact sync and exact-head CI must rerun after push. |
 | Test quality | Targeted P7/P8 tests passed; final exact-head verification must rerun after this artifact sync. |
@@ -64,4 +64,4 @@ Live-readiness blockers:
 
 ## Cleanup Status
 
-P9 cleanup in this sync is documentation-only stale-claim removal. No Rust runtime, trading, provider, secret, or live execution code is changed by this audit report.
+P9 cleanup in this sync includes stale-claim removal plus Rust/provider/test/config/doc changes for no-submit report truthfulness and Binance reference endpoint validation. No trading submit path, secret backend, or production state is changed by this audit report.

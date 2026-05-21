@@ -198,7 +198,7 @@ venue = "BINANCE"
 product_types = ["spot"]
 environment = "mainnet"
 base_url_http = "https://api.binance.com"
-base_url_ws = "wss://stream.binance.com:9443/ws"
+base_url_ws = "wss://stream-sbe.binance.com/ws"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 

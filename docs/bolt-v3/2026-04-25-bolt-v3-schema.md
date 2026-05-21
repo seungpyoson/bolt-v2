@@ -279,7 +279,7 @@ venue = "BINANCE"
 product_types = ["spot"] # NT: nautilus_binance::config::BinanceDataClientConfig.product_types
 environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
-base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
+base_url_ws = "wss://stream-sbe.binance.com/ws" # NT: BinanceDataClientConfig.base_url_ws
 instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 transport_backend = "sockudo" # NT: BinanceDataClientConfig.transport_backend
 
@@ -1107,6 +1107,7 @@ For current Binance reference-data use:
 - required: yes
 - maps to Nautilus `BinanceDataClientConfig.base_url_ws`
 - explicit TOML ownership prevents NautilusTrader from falling back to its compiled-in Binance WebSocket URL
+- must not use NautilusTrader's Binance Spot JSON WebSocket host; the bolt-v3 reference quote probe requires an SBE endpoint or compatible SBE proxy so NT `subscribe_quotes` can emit `QuoteTick` data
 
 ##### `instrument_status_poll_secs`
 
@@ -1563,6 +1564,7 @@ Must fail if:
 - `target.cadence_secs` is not positive or is not divisible by `60`
 - `target.cadence_secs` does not have a runtime-contract-defined slug-token mapping
 - a field appears under `[clients.<identifier>.data]` or `[clients.<identifier>.execution]` that is not allowed for that client's `venue`
+- a Binance reference-data `base_url_ws` uses NautilusTrader's Binance Spot JSON WebSocket host instead of an SBE endpoint or compatible SBE proxy
 - archetype-specific parameter sections contain fields not allowed for the declared `strategy_archetype`
 - archetype-specific order parameters contain any combination not explicitly allowed for that archetype
 - `order_notional_target` exceeds `root risk.default_max_notional_per_order`
@@ -1780,7 +1782,7 @@ venue = "BINANCE"
 product_types = ["spot"] # NT: nautilus_binance::config::BinanceDataClientConfig.product_types
 environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
-base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
+base_url_ws = "wss://stream-sbe.binance.com/ws" # NT: BinanceDataClientConfig.base_url_ws
 instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 transport_backend = "sockudo" # NT: BinanceDataClientConfig.transport_backend
 

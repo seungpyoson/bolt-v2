@@ -15,6 +15,7 @@ RESEARCH_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/research.md"
 TASKS_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/tasks.md"
 CONTRACT_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/contracts/order-intent-layer.md"
 SPEC_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/spec.md"
+DATA_MODEL_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/data-model.md"
 
 ENABLED_ORDER_TYPES = (
     "limit",
@@ -70,6 +71,9 @@ STALE_CONTRACT_PHRASES = (
 )
 STALE_SPEC_PHRASES = (
     "config validation does not reject the shape merely because it is short-side",
+)
+STALE_DATA_MODEL_PHRASES = (
+    "`expire_time_unix_nanos` only when GTD is enabled by a reviewed slice",
 )
 UNSUPPORTED_SCOPE_PATTERNS = (
     re.compile(
@@ -139,6 +143,7 @@ def validate_docs(
     tasks: str = "",
     contract: str = "",
     spec: str = "",
+    data_model: str = "",
 ) -> list[str]:
     findings: list[str] = []
 
@@ -205,12 +210,17 @@ def validate_docs(
         if phrase in spec:
             findings.append(f"spec still contains stale phrase: {phrase}")
 
+    for phrase in STALE_DATA_MODEL_PHRASES:
+        if phrase in data_model:
+            findings.append(f"data model still contains stale phrase: {phrase}")
+
     findings.extend(unsupported_scope_overclaims("schema", schema))
     findings.extend(unsupported_scope_overclaims("status map", status_map))
     findings.extend(unsupported_scope_overclaims("research", research))
     findings.extend(unsupported_scope_overclaims("tasks", tasks))
     findings.extend(unsupported_scope_overclaims("contract", contract))
     findings.extend(unsupported_scope_overclaims("spec", spec))
+    findings.extend(unsupported_scope_overclaims("data model", data_model))
 
     return findings
 
@@ -223,6 +233,7 @@ def main() -> int:
         TASKS_DOC.read_text(encoding="utf-8"),
         CONTRACT_DOC.read_text(encoding="utf-8"),
         SPEC_DOC.read_text(encoding="utf-8"),
+        DATA_MODEL_DOC.read_text(encoding="utf-8"),
     )
     if findings:
         for finding in findings:

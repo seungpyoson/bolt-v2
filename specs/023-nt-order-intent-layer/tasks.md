@@ -337,6 +337,15 @@
 - [x] T149 [US2] GREEN: Remove only the extra default-field requirements while preserving required trigger/activation, positive trailing offset, GTD expiry, and post-only rejection
 - [x] T150 [US2] Verify focused TrailingStopMarket tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
+## Phase 35: TDD Slice 31 - Non-GTD Expiry NT Pass-Through Guard
+
+**Goal**: Reject the no-mistakes blanket non-GTD expiry patch as NT-over-narrowing, while preserving the real Market expiry rejection and adding guardrails so the stale policy does not return.
+
+- [x] T151 [P] [US2] Record pinned NT and multi-agent evidence that non-market factories preserve `expire_time` even when TIF is not GTD
+- [x] T152 [US2] RED: Add a schema-current verifier regression proving stale data-model wording still claims expiry is GTD-only
+- [x] T153 [US2] GREEN: Include `data-model.md` in the verifier, update expiry wording, and add config/runtime pass-through regressions
+- [x] T154 [US2] Verify focused non-GTD expiry tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -370,6 +379,7 @@
 - Phase 32 blocks completion because no-mistakes found triggered exit EV was priced from the live book while the configured StopMarket exit order submits with trigger pricing.
 - Phase 33 blocks completion because source inspection found the Speckit spec still claimed short-side acceptance after Phase 28 restored current strategy-economics rejection.
 - Phase 34 blocks completion because multi-agent pinned-NT review found TrailingStopMarket validation still requires optional fields that NT defaults.
+- Phase 35 blocks completion because no-mistakes produced a non-terminal blanket non-GTD expiry patch that conflicts with pinned NT Rust behavior and prior Speckit decisions.
 
 ## Parallel Opportunities
 

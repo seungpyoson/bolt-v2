@@ -10241,6 +10241,31 @@ mod tests {
     }
 
     #[test]
+    fn non_gtd_limit_order_objects_preserve_nt_expire_time() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+
+        let order = strategy
+            .build_configured_entry_order(
+                InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET"),
+                OrderSide::Buy,
+                Quantity::new(1.0, 2),
+                Price::new(0.40, 2),
+                ClientOrderId::from("O-19700101-000000-001-020-1"),
+            )
+            .expect("non-GTD limit expiry should pass through to NT");
+
+        let OrderAny::Limit(order) = order else {
+            panic!("non-GTD limit config should build an NT limit order");
+        };
+        assert_eq!(order.time_in_force(), TimeInForce::Gtc);
+        assert_eq!(order.expire_time(), Some(expire_time));
+    }
+
+    #[test]
     fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let _cache = register_test_strategy(&mut strategy);

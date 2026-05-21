@@ -154,6 +154,19 @@ def test_validate_docs_rejects_stale_spec_short_side_claim() -> None:
         raise AssertionError(f"expected spec short-side finding, got {findings!r}")
 
 
+def test_validate_docs_rejects_blanket_non_gtd_expiry_claim() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        data_model="- `expire_time_unix_nanos` only when GTD is enabled by a reviewed slice",
+    )
+
+    if not any(
+        "data model" in finding and "expire_time_unix_nanos" in finding for finding in findings
+    ):
+        raise AssertionError(f"expected data-model expiry finding, got {findings!r}")
+
+
 def test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA,
@@ -281,6 +294,7 @@ def main() -> int:
         test_validate_docs_rejects_short_side_overclaims_in_scoped_docs,
         test_validate_docs_rejects_stale_contract_short_side_claim,
         test_validate_docs_rejects_stale_spec_short_side_claim,
+        test_validate_docs_rejects_blanket_non_gtd_expiry_claim,
         test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere,
         test_validate_docs_rejects_gtd_broad_support_and_live_canary_overclaims,
         test_validate_docs_rejects_equivalent_live_canary_and_broad_venue_overclaims,

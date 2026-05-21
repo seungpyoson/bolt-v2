@@ -34,7 +34,7 @@ Fields:
 - `is_post_only`: bool
 - `is_reduce_only`: bool
 - `is_quote_quantity`: bool
-- `expire_after_ms` or `expire_time_unix_nanos` only when GTD is enabled by a reviewed slice
+- `expire_time_unix_nanos` is passed through for enabled NT factories that accept expiry; GTD requires a positive expiry and Market rejects expiry because the pinned NT market factory has no expiry input
 - `trigger_type`, `trigger_price`, and `trigger_instrument_id` only when triggered order slices are enabled
 - `display_qty` only when an iceberg/display quantity slice is enabled
 - `trailing_offset` and related fields only when a trailing slice is enabled

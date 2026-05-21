@@ -51,11 +51,50 @@ Typed subpaths under that root are:
 - `source-proofs/`
 - `backtests/`
 - `artifact-index/`
+- `research-analytics/`, for Research Analytics-owned derived artifacts only
 
 Do not add separate canonical roots for raw data, catalog data, source proofs,
-or backtest outputs. Local filesystem paths may be used only for disposable
-cache or small development fixtures; they are not canonical source of truth.
-No hidden cwd, temp-directory, or sibling-project fallback path is allowed.
+backtest outputs, or Research Analytics-derived artifacts. Local filesystem
+paths may be used only for disposable cache or small development fixtures; they
+are not canonical source of truth. No hidden cwd, temp-directory, or
+sibling-project fallback path is allowed.
+
+## Artifact Path Convention
+
+The path convention is a human-navigable and prefix-friendly envelope around
+artifact-local manifests and the Artifact Index. It is not the authority for
+venue/provider semantics. Full venue, provider, instrument, license, schema,
+hash, and time semantics live in the artifact manifest, source proof report, or
+Artifact Index record.
+
+Path rules:
+
+- Use one configured `artifact_root`, then a typed subpath and schema version.
+- Use short, registry-selected `source_binding` or artifact ids in paths. These
+  keys are TOML/config data, not code branches.
+- Use market-structure labels such as `binary-option` and `perps-spot`, not
+  concrete venue names, as fixture path slots.
+- Use short normalized instrument/signal keys in Bolt-owned paths when needed.
+  Very long instrument lists stay in manifests/index metadata.
+- Partition high-volume raw data by event or batch date.
+- Do not rely on recursive S3 listing for normal discovery.
+
+Canonical shape:
+
+```text
+raw/v1/source_binding=<key>/fixture=<binary-option|perps-spot>/family=<source_family>/dt=<YYYY-MM-DD>/object=<content_hash>.<ext>
+nt-catalog/v1/projection=<catalog_projection_id>/
+source-proofs/v1/source_binding=<key>/fixture=<binary-option|perps-spot>/proof=<source_proof_id>/version=<version>/
+backtests/v1/fixture=<binary-option|perps-spot>/run=<run_id>/
+artifact-index/v1/<events|snapshots|pointers>/...
+research-analytics/v1/<datasets|feature-tables|experiment-results|promotion-packages>/...
+```
+
+The `nt-catalog/` path is special: Bolt stops at the catalog projection root and
+lets NT write its native `data/<data_type>/<instrument_id>/...` structure under
+that root. Bolt must not duplicate the instrument id above NT's own catalog
+tree. NT `InstrumentId` values may contain venue-like suffixes because that is
+part of NT identity; this does not permit code to branch on concrete venues.
 
 ## Artifact Index Contract
 
@@ -64,17 +103,33 @@ The artifact index is a thin table of contents for canonical artifacts under
 NT `ParquetDataCatalog`, or second truth source for PnL, fills, positions,
 reports, or strategy results.
 
-Index layout under the same configured `artifact_root` is proof-gated during
-Backtesting Engine implementation. The required logical pieces are:
+Index layout under the same configured `artifact_root` uses per-kind latest
+pointers. The required logical pieces are:
 
 - immutable event records
 - committed snapshot artifacts
 - snapshot manifests
-- a generated latest-pointer object
+- a generated latest-pointer object per top-level artifact kind
 
-JSON, Parquet, and a `latest.json` object name are candidate formats/names, not
-final architecture decisions until the implementation proves the configured
-artifact store and reader path.
+The top-level artifact kinds are `raw`, `nt-catalog`, `source-proofs`,
+`backtests`, `artifact-index`, and `research-analytics`. Research Analytics
+subfamilies (`datasets`, `feature-tables`, `experiment-results`, and
+`promotion-packages`) commit into the single `research-analytics` kind snapshot;
+they do not get separate latest pointers.
+
+The pointer path is:
+
+```text
+artifact-index/v1/pointers/kind=<artifact_kind>/latest.json
+```
+
+Event and snapshot serialization remains proof-gated, but events and snapshots
+must be addressable by artifact kind:
+
+```text
+artifact-index/v1/events/kind=<artifact_kind>/...
+artifact-index/v1/snapshots/kind=<artifact_kind>/...
+```
 
 Rules:
 
@@ -91,6 +146,8 @@ Rules:
   `created_at`, `artifact_id`, `artifact_kind`, URI, content hash, lineage ids,
   lifecycle state, producer/owner id, and source/fidelity fields relevant to
   that artifact kind.
+- Content hash algorithm is `sha256` for every artifact kind. S3 ETag is never
+  treated as content hash.
 - Index snapshots are committed query surfaces for bulk discovery by
   Backtesting Engine, Research Analytics, and Dashboard; exact format is chosen
   after proof.
@@ -102,6 +159,14 @@ Rules:
   committed discovery truth.
 - Readers trust only the snapshot reachable from the latest pointer after
   verifying the snapshot hash recorded by the pointer and the snapshot manifest.
+- Cross-kind lineage joins must traverse manifest `lineage_ids` and verify the
+  recorded content hashes. Consumers must not independently read two per-kind
+  latest pointers and join those snapshots as if they were one atomic global
+  view.
+- Every event and snapshot row must carry outbound cross-kind references
+  (`artifact_id`, version when applicable, and `sha256` content hash) for every
+  artifact it depends on. Consumers must be able to resolve declared parents
+  without listing another artifact prefix.
 - Writers create immutable manifests, events, snapshots, and snapshot manifests
   with create-only semantics. They must not overwrite a different payload at the
   same id.
@@ -110,13 +175,25 @@ Rules:
   `If-Match: <previous pointer ETag>` for updates.
   If the conditional write fails, the writer must re-read latest, rebuild or
   rebase the snapshot, and retry.
+- The index writer must use an object-store/client configuration that explicitly
+  supports the selected conditional-write semantics. NT catalog object-store
+  settings do not automatically prove Artifact Index commit safety.
 - The configured artifact store must prove support for the required conditional
   write semantics before relying on this S3-native commit path. If unsupported,
   implementation must select an approved commit coordinator or table format
   before claiming reliable index commits.
-- S3 ETag must not be treated as the artifact content hash. Content hashes use a
-  declared hash algorithm. Multi-object artifact hashes are computed from a
-  canonical sorted manifest of relative path, size, and object content hash.
+- Multi-object artifact hashes are computed from a canonical sorted manifest of
+  relative path, size, and object content hash.
+- Each pointer swap appends a create-only audit epoch object at
+  `artifact-index/v1/audit/epochs/<RFC3339>.json` with kind, prior snapshot id,
+  new snapshot id, timestamp, writer id, prior ETag, and new ETag. Audit epochs
+  support forensics and reconciliation only; they are not on the normal
+  discovery path and must not be used for cross-kind joins.
+- Producer IAM must restrict pointer, event, and snapshot writes per kind. Only
+  the producer family for kind `K` may write
+  `artifact-index/v1/pointers/kind=K/latest.json`,
+  `artifact-index/v1/events/kind=K/...`, and
+  `artifact-index/v1/snapshots/kind=K/...`.
 - Recursive S3 listing is forbidden for normal artifact discovery. Listing is
   allowed only for off-path reconciliation, recovery, and compaction jobs that
   detect staged events, orphan bytes, or index drift.
@@ -138,6 +215,9 @@ It must not carry a subjective promotion recommendation such as "use this
 strategy" or "escalate this strategy." Strategy review status belongs to a
 Research Analytics `PromotionPackage` or a later explicitly owned review
 artifact that consumes one or more backtest result contracts as evidence.
+
+Reproduction, audit, regression, or migration results are historical/mechanical
+artifacts. They must not be presented as normal current performance.
 
 ## Source Proof Contract
 
@@ -204,7 +284,8 @@ Required fields:
   "audit_or_investigation"`; optional for other allowed codes
 - `run_purpose` in the run manifest; `normal` cannot use non-latest proof
 - `accepted_by` and `accepted_at` when status is `accepted`
-- `acceptance_mode = "automated" | "manual"`
+- `acceptance_mode = "automated" | "manual"` when status is `accepted`; pending
+  or rejected reports omit this field instead of setting it to null
 - required-check results for schema, sample, license, time/freshness, NT
   mapping, fidelity, and forbidden claims
 - market-structure fixture: `binary option` or `perps/spot`
@@ -213,7 +294,10 @@ Required fields:
 - instrument/market coverage
 - source time range, capture time, event-time and availability-time semantics
 - schema version, field list, sample pointer, and sample/content hash
-- historical order-book snapshot/delta availability when claiming `L2_REPLAY`
+- historical order-book evidence when claiming `L2_REPLAY`: NT L2/L3 book type
+  plus either source-order-preserving historical deltas, or historical snapshots
+  at a cadence no slower than the strategy's minimum decision interval with
+  explicit forbidden claims for queue-position behavior across snapshot gaps
 - license/commercial-use boundary and proof timestamp
 - NT catalog/data-class mapping status or approved signal-input status
 - fidelity class and forbidden claims

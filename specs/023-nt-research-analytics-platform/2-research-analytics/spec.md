@@ -69,6 +69,10 @@ PnL/account truth.
 - Research Analytics is read-only for upstream raw, NT catalog, source-proof,
   and backtest Artifact Index records. If it later produces derived research
   artifacts, it may write only those RA-owned artifact records.
+- RA-owned derived artifacts use the single top-level `research-analytics`
+  Artifact Index kind. Subfamilies are `datasets`, `feature-tables`,
+  `experiment-results`, and `promotion-packages`; they do not get separate
+  latest pointers.
 - Research datasets must preserve artifact lifecycle metadata and must not
   propose default deletion of canonical artifacts.
 
@@ -147,6 +151,10 @@ promotion packages.
   strategy-review status, reviewer/policy references, and rejection/approval
   state. It consumes BTE result contracts as evidence; it does not mutate or
   rewrite them.
+- `ResearchAnalyticsArtifact`: RA-owned artifact under
+  `research-analytics/v1/{datasets,feature-tables,experiment-results,promotion-packages}/`
+  with schema version, source refs, source hashes, `sha256` content hash,
+  lifecycle state, Artifact Index event, and owner `research-analytics`.
 
 ## Promotion Status
 
@@ -172,7 +180,8 @@ strategy, schedule live trading, touch SSM credentials, or mutate production
 runtime config.
 
 Generated promotion/config artifacts live under the shared S3 `artifact_root`
-as RA-owned derived artifacts, e.g. `research-analytics/promotion-packages/`.
+as RA-owned derived artifacts, e.g.
+`research-analytics/v1/promotion-packages/`.
 They must not be written directly into repo runtime config; importing them into
 production config is a separate future implementation/review step.
 

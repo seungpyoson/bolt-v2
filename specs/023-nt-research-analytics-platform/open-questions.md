@@ -1,6 +1,6 @@
 # Open Questions And Review Prompts
 
-This is the single root handoff for unresolved questions in the
+This is the single root handoff for answered and remaining questions in the
 `023-nt-research-analytics-platform` planning package.
 
 Use it after reading `README.md`. Do not implement from this document. Pick one
@@ -28,8 +28,8 @@ question, answer it with evidence, and then update the relevant project
   proof versions are allowed only when a manifest explicitly pins them for a
   non-normal purpose such as reproduction, audit, regression, or migration.
 - The Artifact Index is intended to be a thin table-of-contents layer, not a
-  warehouse or replacement for NT catalog truth. JSON, Parquet, and
-  `latest.json` are candidate implementation choices, not final decisions.
+  warehouse or replacement for NT catalog truth. Per-kind latest-pointer
+  topology is selected; event/snapshot serialization remains proof-gated.
 - No GitHub issue mutation or external review request is authorized by this
   document.
 
@@ -40,6 +40,36 @@ For every prompt below, require the responder to return:
 3. Explicit rejected alternatives and why.
 4. Required doc changes.
 5. Tests or proof gates needed before implementation.
+
+## Response Triage Outcome
+
+The first-pass response set from Claude, ChatGPT, Gemini, and Grok has been
+triaged. Accepted decisions are reflected in the numbered project docs and
+shared contracts. This table records decision state so future sessions do not
+restart from examples or model-specific drafts.
+
+| Question | State | Outcome |
+|---|---|---|
+| OQ-001 | Approved | One S3 `artifact_root`, typed subpaths, short config-selected path keys, full venue/provider/instrument details in manifests/index metadata, and NT-owned internal `nt-catalog/data/...` layout under a catalog projection root. |
+| OQ-002 | Approved with review fixes | Per-kind Artifact Index latest pointers, one pointer per top-level kind, no RA subfamily pointers, manifest-lineage traversal for cross-kind joins, `sha256` content hashes, conditional pointer updates, audit epoch records, and per-kind producer IAM. |
+| OQ-003 | Approved | S3 remains canonical; direct NT `ParquetDataCatalog` S3 access requires crate/feature/runtime proof; any staging path must be explicit, non-canonical, and stamped with source S3 URI/hash. |
+| OQ-004 | Approved | `SourceProofReport` is strict, immutable, fail-closed, and may be accepted automatically only when every required check passes; `acceptance_mode` appears only on accepted reports. |
+| OQ-005 | Approved | Provider/source selection is mechanical: official/free candidates first, paid/vendor only for recorded gaps, forward-capture pending only after no usable historical source; candidate examples are not closed lists. |
+| OQ-006 | Approved | BTE aims for highest-fidelity historical data. Execution-quality claims require source-proven L2/L3 order-book evidence and NT replay proof; weaker data is allowed only with explicit forbidden claims. |
+| OQ-007 | Approved | Manifest obligations are fixed now; exact TOML keys and NT Rust API mapping are finalized only after target-branch NT compile/API proof. |
+| OQ-008 | Approved | Strategy inputs are existing compiled Rust strategies, human typed config, or RA-generated typed config from `PromotionPackage`; no Python/import-string strategy path. |
+| OQ-009 | Approved | `BacktestResultContract` is an objective receipt for run/data/proof/result pointers and claim limits; no subjective promotion/escalation fields. |
+| OQ-010 | Approved | Every NT/backtest extension surface must be classified as `defaulted`, `pass_through`, `custom_owned`, or `unsupported_for_now`; exact Rust fields remain proof-gated. |
+| OQ-011 | Approved | RA is implementation-ready at contract level but does not overdesign internals before BTE result/source-proof/index contracts land. |
+| OQ-012 | Approved | RA owns one `research-analytics` top-level artifact kind with four subfamilies: `datasets`, `feature-tables`, `experiment-results`, and `promotion-packages`. |
+| OQ-013 | Approved | `PromotionPackage` owns strategy-review state; `approved_for_config` means typed config generation only, not live-trading approval. |
+| OQ-014 | Approved | Point-in-time joins use availability time, not event time alone; kimchi-premium components each need independent as-of proof. |
+| OQ-015 | Approved | Dashboard starts from field-source matrix and trade investigation fields before product choice. |
+| OQ-016 | Deferred product choice | Product choice waits for customer jobs and read-model shape. Trade monitor, trade investigation, optional annotation/review notes, and controlled action workflow must be specified before gate. |
+| OQ-017 | Approved | Dashboard may display strategy state/outlook only from upstream source contracts or RA artifacts; it must not infer promotion from BTE metrics or mutate promotion state. |
+| OQ-018 | Approved with naming caveat | Keep source role separate from data status/gap reason; final display names and legend require shared registry. |
+| OQ-019 | Process complete | Gemini Code Assist comments were reviewed and resolved/disproved in PR cycle. |
+| OQ-020 | Process complete | External review packet was run for the PR cycle; future reviews should use current head and updated docs. |
 
 ## Backtesting Engine
 
@@ -80,9 +110,10 @@ Prompt:
 Question: What exact index format/backend and commit rule should implement the
 thin Artifact Index?
 
-Context: Current docs intentionally do not choose JSON, Parquet, SQLite,
-DuckDB, table formats, or a `latest.json` object name. The desired behavior is
-an append/commit-friendly table of contents: immutable events or equivalent
+Context: Current docs choose a per-kind latest-pointer topology, with pointer
+path `artifact-index/v1/pointers/kind=<artifact_kind>/latest.json`. Event and
+snapshot serialization remains proof-gated. The desired behavior is an
+append/commit-friendly table of contents: immutable events or equivalent
 records, committed snapshots, generated latest pointer, content hashes,
 producer-owned writes, read-only consumers, staged/orphan recovery, and no
 recursive S3 discovery on the normal read path.

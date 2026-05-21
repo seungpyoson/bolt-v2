@@ -44,6 +44,9 @@ notebooks, dashboard UI, provider capture, live trading, or a custom simulator.
 - Fail fast when a requested surface is `unsupported_for_now`.
 - Label each result by data fidelity: `L2_REPLAY`, `TRADE_BAR_REPLAY`,
   `SIGNAL_ONLY`, or `FORWARD_CAPTURE_PENDING`.
+- Evaluate the highest-fidelity historical market data available for each
+  fixture before accepting weaker replay. Execution-quality claims require
+  source-proven L2/L3 order-book evidence and matching NT replay proof.
 - Use L2 order-book data whenever source proof, license, sample, and NT catalog
   mapping pass; otherwise cap result claims to the proven source fidelity.
 - Require an accepted thin `SourceProofReport` before any source becomes
@@ -85,7 +88,7 @@ notebooks, dashboard UI, provider capture, live trading, or a custom simulator.
 
 | Class | Meaning | Allowed use | Forbidden use |
 |---|---|---|---|
-| `L2_REPLAY` | Historical order-book replay supports execution-quality backtest claims after NT catalog projection proof. | Execution-quality replay/backtest claims for proven venue/source/instrument scope. | Extending the claim to venues, sources, or instruments without L2 proof. |
+| `L2_REPLAY` | Historical L2/L3 order-book replay supports execution-quality backtest claims after NT catalog projection proof. Acceptable evidence is source-order-preserving deltas or snapshots frequent enough for the strategy decision interval, with explicit limits for unproven queue behavior. | Execution-quality replay/backtest claims for proven venue/source/instrument scope. | Extending the claim to venues, sources, instruments, queue position, or sub-snapshot liquidity behavior without proof. |
 | `TRADE_BAR_REPLAY` | Trades, fills, candles, or bars support price/alpha research but not full queue/execution simulation. | Price path, alpha, fills-history, or bar/trade replay analysis with limitations. | Queue position, order-book liquidity, or execution-quality claims. |
 | `SIGNAL_ONLY` | Data can inform signals, features, provenance, or dashboards but not execution-quality backtests. | Feature generation, provenance, dashboards, exploratory research. | Backtest execution quality or simulated fill claims. |
 | `FORWARD_CAPTURE_PENDING` | No sufficient history exists; capture can start now and backtests wait until enough data exists. | Planning, recorder/capture trigger decisions, future replay after accumulation. | Historical replay or retroactive L2 claims. |
@@ -122,7 +125,7 @@ notebooks, dashboard UI, provider capture, live trading, or a custom simulator.
 | E-035 | USER_ASSUMPTION + DECISION_NEEDED | Artifact retention defaults to forever; lifecycle may move artifacts colder but must not delete canonical artifacts by default; archive storage under `$5/month` is zero for planning. |
 | E-036 | USER_ASSUMPTION + DECISION_NEEDED | Lifecycle is simple: artifacts start `active`; after the configured quiet window passes, they become `inactive`; inactive allows archive transition, not deletion. |
 | E-037 | SOURCE_PROVEN + GAP | NT upstream supports remote/object-store catalog paths behind storage features, but the currently resolved `bolt-v2` `nautilus-persistence` dependency must prove S3 feature enablement and catalog read/write/query behavior before implementation relies on direct S3 catalog access. |
-| E-038 | SOURCE_PROVEN + DECISION_NEEDED | Artifact discovery should use artifact-local manifests, immutable index events, committed snapshots, and a generated latest pointer; exact formats/names such as JSON, Parquet, or `latest.json` are proof-gated implementation choices. S3 conditional-write support or an approved commit coordinator must be proved before relying on the index commit path. |
+| E-038 | SOURCE_PROVEN + DECISION_NEEDED | Artifact discovery should use artifact-local manifests, immutable index events, committed snapshots, and generated per-kind latest pointers; event/snapshot serialization remains proof-gated. S3 conditional-write support or an approved commit coordinator must be proved before relying on the index commit path. |
 | E-039 | USER_ASSUMPTION + DECISION_NEEDED | Artifact Index write authority is producer-owned; Backtesting Engine publishes records for artifacts it produces, while Research Analytics and Dashboard consume upstream records read-only. |
 | E-040 | USER_ASSUMPTION + DECISION_NEEDED | `SourceProofReport` is a Bolt-owned thin gate required before source data becomes canonical NT catalog or backtest input; Backtesting Engine/source-proof implementation owns acceptance, automated acceptance is allowed from initial implementation when all robust checks pass, accepted records are immutable/superseded by new versions, normal runs cannot pin non-latest proof, and non-latest proof pins require structured reason fields. |
 | E-041 | SOURCE_PROVEN + DECISION_NEEDED | Backtest result contracts are objective evidence/lookup artifacts; strategy promotion or escalation status belongs to Research Analytics, not the BTE result object. |
@@ -288,14 +291,19 @@ Backtesting Engine writes canonical artifacts only under configured
 - `artifact_root` must be a TOML/config-owned S3 URI.
 - The bucket and prefix are configured values, not code constants.
 - Typed subpaths are `raw/`, `nt-catalog/`, `source-proofs/`, and
-  `backtests/`.
+  `backtests/`; shared index records live under `artifact-index/`.
 - Backtest run artifacts are written under `backtests/` by run id unless the
   manifest supplies an explicit output prefix under the same `artifact_root`.
 - Raw provider/API/archive payloads are referenced under `raw/`.
 - NT `ParquetDataCatalog` projections are referenced under `nt-catalog/`.
+- `nt-catalog/` stops at the catalog projection root. NT writes its native
+  `data/<data_type>/<instrument_id>/...` tree below that root.
 - Direct NT catalog access under `nt-catalog/` must be proved against the
   resolved `bolt-v2` NT dependency and crate features before implementation
   relies on S3 for runtime catalog reads/writes/queries.
+- Manifest/catalog metadata must record whether direct S3 catalog access is
+  proven for the run. Any staging path must be explicit, non-canonical, and
+  stamped with the source S3 URI/hash; hidden local fallback is forbidden.
 - Source proof reports and samples are referenced under `source-proofs/`.
 - No separate canonical root knobs are allowed for raw data, catalog data,
   source proofs, or backtest outputs.
@@ -315,15 +323,22 @@ not become a warehouse, query engine, or replacement for NT `ParquetDataCatalog`
 - Each backtest run writes an artifact-local manifest under its output prefix
   using the selected structured format.
 - Each artifact produces an immutable structured index event under
-  `artifact-index/v1/events/` or the selected event path.
+  `artifact-index/v1/events/kind=<artifact_kind>/` or the selected event path
+  for that top-level kind.
 - Index records for source-proof, catalog projection, and backtest artifacts are
   written only by the producer job for that artifact. Consumers may read those
   records but must not repair, invent, or mutate them.
 - Bulk discovery uses the committed snapshot reachable from the generated
-  latest pointer.
+  per-kind latest pointer.
 - The latest pointer is generated and updated only through the approved
-  conditional commit path. It is not manually maintained. Its exact object name
-  and format are proof-gated implementation choices.
+  conditional commit path at
+  `artifact-index/v1/pointers/kind=<artifact_kind>/latest.json`. It is not
+  manually maintained.
+- BTE readers must not independently join two per-kind latest snapshots. To find
+  the source proof, catalog projection, or raw inputs used by a backtest, follow
+  the backtest manifest lineage ids/version/hash and verify `sha256`.
+- Every BTE-produced event and snapshot row must carry parent cross-kind
+  lineage ids, versions where applicable, and `sha256` content hashes.
 - Events or artifacts not reachable from the snapshot referenced by
   the latest pointer are staged/orphan audit input, not committed discovery
   truth.
@@ -331,6 +346,8 @@ not become a warehouse, query engine, or replacement for NT `ParquetDataCatalog`
   only for off-path reconciliation, recovery, and compaction.
 - The current latest pointer, current snapshot, and metadata needed to resolve
   the current snapshot must remain in active/queryable storage.
+- Pointer swaps append audit epoch records for forensics only. Normal discovery
+  still uses the per-kind latest pointer and snapshot.
 - Backtest callers may use the returned `BacktestResultContract` immediately as
   an artifact-local handle; cross-run consumers use the committed Artifact Index
   snapshot.

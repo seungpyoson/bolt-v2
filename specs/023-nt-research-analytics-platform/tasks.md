@@ -21,6 +21,16 @@ numbered subdirectories.
 - [Research Analytics tasks](2-research-analytics/tasks.md)
 - [Dashboard tasks](3-dashboard/tasks.md)
 
+## Future Cross-Project Tasks
+
+- [ ] ROOT-009 Create a shared status/label/legend registry before
+  implementation or UI work. It must define each internal enum/status, plain
+  display label, tooltip/legend meaning, owner/source of truth, which vertical
+  may set it, and which vertical may only display it. Covered concepts include
+  fidelity classes, source roles, data status/gap reasons, lifecycle states,
+  run purposes, promotion statuses, artifact kinds, proof statuses, warning
+  labels, and product-gate outcomes.
+
 ## Shared Issue Summaries
 
 Canonical staged payloads remain in `shared/github-issues.md` until the user

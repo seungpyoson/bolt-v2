@@ -13,13 +13,29 @@ Dashboard truth is derived. NT reports/events/snapshots remain authority for
 trading state. Analytics tables may support views but cannot replace NT-derived
 truth for PnL, positions, fills, orders, account state, or portfolio state.
 
-## Source Rules
+## Source Roles And Data Status
+
+Keep source role separate from data status. Exact user-facing label names and
+legend text require a shared terminology pass before UI implementation.
+
+Source roles:
 
 - `authoritative`: NT report/event/snapshot source.
 - `derived`: read model computed from authoritative or accepted analytics source.
-- `exploratory`: non-trading-truth field such as outlook without runtime truth.
+- `exploratory`: research/outlook field, not trading truth.
+
+Data status/gap reasons:
+
+- `current`: source is within freshness threshold.
 - `stale`: source exists but freshness threshold is exceeded.
+- `partial`: source exists but coverage is incomplete.
 - `unavailable`: required source is missing or blocked.
+- `excluded`: intentionally out of scope.
+- `non_normal_run`: reproduction, audit, regression, or migration result; not
+  normal current performance.
+
+Additional source rules:
+
 - Artifact links from Backtesting Engine or Research Analytics must point under
   the shared S3 `artifact_root`; dashboard products do not own canonical
   artifact storage.
@@ -51,23 +67,41 @@ truth for PnL, positions, fills, orders, account state, or portfolio state.
 
 ## Implementation Gates
 
-1. Build field-source matrix.
-2. Resolve #409, #77, #36, and #369 dashboard/PnL dependencies.
-3. Define freshness/staleness behavior for each live/current field.
-4. Run product gate for Grafana, Metabase, Superset/Preset, Retool,
+1. Define dashboard customer jobs and capability classes.
+2. Build field-source matrix.
+3. Resolve #409, #77, #36, and #369 dashboard/PnL dependencies.
+4. Define freshness/staleness behavior for each live/current field.
+5. Run product gate for Grafana, Metabase, Superset/Preset, Retool,
    Plotly/Dash, and custom fallback.
-5. Define no-mutation controls for selected product/UI.
-6. Validate read-only source contract before UI implementation.
-7. Validate displayed artifact links resolve under shared S3 `artifact_root` and
+6. Define no-mutation controls for selected product/UI.
+7. Validate read-only source contract before UI implementation.
+8. Validate displayed artifact links resolve under shared S3 `artifact_root` and
    that cross-run/bulk lists use committed Artifact Index snapshots when
    artifact lists are in scope.
-8. Validate dashboard has no artifact delete/expiration controls.
+9. Validate dashboard has no artifact delete/expiration controls.
+
+## Customer Jobs And Capability Classes
+
+Product choice is deferred until these jobs are specified and weighted:
+
+1. Trade monitor: ongoing trades/orders, positions, exposure, current PnL,
+   venue/source binding, and freshness.
+2. Trade investigation: prior trades/fills, why trade fired,
+   strategy/signal/reason refs, source proof/data used, and historical PnL
+   context.
+3. Annotation/review notes: optional notes, tags, comments, and investigation
+   status. This is least necessary and requires explicit owner/schema/audit
+   rules before any write path.
+4. Controlled action workflow: request rerun, request RA review, stage config
+   review, or future high-risk actions. Trading/runtime/credential/fund/order
+   mutation remains outside this package unless separately approved.
 
 ## Field Source Matrix Seed
 
 | Field group | Required source stance |
 |---|---|
 | Orders/fills/positions | NT reports/events/snapshots only. |
+| Trade explanation | Strategy/signal/reason evidence refs, source proof refs, and source binding from accepted upstream artifacts; never inferred by dashboard. |
 | Account state and portfolio equity | `PortfolioSnapshot` or explicit unavailable label until #409/equivalent lands. |
 | Exposure | NT reports/events/snapshots or accepted derived analytics table with freshness; otherwise omit or render explicit partial/unavailable label. |
 | Historical PnL | Durable trade-history/PnL path from #77 or omit/render explicit gap label. |
@@ -78,11 +112,14 @@ truth for PnL, positions, fills, orders, account state, or portfolio state.
 
 ## Product Gate
 
-Evaluate products in this order:
+Evaluate products against the customer jobs and read-model shape before
+selection:
 
 1. Grafana for ops metrics/logs and time-series observability.
-2. Metabase or Superset/Preset for SQL analytics/read-model dashboards.
-3. Retool for internal operator workflows if permissions, auditability,
+2. Metabase or Superset/Preset for SQL analytics/read-model dashboards and
+   trade investigation tables/drilldowns.
+3. Retool for internal operator workflows, annotations, or controlled action
+   requests if permissions, auditability,
    source-contract, query/API, security, UX, and cost fit.
 4. Plotly/Dash for custom visual app needs.
 5. Bespoke UI only after source-contract, security, query-backend, UX, cost, and

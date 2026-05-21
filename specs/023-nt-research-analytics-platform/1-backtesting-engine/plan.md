@@ -43,22 +43,31 @@ Standard typed subpaths:
 - `source-proofs/`
 - `backtests/`
 - `artifact-index/`
+- `research-analytics/` reserved for downstream RA-owned artifacts
 
 Backtest run artifacts live under `backtests/` by run id unless the manifest
 sets an explicit output prefix under the same `artifact_root`. Raw source
-payloads, NT catalog projections, source proofs, and backtest results must not
-define separate canonical roots. Local filesystem paths are cache or development
-fixtures only. There is no hidden cwd, temp-directory, or sibling-project
-fallback.
+payloads, NT catalog projections, source proofs, backtest results, and RA-owned
+derived artifacts must not define separate canonical roots. Local filesystem
+paths are cache or development fixtures only. There is no hidden cwd,
+temp-directory, or sibling-project fallback.
+
+Paths use short config-selected source bindings, market-structure fixture
+labels, artifact ids, date partitions where useful, and artifact-local
+manifests. Full venue/provider/instrument/license/time details live in
+manifests, source proofs, and index metadata. The `nt-catalog/` prefix stops at
+the catalog projection root and lets NT write its native
+`data/<data_type>/<instrument_id>/...` tree below that root.
 
 Artifact discovery uses the shared Artifact Index Contract. The index is a thin
 table of contents: artifact-local structured manifests, immutable structured
-events, committed snapshots, and a generated latest pointer. JSON, Parquet, and
-`latest.json` are candidate implementation choices, not final architecture
-decisions before proof. Normal readers do not recursively list S3 to find
-artifacts. Index writes are producer-owned: the job that creates a canonical
-artifact publishes its index record, while consumers read upstream records
-without mutating them.
+events, committed snapshots, and generated per-kind latest pointers at
+`artifact-index/v1/pointers/kind=<artifact_kind>/latest.json`. Event and
+snapshot serialization choices remain proof-gated. Normal readers do not
+recursively list S3 to find artifacts. Index writes are producer-owned: the job
+that creates a canonical artifact publishes its index record, while consumers
+read upstream records without mutating them. Cross-kind reads follow manifest
+lineage ids/version/hash; they do not join independently read latest snapshots.
 
 Lifecycle policy:
 
@@ -84,10 +93,12 @@ Lifecycle policy:
    required crate features and storage options. If direct S3 catalog access is
    not supported, document the supported staging path before implementation.
 3. Prove the configured artifact store supports the Artifact Index commit path:
-   immutable create-only writes, conditional latest-pointer update, snapshot
-   hash verification, retry/rebase on conditional-write failure, staged/orphan
-   recovery, producer-owned write authority, read-only consumer enforcement,
-   exact format/name selection, and active storage for the hot index path. If
+   immutable create-only writes, per-kind conditional latest-pointer update,
+   snapshot hash verification, retry/rebase on conditional-write failure,
+   staged/orphan recovery, producer-owned write authority, read-only consumer
+   enforcement, event/snapshot format selection, cross-kind lineage traversal,
+   `sha256` content hashes, audit epoch append, per-kind IAM, and active storage
+   for the hot index path. If
    unsupported, select an approved commit coordinator or table format before
    relying on the index.
 4. Prove `ParquetDataCatalog` input path and required NT data classes for the
@@ -128,6 +139,31 @@ Proof order is fixed:
 
 Use L2 order-book data when a source passes proof. Weaker data is allowed only
 with claim limits that block execution-quality claims.
+
+Candidate discovery is mechanical, not limited to the examples in this package:
+
+1. Register each candidate with fixture type, source binding key, source family,
+   official/free or paid/vendor class, target coverage, target time range, and
+   intended fidelity claim.
+2. Fetch a proof packet: docs/license ref, schema ref, representative sample URI
+   and hash, coverage window, retention/freshness facts, and cost terms if paid.
+3. Run required checks: license, sample access, schema, time semantics, coverage,
+   NT mapping or approved signal-input mapping, fidelity, forbidden claims, and
+   cost if paid/vendor.
+4. Classify the candidate as `ACCEPTED_FOR_REQUIRED_FIDELITY`,
+   `ACCEPTED_LOWER_FIDELITY`, `REJECTED`, or `PENDING_MORE_PROOF`.
+5. Paid/vendor candidates are considered only for gaps recorded from
+   official/free candidates. `FORWARD_CAPTURE_PENDING` is allowed only after
+   official/free and paid/vendor candidates fail required historical fidelity.
+6. Select the highest accepted fidelity source; if candidates tie, prefer the
+   clearer license, schema, sample, coverage, cost, and NT mapping proof.
+
+Hard rejection or non-selection criteria: no obtainable sample, unclear or
+prohibited license, missing or non-inferable schema, missing event/availability
+time basis, no target coverage, no NT catalog or approved signal-input mapping,
+unsupported L2 claim, required hardcoded venue/provider branch, non-SSM
+credential path, storage outside configured `artifact_root`, or unestimated
+cost for review.
 
 1. Create `SourceProofReport` for the fixture before provider selection.
 2. Compare official/free candidates and paid/vendor candidates in that report.
@@ -222,10 +258,12 @@ provider downloads, sample transforms, and live submit/cancel.
   selected fixture.
 - Raw, catalog, source-proof, and backtest artifacts resolve under one S3
   `artifact_root` with typed subpaths.
-- Artifact Index validation proves committed snapshots are reached through a
-  generated latest pointer, stale or hash-invalid pointers fail, staged/orphan
-  events are not treated as committed truth, exact format/name choices are
-  recorded, and normal readers do not recursively list S3 for discovery.
+- Artifact Index validation proves committed snapshots are reached through
+  generated per-kind latest pointers, stale or hash-invalid pointers fail,
+  staged/orphan events are not treated as committed truth, cross-kind parents
+  are resolved through manifest lineage ids and `sha256` hashes, event/snapshot
+  format choices are recorded, and normal readers do not recursively list S3 for
+  discovery.
 - Manifest-to-NT mapping artifact covers every manifest field and is recorded
   in this plan's future `Manifest-To-NT Mapping` section before implementation
   review.

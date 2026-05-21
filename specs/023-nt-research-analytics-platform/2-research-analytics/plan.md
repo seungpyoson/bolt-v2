@@ -37,6 +37,10 @@ contracts.
 - Analytics is read-only for upstream raw, NT catalog, source-proof, and
   backtest Artifact Index records. Derived research artifacts require explicit
   RA-owned artifact kind/schema before Analytics can publish index records.
+- RA-owned derived artifacts use one top-level Artifact Index kind,
+  `research-analytics`, with four subfamilies: `datasets`, `feature-tables`,
+  `experiment-results`, and `promotion-packages`. These subfamilies commit into
+  one `research-analytics` snapshot and do not get separate latest pointers.
 - Analytics preserves upstream `SourceProofReport` ids, fidelity classes, and
   claim limits through datasets, experiments, and promotion packages. It may
   narrow claims but cannot accept upstream proof, upgrade proof strength, or
@@ -103,9 +107,9 @@ contracts.
   mutate production runtime config.
 - Generated promotion/config artifacts live under the shared S3 `artifact_root`
   as RA-owned derived artifacts, for example
-  `research-analytics/promotion-packages/`. They must not be written directly
-  into repo runtime config; importing them into production config is a separate
-  future implementation/review step.
+  `research-analytics/v1/promotion-packages/`. They must not be written
+  directly into repo runtime config; importing them into production config is a
+  separate future implementation/review step.
 - Promotion must name required Backtesting Engine evidence and selected
   Dashboard source fields, if any, using the `PromotionPackage` reference fields
   defined in the project spec.

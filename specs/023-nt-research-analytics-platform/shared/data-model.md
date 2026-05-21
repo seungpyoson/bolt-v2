@@ -92,7 +92,8 @@ defined inside the numbered project specs/plans:
   accepted the report, if accepted.
 - `accepted_at`: UTC timestamp for acceptance, if accepted.
 - `acceptance_mode`: automated or manual; automated acceptance is allowed from
-  initial implementation only when every required check passes.
+  initial implementation only when every required check passes. Present only for
+  accepted reports; pending or rejected reports omit the field.
 - `required_checks`: Schema, sample, license, time/freshness, NT mapping,
   fidelity, and forbidden-claim check results.
 - `fixture_type`: binary option or perps/spot.
@@ -112,19 +113,44 @@ defined inside the numbered project specs/plans:
 ## ArtifactIndex
 
 - `artifact_id`: Stable id for a canonical artifact.
-- `artifact_kind`: raw, nt_catalog, source_proof, backtest, or artifact_index.
+- `artifact_kind`: Top-level kind: raw, nt_catalog, source_proofs, backtests,
+  artifact_index, or research_analytics.
+- `artifact_subfamily`: Optional subfamily inside the top-level kind. Required
+  for Research Analytics artifacts: datasets, feature_tables,
+  experiment_results, or promotion_packages.
 - `producer_project`: Project or job family that produced the artifact and owns
   its index record.
 - `manifest_uri`: Artifact-local structured manifest URI under `artifact_root`.
-- `event_uri`: Immutable index event URI under `artifact-index/v1/events/`.
+- `event_uri`: Immutable index event URI under
+  `artifact-index/v1/events/kind=<artifact_kind>/`.
 - `snapshot_id`: Immutable snapshot id when committed.
-- `snapshot_uri`: Committed snapshot URI under `artifact-index/v1/snapshots/`.
-- `latest_pointer_uri`: Generated latest-pointer URI under `artifact-index/`.
-- `content_hash`: Declared hash algorithm and value; S3 ETag is not the content hash.
-- `lineage_ids`: Source proof, catalog projection, run, dataset, or result ids.
+- `snapshot_uri`: Committed snapshot URI under
+  `artifact-index/v1/snapshots/kind=<artifact_kind>/`.
+- `latest_pointer_uri`: Generated latest-pointer URI under
+  `artifact-index/v1/pointers/kind=<artifact_kind>/latest.json`.
+- `content_hash`: `sha256` value; S3 ETag is not the content hash.
+- `lineage_ids`: Source proof, catalog projection, run, dataset, or result ids
+  plus parent artifact versions and `sha256` hashes for cross-kind traversal.
 - `write_authority`: producer-owned, read-only-consumer, or unsupported.
 - `commit_state`: staged, committed, orphan, or superseded.
 - `lifecycle_state`: active or inactive; hot index pointer/current snapshot stays active.
+- `audit_epoch_uri`: Optional pointer-swap audit record used for forensics, not
+  normal discovery.
+
+## ResearchAnalyticsArtifact
+
+Research Analytics may write only these derived families under the shared
+`artifact_root/research-analytics/v1/` prefix:
+
+- `datasets`: point-in-time research datasets.
+- `feature-tables`: point-in-time feature tables.
+- `experiment-results`: experiment metadata, metrics pointers, consumed BTE
+  result ids, and leakage reports.
+- `promotion-packages`: promotion package states and typed config artifacts.
+
+Every RA-owned artifact records owner, schema version, source refs, source
+hashes, content hash, lifecycle state, and Artifact Index event behavior. RA
+does not write upstream raw, NT catalog, source-proof, or backtest records.
 
 ## IssueSlice
 

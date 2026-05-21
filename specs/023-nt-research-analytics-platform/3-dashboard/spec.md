@@ -6,6 +6,10 @@ Build a future read-only operator dashboard over NT-derived sources. It shows
 current trades, positions, PnL, exposure, data health, strategy state, and
 outlook only where source contracts exist.
 
+Primary customer job is trade investigation: view ongoing trades, prior
+trades/fills, why trades fired, which strategy/signal/source binding produced
+them, respective PnL, historical context, and data/proof freshness.
+
 This is separate from Backtesting Engine and Research Analytics. It does not own
 trading actions, credential mutation, provider capture, backtest execution, or
 independent PnL/account truth.
@@ -20,6 +24,11 @@ independent PnL/account truth.
 
 - Dashboard must be read-only: no order submit, cancel, transfer, credential, or
   runtime mutation action.
+- Future dashboard work must classify customer jobs and write capabilities
+  before product selection. Non-trading annotation/review workflow writes may be
+  considered only after explicit artifact kind/schema/owner/audit rules exist.
+  Trading, runtime config, credential, and funds/order mutations remain outside
+  this package unless a separate future scope explicitly approves them.
 - Every displayed field must map to NT report, NT event, NT snapshot, derived
   analytics table, or explicit unavailable/gap label.
 - PnL, positions, orders, fills, exposure, and account state must come from
@@ -70,6 +79,9 @@ independent PnL/account truth.
   mutate promotion state.
 - Dashboard must preserve artifact lifecycle status and must not add delete or
   expiration behavior for canonical artifacts.
+- Dashboard user-facing labels, status names, and legends must be finalized in a
+  shared terminology/legend pass before UI implementation. Internal semantics
+  must distinguish source role from data status/gap reason.
 
 ## Evidence And Decisions
 
@@ -109,8 +121,11 @@ independent PnL/account truth.
 - `DashboardFieldSource`: field name, source type, source ref or shared
   `artifact_root` URI, source proof id if applicable, fidelity class, claim
   limits, run purpose, proof pin reason code/detail when present, lifecycle
-  status, promotion/status source if applicable, freshness rule, truth status,
-  partial/unavailable status, and gap label.
+  status, promotion/status source if applicable, freshness rule, source role,
+  data status/gap reason, and user-facing legend key.
+- `TradeExplanationField`: trade/order/fill id, source binding, strategy id,
+  signal/reason evidence refs, source proof id/version, artifact refs, PnL
+  source stance, and freshness/gap labels for drilldown.
 - `FreshnessRule`: max age, display behavior, alert behavior, and source ref.
 - `DashboardReadModel`: read-only projection derived from NT/report/analytics
   sources.

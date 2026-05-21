@@ -11,8 +11,6 @@ manage_gtd_expiry = false
 manage_stop = false
 market_exit_interval_ms = 100
 market_exit_max_attempts = 100
-market_exit_time_in_force = "gtc"
-market_exit_reduce_only = true
 log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
@@ -67,6 +65,15 @@ order_type = "market"
 time_in_force = "ioc"
 is_post_only = false
 is_reduce_only = false
+is_quote_quantity = false
+
+[parameters.forced_exit_order]
+side = "sell"
+position_side = "long"
+order_type = "market"
+time_in_force = "gtc"
+is_post_only = false
+is_reduce_only = true
 is_quote_quantity = false
 
 [parameters]

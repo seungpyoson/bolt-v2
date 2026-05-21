@@ -679,16 +679,12 @@ fn bolt_v3_archetype_accepts_post_only_gtc_exit_order() {
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable");
-    let maker_exit_strategy = taker_strategy
-        .replace("order_type = \"market\"", "order_type = \"limit\"")
-        .replace("time_in_force = \"ioc\"", "time_in_force = \"gtc\"");
-    let (before_exit, exit_block) = maker_exit_strategy
-        .split_once("[parameters.exit_order]")
-        .expect("fixture should include exit order block");
-    let maker_exit_strategy = format!(
-        "{before_exit}[parameters.exit_order]{}",
-        exit_block.replacen("is_post_only = false", "is_post_only = true", 1)
-    );
+    let maker_exit_strategy = mutate_parameters_exit_order(&taker_strategy, |exit_block| {
+        exit_block
+            .replace("order_type = \"market\"", "order_type = \"limit\"")
+            .replace("time_in_force = \"ioc\"", "time_in_force = \"gtc\"")
+            .replacen("is_post_only = false", "is_post_only = true", 1)
+    });
     let strategy: BoltV3StrategyConfig = toml::from_str(&maker_exit_strategy)
         .expect("post-only GTC exit order should parse via NT order enums");
     let loaded = vec![LoadedStrategy {
@@ -741,17 +737,67 @@ fn bolt_v3_archetype_accepts_mixed_maker_taker_order_configs() {
         .replacen("is_post_only = false", "is_post_only = true", 1);
     validate_strategy(maker_entry_taker_exit, "maker entry with taker exit");
 
-    let maker_exit_taker_entry = fixture
-        .replace("order_type = \"market\"", "order_type = \"limit\"")
-        .replace("time_in_force = \"ioc\"", "time_in_force = \"gtc\"");
-    let (before_exit, exit_block) = maker_exit_taker_entry
-        .split_once("[parameters.exit_order]")
-        .expect("fixture should include exit order block");
-    let maker_exit_taker_entry = format!(
-        "{before_exit}[parameters.exit_order]{}",
-        exit_block.replacen("is_post_only = false", "is_post_only = true", 1)
-    );
+    let maker_exit_taker_entry = mutate_parameters_exit_order(&fixture, |exit_block| {
+        exit_block
+            .replace("order_type = \"market\"", "order_type = \"limit\"")
+            .replace("time_in_force = \"ioc\"", "time_in_force = \"gtc\"")
+            .replacen("is_post_only = false", "is_post_only = true", 1)
+    });
     validate_strategy(maker_exit_taker_entry, "taker entry with maker exit");
+}
+
+#[test]
+fn bolt_v3_archetype_accepts_configured_forced_exit_order_template() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let parameters = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table");
+    let mut forced_exit_order = parameters
+        .get("exit_order")
+        .cloned()
+        .expect("fixture parameters should include exit_order");
+    let forced_exit_table = forced_exit_order
+        .as_table_mut()
+        .expect("forced exit fixture should be an order table");
+    forced_exit_table.insert(
+        "order_type".to_string(),
+        toml::Value::String("limit".to_string()),
+    );
+    forced_exit_table.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    forced_exit_table.insert("is_post_only".to_string(), toml::Value::Boolean(true));
+    parameters.insert("forced_exit_order".to_string(), forced_exit_order);
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.is_empty(),
+        "configured forced_exit_order should validate through the NT order template path: {messages:#?}"
+    );
 }
 
 #[test]
@@ -824,9 +870,11 @@ fn bolt_v3_archetype_accepts_nt_model_valid_limit_order_templates_without_maker_
     let entry_limit_gtc = fixture.replace("time_in_force = \"fok\"", "time_in_force = \"gtc\"");
     validate_strategy(entry_limit_gtc, "entry limit GTC without post-only");
 
-    let exit_limit_fok = fixture
-        .replace("order_type = \"market\"", "order_type = \"limit\"")
-        .replace("time_in_force = \"ioc\"", "time_in_force = \"fok\"");
+    let exit_limit_fok = mutate_parameters_exit_order(&fixture, |exit_block| {
+        exit_block
+            .replace("order_type = \"market\"", "order_type = \"limit\"")
+            .replace("time_in_force = \"ioc\"", "time_in_force = \"fok\"")
+    });
     validate_strategy(exit_limit_fok, "exit limit FOK without post-only");
 }
 
@@ -850,15 +898,11 @@ fn bolt_v3_archetype_rejects_short_side_order_contract_until_short_economics_exi
     let short_strategy = fixture
         .replacen("side = \"buy\"", "side = \"sell\"", 1)
         .replacen("position_side = \"long\"", "position_side = \"short\"", 1);
-    let (before_exit, exit_block) = short_strategy
-        .split_once("[parameters.exit_order]")
-        .expect("fixture should include exit order block");
-    let short_strategy = format!(
-        "{before_exit}[parameters.exit_order]{}",
+    let short_strategy = mutate_parameters_exit_order(&short_strategy, |exit_block| {
         exit_block
             .replacen("side = \"sell\"", "side = \"buy\"", 1)
             .replacen("position_side = \"long\"", "position_side = \"short\"", 1)
-    );
+    });
 
     let strategy: BoltV3StrategyConfig =
         toml::from_str(&short_strategy).expect("coherent short-side order contract should parse");
@@ -893,13 +937,9 @@ fn bolt_v3_archetype_rejects_incoherent_order_position_contract() {
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable");
-    let (before_exit, exit_block) = fixture
-        .split_once("[parameters.exit_order]")
-        .expect("fixture should include exit order block");
-    let incoherent_strategy = format!(
-        "{before_exit}[parameters.exit_order]{}",
+    let incoherent_strategy = mutate_parameters_exit_order(&fixture, |exit_block| {
         exit_block.replacen("side = \"sell\"", "side = \"buy\"", 1)
-    );
+    });
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&incoherent_strategy)
         .expect("incoherent order position contract should still parse");
@@ -1220,17 +1260,13 @@ fn bolt_v3_archetype_rejects_non_triggered_exit_order_with_trigger_price() {
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable");
-    let (before_exit, exit_block) = fixture
-        .split_once("[parameters.exit_order]")
-        .expect("fixture should include exit order block");
-    let strategy_source = format!(
-        "{before_exit}[parameters.exit_order]{}",
+    let strategy_source = mutate_parameters_exit_order(&fixture, |exit_block| {
         exit_block.replacen(
             "time_in_force = \"ioc\"\nis_post_only = false",
             "time_in_force = \"ioc\"\ntrigger_price = 0.48\nis_post_only = false",
             1,
         )
-    );
+    });
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
         .expect("non-triggered exit trigger_price should parse typed order config");
@@ -1599,10 +1635,8 @@ fn bolt_v3_archetype_accepts_market_if_touched_exit_with_trigger_price() {
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable");
-    let (before_exit, exit_and_after) = fixture
-        .split_once("[parameters.exit_order]")
-        .expect("fixture should include exit_order section");
-    let exit_source = exit_and_after
+    let strategy_source = mutate_parameters_exit_order(&fixture, |exit_block| {
+        exit_block
         .replace(
             "order_type = \"market\"",
             "order_type = \"market_if_touched\"",
@@ -1610,8 +1644,8 @@ fn bolt_v3_archetype_accepts_market_if_touched_exit_with_trigger_price() {
         .replace(
             "time_in_force = \"ioc\"\nis_post_only = false",
             "time_in_force = \"gtc\"\ntrigger_price = 0.48\ntrigger_type = \"mark_price\"\nis_post_only = false",
-        );
-    let strategy_source = format!("{before_exit}[parameters.exit_order]{exit_source}");
+        )
+    });
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
         .expect("MarketIfTouched exit order should parse typed order config");
@@ -1726,10 +1760,8 @@ fn bolt_v3_archetype_accepts_trailing_stop_market_exit_with_activation_price() {
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable");
-    let (before_exit, exit_and_after) = fixture
-        .split_once("[parameters.exit_order]")
-        .expect("fixture should include exit_order section");
-    let exit_source = exit_and_after
+    let strategy_source = mutate_parameters_exit_order(&fixture, |exit_block| {
+        exit_block
         .replace(
             "order_type = \"market\"",
             "order_type = \"trailing_stop_market\"",
@@ -1737,8 +1769,8 @@ fn bolt_v3_archetype_accepts_trailing_stop_market_exit_with_activation_price() {
         .replace(
             "time_in_force = \"ioc\"\nis_post_only = false",
             "time_in_force = \"gtc\"\nactivation_price = 0.48\ntrigger_type = \"mark_price\"\ntrailing_offset = 3.0\ntrailing_offset_type = \"ticks\"\nis_post_only = false",
-        );
-    let strategy_source = format!("{before_exit}[parameters.exit_order]{exit_source}");
+        )
+    });
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
         .expect("TrailingStopMarket exit should parse typed order config");
@@ -1916,17 +1948,14 @@ fn bolt_v3_archetype_accepts_stop_limit_exit_with_trigger_price() {
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable");
-    let (before_exit, exit_and_after) = fixture
-        .split_once("[parameters.exit_order]")
-        .expect("fixture should include exit_order table");
-    let stop_limit_exit = exit_and_after
-        .replace("order_type = \"market\"", "order_type = \"stop_limit\"")
-        .replace(
-            "time_in_force = \"ioc\"\nis_post_only = false",
-            "time_in_force = \"gtc\"\ntrigger_price = 0.48\nis_post_only = true",
-        );
-    let stop_limit_strategy_source =
-        format!("{before_exit}[parameters.exit_order]{stop_limit_exit}");
+    let stop_limit_strategy_source = mutate_parameters_exit_order(&fixture, |exit_block| {
+        exit_block
+            .replace("order_type = \"market\"", "order_type = \"stop_limit\"")
+            .replace(
+                "time_in_force = \"ioc\"\nis_post_only = false",
+                "time_in_force = \"gtc\"\ntrigger_price = 0.48\nis_post_only = true",
+            )
+    });
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&stop_limit_strategy_source)
         .expect("StopLimit exit trigger price should parse through typed order config");
@@ -2000,19 +2029,17 @@ fn bolt_v3_archetype_accepts_limit_if_touched_exit_with_trigger_price() {
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable");
-    let (before_exit, exit_and_after) = fixture
-        .split_once("[parameters.exit_order]")
-        .expect("fixture should include exit_order table");
-    let limit_if_touched_exit = exit_and_after
-        .replace(
-            "order_type = \"market\"",
-            "order_type = \"limit_if_touched\"",
-        )
-        .replace(
-            "time_in_force = \"ioc\"\nis_post_only = false",
-            "time_in_force = \"gtc\"\ntrigger_price = 0.46\nis_post_only = true",
-        );
-    let strategy_source = format!("{before_exit}[parameters.exit_order]{limit_if_touched_exit}");
+    let strategy_source = mutate_parameters_exit_order(&fixture, |exit_block| {
+        exit_block
+            .replace(
+                "order_type = \"market\"",
+                "order_type = \"limit_if_touched\"",
+            )
+            .replace(
+                "time_in_force = \"ioc\"\nis_post_only = false",
+                "time_in_force = \"gtc\"\ntrigger_price = 0.46\nis_post_only = true",
+            )
+    });
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
         .expect("LimitIfTouched exit trigger price should parse through typed order config");
@@ -2222,13 +2249,9 @@ fn bolt_v3_archetype_rejects_exit_quote_quantity_until_exit_quote_sizing_exists(
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable");
-    let (before_exit, exit_and_after) = fixture
-        .split_once("[parameters.exit_order]")
-        .expect("fixture should include exit_order table");
-    let strategy_source = format!(
-        "{before_exit}[parameters.exit_order]{}",
-        exit_and_after.replacen("is_quote_quantity = false", "is_quote_quantity = true", 1)
-    );
+    let strategy_source = mutate_parameters_exit_order(&fixture, |exit_block| {
+        exit_block.replacen("is_quote_quantity = false", "is_quote_quantity = true", 1)
+    });
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
         .expect("exit quote-quantity config should parse typed order config");
@@ -2265,42 +2288,43 @@ fn bolt_v3_archetype_rejects_limit_if_touched_exit_invalid_combinations() {
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable");
-    let (before_exit, exit_and_after) = fixture
-        .split_once("[parameters.exit_order]")
-        .expect("fixture should include exit_order table");
-
     let mut cases = vec![
         (
             "missing trigger",
-            exit_and_after
-                .replace(
-                    "order_type = \"market\"",
-                    "order_type = \"limit_if_touched\"",
-                )
-                .replace(
-                    "time_in_force = \"ioc\"\nis_post_only = false",
-                    "time_in_force = \"gtc\"\nis_post_only = false",
-                ),
+            mutate_parameters_exit_order(&fixture, |exit_block| {
+                exit_block
+                    .replace(
+                        "order_type = \"market\"",
+                        "order_type = \"limit_if_touched\"",
+                    )
+                    .replace(
+                        "time_in_force = \"ioc\"\nis_post_only = false",
+                        "time_in_force = \"gtc\"\nis_post_only = false",
+                    )
+            }),
             "trigger_price",
         ),
         (
             "GTD without expiry",
-            exit_and_after
-                .replace(
-                    "order_type = \"market\"",
-                    "order_type = \"limit_if_touched\"",
-                )
-                .replace(
-                    "time_in_force = \"ioc\"\nis_post_only = false",
-                    "time_in_force = \"gtd\"\ntrigger_price = 0.46\nis_post_only = false",
-                ),
+            mutate_parameters_exit_order(&fixture, |exit_block| {
+                exit_block
+                    .replace(
+                        "order_type = \"market\"",
+                        "order_type = \"limit_if_touched\"",
+                    )
+                    .replace(
+                        "time_in_force = \"ioc\"\nis_post_only = false",
+                        "time_in_force = \"gtd\"\ntrigger_price = 0.46\nis_post_only = false",
+                    )
+            }),
             "expire_time_unix_nanos",
         ),
     ];
     for trigger_price in ["0.0", "-0.01"] {
         cases.push((
             "non-positive trigger",
-            exit_and_after
+            mutate_parameters_exit_order(&fixture, |exit_block| {
+                exit_block
                 .replace(
                     "order_type = \"market\"",
                     "order_type = \"limit_if_touched\"",
@@ -2310,13 +2334,13 @@ fn bolt_v3_archetype_rejects_limit_if_touched_exit_invalid_combinations() {
                     &format!(
                         "time_in_force = \"gtc\"\ntrigger_price = {trigger_price}\nis_post_only = false"
                     ),
-                ),
+                )
+            }),
             "trigger_price",
         ));
     }
     for (case, exit_source, expected_field) in cases {
-        let strategy_source = format!("{before_exit}[parameters.exit_order]{exit_source}");
-        let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
+        let strategy: BoltV3StrategyConfig = toml::from_str(&exit_source)
             .expect("LimitIfTouched invalid exit case should parse typed order config");
         let loaded = vec![LoadedStrategy {
             config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
@@ -3178,6 +3202,19 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
         "fixture must contain `{needle}` for this validation test to mutate"
     );
     fixture.replace(needle, replacement)
+}
+
+fn mutate_parameters_exit_order(fixture: &str, mutate: impl FnOnce(&str) -> String) -> String {
+    let (before_exit, exit_and_after) = fixture
+        .split_once("[parameters.exit_order]")
+        .expect("fixture should include exit_order table");
+    let (exit_block, after_forced_exit_marker) = exit_and_after
+        .split_once("\n[parameters.forced_exit_order]")
+        .expect("fixture should include forced_exit_order table after exit_order");
+    format!(
+        "{before_exit}[parameters.exit_order]{}\n[parameters.forced_exit_order]{after_forced_exit_marker}",
+        mutate(exit_block)
+    )
 }
 
 #[test]

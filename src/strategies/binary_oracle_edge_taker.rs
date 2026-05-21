@@ -77,8 +77,6 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             manage_stop: bool => Boolean;
             market_exit_interval_ms: u64 => Integer;
             market_exit_max_attempts: u64 => Integer;
-            market_exit_time_in_force: String => String;
-            market_exit_reduce_only: bool => Boolean;
             log_events: bool => Boolean;
             log_commands: bool => Boolean;
             log_rejected_due_post_only_as_warning: bool => Boolean;
@@ -229,6 +227,7 @@ macro_rules! define_config_struct {
             $( $field: $ty, )+
             entry_order: BinaryOracleEdgeTakerOrderConfig,
             exit_order: BinaryOracleEdgeTakerOrderConfig,
+            forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
         }
     };
 }
@@ -1794,11 +1793,7 @@ impl BinaryOracleEdgeTaker {
         let pricing = PricingState::from_config(&config);
         let oms_type = parse_configured_oms_type(CONFIG_FIELD_OMS_TYPE, &config.oms_type)
             .expect("validated binary_oracle_edge_taker oms_type");
-        let market_exit_time_in_force = parse_configured_time_in_force(
-            CONFIG_FIELD_MARKET_EXIT_TIME_IN_FORCE,
-            &config.market_exit_time_in_force,
-        )
-        .expect("validated binary_oracle_edge_taker market_exit_time_in_force");
+        let market_exit_time_in_force = config.forced_exit_order.time_in_force;
         let external_order_claims = config
             .external_order_claims
             .iter()
@@ -1818,7 +1813,7 @@ impl BinaryOracleEdgeTaker {
                 market_exit_interval_ms: config.market_exit_interval_ms,
                 market_exit_max_attempts: config.market_exit_max_attempts,
                 market_exit_time_in_force,
-                market_exit_reduce_only: config.market_exit_reduce_only,
+                market_exit_reduce_only: config.forced_exit_order.is_reduce_only,
                 log_events: config.log_events,
                 log_commands: config.log_commands,
                 log_rejected_due_post_only_as_warning: config.log_rejected_due_post_only_as_warning,
@@ -3206,12 +3201,11 @@ impl BinaryOracleEdgeTaker {
         order_config: &ExitOrderExecutionConfig,
     ) -> Option<(OrderSide, f64)> {
         let open_position = &self.managed_position()?.position;
-        let contract = self.configured_position_contract().ok()?;
-        if open_position.side != contract.exit_position_side {
+        if open_position.side != order_config.position_side {
             return None;
         }
 
-        let order_side = contract.exit_order_side;
+        let order_side = order_config.side;
         let price = match order_config.order_type {
             OrderType::StopMarket | OrderType::MarketIfTouched => order_config.trigger_price,
             OrderType::TrailingStopMarket => {
@@ -3408,7 +3402,10 @@ impl BinaryOracleEdgeTaker {
             return evaluation;
         };
 
-        let order_config = self.normal_exit_order_execution_config();
+        let Ok(order_config) = self.normal_exit_order_execution_config() else {
+            evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID);
+            return evaluation;
+        };
         evaluation.hold_ev_bps = self.current_hold_ev_bps_at(now_ms, position_outcome_side);
         evaluation.exit_ev_bps = self.current_exit_ev_bps_at(position_outcome_side, &order_config);
         evaluation.exit_decision = Some(evaluate_exit_decision(
@@ -3426,6 +3423,7 @@ impl BinaryOracleEdgeTaker {
             instrument_id: None,
             order_type: None,
             order_side: None,
+            position_side: None,
             time_in_force: None,
             price: None,
             quantity: None,
@@ -3485,6 +3483,7 @@ impl BinaryOracleEdgeTaker {
         decision.instrument_id = Some(open_position.instrument_id);
         decision.order_type = Some(order_config.order_type);
         decision.order_side = Some(order_side);
+        decision.position_side = Some(order_config.position_side);
         decision.time_in_force = Some(order_config.time_in_force);
         decision.price = Some(price);
         decision.quantity = Some(open_position.quantity);
@@ -3855,48 +3854,54 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn normal_exit_order_execution_config(&self) -> ExitOrderExecutionConfig {
-        ExitOrderExecutionConfig {
-            order_type: self.config.exit_order.order_type,
-            time_in_force: self.config.exit_order.time_in_force,
-            expire_time_unix_nanos: self.config.exit_order.expire_time_unix_nanos,
-            trigger_price: self.config.exit_order.trigger_price,
-            activation_price: self.config.exit_order.activation_price,
-            trigger_type: self.config.exit_order.trigger_type,
-            trigger_instrument_id: self.config.exit_order.trigger_instrument_id,
-            trailing_offset: self.config.exit_order.trailing_offset,
-            trailing_offset_type: self.config.exit_order.trailing_offset_type,
-            is_post_only: self.config.exit_order.is_post_only,
-            is_reduce_only: self.config.exit_order.is_reduce_only,
-            is_quote_quantity: self.config.exit_order.is_quote_quantity,
-        }
+    fn exit_order_execution_config_from_order(
+        &self,
+        order: &BinaryOracleEdgeTakerOrderConfig,
+        side_field: &'static str,
+        position_side_field: &'static str,
+    ) -> Result<ExitOrderExecutionConfig> {
+        Ok(ExitOrderExecutionConfig {
+            side: parse_configured_order_side(side_field, &order.side)?,
+            position_side: parse_configured_position_side(
+                position_side_field,
+                &order.position_side,
+            )?,
+            order_type: order.order_type,
+            time_in_force: order.time_in_force,
+            expire_time_unix_nanos: order.expire_time_unix_nanos,
+            trigger_price: order.trigger_price,
+            activation_price: order.activation_price,
+            trigger_type: order.trigger_type,
+            trigger_instrument_id: order.trigger_instrument_id,
+            trailing_offset: order.trailing_offset,
+            trailing_offset_type: order.trailing_offset_type,
+            is_post_only: order.is_post_only,
+            is_reduce_only: order.is_reduce_only,
+            is_quote_quantity: order.is_quote_quantity,
+        })
+    }
+
+    fn normal_exit_order_execution_config(&self) -> Result<ExitOrderExecutionConfig> {
+        self.exit_order_execution_config_from_order(
+            &self.config.exit_order,
+            CONFIG_FIELD_EXIT_ORDER_SIDE,
+            CONFIG_FIELD_EXIT_ORDER_POSITION_SIDE,
+        )
     }
 
     fn forced_exit_order_execution_config(&self) -> Result<ExitOrderExecutionConfig> {
-        Ok(ExitOrderExecutionConfig {
-            order_type: OrderType::Market,
-            time_in_force: parse_configured_time_in_force(
-                CONFIG_FIELD_MARKET_EXIT_TIME_IN_FORCE,
-                &self.config.market_exit_time_in_force,
-            )?,
-            expire_time_unix_nanos: None,
-            trigger_price: None,
-            activation_price: None,
-            trigger_type: None,
-            trigger_instrument_id: None,
-            trailing_offset: None,
-            trailing_offset_type: None,
-            is_post_only: false,
-            is_reduce_only: self.config.market_exit_reduce_only,
-            is_quote_quantity: false,
-        })
+        self.exit_order_execution_config_from_order(
+            &self.config.forced_exit_order,
+            CONFIG_FIELD_FORCED_EXIT_ORDER_SIDE,
+            CONFIG_FIELD_FORCED_EXIT_ORDER_POSITION_SIDE,
+        )
     }
 
     fn exit_order_execution_config(&self, forced_flat: bool) -> Result<ExitOrderExecutionConfig> {
         if forced_flat {
             self.forced_exit_order_execution_config()
         } else {
-            Ok(self.normal_exit_order_execution_config())
+            self.normal_exit_order_execution_config()
         }
     }
 
@@ -3910,7 +3915,7 @@ impl BinaryOracleEdgeTaker {
         client_order_id: ClientOrderId,
     ) -> Result<nautilus_model::orders::OrderAny> {
         self.build_exit_order_with_execution_config(
-            self.normal_exit_order_execution_config(),
+            self.normal_exit_order_execution_config()?,
             instrument_id,
             order_side,
             quantity,
@@ -4717,6 +4722,7 @@ pub struct BinaryOracleEdgeTakerBuilder;
 pub const KEY: &str = stringify!(binary_oracle_edge_taker);
 const ENTRY_ORDER_FIELD: &str = stringify!(entry_order);
 const EXIT_ORDER_FIELD: &str = stringify!(exit_order);
+const FORCED_EXIT_ORDER_FIELD: &str = stringify!(forced_exit_order);
 const WRONG_TYPE_CODE: &str = stringify!(wrong_type);
 const UNKNOWN_FIELD_CODE: &str = stringify!(unknown_field);
 const TARGET_MARKET_NOT_FOUND_REASON: &str = stringify!(target_market_not_found);
@@ -4777,6 +4783,7 @@ impl BinaryOracleEdgeTakerBuilder {
                 key.as_str(),
                 ENTRY_ORDER_FIELD
                     | EXIT_ORDER_FIELD
+                    | FORCED_EXIT_ORDER_FIELD
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -4800,6 +4807,13 @@ impl BinaryOracleEdgeTakerBuilder {
             field_prefix,
             EXIT_ORDER_FIELD,
             concat!(stringify!(missing_), stringify!(exit_order)),
+            errors,
+        );
+        Self::validate_order_table(
+            table,
+            field_prefix,
+            FORCED_EXIT_ORDER_FIELD,
+            concat!(stringify!(missing_), stringify!(forced_exit_order)),
             errors,
         );
     }
@@ -5196,9 +5210,6 @@ const ORDER_SIDE_BUY_VALUE: &str = stringify!(buy);
 const ORDER_SIDE_SELL_VALUE: &str = stringify!(sell);
 const POSITION_SIDE_LONG_VALUE: &str = stringify!(long);
 const POSITION_SIDE_SHORT_VALUE: &str = stringify!(short);
-const TIME_IN_FORCE_GTC_VALUE: &str = stringify!(gtc);
-const TIME_IN_FORCE_FOK_VALUE: &str = stringify!(fok);
-const TIME_IN_FORCE_IOC_VALUE: &str = stringify!(ioc);
 
 fn parse_configured_order_side(field: &str, value: &str) -> Result<OrderSide> {
     match value {
@@ -5213,15 +5224,6 @@ fn parse_configured_position_side(field: &str, value: &str) -> Result<PositionSi
         POSITION_SIDE_LONG_VALUE => Ok(PositionSide::Long),
         POSITION_SIDE_SHORT_VALUE => Ok(PositionSide::Short),
         _ => anyhow::bail!("{field} must be `long` or `short`, got `{value}`"),
-    }
-}
-
-fn parse_configured_time_in_force(field: &str, value: &str) -> Result<TimeInForce> {
-    match value {
-        TIME_IN_FORCE_GTC_VALUE => Ok(TimeInForce::Gtc),
-        TIME_IN_FORCE_FOK_VALUE => Ok(TimeInForce::Fok),
-        TIME_IN_FORCE_IOC_VALUE => Ok(TimeInForce::Ioc),
-        _ => anyhow::bail!("{field} must be `gtc`, `fok`, or `ioc`, got `{value}`"),
     }
 }
 
@@ -5336,11 +5338,12 @@ const NORMAL_CDF_POLY_A3: f64 = 1.781_478;
 const NORMAL_CDF_POLY_A4: f64 = -1.821_256;
 const NORMAL_CDF_POLY_A5: f64 = 1.330_274;
 const CONFIG_FIELD_OMS_TYPE: &str = "oms_type";
-const CONFIG_FIELD_MARKET_EXIT_TIME_IN_FORCE: &str = "market_exit_time_in_force";
 const CONFIG_FIELD_ENTRY_ORDER_SIDE: &str = "entry_order_side";
 const CONFIG_FIELD_ENTRY_ORDER_POSITION_SIDE: &str = "entry_order_position_side";
 const CONFIG_FIELD_EXIT_ORDER_SIDE: &str = "exit_order_side";
 const CONFIG_FIELD_EXIT_ORDER_POSITION_SIDE: &str = "exit_order_position_side";
+const CONFIG_FIELD_FORCED_EXIT_ORDER_SIDE: &str = "forced_exit_order_side";
+const CONFIG_FIELD_FORCED_EXIT_ORDER_POSITION_SIDE: &str = "forced_exit_order_position_side";
 const ORDER_CONFIGURATION_PREFIX_ENTRY: &str = "entry";
 const ORDER_CONFIGURATION_PREFIX_EXIT: &str = "exit";
 const SELECTION_BLOCK_REASON_TARGET_SELECTION_BLOCKED: &str = "target_selection_blocked";
@@ -5860,6 +5863,8 @@ struct ExitEvaluation {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ExitOrderExecutionConfig {
+    side: OrderSide,
+    position_side: PositionSide,
     order_type: OrderType,
     time_in_force: TimeInForce,
     expire_time_unix_nanos: Option<u64>,
@@ -5907,6 +5912,7 @@ struct ExitSubmissionDecision {
     instrument_id: Option<InstrumentId>,
     order_type: Option<OrderType>,
     order_side: Option<OrderSide>,
+    position_side: Option<PositionSide>,
     time_in_force: Option<TimeInForce>,
     price: Option<f64>,
     quantity: Option<Quantity>,
@@ -5928,6 +5934,8 @@ struct ExitSubmissionDecision {
 impl ExitSubmissionDecision {
     fn execution_config(&self) -> Option<ExitOrderExecutionConfig> {
         Some(ExitOrderExecutionConfig {
+            side: self.order_side?,
+            position_side: self.position_side?,
             order_type: self.order_type?,
             time_in_force: self.time_in_force?,
             expire_time_unix_nanos: self.expire_time_unix_nanos,
@@ -6226,8 +6234,6 @@ mod tests {
             manage_stop = true
             market_exit_interval_ms = 250
             market_exit_max_attempts = 7
-            market_exit_time_in_force = "ioc"
-            market_exit_reduce_only = false
             log_events = false
             log_commands = false
             log_rejected_due_post_only_as_warning = false
@@ -6256,6 +6262,15 @@ mod tests {
             position_side = "long"
             order_type = "limit"
             time_in_force = "fok"
+            is_post_only = false
+            is_reduce_only = false
+            is_quote_quantity = false
+
+            [forced_exit_order]
+            side = "sell"
+            position_side = "long"
+            order_type = "market"
+            time_in_force = "ioc"
             is_post_only = false
             is_reduce_only = false
             is_quote_quantity = false
@@ -6486,8 +6501,6 @@ mod tests {
                 manage_stop: true,
                 market_exit_interval_ms: 250,
                 market_exit_max_attempts: 7,
-                market_exit_time_in_force: "ioc".to_string(),
-                market_exit_reduce_only: false,
                 log_events: false,
                 log_commands: false,
                 log_rejected_due_post_only_as_warning: false,
@@ -6508,6 +6521,22 @@ mod tests {
                     is_quote_quantity: false,
                 },
                 exit_order: BinaryOracleEdgeTakerOrderConfig {
+                    side: "sell".to_string(),
+                    position_side: "long".to_string(),
+                    order_type: OrderType::Market,
+                    time_in_force: TimeInForce::Ioc,
+                    expire_time_unix_nanos: None,
+                    trigger_price: None,
+                    activation_price: None,
+                    trigger_type: None,
+                    trigger_instrument_id: None,
+                    trailing_offset: None,
+                    trailing_offset_type: None,
+                    is_post_only: false,
+                    is_reduce_only: false,
+                    is_quote_quantity: false,
+                },
+                forced_exit_order: BinaryOracleEdgeTakerOrderConfig {
                     side: "sell".to_string(),
                     position_side: "long".to_string(),
                     order_type: OrderType::Market,
@@ -9859,14 +9888,17 @@ mod tests {
     }
 
     #[test]
-    fn forced_flat_exit_uses_market_exit_config_when_normal_exit_is_post_only() {
+    fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.active.phase = SelectionPhase::Freeze;
         strategy.config.exit_order.order_type = OrderType::Limit;
         strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
         strategy.config.exit_order.is_post_only = true;
-        strategy.config.market_exit_time_in_force = "ioc".to_string();
-        strategy.config.market_exit_reduce_only = true;
+        strategy.config.forced_exit_order = strategy.config.exit_order.clone();
+        strategy.config.forced_exit_order.order_type = OrderType::Market;
+        strategy.config.forced_exit_order.time_in_force = TimeInForce::Ioc;
+        strategy.config.forced_exit_order.is_post_only = false;
+        strategy.config.forced_exit_order.is_reduce_only = true;
         set_active_books_best_prices(&mut strategy, 0.44, 0.45);
         let instrument_id = selected_entry_instrument(&strategy);
         let open_position = materialize_configured_position(
@@ -9893,15 +9925,18 @@ mod tests {
     }
 
     #[test]
-    fn forced_flat_exit_order_object_preserves_market_reduce_only_config() {
+    fn forced_flat_exit_order_object_preserves_forced_exit_reduce_only_config() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let _cache = register_test_strategy_with_active_instruments(&mut strategy);
         strategy.active.phase = SelectionPhase::Freeze;
         strategy.config.exit_order.order_type = OrderType::Limit;
         strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
         strategy.config.exit_order.is_post_only = true;
-        strategy.config.market_exit_time_in_force = "ioc".to_string();
-        strategy.config.market_exit_reduce_only = true;
+        strategy.config.forced_exit_order = strategy.config.exit_order.clone();
+        strategy.config.forced_exit_order.order_type = OrderType::Market;
+        strategy.config.forced_exit_order.time_in_force = TimeInForce::Ioc;
+        strategy.config.forced_exit_order.is_post_only = false;
+        strategy.config.forced_exit_order.is_reduce_only = true;
         let instrument_id = selected_entry_instrument(&strategy);
         let open_position = materialize_configured_position(
             &mut strategy,
@@ -9947,6 +9982,69 @@ mod tests {
         assert_eq!(order.order_type(), OrderType::Market);
         assert_eq!(order.time_in_force(), TimeInForce::Ioc);
         assert_eq!(order.price(), None);
+        assert!(order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
+    }
+
+    #[test]
+    fn forced_flat_exit_order_object_uses_configured_forced_exit_template() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.active.phase = SelectionPhase::Freeze;
+        strategy.config.exit_order.order_type = OrderType::Market;
+        strategy.config.exit_order.time_in_force = TimeInForce::Ioc;
+        strategy.config.exit_order.is_post_only = false;
+        strategy.config.forced_exit_order = strategy.config.exit_order.clone();
+        strategy.config.forced_exit_order.order_type = OrderType::Limit;
+        strategy.config.forced_exit_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.forced_exit_order.is_post_only = true;
+        strategy.config.forced_exit_order.is_reduce_only = true;
+        let instrument_id = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            PositionId::from("P-FORCED-EXIT-CONFIGURED-001"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+        let decision = strategy.exit_submission_decision_at(1_200);
+        let price = Price::new(
+            decision
+                .price
+                .expect("forced-flat decision should choose price"),
+            strategy
+                .current_instrument(instrument_id)
+                .expect("test instrument should be registered")
+                .price_precision(),
+        );
+
+        let order = strategy
+            .build_exit_order_with_execution_config(
+                decision
+                    .execution_config()
+                    .expect("forced-flat decision should carry order config"),
+                instrument_id,
+                decision.order_side.expect("forced-flat should choose side"),
+                decision
+                    .quantity
+                    .expect("forced-flat should choose quantity"),
+                price,
+                ClientOrderId::from("O-19700101-000000-001-006-1"),
+            )
+            .expect("configured forced-flat exit order should build");
+
+        let OrderAny::Limit(order) = order else {
+            panic!("forced-flat exit should use configured NT order type");
+        };
+        assert_eq!(order.order_type(), OrderType::Limit);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtc);
+        assert_eq!(order.price(), Some(price));
+        assert!(order.is_post_only());
         assert!(order.is_reduce_only());
         assert!(!order.is_quote_quantity());
     }
@@ -11287,8 +11385,8 @@ mod tests {
             strategy.config.exit_order.is_post_only = true;
             strategy.active.phase = SelectionPhase::Freeze;
             let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
-            let expected_exit_time_in_force = strategy.core.config.market_exit_time_in_force;
-            let expected_exit_reduce_only = strategy.core.config.market_exit_reduce_only;
+            let expected_exit_time_in_force = strategy.config.forced_exit_order.time_in_force;
+            let expected_exit_reduce_only = strategy.config.forced_exit_order.is_reduce_only;
             materialize_managed_position_with_resting_pending_entry(
                 &mut strategy,
                 instrument_id,
@@ -13349,7 +13447,9 @@ mod tests {
             ))
             .expect("entry fill should materialize position for exit EV test");
 
-        let order_config = strategy.normal_exit_order_execution_config();
+        let order_config = strategy
+            .normal_exit_order_execution_config()
+            .expect("normal exit order config should parse");
         let outcome_side = managed_position_ref(&strategy)
             .and_then(|position| position.outcome_side)
             .expect("entry fill should preserve configured outcome side");

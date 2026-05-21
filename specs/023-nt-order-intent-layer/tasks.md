@@ -453,6 +453,15 @@
 - [x] T205 [US2] Disposition the non-positive limit-price suggestion against pinned NT evidence without adding a shared-layer price policy
 - [x] T206 [US2] Verify focused order-template tests, source fences, formatting, branch cleanliness, exact-head CI state, and reviewer state
 
+## Phase 47: TDD Slice 43 - TOML-Owned Forced-Exit Order Template
+
+**Goal**: Resolve current-head architecture review evidence that forced-flat exit submission still synthesizes a market-order template in strategy code before calling the shared NT builder. Forced-exit urgency remains strategy-owned, but forced-exit order semantics must be TOML-owned NT order-template data and must continue through the shared `build_nt_order(...)` path without venue, market, or maker/taker policy.
+
+- [x] T207 [P] [US3] Record current-head source and multi-agent evidence that forced-flat exit order semantics are still hardcoded before the shared builder
+- [x] T208 [US3] RED: Add public/runtime regressions proving a configured `forced_exit_order` template is accepted and used for forced-flat submission
+- [x] T209 [US3] GREEN: Add a single TOML-owned forced-exit order template path and remove the hardcoded forced-flat market-order synthesis
+- [x] T210 [US3] Verify focused forced-flat/config/order-intent tests, source fences, formatting, branch cleanliness, exact-head PR state, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -498,6 +507,7 @@
 - Phase 44 blocks completion because latest-head Claude review found more direct shared-builder invariants still covered only indirectly through strategy/config paths.
 - Phase 45 blocks completion because latest-head Claude review found remaining direct-builder validation arms and order-arm post-only fail-closed checks without direct shared-builder coverage.
 - Phase 46 closes the latest-head Claude review disposition because the real triggered-factory test gap is covered directly and the proposed price validation change was rejected against pinned NT evidence.
+- Phase 47 blocks completion because current-head multi-agent review found forced-flat exit order semantics still synthesized as Market/TIF/reduce-only fields in strategy code rather than carried as a TOML-owned NT order template.
 
 ## Parallel Opportunities
 

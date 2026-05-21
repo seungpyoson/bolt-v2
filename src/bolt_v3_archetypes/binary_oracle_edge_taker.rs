@@ -3,8 +3,9 @@
 //! This module owns:
 //!
 //! 1. The archetype's `[parameters]` block shape (`ParametersBlock`)
-//!    and its `[parameters.entry_order]` / `[parameters.exit_order]`
-//!    row shape (`OrderParams`). The `order_type` and `time_in_force`
+//!    and its `[parameters.entry_order]` / `[parameters.exit_order]` /
+//!    `[parameters.forced_exit_order]` row shape (`OrderParams`).
+//!    The `order_type` and `time_in_force`
 //!    fields on `OrderParams` are typed with NT's canonical
 //!    `nautilus_model::enums::{OrderType, TimeInForce}`; this archetype's
 //!    validator checks enabled NT order-template invariants rather than
@@ -17,9 +18,9 @@
 //!    - the required reference-data role
 //!      (`[reference_data.primary]`),
 //!    - the enabled `[parameters.entry_order]` and
-//!      `[parameters.exit_order]` NT order-template invariants, including
-//!      required GTD expiry, triggered-order trigger fields, and
-//!      trailing-stop fields.
+//!      `[parameters.exit_order]` and `[parameters.forced_exit_order]`
+//!      NT order-template invariants, including required GTD expiry,
+//!      triggered-order trigger fields, and trailing-stop fields.
 //!
 //! Core startup validation in `crate::bolt_v3_validate` keeps target-
 //! shape and per-role reference-data structural checks structural and
@@ -80,6 +81,7 @@ pub struct ParametersBlock {
     pub runtime: RuntimeParametersBlock,
     pub entry_order: OrderParams,
     pub exit_order: OrderParams,
+    pub forced_exit_order: OrderParams,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -163,6 +165,7 @@ pub fn validate_strategy(
         context,
         &parameters.entry_order,
         &parameters.exit_order,
+        &parameters.forced_exit_order,
     ));
     errors.extend(validate_parameter_bounds(
         context,
@@ -402,16 +405,6 @@ pub fn raw_taker_config(
         "market_exit_max_attempts",
         strategy.config.market_exit_max_attempts,
     )?;
-    insert_string(
-        &mut table,
-        "market_exit_time_in_force",
-        strategy.config.market_exit_time_in_force.clone(),
-    );
-    insert_bool(
-        &mut table,
-        "market_exit_reduce_only",
-        strategy.config.market_exit_reduce_only,
-    );
     insert_bool(&mut table, "log_events", strategy.config.log_events);
     insert_bool(&mut table, "log_commands", strategy.config.log_commands);
     insert_bool(
@@ -481,6 +474,12 @@ pub fn raw_taker_config(
         strategy_instance_id,
         "exit_order",
         &parameters.exit_order,
+    )?;
+    insert_order_config(
+        &mut table,
+        strategy_instance_id,
+        "forced_exit_order",
+        &parameters.forced_exit_order,
     )?;
     insert_u64(
         &mut table,
@@ -853,11 +852,17 @@ fn validate_order_parameters(
     context: &str,
     entry: &OrderParams,
     exit: &OrderParams,
+    forced_exit: &OrderParams,
 ) -> Vec<String> {
     let mut errors = Vec::new();
     errors.extend(check_strategy_position_contract(context, entry, exit));
     errors.extend(check_entry_order_combination(context, entry));
     errors.extend(check_exit_order_combination(context, exit));
+    errors.extend(check_forced_exit_order_combination(
+        context,
+        exit,
+        forced_exit,
+    ));
     errors
 }
 
@@ -915,6 +920,25 @@ fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String
     if exit.is_quote_quantity {
         errors.push(format!(
             "{context}: parameters.exit_order.is_quote_quantity=true is not supported because `binary_oracle_edge_taker` exits are sized from base position quantity"
+        ));
+    }
+    errors
+}
+
+fn check_forced_exit_order_combination(
+    context: &str,
+    exit: &OrderParams,
+    forced_exit: &OrderParams,
+) -> Vec<String> {
+    let mut errors = check_enabled_order_template(context, "forced_exit_order", forced_exit);
+    if forced_exit.is_quote_quantity {
+        errors.push(format!(
+            "{context}: parameters.forced_exit_order.is_quote_quantity=true is not supported because `binary_oracle_edge_taker` forced exits are sized from base position quantity"
+        ));
+    }
+    if forced_exit.side != exit.side || forced_exit.position_side != exit.position_side {
+        errors.push(format!(
+            "{context}: parameters.forced_exit_order side and position_side must match parameters.exit_order for `binary_oracle_edge_taker`"
         ));
     }
     errors

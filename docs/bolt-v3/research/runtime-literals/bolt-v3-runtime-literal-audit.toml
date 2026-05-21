@@ -327,18 +327,18 @@ reason = "This field-name literal labels the configured market-exit runtime valu
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"market_exit_reduce_only"'''
-context = '''"market_exit_reduce_only",'''
+literal = '''"forced_exit_order"'''
+context = '''"forced_exit_order",'''
 classification = "strategy_runtime_schema_field"
-reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+reason = "This is the configured forced-exit NT order-template table projected from bolt-v3 TOML into the runtime strategy config."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"market_exit_time_in_force"'''
-context = '''"market_exit_time_in_force",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+literal = '''"forced_exit_order"'''
+context = '''let mut errors = check_enabled_order_template(context, "forced_exit_order", forced_exit);'''
+classification = "strategy_runtime_validation_field"
+reason = "This field-name literal labels the TOML-owned forced-exit NT order-template during generic order-template validation."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -2976,10 +2976,18 @@ reason = "This is a stable evidence reason code stating that TOML-owned lead-qua
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"market_exit_time_in_force"'''
-context = '''const CONFIG_FIELD_MARKET_EXIT_TIME_IN_FORCE: &str = "market_exit_time_in_force";'''
+literal = '''"forced_exit_order_side"'''
+context = '''const CONFIG_FIELD_FORCED_EXIT_ORDER_SIDE: &str = "forced_exit_order_side";'''
 classification = "strategy_config_field_name"
-reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
+reason = "This is the stable forced-exit order side field label used in validation diagnostics; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"forced_exit_order_position_side"'''
+context = '''const CONFIG_FIELD_FORCED_EXIT_ORDER_POSITION_SIDE: &str = "forced_exit_order_position_side";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable forced-exit position side field label used in validation diagnostics; the runtime value remains TOML-owned."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"

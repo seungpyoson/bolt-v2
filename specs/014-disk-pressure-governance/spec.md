@@ -115,7 +115,7 @@ As the operator, I can prove every known disk-writing surface is inventoried and
 
 ## Assumptions
 
-- `origin/main` at `400dac8acc8ec04fc7b4aefc41bab10390d6404f` is the fetched source of truth for this planning slice as of 2026-05-20.
+- PR #404 merge commit `400dac8acc8ec04fc7b4aefc41bab10390d6404f` is the #286 completion evidence for this planning slice; current PR review evidence must use the live PR base/head.
 - Issue bodies and comments fetched on 2026-05-18 are authoritative for current #123 scope.
 - #286 is closed by PR #404; wrapper edge residuals found during #404 review are tracked by #374, not by re-opening #286.
 - Implementation that changes local Claude/Codex runtime belongs in `claude-config` unless a bolt-v2 repo artifact is explicitly required.

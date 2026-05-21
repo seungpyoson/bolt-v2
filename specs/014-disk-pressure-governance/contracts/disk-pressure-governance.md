@@ -26,7 +26,7 @@
 
 ## Verified Cargo Routing Evidence
 
-Snapshot scope: operator `spson`, local machine, 2026-05-18.
+Snapshot scope: audited local operator environment, 2026-05-18.
 
 - `USER_HOME_DIR` denotes the audited operator home directory; raw evidence paths remain on the linked issue/PR.
 - `just` resolves bolt-v2 Rust target output to `USER_HOME_DIR/.cache/rust-verification/bolt-v2/target`.

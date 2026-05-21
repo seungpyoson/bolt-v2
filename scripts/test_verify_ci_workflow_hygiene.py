@@ -1173,6 +1173,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
+            "alias c='V=CARGO; eval \"${V}_TARGET_DIR=/tmp/raw cargo\"'; c build",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "V=CARGO; bash -c \"${V}_TARGET_DIR=/tmp/raw cargo test\"",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
             "E=$(echo CARGO_TARGET_DIR); export $E=/tmp/raw-target; cargo check",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
@@ -1746,6 +1754,10 @@ commands:
   evalparam: 'export CMD="cargo build"; eval "${CMD:-}"'
   evaldynamicenv: 'VAR=CARGO_TARGET_DIR; $VAR=/tmp/raw cargo check'
   evalcomposedenv: 'VAR=CARGO; ${VAR}_TARGET_DIR=/tmp/raw cargo check'
+  evalinlinecomposedenv: 'VAR=CARGO ${VAR}_TARGET_DIR=/tmp/raw cargo check'
+  evalinlinecomposedeval: 'VAR=CARGO eval "${VAR}_TARGET_DIR=/tmp/raw cargo check"'
+  shellccomposedenv: 'VAR=CARGO; bash -c "${VAR}_TARGET_DIR=/tmp/raw cargo test"'
+  aliaspayload: 'alias c='\''V=CARGO; eval "${V}_TARGET_DIR=/tmp/raw cargo"'\''; c build'
   foldedplain: eval
     cargo test
   foldeddouble: "eval
@@ -1837,6 +1849,10 @@ commands: { test: "cargo test" }
         "evalparam",
         "evaldynamicenv",
         "evalcomposedenv",
+        "evalinlinecomposedenv",
+        "evalinlinecomposedeval",
+        "shellccomposedenv",
+        "aliaspayload",
         "foldedplain",
         "foldeddouble",
         "shellprefix",
@@ -2844,6 +2860,14 @@ def main() -> int:
             BASE_WORKFLOW,
             '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              exit 1\n',
             '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              true || exit 1\n',
+        ),
+    )
+    assert_error(
+        "gate must require deny skipped on tag reuse",
+        replace_once(
+            BASE_WORKFLOW,
+            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              exit 1\n',
+            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              echo \\\n              exit 1\n',
         ),
     )
     assert_error(

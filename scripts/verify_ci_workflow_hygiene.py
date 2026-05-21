@@ -1851,16 +1851,24 @@ def flock_command_option_tokens(tokens: list[str]) -> list[str] | None:
 def simple_cargo_aliases(tokens: list[str], known_aliases: set[str] | None = None) -> set[str]:
     known_aliases = known_aliases or set()
     aliases: set[str] = set()
+    for name, value in shell_alias_payloads(tokens).items():
+        value_tokens = command_tokens(value)
+        value_names = {pathlib.Path(value_token).name for value_token in value_tokens}
+        if any(raw_rust_tool_token(value_name) or value_name in known_aliases for value_name in value_names):
+            aliases.add(name)
+    return aliases
+
+
+def shell_alias_payloads(tokens: list[str]) -> dict[str, str]:
+    if not tokens or pathlib.Path(tokens[0]).name != "alias":
+        return {}
+    payloads: dict[str, str] = {}
     for token in tokens[1:]:
         name, separator, value = token.partition("=")
         name = name.strip("\"'")
-        value_tokens = command_tokens(value) if separator else []
-        value_names = {pathlib.Path(value_token).name for value_token in value_tokens}
-        if separator and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name) and any(
-            raw_rust_tool_token(value_name) or value_name in known_aliases for value_name in value_names
-        ):
-            aliases.add(name)
-    return aliases
+        if separator and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+            payloads[name] = value.strip()
+    return payloads
 
 
 def expand_cargo_aliases(tokens: list[str], aliases: set[str]) -> list[str]:
@@ -2054,10 +2062,20 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
         cargo_aliases: set[str] = set()
+        cargo_alias_payloads: dict[str, str] = {}
         shell_variables: dict[str, str] = {}
         for token in tokens:
             if token in SHELL_COMMAND_BOUNDARIES:
                 if segment and segment[0] == "alias":
+                    alias_payloads = shell_alias_payloads(segment)
+                    for payload in alias_payloads.values():
+                        if tokens_have_raw_cargo(
+                            command_tokens(payload),
+                            depth=depth + 1,
+                            allow_storage_only=allow_storage_only,
+                        ):
+                            return True
+                    cargo_alias_payloads.update(alias_payloads)
                     cargo_aliases.update(simple_cargo_aliases(segment, cargo_aliases))
                     segment = []
                     continue
@@ -2068,6 +2086,14 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
                     continue
                 segment = expand_known_shell_assignment_names(segment, shell_variables)
                 segment = expand_known_shell_command_variables(segment, shell_variables)
+                if segment and segment[0] in cargo_alias_payloads:
+                    alias_tokens = command_tokens(cargo_alias_payloads[segment[0]]) + segment[1:]
+                    if tokens_have_raw_cargo(
+                        alias_tokens,
+                        depth=depth + 1,
+                        allow_storage_only=allow_storage_only,
+                    ):
+                        return True
                 segment = expand_cargo_aliases(segment, cargo_aliases)
                 if segment and tokens_have_raw_cargo(segment, depth=depth + 1, allow_storage_only=allow_storage_only):
                     return True
@@ -2075,12 +2101,18 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
                 continue
             segment.append(token)
         if segment and segment[0] == "alias":
-            return False
+            return any(
+                tokens_have_raw_cargo(command_tokens(payload), depth=depth + 1, allow_storage_only=allow_storage_only)
+                for payload in shell_alias_payloads(segment).values()
+            )
         shell_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
         if is_persistent_assignment:
             return False
         segment = expand_known_shell_assignment_names(segment, shell_variables)
         segment = expand_known_shell_command_variables(segment, shell_variables)
+        if segment and segment[0] in cargo_alias_payloads:
+            alias_tokens = command_tokens(cargo_alias_payloads[segment[0]]) + segment[1:]
+            return tokens_have_raw_cargo(alias_tokens, depth=depth + 1, allow_storage_only=allow_storage_only)
         segment = expand_cargo_aliases(segment, cargo_aliases)
         return bool(segment) and tokens_have_raw_cargo(segment, depth=depth + 1, allow_storage_only=allow_storage_only)
     assignment_index = consume_assignment_words(tokens, 0)
@@ -2952,15 +2984,25 @@ def dynamic_env_segment_messages(
     if not segment or depth > 4:
         return set()
     messages: set[str] = set()
-    expanded = expand_known_shell_assignment_names(segment, assignments)
+    expanded = merge_split_shell_parameter_assignment_tokens(segment)
+    local_assignments = dict(assignments)
     cursor = 0
-    while cursor < len(expanded) and shell_assignment_word(expanded[cursor]):
-        message = dynamic_env_assignment_message(expanded[cursor], assignments, target_keys)
+    while cursor < len(expanded):
+        current = expand_known_shell_assignment_names([expanded[cursor]], local_assignments)[0]
+        if not shell_assignment_word(current):
+            break
+        expanded[cursor] = current
+        message = dynamic_env_assignment_message(current, local_assignments, target_keys)
         if message is not None:
             messages.add(message)
+        name, value = current.split("=", 1)
+        alias_value = shell_assignment_alias_value(value, target_keys)
+        if alias_value is not None:
+            local_assignments[name] = alias_value
         cursor += 1
     if cursor >= len(expanded):
         return messages
+    expanded = expanded[:cursor] + expand_known_shell_assignment_names(expanded[cursor:], local_assignments)
     command = pathlib.Path(expanded[cursor]).name
     if command == "export":
         for argument in expanded[cursor + 1 :]:
@@ -3009,7 +3051,18 @@ def dynamic_env_segment_messages(
             messages.update(
                 dynamic_env_tokens_messages(
                     command_tokens(" ".join(inner)),
-                    assignments,
+                    local_assignments,
+                    target_keys,
+                    depth=depth + 1,
+                )
+            )
+    if command in ("bash", "dash", "fish", "sh", "zsh"):
+        nested = shell_command(expanded[cursor:])
+        if nested is not None:
+            messages.update(
+                dynamic_env_tokens_messages(
+                    command_tokens(nested),
+                    local_assignments,
                     target_keys,
                     depth=depth + 1,
                 )
@@ -3066,6 +3119,22 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
             continue
         segment.append(token)
     messages.update(dynamic_env_tokens_messages(command_tokens(text), assignments, target_keys))
+    return messages
+
+
+def alias_payload_storage_messages(text: str, *, depth: int = 0) -> set[str]:
+    if depth > 4:
+        return set()
+    messages: set[str] = set()
+    segment: list[str] = []
+    for token in command_tokens(text) + [";"]:
+        if token in SHELL_COMMAND_BOUNDARIES:
+            if segment and pathlib.Path(segment[0]).name == "alias":
+                for payload in shell_alias_payloads(segment).values():
+                    messages.update(raw_rust_storage_errors(payload, alias_depth=depth + 1))
+            segment = []
+            continue
+        segment.append(token)
     return messages
 
 
@@ -3138,7 +3207,7 @@ def folded_yaml_run_commands(text: str) -> list[str]:
     return commands
 
 
-def raw_rust_storage_errors(workflow_text: str) -> list[str]:
+def raw_rust_storage_errors(workflow_text: str, *, alias_depth: int = 0) -> list[str]:
     uncommented = uncommented_text(workflow_text.splitlines())
     folded_commands = "\n".join(folded_yaml_run_commands(uncommented))
     text = re.sub(r"\\\s*\n\s*", " ", "\n".join(part for part in (uncommented, folded_commands) if part))
@@ -3179,6 +3248,9 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         if message not in errors:
             errors.append(message)
     for message in sorted(dynamic_env_target_override_messages(text)):
+        if message not in errors:
+            errors.append(message)
+    for message in sorted(alias_payload_storage_messages(text, depth=alias_depth)):
         if message not in errors:
             errors.append(message)
     config_file_message = "cargo --config file raw target override must be classified"
@@ -3538,7 +3610,7 @@ def shell_line_is_simple_exit(line: str) -> bool:
 
 def branch_is_reachable_before_top_level_exit(gate_text: str, keyword: str, condition: str) -> bool:
     depth = 0
-    for line in gate_text.splitlines():
+    for line in shell_logical_lines(gate_text):
         clean = strip_comment(line).strip()
         if not clean:
             continue
@@ -3572,7 +3644,7 @@ def branch_exits_reachable(gate_text: str, keyword: str, condition: str) -> bool
 def body_exits(body: str) -> bool:
     exit_codes: list[str | None] = []
     depth = 0
-    for line in body.splitlines():
+    for line in shell_logical_lines(body):
         clean = strip_comment(line).strip()
         if not clean:
             continue

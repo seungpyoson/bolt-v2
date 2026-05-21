@@ -510,6 +510,14 @@
 - [x] T232 [US3] GREEN: Update the verifier and Speckit dependency notes so completed Phase 47/48/50/51 slices are recorded as closed or pending only terminal evidence
 - [ ] T233 [US3] Verify schema-current tests, active verifier, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
 
+## Phase 53: TDD Slice 49 - Speckit Phase 34 Dependency Closure
+
+**Goal**: Resolve current-head Speckit drift where the dependency notes still describe the completed Phase 34 TrailingStopMarket NT-default finding as an active completion blocker even though Phase 34 and Phase 51 now record the implementation, schema, and verifier closure. The fix is docs/verifier-only and must not change runtime order construction or narrow NT order-template support.
+
+- [x] T234 [US3] RED: Add schema-current verifier regression proving stale completed-Phase-34 dependency wording is not caught in `tasks.md`
+- [x] T235 [US3] GREEN: Update the verifier and Speckit dependency note so Phase 34 is recorded as closed rather than an active blocker
+- [ ] T236 [US3] Verify schema-current tests, active verifier, formatting/diff checks, source fences, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -542,7 +550,7 @@
 - Phase 31 blocks completion because no-mistakes found market order expiry configs were accepted even though the pinned NT market factory drops expiry.
 - Phase 32 blocks completion because no-mistakes found triggered exit EV was priced from the live book while the configured StopMarket exit order submits with trigger pricing.
 - Phase 33 blocks completion because source inspection found the Speckit spec still claimed short-side acceptance after Phase 28 restored current strategy-economics rejection.
-- Phase 34 blocks completion because multi-agent pinned-NT review found TrailingStopMarket validation still requires optional fields that NT defaults.
+- Phase 34 closes the original TrailingStopMarket NT-default pass-through implementation; Phase 51 closes the active schema-default drift and equivalent-wording verifier gap.
 - Phase 35 blocks completion because no-mistakes produced a non-terminal blanket non-GTD expiry patch that conflicts with pinned NT Rust behavior and prior Speckit decisions.
 - Phase 36 blocks live/canary proof claims because no-mistakes and read-only reviewers found the Phase 8 financial envelope did not bind every currently TOML-owned order-shape field.
 - Phase 37 blocks completion because read-only audit found the pre-admission order-intent evidence did not include the compiled NT order fields needed to explain Bolt admission.
@@ -561,6 +569,7 @@
 - Phase 50 closes the current-head maker lifecycle/sizing review findings; only terminal reviewer/no-mistakes state remains open in T224.
 - Phase 51 closes the TrailingStopMarket schema-default drift and equivalent-wording verifier gap; only terminal reviewer/no-mistakes state remains open in T228.
 - Phase 52 remains open until T233 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.
+- Phase 53 remains open until T236 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.
 
 ## Parallel Opportunities
 

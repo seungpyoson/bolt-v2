@@ -299,6 +299,25 @@ def test_validate_docs_rejects_completed_phase47_and_phase48_blocker_wording() -
             )
 
 
+def test_validate_docs_rejects_completed_phase34_default_blocker_wording() -> None:
+    stale_tasks = """
+- [x] T150 [US2] Verify focused TrailingStopMarket tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+- Phase 34 blocks completion because multi-agent pinned-NT review found TrailingStopMarket validation still requires optional fields that NT defaults.
+- Phase 51 closes the TrailingStopMarket schema-default drift and equivalent-wording verifier gap; only terminal reviewer/no-mistakes state remains open in T228.
+"""
+
+    findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP, tasks=stale_tasks)
+    expected_fragments = [
+        "Phase 34",
+        "optional fields that NT defaults",
+    ]
+    for fragment in expected_fragments:
+        if not any(fragment in finding for finding in findings):
+            raise AssertionError(
+                f"expected stale completed-Phase-34 fragment {fragment!r}, got {findings!r}"
+            )
+
+
 def test_validate_docs_requires_phase51_dependency_note_when_tasks_are_checked() -> None:
     tasks_without_phase51_dependency = """
 ## Phase 51: TDD Slice 47 - TrailingStopMarket Schema Default Drift
@@ -453,6 +472,7 @@ def main() -> int:
         test_validate_docs_rejects_equivalent_trailing_stop_market_default_field_requirements,
         test_validate_docs_rejects_completed_phase50_blocker_wording,
         test_validate_docs_rejects_completed_phase47_and_phase48_blocker_wording,
+        test_validate_docs_rejects_completed_phase34_default_blocker_wording,
         test_validate_docs_requires_phase51_dependency_note_when_tasks_are_checked,
         test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere,
         test_validate_docs_rejects_gtd_broad_support_and_live_canary_overclaims,

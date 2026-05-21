@@ -7,13 +7,13 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, decision_evidence_path,
+        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, decision_evidence_path,
     },
     strategies::registry::FeeProvider,
     strategies::registry::StrategyBuildContext,
 };
 use futures_util::future::{BoxFuture, FutureExt};
-use nautilus_model::enums::OrderSide;
+use nautilus_model::enums::{OrderSide, OrderType, TimeInForce};
 use nautilus_model::identifiers::InstrumentId;
 use rust_decimal::Decimal;
 
@@ -143,6 +143,20 @@ fn strategy_build_context_requires_decision_evidence_value() {
                 order_side: OrderSide::Buy.to_string(),
                 price: "0.50".to_string(),
                 quantity: "1".to_string(),
+                order_fields: BoltV3OrderIntentOrderFields {
+                    order_type: OrderType::Limit.to_string(),
+                    time_in_force: TimeInForce::Gtc.to_string(),
+                    price: Some("0.50".to_string()),
+                    trigger_price: None,
+                    activation_price: None,
+                    trigger_type: None,
+                    trailing_offset: None,
+                    trailing_offset_type: None,
+                    expire_time_unix_nanos: None,
+                    is_post_only: false,
+                    is_reduce_only: false,
+                    is_quote_quantity: false,
+                },
             })
             .is_ok()
     );

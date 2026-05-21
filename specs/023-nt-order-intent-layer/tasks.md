@@ -357,6 +357,16 @@
 - [x] T159 [US3] GREEN: Bind optional entry/exit order-shape fields without adding order-template or venue policy
 - [x] T160 [US3] Verify focused tiny-canary tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
+## Phase 37: TDD Slice 33 - Compiled Order Intent Evidence Binding
+
+**Goal**: Close the accepted-scope evidence gap by binding `OrderIntentEvidence` to the compiled NT order fields used to explain Bolt admission, while keeping the admission outcome in the existing linked post-admission decision record.
+
+- [x] T161 [P] [US3] Record read-only local and multi-agent evidence that `OrderIntentEvidence` lacks compiled NT order fields while `AdmissionDecisionEvidence` already records the post-gate outcome
+- [x] T162 [US3] RED: Add an order-intent evidence regression proving the JSONL intent record must include selected compiled NT order fields
+- [x] T163 [US3] GREEN: Populate selected order fields from the compiled NT `OrderAny` without adding venue, maker/taker, or order-template policy
+- [x] T164 [US3] Update data-model wording to make the pre-admission intent record and post-admission outcome record boundary explicit
+- [x] T165 [US3] Verify focused evidence tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -392,6 +402,7 @@
 - Phase 34 blocks completion because multi-agent pinned-NT review found TrailingStopMarket validation still requires optional fields that NT defaults.
 - Phase 35 blocks completion because no-mistakes produced a non-terminal blanket non-GTD expiry patch that conflicts with pinned NT Rust behavior and prior Speckit decisions.
 - Phase 36 blocks live/canary proof claims because no-mistakes and read-only reviewers found the Phase 8 financial envelope did not bind every currently TOML-owned order-shape field.
+- Phase 37 blocks completion because read-only audit found the pre-admission order-intent evidence did not include the compiled NT order fields needed to explain Bolt admission.
 
 ## Parallel Opportunities
 

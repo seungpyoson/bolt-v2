@@ -4009,15 +4009,12 @@ impl BinaryOracleEdgeTaker {
             client_order_id,
         );
 
-        let intent = BoltV3OrderIntentEvidence {
-            strategy_id: self.config.strategy_id.clone(),
-            intent_kind: BoltV3OrderIntentKind::Exit,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: order_side.to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+            self.config.strategy_id.clone(),
+            BoltV3OrderIntentKind::Exit,
+            price.to_string(),
+            &order,
+        );
 
         if let Err(error) = self.submit_order_with_decision_evidence(
             intent,
@@ -4231,15 +4228,12 @@ impl BinaryOracleEdgeTaker {
             client_order_id,
         );
 
-        let intent = BoltV3OrderIntentEvidence {
-            strategy_id: self.config.strategy_id.clone(),
-            intent_kind: BoltV3OrderIntentKind::Entry,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: order_side.to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+            self.config.strategy_id.clone(),
+            BoltV3OrderIntentKind::Entry,
+            price.to_string(),
+            &order,
+        );
 
         if let Err(error) = self.submit_order_with_decision_evidence(
             intent,
@@ -7003,15 +6997,13 @@ mod tests {
             )
             .expect("limit order should be valid"),
         );
-        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-            strategy_id: strategy.config.strategy_id.clone(),
-            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: order.order_side().to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
 
         let error = strategy
             .submit_order_with_decision_evidence(
@@ -7073,15 +7065,13 @@ mod tests {
             )
             .expect("limit order should be valid"),
         );
-        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-            strategy_id: strategy.config.strategy_id.clone(),
-            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: order.order_side().to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
 
         let error = strategy
             .submit_order_with_decision_evidence(
@@ -7147,15 +7137,13 @@ mod tests {
             )
             .expect("limit order should be valid"),
         );
-        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-            strategy_id: strategy.config.strategy_id.clone(),
-            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: order.order_side().to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             strategy.submit_order_with_decision_evidence(
@@ -7221,15 +7209,14 @@ mod tests {
             )
             .expect("limit order should be valid"),
         );
-        let understated_intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-            strategy_id: strategy.config.strategy_id.clone(),
-            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: order.order_side().to_string(),
-            price: "0.50".to_string(),
-            quantity: quantity.to_string(),
-        };
+        let mut understated_intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
+        understated_intent.price = "0.50".to_string();
 
         let error = strategy
             .submit_order_with_decision_evidence(
@@ -7275,15 +7262,12 @@ mod tests {
 
         let admission = strategy
             .submit_admission_request_from_order(
-                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-                    strategy_id: strategy.config.strategy_id.clone(),
-                    intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-                    instrument_id: instrument_id.to_string(),
-                    client_order_id: client_order_id.to_string(),
-                    order_side: order.order_side().to_string(),
-                    price: price.to_string(),
-                    quantity: quantity.to_string(),
-                },
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    price.to_string(),
+                    &order,
+                ),
                 &order,
             )
             .expect("quote-quantity admission should use NT effective notional");
@@ -7318,15 +7302,12 @@ mod tests {
 
         let admission = strategy
             .submit_admission_request_from_order(
-                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-                    strategy_id: strategy.config.strategy_id.clone(),
-                    intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-                    instrument_id: instrument_id.to_string(),
-                    client_order_id: client_order_id.to_string(),
-                    order_side: order.order_side().to_string(),
-                    price: price.to_string(),
-                    quantity: quantity.to_string(),
-                },
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    price.to_string(),
+                    &order,
+                ),
                 &order,
             )
             .expect("quote-quantity admission should use NT no-quote fallback");
@@ -7381,15 +7362,12 @@ mod tests {
 
         let admission = strategy
             .submit_admission_request_from_order(
-                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-                    strategy_id: strategy.config.strategy_id.clone(),
-                    intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-                    instrument_id: instrument_id.to_string(),
-                    client_order_id: client_order_id.to_string(),
-                    order_side: order.order_side().to_string(),
-                    price: "0.99".to_string(),
-                    quantity: quantity.to_string(),
-                },
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    "0.99".to_string(),
+                    &order,
+                ),
                 &order,
             )
             .expect("quote-quantity market admission should use NT cache quote price");
@@ -7441,15 +7419,12 @@ mod tests {
 
         let admission = strategy
             .submit_admission_request_from_order(
-                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-                    strategy_id: strategy.config.strategy_id.clone(),
-                    intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-                    instrument_id: instrument_id.to_string(),
-                    client_order_id: client_order_id.to_string(),
-                    order_side: order.order_side().to_string(),
-                    price: "0.99".to_string(),
-                    quantity: quantity.to_string(),
-                },
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    "0.99".to_string(),
+                    &order,
+                ),
                 &order,
             )
             .expect("quote-quantity market admission should use NT cache trade fallback");
@@ -7506,15 +7481,13 @@ mod tests {
             )
             .expect("limit order should be valid"),
         );
-        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-            strategy_id: strategy.config.strategy_id.clone(),
-            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: order.order_side().to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
 
         let error = strategy
             .submit_order_with_decision_evidence(
@@ -7590,15 +7563,13 @@ mod tests {
             )
             .expect("limit order should be valid"),
         );
-        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-            strategy_id: strategy.config.strategy_id.clone(),
-            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: order.order_side().to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
 
         let error = strategy
             .submit_order_with_decision_evidence(
@@ -9860,15 +9831,12 @@ mod tests {
             .expect("MarketIfTouched order with explicit trigger price should build");
 
         let admission = submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence {
-                strategy_id: strategy.config.strategy_id.clone(),
-                intent_kind: BoltV3OrderIntentKind::Entry,
-                instrument_id: instrument_id.to_string(),
-                client_order_id: order.client_order_id().to_string(),
-                order_side: order.order_side().to_string(),
-                price: fallback_price.to_string(),
-                quantity: quantity.to_string(),
-            },
+            &BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                BoltV3OrderIntentKind::Entry,
+                fallback_price.to_string(),
+                &order,
+            ),
             &order,
         )
         .expect("MarketIfTouched admission should derive from compiled trigger price");
@@ -10288,15 +10256,12 @@ mod tests {
             .expect("StopMarket order with explicit trigger price should build");
 
         let admission = submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence {
-                strategy_id: strategy.config.strategy_id.clone(),
-                intent_kind: BoltV3OrderIntentKind::Entry,
-                instrument_id: instrument_id.to_string(),
-                client_order_id: order.client_order_id().to_string(),
-                order_side: order.order_side().to_string(),
-                price: admission_price.to_string(),
-                quantity: quantity.to_string(),
-            },
+            &BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                BoltV3OrderIntentKind::Entry,
+                admission_price.to_string(),
+                &order,
+            ),
             &order,
         )
         .expect("StopMarket admission should derive from compiled order plus fallback price");
@@ -10349,15 +10314,12 @@ mod tests {
             .expect("StopLimit order with explicit trigger price should build");
 
         let admission = submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence {
-                strategy_id: strategy.config.strategy_id.clone(),
-                intent_kind: BoltV3OrderIntentKind::Entry,
-                instrument_id: instrument_id.to_string(),
-                client_order_id: order.client_order_id().to_string(),
-                order_side: order.order_side().to_string(),
-                price: price.to_string(),
-                quantity: quantity.to_string(),
-            },
+            &BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            ),
             &order,
         )
         .expect("StopLimit admission should derive from the compiled NT order");
@@ -10437,15 +10399,12 @@ mod tests {
             .expect("LimitIfTouched entry order with explicit trigger price should build");
 
         let admission = submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence {
-                strategy_id: strategy.config.strategy_id.clone(),
-                intent_kind: BoltV3OrderIntentKind::Entry,
-                instrument_id: instrument_id.to_string(),
-                client_order_id: order.client_order_id().to_string(),
-                order_side: order.order_side().to_string(),
-                price: price.to_string(),
-                quantity: quantity.to_string(),
-            },
+            &BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            ),
             &order,
         )
         .expect("LimitIfTouched admission should derive from the compiled NT order");
@@ -10577,15 +10536,12 @@ mod tests {
             .expect("TrailingStopMarket entry order with explicit trailing fields should build");
 
         let admission = submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence {
-                strategy_id: strategy.config.strategy_id.clone(),
-                intent_kind: BoltV3OrderIntentKind::Entry,
-                instrument_id: instrument_id.to_string(),
-                client_order_id: order.client_order_id().to_string(),
-                order_side: order.order_side().to_string(),
-                price: fallback_price.to_string(),
-                quantity: quantity.to_string(),
-            },
+            &BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                BoltV3OrderIntentKind::Entry,
+                fallback_price.to_string(),
+                &order,
+            ),
             &order,
         )
         .expect("TrailingStopMarket admission should derive from compiled trigger price");

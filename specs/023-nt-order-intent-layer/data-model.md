@@ -100,7 +100,7 @@ Validation:
 
 ## OrderIntentEvidence
 
-Bolt audit record for decision and admission.
+Bolt pre-admission audit record for the compiled NT order selected for admission.
 
 Fields:
 
@@ -109,13 +109,30 @@ Fields:
 - instrument id
 - client order id
 - order side
-- admission price and quantity inputs derived from the compiled order
-- selected order fields needed to explain Bolt admission, without duplicating NT `OrderInitialized`
+- selected price from the compiled order price or trigger price when NT exposes one, otherwise the configured fallback price used by admission fallback paths
+- compiled NT order quantity
+- selected compiled NT order fields needed to explain Bolt admission, without duplicating NT `OrderInitialized`: order type, TIF, compiled price, trigger price, activation price, trigger type, trailing offset, trailing offset type, expiry, post-only, reduce-only, and quote-quantity flags
+
+Boundary:
+
+- Evidence records what Bolt decided before the submit-admission gate and before NT submit.
+- Admission outcome is recorded after the gate in the linked `AdmissionDecisionEvidence` record, keyed by strategy id, client order id, and instrument id. It is not duplicated into the pre-admission intent record.
+
+## AdmissionDecisionEvidence
+
+Bolt post-gate audit record for the submit-admission decision.
+
+Fields:
+
+- strategy id
+- client order id
+- instrument id
+- admitted/rejected notional
 - admission outcome
 
 Boundary:
 
-- Evidence records what Bolt decided and admitted.
+- Evidence records the Bolt admission gate outcome only. NT owns exchange submission and execution lifecycle evidence.
 - NT order events remain the authoritative order lifecycle record.
 
 ## AdapterProof

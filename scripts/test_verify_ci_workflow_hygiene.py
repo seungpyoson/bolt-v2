@@ -1422,6 +1422,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "S3 active mutable target cache must be rejected",
         ),
         (
+            "aws s3 sync $PWD/ s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
             "aws s3 sync s3://bolt-v2-active-cache/target \"$CARGO_TARGET_DIR\"",
             "S3 active mutable target cache must be rejected",
         ),
@@ -1502,11 +1506,16 @@ commands:
   ci: |
     cargo clippy --workspace
   envcheck: env CARGO_TARGET_DIR=target cargo test
+  envsplit: env -S 'cargo test'
   shellcheck: bash -lc 'cargo test --all'
+  evalraw: eval "cargo test"
+  shellevalraw: bash -lc 'eval "cargo test"'
   wrapped: command cargo fmt --check
   nicewrap: nice cargo test
+  timeniceadjust: time nice --adjustment 10 cargo test
   doaswrap: doas cargo test
   flockwrap: flock "$TMPDIR/bolt.lock" cargo test
+  timeflocktimeout: time flock --timeout 5 "$TMPDIR/bolt.lock" cargo test
   flockclose: flock -o "$TMPDIR/bolt.lock" cargo test
   sudoflock: sudo flock -o "$TMPDIR/bolt.lock" cargo test
   sudoshell: sudo bash -lc 'cargo test --all'
@@ -1552,11 +1561,16 @@ commands: { test: "cargo test" }
         "review",
         "ci",
         "envcheck",
+        "envsplit",
         "shellcheck",
+        "evalraw",
+        "shellevalraw",
         "wrapped",
         "nicewrap",
+        "timeniceadjust",
         "doaswrap",
         "flockwrap",
+        "timeflocktimeout",
         "flockclose",
         "sudoflock",
         "sudoshell",

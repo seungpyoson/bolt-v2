@@ -1749,12 +1749,17 @@ def assert_v6_red_active_process_wrapper_options_expose_cargo_pattern() -> None:
         "sudo -a pam cargo build",
         "env --split-string 'cargo build'",
         "env --split-string='cargo build'",
+        "env -S'cargo build'",
+        "env -Scargo build",
+        "env -iuLD_PRELOAD cargo build",
+        "env -iu LD_PRELOAD cargo build",
         "env --block-signal cargo build",
         "env --block-signal=PIPE cargo build",
         "nice --adjustment 10 cargo build",
         "nice --adjustment=10 cargo build",
         "flock --timeout 5 /tmp/bolt.lock cargo build",
         "flock --timeout=5 /tmp/bolt.lock cargo build",
+        "flock -- -lockfile cargo build",
     ]
     misses: list[str] = []
     for command in cases:

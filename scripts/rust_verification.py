@@ -564,19 +564,48 @@ def env_command_index(tokens: list[str]) -> int:
             continue
         if token.startswith("-") and not token.startswith("--"):
             cluster = token[1:]
-            if "S" in cluster and index + 1 < len(tokens):
+            if "S" in cluster and (cluster.split("S", 1)[1] or index + 1 < len(tokens)):
                 return index
-            if cluster.startswith(("u", "C")) and len(cluster) > 1:
-                index += 1
-                continue
-            if all(char in "i0v" for char in cluster):
-                index += 1
+            parsed_index = env_short_cluster_next_index(tokens, index, cluster)
+            if parsed_index is not None:
+                index = parsed_index
                 continue
         if "=" in token and not token.startswith("-"):
             index += 1
             continue
         return index
     return index
+
+
+def env_short_cluster_next_index(tokens: list[str], index: int, cluster: str) -> int | None:
+    offset = 0
+    while offset < len(cluster):
+        option = cluster[offset]
+        if option in "i0v":
+            offset += 1
+            continue
+        if option in "uC":
+            if offset + 1 < len(cluster):
+                return index + 1
+            if index + 1 < len(tokens):
+                return index + 2
+            return index + 1
+        return None
+    return index + 1
+
+
+def env_short_split_command(token: str, rest: list[str]) -> str | None:
+    if not token.startswith("-") or token.startswith("--"):
+        return None
+    cluster = token[1:]
+    if "S" not in cluster:
+        return None
+    suffix = cluster.split("S", 1)[1]
+    if suffix:
+        return " ".join([suffix, *rest]).strip()
+    if rest:
+        return rest[0]
+    return None
 
 
 def env_wrapped_tokens(tokens: list[str]) -> list[str]:
@@ -588,8 +617,8 @@ def env_wrapped_tokens(tokens: list[str]) -> list[str]:
             split_command = tokens[index + 1]
         elif token.startswith("--split-string="):
             split_command = token.split("=", 1)[1]
-        elif token.startswith("-") and not token.startswith("--") and "S" in token[1:] and index + 1 < len(tokens):
-            split_command = tokens[index + 1]
+        elif token.startswith("-") and not token.startswith("--"):
+            split_command = env_short_split_command(token, tokens[index + 1 :])
         if split_command is not None:
             split_tokens = command_tokens(split_command)
             split_index = env_command_index(["env", *split_tokens]) - 1
@@ -672,10 +701,12 @@ def nice_command_index(tokens: list[str]) -> int:
 
 def flock_wrapped_tokens(tokens: list[str]) -> list[str]:
     index = 1
+    separator_seen = False
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
             index += 1
+            separator_seen = True
             break
         if token in ("-c", "--command") and index + 1 < len(tokens):
             return command_tokens(tokens[index + 1])
@@ -690,6 +721,8 @@ def flock_wrapped_tokens(tokens: list[str]) -> list[str]:
         if token.startswith("-"):
             index += 1
             continue
+        return tokens[index + 1 :]
+    if separator_seen and index < len(tokens):
         return tokens[index + 1 :]
     return tokens[index:]
 

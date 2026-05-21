@@ -1212,18 +1212,6 @@ fn managed_position_effective_entry_cost(
         .filter(|effective_cost| is_positive_finite(*effective_cost))
 }
 
-fn managed_position_exit_value(
-    position: &OpenPositionState,
-    configured_order_side: OrderSide,
-    configured_position_side: PositionSide,
-    is_post_only: bool,
-) -> Option<f64> {
-    let value = (position.side == configured_position_side)
-        .then(|| order_price_for_side(&position.book, configured_order_side, is_post_only))
-        .flatten()?;
-    Some(value).filter(|value| is_positive_finite(*value))
-}
-
 impl PricingState {
     fn from_config(config: &BinaryOracleEdgeTakerConfig) -> Self {
         Self {
@@ -3205,15 +3193,12 @@ impl BinaryOracleEdgeTaker {
         Some((order_side, price)).filter(|(_, price)| is_positive_finite(*price))
     }
 
-    fn current_exit_value_for_open_position(&self) -> Option<f64> {
-        let open_position = &self.managed_position()?.position;
-        let contract = self.configured_position_contract().ok()?;
-        managed_position_exit_value(
-            open_position,
-            contract.exit_order_side,
-            contract.exit_position_side,
-            self.config.exit_order.is_post_only,
-        )
+    fn current_exit_value_for_open_position_with_config(
+        &self,
+        order_config: &ExitOrderExecutionConfig,
+    ) -> Option<f64> {
+        self.current_exit_order_for_open_position_with_config(order_config)
+            .map(|(_, price)| price)
     }
 
     fn current_position_market_id(&self) -> Option<String> {
@@ -3297,7 +3282,11 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn current_exit_ev_bps_at(&self, side: OutcomeSide) -> Option<f64> {
+    fn current_exit_ev_bps_at(
+        &self,
+        side: OutcomeSide,
+        order_config: &ExitOrderExecutionConfig,
+    ) -> Option<f64> {
         let effective_entry_cost = self.open_position_effective_entry_cost()?;
         let historical_entry_fee_bps = self.open_position_historical_entry_fee_bps()?;
         let current_exit_fee_bps = self.position_outcome_fee_bps(side)?;
@@ -3307,7 +3296,8 @@ impl BinaryOracleEdgeTaker {
             return None;
         }
 
-        let current_exit_value = self.current_exit_value_for_open_position()?;
+        let current_exit_value =
+            self.current_exit_value_for_open_position_with_config(order_config)?;
         let net_exit_value =
             current_exit_value * (UNIT_F64 - current_exit_fee_bps / BPS_DENOMINATOR);
         if !is_positive_finite(net_exit_value) {
@@ -3387,8 +3377,9 @@ impl BinaryOracleEdgeTaker {
             return evaluation;
         };
 
+        let order_config = self.normal_exit_order_execution_config();
         evaluation.hold_ev_bps = self.current_hold_ev_bps_at(now_ms, position_outcome_side);
-        evaluation.exit_ev_bps = self.current_exit_ev_bps_at(position_outcome_side);
+        evaluation.exit_ev_bps = self.current_exit_ev_bps_at(position_outcome_side, &order_config);
         evaluation.exit_decision = Some(evaluate_exit_decision(
             evaluation.hold_ev_bps,
             evaluation.exit_ev_bps,
@@ -11517,6 +11508,46 @@ mod tests {
     }
 
     #[test]
+    fn stop_market_exit_ev_uses_trigger_price_instead_of_live_book() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.config.exit_order.order_type = OrderType::StopMarket;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.exit_order.trigger_price = Some(0.40);
+        strategy.config.exit_order.trigger_type = Some(TriggerType::LastPrice);
+        strategy.config.exit_order.is_post_only = false;
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        strategy.exposure = ExposureState::Managed(ManagedPositionState {
+            position: OpenPositionState {
+                market_id: Some("MKT-1".to_string()),
+                instrument_id,
+                position_id: PositionId::from("P-STOP-EV"),
+                outcome_side: Some(OutcomeSide::Up),
+                outcome_fees: strategy.active.outcome_fees.clone(),
+                historical_entry_fee_bps: Some(0.0),
+                entry_order_side: OrderSide::Buy,
+                side: PositionSide::Long,
+                quantity: Quantity::new(4.0, 2),
+                avg_px_open: 0.450,
+                interval_open: Some(3_100.0),
+                selection_published_at_ms: Some(1_000),
+                seconds_to_expiry_at_selection: Some(300),
+                book: strategy.active.books.up.clone(),
+            },
+            origin: ManagedPositionOrigin::StrategyEntry,
+            pending_entry: None,
+        });
+
+        let decision = strategy.exit_submission_decision_at(1_200);
+        let exit_ev_bps = decision
+            .evaluation
+            .exit_ev_bps
+            .expect("triggered exit EV should be available");
+        let expected_exit_ev_bps = ((0.40 - 0.450) / 0.450) * BPS_DENOMINATOR;
+
+        assert!((exit_ev_bps - expected_exit_ev_bps).abs() < 1e-9);
+    }
+
+    #[test]
     fn entry_fill_without_position_id_stays_fail_closed_until_position_event_arrives() {
         let mut strategy = ready_to_trade_strategy();
         let instrument_id = strategy.active.books.up.instrument_id.unwrap();
@@ -13371,8 +13402,9 @@ mod tests {
             ))
             .expect("entry fill should materialize position for exit EV test");
 
+        let order_config = strategy.normal_exit_order_execution_config();
         let exit_ev_bps = strategy
-            .current_exit_ev_bps_at(OutcomeSide::Up)
+            .current_exit_ev_bps_at(OutcomeSide::Up, &order_config)
             .expect("historical entry fee test should produce exit EV");
         let total_entry_cost = 0.450 * (1.0 + 1.0 / BPS_DENOMINATOR);
         let net_exit_value = 0.500 * (1.0 - 3.0 / BPS_DENOMINATOR);

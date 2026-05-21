@@ -310,6 +310,15 @@
 - [x] T137 [US3] GREEN: Reject market order expiry on the existing strategy/archetype validation paths and update active contract/docs verifier coverage
 - [ ] T138 [US3] Verify focused config/runtime tests, docs/source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
 
+## Phase 32: TDD Slice 28 - Triggered Exit EV Pricing
+
+**Goal**: Resolve the no-mistakes triggered-exit EV finding by pricing normal exit EV through the same configured exit-order price path used for submission/admission, so triggered exit templates do not evaluate with a different live-book price source than the submitted order intent.
+
+- [x] T139 [P] [US3] Record no-mistakes evidence for triggered exit EV using live-book pricing while StopMarket submission uses trigger pricing
+- [x] T140 [US3] RED: Add a StopMarket exit EV regression proving the EV source is not the configured trigger price
+- [x] T141 [US3] GREEN: Route exit EV pricing through configured exit-order pricing for triggered exit templates
+- [ ] T142 [US3] Verify focused runtime tests, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -340,6 +349,7 @@
 - Phase 27 blocks completion because no-mistakes and direct source inspection found active documentation still describing superseded config scope after the order-intent implementation.
 - Phase 28 blocks completion because no-mistakes found tuple-policy removal admitted short-side and quote-quantity configurations beyond current strategy economics and sizing/admission proof.
 - Phase 31 blocks completion because no-mistakes found market order expiry configs were accepted even though the pinned NT market factory drops expiry.
+- Phase 32 blocks completion because no-mistakes found triggered exit EV was priced from the live book while the configured StopMarket exit order submits with trigger pricing.
 
 ## Parallel Opportunities
 

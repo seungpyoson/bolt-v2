@@ -7,7 +7,7 @@ use nautilus_common::{
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    enums::{OrderSide, OrderType, TimeInForce},
+    enums::{OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType},
     identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId},
     orders::{Order, OrderAny},
     types::{Price, Quantity},
@@ -58,6 +58,13 @@ fn limit_price() -> Price {
     base_inputs(OrderSide::Buy).price
 }
 
+fn nonzero_expire_time() -> UnixNanos {
+    let price = limit_price();
+    let raw = u64::try_from(price.raw.unsigned_abs())
+        .expect("generic base price raw value should fit a test timestamp");
+    UnixNanos::from(raw)
+}
+
 fn zero_price() -> Price {
     let price = limit_price();
     Price::from_raw(price.raw - price.raw, price.precision)
@@ -80,6 +87,10 @@ fn trigger_price_above_limit() -> Price {
 
 fn positive_trailing_offset() -> Decimal {
     limit_price().as_decimal()
+}
+
+fn zero_trailing_offset() -> Decimal {
+    positive_trailing_offset() - positive_trailing_offset()
 }
 
 fn valid_template_for_direct_validation(order_type: OrderType) -> NtOrderTemplate {
@@ -116,7 +127,7 @@ fn shared_nt_order_template_builds_post_only_limit_without_submission_context() 
     let mut factory = generic_order_factory();
     let mut template = base_template(OrderType::Limit);
     template.is_post_only = true;
-    template.expire_time = Some(UnixNanos::from(1_000_000_000_u64));
+    template.expire_time = Some(nonzero_expire_time());
 
     let order = build_nt_order(
         &mut factory,
@@ -131,10 +142,7 @@ fn shared_nt_order_template_builds_post_only_limit_without_submission_context() 
     };
     assert_eq!(order.order_side(), OrderSide::Buy);
     assert_eq!(order.time_in_force(), TimeInForce::Gtc);
-    assert_eq!(
-        order.expire_time(),
-        Some(UnixNanos::from(1_000_000_000_u64))
-    );
+    assert_eq!(order.expire_time(), Some(nonzero_expire_time()));
     assert!(order.is_post_only());
 }
 
@@ -142,7 +150,7 @@ fn shared_nt_order_template_builds_post_only_limit_without_submission_context() 
 fn shared_nt_order_template_builds_sell_limit_if_touched_without_position_policy() {
     let mut factory = generic_order_factory();
     let mut template = base_template(OrderType::LimitIfTouched);
-    template.trigger_price = Some(Price::new(12.0, 2));
+    template.trigger_price = Some(trigger_price_above_limit());
 
     let order = build_nt_order(
         &mut factory,
@@ -156,8 +164,8 @@ fn shared_nt_order_template_builds_sell_limit_if_touched_without_position_policy
         panic!("expected NT LimitIfTouched order");
     };
     assert_eq!(order.order_side(), OrderSide::Sell);
-    assert_eq!(order.price(), Some(Price::new(10.0, 2)));
-    assert_eq!(order.trigger_price(), Some(Price::new(12.0, 2)));
+    assert_eq!(order.price(), Some(limit_price()));
+    assert_eq!(order.trigger_price(), Some(trigger_price_above_limit()));
 }
 
 #[test]
@@ -314,6 +322,152 @@ fn shared_nt_order_template_rejects_direct_caller_nt_model_invariants_before_nt_
 }
 
 #[test]
+fn shared_nt_order_template_rejects_remaining_direct_caller_validation_invariants() {
+    let mut factory = generic_order_factory();
+
+    let mut market_expiry = base_template(OrderType::Market);
+    market_expiry.expire_time = Some(nonzero_expire_time());
+    assert_build_error_contains(
+        &mut factory,
+        &market_expiry,
+        OrderSide::Buy,
+        "expire_time is not supported for Market orders",
+    );
+
+    for order_type in [
+        OrderType::StopMarket,
+        OrderType::StopLimit,
+        OrderType::MarketIfTouched,
+        OrderType::LimitIfTouched,
+    ] {
+        let template = base_template(order_type);
+        assert_build_error_contains(
+            &mut factory,
+            &template,
+            OrderSide::Buy,
+            "trigger_price is required for triggered orders",
+        );
+    }
+
+    for order_type in [
+        OrderType::Limit,
+        OrderType::Market,
+        OrderType::StopMarket,
+        OrderType::StopLimit,
+        OrderType::MarketIfTouched,
+        OrderType::LimitIfTouched,
+    ] {
+        let mut activation_template = valid_template_for_direct_validation(order_type);
+        activation_template.activation_price = Some(limit_price());
+        assert_build_error_contains(
+            &mut factory,
+            &activation_template,
+            OrderSide::Buy,
+            "activation_price is only supported for TrailingStopMarket orders",
+        );
+
+        let mut trailing_offset_template = valid_template_for_direct_validation(order_type);
+        trailing_offset_template.trailing_offset = Some(positive_trailing_offset());
+        assert_build_error_contains(
+            &mut factory,
+            &trailing_offset_template,
+            OrderSide::Buy,
+            "trailing_offset is only supported for TrailingStopMarket orders",
+        );
+
+        let mut trailing_offset_type_template = valid_template_for_direct_validation(order_type);
+        trailing_offset_type_template.trailing_offset_type = Some(TrailingOffsetType::Price);
+        assert_build_error_contains(
+            &mut factory,
+            &trailing_offset_type_template,
+            OrderSide::Buy,
+            "trailing_offset_type is only supported for TrailingStopMarket orders",
+        );
+    }
+
+    for order_type in [OrderType::Limit, OrderType::Market] {
+        let mut trigger_type_template = base_template(order_type);
+        trigger_type_template.trigger_type = Some(TriggerType::Default);
+        assert_build_error_contains(
+            &mut factory,
+            &trigger_type_template,
+            OrderSide::Buy,
+            "trigger_type is only supported for triggered orders",
+        );
+
+        let mut trigger_instrument_template = base_template(order_type);
+        trigger_instrument_template.trigger_instrument_id =
+            Some(base_inputs(OrderSide::Buy).instrument_id);
+        assert_build_error_contains(
+            &mut factory,
+            &trigger_instrument_template,
+            OrderSide::Buy,
+            "trigger_instrument_id is only supported for triggered orders",
+        );
+    }
+
+    let trailing_without_trigger = base_template(OrderType::TrailingStopMarket);
+    assert_build_error_contains(
+        &mut factory,
+        &trailing_without_trigger,
+        OrderSide::Sell,
+        "trigger_price or generic_order_activation_price is required",
+    );
+
+    let mut trailing_without_offset = base_template(OrderType::TrailingStopMarket);
+    trailing_without_offset.activation_price = Some(limit_price());
+    assert_build_error_contains(
+        &mut factory,
+        &trailing_without_offset,
+        OrderSide::Sell,
+        "trailing_offset is required for TrailingStopMarket orders",
+    );
+
+    let mut trailing_zero_offset = base_template(OrderType::TrailingStopMarket);
+    trailing_zero_offset.activation_price = Some(limit_price());
+    trailing_zero_offset.trailing_offset = Some(zero_trailing_offset());
+    assert_build_error_contains(
+        &mut factory,
+        &trailing_zero_offset,
+        OrderSide::Sell,
+        "trailing_offset must be positive",
+    );
+}
+
+#[test]
+fn shared_nt_order_template_rejects_order_arm_post_only_invariants_before_nt_factory() {
+    let mut factory = generic_order_factory();
+
+    for (order_type, expected) in [
+        (
+            OrderType::Market,
+            "is_post_only must be false for market orders",
+        ),
+        (
+            OrderType::StopMarket,
+            "is_post_only must be false for StopMarket orders",
+        ),
+        (
+            OrderType::MarketIfTouched,
+            "is_post_only must be false for MarketIfTouched orders",
+        ),
+    ] {
+        let mut template = valid_template_for_direct_validation(order_type);
+        template.is_post_only = true;
+        assert_build_error_contains(&mut factory, &template, OrderSide::Buy, expected);
+    }
+}
+
+fn source_contains_forbidden_pattern(source: &str, forbidden: &str) -> bool {
+    if matches!(forbidden, "Entry" | "Exit") {
+        return source
+            .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+            .any(|token| token == forbidden);
+    }
+    source.contains(forbidden)
+}
+
+#[test]
 fn shared_nt_order_template_source_has_no_strategy_venue_market_or_submit_coupling() {
     let source = std::fs::read_to_string("src/bolt_v3_order_intent.rs")
         .expect("shared order-intent module should exist");
@@ -333,7 +487,7 @@ fn shared_nt_order_template_source_has_no_strategy_venue_market_or_submit_coupli
         "Exit",
     ] {
         assert!(
-            !source.contains(forbidden),
+            !source_contains_forbidden_pattern(&source, forbidden),
             "shared order-intent module must not contain `{forbidden}`"
         );
     }

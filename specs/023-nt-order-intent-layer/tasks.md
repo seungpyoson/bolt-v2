@@ -434,6 +434,15 @@
 - [x] T196 [US2] REGRESSION: Add direct shared-builder coverage for GTD-without-expiry, Market GTD rejection, TrailingStopMarket post-only rejection, LimitIfTouched side/price rejection, and non-triggered trigger rejection
 - [x] T197 [US2] Verify focused order-template tests, source fences, formatting, branch cleanliness, CI state, and latest-head reviewer state
 
+## Phase 45: TDD Slice 41 - Latest-Head Direct Validation Residual Closure
+
+**Goal**: Close latest-head Claude non-blocking residuals by directly testing the remaining generic shared-builder validation arms and order-arm post-only fail-closed checks. This is regression coverage only unless the expanded tests expose a production behavior gap.
+
+- [x] T198 [P] [US2] Record latest-head Gemini and Claude review state for PR #434 head `e48c5493321ec3cd05b7d2baa6010720527f22a2`
+- [x] T199 [US2] REGRESSION: Add direct shared-builder coverage for Market expiry rejection, missing trigger prices, non-trailing activation/trailing fields, non-triggered trigger type/instrument fields, and TrailingStopMarket trigger/trailing-offset requirements
+- [x] T200 [US2] REGRESSION: Add direct post-only fail-closed coverage for Market, StopMarket, and MarketIfTouched order-arm invariants and make the source fence less brittle for `Entry`/`Exit` tokens
+- [x] T201 [US2] Verify focused order-template tests, source fences, formatting, branch cleanliness, CI state, and latest-head reviewer state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -477,6 +486,7 @@
 - Phase 42 blocks completion because latest-head external review exposed a public shared-builder validation asymmetry after Phase 41 extraction.
 - Phase 43 blocks completion because latest-head Claude review found the Phase 42 direct shared-builder regression did not enumerate every affected triggered factory variant.
 - Phase 44 blocks completion because latest-head Claude review found more direct shared-builder invariants still covered only indirectly through strategy/config paths.
+- Phase 45 blocks completion because latest-head Claude review found remaining direct-builder validation arms and order-arm post-only fail-closed checks without direct shared-builder coverage.
 
 ## Parallel Opportunities
 

@@ -2984,8 +2984,8 @@ reason = "This is the stable NT stop-order trigger price field label used in val
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, or `market_if_touched`, got `{order_type:?}`"'''
-context = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, or `market_if_touched`, got `{order_type:?}`"'''
+literal = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, or `limit_if_touched`, got `{order_type:?}`"'''
+context = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, or `limit_if_touched`, got `{order_type:?}`"'''
 classification = "strategy_config_error_message"
 reason = "This is a stable validation diagnostic naming the NT factory variants enabled by this slice, not an operator runtime value."
 

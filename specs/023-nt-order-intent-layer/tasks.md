@@ -205,6 +205,18 @@
 - [x] T087 [US2] GREEN: Fold non-triggered `trigger_price` rejection into the existing entry/exit order-combination predicates
 - [x] T088 [US2] Verify focused tests, source-fence, full local checks as possible, and archived nextest replay before push
 
+## Phase 21: TDD Slice 17 - LimitIfTouched Factory Variant
+
+**Goal**: Enable NT `OrderFactory::limit_if_touched` through the existing normalized order path without adding venue policy, direct NT constructors, or a parallel submit path.
+
+- [x] T089 [P] [US2] Run current NT-source and adversarial architecture reviews for `LimitIfTouched` and record the findings
+- [x] T090 [US2] Correct stale support ledgers before implementation so `MarketIfTouched` is no longer listed as remaining scope
+- [x] T091 [US2] RED: Add positive `LimitIfTouched` construction/admission coverage for entry and exit in `src/strategies/binary_oracle_edge_taker.rs`
+- [x] T092 [US2] RED: Add pre-factory side-aware trigger/limit price rejection coverage for BUY and SELL `LimitIfTouched`
+- [x] T093 [US2] GREEN: Construct `LimitIfTouched` through `OrderFactory::limit_if_touched` and validate pinned NT model invariants before factory calls
+- [x] T094 [US2] RED/GREEN: Add public archetype config and raw runtime round-trip coverage for `order_type=limit_if_touched`
+- [x] T095 [US2] Verify focused `LimitIfTouched` tests, runtime literal/source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and stale reviewer state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -226,6 +238,7 @@
 - Phase 17 is the next deferred Phase 7 factory-variant slice and blocks MarketIfTouched support claims until verified and reviewed.
 - Phase 18 blocks completion because no-mistakes produced an optional-field validation finding after the MarketIfTouched exact-head review.
 - Phase 19 blocks completion because CI proved the Phase 18 characterization test was not isolated-green under nextest archive.
+- Phase 21 is the next deferred Phase 7 factory-variant slice and blocks LimitIfTouched support claims until verified and reviewed.
 
 ## Parallel Opportunities
 

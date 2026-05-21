@@ -481,6 +481,16 @@
 - [x] T218 [US2] Decide, with evidence, whether the next implementation slice should expand beyond `OrderFactory`, make runtime price optional for market-like NT constructors, or keep the current boundary as explicit residual scope
 - [x] T219 [US2] Add RED tests only after the architecture decision identifies a concrete behavior gap
 
+## Phase 50: TDD Slice 46 - Current-Head Maker Lifecycle And Sizing Review
+
+**Goal**: Resolve current-head Greptile/PR-body evidence that maker entry sizing and external close cleanup still use taker/dead-letter semantics after the order-intent implementation. The fix must stay strategy-owned, use NT cancel APIs for live order lifecycle, and not add venue, market, maker-only, or taker-only policy to the shared order-intent layer.
+
+- [x] T220 [P] [US3] Record current-head evidence for stale PR-body review state, maker book-impact cap side selection, and Managed-position pending-entry close cleanup
+- [x] T221 [US3] RED: Add regression proving post-only entry book-impact cap derives depth from the passive book side
+- [x] T222 [US3] RED: Add regression proving Managed external position close cancels a resting pending entry before flattening
+- [x] T223 [US3] GREEN: Fix strategy-owned sizing and lifecycle paths without changing shared NT order construction
+- [ ] T224 [US3] Verify focused strategy tests, source fences, formatting, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -529,6 +539,7 @@
 - Phase 47 blocks completion because current-head multi-agent review found forced-flat exit order semantics still synthesized as Market/TIF/reduce-only fields in strategy code rather than carried as a TOML-owned NT order template.
 - Phase 48 blocks completion because latest-head multi-agent review found active schema docs still describe removed market-exit fields and `manage_stop=true` can silently route non-market `forced_exit_order` configs through NT's built-in market close path.
 - Phase 49 blocks broad "all NT order model surface" claims until pinned NT builder-vs-factory evidence and a TDD slice resolve or explicitly scope the remaining model-surface and runtime-price findings.
+- Phase 50 blocks completion because current-head PR-body/Greptile evidence and source inspection found maker entry sizing still uses taker-side book depth and external Managed close still drops a resting pending entry without NT cancel.
 
 ## Parallel Opportunities
 

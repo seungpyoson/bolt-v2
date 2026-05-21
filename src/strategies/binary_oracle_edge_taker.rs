@@ -1226,6 +1226,17 @@ fn order_price_for_side(
     }
 }
 
+fn visible_book_depth_side_for_order(
+    order_side: OrderSide,
+    is_post_only: bool,
+) -> Option<OrderSide> {
+    match (order_side, is_post_only) {
+        (OrderSide::Buy, false) | (OrderSide::Sell, true) => Some(OrderSide::Buy),
+        (OrderSide::Sell, false) | (OrderSide::Buy, true) => Some(OrderSide::Sell),
+        _ => None,
+    }
+}
+
 fn infer_strategy_position_side_from_entry_fill(
     entry_order_side: OrderSide,
     configured_entry_order_side: OrderSide,
@@ -2833,9 +2844,14 @@ impl BinaryOracleEdgeTaker {
 
     fn visible_book_notional_cap(&self, side: OutcomeSide) -> Option<f64> {
         let order_side = self.configured_entry_order_side().ok()?;
+        let book_depth_side =
+            visible_book_depth_side_for_order(order_side, self.config.entry_order.is_post_only)?;
         let capped_execution = self
             .active_book_for_outcome(side)
-            .max_execution_within_vwap_slippage_bps(order_side, self.config.book_impact_cap_bps)
+            .max_execution_within_vwap_slippage_bps(
+                book_depth_side,
+                self.config.book_impact_cap_bps,
+            )
             .filter(|execution| is_positive_finite(execution.quantity))?;
         Some(match side {
             OutcomeSide::Up => capped_execution.quantity * capped_execution.vwap_price,
@@ -4682,12 +4698,29 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
     }
 
     fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
-        match &mut self.exposure {
-            ExposureState::Managed(position)
-                if position.position.position_id == event.position_id =>
-            {
+        if let ExposureState::Managed(position) = &self.exposure
+            && position.position.position_id == event.position_id
+        {
+            if let Some(pending_entry) = position.pending_entry.clone() {
+                let client_order_id = pending_entry.client_order_id;
+                self.exposure = ExposureState::PendingEntry(pending_entry);
+                let client_id = ClientId::from(self.config.client_id.as_str());
+                if let Err(error) = self.cancel_order(client_order_id, Some(client_id), None) {
+                    log::error!(
+                        "binary_oracle_edge_taker external position close could not cancel pending entry: strategy_id={} client_order_id={} error={error}",
+                        self.config.strategy_id,
+                        client_order_id,
+                    );
+                }
+            } else {
                 self.exposure = ExposureState::Flat;
             }
+            self.refresh_book_subscriptions_for_current_state();
+            self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
+            return;
+        }
+
+        match &mut self.exposure {
             ExposureState::ExitPending(exit_pending)
                 if exit_pending.pending_exit.position_id == Some(event.position_id) =>
             {
@@ -10924,6 +10957,28 @@ mod tests {
     }
 
     #[test]
+    fn post_only_entry_book_impact_cap_uses_passive_side_book() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let selected_side = selected_entry_side(&strategy);
+        strategy.config.entry_order.is_post_only = true;
+        strategy.config.book_impact_cap_bps = 0;
+        set_configured_books_depth(
+            &mut strategy,
+            &[
+                (BookAction::Clear, OrderSide::Buy, 0.44, 7.0),
+                (BookAction::Add, OrderSide::Buy, 0.44, 7.0),
+                (BookAction::Add, OrderSide::Buy, 0.42, 100.0),
+                (BookAction::Add, OrderSide::Sell, 0.60, 100.0),
+            ],
+        );
+
+        assert_eq!(
+            strategy.visible_book_notional_cap(selected_side),
+            Some(3.08)
+        );
+    }
+
+    #[test]
     fn configured_short_position_contract_is_rejected_until_short_economics_exists() {
         let contract = ConfiguredPositionContract {
             entry_order_side: OrderSide::Sell,
@@ -11909,6 +11964,80 @@ mod tests {
             PositionId::from("P-CLOSED-BEFORE-OPEN"),
         ));
 
+        assert!(matches!(strategy.exposure, ExposureState::Flat));
+        assert!(strategy.pending_entry().is_none());
+    }
+
+    #[test]
+    fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.is_post_only = true;
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        let (exec_handler, exec_messages) =
+            get_typed_into_message_saving_handler::<TradingCommand>(None);
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::exec_engine_queue_execute(),
+            exec_handler,
+        );
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("POSITION-CLOSED-CANCELS-ENTRY");
+        let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+        let (instrument_id, entry_client_order_id) =
+            materialize_managed_position_with_resting_pending_entry(
+                &mut strategy,
+                instrument_id,
+                position_id,
+                position_quantity,
+            );
+        let entry_price = configured_book_for_instrument(&mut strategy, instrument_id)
+            .best_ask
+            .expect("ready-to-trade fixture should expose an ask");
+        let entry_order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                strategy
+                    .configured_entry_order_side()
+                    .expect("test config should carry entry order side"),
+                position_quantity,
+                Price::new(entry_price, 2),
+                entry_client_order_id,
+            )
+            .expect("resting entry order should build through NT factory");
+        cache
+            .borrow_mut()
+            .add_order(
+                entry_order,
+                None,
+                Some(ClientId::from(strategy.config.client_id.as_str())),
+                true,
+            )
+            .expect("test cache should accept resting entry order");
+
+        strategy.on_position_closed(position_closed_event(instrument_id, position_id));
+
+        let exec_messages = exec_messages.get_messages();
+        assert!(
+            exec_messages.iter().any(|message| matches!(
+                message,
+                TradingCommand::CancelOrder(command)
+                    if command.client_order_id == entry_client_order_id
+            )),
+            "external position close should cancel the resting entry"
+        );
+        assert!(matches!(
+            strategy.exposure,
+            ExposureState::PendingEntry(PendingEntryState {
+                client_order_id,
+                ..
+            }) if client_order_id == entry_client_order_id
+        ));
+        assert!(strategy.pending_entry().is_some());
+
+        strategy
+            .on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id))
+            .expect("entry cancel should clear retained pending-entry context");
         assert!(matches!(strategy.exposure, ExposureState::Flat));
         assert!(strategy.pending_entry().is_none());
     }

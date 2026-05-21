@@ -928,7 +928,8 @@ ENV_OPTIONS_WITHOUT_ARGUMENT = {
 }
 TIME_OPTIONS_WITH_ARGUMENT = {"-f", "-o", "--format", "--output"}
 TIME_OPTIONS_WITHOUT_ARGUMENT = {"-a", "-p", "-v", "--append", "--portability", "--verbose"}
-SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")"}
+SHELL_PUNCTUATION_CHARS = ";&|(){}!"
+SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")", "}"}
 CARGO_PROCESS_SUBCOMMANDS = {
     "bench",
     "build",
@@ -1059,11 +1060,28 @@ def cargo_token_is_command(tokens: list[str], index: int) -> bool:
     return command_prefix_allows_cargo(prefix)
 
 
+def split_shell_punctuation_tokens(tokens: list[str]) -> list[str]:
+    split_tokens: list[str] = []
+    for token in tokens:
+        if not token or any(char not in SHELL_PUNCTUATION_CHARS for char in token):
+            split_tokens.append(token)
+            continue
+        cursor = 0
+        while cursor < len(token):
+            if token[cursor : cursor + 2] in {"&&", "||"}:
+                split_tokens.append(token[cursor : cursor + 2])
+                cursor += 2
+            else:
+                split_tokens.append(token[cursor])
+                cursor += 1
+    return split_tokens
+
+
 def command_tokens(command: str) -> list[str]:
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|(){}!")
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=SHELL_PUNCTUATION_CHARS)
         lexer.whitespace_split = True
-        return list(lexer)
+        return split_shell_punctuation_tokens(list(lexer))
     except ValueError:
         return command.split()
 
@@ -1869,6 +1887,30 @@ def shell_assignment_values_from_tokens(tokens: list[str]) -> tuple[dict[str, st
     return assignments, cursor
 
 
+def export_assignment_values_from_tokens(tokens: list[str]) -> tuple[dict[str, str], int]:
+    if not tokens or pathlib.Path(tokens[0]).name != "export":
+        return {}, 0
+    assignments: dict[str, str] = {}
+    cursor = 1
+    while cursor < len(tokens):
+        assignment = shell_assignment_from_tokens(tokens, cursor)
+        if assignment is None:
+            break
+        name, value, cursor = assignment
+        assignments[name] = storage_strip_quotes(value)
+    return assignments, cursor
+
+
+def persistent_shell_assignment_values(tokens: list[str]) -> tuple[dict[str, str], bool]:
+    assignments, assignment_index = shell_assignment_values_from_tokens(tokens)
+    if assignments and assignment_index == len(tokens):
+        return assignments, True
+    assignments, assignment_index = export_assignment_values_from_tokens(tokens)
+    if assignments and assignment_index == len(tokens):
+        return assignments, True
+    return {}, False
+
+
 def shell_variable_reference_token(token: str) -> str | None:
     clean = storage_strip_quotes(token)
     match = re.fullmatch(r"\$([A-Za-z_][A-Za-z0-9_]*)", clean)
@@ -1891,6 +1933,30 @@ def expand_known_shell_variables(tokens: list[str], variables: dict[str, str]) -
     return expanded
 
 
+def expand_known_shell_command_variables(tokens: list[str], variables: dict[str, str]) -> list[str]:
+    if not tokens:
+        return tokens
+    executable = pathlib.Path(tokens[0]).name
+    if executable == "eval":
+        return [tokens[0], *expand_known_shell_variables(tokens[1:], variables)]
+    if executable in ("bash", "dash", "fish", "sh", "zsh"):
+        expanded = list(tokens)
+        index = 1
+        while index + 1 < len(expanded):
+            token = expanded[index]
+            if token == "-c" or (token.startswith("-") and not token.startswith("--") and "c" in token[1:]):
+                variable = shell_variable_reference_token(expanded[index + 1])
+                if variable is not None and variable in variables:
+                    expanded[index + 1] = variables[variable]
+                return expanded
+            index += 1
+        return expanded
+    variable = shell_variable_reference_token(tokens[0])
+    if variable is not None and variable in variables:
+        return [*command_tokens(variables[variable]), *tokens[1:]]
+    return tokens
+
+
 def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_only: bool = True) -> bool:
     if not tokens:
         return False
@@ -1908,12 +1974,12 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
                     cargo_aliases.update(simple_cargo_aliases(segment, cargo_aliases))
                     segment = []
                     continue
-                shell_assignments, assignment_index = shell_assignment_values_from_tokens(segment)
-                if shell_assignments and assignment_index == len(segment):
+                shell_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
+                if is_persistent_assignment:
                     shell_variables.update(shell_assignments)
                     segment = []
                     continue
-                segment = expand_known_shell_variables(segment, shell_variables)
+                segment = expand_known_shell_command_variables(segment, shell_variables)
                 segment = expand_cargo_aliases(segment, cargo_aliases)
                 if segment and tokens_have_raw_cargo(segment, depth=depth + 1, allow_storage_only=allow_storage_only):
                     return True
@@ -1922,10 +1988,10 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0, allow_storage_on
             segment.append(token)
         if segment and segment[0] == "alias":
             return False
-        shell_assignments, assignment_index = shell_assignment_values_from_tokens(segment)
-        if shell_assignments and assignment_index == len(segment):
+        shell_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
+        if is_persistent_assignment:
             return False
-        segment = expand_known_shell_variables(segment, shell_variables)
+        segment = expand_known_shell_command_variables(segment, shell_variables)
         segment = expand_cargo_aliases(segment, cargo_aliases)
         return bool(segment) and tokens_have_raw_cargo(segment, depth=depth + 1, allow_storage_only=allow_storage_only)
     assignment_index = consume_assignment_words(tokens, 0)
@@ -2057,6 +2123,7 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
     errors: list[str] = []
     managed_just_recipe = False
     current_just_recipe = ""
+    shell_variables: dict[str, str] = {}
     is_justfile = file_name == "justfile" or file_name.startswith("justfile.")
     for line in text.replace("\\\n", " ").splitlines():
         stripped = strip_comment(line).strip()
@@ -2080,7 +2147,13 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
             continue
         if is_justfile and managed_just_recipe:
             continue
-        if tokens_have_repo_automation_raw_cargo(command_tokens(stripped)):
+        tokens = command_tokens(stripped)
+        assignments, is_persistent_assignment = persistent_shell_assignment_values(tokens)
+        if is_persistent_assignment:
+            shell_variables.update(assignments)
+            continue
+        tokens = expand_known_shell_command_variables(tokens, shell_variables)
+        if tokens_have_repo_automation_raw_cargo(tokens):
             errors.append("repo automation raw Cargo must use managed rust_verification wrapper")
             break
     return errors
@@ -2500,6 +2573,19 @@ def shell_assignment_from_tokens(tokens: list[str], index: int) -> tuple[str, st
                 depth -= 1
             cursor += 1
         value = " ".join(parts)
+    elif value == "$" and cursor < len(tokens) and tokens[cursor] == "{":
+        depth = 1
+        parts = [value, tokens[cursor]]
+        cursor += 1
+        while cursor < len(tokens) and depth:
+            token = tokens[cursor]
+            parts.append(token)
+            if token == "{":
+                depth += 1
+            elif token == "}":
+                depth -= 1
+            cursor += 1
+        value = " ".join(parts)
     elif value.startswith("`") and not value.endswith("`"):
         parts = [value]
         while cursor < len(tokens):
@@ -2673,7 +2759,7 @@ def aws_s3_transfer_touches_active_target(
         return False
     endpoint_roles = [
         storage_value_roles(endpoint, variable_roles, cwd_is_active_target=cwd_is_active_target)
-        for endpoint in operands[:2]
+        for endpoint in operands
     ]
     return (
         any(STORAGE_ROLE_S3 in roles for roles in endpoint_roles)
@@ -2712,6 +2798,19 @@ def storage_transfer_policy_errors(text: str) -> list[str]:
     return []
 
 
+def target_env_key_alias(value: str, target_keys: dict[str, str]) -> str | None:
+    clean = storage_strip_quotes(value)
+    compact = re.sub(r"\s+", "", clean)
+    if clean in target_keys:
+        return clean
+    for target_key in target_keys:
+        if target_key not in clean:
+            continue
+        if compact.startswith("$(") or compact.startswith("`") or compact.startswith("${"):
+            return target_key
+    return None
+
+
 def dynamic_env_target_override_messages(text: str) -> set[str]:
     messages: set[str] = set()
     target_keys = {
@@ -2720,19 +2819,25 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
         "CARGO_TARGET_TMPDIR": "CARGO_TARGET_TMPDIR raw target override must be classified",
     }
     assignments: dict[str, str] = {}
+    for name, value in storage_assignment_values(text):
+        target_key = target_env_key_alias(value, target_keys)
+        if target_key is not None:
+            assignments[name] = target_key
     for line in text.splitlines():
         line_tokens = command_tokens(strip_comment(line))
-        line_assignments, assignment_index = shell_assignment_values_from_tokens(line_tokens)
+        line_assignments, is_persistent_assignment = persistent_shell_assignment_values(line_tokens)
         for name, value in line_assignments.items():
-            if value in target_keys and assignment_index == len(line_tokens):
-                assignments[name] = value
+            target_key = target_env_key_alias(value, target_keys)
+            if target_key is not None and is_persistent_assignment:
+                assignments[name] = target_key
     segment: list[str] = []
     for token in command_tokens(text) + [";"]:
         if token in SHELL_COMMAND_BOUNDARIES:
-            segment_assignments, assignment_index = shell_assignment_values_from_tokens(segment)
+            segment_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
             for name, value in segment_assignments.items():
-                if value in target_keys and assignment_index == len(segment):
-                    assignments[name] = value
+                target_key = target_env_key_alias(value, target_keys)
+                if target_key is not None and is_persistent_assignment:
+                    assignments[name] = target_key
             segment = []
             continue
         segment.append(token)
@@ -3219,6 +3324,9 @@ def body_exits(body: str) -> bool:
     exit_codes: list[str | None] = []
     depth = 0
     for line in body.splitlines():
+        clean = strip_comment(line).strip()
+        if not clean:
+            continue
         if FI_RE.match(line):
             depth = max(0, depth - 1)
             continue
@@ -3230,8 +3338,14 @@ def body_exits(body: str) -> bool:
         if ELSE_RE.match(line):
             continue
         match = EXIT_RE.match(line)
-        if depth == 0 and match:
+        if depth != 0:
+            continue
+        if match:
             exit_codes.append(match.group(1))
+            continue
+        if clean.startswith("echo "):
+            continue
+        return False
     return exit_codes == ["1"]
 
 

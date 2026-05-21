@@ -1119,6 +1119,9 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         "inline backtick target operand": """
             aws s3 sync `echo target` s3://bolt-v2-active-cache/target
         """,
+        "aws global option before active target endpoints": """
+            aws s3 sync --endpoint-url https://example.com target s3://bolt-v2-active-cache/target
+        """,
         "workspace root dot path": """
             aws s3 sync "$PWD/." s3://bolt-v2-active-cache/workspace
         """,
@@ -1155,6 +1158,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "E=CARGO_TARGET_DIR\nexport $E=/tmp/raw-target\ncargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "E=$(echo CARGO_TARGET_DIR); export $E=/tmp/raw-target; cargo check",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
@@ -1723,6 +1730,7 @@ commands:
   evalprefix: A=B eval cargo test
   evalprefixquoted: A=B eval "cargo test"
   evalvar: 'CMD="cargo build --target-dir /tmp/raw"; eval "$CMD"'
+  evalexportvar: 'export CMD="cargo build"; eval "$CMD"'
   shellprefix: A=B bash -c "cargo test"
   shellevalraw: bash -lc 'eval "cargo test"'
   shellalias: bash -lc 'alias c=cargo; c test'
@@ -1806,6 +1814,7 @@ commands: { test: "cargo test" }
         "evalprefix",
         "evalprefixquoted",
         "evalvar",
+        "evalexportvar",
         "shellprefix",
         "shellevalraw",
         "shellalias",
@@ -1948,6 +1957,7 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "justfile.raw": "test:\n    cargo test\n",
             "justfile.spoof": 'bad:\n    echo "BOLT_MANAGED_JUST exit"\n    cargo build\n',
             "scripts/raw.sh": "#!/usr/bin/env bash\ncargo build\n",
+            "scripts/multiline-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo build\"\nbash -c \"$CMD\"\n",
             "scripts/raw-guard-text.sh": '#!/usr/bin/env bash\necho "Missing BOLT_MANAGED_JUST, exit 1"\ncargo build\n',
             "scripts/symlink-cargo.sh": "ln -s $(which cargo) /tmp/mycargo\n/tmp/mycargo build --target-dir /tmp/raw\n",
             "scripts/copy-cargo.sh": "cp $(which cargo) /tmp/mycargo\n/tmp/mycargo build\n",
@@ -1976,6 +1986,8 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"spoofed justfile managed-guard drift was silent: {repo_errors!r}")
     if not any("scripts/raw.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/multiline-eval.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script multiline eval raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-guard-text.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script guard-text raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/symlink-cargo.sh" in error and "cargo --target-dir raw target override" in error for error in repo_errors):
@@ -2773,6 +2785,14 @@ def main() -> int:
             BASE_WORKFLOW,
             '          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
             '          exit 0\n          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
+        ),
+    )
+    assert_error(
+        "gate must require fmt-check skipped on tag reuse",
+        replace_once(
+            BASE_WORKFLOW,
+            '            if [[ "${{ needs.fmt-check.result }}" != "skipped" ]]; then\n              exit 1\n',
+            '            if [[ "${{ needs.fmt-check.result }}" != "skipped" ]]; then\n              true && exit 0\n              exit 1\n',
         ),
     )
     check_aarch64_condition = '"${{ needs.check-aarch64.result }}" != "success"'

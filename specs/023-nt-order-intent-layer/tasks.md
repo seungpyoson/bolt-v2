@@ -178,7 +178,16 @@
 - [x] T075 [US2] RED: Add positive MarketIfTouched construction/admission/sizing coverage in `src/strategies/binary_oracle_edge_taker.rs`
 - [x] T076 [US2] GREEN: Thread TOML-owned MarketIfTouched trigger price through archetype/runtime order config into NT `OrderFactory::market_if_touched`
 - [x] T077 [US2] RED/GREEN: Add public archetype and runtime round-trip coverage for `order_type=market_if_touched`
-- [ ] T078 [US2] Verify focused MarketIfTouched tests, runtime literal/source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and external review state
+- [x] T078 [US2] Verify focused MarketIfTouched tests, runtime literal/source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and external review state
+
+## Phase 18: TDD Slice 14 - Optional Order Field Shape Validation
+
+**Goal**: Resolve the no-mistakes optional-field finding only where current pinned NT Rust and Bolt architecture evidence support it, without adding venue policy or narrowing supported order variants.
+
+- [x] T079 [P] [US2] Review no-mistakes optional-field patch against pinned NT source, current Bolt config/runtime paths, and architecture docs
+- [x] T080 [US2] Characterize existing `trigger_price` rejection on non-triggered public archetype order configs before runtime construction
+- [x] T081 [US2] Record why non-GTD `expire_time_unix_nanos` rejection is not adopted as an NT invariant for the pure Rust path
+- [x] T082 [US2] Verify focused tests, full local checks as possible, branch cleanliness, exact-head gate state, no-mistakes state, and external review state
 
 ## Dependencies & Execution Order
 
@@ -199,6 +208,7 @@
 - Phase 15 is the next deferred Phase 7 factory-variant slice and blocks StopLimit support claims until verified and reviewed.
 - Phase 16 blocks StopLimit support claims because post-slice review found missing regression coverage.
 - Phase 17 is the next deferred Phase 7 factory-variant slice and blocks MarketIfTouched support claims until verified and reviewed.
+- Phase 18 blocks completion because no-mistakes produced an optional-field validation finding after the MarketIfTouched exact-head review.
 
 ## Parallel Opportunities
 

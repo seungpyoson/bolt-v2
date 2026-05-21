@@ -58,6 +58,10 @@ verify-bolt-v3-status-map-current: check-workspace
     python3 scripts/test_verify_bolt_v3_status_map_current.py
     python3 scripts/verify_bolt_v3_status_map_current.py
 
+verify-bolt-v3-schema-current: check-workspace
+    python3 scripts/test_verify_bolt_v3_schema_current.py
+    python3 scripts/verify_bolt_v3_schema_current.py
+
 verify-bolt-v3-core-boundary: check-workspace
     python3 scripts/test_verify_bolt_v3_core_boundary.py
     python3 scripts/verify_bolt_v3_core_boundary.py
@@ -137,6 +141,8 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_naming.py
     python3 scripts/test_verify_bolt_v3_status_map_current.py
     python3 scripts/verify_bolt_v3_status_map_current.py
+    python3 scripts/test_verify_bolt_v3_schema_current.py
+    python3 scripts/verify_bolt_v3_schema_current.py
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py

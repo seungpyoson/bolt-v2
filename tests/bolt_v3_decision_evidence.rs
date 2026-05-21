@@ -13,6 +13,7 @@ use bolt_v2::{
     strategies::registry::StrategyBuildContext,
 };
 use futures_util::future::{BoxFuture, FutureExt};
+use nautilus_model::enums::OrderSide;
 use nautilus_model::identifiers::InstrumentId;
 use rust_decimal::Decimal;
 
@@ -139,7 +140,7 @@ fn strategy_build_context_requires_decision_evidence_value() {
                 intent_kind: BoltV3OrderIntentKind::Entry,
                 instrument_id: "instrument-a".to_string(),
                 client_order_id: "order-a".to_string(),
-                order_side: "buy".to_string(),
+                order_side: OrderSide::Buy.to_string(),
                 price: "0.50".to_string(),
                 quantity: "1".to_string(),
             })

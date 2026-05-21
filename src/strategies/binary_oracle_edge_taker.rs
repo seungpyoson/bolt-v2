@@ -18,7 +18,7 @@ use nautilus_model::{
     },
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
     instruments::{Instrument, InstrumentAny},
-    orders::Order,
+    orders::{Order, OrderAny},
     types::{Price, Quantity},
 };
 use nautilus_system::trader::Trader;
@@ -1148,6 +1148,11 @@ fn supports_strategy_managed_position(
 }
 
 fn supports_strategy_position_contract(contract: ConfiguredPositionContract) -> bool {
+    if contract.entry_position_side == PositionSide::Short
+        || contract.exit_position_side == PositionSide::Short
+    {
+        return false;
+    }
     expected_position_side_for_entry_order(contract.entry_order_side)
         .is_some_and(|side| side == contract.entry_position_side)
         && expected_exit_order_side_for_position(contract.exit_position_side)
@@ -3439,6 +3444,10 @@ impl BinaryOracleEdgeTaker {
             decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID);
             return decision;
         };
+        if order_config.is_quote_quantity {
+            decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED);
+            return decision;
+        }
         let Some((order_side, price)) =
             self.current_exit_order_for_open_position_with_config(&order_config)
         else {
@@ -3665,7 +3674,7 @@ impl BinaryOracleEdgeTaker {
         self.context
             .decision_evidence()
             .record_order_intent(&intent)?;
-        let request = submit_admission_request_from_order(&intent, &order)?;
+        let request = self.submit_admission_request_from_order(&intent, &order)?;
         let _permit = self.context.submit_admission().admit(&request)?;
         self.submit_order(
             order,
@@ -3673,6 +3682,123 @@ impl BinaryOracleEdgeTaker {
             submit_context.client_id,
             submit_context.params,
         )
+    }
+
+    fn submit_admission_request_from_order(
+        &self,
+        intent: &BoltV3OrderIntentEvidence,
+        order: &nautilus_model::orders::OrderAny,
+    ) -> Result<BoltV3SubmitAdmissionRequest> {
+        let client_order_id = order.client_order_id().to_string();
+        let quantity_source = order.quantity().to_string();
+        let quantity = Decimal::from_str(quantity_source.trim()).with_context(|| {
+            format!(
+                "bolt-v3 submit admission quantity is not a decimal for client_order_id={}",
+                client_order_id
+            )
+        })?;
+        let price_source = order
+            .price()
+            .or_else(|| order.trigger_price())
+            .map(|price| price.to_string())
+            .unwrap_or_else(|| intent.price.clone());
+        let price = Decimal::from_str(price_source.trim()).with_context(|| {
+            format!(
+                "bolt-v3 submit admission price is not a decimal for client_order_id={}",
+                client_order_id
+            )
+        })?;
+        let notional = if order.is_quote_quantity() {
+            self.quote_quantity_last_price_for_order(order)
+                .and_then(|last_px| self.quote_quantity_submit_notional(order, last_px))
+                .unwrap_or(quantity)
+        } else {
+            price * quantity
+        };
+
+        Ok(BoltV3SubmitAdmissionRequest {
+            strategy_id: intent.strategy_id.clone(),
+            client_order_id,
+            instrument_id: order.instrument_id().to_string(),
+            notional,
+        })
+    }
+
+    fn quote_quantity_last_price_for_order(
+        &self,
+        order: &nautilus_model::orders::OrderAny,
+    ) -> Option<Price> {
+        match order {
+            OrderAny::Market(_) | OrderAny::MarketToLimit(_) => {
+                self.market_order_cache_price_for_order(order)
+            }
+            OrderAny::StopMarket(_) | OrderAny::MarketIfTouched(_) => order.trigger_price(),
+            OrderAny::TrailingStopMarket(_) | OrderAny::TrailingStopLimit(_) => {
+                order.trigger_price()
+            }
+            _ => order.price(),
+        }
+    }
+
+    fn market_order_cache_price_for_order(
+        &self,
+        order: &nautilus_model::orders::OrderAny,
+    ) -> Option<Price> {
+        let cache = self.cache();
+        if let Some(last_quote) = cache.quote(&order.instrument_id()) {
+            return match order.order_side() {
+                OrderSide::Buy => Some(last_quote.ask_price),
+                OrderSide::Sell => Some(last_quote.bid_price),
+                _ => None,
+            };
+        }
+        cache
+            .trade(&order.instrument_id())
+            .map(|last_trade| last_trade.price)
+    }
+
+    fn quote_quantity_submit_notional(
+        &self,
+        order: &nautilus_model::orders::OrderAny,
+        last_px: Price,
+    ) -> Option<Decimal> {
+        let instrument = self.current_instrument(order.instrument_id())?;
+        let effective_price =
+            self.quote_quantity_effective_price_for_order(order, &instrument, last_px);
+        let effective_quantity = if order.is_quote_quantity() && !instrument.is_inverse() {
+            instrument.calculate_base_quantity(order.quantity(), effective_price)
+        } else {
+            order.quantity()
+        };
+        Some(
+            instrument
+                .calculate_notional_value(effective_quantity, last_px, Some(true))
+                .as_decimal(),
+        )
+    }
+
+    fn quote_quantity_effective_price_for_order(
+        &self,
+        order: &nautilus_model::orders::OrderAny,
+        instrument: &InstrumentAny,
+        last_px: Price,
+    ) -> Price {
+        if !order.is_quote_quantity()
+            || instrument.is_inverse()
+            || !matches!(order, OrderAny::Limit(_) | OrderAny::StopLimit(_))
+        {
+            return last_px;
+        }
+
+        let cache = self.cache();
+        let Some(quote_tick) = cache.quote(&order.instrument_id()) else {
+            return last_px;
+        };
+        match order.order_side() {
+            OrderSide::Buy => last_px.min(quote_tick.ask_price),
+            OrderSide::Sell => last_px.max(quote_tick.bid_price),
+            _ => last_px,
+        }
     }
 
     fn build_configured_entry_order(
@@ -3787,6 +3913,10 @@ impl BinaryOracleEdgeTaker {
         price: Price,
         client_order_id: ClientOrderId,
     ) -> Result<nautilus_model::orders::OrderAny> {
+        anyhow::ensure!(
+            !order_config.is_quote_quantity,
+            "exit_is_quote_quantity must be false because exits are sized from base position quantity"
+        );
         build_configured_order(
             &mut self.core,
             ORDER_CONFIGURATION_PREFIX_EXIT,
@@ -3963,7 +4093,11 @@ impl BinaryOracleEdgeTaker {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_COST_MISSING);
             return decision;
         };
-        let shares_value = sized_notional / entry_cost;
+        let shares_value = if self.config.entry_order.is_quote_quantity {
+            sized_notional
+        } else {
+            sized_notional / entry_cost
+        };
         let Ok(quantity) = instrument.try_make_qty(shares_value, Some(true)) else {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
             return decision;
@@ -5565,6 +5699,7 @@ const EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE: &str = "exit_decision_unavail
 const EXIT_BLOCK_REASON_EXIT_HOLD: &str = "exit_hold";
 const EXIT_BLOCK_REASON_OPEN_POSITION_MISSING: &str = "open_position_missing";
 const EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID: &str = "exit_order_config_invalid";
+const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quantity_unsupported";
 const EXIT_BLOCK_REASON_EXIT_PRICE_MISSING: &str = "exit_price_missing";
 const EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE: &str = "exit_quantity_not_positive";
 
@@ -6274,11 +6409,23 @@ fn evaluate_forced_flat_predicates(inputs: &ForcedFlatInputs) -> Vec<ForcedFlatR
     reasons
 }
 
+#[cfg(test)]
 fn submit_admission_request_from_order(
     intent: &BoltV3OrderIntentEvidence,
     order: &nautilus_model::orders::OrderAny,
 ) -> Result<BoltV3SubmitAdmissionRequest> {
     let client_order_id = order.client_order_id().to_string();
+    let quantity_source = order.quantity().to_string();
+    let quantity = Decimal::from_str(quantity_source.trim()).with_context(|| {
+        format!(
+            "bolt-v3 submit admission quantity is not a decimal for client_order_id={}",
+            client_order_id
+        )
+    })?;
+    anyhow::ensure!(
+        !order.is_quote_quantity(),
+        "test submit admission helper requires strategy cache context for quote-quantity orders"
+    );
     let price_source = order
         .price()
         .or_else(|| order.trigger_price())
@@ -6290,19 +6437,13 @@ fn submit_admission_request_from_order(
             client_order_id
         )
     })?;
-    let quantity_source = order.quantity().to_string();
-    let quantity = Decimal::from_str(quantity_source.trim()).with_context(|| {
-        format!(
-            "bolt-v3 submit admission quantity is not a decimal for client_order_id={}",
-            client_order_id
-        )
-    })?;
+    let notional = price * quantity;
 
     Ok(BoltV3SubmitAdmissionRequest {
         strategy_id: intent.strategy_id.clone(),
         client_order_id,
         instrument_id: order.instrument_id().to_string(),
-        notional: price * quantity,
+        notional,
     })
 }
 
@@ -6782,6 +6923,19 @@ mod tests {
         .expect("test quote tick should be valid")
     }
 
+    fn trade_tick(instrument_id: &str, price: f64, ts_ms: u64) -> nautilus_model::data::TradeTick {
+        nautilus_model::data::TradeTick::new_checked(
+            InstrumentId::from(instrument_id),
+            Price::new(price, 2),
+            Quantity::new(1.0, 0),
+            nautilus_model::enums::AggressorSide::Buyer,
+            nautilus_model::identifiers::TradeId::from("TRADE-TICK-001"),
+            nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+            nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        )
+        .expect("test trade tick should be valid")
+    }
+
     #[test]
     fn reference_quote_tick_updates_pricing_from_configured_reference_data() {
         let mut strategy = test_strategy();
@@ -6864,7 +7018,7 @@ mod tests {
             intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
             instrument_id: instrument_id.to_string(),
             client_order_id: client_order_id.to_string(),
-            order_side: "Buy".to_string(),
+            order_side: order.order_side().to_string(),
             price: price.to_string(),
             quantity: quantity.to_string(),
         };
@@ -6934,7 +7088,7 @@ mod tests {
             intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
             instrument_id: instrument_id.to_string(),
             client_order_id: client_order_id.to_string(),
-            order_side: "Buy".to_string(),
+            order_side: order.order_side().to_string(),
             price: price.to_string(),
             quantity: quantity.to_string(),
         };
@@ -7008,7 +7162,7 @@ mod tests {
             intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
             instrument_id: instrument_id.to_string(),
             client_order_id: client_order_id.to_string(),
-            order_side: "Buy".to_string(),
+            order_side: order.order_side().to_string(),
             price: price.to_string(),
             quantity: quantity.to_string(),
         };
@@ -7082,7 +7236,7 @@ mod tests {
             intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
             instrument_id: instrument_id.to_string(),
             client_order_id: client_order_id.to_string(),
-            order_side: "Buy".to_string(),
+            order_side: order.order_side().to_string(),
             price: "0.50".to_string(),
             quantity: quantity.to_string(),
         };
@@ -7100,6 +7254,217 @@ mod tests {
             "{error:#}"
         );
         assert_eq!(submit_admission.admitted_order_count(), 0);
+    }
+
+    #[test]
+    fn quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        strategy.config.entry_order.is_quote_quantity = true;
+        strategy.active.books.up.best_bid = Some(0.24);
+        strategy.active.books.up.best_ask = Some(0.25);
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        cache
+            .borrow_mut()
+            .add_quote(quote_tick(&instrument_id.to_string(), 0.24, 0.25, 1_200))
+            .expect("test cache should accept quote tick");
+        let quantity = Quantity::new(25.0, 2);
+        let price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-1");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                client_order_id,
+            )
+            .expect("quote-quantity limit order should build through the strategy factory path");
+        assert!(order.is_quote_quantity());
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
+                    strategy_id: strategy.config.strategy_id.clone(),
+                    intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    instrument_id: instrument_id.to_string(),
+                    client_order_id: client_order_id.to_string(),
+                    order_side: order.order_side().to_string(),
+                    price: price.to_string(),
+                    quantity: quantity.to_string(),
+                },
+                &order,
+            )
+            .expect("quote-quantity admission should use NT effective notional");
+
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("50.00").expect("expected decimal should parse")
+        );
+    }
+
+    #[test]
+    fn quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.config.entry_order.is_quote_quantity = true;
+        strategy.active.books.up.best_bid = Some(0.24);
+        strategy.active.books.up.best_ask = Some(0.25);
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let quantity = Quantity::new(25.0, 2);
+        let price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-2");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                client_order_id,
+            )
+            .expect("quote-quantity limit order should build through the strategy factory path");
+        assert!(order.is_quote_quantity());
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
+                    strategy_id: strategy.config.strategy_id.clone(),
+                    intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    instrument_id: instrument_id.to_string(),
+                    client_order_id: client_order_id.to_string(),
+                    order_side: order.order_side().to_string(),
+                    price: price.to_string(),
+                    quantity: quantity.to_string(),
+                },
+                &order,
+            )
+            .expect("quote-quantity admission should use NT no-quote fallback");
+
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("25.00").expect("expected decimal should parse")
+        );
+    }
+
+    #[test]
+    fn quote_quantity_market_submit_admission_uses_nt_cache_quote_ask() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        strategy.config.entry_order.order_type = OrderType::Market;
+        strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
+        strategy.config.entry_order.is_quote_quantity = true;
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let quote = quote_tick(&instrument_id.to_string(), 0.32, 0.33, 1_200);
+        let expected_price = quote.ask_price;
+        cache
+            .borrow_mut()
+            .add_quote(quote)
+            .expect("test cache should accept quote tick");
+        let quantity = Quantity::new(25.019, 3);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-3");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                Price::new(0.99, 2),
+                client_order_id,
+            )
+            .expect("quote-quantity market order should build through the strategy factory path");
+        assert!(matches!(order, OrderAny::Market(_)));
+        assert!(order.is_quote_quantity());
+        let instrument = strategy
+            .current_instrument(instrument_id)
+            .expect("registered instrument should be available");
+        let expected_notional = instrument
+            .calculate_notional_value(
+                instrument.calculate_base_quantity(order.quantity(), expected_price),
+                expected_price,
+                Some(true),
+            )
+            .as_decimal();
+        let raw_quote_quantity = Decimal::from_str(order.quantity().to_string().trim())
+            .expect("order quantity should parse");
+        assert_ne!(expected_notional, raw_quote_quantity);
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
+                    strategy_id: strategy.config.strategy_id.clone(),
+                    intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    instrument_id: instrument_id.to_string(),
+                    client_order_id: client_order_id.to_string(),
+                    order_side: order.order_side().to_string(),
+                    price: "0.99".to_string(),
+                    quantity: quantity.to_string(),
+                },
+                &order,
+            )
+            .expect("quote-quantity market admission should use NT cache quote price");
+
+        assert_eq!(admission.notional, expected_notional);
+    }
+
+    #[test]
+    fn quote_quantity_market_submit_admission_uses_nt_cache_trade_when_quote_missing() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        strategy.config.entry_order.order_type = OrderType::Market;
+        strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
+        strategy.config.entry_order.is_quote_quantity = true;
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let trade = trade_tick(&instrument_id.to_string(), 0.33, 1_200);
+        let expected_price = trade.price;
+        cache
+            .borrow_mut()
+            .add_trade(trade)
+            .expect("test cache should accept trade tick");
+        let quantity = Quantity::new(25.019, 3);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-4");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                Price::new(0.99, 2),
+                client_order_id,
+            )
+            .expect("quote-quantity market order should build through the strategy factory path");
+        assert!(matches!(order, OrderAny::Market(_)));
+        assert!(order.is_quote_quantity());
+        let instrument = strategy
+            .current_instrument(instrument_id)
+            .expect("registered instrument should be available");
+        let expected_notional = instrument
+            .calculate_notional_value(
+                instrument.calculate_base_quantity(order.quantity(), expected_price),
+                expected_price,
+                Some(true),
+            )
+            .as_decimal();
+        let raw_quote_quantity = Decimal::from_str(order.quantity().to_string().trim())
+            .expect("order quantity should parse");
+        assert_ne!(expected_notional, raw_quote_quantity);
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
+                    strategy_id: strategy.config.strategy_id.clone(),
+                    intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    instrument_id: instrument_id.to_string(),
+                    client_order_id: client_order_id.to_string(),
+                    order_side: order.order_side().to_string(),
+                    price: "0.99".to_string(),
+                    quantity: quantity.to_string(),
+                },
+                &order,
+            )
+            .expect("quote-quantity market admission should use NT cache trade fallback");
+
+        assert_eq!(admission.notional, expected_notional);
     }
 
     #[test]
@@ -7156,7 +7521,7 @@ mod tests {
             intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
             instrument_id: instrument_id.to_string(),
             client_order_id: client_order_id.to_string(),
-            order_side: "Buy".to_string(),
+            order_side: order.order_side().to_string(),
             price: price.to_string(),
             quantity: quantity.to_string(),
         };
@@ -7240,7 +7605,7 @@ mod tests {
             intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
             instrument_id: instrument_id.to_string(),
             client_order_id: client_order_id.to_string(),
-            order_side: "Buy".to_string(),
+            order_side: order.order_side().to_string(),
             price: price.to_string(),
             quantity: quantity.to_string(),
         };
@@ -9448,6 +9813,30 @@ mod tests {
     }
 
     #[test]
+    fn quote_quantity_entry_submission_sizes_quantity_as_quote_notional() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.config.entry_order.is_quote_quantity = true;
+        strategy.config.order_notional_target = 25.0;
+        strategy.config.maximum_position_notional = 25.0;
+        strategy.config.risk_lambda = 0.0001;
+
+        let decision = strategy.entry_submission_decision_at(1_200);
+        let sized_notional = decision
+            .evaluation
+            .sized_notional
+            .expect("test setup should produce a positive sized notional");
+
+        assert_eq!(decision.blocked_reason, None);
+        assert!(
+            decision
+                .quantity_value
+                .is_some_and(|quantity| (quantity - sized_notional).abs() < 1e-9),
+            "quote-quantity entry should send quote notional as NT quantity, got {decision:#?}"
+        );
+    }
+
+    #[test]
     fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let _cache = register_test_strategy(&mut strategy);
@@ -9486,7 +9875,7 @@ mod tests {
                 intent_kind: BoltV3OrderIntentKind::Entry,
                 instrument_id: instrument_id.to_string(),
                 client_order_id: order.client_order_id().to_string(),
-                order_side: OrderSide::Buy.to_string(),
+                order_side: order.order_side().to_string(),
                 price: fallback_price.to_string(),
                 quantity: quantity.to_string(),
             },
@@ -9582,6 +9971,67 @@ mod tests {
         assert!(decision.forced_flat_reasons.is_empty());
         assert_eq!(decision.order_side, Some(OrderSide::Sell));
         assert_eq!(decision.price, expected_passive_price);
+    }
+
+    #[test]
+    fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.config.exit_order.is_quote_quantity = true;
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
+        strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
+        strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let open_position = OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            position_id: PositionId::from("P-UP-QUOTE-EXIT-001"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        };
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        let decision = strategy.exit_submission_decision_at(1_200);
+
+        assert_eq!(
+            decision.blocked_reason,
+            Some("exit_quote_quantity_unsupported")
+        );
+        assert_eq!(decision.quantity, None);
+        assert_eq!(decision.is_quote_quantity, None);
+    }
+
+    #[test]
+    fn exit_quote_quantity_order_build_is_rejected_before_nt_factory() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        strategy.config.exit_order.is_quote_quantity = true;
+        let error = strategy
+            .build_configured_exit_order(
+                InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET"),
+                OrderSide::Sell,
+                Quantity::new(10.0, 2),
+                Price::new(0.50, 2),
+                ClientOrderId::from("O-19700101-000000-001-QQE-1"),
+            )
+            .expect_err("exit quote-quantity should fail before NT factory construction");
+
+        assert!(
+            error.to_string().contains("exit_is_quote_quantity"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -9807,7 +10257,7 @@ mod tests {
                 intent_kind: BoltV3OrderIntentKind::Entry,
                 instrument_id: instrument_id.to_string(),
                 client_order_id: order.client_order_id().to_string(),
-                order_side: OrderSide::Buy.to_string(),
+                order_side: order.order_side().to_string(),
                 price: admission_price.to_string(),
                 quantity: quantity.to_string(),
             },
@@ -9868,7 +10318,7 @@ mod tests {
                 intent_kind: BoltV3OrderIntentKind::Entry,
                 instrument_id: instrument_id.to_string(),
                 client_order_id: order.client_order_id().to_string(),
-                order_side: OrderSide::Buy.to_string(),
+                order_side: order.order_side().to_string(),
                 price: price.to_string(),
                 quantity: quantity.to_string(),
             },
@@ -9956,7 +10406,7 @@ mod tests {
                 intent_kind: BoltV3OrderIntentKind::Entry,
                 instrument_id: instrument_id.to_string(),
                 client_order_id: order.client_order_id().to_string(),
-                order_side: OrderSide::Buy.to_string(),
+                order_side: order.order_side().to_string(),
                 price: price.to_string(),
                 quantity: quantity.to_string(),
             },
@@ -10096,7 +10546,7 @@ mod tests {
                 intent_kind: BoltV3OrderIntentKind::Entry,
                 instrument_id: instrument_id.to_string(),
                 client_order_id: order.client_order_id().to_string(),
-                order_side: OrderSide::Buy.to_string(),
+                order_side: order.order_side().to_string(),
                 price: fallback_price.to_string(),
                 quantity: quantity.to_string(),
             },
@@ -10419,7 +10869,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_short_position_contract_is_supported_when_entry_exit_contract_is_coherent() {
+    fn configured_short_position_contract_is_rejected_until_short_economics_exists() {
         let contract = ConfiguredPositionContract {
             entry_order_side: OrderSide::Sell,
             entry_position_side: PositionSide::Short,
@@ -10427,7 +10877,7 @@ mod tests {
             exit_position_side: PositionSide::Short,
         };
 
-        assert!(supports_strategy_managed_position(
+        assert!(!supports_strategy_managed_position(
             OrderSide::Sell,
             PositionSide::Short,
             contract

@@ -152,7 +152,7 @@ reason = "This labels the existing nested entry order table in enabled NT order-
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"exit_order"'''
-context = '''check_enabled_order_template(context, "exit_order", exit)'''
+context = '''let mut errors = check_enabled_order_template(context, "exit_order", exit);'''
 classification = "strategy_runtime_validation_field"
 reason = "This labels the existing nested exit order table in enabled NT order-template validation diagnostics; the table values remain TOML-owned."
 
@@ -2876,6 +2876,14 @@ literal = '''"exit_order_config_invalid"'''
 context = '''const EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID: &str = "exit_order_config_invalid";'''
 classification = "strategy_exit_block_reason_code"
 reason = "This is a stable decision-evidence reason code for invalid TOML-owned exit order configuration."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_quote_quantity_unsupported"'''
+context = '''const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quantity_unsupported";'''
+classification = "strategy_exit_block_reason_code"
+reason = "This is a stable decision-evidence reason code for rejecting exit quote quantity until exit sizing owns quote-to-base conversion."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"

@@ -1154,9 +1154,11 @@ Nautilus strategy identity mapping for live trading:
 
 - type: string enum
 - required: yes
-- current allowed value:
-  - `netting`
-- maps directly to Nautilus `StrategyConfig.oms_type`
+- delegates accepted values to NautilusTrader `OmsType`
+- maps directly to NautilusTrader `StrategyConfig.oms_type`
+
+The current source-level tests prove `netting`, `hedging`, and `unspecified` parse and validate.
+This is source/config validation proof only; it does not prove live venue behavior for every OMS mode.
 
 #### Other Nautilus `StrategyConfig` fields
 
@@ -1312,24 +1314,39 @@ They must map directly to NautilusTrader-native order semantics used by the arch
 - type: string enum
 - required
 - current allowed values:
-  - entry order: `buy`
-  - exit order: `sell`
+  - `buy`
+  - `sell`
 - maps to the order side used by the archetype
 
 #### `position_side`
 
 - type: string enum
 - required
-- current allowed value:
+- parsed values:
   - `long`
+  - `short`
 - maps to the position side used by the archetype
+
+The current archetype accepts the long position contract only:
+
+- long position contract: entry side `buy`, exit side `sell`, both with `position_side = "long"`
+
+Short-side position contracts are parsed but rejected until strategy-owned short economics, collateral, and exit semantics exist.
 
 #### `order_type`
 
 - type: string enum
-- allowed values for the current archetype:
+- enabled through the pinned NT single-order `OrderFactory` for current source/unit config validation:
   - `limit`
   - `market`
+  - `stop_market`
+  - `stop_limit`
+  - `market_if_touched`
+  - `limit_if_touched`
+  - `trailing_stop_market`
+- parsed by NT but unsupported for this archetype because the pinned NT single-order `OrderFactory` exposes no public constructor:
+  - `market_to_limit`
+  - `trailing_stop_limit`
 
 #### `time_in_force`
 
@@ -1338,16 +1355,67 @@ They must map directly to NautilusTrader-native order semantics used by the arch
   - `gtc`
   - `fok`
   - `ioc`
+  - `gtd`
+
+GTD order templates require `expire_time_unix_nanos` when the selected NT order type supports GTD.
+`market` order templates reject GTD.
+
+#### `expire_time_unix_nanos`
+
+- type: integer
+- required: no
+- required for GTD order templates accepted by the current archetype
+- maps to the NT order factory `expire_time` argument
+
+#### `trigger_price`
+
+- type: decimal string or TOML number
+- required for `stop_market`, `stop_limit`, `market_if_touched`, and `limit_if_touched`
+- required for `trailing_stop_market` unless `activation_price` is provided
+- forbidden on non-triggered `limit` and `market` order templates
+- maps to the NT order factory `trigger_price` argument
+
+#### `activation_price`
+
+- type: decimal string or TOML number
+- required for `trailing_stop_market` when `trigger_price` is absent
+- forbidden on other order types
+- maps to the NT order factory `activation_price` argument
+
+#### `trigger_type`
+
+- type: string enum backed by NautilusTrader `TriggerType`
+- required for `trailing_stop_market`
+- optional for the other triggered order types supported by the current archetype
+- forbidden on non-triggered `limit` and `market` order templates
+- maps to the NT order factory `trigger_type` argument
+
+#### `trailing_offset`
+
+- type: decimal string or TOML number
+- required for `trailing_stop_market`
+- forbidden on other order types
+- maps to the NT order factory `trailing_offset` argument
+
+#### `trailing_offset_type`
+
+- type: string enum backed by NautilusTrader `TrailingOffsetType`
+- required for `trailing_stop_market`
+- forbidden on other order types
+- maps to the NT order factory `trailing_offset_type` argument
 
 #### `is_post_only`
 
 - type: boolean
 - required
+- maps to the NT order factory post-only flag for order types that expose it
+- must be false for current market-style order types that do not support post-only behavior
 
 #### `is_reduce_only`
 
 - type: boolean
 - required
+- maps to the NT order factory reduce-only flag
 
 #### `is_quote_quantity`
 
@@ -1358,50 +1426,27 @@ Meaning:
 
 - this is the NautilusTrader-native quote/base quantity toggle used by the archetype
 - it is not a bolt-owned translation field
-- for the current `binary_oracle_edge_taker` archetype, the only allowed value is `false`
+- maps to the NT order factory quote-quantity flag
+- Entry `is_quote_quantity = true` is supported by sizing the entry quantity as quote notional
+- Exit `is_quote_quantity = true` is rejected because exits are sized from held base position quantity
 
-### Current valid order combinations for `binary_oracle_edge_taker`
+### Current order template validation for `binary_oracle_edge_taker`
 
-To avoid hidden policy, the current archetype supports only these combinations:
+Order construction uses one TOML-to-template-to-NT path for entry and exit orders.
+The archetype validates current pinned NT model invariants before calling `OrderFactory`; it does not maintain a maker/taker tuple allowlist.
 
-- `[parameters.entry_order]` taker entry
-  - `side = "buy"`
-  - `position_side = "long"`
-  - `order_type = "limit"`
-  - `time_in_force = "fok"`
-  - `is_post_only = false`
-  - `is_reduce_only = false`
-  - `is_quote_quantity = false`
+Current validation rejects:
 
-- `[parameters.entry_order]` maker entry
-  - `side = "buy"`
-  - `position_side = "long"`
-  - `order_type = "limit"`
-  - `time_in_force = "gtc"`
-  - `is_post_only = true`
-  - `is_reduce_only = false`
-  - `is_quote_quantity = false`
-
-- `[parameters.exit_order]` taker exit
-  - `side = "sell"`
-  - `position_side = "long"`
-  - `order_type = "market"`
-  - `time_in_force = "ioc"`
-  - `is_post_only = false`
-  - `is_reduce_only = false`
-  - `is_quote_quantity = false`
-
-- `[parameters.exit_order]` maker exit
-  - `side = "sell"`
-  - `position_side = "long"`
-  - `order_type = "limit"`
-  - `time_in_force = "gtc"`
-  - `is_post_only = true`
-  - `is_reduce_only = false`
-  - `is_quote_quantity = false`
-  - passive at the touch; not an immediate forced-flat guarantee
-
-Any other combination fails validation for this archetype.
+- unsupported NT enum variants without a pinned single-order `OrderFactory` constructor
+- short-side position contracts until strategy-owned short economics, collateral, and exit semantics exist
+- exit order templates with `is_quote_quantity = true`
+- GTD order templates without `expire_time_unix_nanos`
+- `market` order templates with GTD or post-only
+- market-style triggered orders with post-only
+- non-triggered `limit` and `market` order templates with trigger or trailing fields
+- triggered order templates without a positive `trigger_price`
+- `limit_if_touched` templates whose trigger/limit relationship violates the pinned NT side invariant
+- `trailing_stop_market` templates without positive trigger or activation input, explicit trigger type, positive trailing offset, and trailing offset type
 
 When maker exit is configured, freeze, stale-data, and thin-book exits still use the configured maker exit shape. Operators who require immediate flattening must configure the taker exit shape until a separate TOML-owned forced-exit override exists.
 

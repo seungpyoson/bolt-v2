@@ -796,7 +796,7 @@ fn bolt_v3_archetype_accepts_nt_model_valid_limit_order_templates_without_maker_
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_coherent_short_side_order_contract() {
+fn bolt_v3_archetype_rejects_short_side_order_contract_until_short_economics_exists() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -835,8 +835,10 @@ fn bolt_v3_archetype_accepts_coherent_short_side_order_contract() {
 
     let messages = validate_strategies(&stable_root, &loaded);
     assert!(
-        messages.is_empty(),
-        "coherent short-side order contract should be accepted by binary_oracle_edge_taker validation: {messages:#?}"
+        messages.iter().any(|message| {
+            message.contains("short-side") && message.contains("binary_oracle_edge_taker")
+        }),
+        "short-side order contract should be rejected until strategy short economics exists: {messages:#?}"
     );
 }
 
@@ -877,7 +879,7 @@ fn bolt_v3_archetype_rejects_incoherent_order_position_contract() {
         messages.iter().any(|message| {
             message.contains("position contract is not supported")
                 && message.contains("long requires entry side=buy, exit side=sell")
-                && message.contains("short requires entry side=sell, exit side=buy")
+                && message.contains("binary_oracle_edge_taker")
         }),
         "incoherent order position contract should be rejected with contract guidance: {messages:#?}"
     );
@@ -1953,6 +1955,49 @@ fn bolt_v3_archetype_accepts_limit_if_touched_entry_nt_boolean_flags() {
     assert!(
         messages.is_empty(),
         "LimitIfTouched entry boolean flags should be accepted as NT order fields: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_exit_quote_quantity_until_exit_quote_sizing_exists() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let fixture = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let (before_exit, exit_and_after) = fixture
+        .split_once("[parameters.exit_order]")
+        .expect("fixture should include exit_order table");
+    let strategy_source = format!(
+        "{before_exit}[parameters.exit_order]{}",
+        exit_and_after.replacen("is_quote_quantity = false", "is_quote_quantity = true", 1)
+    );
+
+    let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
+        .expect("exit quote-quantity config should parse typed order config");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&stable_root, &loaded);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("exit_order")
+                && message.contains("is_quote_quantity")
+                && message.contains("base position")
+        }),
+        "exit quote quantity should be rejected until exit quote sizing exists: {messages:#?}"
     );
 }
 

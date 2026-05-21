@@ -877,7 +877,13 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
 }
 
 fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {
-    check_enabled_order_template(context, "exit_order", exit)
+    let mut errors = check_enabled_order_template(context, "exit_order", exit);
+    if exit.is_quote_quantity {
+        errors.push(format!(
+            "{context}: parameters.exit_order.is_quote_quantity=true is not supported because `binary_oracle_edge_taker` exits are sized from base position quantity"
+        ));
+    }
+    errors
 }
 
 fn check_enabled_order_template(context: &str, field: &str, order: &OrderParams) -> Vec<String> {
@@ -1073,6 +1079,11 @@ fn check_strategy_position_contract(
     entry: &OrderParams,
     exit: &OrderParams,
 ) -> Vec<String> {
+    if entry.position_side == PositionSide::Short || exit.position_side == PositionSide::Short {
+        return vec![format!(
+            "{context}: short-side position contracts require strategy-owned short economics and are not enabled for `binary_oracle_edge_taker`"
+        )];
+    }
     if expected_position_side_for_entry_order(entry.side)
         .is_some_and(|side| side == entry.position_side)
         && expected_exit_order_side_for_position(exit.position_side)
@@ -1084,8 +1095,7 @@ fn check_strategy_position_contract(
     } else {
         vec![format!(
             "{context}: parameters entry/exit order position contract is not supported for `binary_oracle_edge_taker`; \
-             long requires entry side=buy, exit side=sell, position_side=long; \
-             short requires entry side=sell, exit side=buy, position_side=short"
+             long requires entry side=buy, exit side=sell, position_side=long"
         )]
     }
 }

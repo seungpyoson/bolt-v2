@@ -26,14 +26,14 @@
 
 ## Phase 3: TDD Slice 1 - Remove Tuple Narrowing Without Broadening Venue Policy
 
-**Goal**: Preserve existing mixed maker/taker coverage and add valid short-side strategy position contracts without adding a maker-only mode or venue capability table.
+**Goal**: Preserve existing mixed maker/taker coverage while removing maker/taker tuple narrowing without adding a maker-only mode or venue capability table. Phase 28 supersedes the initial short-side acceptance attempt because current `binary_oracle_edge_taker` economics are long-side only.
 
-**Independent Test**: `tests/config_parsing.rs` validates coherent short-side order configs through the public config validation path.
+**Independent Test**: `tests/config_parsing.rs` validates mixed maker/taker order configs through the public config validation path; Phase 28 adds the current short-side rejection regression.
 
 - [x] T010 [US2] Confirm existing mixed maker/taker config coverage remains green before widening the contract
 - [x] T011 [US2] RED: Add a config validation test for coherent short-side entry/exit in `tests/config_parsing.rs`
 - [x] T012 [US2] GREEN: Replace hardcoded entry/exit tuple whitelist in `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs` with strategy position-contract validation
-- [x] T013 [US2] GREEN: Allow coherent short-side contracts while keeping incoherent long/short contracts rejected
+- [x] T013 [US2] HISTORICAL GREEN: The initial implementation temporarily accepted coherent short-side contracts; Phase 28 supersedes that behavior and restores current short-side rejection until strategy-owned short economics exist
 - [x] T014 [US2] Verify focused tests, `cargo fmt -- --check`, and `git diff --check`
 
 ## Phase 4: TDD Slice 2 - Normalize Order Template Once
@@ -265,6 +265,24 @@
 - [x] T117 [US3] GREEN: Apply minimal strategy fixes on the existing exit decision and NT `OrderFactory` construction path
 - [x] T118 [US3] Verify focused runtime tests, source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
 
+## Phase 27: TDD Slice 23 - Active Schema Doc Consistency
+
+**Goal**: Resolve proven active-doc drift after the order-intent implementation without changing runtime behavior: schema/status docs must describe the current NT-backed TOML surface, not the superseded netting-only and maker/taker tuple policy.
+
+- [x] T119 [P] [US3] Record source-backed evidence for stale active docs: `oms_type`, enabled order templates, factory-gap order types, and status-map single-value enum wording
+- [x] T120 [US3] RED: Add a docs consistency verifier proving the active schema/status docs still contain superseded netting-only and tuple-policy claims
+- [x] T121 [US3] GREEN: Update active docs to reflect current NT-backed order template scope while preserving live/no-submit/canary proof boundaries
+- [ ] T122 [US3] Verify the docs verifier, source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
+
+## Phase 28: TDD Slice 24 - Strategy Economics Boundary After Order Template Widening
+
+**Goal**: Resolve no-mistakes runtime findings from the tuple-policy removal: keep NT order-template breadth where the strategy can size/admit it correctly, and reject configuration that needs strategy economics not provided by NT.
+
+- [x] T123 [P] [US3] Record no-mistakes and pinned-NT evidence for short-side economics and quote-quantity sizing/admission
+- [x] T124 [US3] RED: Add public/runtime regressions for short-side rejection, exit quote-quantity rejection, entry quote-quantity sizing, quote-quantity admission notional, NT market quote/trade fallback, and active-doc overclaim detection
+- [x] T125 [US3] GREEN: Apply minimal strategy fixes on the existing config validation, entry sizing, submit-admission path, and active-doc verifier
+- [ ] T126 [US3] Verify focused runtime/config tests, docs/source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -292,6 +310,8 @@
 - Phase 24 blocks completion because post-review found `trigger_type` pass-through was broader than the TrailingStopMarket task text documented.
 - Phase 25 blocks completion until focused/local checks, reviewer findings, branch cleanliness, and post-push exact-head gate state are recorded for the tuple-policy removal.
 - Phase 26 blocks completion because no-mistakes produced runtime exit findings on top of the current branch.
+- Phase 27 blocks completion because no-mistakes and direct source inspection found active documentation still describing superseded config scope after the order-intent implementation.
+- Phase 28 blocks completion because no-mistakes found tuple-policy removal admitted short-side and quote-quantity configurations beyond current strategy economics and sizing/admission proof.
 
 ## Parallel Opportunities
 

@@ -192,6 +192,8 @@ fn encode_admission_decision_line(decision: &BoltV3AdmissionDecisionEvidence) ->
 mod tests {
     use super::*;
 
+    use nautilus_model::enums::OrderSide;
+
     fn parse_line(line: &[u8]) -> serde_json::Value {
         assert!(line.ends_with(b"\n"), "line must end with newline");
         let json = std::str::from_utf8(&line[..line.len() - 1]).expect("line is utf8");
@@ -205,7 +207,7 @@ mod tests {
             intent_kind: BoltV3OrderIntentKind::Entry,
             instrument_id: "instrument-one".to_string(),
             client_order_id: "client-order-one".to_string(),
-            order_side: "Buy".to_string(),
+            order_side: OrderSide::Buy.to_string(),
             price: "0.42".to_string(),
             quantity: "1".to_string(),
         };
@@ -234,7 +236,7 @@ mod tests {
         let intent = &decoded["intent"];
         assert_eq!(intent["strategy_id"], "strategy-one");
         assert_eq!(intent["intent_kind"], "entry");
-        assert_eq!(intent["order_side"], "Buy");
+        assert_eq!(intent["order_side"], OrderSide::Buy.to_string());
     }
 
     #[test]

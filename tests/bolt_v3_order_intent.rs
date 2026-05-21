@@ -54,6 +54,52 @@ fn base_inputs(order_side: OrderSide) -> NtOrderBuildInputs {
     }
 }
 
+fn limit_price() -> Price {
+    base_inputs(OrderSide::Buy).price
+}
+
+fn zero_price() -> Price {
+    let price = limit_price();
+    Price::from_raw(price.raw - price.raw, price.precision)
+}
+
+fn negative_price() -> Price {
+    let price = limit_price();
+    Price::from_raw(-price.raw, price.precision)
+}
+
+fn trigger_price_below_limit() -> Price {
+    let price = limit_price();
+    Price::from_raw(price.raw - price.raw.signum(), price.precision)
+}
+
+fn trigger_price_above_limit() -> Price {
+    let price = limit_price();
+    Price::from_raw(price.raw + price.raw.signum(), price.precision)
+}
+
+fn positive_trailing_offset() -> Decimal {
+    limit_price().as_decimal()
+}
+
+fn valid_template_for_direct_validation(order_type: OrderType) -> NtOrderTemplate {
+    let mut template = base_template(order_type);
+    match order_type {
+        OrderType::StopMarket | OrderType::StopLimit | OrderType::MarketIfTouched => {
+            template.trigger_price = Some(trigger_price_below_limit());
+        }
+        OrderType::LimitIfTouched => {
+            template.trigger_price = Some(trigger_price_below_limit());
+        }
+        OrderType::TrailingStopMarket => {
+            template.activation_price = Some(trigger_price_below_limit());
+            template.trailing_offset = Some(positive_trailing_offset());
+        }
+        _ => {}
+    }
+    template
+}
+
 fn assert_build_error_contains(
     factory: &mut OrderFactory,
     template: &NtOrderTemplate,
@@ -125,7 +171,7 @@ fn shared_nt_order_template_rejects_non_positive_trigger_inputs_before_nt_factor
         OrderType::LimitIfTouched,
     ] {
         let mut template = base_template(order_type);
-        template.trigger_price = Some(Price::new(0.0, 2));
+        template.trigger_price = Some(zero_price());
         assert_build_error_contains(
             &mut factory,
             &template,
@@ -135,8 +181,8 @@ fn shared_nt_order_template_rejects_non_positive_trigger_inputs_before_nt_factor
     }
 
     let mut trailing_stop_trigger = base_template(OrderType::TrailingStopMarket);
-    trailing_stop_trigger.trigger_price = Some(Price::new(0.0, 2));
-    trailing_stop_trigger.trailing_offset = Some(Decimal::new(1, 1));
+    trailing_stop_trigger.trigger_price = Some(zero_price());
+    trailing_stop_trigger.trailing_offset = Some(positive_trailing_offset());
     assert_build_error_contains(
         &mut factory,
         &trailing_stop_trigger,
@@ -145,14 +191,126 @@ fn shared_nt_order_template_rejects_non_positive_trigger_inputs_before_nt_factor
     );
 
     let mut trailing_stop = base_template(OrderType::TrailingStopMarket);
-    trailing_stop.activation_price = Some(Price::new(0.0, 2));
-    trailing_stop.trailing_offset = Some(Decimal::new(1, 1));
+    trailing_stop.activation_price = Some(zero_price());
+    trailing_stop.trailing_offset = Some(positive_trailing_offset());
     assert_build_error_contains(
         &mut factory,
         &trailing_stop,
         OrderSide::Sell,
         "activation_price must be positive",
     );
+}
+
+#[test]
+fn shared_nt_order_template_rejects_negative_trigger_inputs_before_nt_factory() {
+    let mut factory = generic_order_factory();
+
+    for order_type in [
+        OrderType::StopMarket,
+        OrderType::StopLimit,
+        OrderType::MarketIfTouched,
+        OrderType::LimitIfTouched,
+    ] {
+        let mut template = base_template(order_type);
+        template.trigger_price = Some(negative_price());
+        assert_build_error_contains(
+            &mut factory,
+            &template,
+            OrderSide::Buy,
+            "trigger_price must be positive",
+        );
+    }
+
+    let mut trailing_stop_trigger = base_template(OrderType::TrailingStopMarket);
+    trailing_stop_trigger.trigger_price = Some(negative_price());
+    trailing_stop_trigger.trailing_offset = Some(positive_trailing_offset());
+    assert_build_error_contains(
+        &mut factory,
+        &trailing_stop_trigger,
+        OrderSide::Sell,
+        "trigger_price must be positive",
+    );
+
+    let mut trailing_stop_activation = base_template(OrderType::TrailingStopMarket);
+    trailing_stop_activation.activation_price = Some(negative_price());
+    trailing_stop_activation.trailing_offset = Some(positive_trailing_offset());
+    assert_build_error_contains(
+        &mut factory,
+        &trailing_stop_activation,
+        OrderSide::Sell,
+        "activation_price must be positive",
+    );
+}
+
+#[test]
+fn shared_nt_order_template_rejects_direct_caller_nt_model_invariants_before_nt_factory() {
+    let mut factory = generic_order_factory();
+
+    for order_type in [
+        OrderType::Limit,
+        OrderType::StopMarket,
+        OrderType::StopLimit,
+        OrderType::MarketIfTouched,
+        OrderType::LimitIfTouched,
+        OrderType::TrailingStopMarket,
+    ] {
+        let mut template = valid_template_for_direct_validation(order_type);
+        template.time_in_force = TimeInForce::Gtd;
+        assert_build_error_contains(
+            &mut factory,
+            &template,
+            OrderSide::Buy,
+            "expire_time is required",
+        );
+    }
+
+    let mut market_gtd = base_template(OrderType::Market);
+    market_gtd.time_in_force = TimeInForce::Gtd;
+    assert_build_error_contains(
+        &mut factory,
+        &market_gtd,
+        OrderSide::Buy,
+        "GTD not supported for Market orders",
+    );
+
+    let mut trailing_stop_post_only =
+        valid_template_for_direct_validation(OrderType::TrailingStopMarket);
+    trailing_stop_post_only.is_post_only = true;
+    assert_build_error_contains(
+        &mut factory,
+        &trailing_stop_post_only,
+        OrderSide::Sell,
+        "is_post_only must be false",
+    );
+
+    let mut buy_lit = base_template(OrderType::LimitIfTouched);
+    buy_lit.trigger_price = Some(trigger_price_above_limit());
+    assert_build_error_contains(
+        &mut factory,
+        &buy_lit,
+        OrderSide::Buy,
+        "trigger_price must be <= order price",
+    );
+
+    let mut sell_lit = base_template(OrderType::LimitIfTouched);
+    sell_lit.trigger_price = Some(trigger_price_below_limit());
+    assert_build_error_contains(
+        &mut factory,
+        &sell_lit,
+        OrderSide::Sell,
+        "trigger_price must be >= order price",
+    );
+
+    for order_type in [OrderType::Limit, OrderType::Market] {
+        let mut template = base_template(order_type);
+        template.trigger_price = Some(trigger_price_below_limit());
+        assert_build_error_contains(
+            &mut factory,
+            &template,
+            OrderSide::Buy,
+            "trigger_price is only supported for triggered orders",
+        );
+    }
 }
 
 #[test]

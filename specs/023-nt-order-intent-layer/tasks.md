@@ -425,6 +425,15 @@
 - [x] T192 [US2] REGRESSION: Expand direct shared-builder coverage for StopLimit, MarketIfTouched, LimitIfTouched, and TrailingStopMarket zero-trigger rejection
 - [x] T193 [US2] Verify focused order-template tests, source fences, formatting, branch cleanliness, and latest-head reviewer state
 
+## Phase 44: TDD Slice 40 - Direct Shared-Builder Validation Matrix Closure
+
+**Goal**: Close latest-head Claude non-blocking direct-builder coverage concerns without changing production behavior unless tests expose a gap. Direct callers of `build_nt_order(...)` should have regression coverage for negative trigger/activation values and the other generic NT model invariants enforced by `validate_nt_order_template(...)`.
+
+- [x] T194 [P] [US2] Record latest-head external review state for PR #434 head `3e3679f3763c59139041bb36bff460f05136668d`
+- [x] T195 [US2] REGRESSION: Add direct shared-builder negative trigger/activation rejection coverage
+- [x] T196 [US2] REGRESSION: Add direct shared-builder coverage for GTD-without-expiry, Market GTD rejection, TrailingStopMarket post-only rejection, LimitIfTouched side/price rejection, and non-triggered trigger rejection
+- [x] T197 [US2] Verify focused order-template tests, source fences, formatting, branch cleanliness, CI state, and latest-head reviewer state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -467,6 +476,7 @@
 - Phase 41 blocks completion because multi-agent review found generic NT order-template mechanics still housed in `binary_oracle_edge_taker`; extraction must remain submission-agnostic, venue-agnostic, market-agnostic, and strategy-agnostic.
 - Phase 42 blocks completion because latest-head external review exposed a public shared-builder validation asymmetry after Phase 41 extraction.
 - Phase 43 blocks completion because latest-head Claude review found the Phase 42 direct shared-builder regression did not enumerate every affected triggered factory variant.
+- Phase 44 blocks completion because latest-head Claude review found more direct shared-builder invariants still covered only indirectly through strategy/config paths.
 
 ## Parallel Opportunities
 

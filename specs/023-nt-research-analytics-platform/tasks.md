@@ -16,6 +16,8 @@ the numbered subdirectories.
 - [x] ROOT-008 Provide human triage in `README.md`.
 - [x] ROOT-010 Move answered/open question trace into `reference/open-questions.md`.
 
+ROOT-009 is intentionally deferred; see Future Cross-Project Tasks below.
+
 ## Project Task Lists
 
 - [Backtesting Engine tasks](1-backtesting-engine/tasks.md)

@@ -110,6 +110,7 @@ notebooks, dashboard UI, provider capture, live trading, or a custom simulator.
 | E-011 | SOURCE_PROVEN + DECISION_NEEDED | Tardis Professional replay is strong but expensive; cost is a review lever after fidelity is explicit. |
 | E-012 | SOURCE_PROVEN | NT Bybit live market data/execution support exists; Bybit is a venue candidate, while historical data-class claims still need proof. |
 | E-013 | SOURCE_PROVEN | NT Polymarket support exists, but public historical coverage can hit API cap/depth limits. |
+| E-014 | SOURCE_PROVEN | Polymarket discovery, data, and CLOB APIs are distinct source families; BTE raw evidence records and lineage must preserve source-family provenance. |
 | E-015 | SOURCE_PROVEN + DECISION_NEEDED | Telonex is a Polymarket historical-data candidate; Plus is personal-use priced and commercial/team use needs license proof. |
 | E-016 | SOURCE_PROVEN + DECISION_NEEDED | Goldsky can support Polymarket on-chain/provenance indexing, but it is usage-metered and not a free data-lake substitute. |
 | E-021 | SOURCE_PROVEN | Hyperliquid perps live data/trading support exists upstream; historical replay still needs data-source proof. |
@@ -122,7 +123,7 @@ notebooks, dashboard UI, provider capture, live trading, or a custom simulator.
 | E-032 | SOURCE_PROVEN + DECISION_NEEDED | NT exposes configurable backtest engine, venue, run, and simulation surfaces; hidden defaults are not acceptable. |
 | E-033 | USER_ASSUMPTION + DECISION_NEEDED | Kimchi premium is a required cross-market source family for `perps/spot` inputs; Korean spot venues such as Upbit/Bithumb are candidate bindings, not hardcoded branches. |
 | E-034 | USER_ASSUMPTION + DECISION_NEEDED | Raw payloads, NT catalog, source proofs, and backtest outputs must share one TOML/config-owned S3 `artifact_root` with typed subpaths. |
-| E-035 | USER_ASSUMPTION + DECISION_NEEDED | Artifact retention defaults to forever; lifecycle may move artifacts colder but must not delete canonical artifacts by default; archive storage under `$5/month` is zero for planning. |
+| E-035 | USER_ASSUMPTION + DECISION_NEEDED | Artifact retention defaults to forever; lifecycle may move artifacts colder but must not delete canonical artifacts by default; archive-as-zero planning threshold is inherited from the reference Artifact Lifecycle Contract. |
 | E-036 | USER_ASSUMPTION + DECISION_NEEDED | Lifecycle is simple: artifacts start `active`; after the configured quiet window passes, they become `inactive`; inactive allows archive transition, not deletion. |
 | E-037 | SOURCE_PROVEN + GAP | NT upstream supports remote/object-store catalog paths behind storage features, but the currently resolved `bolt-v2` `nautilus-persistence` dependency must prove S3 feature enablement and catalog read/write/query behavior before implementation relies on direct S3 catalog access. |
 | E-038 | SOURCE_PROVEN + DECISION_NEEDED | Artifact discovery should use artifact-local manifests, immutable index events, committed snapshots, and generated per-kind latest pointers; event/snapshot serialization remains proof-gated. S3 conditional-write support or an approved commit coordinator must be proved before relying on the index commit path. |
@@ -363,8 +364,9 @@ not become a warehouse, query engine, or replacement for NT `ParquetDataCatalog`
 - Lifecycle state starts as `active`.
 - After the configured quiet window passes, lifecycle state becomes `inactive`.
 - `inactive` permits archive/deep-archive transition, not deletion.
-- Archive storage under `$5/month` is treated as zero for planning decisions,
-  but restore/retrieval/minimum-duration costs remain explicit.
+- Archive-as-zero planning threshold is inherited from the
+  [Artifact Lifecycle Contract](../reference/contracts.md); restore,
+  retrieval, and minimum-duration costs remain explicit.
 - Future implementation must finalize exact quiet-window values and timestamp
   basis.
 - Restoring archive/deep-archive artifacts is an explicit operational step and

@@ -18,7 +18,8 @@ Raw evidence record
   -> deterministic NT catalog projection
   -> NT BacktestNode / NT reports / NT events / NT snapshots
   -> analytics read model
-  -> read-only dashboard / notebooks
+     -> read-only dashboard
+     -> research notebooks (non-production)
 ```
 
 Rules:
@@ -27,6 +28,8 @@ Rules:
 - NT catalog is canonical replay/backtest input.
 - NT reports/events/snapshots are trading truth for orders, fills, positions, PnL, account state, and portfolio state.
 - Analytics read models are derived and must carry source hashes/freshness.
+- Research notebooks are non-production consumers. They must not become a
+  dashboard relay, runtime data path, or production source of trading truth.
 - Dashboards are read-only and must expose staleness.
 - Dashboard outlook/strategy-state fields must be backed by an accepted source
   contract or omitted/labeled as non-trading-truth.

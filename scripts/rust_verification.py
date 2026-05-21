@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import fcntl
 import json
@@ -54,6 +55,7 @@ OPAQUE_RUST_LAUNCHERS = {
     "bash",
     "catchsegv",
     "chrt",
+    "chroot",
     "command",
     "dash",
     "docker",
@@ -69,6 +71,7 @@ OPAQUE_RUST_LAUNCHERS = {
     "python",
     "python2",
     "python3",
+    "podman",
     "rustup",
     "setsid",
     "sh",
@@ -674,6 +677,61 @@ def shell_command(tokens: list[str]) -> str | None:
     return None
 
 
+def python_constant_string(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = python_constant_string(node.left)
+        right = python_constant_string(node.right)
+        if left is not None and right is not None:
+            return left + right
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            else:
+                return None
+        return "".join(parts)
+    return None
+
+
+def python_call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = python_call_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    return ""
+
+
+def python_inline_command_payloads(tokens: list[str]) -> list[str]:
+    payloads: list[str] = []
+    for index, token in enumerate(tokens):
+        if token != "-c" or index + 1 >= len(tokens):
+            continue
+        try:
+            tree = ast.parse(tokens[index + 1])
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            if python_call_name(node.func) not in {
+                "os.system",
+                "subprocess.call",
+                "subprocess.check_call",
+                "subprocess.check_output",
+                "subprocess.Popen",
+                "subprocess.run",
+            }:
+                continue
+            payload = python_constant_string(node.args[0])
+            if payload is not None:
+                payloads.append(payload)
+    return payloads
+
+
 def env_command_index(tokens: list[str]) -> int:
     signal_options = ("--block-signal", "--default-signal", "--ignore-signal")
     index = 1
@@ -1042,8 +1100,80 @@ def exec_command_index(tokens: list[str]) -> int:
         if token in ("-c", "-l"):
             index += 1
             continue
+        if token.startswith("-") and not token.startswith("--") and set(token[1:]) <= {"c", "l"}:
+            index += 1
+            continue
         return index
     return index
+
+
+def container_wrapped_tokens(tokens: list[str]) -> list[str] | None:
+    if len(tokens) < 3:
+        return None
+    executable = basename_token(tokens[0])
+    if executable not in {"docker", "podman"}:
+        return None
+    command = tokens[1]
+    options_with_argument = {
+        "--add-host",
+        "--cpus",
+        "--entrypoint",
+        "--env",
+        "--env-file",
+        "--hostname",
+        "--mount",
+        "--name",
+        "--network",
+        "--platform",
+        "--user",
+        "--volume",
+        "--workdir",
+        "-e",
+        "-h",
+        "-m",
+        "-u",
+        "-v",
+        "-w",
+    }
+    index = 2
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in options_with_argument and index + 1 < len(tokens):
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    if command in {"run", "exec"}:
+        return tokens[index + 1 :] if index < len(tokens) else []
+    return None
+
+
+def chroot_wrapped_tokens(tokens: list[str]) -> list[str]:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token.startswith("--userspec=") or token.startswith("--groups="):
+            index += 1
+            continue
+        if token in {"--userspec", "--groups"} and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    return tokens[index + 1 :] if index < len(tokens) else []
 
 
 def setsid_command_index(tokens: list[str]) -> int:
@@ -1246,6 +1376,10 @@ def process_wrapper_tokens(tokens: list[str]) -> list[str] | None:
         return tokens[stdbuf_command_index(tokens) :]
     if executable == "catchsegv":
         return tokens[1:]
+    if executable in {"docker", "podman"}:
+        return container_wrapped_tokens(tokens)
+    if executable == "chroot":
+        return chroot_wrapped_tokens(tokens)
     if executable == "command":
         return tokens[command_builtin_index(tokens) :]
     if executable == "exec":
@@ -1307,6 +1441,8 @@ def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
         if command is not None:
             names.update(process_names_from_tokens(command_tokens(command), depth=depth + 1))
     elif executable.startswith("python"):
+        for payload in python_inline_command_payloads(tokens):
+            names.update(process_names_from_tokens(command_tokens(payload), depth=depth + 1))
         script_name = python_script_name(tokens, 1)
         if script_name is not None:
             names.add(script_name)
@@ -1373,6 +1509,12 @@ def tokens_may_be_renamed_rustc(tokens: list[str], *, depth: int = 0) -> bool:
     wrapped_tokens = process_wrapper_tokens(tokens)
     if wrapped_tokens is not None:
         return tokens_may_be_renamed_rustc(wrapped_tokens, depth=depth + 1)
+    executable = basename_token(tokens[0])
+    if executable.startswith("python"):
+        return any(
+            tokens_may_be_renamed_rustc(command_tokens(payload), depth=depth + 1)
+            for payload in python_inline_command_payloads(tokens)
+        )
     return False
 
 
@@ -1443,6 +1585,11 @@ def tokens_may_be_renamed_cargo(tokens: list[str], *, depth: int = 0) -> bool:
         elif executable in ("bash", "dash", "fish", "sh", "zsh"):
             command = shell_command(tokens)
             wrapped_tokens = command_tokens(command) if command is not None else None
+        elif executable.startswith("python"):
+            return any(
+                tokens_may_be_renamed_cargo(command_tokens(payload), depth=depth + 1)
+                for payload in python_inline_command_payloads(tokens)
+            )
     return wrapped_tokens is not None and tokens_may_be_renamed_cargo(wrapped_tokens, depth=depth + 1)
 
 
@@ -1506,6 +1653,9 @@ def command_scope_path_values(tokens: list[str], *, depth: int = 0) -> list[str]
         command = shell_command(tokens)
         if command is not None:
             values.extend(command_scope_path_values(command_tokens(command), depth=depth + 1))
+    elif executable.startswith("python"):
+        for payload in python_inline_command_payloads(tokens):
+            values.extend(command_scope_path_values(command_tokens(payload), depth=depth + 1))
     return values
 
 

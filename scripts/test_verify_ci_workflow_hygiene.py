@@ -1359,6 +1359,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
+            'env -iS "CARGO_TARGET_DIR=/tmp/raw-target cargo test"',
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
             "E=CARGO_TARGET_DIR\nexport $E=/tmp/raw-target\ncargo check",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),

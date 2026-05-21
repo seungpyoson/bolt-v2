@@ -2213,6 +2213,8 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "justfile.raw": "test:\n    cargo test\n",
             "justfile.spoof": 'bad:\n    echo "BOLT_MANAGED_JUST exit"\n    cargo build\n',
             "scripts/raw.sh": "#!/usr/bin/env bash\ncargo build\n",
+            "scripts/raw-substitution-dollar.sh": "#!/usr/bin/env bash\nx=$(cargo build)\n",
+            "scripts/raw-substitution-backtick.sh": "#!/usr/bin/env bash\nx=`cargo build`\n",
             "scripts/multiline-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo build\"\nbash -c \"$CMD\"\n",
             "scripts/multiline-quoted-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo\nbuild --target-dir /tmp/raw\"\nbash -c \"$CMD\"\n",
             "scripts/comment-blind.sh": "# comment with unbalanced quote '\ncargo build\necho 'closing quote'\n",
@@ -2245,6 +2247,10 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"spoofed justfile managed-guard drift was silent: {repo_errors!r}")
     if not any("scripts/raw.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-substitution-dollar.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script command-substitution raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-substitution-backtick.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script backtick raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/multiline-eval.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script multiline eval raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/multiline-quoted-eval.sh" in error and expected in error for error in repo_errors):

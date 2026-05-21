@@ -1107,6 +1107,76 @@ def command_tokens(command: str) -> list[str]:
         return command.split()
 
 
+def backtick_command_payloads(tokens: list[str]) -> list[list[str]]:
+    payloads: list[list[str]] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        start = token.find("`")
+        if start < 0:
+            index += 1
+            continue
+        payload_parts: list[str] = []
+        remainder = token[start + 1 :]
+        end = remainder.find("`")
+        if end >= 0:
+            payload = remainder[:end].strip()
+            if payload:
+                payloads.append(command_tokens(payload))
+            index += 1
+            continue
+        if remainder:
+            payload_parts.append(remainder)
+        cursor = index + 1
+        while cursor < len(tokens):
+            part = tokens[cursor]
+            end = part.find("`")
+            if end >= 0:
+                if end:
+                    payload_parts.append(part[:end])
+                break
+            payload_parts.append(part)
+            cursor += 1
+        if cursor < len(tokens):
+            payload = " ".join(payload_parts).strip()
+            if payload:
+                payloads.append(command_tokens(payload))
+            index = cursor + 1
+            continue
+        index += 1
+    return payloads
+
+
+def shell_command_substitution_payloads(tokens: list[str]) -> list[list[str]]:
+    payloads = backtick_command_payloads(tokens)
+    index = 0
+    while index + 1 < len(tokens):
+        token = tokens[index]
+        if (token == "$" or token.endswith("$") or token == "<") and tokens[index + 1] == "(":
+            cursor = index + 2
+            depth = 1
+            payload: list[str] = []
+            while cursor < len(tokens) and depth:
+                current = tokens[cursor]
+                if current == "(":
+                    depth += 1
+                    payload.append(current)
+                elif current == ")":
+                    depth -= 1
+                    if depth:
+                        payload.append(current)
+                else:
+                    payload.append(current)
+                cursor += 1
+            if depth == 0:
+                if payload:
+                    payloads.append(payload)
+                index = cursor
+                continue
+        index += 1
+    return payloads
+
+
 def shell_quotes_are_balanced(text: str) -> bool:
     quote: str | None = None
     escaped = False
@@ -2094,6 +2164,14 @@ def tokens_have_raw_cargo(
         return True
     if allow_storage_only and tokens_have_target_routing_override(tokens):
         return True
+    for payload in shell_command_substitution_payloads(tokens):
+        if tokens_have_raw_cargo(
+            payload,
+            depth=depth + 1,
+            allow_storage_only=allow_storage_only,
+            variables=variables,
+        ):
+            return True
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
         cargo_aliases: set[str] = set()
@@ -2313,6 +2391,9 @@ def tokens_have_repo_automation_raw_cargo(
     if not tokens:
         return False
     variables = variables or {}
+    for payload in shell_command_substitution_payloads(tokens):
+        if tokens_have_raw_cargo_launch(payload, variables=variables):
+            return True
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
         segment_variables = dict(variables)
@@ -2363,6 +2444,9 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
         if is_justfile and managed_just_recipe:
             continue
         tokens = command_tokens(stripped)
+        if tokens_have_repo_automation_raw_cargo(tokens, variables=shell_variables):
+            errors.append("repo automation raw Cargo must use managed rust_verification wrapper")
+            break
         assignments, is_persistent_assignment = persistent_shell_assignment_values(tokens)
         if is_persistent_assignment:
             shell_variables.update(assignments)

@@ -517,6 +517,77 @@ def shell_normalized_tokens(tokens: list[str]) -> list[str]:
     return normalized
 
 
+def backtick_command_payloads(tokens: list[str]) -> list[list[str]]:
+    payloads: list[list[str]] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        start = token.find("`")
+        if start < 0:
+            index += 1
+            continue
+        payload_parts: list[str] = []
+        remainder = token[start + 1 :]
+        end = remainder.find("`")
+        if end >= 0:
+            payload = remainder[:end].strip()
+            if payload:
+                payloads.append(command_tokens(payload))
+            index += 1
+            continue
+        if remainder:
+            payload_parts.append(remainder)
+        cursor = index + 1
+        while cursor < len(tokens):
+            part = tokens[cursor]
+            end = part.find("`")
+            if end >= 0:
+                if end:
+                    payload_parts.append(part[:end])
+                break
+            payload_parts.append(part)
+            cursor += 1
+        if cursor < len(tokens):
+            payload = " ".join(payload_parts).strip()
+            if payload:
+                payloads.append(command_tokens(payload))
+            index = cursor + 1
+            continue
+        index += 1
+    return payloads
+
+
+def shell_command_substitution_payloads(tokens: list[str]) -> list[list[str]]:
+    normalized = shell_normalized_tokens(tokens)
+    payloads = backtick_command_payloads(normalized)
+    index = 0
+    while index + 1 < len(normalized):
+        token = normalized[index]
+        if (token == "$" or token.endswith("$") or token == "<") and normalized[index + 1] == "(":
+            cursor = index + 2
+            depth = 1
+            payload: list[str] = []
+            while cursor < len(normalized) and depth:
+                current = normalized[cursor]
+                if current == "(":
+                    depth += 1
+                    payload.append(current)
+                elif current == ")":
+                    depth -= 1
+                    if depth:
+                        payload.append(current)
+                else:
+                    payload.append(current)
+                cursor += 1
+            if depth == 0:
+                if payload:
+                    payloads.append(payload)
+                index = cursor
+                continue
+        index += 1
+    return payloads
+
+
 def shell_command_segments(tokens: list[str]) -> list[list[str]]:
     segments: list[list[str]] = []
     segment: list[str] = []
@@ -1127,19 +1198,22 @@ def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
         return set()
     if depth > PROCESS_PARSE_DEPTH_LIMIT:
         return {PROCESS_PARSE_DEPTH_EXCEEDED}
+    substitution_names: set[str] = set()
+    for payload in shell_command_substitution_payloads(tokens):
+        substitution_names.update(process_names_from_tokens(payload, depth=depth + 1))
     assignment_index = consume_assignment_words(tokens, 0)
     if assignment_index >= len(tokens):
-        return set()
+        return substitution_names
     if assignment_index:
         tokens = tokens[assignment_index:]
     segments = shell_command_segments(tokens)
     if segments:
-        names: set[str] = set()
+        names = set(substitution_names)
         for segment in segments:
             names.update(process_names_from_tokens(segment, depth=depth + 1))
         return names
     executable = basename_token(tokens[0])
-    names = {executable}
+    names = {executable, *substitution_names}
     wrapped_tokens = process_wrapper_tokens(tokens)
     if wrapped_tokens is not None:
         names.update(process_names_from_tokens(wrapped_tokens, depth=depth + 1))

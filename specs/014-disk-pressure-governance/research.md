@@ -24,6 +24,7 @@
 - `rustup run stable -- -- cargo build`
 - depth-cap observability for deeply wrapped process detection
 - wrapper inventory for `timeout`, `xargs`, `setsid`, `taskset`, `ionice`, `chrt`, `make`, `python -c` / `os.system(...)`, and symlink-renamed `cargo` or `rustc`
+- destructive managed cargo subcommands, especially `cargo clean`, because generic managed cargo passthrough currently shares the managed target root with ordinary build/test commands
 
 **Alternatives considered**:
 - Re-open #286 for wrapper inventory: rejected because #286 owns managed-cache retention, while #374 owns cargo invocation and wrapper hardening.
@@ -40,7 +41,7 @@
 
 ## Decision: Treat no-mistakes as a verified Cargo-routing gap
 
-**Rationale**: For operator `spson` on 2026-05-18, no-mistakes v1.18.3 was running without `CARGO_TARGET_DIR` in the daemon environment. The repo `.no-mistakes.yaml` configures raw `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check`. A recorded bolt-v2 no-mistakes run wrote Cargo output under `USER_HOME_DIR/.no-mistakes/worktrees/WORKTREE_HASH/WORKTREE_ID/target/...` and failed with `No space left on device`. This proves no-mistakes is not only theoretical drift; it is a real unmanaged target producer.
+**Rationale**: For the audited operator environment on 2026-05-18, no-mistakes v1.18.3 was running without `CARGO_TARGET_DIR` in the daemon environment. The repo `.no-mistakes.yaml` configures raw `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check`. A recorded bolt-v2 no-mistakes run wrote Cargo output under `USER_HOME_DIR/.no-mistakes/worktrees/WORKTREE_HASH/WORKTREE_ID/target/...` and failed with `No space left on device`. This proves no-mistakes is not only theoretical drift; it is a real unmanaged target producer.
 
 **Alternatives considered**:
 - Assume no-mistakes inherits managed routing: rejected by daemon env check and historical failure path.

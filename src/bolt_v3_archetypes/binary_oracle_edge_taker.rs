@@ -873,7 +873,13 @@ fn validate_parameter_bounds(
 }
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
-    check_enabled_order_template(context, "entry_order", entry)
+    let mut errors = check_enabled_order_template(context, "entry_order", entry);
+    if entry.is_reduce_only {
+        errors.push(format!(
+            "{context}: parameters.entry_order.is_reduce_only must be false because `binary_oracle_edge_taker` entry orders open the managed position"
+        ));
+    }
+    errors
 }
 
 fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {

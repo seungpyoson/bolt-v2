@@ -292,6 +292,15 @@
 - [x] T129 [US3] GREEN: Apply minimal archetype validation fix on the existing order-template validation path
 - [ ] T130 [US3] Verify focused config tests, docs/source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
 
+## Phase 30: TDD Slice 26 - Entry Reduce-Only Rejection
+
+**Goal**: Resolve the no-mistakes reduce-only entry finding without narrowing NT order-template breadth: `binary_oracle_edge_taker` entry orders open the managed position, so `entry_order.is_reduce_only=true` must be rejected before NT submission.
+
+- [x] T131 [P] [US3] Record no-mistakes and pinned-NT evidence for reduce-only entry semantics
+- [x] T132 [US3] RED: Add public config and runtime builder regressions for reduce-only entry rejection
+- [x] T133 [US3] GREEN: Reject reduce-only entry orders on the existing strategy/archetype validation paths
+- [ ] T134 [US3] Verify focused config/runtime tests, source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.

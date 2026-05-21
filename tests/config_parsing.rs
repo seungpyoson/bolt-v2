@@ -755,6 +755,41 @@ fn bolt_v3_archetype_accepts_mixed_maker_taker_order_configs() {
 }
 
 #[test]
+fn bolt_v3_archetype_rejects_reduce_only_entry_order() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let fixture = fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+
+    let strategy_source = fixture.replacen("is_reduce_only = false", "is_reduce_only = true", 1);
+    let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
+        .expect("reduce-only entry order should parse typed config");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("entry_order") && message.contains("is_reduce_only")),
+        "reduce-only entry order should be rejected before NT submission: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_archetype_accepts_nt_model_valid_limit_order_templates_without_maker_tuple_policy() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
@@ -1925,7 +1960,7 @@ fn bolt_v3_archetype_rejects_limit_if_touched_gtd_entry_without_expiry() {
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_limit_if_touched_entry_nt_boolean_flags() {
+fn bolt_v3_archetype_accepts_limit_if_touched_entry_quote_quantity_flag() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -1950,7 +1985,6 @@ fn bolt_v3_archetype_accepts_limit_if_touched_entry_nt_boolean_flags() {
             "time_in_force = \"fok\"\nis_post_only = false",
             "time_in_force = \"gtc\"\ntrigger_price = 0.39\nis_post_only = false",
         )
-        .replacen("is_reduce_only = false", "is_reduce_only = true", 1)
         .replacen("is_quote_quantity = false", "is_quote_quantity = true", 1);
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
@@ -1964,7 +1998,7 @@ fn bolt_v3_archetype_accepts_limit_if_touched_entry_nt_boolean_flags() {
 
     assert!(
         messages.is_empty(),
-        "LimitIfTouched entry boolean flags should be accepted as NT order fields: {messages:#?}"
+        "LimitIfTouched entry quote-quantity flag should be accepted as an NT order field: {messages:#?}"
     );
 }
 
@@ -2222,7 +2256,7 @@ fn bolt_v3_archetype_rejects_stop_limit_gtd_entry_without_expiry() {
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_stop_limit_entry_nt_boolean_flags() {
+fn bolt_v3_archetype_accepts_stop_limit_entry_quote_quantity_flag() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -2244,7 +2278,6 @@ fn bolt_v3_archetype_accepts_stop_limit_entry_nt_boolean_flags() {
             "time_in_force = \"fok\"\nis_post_only = false",
             "time_in_force = \"gtc\"\ntrigger_price = 0.52\nis_post_only = false",
         )
-        .replacen("is_reduce_only = false", "is_reduce_only = true", 1)
         .replacen("is_quote_quantity = false", "is_quote_quantity = true", 1);
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&stop_limit_strategy_source)
@@ -2258,7 +2291,7 @@ fn bolt_v3_archetype_accepts_stop_limit_entry_nt_boolean_flags() {
 
     assert!(
         messages.is_empty(),
-        "StopLimit entry boolean flags should be accepted as NT order fields: {messages:#?}"
+        "StopLimit entry quote-quantity flag should be accepted as an NT order field: {messages:#?}"
     );
 }
 

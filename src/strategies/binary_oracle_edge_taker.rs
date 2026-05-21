@@ -3809,6 +3809,10 @@ impl BinaryOracleEdgeTaker {
         price: Price,
         client_order_id: ClientOrderId,
     ) -> Result<nautilus_model::orders::OrderAny> {
+        anyhow::ensure!(
+            !self.config.entry_order.is_reduce_only,
+            "entry_is_reduce_only must be false because binary_oracle_edge_taker entry orders open the managed position"
+        );
         build_configured_order(
             &mut self.core,
             ORDER_CONFIGURATION_PREFIX_ENTRY,
@@ -10030,6 +10034,27 @@ mod tests {
 
         assert!(
             error.to_string().contains("exit_is_quote_quantity"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn reduce_only_entry_order_build_is_rejected_before_nt_factory() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        strategy.config.entry_order.is_reduce_only = true;
+        let error = strategy
+            .build_configured_entry_order(
+                InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET"),
+                OrderSide::Buy,
+                Quantity::new(10.0, 2),
+                Price::new(0.50, 2),
+                ClientOrderId::from("O-19700101-000000-001-ROE-1"),
+            )
+            .expect_err("reduce-only entry should fail before NT factory construction");
+
+        assert!(
+            error.to_string().contains("entry_is_reduce_only"),
             "{error:#}"
         );
     }

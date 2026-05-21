@@ -97,6 +97,25 @@ fn tiny_canary_schema_doc_names_required_operator_artifacts() {
 }
 
 #[test]
+fn tiny_canary_runtime_contract_does_not_prebind_live_order_ids() {
+    let runtime_contract = include_str!("../docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md");
+    let gate_section = runtime_contract
+        .split("### 11.8 Live canary gate boundary")
+        .nth(1)
+        .and_then(|section| section.split("## 12. Panic Gate").next())
+        .expect("runtime contract must contain live canary gate boundary section");
+
+    assert!(
+        !gate_section.contains("client_order_id_hash"),
+        "live canary gate boundary must not require pre-run client order id hash"
+    );
+    assert!(
+        !gate_section.contains("venue_order_id_hash"),
+        "live canary gate boundary must not require pre-run venue order id hash"
+    );
+}
+
+#[test]
 fn tiny_canary_quickstart_names_conditional_strategy_cancel_artifact() {
     let quickstart = include_str!("../specs/001-thin-live-canary-path/quickstart.md");
 

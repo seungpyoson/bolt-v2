@@ -1838,9 +1838,27 @@ async fn live_canary_gate_rejects_stale_no_submit_linkage_fields() {
         },
     );
 
-    check_bolt_v3_live_canary_gate(&loaded)
+    let error = check_bolt_v3_live_canary_gate(&loaded)
         .await
         .expect_err("stale no-submit linkage must fail closed");
+
+    match error {
+        BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport { reasons, .. } => {
+            assert!(
+                reasons
+                    .iter()
+                    .any(|reason| reason.contains(APPROVAL_ID_HASH_KEY))
+                    && reasons
+                        .iter()
+                        .any(|reason| reason.contains(EXECUTABLE_IDENTITY_KEY))
+                    && reasons
+                        .iter()
+                        .any(|reason| reason.contains(CONFIG_BUNDLE_CHECKSUM_KEY)),
+                "stale linkage should report all linkage fields, got {reasons:?}"
+            );
+        }
+        other => panic!("expected unsatisfied no-submit report rejection, got {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

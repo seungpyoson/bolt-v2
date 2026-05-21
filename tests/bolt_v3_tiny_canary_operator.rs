@@ -721,7 +721,8 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
             "record_kind": "nt_submit_event",
             "run_id": run_id,
             "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
-            "client_order_id_hash": client_order_id_hash
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
         }),
     );
     write_json_proof(
@@ -889,7 +890,8 @@ fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
             "record_kind": "nt_submit_event",
             "run_id": run_id,
             "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
-            "client_order_id_hash": client_order_id_hash
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
         }),
     );
     write_json_proof(
@@ -995,7 +997,8 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
             "record_kind": "nt_submit_event",
             "run_id": run_id,
             "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
-            "client_order_id_hash": client_order_id_hash
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
         }),
     );
     write_json_proof(
@@ -1109,7 +1112,8 @@ fn live_result_paths_reject_open_restart_reconciliation() {
             "record_kind": "nt_submit_event",
             "run_id": run_id,
             "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
-            "client_order_id_hash": client_order_id_hash
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
         }),
     );
     write_json_proof(
@@ -1176,6 +1180,198 @@ fn write_json_proof(path: &Path, value: serde_json::Value) {
     .expect("proof should write");
 }
 
+fn write_terminal_live_result_proofs(
+    paths: &Phase8OperatorLiveResultPaths,
+    run_id: &str,
+    strategy_instance_id_hash: &str,
+    client_order_id_hash: &str,
+    nt_submit_venue_order_id_hash: &str,
+    venue_order_id_hash: &str,
+) {
+    let scanned_hash = phase8_sha256_text("phase8-secret-scan");
+    let retention_hash = phase8_sha256_text("phase8-retention-purge");
+    write_json_proof(
+        Path::new(&paths.decision_evidence_path),
+        serde_json::json!({
+            "record_kind": "decision_evidence",
+            "run_id": run_id,
+            "strategy_instance_id_hash": strategy_instance_id_hash,
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        Path::new(&paths.nt_submit_event_path),
+        serde_json::json!({
+            "record_kind": "nt_submit_event",
+            "run_id": run_id,
+            "strategy_instance_id_hash": strategy_instance_id_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": nt_submit_venue_order_id_hash
+        }),
+    );
+    write_json_proof(
+        Path::new(&paths.venue_order_state_path),
+        serde_json::json!({
+            "record_kind": "venue_order_state",
+            "run_id": run_id,
+            "strategy_instance_id_hash": strategy_instance_id_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        }),
+    );
+    write_json_proof(
+        Path::new(&paths.restart_reconciliation_path),
+        serde_json::json!({
+            "record_kind": "restart_reconciliation",
+            "source_run_id": run_id,
+            "strategy_instance_id_hash": strategy_instance_id_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        }),
+    );
+    write_json_proof(
+        Path::new(&paths.post_run_hygiene_path),
+        serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": run_id,
+            "strategy_instance_id_hash": strategy_instance_id_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "raw_secret_residue_absent": true,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }),
+    );
+}
+
+#[test]
+fn live_result_paths_accept_complete_terminal_post_run_proofs() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let run_id = "phase8-live-run-001";
+    let approved_strategy_hash = phase8_sha256_text("bitcoin_updown_main");
+    let client_order_id_hash = "c".repeat(64);
+    let venue_order_id_hash = "d".repeat(64);
+    let paths = Phase8OperatorLiveResultPaths {
+        decision_evidence_path: temp
+            .path()
+            .join("decision.json")
+            .to_string_lossy()
+            .to_string(),
+        nt_submit_event_path: temp
+            .path()
+            .join("nt-submit.json")
+            .to_string_lossy()
+            .to_string(),
+        venue_order_state_path: temp
+            .path()
+            .join("venue-state.json")
+            .to_string_lossy()
+            .to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: temp
+            .path()
+            .join("restart.json")
+            .to_string_lossy()
+            .to_string(),
+        post_run_hygiene_path: temp
+            .path()
+            .join("post-hygiene.json")
+            .to_string_lossy()
+            .to_string(),
+    };
+    let snapshot = paths
+        .snapshot_before_run()
+        .expect("empty pre-run snapshot should be captured");
+    write_terminal_live_result_proofs(
+        &paths,
+        run_id,
+        &approved_strategy_hash,
+        &client_order_id_hash,
+        &venue_order_id_hash,
+        &venue_order_id_hash,
+    );
+
+    let (decision_ref, live_order_ref, result_refs) = paths
+        .to_refs(&snapshot, run_id, &approved_strategy_hash)
+        .expect("complete terminal post-run proofs should convert to refs");
+
+    assert_eq!(
+        live_order_ref.strategy_instance_id_hash,
+        approved_strategy_hash
+    );
+    assert_eq!(live_order_ref.client_order_id_hash, client_order_id_hash);
+    assert_eq!(live_order_ref.venue_order_id_hash, venue_order_id_hash);
+    assert_eq!(decision_ref.path_hash.len(), 64);
+    assert_eq!(result_refs.nt_submit_event_ref.path_hash.len(), 64);
+    assert_eq!(result_refs.venue_order_state_ref.path_hash.len(), 64);
+    assert!(result_refs.strategy_cancel_ref.is_none());
+    assert_eq!(result_refs.restart_reconciliation_ref.path_hash.len(), 64);
+    assert_eq!(result_refs.post_run_hygiene_ref.path_hash.len(), 64);
+}
+
+#[test]
+fn live_result_paths_reject_nt_submit_venue_order_mismatch() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let run_id = "phase8-live-run-001";
+    let approved_strategy_hash = phase8_sha256_text("bitcoin_updown_main");
+    let client_order_id_hash = "c".repeat(64);
+    let venue_order_id_hash = "d".repeat(64);
+    let stale_venue_order_id_hash = "e".repeat(64);
+    let paths = Phase8OperatorLiveResultPaths {
+        decision_evidence_path: temp
+            .path()
+            .join("decision.json")
+            .to_string_lossy()
+            .to_string(),
+        nt_submit_event_path: temp
+            .path()
+            .join("nt-submit.json")
+            .to_string_lossy()
+            .to_string(),
+        venue_order_state_path: temp
+            .path()
+            .join("venue-state.json")
+            .to_string_lossy()
+            .to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: temp
+            .path()
+            .join("restart.json")
+            .to_string_lossy()
+            .to_string(),
+        post_run_hygiene_path: temp
+            .path()
+            .join("post-hygiene.json")
+            .to_string_lossy()
+            .to_string(),
+    };
+    let snapshot = paths
+        .snapshot_before_run()
+        .expect("empty pre-run snapshot should be captured");
+    write_terminal_live_result_proofs(
+        &paths,
+        run_id,
+        &approved_strategy_hash,
+        &client_order_id_hash,
+        &stale_venue_order_id_hash,
+        &venue_order_id_hash,
+    );
+
+    let error = paths
+        .to_refs(&snapshot, run_id, &approved_strategy_hash)
+        .expect_err("nt submit event venue order id must match venue state");
+
+    assert!(
+        error.to_string().contains("nt_submit_event")
+            && error.to_string().contains("venue_order_id_hash"),
+        "error should mention nt submit venue-order mismatch: {error}"
+    );
+}
+
 #[test]
 fn live_result_paths_reject_unapproved_post_run_hygiene_strategy_hash() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -1227,7 +1423,8 @@ fn live_result_paths_reject_unapproved_post_run_hygiene_strategy_hash() {
             "record_kind": "nt_submit_event",
             "run_id": run_id,
             "strategy_instance_id_hash": approved_strategy_hash,
-            "client_order_id_hash": client_order_id_hash
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
         }),
     );
     write_json_proof(
@@ -1910,6 +2107,13 @@ impl Phase8OperatorLiveResultPaths {
             "decision_evidence",
             "client_order_id_hash",
         )?;
+        let venue_state_proof =
+            phase8_read_operator_evidence_proof(&self.venue_order_state_path, "venue_order_state")?;
+        let venue_order_id_hash = phase8_required_proof_sha256(
+            venue_state_proof.venue_order_id_hash.as_deref(),
+            "venue_order_state",
+            "venue_order_id_hash",
+        )?;
         phase8_assert_operator_evidence_proof(
             &self.decision_evidence_path,
             "decision_evidence",
@@ -1926,14 +2130,7 @@ impl Phase8OperatorLiveResultPaths {
             None,
             Some(expected_strategy_instance_id_hash),
             Some(&client_order_id_hash),
-            None,
-        )?;
-        let venue_state_proof =
-            phase8_read_operator_evidence_proof(&self.venue_order_state_path, "venue_order_state")?;
-        let venue_order_id_hash = phase8_required_proof_sha256(
-            venue_state_proof.venue_order_id_hash.as_deref(),
-            "venue_order_state",
-            "venue_order_id_hash",
+            Some(&venue_order_id_hash),
         )?;
         phase8_assert_operator_evidence_proof(
             &self.venue_order_state_path,

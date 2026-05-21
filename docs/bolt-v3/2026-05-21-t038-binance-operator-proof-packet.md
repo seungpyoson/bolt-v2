@@ -1,86 +1,108 @@
 # T038 Binance Runner Guide
 
-Date: 2026-05-21
+Date: 2026-05-22
 Scope: T038 no-submit readiness only.
 
-This is not a readiness claim, not canary approval, and not production trading
-approval. T038 and T046 remain unchecked.
+This is not canary approval and not production trading approval. T038 is now
+satisfied by the EC2/EIP no-submit proof below. T046 remains unchecked.
 
 ## Current Answer
 
-Do not rerun T038 from the local Mac while the Binance API key is whitelisted
-only for EC2 EIP `34.248.143.2`.
+The Binance blocker on the local reruns was runner IP mismatch.
 
-Fresh evidence says the latest no-submit command ran on local macOS
-`SP-MB-Pro.local` from public IP `58.232.146.158`, while AWS says EIP
-`34.248.143.2` is attached to EC2 instance `i-0b68843392a62e359` and that
-instance is `stopped`.
+Evidence:
 
-Therefore the latest Binance `Invalid X-MBX-APIKEY header` failure is consistent
-with runner-IP mismatch. It is not proof that the SSM key/secret pair is wrong.
+- Local reruns used public IP `58.232.146.158`.
+- Operator attested the Binance API key allowed EC2 EIP `34.248.143.2`.
+- AWS showed EIP `34.248.143.2` attached to EC2 instance `i-0b68843392a62e359`.
+- The local no-submit rerun failed Binance SBE with `Invalid X-MBX-APIKEY header`.
+- The EC2 rerun from EIP `34.248.143.2`, using the same approved config hash and resolved SSM secrets, connected Binance SBE and satisfied every no-submit readiness stage.
 
-## What Is Verified Or Operator-Attested
+This proves the local failure cause for T038. It does not prove tiny canary
+safety or production live trading readiness.
 
-- Current head: `ac656c2bdd9c5457a3682aa29355d94c48715049`
-- `origin/main`: `d55ccfefc316928a67a23cf076c8b7e584e011bd`
-- PR #388: open, head `ac656c2bdd9c5457a3682aa29355d94c48715049`, base `831368756bf5a7f8398944502dcce5fcc7c7952d`, merge state `CLEAN`
-- `config/live.local.toml` mode `0600`, size `5024`, SHA-256 `85fe8e17f2ffe813d464e8f5fe1908604060b5af9c5fd79f7b22ffe770b25289`
-- `config/live.local.toml` configures Binance `environment = "mainnet"`, REST `https://api.binance.com`, and SBE WS `wss://stream-sbe.binance.com/ws`
-- Rust mapping passes those URLs into NT `BinanceDataClientConfig` as `Some(...)`
-- `secrets check` and `secrets resolve` passed without printing secret values
-- Operator-confirmed Binance console checks: key type confirmed, active confirmed, configured public-key fingerprint matched, EIP `34.248.143.2` allowed
+## EC2 No-Submit Proof
 
-## Latest T038 Rerun
+Runner:
+
+- EC2 instance: `i-0b68843392a62e359`
+- Public IP: `34.248.143.2`
+- SSM state before run: `Online`
+- Current head: `1245264f294ae096155bffc3236fb692cc46b46f`
+- Current-head Linux aarch64 binary SHA-256: `7ef548c74688fc96ef3f06726df1838fb0742fe59176d386211ba3d680eccdc7`
+- Binary path on EC2: `/tmp/bolt-v2-t038-1245264f`
+
+Config:
+
+- Root config path on EC2: `/tmp/config/live.local.toml`
+- Root config SHA-256: `85fe8e17f2ffe813d464e8f5fe1908604060b5af9c5fd79f7b22ffe770b25289`
+- Root config mode/size on EC2: `0600`, `5024`
+- Strategy config path on EC2: `/tmp/config/strategies/binary_oracle.example.toml`
+- Strategy config SHA-256: `3961588674c44e2265ad1797856be6e2a4f386ca2c55b7691e4e0f3c500e22b1`
+
+Secret prechecks:
+
+- `secrets check` passed on EC2 without printing secret values.
+- `secrets resolve` passed on EC2 without printing secret values.
 
 Command:
 
 ```sh
-cargo run --bin bolt-v2 -- no-submit-readiness --config /Users/spson/Projects/Claude/bolt-v2/.worktrees/production-readiness-evidence-audit/config/live.local.toml
+cd /tmp
+/tmp/bolt-v2-t038-1245264f no-submit-readiness --config /tmp/config/live.local.toml
 ```
 
-Result:
+Runtime evidence:
 
-- Report path: `/Users/spson/Projects/Claude/bolt-v2/var/bolt-v3-live/reports/no-submit-readiness.json`
-- Report mode/size: `0600`, `1283` bytes
-- Report SHA-256: `1ea225543fad0f739e711b2842db254bc9a52f6677eba015a84f032a69c4b5a4`
+- Binance SBE connected: `Connected: client_id=binance_reference`
+- Polymarket data connected.
+- Polymarket execution connected.
+- Reference readiness stage was satisfied.
+- Controlled disconnect completed.
+- The no-submit run wrote the readiness report.
+
+Report:
+
+- Path on EC2: `/Users/spson/Projects/Claude/bolt-v2/var/bolt-v3-live/reports/no-submit-readiness.json`
+- Mode/size: `0644`, `935`
+- SHA-256: `53b945f92a2c747345ff65fb551ebf337cc4a5b5ab5f9552a92a4c6f68fb4126`
 - Schema: `bolt-v3.no-submit-readiness.v2`
-- Generated timestamp: `1779373729` (`2026-05-21 23:28:49 KST`)
+- Generated timestamp: `1779377947` (`2026-05-22 00:39:07 KST`)
 - Config bundle checksum: `a6f0f1d1e472c88d848b8505dc138e136a55314ec89d80dbb6be926ab7b88639`
-- Executable identity: `ffb56ce27899987b5028e2913dfd203d78297eb89968b99016bdfdb5f5d4ace3`
-- Satisfied stages: `operator_approval`, `secret_resolution`, `live_node_build`, `controlled_disconnect`, `report_write`
-- Failed stage: `controlled_connect`
-- Skipped stage: `reference_readiness`
-- Runtime evidence: `binance_reference` data did not connect; `polymarket_main` data/execution connected; NT did not start trader
-- Process check: no `bolt-v2` executable remained running after command exit
+- Executable identity: `7ef548c74688fc96ef3f06726df1838fb0742fe59176d386211ba3d680eccdc7`
+- Satisfied stages: `operator_approval`, `secret_resolution`, `live_node_build`, `controlled_connect`, `reference_readiness`, `controlled_disconnect`, `report_write`
 
-This is blocker evidence only. T038 is not satisfied.
+T038 is satisfied by this evidence only.
 
-## Why EC2 Matters
+## Pre-Existing EC2 Service Finding
+
+Starting EC2 also auto-started a pre-existing service that was not part of the
+T038 current-head no-submit run.
 
 Evidence:
 
-- Local public IP probe returned `58.232.146.158`
-- AWS `describe-addresses` for `34.248.143.2` returned instance `i-0b68843392a62e359`
-- AWS `describe-instances` returned state `stopped` for that instance
-- AWS `describe-security-groups` for `sg-08921a4b725682171` returned SSH ingress only from `59.8.178.135/32` and `118.129.66.2/32`, not current local IP `58.232.146.158`
-- AWS `ssm describe-instance-information` returned no managed-instance record for `i-0b68843392a62e359` while stopped
-- Binance SBE rejected the local run with `Invalid X-MBX-APIKEY header`
+- Unit: `bolt-v2.service`
+- Unit state after remediation: `inactive`, `disabled`
+- Unit command: `/opt/bolt-v2/bolt-v2 run --config /opt/bolt-v2/config/live.toml`
+- Installed binary SHA-256: `4c95cd843f3329e4d267f0c9db91997f9ba8b411be2e9efbe89aab57b4f45078`
+- Installed config SHA-256: `fa7d129c2d17bc6762458b7f48591797a4130ac5d523ab7e09ed340764d3eb06`
+- Current-head binary used for T038: `/tmp/bolt-v2-t038-1245264f`
+- Current-head binary SHA-256: `7ef548c74688fc96ef3f06726df1838fb0742fe59176d386211ba3d680eccdc7`
 
-If Binance allows only EIP `34.248.143.2`, T038 must run from that EIP or the
-allowlist must temporarily include the runner IP. Running from the local Mac is
-expected to fail the Binance SBE handshake.
+Classification:
 
-## Next Safe Step
+- This was a pre-existing `bolt-v2` live service, not the current-head T038 no-submit runner.
+- It is a production control-surface blocker before any T046 canary or production trading.
+- The service was stopped and disabled during the EC2 session.
+- Follow-up process check showed no `bolt-v2` process.
+- Targeted journal review for the final auto-start window showed `Not starting trader: engine client(s) not connected` after a Binance SBE schema mismatch in the stale service.
 
-Pick one runner path:
+## Remaining Gate
 
-1. Preferred: start EC2 instance `i-0b68843392a62e359`, verify it still has public IP `34.248.143.2`, then prove access by either SSM online status or SSH from an allowed source before rerunning T038 from that host.
-2. If using SSH from the current local network, first update or use an allowed EC2 security-group source; current local IP `58.232.146.158` is not in the observed SSH ingress list. If the security group is changed temporarily, revert it after the run and record that revert in the evidence.
-3. Alternative: temporarily allow the local runner public IP in Binance, rerun T038 locally, then remove that allowlist entry.
-
-Do not run T046 until T038 produces a fresh report where every required stage is
-`satisfied` and the live canary gate accepts the report's approval hash,
-executable identity, config checksum, freshness, and stages.
+Do not run T046 until there is separate explicit operator approval for the
+tiny-capital canary and the live canary gate is evaluated against this fresh
+T038 report, current executable identity, config checksum, approval evidence,
+and report freshness.
 
 ## Binance References
 

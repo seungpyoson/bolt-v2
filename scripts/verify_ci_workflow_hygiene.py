@@ -1458,7 +1458,9 @@ def simple_cargo_aliases(tokens: list[str]) -> set[str]:
         name, separator, value = token.partition("=")
         value_tokens = command_tokens(value) if separator else []
         value_names = {pathlib.Path(value_token).name for value_token in value_tokens}
-        if separator and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name) and "cargo" in value_names:
+        if separator and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name) and any(
+            raw_rust_tool_token(value_name) for value_name in value_names
+        ):
             aliases.add(name)
     return aliases
 

@@ -606,7 +606,7 @@ def env_short_split_command(token: str, rest: list[str]) -> str | None:
     if suffix:
         return " ".join([suffix, *rest]).strip()
     if rest:
-        return rest[0]
+        return " ".join(rest).strip()
     return None
 
 
@@ -876,6 +876,207 @@ def stdbuf_command_index(tokens: list[str]) -> int:
     return index
 
 
+def command_builtin_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token == "-p":
+            index += 1
+            continue
+        if token in ("-v", "-V"):
+            return len(tokens)
+        return index
+    return index
+
+
+def exec_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token == "-a" and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token in ("-c", "-l"):
+            index += 1
+            continue
+        return index
+    return index
+
+
+def setsid_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in ("-c", "--ctty", "-f", "--fork", "-w", "--wait"):
+            index += 1
+            continue
+        return index
+    return index
+
+
+def time_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in ("-f", "--format", "-o", "--output") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--format=", "--output=")) or re.fullmatch(r"-[fo].+", token):
+            index += 1
+            continue
+        if token in ("-a", "--append", "-p", "--portability", "-v", "--verbose"):
+            index += 1
+            continue
+        return index
+    return index
+
+
+def taskset_command_index(tokens: list[str]) -> int:
+    index = 1
+    cpu_list_mode = False
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in ("-c", "--cpu-list") and index + 1 < len(tokens):
+            index += 2
+            cpu_list_mode = True
+            continue
+        if token.startswith("--cpu-list=") or re.fullmatch(r"-c.+", token):
+            index += 1
+            cpu_list_mode = True
+            continue
+        if token in ("-a", "--all-tasks"):
+            index += 1
+            continue
+        if token in ("-p", "--pid"):
+            return len(tokens)
+        if token.startswith("-"):
+            index += 1
+            continue
+        if not cpu_list_mode:
+            index += 1
+        return index
+    return index
+
+
+def ionice_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in ("-c", "--class", "-n", "--classdata") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--class=", "--classdata=")) or re.fullmatch(r"-[cn].+", token):
+            index += 1
+            continue
+        if token in ("-p", "--pid"):
+            return len(tokens)
+        if token in ("-t", "--ignore"):
+            index += 1
+            continue
+        return index
+    return index
+
+
+def chrt_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in ("-p", "--pid"):
+            return len(tokens)
+        if token in ("-T", "--sched-runtime", "-P", "--sched-period", "-D", "--sched-deadline") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--sched-runtime=", "--sched-period=", "--sched-deadline=")):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    if index < len(tokens):
+        index += 1
+    return index
+
+
+def xargs_command_index(tokens: list[str]) -> int:
+    options_with_argument = {"-a", "--arg-file", "-d", "--delimiter", "-E", "-I", "-L", "-n", "--max-args", "-P", "--max-procs", "-s", "--max-chars"}
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in options_with_argument and index + 1 < len(tokens):
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
+            index += 1
+            continue
+        if re.fullmatch(r"-(?:a|d|E|I|L|n|P|s).+", token):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return index
+    return index
+
+
+def process_wrapper_tokens(tokens: list[str]) -> list[str] | None:
+    if not tokens:
+        return None
+    executable = basename_token(tokens[0])
+    if executable == "env":
+        return env_wrapped_tokens(tokens)
+    if executable in ("sudo", "doas"):
+        return tokens[sudo_command_index(tokens) :]
+    if executable == "nice":
+        return tokens[nice_command_index(tokens) :]
+    if executable == "flock":
+        return flock_wrapped_tokens(tokens)
+    if executable == "rustup" and len(tokens) >= 4 and tokens[1] == "run":
+        return rustup_run_tokens(tokens)
+    if executable == "timeout":
+        return tokens[timeout_command_index(tokens) :]
+    if executable == "stdbuf":
+        return tokens[stdbuf_command_index(tokens) :]
+    if executable == "catchsegv":
+        return tokens[1:]
+    if executable == "command":
+        return tokens[command_builtin_index(tokens) :]
+    if executable == "exec":
+        return tokens[exec_command_index(tokens) :]
+    if executable == "nohup":
+        return tokens[1:]
+    if executable == "setsid":
+        return tokens[setsid_command_index(tokens) :]
+    if executable == "time":
+        return tokens[time_command_index(tokens) :]
+    if executable == "taskset":
+        return tokens[taskset_command_index(tokens) :]
+    if executable == "ionice":
+        return tokens[ionice_command_index(tokens) :]
+    if executable == "chrt":
+        return tokens[chrt_command_index(tokens) :]
+    if executable == "xargs":
+        return tokens[xargs_command_index(tokens) :]
+    return None
+
+
 def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
     # Depth cap guards against pathological re-tokenisation loops while
     # leaving headroom for realistic legitimate wrapper stacks. A supported
@@ -890,22 +1091,9 @@ def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
         tokens = tokens[assignment_index:]
     executable = basename_token(tokens[0])
     names = {executable}
-    if executable == "env":
-        names.update(process_names_from_tokens(env_wrapped_tokens(tokens), depth=depth + 1))
-    elif executable in ("sudo", "doas"):
-        names.update(process_names_from_tokens(tokens[sudo_command_index(tokens) :], depth=depth + 1))
-    elif executable == "nice":
-        names.update(process_names_from_tokens(tokens[nice_command_index(tokens) :], depth=depth + 1))
-    elif executable == "flock":
-        names.update(process_names_from_tokens(flock_wrapped_tokens(tokens), depth=depth + 1))
-    elif executable == "rustup" and len(tokens) >= 4 and tokens[1] == "run":
-        names.update(process_names_from_tokens(rustup_run_tokens(tokens), depth=depth + 1))
-    elif executable == "timeout":
-        names.update(process_names_from_tokens(tokens[timeout_command_index(tokens) :], depth=depth + 1))
-    elif executable == "stdbuf":
-        names.update(process_names_from_tokens(tokens[stdbuf_command_index(tokens) :], depth=depth + 1))
-    elif executable == "catchsegv":
-        names.update(process_names_from_tokens(tokens[1:], depth=depth + 1))
+    wrapped_tokens = process_wrapper_tokens(tokens)
+    if wrapped_tokens is not None:
+        names.update(process_names_from_tokens(wrapped_tokens, depth=depth + 1))
     elif executable == "eval":
         eval_index = 1
         if eval_index < len(tokens) and tokens[eval_index] == "--":
@@ -938,6 +1126,8 @@ def command_may_launch_rust(command: str) -> bool:
     tokens = command_tokens(command)
     if not tokens:
         return False
+    if command_may_be_renamed_cargo(command):
+        return True
     executable = basename_token(tokens[0])
     if executable_is_rust_tool(executable):
         return True
@@ -969,7 +1159,31 @@ def command_may_launch_build(command: str) -> bool:
 
 def command_may_be_renamed_cargo(command: str) -> bool:
     tokens = command_tokens(command)
-    return bool(tokens) and "/" in tokens[0] and cargo_subcommand(tokens[1:]) in CARGO_PROCESS_SUBCOMMANDS
+    return tokens_may_be_renamed_cargo(tokens)
+
+
+def tokens_may_be_renamed_cargo(tokens: list[str], *, depth: int = 0) -> bool:
+    if not tokens or depth > 6:
+        return False
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index >= len(tokens):
+        return False
+    if assignment_index:
+        return tokens_may_be_renamed_cargo(tokens[assignment_index:], depth=depth + 1)
+    if "/" in tokens[0] and cargo_subcommand(tokens[1:]) in CARGO_PROCESS_SUBCOMMANDS:
+        return True
+    wrapped_tokens = process_wrapper_tokens(tokens)
+    if wrapped_tokens is None:
+        executable = basename_token(tokens[0])
+        if executable == "eval":
+            eval_index = 1
+            if eval_index < len(tokens) and tokens[eval_index] == "--":
+                eval_index += 1
+            wrapped_tokens = command_tokens(" ".join(tokens[eval_index:]))
+        elif executable in ("bash", "dash", "fish", "sh", "zsh"):
+            command = shell_command(tokens)
+            wrapped_tokens = command_tokens(command) if command is not None else None
+    return wrapped_tokens is not None and tokens_may_be_renamed_cargo(wrapped_tokens, depth=depth + 1)
 
 
 def matching_process_pattern(command: str, patterns: list[str]) -> str | None:

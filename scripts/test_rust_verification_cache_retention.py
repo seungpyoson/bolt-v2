@@ -1759,6 +1759,7 @@ def assert_v6_red_active_process_wrapper_options_expose_cargo_pattern() -> None:
         "env --split-string='cargo build'",
         "env -S'cargo build'",
         "env -Scargo build",
+        "env -iS timeout 30 cargo build",
         "env -S timeout 30 cargo build",
         "env -iuLD_PRELOAD cargo build",
         "env -iu LD_PRELOAD cargo build",
@@ -1785,6 +1786,31 @@ def assert_v6_red_active_process_wrapper_options_expose_cargo_pattern() -> None:
             misses.append(f"{command!r}: names={sorted(names)!r} matched={matched!r}")
     if misses:
         raise AssertionError("wrapper option parsing must expose wrapped cargo process names: " + "; ".join(misses))
+
+
+def assert_v6_red_wrapped_renamed_cargo_launches_are_classified() -> None:
+    owner = load_owner_module()
+    commands = [
+        "time /tmp/c build",
+        "command /tmp/c test",
+        "exec /tmp/c clean",
+        "nohup /tmp/c build",
+        "setsid /tmp/c build",
+        "taskset -c 0 /tmp/c build",
+        "ionice -c2 /tmp/c build",
+        "chrt -r 10 /tmp/c build",
+        "xargs /tmp/c build",
+    ]
+    misses: list[str] = []
+    for command in commands:
+        if not owner.command_may_be_renamed_cargo(command) or not owner.command_may_launch_rust(command):
+            misses.append(
+                f"{command!r}: renamed={owner.command_may_be_renamed_cargo(command)!r} "
+                f"may_launch={owner.command_may_launch_rust(command)!r} "
+                f"names={sorted(owner.command_process_names(command))!r}"
+            )
+    if misses:
+        raise AssertionError("wrapped renamed cargo launches must be classified: " + "; ".join(misses))
 
 
 def assert_v6_red_active_process_parser_uses_command_scope_without_cwd() -> None:
@@ -2452,6 +2478,7 @@ def assert_v6_red_policy_gaps() -> None:
     checks = [
         assert_v6_red_active_process_parser_gaps,
         assert_v6_red_active_process_wrapper_options_expose_cargo_pattern,
+        assert_v6_red_wrapped_renamed_cargo_launches_are_classified,
         assert_v6_red_active_process_parser_uses_command_scope_without_cwd,
         assert_v6_red_active_process_parser_fails_closed_for_unscoped_wrapped_rust_without_cwd,
         assert_v6_red_active_process_parser_ignores_unscoped_opaque_build_without_cwd,

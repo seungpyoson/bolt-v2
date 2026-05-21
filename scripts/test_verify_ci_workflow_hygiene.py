@@ -1538,6 +1538,9 @@ commands:
   shellevalraw: bash -lc 'eval "cargo test"'
   shellalias: bash -lc 'alias c=cargo; c test'
   shellaliasquoted: bash -lc 'alias c="command cargo"; c test'
+  shellaliasclippy: bash -lc 'alias c=clippy; c --all-targets'
+  shellaliasnextest: bash -lc 'alias c=nextest; c run'
+  shellaliasrustc: bash -lc 'alias c=rustc; c --crate-name bolt_v2'
   wrapped: command cargo fmt --check
   stdbufwrap: stdbuf -oL cargo build
   catchsegvwrap: catchsegv cargo test
@@ -1611,6 +1614,9 @@ commands: { test: "cargo test" }
         "shellevalraw",
         "shellalias",
         "shellaliasquoted",
+        "shellaliasclippy",
+        "shellaliasnextest",
+        "shellaliasrustc",
         "wrapped",
         "stdbufwrap",
         "catchsegvwrap",

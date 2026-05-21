@@ -1741,6 +1741,31 @@ def assert_v6_red_active_process_parser_gaps() -> None:
         raise AssertionError("active-process parser silently missed v6 cargo launch forms: " + "; ".join(misses))
 
 
+def assert_v6_red_active_process_wrapper_options_expose_cargo_pattern() -> None:
+    owner = load_owner_module()
+    cases = [
+        "sudo -R /tmp cargo build",
+        "sudo -c staff cargo build",
+        "sudo -a pam cargo build",
+        "env --split-string 'cargo build'",
+        "env --split-string='cargo build'",
+        "env --block-signal cargo build",
+        "env --block-signal=PIPE cargo build",
+        "nice --adjustment 10 cargo build",
+        "nice --adjustment=10 cargo build",
+        "flock --timeout 5 /tmp/bolt.lock cargo build",
+        "flock --timeout=5 /tmp/bolt.lock cargo build",
+    ]
+    misses: list[str] = []
+    for command in cases:
+        names = owner.command_process_names(command)
+        matched = owner.matching_process_pattern(command, ["cargo"])
+        if "cargo" not in names or matched != "cargo":
+            misses.append(f"{command!r}: names={sorted(names)!r} matched={matched!r}")
+    if misses:
+        raise AssertionError("wrapper option parsing must expose wrapped cargo process names: " + "; ".join(misses))
+
+
 def assert_v6_red_active_process_parser_uses_command_scope_without_cwd() -> None:
     result, debug_file_exists = cache_prune_for_visible_command(
         "timeout 30 cargo build --manifest-path {repo}/Cargo.toml",
@@ -2361,6 +2386,7 @@ exit 0
 def assert_v6_red_policy_gaps() -> None:
     checks = [
         assert_v6_red_active_process_parser_gaps,
+        assert_v6_red_active_process_wrapper_options_expose_cargo_pattern,
         assert_v6_red_active_process_parser_uses_command_scope_without_cwd,
         assert_v6_red_active_process_parser_fails_closed_for_unscoped_wrapped_rust_without_cwd,
         assert_v6_red_active_process_parser_ignores_unscoped_opaque_build_without_cwd,

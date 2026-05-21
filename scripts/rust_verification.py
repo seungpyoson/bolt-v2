@@ -535,12 +535,23 @@ def shell_command(tokens: list[str]) -> str | None:
 
 
 def env_command_index(tokens: list[str]) -> int:
+    signal_options = ("--block-signal", "--default-signal", "--ignore-signal")
     index = 1
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
             return index + 1
         if token in ("-i", "--ignore-environment", "-0", "--null", "-v", "--debug"):
+            index += 1
+            continue
+        if token == "--split-string" and index + 1 < len(tokens):
+            return index
+        if token.startswith("--split-string="):
+            return index
+        if token in signal_options:
+            index += 1
+            continue
+        if token.startswith(tuple(f"{option}=" for option in signal_options)):
             index += 1
             continue
         if token in ("-u", "--unset", "-C", "--chdir") and index + 1 < len(tokens):
@@ -570,10 +581,17 @@ def env_command_index(tokens: list[str]) -> int:
 
 def env_wrapped_tokens(tokens: list[str]) -> list[str]:
     index = env_command_index(tokens)
-    if index < len(tokens) and index + 1 < len(tokens):
+    if index < len(tokens):
         token = tokens[index]
-        if token == "-S" or (token.startswith("-") and not token.startswith("--") and "S" in token[1:]):
-            split_tokens = command_tokens(tokens[index + 1])
+        split_command: str | None = None
+        if (token == "-S" or token == "--split-string") and index + 1 < len(tokens):
+            split_command = tokens[index + 1]
+        elif token.startswith("--split-string="):
+            split_command = token.split("=", 1)[1]
+        elif token.startswith("-") and not token.startswith("--") and "S" in token[1:] and index + 1 < len(tokens):
+            split_command = tokens[index + 1]
+        if split_command is not None:
+            split_tokens = command_tokens(split_command)
             split_index = env_command_index(["env", *split_tokens]) - 1
             return split_tokens[max(split_index, 0) :]
     return tokens[index:]
@@ -601,6 +619,12 @@ def sudo_command_index(tokens: list[str]) -> int:
         "--other-user",
         "-D",
         "--chdir",
+        "-R",
+        "--chroot",
+        "-a",
+        "--auth-type",
+        "-c",
+        "--login-class",
     }
     index = 1
     while index < len(tokens):
@@ -630,6 +654,12 @@ def nice_command_index(tokens: list[str]) -> int:
         if token == "-n" and index + 1 < len(tokens):
             index += 2
             continue
+        if token == "--adjustment" and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith("--adjustment="):
+            index += 1
+            continue
         if re.fullmatch(r"-n-?\d+", token):
             index += 1
             continue
@@ -651,10 +681,10 @@ def flock_wrapped_tokens(tokens: list[str]) -> list[str]:
             return command_tokens(tokens[index + 1])
         if token.startswith("--command="):
             return command_tokens(token.split("=", 1)[1])
-        if token in ("-E", "--conflict-exit-code", "-w", "--wait") and index + 1 < len(tokens):
+        if token in ("-E", "--conflict-exit-code", "-w", "--wait", "--timeout") and index + 1 < len(tokens):
             index += 2
             continue
-        if token.startswith(("--conflict-exit-code=", "--wait=")):
+        if token.startswith(("--conflict-exit-code=", "--wait=", "--timeout=")):
             index += 1
             continue
         if token.startswith("-"):

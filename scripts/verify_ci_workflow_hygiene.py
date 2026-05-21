@@ -1375,6 +1375,28 @@ def exact_head_governance_cache_errors(workflow_text: str) -> list[str]:
     return []
 
 
+def text_has_path_style_cargo_config(text: str) -> bool:
+    for match in re.finditer(r"\bcargo\b[^\n;&|]*", text):
+        tokens = command_tokens(match.group(0))
+        for index, token in enumerate(tokens):
+            if pathlib.Path(token).name != "cargo":
+                continue
+            cursor = index + 1
+            while cursor < len(tokens) and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
+                option = tokens[cursor]
+                if option in ("--config", "-C") and cursor + 1 < len(tokens):
+                    if cargo_config_looks_like_path(tokens[cursor + 1]):
+                        return True
+                    cursor += 2
+                    continue
+                if option.startswith("--config=") and cargo_config_looks_like_path(option.split("=", 1)[1]):
+                    return True
+                if option.startswith("-C") and option != "-C" and cargo_config_looks_like_path(option[2:]):
+                    return True
+                cursor += 1
+    return False
+
+
 def raw_rust_storage_errors(workflow_text: str) -> list[str]:
     text = re.sub(r"\\\s*\n\s*", " ", uncommented_text(workflow_text.splitlines()))
     checks: tuple[tuple[str, str], ...] = (
@@ -1383,7 +1405,7 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         (r"(?:target-dir|build\.target-dir)[^\n]*>\s*\.cargo/config\.toml|\.cargo/config\.toml[^\n]*(?:target-dir|build\.target-dir)", ".cargo/config.toml build.target-dir raw target override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[\"']?build\.target-dir", "cargo --config build.target-dir raw target override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:\[build\]|build\s*=|build\.)[^\n;&|]*target-dir", "cargo --config build.target-dir raw target override must be classified"),
-        (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:\[build\]|build\s*=|build\.)[^\n;&|]*target\\u(?:002[Dd]|002d)dir", "cargo --config build.target-dir raw target override must be classified"),
+        (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:\[build\]|build\s*=|build\.)[^\n;&|]*target\\(?:u002[Dd]|U0000002[Dd])dir", "cargo --config build.target-dir raw target override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:build\.rustflags|rustflags\s*=)[^\n;&|]*(?:--out-dir|--artifact-dir)", "cargo --config build.rustflags raw output override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s-C\s*[\"']?build\.target-dir", "cargo --config build.target-dir raw target override must be classified"),
         (r"\bcargo\b[^\n;&|]*(?:\s--config(?:\s+|=)|\s-C\s+)[\"']?(?:/|\./|[^\s\n;&|\"']+\.toml\b)", "cargo --config file raw target override must be classified"),
@@ -1402,7 +1424,7 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         (r"\bcargo\b[^\n;&|]*\brustc\b[^\n;&|]*\s--artifact-dir\b", "cargo rustc --artifact-dir raw output override must be classified"),
         (r"\bcargo\b[^\n;&|]*\binstall\b(?=[^\n;&|]*\s--target-dir\b)(?=[^\n;&|]*\s--root\b)", "cargo install build target and install root ownership must be classified separately"),
         (r"\bcargo\b[^\n;&|]*\binstall\b[^\n;&|]*\s--root\b[^\n;&|]*\bs3://", "cargo install S3 install root must be classified"),
-        (r"(^|[^A-Za-z0-9_$\{])[\"']?BOLT_MANAGED_JUST[\"']?\s*(?:=|:)", "BOLT_MANAGED_JUST private just recipe bypass must be classified"),
+        (r"(^|[^A-Za-z0-9_$\{])[\"']?BOLT_MANAGED_JUST[\"']?\s*(?:=|:|<<)", "BOLT_MANAGED_JUST private just recipe bypass must be classified"),
         (r"\bno-mistakes\b[^\n]*\bcargo\b", "no-mistakes raw Cargo drift must be classified"),
         (r"\bno-mistakes\b[^\n]*--worktree[^\n]*(?:--target-dir\s+target|\btarget\b)", "no-mistakes worktree-local target path evidence must be reported"),
         (r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])(?:\.?/)?target(?:[\s/\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$CARGO_TARGET_DIR[\"']?|\$\{CARGO_TARGET_DIR[^}]*\})(?:/(?:\./)?[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$GITHUB_WORKSPACE[\"']?|\$\{GITHUB_WORKSPACE[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$PWD[\"']?|\$\{PWD[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])\$\{\{\s*(?:github\.workspace|env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}(?:/(?:\./)?(?:target(?:/[^\s\"']*)?|[^\s\"']*))?(?:[\s\"']|$))", "S3 active mutable target cache must be rejected"),
@@ -1411,6 +1433,9 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
     for pattern, message in checks:
         if re.search(pattern, text):
             errors.append(message)
+    config_file_message = "cargo --config file raw target override must be classified"
+    if text_has_path_style_cargo_config(text) and config_file_message not in errors:
+        errors.append(config_file_message)
     if (
         re.search(r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)", text)
         and re.search(r"\$\([^)\n]*\brust_verification\.py\s+target-dir\b[^)\n]*\)", text)

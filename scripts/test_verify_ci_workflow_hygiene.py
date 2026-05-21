@@ -1146,6 +1146,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --config build.target-dir raw target override must be classified",
         ),
         (
+            "cargo --config 'build = { \"target\\U0000002Ddir\" = \"/tmp/raw-target\" }' check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
             "cargo --config 'build.rustflags = [\"--out-dir\", \"/tmp/raw-out\"]' check",
             "cargo --config build.rustflags raw output override must be classified",
         ),
@@ -1270,7 +1274,19 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --config file raw target override must be classified",
         ),
         (
+            "cargo --config myconfig.txt check",
+            "cargo --config file raw target override must be classified",
+        ),
+        (
+            "cargo --config=myconfig.txt check",
+            "cargo --config file raw target override must be classified",
+        ),
+        (
             "cargo -C .cargo/config.toml check",
+            "cargo --config file raw target override must be classified",
+        ),
+        (
+            "cargo -C myconfig.txt check",
             "cargo --config file raw target override must be classified",
         ),
         (
@@ -1279,6 +1295,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "BOLT_MANAGED_JUST=1 just managed-build",
+            "BOLT_MANAGED_JUST private just recipe bypass must be classified",
+        ),
+        (
+            "echo \"BOLT_MANAGED_JUST<<EOF\" >> \"$GITHUB_ENV\"",
             "BOLT_MANAGED_JUST private just recipe bypass must be classified",
         ),
         (

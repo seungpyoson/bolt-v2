@@ -2152,11 +2152,15 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "order_notional_target": "5.00",
             "maximum_position_notional": "10.00",
             "book_impact_cap_bps": 50,
+            "entry_side": "buy",
+            "entry_position_side": "long",
             "entry_order_type": "limit",
             "entry_time_in_force": "fok",
             "entry_is_post_only": false,
             "entry_is_reduce_only": false,
             "entry_is_quote_quantity": false,
+            "exit_side": "sell",
+            "exit_position_side": "long",
             "exit_order_type": "market",
             "exit_time_in_force": "ioc",
             "exit_is_post_only": false,
@@ -2520,6 +2524,168 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         !approval_consumption_path.exists(),
         "exit order mismatch must not create consumption evidence"
     );
+
+    for (order_key, field_key, envelope_field, value) in [
+        (
+            "entry_order",
+            "expire_time_unix_nanos",
+            "entry_expire_time_unix_nanos",
+            toml::Value::Integer(4_102_444_800_000_000_000),
+        ),
+        (
+            "entry_order",
+            "trigger_price",
+            "entry_trigger_price",
+            toml::Value::Float(0.52),
+        ),
+        (
+            "entry_order",
+            "activation_price",
+            "entry_activation_price",
+            toml::Value::Float(0.51),
+        ),
+        (
+            "entry_order",
+            "trigger_type",
+            "entry_trigger_type",
+            toml::Value::String("default".to_string()),
+        ),
+        (
+            "entry_order",
+            "trailing_offset",
+            "entry_trailing_offset",
+            toml::Value::Float(2.5),
+        ),
+        (
+            "entry_order",
+            "trailing_offset_type",
+            "entry_trailing_offset_type",
+            toml::Value::String("basis_points".to_string()),
+        ),
+        (
+            "exit_order",
+            "expire_time_unix_nanos",
+            "exit_expire_time_unix_nanos",
+            toml::Value::Integer(4_102_444_800_000_000_000),
+        ),
+        (
+            "exit_order",
+            "trigger_price",
+            "exit_trigger_price",
+            toml::Value::Float(0.48),
+        ),
+        (
+            "exit_order",
+            "activation_price",
+            "exit_activation_price",
+            toml::Value::Float(0.47),
+        ),
+        (
+            "exit_order",
+            "trigger_type",
+            "exit_trigger_type",
+            toml::Value::String("default".to_string()),
+        ),
+        (
+            "exit_order",
+            "trailing_offset",
+            "exit_trailing_offset",
+            toml::Value::Float(3.0),
+        ),
+        (
+            "exit_order",
+            "trailing_offset_type",
+            "exit_trailing_offset_type",
+            toml::Value::String("ticks".to_string()),
+        ),
+    ] {
+        let mut mismatched_optional_order_field_loaded = loaded.clone();
+        let order = mismatched_optional_order_field_loaded.strategies[0]
+            .config
+            .parameters
+            .as_table_mut()
+            .and_then(|parameters| parameters.get_mut(order_key))
+            .and_then(toml::Value::as_table_mut)
+            .expect("strategy order parameters should be a TOML table");
+        order.insert(field_key.to_string(), value);
+        let consumption_path = temp.path().join(format!(
+            "phase8-approval-consumed-{order_key}-{field_key}.json"
+        ));
+        let mut mismatched_optional_order_field_envelope = envelope.clone();
+        mismatched_optional_order_field_envelope.approval_consumption_path =
+            consumption_path.to_string_lossy().to_string();
+        let mismatched_optional_order_field_error = mismatched_optional_order_field_envelope
+            .validate_and_consume_against(
+                "expected-head",
+                "expected-config-hash",
+                "operator-approved-canary-001",
+                &mismatched_optional_order_field_loaded,
+                1_500,
+            )
+            .expect_err("optional order-shape drift against loaded TOML should fail closed");
+        assert!(
+            mismatched_optional_order_field_error
+                .to_string()
+                .contains(&format!(
+                    "phase8 financial envelope `{envelope_field}` does not match loaded TOML"
+                )),
+            "error should mention mismatched optional order-shape field: {mismatched_optional_order_field_error}"
+        );
+        assert!(
+            !consumption_path.exists(),
+            "optional order-shape drift must not create consumption evidence"
+        );
+    }
+
+    for (field_key, envelope_field, value) in [
+        (
+            "side",
+            "entry_side",
+            toml::Value::String("sell".to_string()),
+        ),
+        (
+            "position_side",
+            "entry_position_side",
+            toml::Value::String("short".to_string()),
+        ),
+    ] {
+        let mut mismatched_required_order_field_loaded = loaded.clone();
+        let entry_order = mismatched_required_order_field_loaded.strategies[0]
+            .config
+            .parameters
+            .as_table_mut()
+            .and_then(|parameters| parameters.get_mut("entry_order"))
+            .and_then(toml::Value::as_table_mut)
+            .expect("strategy entry order parameters should be a TOML table");
+        entry_order.insert(field_key.to_string(), value);
+        let consumption_path = temp.path().join(format!(
+            "phase8-approval-consumed-entry-order-{field_key}.json"
+        ));
+        let mut mismatched_required_order_field_envelope = envelope.clone();
+        mismatched_required_order_field_envelope.approval_consumption_path =
+            consumption_path.to_string_lossy().to_string();
+        let mismatched_required_order_field_error = mismatched_required_order_field_envelope
+            .validate_and_consume_against(
+                "expected-head",
+                "expected-config-hash",
+                "operator-approved-canary-001",
+                &mismatched_required_order_field_loaded,
+                1_500,
+            )
+            .expect_err("entry side/position drift against loaded TOML should fail closed");
+        assert!(
+            mismatched_required_order_field_error
+                .to_string()
+                .contains(&format!(
+                    "phase8 financial envelope `{envelope_field}` does not match loaded TOML"
+                )),
+            "error should mention mismatched entry side/position field: {mismatched_required_order_field_error}"
+        );
+        assert!(
+            !consumption_path.exists(),
+            "entry side/position drift must not create consumption evidence"
+        );
+    }
 
     let mut multi_strategy_loaded = loaded.clone();
     let mut secondary_strategy = multi_strategy_loaded.strategies[0].clone();
@@ -3021,11 +3187,15 @@ fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_orde
         "order_notional_target": "5.00",
         "maximum_position_notional": "10.00",
         "book_impact_cap_bps": 50,
+        "entry_side": "buy",
+        "entry_position_side": "long",
         "entry_order_type": "limit",
         "entry_time_in_force": "fok",
         "entry_is_post_only": false,
         "entry_is_reduce_only": false,
         "entry_is_quote_quantity": false,
+        "exit_side": "sell",
+        "exit_position_side": "long",
         "exit_order_type": "market",
         "exit_time_in_force": "ioc",
         "exit_is_post_only": false,

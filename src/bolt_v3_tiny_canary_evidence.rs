@@ -1606,7 +1606,7 @@ impl Phase8OperatorApprovalEnvelope {
     }
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct Phase8FinancialEnvelopeEvidenceFile {
     max_live_order_count: u32,
@@ -1626,13 +1626,29 @@ struct Phase8FinancialEnvelopeEvidenceFile {
     order_notional_target: String,
     maximum_position_notional: String,
     book_impact_cap_bps: i64,
+    entry_side: String,
+    entry_position_side: String,
     entry_order_type: String,
     entry_time_in_force: String,
+    entry_expire_time_unix_nanos: Option<i64>,
+    entry_trigger_price: Option<f64>,
+    entry_activation_price: Option<f64>,
+    entry_trigger_type: Option<String>,
+    entry_trailing_offset: Option<f64>,
+    entry_trailing_offset_type: Option<String>,
     entry_is_post_only: bool,
     entry_is_reduce_only: bool,
     entry_is_quote_quantity: bool,
+    exit_side: String,
+    exit_position_side: String,
     exit_order_type: String,
     exit_time_in_force: String,
+    exit_expire_time_unix_nanos: Option<i64>,
+    exit_trigger_price: Option<f64>,
+    exit_activation_price: Option<f64>,
+    exit_trigger_type: Option<String>,
+    exit_trailing_offset: Option<f64>,
+    exit_trailing_offset_type: Option<String>,
     exit_is_post_only: bool,
     exit_is_reduce_only: bool,
     exit_is_quote_quantity: bool,
@@ -1729,16 +1745,44 @@ impl Phase8FinancialEnvelopeEvidenceFile {
                 runtime_parameters,
                 stringify!(book_impact_cap_bps),
             )?,
+            entry_side: required_toml_string(entry_order, stringify!(side))?,
+            entry_position_side: required_toml_string(entry_order, stringify!(position_side))?,
             entry_order_type: required_toml_string(entry_order, stringify!(order_type))?,
             entry_time_in_force: required_toml_string(entry_order, stringify!(time_in_force))?,
+            entry_expire_time_unix_nanos: optional_toml_integer(
+                entry_order,
+                stringify!(expire_time_unix_nanos),
+            )?,
+            entry_trigger_price: optional_toml_float(entry_order, stringify!(trigger_price))?,
+            entry_activation_price: optional_toml_float(entry_order, stringify!(activation_price))?,
+            entry_trigger_type: optional_toml_string(entry_order, stringify!(trigger_type))?,
+            entry_trailing_offset: optional_toml_float(entry_order, stringify!(trailing_offset))?,
+            entry_trailing_offset_type: optional_toml_string(
+                entry_order,
+                stringify!(trailing_offset_type),
+            )?,
             entry_is_post_only: required_toml_bool(entry_order, stringify!(is_post_only))?,
             entry_is_reduce_only: required_toml_bool(entry_order, stringify!(is_reduce_only))?,
             entry_is_quote_quantity: required_toml_bool(
                 entry_order,
                 stringify!(is_quote_quantity),
             )?,
+            exit_side: required_toml_string(exit_order, stringify!(side))?,
+            exit_position_side: required_toml_string(exit_order, stringify!(position_side))?,
             exit_order_type: required_toml_string(exit_order, stringify!(order_type))?,
             exit_time_in_force: required_toml_string(exit_order, stringify!(time_in_force))?,
+            exit_expire_time_unix_nanos: optional_toml_integer(
+                exit_order,
+                stringify!(expire_time_unix_nanos),
+            )?,
+            exit_trigger_price: optional_toml_float(exit_order, stringify!(trigger_price))?,
+            exit_activation_price: optional_toml_float(exit_order, stringify!(activation_price))?,
+            exit_trigger_type: optional_toml_string(exit_order, stringify!(trigger_type))?,
+            exit_trailing_offset: optional_toml_float(exit_order, stringify!(trailing_offset))?,
+            exit_trailing_offset_type: optional_toml_string(
+                exit_order,
+                stringify!(trailing_offset_type),
+            )?,
             exit_is_post_only: required_toml_bool(exit_order, stringify!(is_post_only))?,
             exit_is_reduce_only: required_toml_bool(exit_order, stringify!(is_reduce_only))?,
             exit_is_quote_quantity: required_toml_bool(exit_order, stringify!(is_quote_quantity))?,
@@ -1817,11 +1861,43 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         if self.book_impact_cap_bps != loaded.book_impact_cap_bps {
             return Err(financial_envelope_mismatch(stringify!(book_impact_cap_bps)));
         }
+        if self.entry_side != loaded.entry_side {
+            return Err(financial_envelope_mismatch(stringify!(entry_side)));
+        }
+        if self.entry_position_side != loaded.entry_position_side {
+            return Err(financial_envelope_mismatch(stringify!(entry_position_side)));
+        }
         if self.entry_order_type != loaded.entry_order_type {
             return Err(financial_envelope_mismatch(stringify!(entry_order_type)));
         }
         if self.entry_time_in_force != loaded.entry_time_in_force {
             return Err(financial_envelope_mismatch(stringify!(entry_time_in_force)));
+        }
+        if self.entry_expire_time_unix_nanos != loaded.entry_expire_time_unix_nanos {
+            return Err(financial_envelope_mismatch(stringify!(
+                entry_expire_time_unix_nanos
+            )));
+        }
+        if self.entry_trigger_price != loaded.entry_trigger_price {
+            return Err(financial_envelope_mismatch(stringify!(entry_trigger_price)));
+        }
+        if self.entry_activation_price != loaded.entry_activation_price {
+            return Err(financial_envelope_mismatch(stringify!(
+                entry_activation_price
+            )));
+        }
+        if self.entry_trigger_type != loaded.entry_trigger_type {
+            return Err(financial_envelope_mismatch(stringify!(entry_trigger_type)));
+        }
+        if self.entry_trailing_offset != loaded.entry_trailing_offset {
+            return Err(financial_envelope_mismatch(stringify!(
+                entry_trailing_offset
+            )));
+        }
+        if self.entry_trailing_offset_type != loaded.entry_trailing_offset_type {
+            return Err(financial_envelope_mismatch(stringify!(
+                entry_trailing_offset_type
+            )));
         }
         if self.entry_is_post_only != loaded.entry_is_post_only {
             return Err(financial_envelope_mismatch(stringify!(entry_is_post_only)));
@@ -1836,11 +1912,43 @@ impl Phase8FinancialEnvelopeEvidenceFile {
                 entry_is_quote_quantity
             )));
         }
+        if self.exit_side != loaded.exit_side {
+            return Err(financial_envelope_mismatch(stringify!(exit_side)));
+        }
+        if self.exit_position_side != loaded.exit_position_side {
+            return Err(financial_envelope_mismatch(stringify!(exit_position_side)));
+        }
         if self.exit_order_type != loaded.exit_order_type {
             return Err(financial_envelope_mismatch(stringify!(exit_order_type)));
         }
         if self.exit_time_in_force != loaded.exit_time_in_force {
             return Err(financial_envelope_mismatch(stringify!(exit_time_in_force)));
+        }
+        if self.exit_expire_time_unix_nanos != loaded.exit_expire_time_unix_nanos {
+            return Err(financial_envelope_mismatch(stringify!(
+                exit_expire_time_unix_nanos
+            )));
+        }
+        if self.exit_trigger_price != loaded.exit_trigger_price {
+            return Err(financial_envelope_mismatch(stringify!(exit_trigger_price)));
+        }
+        if self.exit_activation_price != loaded.exit_activation_price {
+            return Err(financial_envelope_mismatch(stringify!(
+                exit_activation_price
+            )));
+        }
+        if self.exit_trigger_type != loaded.exit_trigger_type {
+            return Err(financial_envelope_mismatch(stringify!(exit_trigger_type)));
+        }
+        if self.exit_trailing_offset != loaded.exit_trailing_offset {
+            return Err(financial_envelope_mismatch(stringify!(
+                exit_trailing_offset
+            )));
+        }
+        if self.exit_trailing_offset_type != loaded.exit_trailing_offset_type {
+            return Err(financial_envelope_mismatch(stringify!(
+                exit_trailing_offset_type
+            )));
         }
         if self.exit_is_post_only != loaded.exit_is_post_only {
             return Err(financial_envelope_mismatch(stringify!(exit_is_post_only)));
@@ -2114,6 +2222,49 @@ fn required_toml_bool(
         .get(field)
         .and_then(toml::Value::as_bool)
         .ok_or_else(|| anyhow!("phase8 financial envelope loaded TOML field `{field}` is missing"))
+}
+
+fn optional_toml_string(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &'static str,
+) -> Result<Option<String>> {
+    match table.get(field) {
+        Some(value) => value
+            .as_str()
+            .map(|value| Some(value.to_string()))
+            .ok_or_else(|| {
+                anyhow!("phase8 financial envelope loaded TOML field `{field}` must be a string")
+            }),
+        None => Ok(None),
+    }
+}
+
+fn optional_toml_integer(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &'static str,
+) -> Result<Option<i64>> {
+    match table.get(field) {
+        Some(value) => value.as_integer().map(Some).ok_or_else(|| {
+            anyhow!("phase8 financial envelope loaded TOML field `{field}` must be an integer")
+        }),
+        None => Ok(None),
+    }
+}
+
+fn optional_toml_float(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &'static str,
+) -> Result<Option<f64>> {
+    match table.get(field) {
+        Some(value) => value
+            .as_float()
+            .or_else(|| value.as_integer().map(|integer| integer as f64))
+            .map(Some)
+            .ok_or_else(|| {
+                anyhow!("phase8 financial envelope loaded TOML field `{field}` must be a number")
+            }),
+        None => Ok(None),
+    }
 }
 
 #[derive(Serialize)]

@@ -346,6 +346,17 @@
 - [x] T153 [US2] GREEN: Include `data-model.md` in the verifier, update expiry wording, and add config/runtime pass-through regressions
 - [x] T154 [US2] Verify focused non-GTD expiry tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
+## Phase 36: TDD Slice 32 - Tiny-Canary Order-Field Approval Binding
+
+**Goal**: Treat no-mistakes `b30f4044` as a live/canary proof hardening slice, not a source order-intent gap, by binding the Phase 8 financial envelope to every currently TOML-owned entry/exit order-shape field that can change the approved order intent.
+
+- [x] T155 [P] [US3] Record read-only local and multi-agent evidence that the current canary envelope binds only order type, TIF, and boolean flags
+- [x] T156 [US3] RED: Add a tiny-canary precondition regression proving side or position-side drift can still consume approval
+- [x] T157 [US3] GREEN: Bind required entry/exit side and position-side fields from loaded TOML into the financial envelope comparison
+- [x] T158 [US3] RED: Add a tiny-canary precondition regression proving optional expiry, trigger, activation, trigger-type, trailing-offset, or trailing-offset-type drift can still consume approval
+- [x] T159 [US3] GREEN: Bind optional entry/exit order-shape fields without adding order-template or venue policy
+- [x] T160 [US3] Verify focused tiny-canary tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -380,6 +391,7 @@
 - Phase 33 blocks completion because source inspection found the Speckit spec still claimed short-side acceptance after Phase 28 restored current strategy-economics rejection.
 - Phase 34 blocks completion because multi-agent pinned-NT review found TrailingStopMarket validation still requires optional fields that NT defaults.
 - Phase 35 blocks completion because no-mistakes produced a non-terminal blanket non-GTD expiry patch that conflicts with pinned NT Rust behavior and prior Speckit decisions.
+- Phase 36 blocks live/canary proof claims because no-mistakes and read-only reviewers found the Phase 8 financial envelope did not bind every currently TOML-owned order-shape field.
 
 ## Parallel Opportunities
 

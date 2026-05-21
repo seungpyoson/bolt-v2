@@ -189,6 +189,14 @@
 - [x] T081 [US2] Record why non-GTD `expire_time_unix_nanos` rejection is not adopted as an NT invariant for the pure Rust path
 - [x] T082 [US2] Verify focused tests, full local checks as possible, branch cleanliness, exact-head gate state, no-mistakes state, and external review state
 
+## Phase 19: TDD Slice 15 - Isolated Nextest Trigger Field Validation
+
+**Goal**: Fix the CI nextest-archive isolated failure by enforcing only the NT-supported trigger-field shape for non-triggered order types, without adopting unsupported expiry policy.
+
+- [x] T083 [US2] RED: Capture CI nextest isolated failure for `bolt_v3_archetype_rejects_non_triggered_entry_order_with_trigger_price`
+- [x] T084 [US2] GREEN: Reject `trigger_price` on non-triggered `Limit`/`Market` entry and exit order configs in the archetype validator
+- [x] T085 [US2] Verify focused tests, nextest isolated tests, full local checks as possible, branch cleanliness, exact-head CI state, stale no-mistakes state, and reviewer state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -209,6 +217,7 @@
 - Phase 16 blocks StopLimit support claims because post-slice review found missing regression coverage.
 - Phase 17 is the next deferred Phase 7 factory-variant slice and blocks MarketIfTouched support claims until verified and reviewed.
 - Phase 18 blocks completion because no-mistakes produced an optional-field validation finding after the MarketIfTouched exact-head review.
+- Phase 19 blocks completion because CI proved the Phase 18 characterization test was not isolated-green under nextest archive.
 
 ## Parallel Opportunities
 

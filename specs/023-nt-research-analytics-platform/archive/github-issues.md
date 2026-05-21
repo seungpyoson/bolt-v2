@@ -1,5 +1,9 @@
 # GitHub Issue Payloads: NT-First Research Planning Package
 
+> Archive note: this file is historical/audit context. Live authority is
+> `../reference/evidence.md`, `../reference/data-model.md`, and
+> `../reference/contracts.md`.
+
 Do not create or mutate GitHub issues from this file until explicit user
 approval. This file stages future `/speckit-taskstoissues` payloads only.
 
@@ -87,8 +91,8 @@ Out of scope:
 
 Acceptance evidence:
 
-- Updated `evidence.md`, `research.md`, `fidelity-matrix.md`, `cost-model.md`,
-  `issue-audit.md`, and `contracts.md`.
+- Updated `../reference/evidence.md`, `research.md`, `fidelity-matrix.md`, `cost-model.md`,
+  `issue-audit.md`, and `../reference/contracts.md`.
 - Every claim labeled `SOURCE_PROVEN`, `USER_ASSUMPTION`, `GAP`, or
   `DECISION_NEEDED`.
 - Follow-up adversarial review recorded in `analysis.md`.
@@ -136,7 +140,7 @@ Acceptance evidence:
 
 - `1-backtesting-engine/spec.md`, `1-backtesting-engine/plan.md`, and
   `1-backtesting-engine/tasks.md`.
-- Cross-project contract coverage in `contracts.md`.
+- Cross-project contract coverage in `../reference/contracts.md`.
 - Tasks scoped to future Backtesting Engine session only.
 - Spec Kit analysis shows no runtime task in this research package.
 
@@ -181,7 +185,7 @@ Acceptance evidence:
 - `2-research-analytics/spec.md`, `2-research-analytics/plan.md`, and
   `2-research-analytics/tasks.md`.
 - Reference source notes in `research.md` and cross-project contract coverage in
-  `contracts.md`.
+  `../reference/contracts.md`.
 - Explicit forbidden claims for lower-fidelity inputs.
 - Spec Kit analysis shows analytics tasks are planning-only.
 
@@ -229,7 +233,7 @@ Acceptance evidence:
 
 - `3-dashboard/spec.md`, `3-dashboard/plan.md`, and `3-dashboard/tasks.md`.
 - Reference source notes in `research.md` and cross-project contract coverage in
-  `contracts.md`.
+  `../reference/contracts.md`.
 - Product-fit decision table with source-contract/security/query/UX/cost notes.
 - #409/#77/#36/#369 dependency decision table.
 

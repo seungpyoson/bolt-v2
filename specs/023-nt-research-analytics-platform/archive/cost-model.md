@@ -1,5 +1,9 @@
 # Cost Model: NT-First Research Planning Package
 
+> Archive note: this file is historical/audit context. Live authority is
+> `../reference/evidence.md`, `../reference/data-model.md`, and
+> `../reference/contracts.md`.
+
 **Status**: Draft planning artifact.
 **Refreshed**: 2026-05-21.
 **Cost posture**: choose the best-fidelity architecture first, then expose

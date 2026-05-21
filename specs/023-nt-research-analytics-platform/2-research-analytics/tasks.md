@@ -18,6 +18,6 @@
 - [ ] RA-016 Define cost refresh and provider/license proof triggers for selected datasets.
 - [ ] RA-017 Define `PromotionPackage` evidence-reference fields and canonical status enum (`draft`, `blocked`, `ready_for_review`, `changes_requested`, `rejected`, `approved_for_config`) for required backtest evidence, source proof ids, claim limits, dashboard-facing fields, reviewer/policy refs, and rejection/approval state; assert `approved_for_config` is not live-trading approval.
 - [ ] RA-018 Define the four RA-owned derived artifact subfamilies (`datasets`, `feature-tables`, `experiment-results`, `promotion-packages`) and ensure they commit under one `research-analytics` Artifact Index pointer rather than separate subfamily pointers.
-- [ ] RA-018 Link/update issue dependencies named in `spec.md` before implementation review.
-- [ ] RA-019 Reconcile issue dependencies in `spec.md` against `reference/github-issues.md` Issue C before implementation review.
-- [ ] RA-020 Run future branch verification checks.
+- [ ] RA-019 Link/update issue dependencies named in `spec.md` before implementation review.
+- [ ] RA-020 Reconcile issue dependencies in `spec.md` against `archive/github-issues.md` Issue C before implementation review.
+- [ ] RA-021 Run future branch verification checks.

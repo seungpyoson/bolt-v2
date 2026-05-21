@@ -88,7 +88,7 @@ This constitution supersedes convenience, local habit, and stale branch artifact
 Migration note for v1.1.0: affected planning artifacts are
 `specs/023-nt-research-analytics-platform/spec.md`,
 `specs/023-nt-research-analytics-platform/plan.md`,
-`specs/023-nt-research-analytics-platform/reference/research.md`,
+`specs/023-nt-research-analytics-platform/archive/research.md`,
 `specs/023-nt-research-analytics-platform/reference/evidence.md`,
 `specs/023-nt-research-analytics-platform/reference/data-model.md`,
 `specs/023-nt-research-analytics-platform/reference/contracts.md`,

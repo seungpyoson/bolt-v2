@@ -1,13 +1,17 @@
 # Open Questions And Decision History
 
+> Archive note: this file is historical/audit context. Live authority is
+> `../reference/evidence.md`, `../reference/data-model.md`, and
+> `../reference/contracts.md`.
+
 This is the decision-history and question-triage record for the
 `023-nt-research-analytics-platform` planning package. It is not a root
 implementation backlog.
 
 Use it after reading `../README.md` when you need the reasoning behind an
 accepted or deferred decision. Do not implement from this document. Implement
-from the selected numbered project docs plus the authoritative files in this
-directory.
+from the selected numbered project docs plus the authoritative files in
+`../reference/`.
 
 ## Global Context
 

@@ -1,5 +1,9 @@
 # Research: NT-First Research Planning Package
 
+> Archive note: this file is historical/audit context. Live authority is
+> `../reference/evidence.md`, `../reference/data-model.md`, and
+> `../reference/contracts.md`.
+
 Date: 2026-05-21
 
 ## Research Questions
@@ -15,8 +19,9 @@ Date: 2026-05-21
 
 ## Evidence Authority
 
-`evidence.md` is authoritative for this draft. Any claim below is only valid to
-the extent it is backed by a matching row in `evidence.md`.
+`../reference/evidence.md` is authoritative for this draft. Any claim below is
+only valid to the extent it is backed by a matching row in
+`../reference/evidence.md`.
 
 ## Artifact Storage Evidence
 
@@ -123,7 +128,7 @@ Gaps:
 ## Review Challenges
 
 These findings are inputs, not authority. The authoritative state is
-`evidence.md`.
+`../reference/evidence.md`.
 
 Rejected plan risks:
 

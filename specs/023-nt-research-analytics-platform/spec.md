@@ -16,9 +16,11 @@ Cross-project authority remains in `reference/evidence.md`,
 inherit those files and expose project-specific derived views, requirements,
 architecture, tasks, and acceptance criteria.
 
-Other `reference/` files preserve audit and planning history: cost/fidelity
-archives, issue payload drafts, issue-search evidence, review notes, and
-question/checklist history.
+Audit and planning history lives in `archive/`: cost/fidelity snapshots, issue
+payload drafts, issue-search evidence, review notes, source-research notes, and
+question/checklist history. Archive files are not live authority unless a
+future explicit update promotes content back into `reference/` or a numbered
+project doc.
 
 No runtime implementation, GitHub issue mutation, provider recorder, dashboard
 UI, backtesting runner, or analytics implementation is authorized by this root

@@ -41,21 +41,20 @@ Root `spec.md`, `plan.md`, and `tasks.md` are Speckit compatibility pointers.
 They are not implementation specs.
 
 The numbered project docs contain the implementation-facing scope, gates, tasks,
-and local evidence summaries. The `reference/` directory is the package
-reference layer, not a fourth project. It has two roles:
+and local evidence summaries. The `reference/` directory is the live
+cross-project authority layer, not a fourth project:
 
 - `reference/evidence.md`, `reference/data-model.md`, and `reference/contracts.md` are
   authoritative cross-project inputs inherited by the numbered project docs.
   Per-project evidence tables are derived views of `reference/evidence.md`.
-- `reference/cost-model.md`, `reference/fidelity-matrix.md`,
-  `reference/github-issues.md`, `reference/issue-audit.md`, `reference/analysis.md`,
-  `reference/open-questions.md`, `reference/requirements-checklist.md`, and
-  `reference/research.md` are the audit and decision-history record for source
-  rows, planning snapshots, staged issue payloads, issue-search evidence,
-  review notes, question triage, and checklist history.
 
-Consult `reference/` before issue creation, external review, or changing any
-cross-project evidence, contract, data-model, or archived planning context.
+The `archive/` directory is historical/audit context only. It holds cost and
+fidelity snapshots, staged issue payload drafts, issue-search evidence, review
+notes, open-question history, checklist history, and source-research notes.
+
+Consult `reference/` before changing any cross-project evidence, contract, or
+data-model rule. Consult `archive/` only for provenance, issue-draft recovery,
+external review history, or decision reconstruction.
 
 ## Project Boundaries
 

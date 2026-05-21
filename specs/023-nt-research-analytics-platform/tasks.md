@@ -9,12 +9,12 @@ the numbered subdirectories.
 - [x] ROOT-002 Keep original cross-project evidence in `reference/evidence.md`.
 - [x] ROOT-003 Fold useful evidence, issue dependencies, and residual risks into
   each numbered project spec/plan.
-- [x] ROOT-004 Keep venue/provider fidelity archive in `reference/fidelity-matrix.md`.
-- [x] ROOT-005 Keep cost/product review archive in `reference/cost-model.md`.
-- [x] ROOT-006 Keep existing issue audit and staged payloads in `reference/`.
+- [x] ROOT-004 Keep venue/provider fidelity archive in `archive/fidelity-matrix.md`.
+- [x] ROOT-005 Keep cost/product review archive in `archive/cost-model.md`.
+- [x] ROOT-006 Keep existing issue audit and staged payloads in `archive/`.
 - [x] ROOT-007 Split future implementation work into numbered project directories.
 - [x] ROOT-008 Provide human triage in `README.md`.
-- [x] ROOT-010 Move answered/open question trace into `reference/open-questions.md`.
+- [x] ROOT-010 Move answered/open question trace into `archive/open-questions.md`.
 
 ROOT-009 is intentionally deferred; see Future Cross-Project Tasks below.
 
@@ -36,7 +36,7 @@ ROOT-009 is intentionally deferred; see Future Cross-Project Tasks below.
 
 ## Cross-Project Issue Summaries
 
-Canonical staged payloads remain in `reference/github-issues.md` until the user
+Canonical staged payloads remain in `archive/github-issues.md` until the user
 approves GitHub mutation. These summaries preserve the two cross-cutting
 payloads that are not owned by a numbered implementation project.
 
@@ -69,8 +69,8 @@ Accepted scope:
 Out of scope: runtime code, provider recorder, backtesting runner, dashboard
 UI, and GitHub issue mutation without approval.
 
-Acceptance evidence: updated reference evidence, research, fidelity, cost,
-issue-audit, and contracts artifacts with every claim labeled
+Acceptance evidence: updated reference evidence/contracts plus archived
+research, fidelity, cost, and issue-audit artifacts with every claim labeled
 `SOURCE_PROVEN`, `USER_ASSUMPTION`, `GAP`, or `DECISION_NEEDED`, plus
 follow-up adversarial review recorded in the analysis archive.
 

@@ -16,19 +16,5 @@ Per-project evidence tables and requirements are derived views of these files.
 If they disagree, fix the derived project doc or update the authoritative file
 with evidence.
 
-## Audit And Decision History
-
-These files preserve research, review, and handoff history:
-
-- `analysis.md`
-- `cost-model.md`
-- `fidelity-matrix.md`
-- `github-issues.md`
-- `issue-audit.md`
-- `open-questions.md`
-- `requirements-checklist.md`
-- `research.md`
-
-Use these for provenance, staged issue creation, external review, and decision
-reconstruction. Do not implement from them directly unless a numbered project
-doc or authoritative reference file explicitly points to the relevant content.
+Audit and decision-history files live in `../archive/`. Do not add historical
+or superseded planning material here unless it is promoted into live authority.

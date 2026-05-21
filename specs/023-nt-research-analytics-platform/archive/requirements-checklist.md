@@ -1,5 +1,9 @@
 # Specification Quality Checklist: NT-First Research Planning Package
 
+> Archive note: this file is historical/audit context. Live authority is
+> `../reference/evidence.md`, `../reference/data-model.md`, and
+> `../reference/contracts.md`.
+
 **Purpose**: Validate the planning package before issue creation or implementation.
 **Created**: 2026-05-20
 **Refreshed**: 2026-05-21
@@ -7,7 +11,7 @@
 
 ## Evidence Quality
 
-- [x] CHK001 Does every major claim trace to `evidence.md`? [Evidence, root spec cross-project requirements]
+- [x] CHK001 Does every major claim trace to `../reference/evidence.md`? [Evidence, root spec cross-project requirements]
 - [x] CHK002 Is Kalshi adapter support labeled as a user assumption, not source proof? [Evidence, E-008]
 - [x] CHK003 Is upstream HIP-4 support treated as NT-first and not as a Bolt adapter build? [Evidence, E-003..E-006]
 - [x] CHK004 Is HIP-4 historical-data support separated from live adapter support? [Evidence, E-007]

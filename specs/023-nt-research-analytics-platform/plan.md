@@ -9,8 +9,9 @@ project implementation plan.
    If no vertical is explicitly selected, default to `1-backtesting-engine/`.
 2. Review that project's `spec.md`, `plan.md`, and `tasks.md`.
 3. Consult `reference/` for authoritative cross-project evidence/contracts/data
-   models or for original evidence rows, issue-audit details, staged issue
-   payloads, cost/fidelity archives, or review/question/checklist history.
+   models. Consult `archive/` only for issue-audit details, staged issue
+   payload drafts, cost/fidelity snapshots, or review/question/checklist
+   history.
 4. For Issues B-D, open or update only the selected project payload; handle
    cross-project/process payloads A and E only with explicit user approval.
 5. Start implementation only in a fresh future session for that vertical.

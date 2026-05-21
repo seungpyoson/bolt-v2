@@ -1,5 +1,9 @@
 # Existing Issue Audit: NT-First Research Planning Package
 
+> Archive note: this file is historical/audit context. Live authority is
+> `../reference/evidence.md`, `../reference/data-model.md`, and
+> `../reference/contracts.md`.
+
 Date: 2026-05-21
 Remote: `https://github.com/seungpyoson/bolt-v2.git`
 

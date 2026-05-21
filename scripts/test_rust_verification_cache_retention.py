@@ -1049,7 +1049,7 @@ def assert_cache_prune_apply_waits_for_managed_cargo_lock() -> None:
         bin_dir.mkdir()
         marker = tmp_path / "started"
         write_executable(
-            bin_dir / "fake-runner",
+            bin_dir / "cargo",
             """#!/usr/bin/env bash
 printf started > "$MARKER"
 sleep 1
@@ -1066,7 +1066,6 @@ exit 0
         env = os.environ.copy()
         env["DEBUG_PARENT"] = str(debug_dir)
         env["MARKER"] = str(marker)
-        env["RUST_VERIFICATION_REAL_CARGO"] = str(bin_dir / "fake-runner")
         env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
         env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
 
@@ -1875,6 +1874,49 @@ def assert_managed_env_scrubs_build_target_dir_and_routes_target_dir() -> None:
             raise AssertionError((env.get("CARGO_TARGET_DIR"), expected_target))
 
 
+def assert_managed_cargo_ignores_real_cargo_env_override() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+        root_base = tmp_path / "rust-root"
+        (root_base / "bolt-v2" / "target").mkdir(parents=True)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        path_marker = tmp_path / "path-cargo-started"
+        override_marker = tmp_path / "override-started"
+        write_executable(
+            bin_dir / "cargo",
+            f"""#!/usr/bin/env bash
+touch {path_marker}
+printf '%s\\n' "$@"
+exit 0
+""",
+        )
+        write_executable(
+            bin_dir / "override-cargo",
+            f"""#!/usr/bin/env bash
+touch {override_marker}
+printf 'override used\\n'
+exit 0
+""",
+        )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["RUST_VERIFICATION_REAL_CARGO"] = str(bin_dir / "override-cargo")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cargo", "--repo", str(repo), "--", "test"], env=env)
+        if result.returncode != 0 or not path_marker.exists() or override_marker.exists():
+            raise AssertionError(
+                "managed cargo must ignore caller-provided RUST_VERIFICATION_REAL_CARGO: "
+                f"returncode={result.returncode} path_started={path_marker.exists()} "
+                f"override_started={override_marker.exists()} stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
 def assert_v6_red_managed_cargo_clean_refuses_active_process() -> None:
     cases = [
         ["clean"],
@@ -1897,7 +1939,7 @@ def assert_v6_red_managed_cargo_clean_refuses_active_process() -> None:
             bin_dir = tmp_path / "bin"
             bin_dir.mkdir()
             write_executable(
-                bin_dir / "fake-cargo",
+                bin_dir / "cargo",
                 """#!/usr/bin/env bash
 for arg in "$@"; do
   if [[ "$arg" == "clean" ]]; then
@@ -1919,7 +1961,6 @@ printf '123 {escaped_command}\\n'
             (proc_dir / "cwd").symlink_to(repo)
 
             env = os.environ.copy()
-            env["RUST_VERIFICATION_REAL_CARGO"] = str(bin_dir / "fake-cargo")
             env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
             env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "proc")
             env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
@@ -1968,7 +2009,7 @@ def assert_v6_red_disk_preflight_before_managed_cargo_and_run() -> None:
             bin_dir.mkdir()
             marker = tmp_path / "started"
             write_executable(
-                bin_dir / "fake-runner",
+                bin_dir / "cargo",
                 f"""#!/usr/bin/env bash
 touch {marker}
 exit 0
@@ -1984,7 +2025,6 @@ exit 0
 
             env = os.environ.copy()
             env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
-            env["RUST_VERIFICATION_REAL_CARGO"] = str(bin_dir / "fake-runner")
             env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
             args = [
                 str(repo) if token == "{repo}" else token
@@ -2037,7 +2077,7 @@ def assert_v6_red_managed_cargo_rejects_target_routing_overrides() -> None:
             marker = tmp_path / "started"
             captured = tmp_path / "captured-args"
             write_executable(
-                bin_dir / "fake-cargo",
+                bin_dir / "cargo",
                 f"""#!/usr/bin/env bash
 touch {marker}
 printf '%s\\n' "$@" > {captured}
@@ -2047,7 +2087,6 @@ exit 0
 
             env = os.environ.copy()
             env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
-            env["RUST_VERIFICATION_REAL_CARGO"] = str(bin_dir / "fake-cargo")
             env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
             result = run_owner(["cargo", "--repo", str(repo), "--", *cargo_args], env=env)
             combined = f"{result.stdout}\n{result.stderr}".lower()
@@ -2124,7 +2163,7 @@ def assert_v6_red_managed_cargo_allows_post_separator_binary_args() -> None:
             marker = tmp_path / "started"
             captured = tmp_path / "captured-args"
             write_executable(
-                bin_dir / "fake-cargo",
+                bin_dir / "cargo",
                 f"""#!/usr/bin/env bash
 touch {marker}
 printf '%s\\n' "$@" > {captured}
@@ -2134,7 +2173,6 @@ exit 0
 
             env = os.environ.copy()
             env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
-            env["RUST_VERIFICATION_REAL_CARGO"] = str(bin_dir / "fake-cargo")
             env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
             result = run_owner(["cargo", "--repo", str(repo), "--", *cargo_args], env=env)
             if result.returncode != 0 or not marker.exists():
@@ -2159,6 +2197,7 @@ def assert_v6_red_policy_gaps() -> None:
         assert_v6_red_managed_cargo_rejects_target_routing_overrides,
         assert_v6_red_managed_run_rejects_target_routing_overrides,
         assert_v6_red_managed_cargo_allows_post_separator_binary_args,
+        assert_managed_cargo_ignores_real_cargo_env_override,
     ]
     failures: list[str] = []
     for check in checks:

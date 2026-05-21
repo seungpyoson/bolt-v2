@@ -297,22 +297,22 @@ setup:
     if command -v cargo-nextest >/dev/null 2>&1 && cargo-nextest --version | grep -Eq "^cargo-nextest {{nextest_version}}([[:space:]]|$)"; then
         echo "cargo-nextest {{nextest_version}} already installed"
     else
-        echo "Installing cargo-nextest {{nextest_version}}..."
-        cargo install cargo-nextest --version {{nextest_version}} --locked
+        echo "ERROR: cargo-nextest {{nextest_version}} is required as a prebuilt tool"
+        exit 2
     fi
 
     if command -v cargo-deny >/dev/null 2>&1 && cargo-deny --version | grep -Eq "^cargo-deny {{deny_version}}([[:space:]]|$)"; then
         echo "cargo-deny {{deny_version}} already installed"
     else
-        echo "Installing cargo-deny {{deny_version}}..."
-        cargo install cargo-deny --version {{deny_version}} --locked
+        echo "ERROR: cargo-deny {{deny_version}} is required as a prebuilt tool"
+        exit 2
     fi
 
     if command -v cargo-zigbuild >/dev/null 2>&1 && cargo-zigbuild --version | grep -Eq "^cargo-zigbuild {{zigbuild_version}}([[:space:]]|$)"; then
         echo "cargo-zigbuild {{zigbuild_version}} already installed"
     else
-        echo "Installing cargo-zigbuild {{zigbuild_version}}..."
-        cargo install cargo-zigbuild --version {{zigbuild_version}} --locked
+        echo "ERROR: cargo-zigbuild {{zigbuild_version}} is required as a prebuilt tool"
+        exit 2
     fi
 
     if ! command -v zig >/dev/null 2>&1; then

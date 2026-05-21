@@ -1290,6 +1290,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "S3 active mutable target cache must be rejected",
         ),
         (
+            'aws s3 sync "$(python3 scripts/rust_verification.py target-dir --repo .)" s3://bolt-v2-active-cache/target',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
             "aws s3 cp --recursive target s3://bolt-v2-active-cache/target",
             "S3 active mutable target cache must be rejected",
         ),
@@ -1560,6 +1564,7 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
     repo_errors = verifier.verify_repo_automation_texts(
         {
             "justfile": "check:\n    CARGO_TARGET_DIR=/tmp/raw cargo check\n",
+            "justfile.setup": "setup:\n    cargo install cargo-nextest --version 0.9.132 --locked\n",
             "scripts/local.sh": "aws s3 sync \"$PWD\"/target s3://some-bucket/linux-cache\n",
         }
     )
@@ -1571,6 +1576,9 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"setup action raw-storage drift was silent: {action_errors!r}")
     if not any("justfile" in error and expected in error for error in repo_errors):
         raise AssertionError(f"justfile raw-storage drift was silent: {repo_errors!r}")
+    expected = "repo automation must not compile cargo-nextest from source"
+    if not any("justfile.setup" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"justfile cargo-install drift was silent: {repo_errors!r}")
     expected = "S3 active mutable target cache must be rejected"
     if not any("scripts/local.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script raw-storage drift was silent: {repo_errors!r}")

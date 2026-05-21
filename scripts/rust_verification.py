@@ -1131,7 +1131,7 @@ def cmd_cargo(args: argparse.Namespace) -> int:
     except (OSError, PolicyError, FileNotFoundError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    cargo = os.environ.get("RUST_VERIFICATION_REAL_CARGO", "cargo")
+    cargo = "cargo"
     cargo_args = command_args(args.args)
     override = cargo_target_routing_override(cargo_args)
     if override is not None:

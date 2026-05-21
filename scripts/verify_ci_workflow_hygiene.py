@@ -1315,6 +1315,12 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
     for pattern, message in checks:
         if re.search(pattern, text):
             errors.append(message)
+    if (
+        re.search(r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)", text)
+        and re.search(r"\$\([^)\n]*\brust_verification\.py\s+target-dir\b[^)\n]*\)", text)
+        and "S3 active mutable target cache must be rejected" not in errors
+    ):
+        errors.append("S3 active mutable target cache must be rejected")
     return errors
 
 
@@ -2051,10 +2057,18 @@ def verify_text(workflow_text: str, action_text: str, nextest_config_text: str) 
     return verify_workflows({"ci.yml": workflow_text}, action_text, nextest_config_text)
 
 
+def repo_automation_source_build_errors(text: str) -> list[str]:
+    return [
+        f"repo automation must not compile {tool} from source"
+        for tool in sorted(cargo_install_source_build_tools_in_text(text))
+    ]
+
+
 def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for file_name, text in texts.items():
         errors.extend(f"{file_name}: {error}" for error in raw_rust_storage_errors(text))
+        errors.extend(f"{file_name}: {error}" for error in repo_automation_source_build_errors(text))
     return errors
 
 

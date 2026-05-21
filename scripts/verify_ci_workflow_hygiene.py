@@ -550,8 +550,28 @@ def extract_needs(job_lines: list[str]) -> set[str]:
 def step_blocks(job_lines: list[str]) -> list[list[str]]:
     blocks: list[list[str]] = []
     current: list[str] | None = None
+    in_steps = False
+    steps_indent: int | None = None
+    step_indent: int | None = None
+
     for line in job_lines:
-        if re.match(r"^      - ", line):
+        clean = strip_comment(line)
+        stripped = clean.lstrip()
+        if not in_steps:
+            if re.match(r"^\s*steps:\s*$", clean):
+                in_steps = True
+                steps_indent = len(clean) - len(stripped)
+            continue
+        if not stripped:
+            if current is not None:
+                current.append(line)
+            continue
+        indent = len(clean) - len(stripped)
+        if steps_indent is not None and indent <= steps_indent:
+            break
+        if step_indent is None and stripped.startswith("- "):
+            step_indent = indent
+        if step_indent is not None and indent == step_indent and stripped.startswith("- "):
             if current is not None:
                 blocks.append(current)
             current = [line]
@@ -3408,9 +3428,7 @@ def workflow_run_commands(workflow_text: str) -> list[str]:
     return commands
 
 
-def github_env_assignment_line(line: str) -> str | None:
-    clean = strip_comment(line).strip()
-    tokens = command_tokens(clean)
+def github_env_assignment_from_echo_tokens(tokens: list[str]) -> str | None:
     if len(tokens) < 4 or pathlib.Path(tokens[0]).name != "echo":
         return None
     for redirect_index, token in enumerate(tokens):
@@ -3424,8 +3442,18 @@ def github_env_assignment_line(line: str) -> str | None:
             return None
         name, value = payload.split("=", 1)
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-            return f"{name}={value}"
+            return f"{name}={shlex.quote(storage_strip_quotes(value))}"
         return None
+    return None
+
+
+def github_env_assignment_line(line: str) -> str | None:
+    clean = strip_comment(line).strip()
+    tokens = command_tokens(clean)
+    for segment in shell_command_segments_from_tokens(tokens):
+        assignment = github_env_assignment_from_echo_tokens(segment)
+        if assignment is not None:
+            return assignment
     return None
 
 
@@ -3439,17 +3467,18 @@ def github_env_assignment_lines(text: str) -> list[str]:
 
 
 def workflow_run_shell_texts(workflow_text: str) -> list[str]:
-    commands = workflow_run_commands(workflow_text)
-    if not commands:
-        return []
     texts: list[str] = []
-    persisted_env: list[str] = []
-    for command in commands:
-        parts = [*persisted_env]
-        if command.strip():
-            parts.append(command)
-        texts.append("\n".join(parts))
-        persisted_env.extend(github_env_assignment_lines(command))
+    for job_lines in parse_jobs(workflow_text).values():
+        persisted_env: list[str] = []
+        for block in step_blocks(job_lines):
+            command = step_run_command(block)
+            if command is None:
+                continue
+            parts = [*persisted_env]
+            if command.strip():
+                parts.append(command)
+            texts.append("\n".join(parts))
+            persisted_env.extend(github_env_assignment_lines(command))
     return texts
 
 

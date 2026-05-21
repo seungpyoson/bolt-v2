@@ -1179,6 +1179,33 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
             False,
         ),
         (
+            "flexibly indented same run step cwd must classify active-target S3",
+            """
+            jobs:
+              test:
+                steps:
+                    - run: |
+                        cd target
+                        aws s3 cp s3://bolt-v2-cache/file artifact.bin
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "flexibly indented separate run step cwd must not leak into later S3 step",
+            """
+            jobs:
+              test:
+                steps:
+                    - run: |
+                        cd target
+                    - run: |
+                        aws s3 cp s3://bolt-v2-cache/file artifact.bin
+            """,
+            s3_expected,
+            False,
+        ),
+        (
             "same run step target env alias must classify raw target override",
             """
             jobs:
@@ -1220,6 +1247,36 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
             True,
         ),
         (
+            "github env target must persist after earlier command in same step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      mkdir -p out && echo TARGET=target >> $GITHUB_ENV
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env target must not persist across jobs",
+            """
+            jobs:
+              producer:
+                steps:
+                  - run: |
+                      echo TARGET=target >> $GITHUB_ENV
+              consumer:
+                steps:
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+            """,
+            s3_expected,
+            False,
+        ),
+        (
             "github env target key alias must persist into later cargo step",
             """
             jobs:
@@ -1240,6 +1297,9 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
         found = expected in errors
         if found != should_find:
             failures.append(f"{name}: expected found={should_find}, got {errors!r}")
+    env_assignment = verifier.github_env_assignment_line('mkdir -p out && echo "TARGET=target dir" >> "$GITHUB_ENV"')
+    if env_assignment != "TARGET='target dir'":
+        failures.append(f"GITHUB_ENV assignment with spaces was not shell-safe: {env_assignment!r}")
     if failures:
         raise AssertionError("workflow run step shell state handling failed: " + "; ".join(failures))
 

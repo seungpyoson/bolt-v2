@@ -309,7 +309,17 @@ CI_INSTALL_ACTION_COMMANDS = {
     "test-archive": 'just test-archive "$NEXTEST_ARCHIVE_PATH"',
     "test-shards": TEST_PARTITION_COMMAND,
 }
-CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {"--color", "--config", "-C", "-Z"}
+CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {
+    "--color",
+    "--config",
+    "--jobs",
+    "--manifest-path",
+    "--profile",
+    "--target",
+    "--target-dir",
+    "-C",
+    "-Z",
+}
 CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "--quiet", "-q", "--verbose", "-v"}
 ZIGBUILD_PREBUILT_LITERALS = (
     'version="${{ steps.setup.outputs.zigbuild_version }}"',
@@ -1195,8 +1205,55 @@ def rustup_run_inner_tokens(tokens: list[str]) -> list[str]:
 
 
 def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
+    executable = pathlib.Path(tokens[0]).name if tokens else ""
+    if executable in {"sudo", "doas"}:
+        index = consume_option_prefix(
+            tokens,
+            1,
+            SUDO_OPTIONS_WITH_ARGUMENT,
+            SUDO_OPTIONS_WITHOUT_ARGUMENT,
+            SUDO_OPTIONS_WITH_OPTIONAL_ARGUMENT if executable == "sudo" else None,
+        )
+        return tokens[index:] if index is not None else None
+    if executable == "timeout":
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                return tokens[index + 1 :]
+            if token in ("-k", "--kill-after", "-s", "--signal") and index + 1 < len(tokens):
+                index += 2
+                continue
+            if token.startswith(("--kill-after=", "--signal=")):
+                index += 1
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            return tokens[index + 1 :]
+        return []
+    if executable == "stdbuf":
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                return tokens[index + 1 :]
+            if token in ("-i", "-o", "-e", "--input", "--output", "--error") and index + 1 < len(tokens):
+                index += 2
+                continue
+            if token.startswith(("--input=", "--output=", "--error=")):
+                index += 1
+                continue
+            if re.fullmatch(r"-[ioe].+", token):
+                index += 1
+                continue
+            return tokens[index:]
+        return []
+    if executable == "catchsegv":
+        return tokens[1:]
     starters = {
         "bash",
+        "catchsegv",
         "cargo",
         "cargo-clippy",
         "cargo-fmt",
@@ -1208,6 +1265,7 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
         "python3",
         "rustup",
         "sh",
+        "stdbuf",
         "time",
         "zsh",
     }
@@ -1394,6 +1452,30 @@ def flock_command_option_tokens(tokens: list[str]) -> list[str] | None:
     return None
 
 
+def simple_cargo_aliases(tokens: list[str]) -> set[str]:
+    aliases: set[str] = set()
+    for token in tokens[1:]:
+        name, separator, value = token.partition("=")
+        value_tokens = command_tokens(value) if separator else []
+        value_names = {pathlib.Path(value_token).name for value_token in value_tokens}
+        if separator and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name) and "cargo" in value_names:
+            aliases.add(name)
+    return aliases
+
+
+def no_mistakes_inner_tokens(tokens: list[str]) -> list[str] | None:
+    for index, token in enumerate(tokens):
+        if token == "--":
+            return tokens[index + 1 :]
+    return None
+
+
+def raw_rust_tool_token(name: str) -> bool:
+    return name in {"cargo", "clippy", "nextest", "rustc", "rustdoc"} or name.startswith(
+        ("cargo-", "clippy-", "rust-")
+    )
+
+
 def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
     if not tokens:
         return False
@@ -1403,14 +1485,28 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
         return True
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
+        cargo_aliases: set[str] = set()
         for token in tokens:
             if token in SHELL_COMMAND_BOUNDARIES:
+                if segment and segment[0] == "alias":
+                    cargo_aliases.update(simple_cargo_aliases(segment))
+                    segment = []
+                    continue
+                if segment and segment[0] in cargo_aliases:
+                    segment = ["cargo", *segment[1:]]
                 if segment and tokens_have_raw_cargo(segment, depth=depth + 1):
                     return True
                 segment = []
                 continue
             segment.append(token)
+        if segment and segment[0] == "alias":
+            return False
+        if segment and segment[0] in cargo_aliases:
+            segment = ["cargo", *segment[1:]]
         return bool(segment) and tokens_have_raw_cargo(segment, depth=depth + 1)
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index:
+        return assignment_index < len(tokens) and tokens_have_raw_cargo(tokens[assignment_index:], depth=depth + 1)
     if managed_rust_verification_tokens(tokens):
         return tokens_have_target_routing_override(tokens[3:])
     executable = pathlib.Path(tokens[0]).name
@@ -1422,6 +1518,13 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
         if inner and inner[0] == "--":
             inner = inner[1:]
         return bool(inner) and tokens_have_raw_cargo(command_tokens(" ".join(inner)), depth=depth + 1)
+    if executable == "no-mistakes":
+        inner = no_mistakes_inner_tokens(tokens)
+        if inner is None:
+            return False
+        if inner and raw_rust_tool_token(pathlib.Path(inner[0]).name):
+            return True
+        return tokens_have_raw_cargo(inner, depth=depth + 1)
     if executable == "env":
         inner = env_inner_tokens(tokens)
         return inner is not None and tokens_have_raw_cargo(inner, depth=depth + 1)
@@ -1435,13 +1538,31 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
         inner = flock_inner_tokens(tokens)
         if inner is not None:
             return tokens_have_raw_cargo(inner, depth=depth + 1)
-    if executable in {"chrt", "command", "doas", "exec", "ionice", "nice", "nohup", "setsid", "sudo", "taskset", "time", "timeout", "xargs"}:
+    if executable in {
+        "catchsegv",
+        "chrt",
+        "command",
+        "doas",
+        "exec",
+        "ionice",
+        "nice",
+        "nohup",
+        "setsid",
+        "stdbuf",
+        "sudo",
+        "taskset",
+        "time",
+        "timeout",
+        "xargs",
+    }:
         inner = wrapper_inner_tokens(tokens)
         if inner is not None:
             return tokens_have_raw_cargo(inner, depth=depth + 1)
     for index, token in enumerate(tokens):
         name = pathlib.Path(token).name
         if name == "cargo" and cargo_token_is_command(tokens, index):
+            return True
+        if name in {"clippy", "nextest", "rustc", "rustdoc"} and command_prefix_allows_cargo(tokens[:index]):
             return True
         if name.startswith("cargo-") and command_prefix_allows_cargo(tokens[:index]):
             return True
@@ -1607,7 +1728,8 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         errors.append("S3 active mutable target cache must be rejected")
     s3_active_patterns = (
         r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])/[^\s\"']*/target(?:/[^\s\"']*)?(?:[\s\"']|$))",
-        r"\bcd\s+[\"']?(?:\.?/)?target[\"']?\s*&&[^\n]*\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)",
+        r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])\$\(pwd\)/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$))",
+        r"\bcd\s+[\"']?(?:\.?/)?target[\"']?\s*(?:&&|;|\|\|)[^\n]*\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)",
         r"\baws\b[^\n;&|]*\bs3\s+sync\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])(?:\.|\$GITHUB_WORKSPACE|\$\{GITHUB_WORKSPACE[^}]*\}|\$\{\{\s*github\.workspace\s*\}\}|\$PWD|\$\{PWD[^}]*\})(?:/(?:\./)?)?(?:[\s\"']|$))",
         r"\baws\b[^\n;&|]*\bs3api\b[^\n;&|]*(?:target(?:/|[\s\"']|$)|CARGO_TARGET_DIR|managed_target_dir|\$\{\{\s*(?:github\.workspace|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\})",
     )

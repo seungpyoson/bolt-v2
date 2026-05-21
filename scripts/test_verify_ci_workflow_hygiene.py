@@ -1326,6 +1326,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "S3 active mutable target cache must be rejected",
         ),
         (
+            'aws s3 sync "$(pwd)/target" s3://bolt-v2-active-cache/target',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
             "aws s3 sync \"$CARGO_TARGET_DIR\" s3://bolt-v2-active-cache/target",
             "S3 active mutable target cache must be rejected",
         ),
@@ -1434,6 +1438,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "S3 active mutable target cache must be rejected",
         ),
         (
+            "cd target ; aws s3 sync * s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "cd target || aws s3 sync * s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
             "aws s3 sync s3://bolt-v2-active-cache/target \"$CARGO_TARGET_DIR\"",
             "S3 active mutable target cache must be rejected",
         ),
@@ -1521,8 +1533,14 @@ commands:
   evalraw: eval "cargo test"
   evaldashdash: eval -- cargo test
   evalprefix: A=B eval cargo test
+  evalprefixquoted: A=B eval "cargo test"
+  shellprefix: A=B bash -c "cargo test"
   shellevalraw: bash -lc 'eval "cargo test"'
+  shellalias: bash -lc 'alias c=cargo; c test'
+  shellaliasquoted: bash -lc 'alias c="command cargo"; c test'
   wrapped: command cargo fmt --check
+  stdbufwrap: stdbuf -oL cargo build
+  catchsegvwrap: catchsegv cargo test
   nicewrap: nice cargo test
   timeniceadjust: time nice --adjustment 10 cargo test
   timeverbose: A=B time -v cargo test
@@ -1534,6 +1552,7 @@ commands:
   timeflocktimeout: time flock --timeout 5 "$TMPDIR/bolt.lock" cargo test
   flockclose: flock -o "$TMPDIR/bolt.lock" cargo test
   sudoflock: sudo flock -o "$TMPDIR/bolt.lock" cargo test
+  sudousercommand: sudo -u bash cargo build
   sudoshell: sudo bash -lc 'cargo test --all'
   envshell: env -i bash -lc 'cargo test --all'
   hyphenated: cargo-clippy --workspace
@@ -1554,6 +1573,8 @@ commands:
   managedshortconfig: python3 scripts/rust_verification.py cargo --repo . -- -C build.target-dir=/tmp/raw test
   managedencodedrustflags: CARGO_ENCODED_RUSTFLAGS='--out-dir\\x1f/tmp/raw-out' python3 scripts/rust_verification.py cargo --repo . -- check
   managedinstallroot: python3 scripts/rust_verification.py cargo --repo . -- install ripgrep --root /tmp/install-root
+  no-mistakes-clippy-command: no-mistakes run -- clippy
+  no-mistakes-nextest-command: no-mistakes run -- nextest run
   docs: just docs
 """
     allowed_fixture = """
@@ -1562,6 +1583,7 @@ commands:
   lint: python3 scripts/rust_verification.py cargo --repo . -- clippy --all-targets -- -D warnings
   format: python3 scripts/rust_verification.py cargo --repo . -- fmt --check
   exact-head-ci: gh run view --repo seungpyoson/bolt-v2 --commit "$GITHUB_SHA" --json conclusion
+  sudouserarg: timeout 30 sudo -u cargo echo hello
 """
     commented_commands_fixture = """
 commands: # repo review commands
@@ -1584,8 +1606,14 @@ commands: { test: "cargo test" }
         "evalraw",
         "evaldashdash",
         "evalprefix",
+        "evalprefixquoted",
+        "shellprefix",
         "shellevalraw",
+        "shellalias",
+        "shellaliasquoted",
         "wrapped",
+        "stdbufwrap",
+        "catchsegvwrap",
         "nicewrap",
         "timeniceadjust",
         "timeverbose",
@@ -1597,6 +1625,7 @@ commands: { test: "cargo test" }
         "timeflocktimeout",
         "flockclose",
         "sudoflock",
+        "sudousercommand",
         "sudoshell",
         "envshell",
         "hyphenated",
@@ -1615,6 +1644,8 @@ commands: { test: "cargo test" }
         "managedshortconfig",
         "managedencodedrustflags",
         "managedinstallroot",
+        "no-mistakes-clippy-command",
+        "no-mistakes-nextest-command",
     ]
     expected = [
         f".no-mistakes.yaml commands.{command_name} raw Cargo drift must be classified"
@@ -2621,6 +2652,26 @@ def main() -> int:
             "      - run: just deny",
             """      - run: |
           cargo --config net.git-fetch-with-cli=true install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo --manifest-path Cargo.toml install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo --target x86_64-unknown-linux-gnu install cargo-deny --locked
           just deny""",
         ),
     )

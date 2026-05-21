@@ -52,6 +52,7 @@ SCRUB_ENV_KEYS = (
 )
 OPAQUE_RUST_LAUNCHERS = {
     "bash",
+    "catchsegv",
     "chrt",
     "command",
     "dash",
@@ -70,6 +71,7 @@ OPAQUE_RUST_LAUNCHERS = {
     "rustup",
     "setsid",
     "sh",
+    "stdbuf",
     "taskset",
     "time",
     "timeout",
@@ -779,6 +781,25 @@ def timeout_command_index(tokens: list[str]) -> int:
     return index
 
 
+def stdbuf_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in ("-i", "-o", "-e", "--input", "--output", "--error") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--input=", "--output=", "--error=")):
+            index += 1
+            continue
+        if re.fullmatch(r"-[ioe].+", token):
+            index += 1
+            continue
+        return index
+    return index
+
+
 def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
     # Depth cap guards against pathological re-tokenisation loops while
     # leaving headroom for realistic legitimate wrapper stacks. A supported
@@ -800,6 +821,10 @@ def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
         names.update(process_names_from_tokens(rustup_run_tokens(tokens), depth=depth + 1))
     elif executable == "timeout":
         names.update(process_names_from_tokens(tokens[timeout_command_index(tokens) :], depth=depth + 1))
+    elif executable == "stdbuf":
+        names.update(process_names_from_tokens(tokens[stdbuf_command_index(tokens) :], depth=depth + 1))
+    elif executable == "catchsegv":
+        names.update(process_names_from_tokens(tokens[1:], depth=depth + 1))
     elif executable in ("bash", "dash", "fish", "sh", "zsh"):
         command = shell_command(tokens)
         if command is not None:
@@ -856,6 +881,11 @@ def command_may_launch_build(command: str) -> bool:
     return executable in OPAQUE_RUST_LAUNCHERS and "build" in command.lower()
 
 
+def command_may_be_renamed_cargo(command: str) -> bool:
+    tokens = command_tokens(command)
+    return bool(tokens) and "/" in tokens[0] and cargo_subcommand(tokens[1:]) in CARGO_PROCESS_SUBCOMMANDS
+
+
 def matching_process_pattern(command: str, patterns: list[str]) -> str | None:
     names = command_process_names(command)
     return next((pattern for pattern in patterns if basename_token(pattern) in names), None)
@@ -888,14 +918,19 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
         pid = int(pid_text)
         command_matches_scope = any(scope_text in command for scope_text in scope_texts)
         matched_pattern = matching_process_pattern(command, patterns)
-        may_launch_rust = matched_pattern is None and command_may_launch_rust(command)
+        may_launch_renamed_cargo = matched_pattern is None and command_may_be_renamed_cargo(command)
+        may_launch_rust = matched_pattern is None and (command_may_launch_rust(command) or may_launch_renamed_cargo)
         may_launch_build = matched_pattern is None and not may_launch_rust and command_may_launch_build(command)
         if matched_pattern is None and not may_launch_rust and not may_launch_build and not command_matches_scope:
             continue
         if command_matches_scope:
             if matched_pattern is None:
                 if may_launch_rust:
-                    matched_pattern = "unclassified Rust launch command"
+                    matched_pattern = (
+                        "renamed Cargo launch command"
+                        if may_launch_renamed_cargo
+                        else "unclassified Rust launch command"
+                    )
                 elif may_launch_build:
                     matched_pattern = "unclassified build launch command"
                 else:
@@ -913,7 +948,11 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
         )
         if matched_pattern is None:
             if cwd_matches_scope and may_launch_rust:
-                matched_pattern = "unclassified Rust launch command"
+                matched_pattern = (
+                    "renamed Cargo launch command"
+                    if may_launch_renamed_cargo
+                    else "unclassified Rust launch command"
+                )
             elif cwd_matches_scope and may_launch_build:
                 matched_pattern = "unclassified build launch command"
             elif may_launch_rust and cwd is None:
@@ -1076,6 +1115,9 @@ CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {
     "--config",
     "--color",
     "--jobs",
+    "--manifest-path",
+    "--profile",
+    "--target",
     "--target-dir",
     "-C",
     "-Z",
@@ -1363,9 +1405,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     except (OSError, PolicyError, FileNotFoundError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    test_separator = args.command == "test" and bool(getattr(args, "args_separator", False))
+    command_tail = ["--", *args.args] if test_separator else args.args
     justfile = repo / "justfile"
-    argv = ["just", "-f", str(justfile), "--working-directory", str(repo), "--", command["recipe"], *args.args]
-    override = cargo_target_routing_override(args.args)
+    argv = ["just", "-f", str(justfile), "--working-directory", str(repo), "--", command["recipe"], *command_tail]
+    override_args = [args.command, *command_tail] if args.command == "test" else args.args
+    override = cargo_target_routing_override(override_args)
     if override is not None:
         return print_refusal(target_routing_refusal_payload(repo, policy, override))
     if args.command in {"build", "clippy", "test"}:
@@ -1505,8 +1550,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def run_args_had_separator(argv: list[str], args: argparse.Namespace) -> bool:
+    if getattr(args, "command_name", None) != "run":
+        return False
+    for index, token in enumerate(argv):
+        if token != args.command:
+            continue
+        tail = argv[index + 1 :]
+        had_separator = bool(tail) and tail[0] == "--"
+        normalized_tail = tail[1:] if had_separator else tail
+        if normalized_tail == args.args:
+            return had_separator
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = build_parser().parse_args(raw_argv)
+    if getattr(args, "command_name", None) == "run":
+        args.args_separator = run_args_had_separator(raw_argv, args)
     return args.func(args)
 
 

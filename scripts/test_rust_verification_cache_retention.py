@@ -1682,6 +1682,8 @@ def assert_v6_red_active_process_parser_gaps() -> None:
         "env -iuLD_PRELOAD cargo build",
         "env -iu LD_PRELOAD cargo build",
         "rustup run stable -- -- cargo build",
+        "stdbuf -oL cargo build",
+        "catchsegv cargo test",
         "command cargo build",
         "exec cargo build",
         "nohup cargo build",
@@ -1700,6 +1702,9 @@ def assert_v6_red_active_process_parser_gaps() -> None:
         "bash -c 'alias c=cargo; c build'",
         "bash -c 'cargo() { command cargo \"$@\"; }; cargo build'",
         "bash -c 'builtin command cargo build'",
+        "/tmp/c clean",
+        "/tmp/c test",
+        "/tmp/c build",
         "/tmp/c clean --manifest-path {repo}/Cargo.toml",
         "/tmp/c test --manifest-path {repo}/Cargo.toml",
         "/tmp/c run --manifest-path {repo}/Cargo.toml",
@@ -1758,6 +1763,8 @@ def assert_v6_red_active_process_wrapper_options_expose_cargo_pattern() -> None:
         "env --block-signal=PIPE cargo build",
         "nice --adjustment 10 cargo build",
         "nice --adjustment=10 cargo build",
+        "stdbuf -oL cargo build",
+        "catchsegv cargo test",
         "flock --timeout 5 /tmp/bolt.lock cargo build",
         "flock --timeout=5 /tmp/bolt.lock cargo build",
         "flock -- -lockfile cargo build",
@@ -1960,6 +1967,8 @@ def assert_v6_red_managed_cargo_clean_refuses_active_process() -> None:
         ["clean"],
         ["+stable", "clean"],
         ["--config", "net.offline=true", "clean"],
+        ["--manifest-path", "Cargo.toml", "clean"],
+        ["--target", "aarch64-unknown-linux-gnu", "clean"],
     ]
     failures: list[str] = []
     for cargo_args in cases:
@@ -2352,6 +2361,8 @@ def assert_v6_red_managed_cargo_allows_post_separator_binary_args() -> None:
     allowed_cases = [
         ["run", "--release", "--bin", "bolt-v2", "--", "--root", "/tmp/binary-arg"],
         ["test", "--locked", "--", "--out-dir", "/tmp/test-arg"],
+        ["--manifest-path", "Cargo.toml", "test", "--", "--target-dir", "/tmp/test-arg"],
+        ["--profile", "dev", "test", "--", "--target-dir", "/tmp/test-arg"],
         ["bench", "--locked", "--", "--artifact-dir", "/tmp/bench-arg"],
     ]
     failures: list[str] = []
@@ -2391,6 +2402,46 @@ exit 0
         raise AssertionError("managed cargo must not reject binary/test args after Cargo separator: " + "; ".join(failures))
 
 
+def assert_v6_red_managed_run_allows_post_separator_binary_args() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+        root_base = tmp_path / "rust-root"
+        (root_base / "bolt-v2" / "target").mkdir(parents=True)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker = tmp_path / "just-started"
+        captured = tmp_path / "just-args"
+        write_executable(
+            bin_dir / "just",
+            f"""#!/usr/bin/env bash
+touch {marker}
+printf '%s\\n' "$@" > {captured}
+exit 0
+""",
+        )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(
+            ["run", "--repo", str(repo), "test", "--", "--target-dir", "/tmp/valid-test-binary-arg"],
+            env=env,
+        )
+        captured_args = captured.read_text().splitlines() if captured.exists() else []
+        expected_tail = ["managed-test", "--", "--target-dir", "/tmp/valid-test-binary-arg"]
+        if result.returncode != 0 or not marker.exists() or captured_args[-4:] != expected_tail:
+            raise AssertionError(
+                "managed run test must preserve Cargo separator semantics for test-binary args: "
+                f"returncode={result.returncode} just_started={marker.exists()} "
+                f"captured={captured_args!r} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
 def assert_v6_red_policy_gaps() -> None:
     checks = [
         assert_v6_red_active_process_parser_gaps,
@@ -2408,6 +2459,7 @@ def assert_v6_red_policy_gaps() -> None:
         assert_managed_run_authorizes_private_just_recipes,
         assert_direct_private_managed_just_recipes_require_wrapper_env,
         assert_v6_red_managed_cargo_allows_post_separator_binary_args,
+        assert_v6_red_managed_run_allows_post_separator_binary_args,
         assert_managed_cargo_ignores_real_cargo_env_override,
     ]
     failures: list[str] = []

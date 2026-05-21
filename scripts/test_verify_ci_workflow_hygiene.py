@@ -1169,6 +1169,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
+            "E=CARGO; ${E}_TARGET_DIR=/tmp/raw-target cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
             "E=$(echo CARGO_TARGET_DIR); export $E=/tmp/raw-target; cargo check",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
@@ -1741,6 +1745,7 @@ commands:
   evalexportvar: 'export CMD="cargo build"; eval "$CMD"'
   evalparam: 'export CMD="cargo build"; eval "${CMD:-}"'
   evaldynamicenv: 'VAR=CARGO_TARGET_DIR; $VAR=/tmp/raw cargo check'
+  evalcomposedenv: 'VAR=CARGO; ${VAR}_TARGET_DIR=/tmp/raw cargo check'
   foldedplain: eval
     cargo test
   foldeddouble: "eval
@@ -1831,6 +1836,7 @@ commands: { test: "cargo test" }
         "evalexportvar",
         "evalparam",
         "evaldynamicenv",
+        "evalcomposedenv",
         "foldedplain",
         "foldeddouble",
         "shellprefix",
@@ -1929,6 +1935,13 @@ def assert_v6_red_exact_head_governance_inputs_are_cache_keyed() -> None:
             "cache keys must include exact-head CI/no-mistakes governance inputs",
             governed_workflow.replace(f", {cache_input}", ""),
         )
+
+
+def assert_shell_logical_lines_handles_crlf_continuations() -> None:
+    verifier = load_verifier()
+    logical_lines = verifier.shell_logical_lines("cargo check \\\r\n  --target-dir /tmp/raw\r\n")
+    if logical_lines != ["cargo check    --target-dir /tmp/raw"]:
+        raise AssertionError(f"CRLF shell continuation was not folded: {logical_lines!r}")
 
 
 def assert_v6_red_workflow_policy_gaps() -> None:
@@ -2060,6 +2073,7 @@ def main() -> int:
     assert_pin_consistency_rejects_mismatched_quotes()
     assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action()
     assert_v6_red_raw_storage_checks_all_ci_automation()
+    assert_shell_logical_lines_handles_crlf_continuations()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(
         "concurrency group must key pull_request runs by PR number",

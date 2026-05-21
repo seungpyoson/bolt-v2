@@ -1106,7 +1106,8 @@ def shell_quotes_are_balanced(text: str) -> bool:
 def shell_logical_lines(text: str) -> list[str]:
     lines: list[str] = []
     pending = ""
-    for line in text.replace("\\\n", " ").splitlines():
+    normalized = text.replace("\\\r\n", " ").replace("\\\n", " ")
+    for line in normalized.splitlines():
         pending = f"{pending}\n{line}" if pending else line
         if shell_quotes_are_balanced(pending):
             lines.append(pending)
@@ -1966,20 +1967,54 @@ def expand_known_shell_variables(tokens: list[str], variables: dict[str, str]) -
     return expanded
 
 
+def shell_identifier_fragment(value: str) -> str | None:
+    clean = storage_strip_quotes(value)
+    return clean if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", clean) else None
+
+
+def expand_known_shell_assignment_name(name: str, variables: dict[str, str]) -> str:
+    def replace_reference(match: re.Match[str]) -> str:
+        variable = match.group("bare") or match.group("braced")
+        if variable is None or variable not in variables:
+            return match.group(0)
+        fragment = shell_identifier_fragment(variables[variable])
+        return fragment if fragment is not None else match.group(0)
+
+    return re.sub(
+        r"\$(?P<bare>[A-Za-z_][A-Za-z0-9_]*)|\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?::?[-?+=][^}]*)?\}",
+        replace_reference,
+        name,
+    )
+
+
+def merge_split_shell_parameter_assignment_tokens(tokens: list[str]) -> list[str]:
+    merged: list[str] = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index] == "$" and index + 3 < len(tokens) and tokens[index + 1] == "{":
+            close = index + 2
+            while close < len(tokens) and tokens[close] != "}":
+                close += 1
+            if close + 1 < len(tokens) and "=" in tokens[close + 1]:
+                variable = "".join(tokens[index + 2 : close])
+                merged.append("${" + variable + "}" + tokens[close + 1])
+                index = close + 2
+                continue
+        merged.append(tokens[index])
+        index += 1
+    return merged
+
+
 def expand_known_shell_assignment_names(tokens: list[str], variables: dict[str, str]) -> list[str]:
     expanded: list[str] = []
-    for token in tokens:
+    for token in merge_split_shell_parameter_assignment_tokens(tokens):
         if "=" not in token:
             expanded.append(token)
             continue
         name, value = token.split("=", 1)
-        variable = shell_variable_reference_token(name)
-        if (
-            variable is not None
-            and variable in variables
-            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variables[variable])
-        ):
-            expanded.append(f"{variables[variable]}={value}")
+        expanded_name = expand_known_shell_assignment_name(name, variables)
+        if expanded_name != name and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", expanded_name):
+            expanded.append(f"{expanded_name}={value}")
             continue
         expanded.append(token)
     return expanded
@@ -2874,6 +2909,13 @@ def target_env_key_alias(value: str, target_keys: dict[str, str]) -> str | None:
     return None
 
 
+def shell_assignment_alias_value(value: str, target_keys: dict[str, str]) -> str | None:
+    target_key = target_env_key_alias(value, target_keys)
+    if target_key is not None:
+        return target_key
+    return shell_identifier_fragment(value)
+
+
 def target_env_key_from_assignment_name(
     name: str,
     assignments: dict[str, str],
@@ -2882,9 +2924,9 @@ def target_env_key_from_assignment_name(
     clean = storage_strip_quotes(name)
     if clean in target_keys:
         return clean
-    variable = shell_variable_reference_token(clean)
-    if variable is not None and variable in assignments:
-        return assignments[variable]
+    expanded = expand_known_shell_assignment_name(clean, assignments)
+    if expanded in target_keys:
+        return expanded
     return None
 
 
@@ -2984,7 +3026,7 @@ def dynamic_env_tokens_messages(
 ) -> set[str]:
     messages: set[str] = set()
     segment: list[str] = []
-    for token in tokens + [";"]:
+    for token in merge_split_shell_parameter_assignment_tokens(tokens) + [";"]:
         if token in SHELL_COMMAND_BOUNDARIES:
             messages.update(dynamic_env_segment_messages(segment, assignments, target_keys, depth=depth))
             segment = []
@@ -3002,24 +3044,24 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
     }
     assignments: dict[str, str] = {}
     for name, value in storage_assignment_values(text):
-        target_key = target_env_key_alias(value, target_keys)
-        if target_key is not None:
-            assignments[name] = target_key
+        alias_value = shell_assignment_alias_value(value, target_keys)
+        if alias_value is not None:
+            assignments[name] = alias_value
     for line in text.splitlines():
         line_tokens = command_tokens(strip_comment(line))
         line_assignments, is_persistent_assignment = persistent_shell_assignment_values(line_tokens)
         for name, value in line_assignments.items():
-            target_key = target_env_key_alias(value, target_keys)
-            if target_key is not None and is_persistent_assignment:
-                assignments[name] = target_key
+            alias_value = shell_assignment_alias_value(value, target_keys)
+            if alias_value is not None and is_persistent_assignment:
+                assignments[name] = alias_value
     segment: list[str] = []
     for token in command_tokens(text) + [";"]:
         if token in SHELL_COMMAND_BOUNDARIES:
             segment_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
             for name, value in segment_assignments.items():
-                target_key = target_env_key_alias(value, target_keys)
-                if target_key is not None and is_persistent_assignment:
-                    assignments[name] = target_key
+                alias_value = shell_assignment_alias_value(value, target_keys)
+                if alias_value is not None and is_persistent_assignment:
+                    assignments[name] = alias_value
             segment = []
             continue
         segment.append(token)

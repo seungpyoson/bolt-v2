@@ -1266,6 +1266,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --target-dir raw target override must be classified",
         ),
         (
+            "sudo sudo sudo sudo sudo sudo sudo /tmp/c build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
             "/tmp/c install cargo-deny --root s3://bolt-v2-active-cache/install-root",
             "cargo install S3 install root must be classified",
         ),
@@ -1848,6 +1852,7 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "justfile": "check:\n    CARGO_TARGET_DIR=/tmp/raw cargo check\n",
             "justfile.raw": "test:\n    cargo test\n",
             "scripts/raw.sh": "#!/usr/bin/env bash\ncargo build\n",
+            "scripts/raw-guard-text.sh": '#!/usr/bin/env bash\necho "Missing BOLT_MANAGED_JUST, exit 1"\ncargo build\n',
             "justfile.setup": "setup:\n    cargo install cargo-nextest --version 0.9.132 --locked\n",
             "justfile.setup.absolute": "setup:\n    /usr/bin/cargo install cargo-nextest --version 0.9.132 --locked\n",
             "justfile.setup.timeout": "setup:\n    timeout 30 cargo install cargo-deny --version 0.18.2\n",
@@ -1871,6 +1876,8 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"justfile raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-guard-text.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script guard-text raw-cargo drift was silent: {repo_errors!r}")
     expected = "repo automation must not compile cargo-nextest from source"
     if not any("justfile.setup" in error and expected in error for error in repo_errors):
         raise AssertionError(f"justfile cargo-install drift was silent: {repo_errors!r}")

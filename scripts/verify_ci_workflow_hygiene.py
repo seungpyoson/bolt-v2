@@ -2014,10 +2014,10 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
                 continue
             if ":" in stripped:
                 managed_just_recipe = False
-        if "BOLT_MANAGED_JUST" in stripped and "exit" in stripped:
+        if is_justfile and "BOLT_MANAGED_JUST" in stripped and "exit" in stripped:
             managed_just_recipe = True
             continue
-        if managed_just_recipe:
+        if is_justfile and managed_just_recipe:
             continue
         if tokens_have_repo_automation_raw_cargo(command_tokens(stripped)):
             errors.append("repo automation raw Cargo must use managed rust_verification wrapper")
@@ -2040,15 +2040,35 @@ def cargo_config_storage_override_message(tokens: list[str]) -> str | None:
     return None
 
 
+def direct_raw_cargo_storage_override_messages(tokens: list[str]) -> set[str]:
+    messages: set[str] = set()
+    if any(token == "--target-dir" or token.startswith("--target-dir=") for token in tokens):
+        messages.add("cargo --target-dir raw target override must be classified")
+    config_message = cargo_config_storage_override_message(tokens)
+    if config_message is not None:
+        messages.add(config_message)
+    if any(token == "install" for token in tokens):
+        if any(token == "--root" and index + 1 < len(tokens) and tokens[index + 1].startswith("s3://") for index, token in enumerate(tokens)):
+            messages.add("cargo install S3 install root must be classified")
+        if any(token.startswith("--root=s3://") for token in tokens):
+            messages.add("cargo install S3 install root must be classified")
+    return messages
+
+
 def raw_cargo_storage_override_messages_from_tokens(
     tokens: list[str],
     *,
     aliases: set[str] | None = None,
     depth: int = 0,
 ) -> set[str]:
-    if not tokens or depth > 6:
+    if not tokens:
         return set()
     aliases = aliases or set()
+    expanded = expand_cargo_aliases(tokens, aliases)
+    if depth > 6:
+        if tokens_have_raw_cargo_launch(expanded):
+            return direct_raw_cargo_storage_override_messages(expanded)
+        return set()
     messages: set[str] = set()
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
@@ -2077,7 +2097,6 @@ def raw_cargo_storage_override_messages_from_tokens(
         return messages
     if tokens and tokens[0] == "alias":
         return messages
-    expanded = expand_cargo_aliases(tokens, aliases)
     assignment_index = consume_assignment_words(expanded, 0)
     if assignment_index:
         return raw_cargo_storage_override_messages_from_tokens(
@@ -2126,18 +2145,7 @@ def raw_cargo_storage_override_messages_from_tokens(
         return messages
     if not tokens_have_raw_cargo_launch(expanded):
         return messages
-    if any(token == "--target-dir" or token.startswith("--target-dir=") for token in expanded):
-        messages.add("cargo --target-dir raw target override must be classified")
-    config_message = cargo_config_storage_override_message(expanded)
-    if config_message is not None:
-        messages.add(config_message)
-    if executable == "cargo" or path_invocation_has_cargo_subcommand(expanded):
-        command_index = consume_cargo_global_options(expanded, 1)
-        if command_index < len(expanded) and expanded[command_index] == "install":
-            if any(token == "--root" and index + 1 < len(expanded) and expanded[index + 1].startswith("s3://") for index, token in enumerate(expanded)):
-                messages.add("cargo install S3 install root must be classified")
-            if any(token.startswith("--root=s3://") for token in expanded):
-                messages.add("cargo install S3 install root must be classified")
+    messages.update(direct_raw_cargo_storage_override_messages(expanded))
     return messages
 
 

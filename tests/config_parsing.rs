@@ -755,6 +755,47 @@ fn bolt_v3_archetype_accepts_mixed_maker_taker_order_configs() {
 }
 
 #[test]
+fn bolt_v3_archetype_accepts_nt_model_valid_limit_order_templates_without_maker_tuple_policy() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let fixture = fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+
+    let validate_strategy = |strategy_source: String, case_name: &str| {
+        let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
+            .unwrap_or_else(|error| panic!("{case_name} should parse via NT order enums: {error}"));
+        let loaded = vec![LoadedStrategy {
+            config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+            relative_path: "strategies/binary_oracle.toml".to_string(),
+            config: strategy,
+        }];
+        let messages = validate_strategies(&stable_root, &loaded);
+        assert!(
+            messages.is_empty(),
+            "{case_name} should be accepted by NT-order invariant validation: {messages:#?}"
+        );
+    };
+
+    let entry_limit_gtc = fixture.replace("time_in_force = \"fok\"", "time_in_force = \"gtc\"");
+    validate_strategy(entry_limit_gtc, "entry limit GTC without post-only");
+
+    let exit_limit_fok = fixture
+        .replace("order_type = \"market\"", "order_type = \"limit\"")
+        .replace("time_in_force = \"ioc\"", "time_in_force = \"fok\"");
+    validate_strategy(exit_limit_fok, "exit limit FOK without post-only");
+}
+
+#[test]
 fn bolt_v3_archetype_accepts_coherent_short_side_order_contract() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
@@ -860,10 +901,9 @@ fn polymarket_post_order_params_declares_camel_case_is_post_only_flag() {
 
 #[test]
 fn bolt_v3_archetype_rejects_unsupported_nt_order_type_variants() {
-    // FINDING-1: NT's OrderType has 9 variants; binary_oracle_edge_taker only
-    // permits (Limit, Fok) on entry and (Market, Ioc) on exit. A
-    // `[parameters.entry_order]` row with `order_type = "stop_market"` must
-    // parse via NT serde and then be rejected by the archetype validator.
+    // NT exposes model variants which the pinned single-order OrderFactory does
+    // not expose as public constructors. Those remain unsupported here even
+    // though they parse through NT serde.
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -875,29 +915,40 @@ fn bolt_v3_archetype_rejects_unsupported_nt_order_type_variants() {
     )
     .expect("stable root should parse");
 
-    let mutated_strategy = std::fs::read_to_string(support::repo_path(
+    let strategy_fixture = std::fs::read_to_string(support::repo_path(
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
-    .expect("strategy fixture should be readable")
-    .replace("order_type = \"limit\"", "order_type = \"stop_market\"");
-    let strategy: BoltV3StrategyConfig = toml::from_str(&mutated_strategy)
-        .expect("stop_market order_type should parse via NT OrderType");
-    let loaded = vec![LoadedStrategy {
-        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
-        relative_path: "strategies/binary_oracle.toml".to_string(),
-        config: strategy,
-    }];
-    let messages = validate_strategies(&stable_root, &loaded);
-    assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("entry_order") && m.contains("binary_oracle_edge_taker")),
-        "expected entry_order rejection citing binary_oracle_edge_taker, got: {messages:#?}"
-    );
+    .expect("strategy fixture should be readable");
+
+    for (toml_order_type, nt_order_type) in [
+        ("market_to_limit", "MARKET_TO_LIMIT"),
+        ("trailing_stop_limit", "TRAILING_STOP_LIMIT"),
+    ] {
+        let mutated_strategy = strategy_fixture.replace(
+            "order_type = \"limit\"",
+            &format!("order_type = \"{toml_order_type}\""),
+        );
+        let strategy: BoltV3StrategyConfig =
+            toml::from_str(&mutated_strategy).unwrap_or_else(|error| {
+                panic!("{toml_order_type} should parse via NT OrderType: {error}")
+            });
+        let loaded = vec![LoadedStrategy {
+            config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+            relative_path: "strategies/binary_oracle.toml".to_string(),
+            config: strategy,
+        }];
+        let messages = validate_strategies(&stable_root, &loaded);
+        assert!(
+            messages.iter().any(|m| {
+                m.contains("entry_order") && m.contains(nt_order_type) && m.contains("OrderFactory")
+            }),
+            "expected entry_order rejection citing the OrderFactory gap for {toml_order_type}, got: {messages:#?}"
+        );
+    }
 }
 
 #[test]
-fn bolt_v3_archetype_rejects_gtd_time_in_force_until_expiry_policy_exists() {
+fn bolt_v3_archetype_rejects_gtd_limit_without_expiry() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -923,12 +974,10 @@ fn bolt_v3_archetype_rejects_gtd_time_in_force_until_expiry_policy_exists() {
     }];
     let messages = validate_strategies(&stable_root, &loaded);
     assert!(
-        messages.iter().any(|m| {
-            m.contains("entry_order")
-                && m.contains("time_in_force=fok")
-                && m.contains("time_in_force=gtc")
-        }),
-        "expected entry_order GTD rejection until an expiry policy exists, got: {messages:#?}"
+        messages
+            .iter()
+            .any(|m| { m.contains("entry_order") && m.contains("expire_time_unix_nanos") }),
+        "expected entry_order GTD rejection requiring expiry, got: {messages:#?}"
     );
 
     let exit_gtd_strategy: BoltV3StrategyConfig =
@@ -941,12 +990,10 @@ fn bolt_v3_archetype_rejects_gtd_time_in_force_until_expiry_policy_exists() {
     }];
     let messages = validate_strategies(&stable_root, &loaded);
     assert!(
-        messages.iter().any(|m| {
-            m.contains("exit_order")
-                && m.contains("time_in_force=ioc")
-                && m.contains("time_in_force=gtc")
-        }),
-        "expected exit_order GTD rejection until an expiry policy exists, got: {messages:#?}"
+        messages
+            .iter()
+            .any(|m| { m.contains("exit_order") && m.contains("time_in_force=gtd") }),
+        "expected exit_order market GTD rejection, got: {messages:#?}"
     );
 }
 
@@ -1283,7 +1330,7 @@ fn bolt_v3_archetype_rejects_market_if_touched_gtd_entry_without_expiry() {
 }
 
 #[test]
-fn bolt_v3_archetype_rejects_market_if_touched_entry_disallowed_flags() {
+fn bolt_v3_archetype_rejects_market_if_touched_entry_post_only() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -1299,38 +1346,31 @@ fn bolt_v3_archetype_rejects_market_if_touched_entry_disallowed_flags() {
     ))
     .expect("strategy fixture should be readable");
 
-    for (field, replacement) in [
-        ("is_post_only", "is_post_only = true"),
-        ("is_reduce_only", "is_reduce_only = true"),
-        ("is_quote_quantity", "is_quote_quantity = true"),
-    ] {
-        let strategy_source = fixture
-            .replace(
-                "order_type = \"limit\"",
-                "order_type = \"market_if_touched\"",
-            )
-            .replace(
-                "time_in_force = \"fok\"\nis_post_only = false",
-                "time_in_force = \"gtc\"\ntrigger_price = 0.52\nis_post_only = false",
-            )
-            .replacen(&format!("{field} = false"), replacement, 1);
-
-        let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
-            .expect("MarketIfTouched disallowed flag case should parse typed order config");
-        let loaded = vec![LoadedStrategy {
-            config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
-            relative_path: "strategies/binary_oracle.toml".to_string(),
-            config: strategy,
-        }];
-        let messages = validate_strategies(&stable_root, &loaded);
-
-        assert!(
-            messages
-                .iter()
-                .any(|m| m.contains("entry_order") && m.contains(field)),
-            "expected MarketIfTouched entry_order rejection for {field}, got: {messages:#?}"
+    let strategy_source = fixture
+        .replace(
+            "order_type = \"limit\"",
+            "order_type = \"market_if_touched\"",
+        )
+        .replace(
+            "time_in_force = \"fok\"\nis_post_only = false",
+            "time_in_force = \"gtc\"\ntrigger_price = 0.52\nis_post_only = true",
         );
-    }
+
+    let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
+        .expect("MarketIfTouched post-only case should parse typed order config");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&stable_root, &loaded);
+
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("entry_order") && m.contains("is_post_only")),
+        "expected MarketIfTouched entry_order rejection for post-only, got: {messages:#?}"
+    );
 }
 
 #[test]
@@ -1873,7 +1913,7 @@ fn bolt_v3_archetype_rejects_limit_if_touched_gtd_entry_without_expiry() {
 }
 
 #[test]
-fn bolt_v3_archetype_rejects_limit_if_touched_entry_disallowed_flags() {
+fn bolt_v3_archetype_accepts_limit_if_touched_entry_nt_boolean_flags() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -1889,37 +1929,31 @@ fn bolt_v3_archetype_rejects_limit_if_touched_entry_disallowed_flags() {
     ))
     .expect("strategy fixture should be readable");
 
-    for (field, replacement) in [
-        ("is_reduce_only", "is_reduce_only = true"),
-        ("is_quote_quantity", "is_quote_quantity = true"),
-    ] {
-        let strategy_source = fixture
-            .replace(
-                "order_type = \"limit\"",
-                "order_type = \"limit_if_touched\"",
-            )
-            .replace(
-                "time_in_force = \"fok\"\nis_post_only = false",
-                "time_in_force = \"gtc\"\ntrigger_price = 0.39\nis_post_only = false",
-            )
-            .replacen(&format!("{field} = false"), replacement, 1);
+    let strategy_source = fixture
+        .replace(
+            "order_type = \"limit\"",
+            "order_type = \"limit_if_touched\"",
+        )
+        .replace(
+            "time_in_force = \"fok\"\nis_post_only = false",
+            "time_in_force = \"gtc\"\ntrigger_price = 0.39\nis_post_only = false",
+        )
+        .replacen("is_reduce_only = false", "is_reduce_only = true", 1)
+        .replacen("is_quote_quantity = false", "is_quote_quantity = true", 1);
 
-        let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
-            .expect("LimitIfTouched disallowed flag case should parse typed order config");
-        let loaded = vec![LoadedStrategy {
-            config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
-            relative_path: "strategies/binary_oracle.toml".to_string(),
-            config: strategy,
-        }];
-        let messages = validate_strategies(&stable_root, &loaded);
+    let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
+        .expect("LimitIfTouched boolean flag case should parse typed order config");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&stable_root, &loaded);
 
-        assert!(
-            messages
-                .iter()
-                .any(|m| m.contains("entry_order") && m.contains(field)),
-            "expected LimitIfTouched entry_order rejection for {field}, got: {messages:#?}"
-        );
-    }
+    assert!(
+        messages.is_empty(),
+        "LimitIfTouched entry boolean flags should be accepted as NT order fields: {messages:#?}"
+    );
 }
 
 #[test]
@@ -1987,26 +2021,6 @@ fn bolt_v3_archetype_rejects_limit_if_touched_exit_invalid_combinations() {
             "trigger_price",
         ));
     }
-    for (field, replacement) in [
-        ("is_reduce_only", "is_reduce_only = true"),
-        ("is_quote_quantity", "is_quote_quantity = true"),
-    ] {
-        cases.push((
-            field,
-            exit_and_after
-                .replace(
-                    "order_type = \"market\"",
-                    "order_type = \"limit_if_touched\"",
-                )
-                .replace(
-                    "time_in_force = \"ioc\"\nis_post_only = false",
-                    "time_in_force = \"gtc\"\ntrigger_price = 0.46\nis_post_only = false",
-                )
-                .replacen(&format!("{field} = false"), replacement, 1),
-            field,
-        ));
-    }
-
     for (case, exit_source, expected_field) in cases {
         let strategy_source = format!("{before_exit}[parameters.exit_order]{exit_source}");
         let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_source)
@@ -2153,7 +2167,7 @@ fn bolt_v3_archetype_rejects_stop_limit_gtd_entry_without_expiry() {
 }
 
 #[test]
-fn bolt_v3_archetype_rejects_stop_limit_entry_disallowed_flags() {
+fn bolt_v3_archetype_accepts_stop_limit_entry_nt_boolean_flags() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -2169,34 +2183,28 @@ fn bolt_v3_archetype_rejects_stop_limit_entry_disallowed_flags() {
     ))
     .expect("strategy fixture should be readable");
 
-    for (field, replacement) in [
-        ("is_reduce_only", "is_reduce_only = true"),
-        ("is_quote_quantity", "is_quote_quantity = true"),
-    ] {
-        let stop_limit_strategy_source = fixture
-            .replace("order_type = \"limit\"", "order_type = \"stop_limit\"")
-            .replace(
-                "time_in_force = \"fok\"\nis_post_only = false",
-                "time_in_force = \"gtc\"\ntrigger_price = 0.52\nis_post_only = false",
-            )
-            .replacen(&format!("{field} = false"), replacement, 1);
+    let stop_limit_strategy_source = fixture
+        .replace("order_type = \"limit\"", "order_type = \"stop_limit\"")
+        .replace(
+            "time_in_force = \"fok\"\nis_post_only = false",
+            "time_in_force = \"gtc\"\ntrigger_price = 0.52\nis_post_only = false",
+        )
+        .replacen("is_reduce_only = false", "is_reduce_only = true", 1)
+        .replacen("is_quote_quantity = false", "is_quote_quantity = true", 1);
 
-        let strategy: BoltV3StrategyConfig = toml::from_str(&stop_limit_strategy_source)
-            .expect("StopLimit disallowed flag case should parse typed order config");
-        let loaded = vec![LoadedStrategy {
-            config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
-            relative_path: "strategies/binary_oracle.toml".to_string(),
-            config: strategy,
-        }];
-        let messages = validate_strategies(&stable_root, &loaded);
+    let strategy: BoltV3StrategyConfig = toml::from_str(&stop_limit_strategy_source)
+        .expect("StopLimit boolean flag case should parse typed order config");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&stable_root, &loaded);
 
-        assert!(
-            messages
-                .iter()
-                .any(|m| m.contains("entry_order") && m.contains(field)),
-            "expected StopLimit entry_order rejection for {field}, got: {messages:#?}"
-        );
-    }
+    assert!(
+        messages.is_empty(),
+        "StopLimit entry boolean flags should be accepted as NT order fields: {messages:#?}"
+    );
 }
 
 #[test]

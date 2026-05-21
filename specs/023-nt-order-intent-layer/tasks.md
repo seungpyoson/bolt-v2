@@ -246,6 +246,16 @@
 - [x] T108 [US2] GREEN: Keep explicit `trigger_type` threaded to existing triggered `OrderFactory` calls through the same order-template path
 - [x] T109 [US2] Verify focused trigger-type tests, source fences as possible, branch cleanliness, exact-head gate state, and reviewer state
 
+## Phase 25: TDD Slice 21 - Remove Residual Archetype Tuple Policy
+
+**Goal**: Replace the remaining public entry/exit maker-taker tuple allowlists with reusable enabled-order invariant validation, so public config accepts NT-model-valid order templates without encoding hardcoded maker/taker policy.
+
+- [x] T110 [P] [US1] Record current exact-head CI/no-mistakes state and multi-agent findings for stale branch proof, tuple policy, forced-exit policy, provider binding scope, and NT factory gaps
+- [x] T111 [US2] RED: Add public config coverage for a model-valid enabled order template rejected only by the residual entry/exit tuple policy
+- [x] T112 [US2] GREEN: Replace entry/exit tuple allowlists with reusable enabled-order invariant validation matching the runtime NT-model checks for currently enabled order types
+- [x] T113 [US2] Refactor or retire tests that asserted old tuple policy while preserving negative coverage for real NT model invariants
+- [ ] T114 [US2] Verify focused config/runtime tests, source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and reviewer state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -271,6 +281,7 @@
 - Phase 22 blocks broad MarketIfTouched source/unit support claims because public exit validation was still narrowed to reject it.
 - Phase 23 blocks TrailingStopMarket source/unit support claims until explicit trailing fields are tested, constructed, and reviewed.
 - Phase 24 blocks completion because post-review found `trigger_type` pass-through was broader than the TrailingStopMarket task text documented.
+- Phase 25 blocks completion until focused/local checks, reviewer findings, branch cleanliness, and post-push exact-head gate state are recorded for the tuple-policy removal.
 
 ## Parallel Opportunities
 

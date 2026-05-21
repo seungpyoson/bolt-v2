@@ -7,8 +7,8 @@
 //!    row shape (`OrderParams`). The `order_type` and `time_in_force`
 //!    fields on `OrderParams` are typed with NT's canonical
 //!    `nautilus_model::enums::{OrderType, TimeInForce}`; this archetype's
-//!    validator allow-lists the specific combinations it supports rather
-//!    than defining a narrower shadow enum. Core config in
+//!    validator checks enabled NT order-template invariants rather than
+//!    defining a narrower shadow enum. Core config in
 //!    `crate::bolt_v3_config` keeps the strategy envelope and the
 //!    field name `parameters`, but the row shape is archetype-specific
 //!    and lives here so a future archetype can introduce its own
@@ -16,12 +16,10 @@
 //! 2. The archetype's bolt-v3 startup-validation policy:
 //!    - the required reference-data role
 //!      (`[reference_data.primary]`),
-//!    - the supported `[parameters.entry_order]` and
-//!      `[parameters.exit_order]` combinations: taker limit/FOK or
-//!      market/IOC where applicable, maker limit/GTC with
-//!      `is_post_only=true`, limit/GTD with an explicit
-//!      `expire_time_unix_nanos`, and stop-market with an explicit
-//!      `trigger_price`.
+//!    - the enabled `[parameters.entry_order]` and
+//!      `[parameters.exit_order]` NT order-template invariants, including
+//!      required GTD expiry, triggered-order trigger fields, and
+//!      trailing-stop fields.
 //!
 //! Core startup validation in `crate::bolt_v3_validate` keeps target-
 //! shape and per-role reference-data structural checks structural and
@@ -875,173 +873,149 @@ fn validate_parameter_bounds(
 }
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
-    if entry.order_type == OrderType::TrailingStopMarket {
-        return check_trailing_stop_market_combination(context, "entry_order", entry);
-    }
-
-    let taker_limit_fok = (OrderType::Limit, TimeInForce::Fok, false, false, false);
-    let maker_limit_gtc = (OrderType::Limit, TimeInForce::Gtc, true, false, false);
-    let gtd_limit = (OrderType::Limit, TimeInForce::Gtd, false, false);
-    let stop_market = (OrderType::StopMarket, false, false, false);
-    let market_if_touched = (OrderType::MarketIfTouched, false, false, false);
-    let stop_limit = (OrderType::StopLimit, false, false);
-    let limit_if_touched = (OrderType::LimitIfTouched, false, false);
-    let actual = (
-        entry.order_type,
-        entry.time_in_force,
-        entry.is_post_only,
-        entry.is_reduce_only,
-        entry.is_quote_quantity,
-    );
-    let is_taker_limit_fok = actual == taker_limit_fok && has_no_trigger_or_trailing_fields(entry);
-    let is_maker_limit_gtc = actual == maker_limit_gtc && has_no_trigger_or_trailing_fields(entry);
-    let is_gtd_limit_with_expiry = (
-        entry.order_type,
-        entry.time_in_force,
-        entry.is_reduce_only,
-        entry.is_quote_quantity,
-    ) == gtd_limit
-        && entry.expire_time_unix_nanos.is_some_and(|value| value > 0);
-    let is_gtd_limit = is_gtd_limit_with_expiry && has_no_trigger_or_trailing_fields(entry);
-    let is_stop_market = (
-        entry.order_type,
-        entry.is_post_only,
-        entry.is_reduce_only,
-        entry.is_quote_quantity,
-    ) == stop_market
-        && has_positive_trigger_and_valid_expiry(entry)
-        && has_no_trailing_stop_market_fields(entry);
-    let is_market_if_touched = (
-        entry.order_type,
-        entry.is_post_only,
-        entry.is_reduce_only,
-        entry.is_quote_quantity,
-    ) == market_if_touched
-        && has_positive_trigger_and_valid_expiry(entry)
-        && has_no_trailing_stop_market_fields(entry);
-    let is_stop_limit = (
-        entry.order_type,
-        entry.is_reduce_only,
-        entry.is_quote_quantity,
-    ) == stop_limit
-        && has_positive_trigger_and_valid_expiry(entry)
-        && has_no_trailing_stop_market_fields(entry);
-    let is_limit_if_touched = (
-        entry.order_type,
-        entry.is_reduce_only,
-        entry.is_quote_quantity,
-    ) == limit_if_touched
-        && has_positive_trigger_and_valid_expiry(entry)
-        && has_no_trailing_stop_market_fields(entry);
-    if !is_taker_limit_fok
-        && !is_maker_limit_gtc
-        && !is_gtd_limit
-        && !is_stop_market
-        && !is_market_if_touched
-        && !is_stop_limit
-        && !is_limit_if_touched
-    {
-        vec![format!(
-            "{context}: parameters.entry_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only order_type=limit with time_in_force=fok, time_in_force=gtc plus is_post_only=true, time_in_force=gtd plus expire_time_unix_nanos, order_type=stop_market plus trigger_price, order_type=market_if_touched plus trigger_price, order_type=stop_limit plus trigger_price, order_type=limit_if_touched plus trigger_price, or order_type=trailing_stop_market plus trailing fields is allowed; \
-             is_reduce_only=false and is_quote_quantity=false are required"
-        )]
-    } else {
-        Vec::new()
-    }
+    check_enabled_order_template(context, "entry_order", entry)
 }
 
 fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {
-    if exit.order_type == OrderType::TrailingStopMarket {
-        return check_trailing_stop_market_combination(context, "exit_order", exit);
-    }
+    check_enabled_order_template(context, "exit_order", exit)
+}
 
-    let taker_market_ioc = (OrderType::Market, TimeInForce::Ioc, false, false, false);
-    let maker_limit_gtc = (OrderType::Limit, TimeInForce::Gtc, true, false, false);
-    let gtd_limit = (OrderType::Limit, TimeInForce::Gtd, false, false);
-    let stop_market = (OrderType::StopMarket, false, false, false);
-    let market_if_touched = (OrderType::MarketIfTouched, false, false, false);
-    let stop_limit = (OrderType::StopLimit, false, false);
-    let limit_if_touched = (OrderType::LimitIfTouched, false, false);
-    let actual = (
-        exit.order_type,
-        exit.time_in_force,
-        exit.is_post_only,
-        exit.is_reduce_only,
-        exit.is_quote_quantity,
-    );
-    let is_taker_market_ioc = actual == taker_market_ioc && has_no_trigger_or_trailing_fields(exit);
-    let is_maker_limit_gtc = actual == maker_limit_gtc && has_no_trigger_or_trailing_fields(exit);
-    let is_gtd_limit_with_expiry = (
-        exit.order_type,
-        exit.time_in_force,
-        exit.is_reduce_only,
-        exit.is_quote_quantity,
-    ) == gtd_limit
-        && exit.expire_time_unix_nanos.is_some_and(|value| value > 0);
-    let is_gtd_limit = is_gtd_limit_with_expiry && has_no_trigger_or_trailing_fields(exit);
-    let is_stop_market = (
-        exit.order_type,
-        exit.is_post_only,
-        exit.is_reduce_only,
-        exit.is_quote_quantity,
-    ) == stop_market
-        && has_positive_trigger_and_valid_expiry(exit)
-        && has_no_trailing_stop_market_fields(exit);
-    let is_market_if_touched = (
-        exit.order_type,
-        exit.is_post_only,
-        exit.is_reduce_only,
-        exit.is_quote_quantity,
-    ) == market_if_touched
-        && has_positive_trigger_and_valid_expiry(exit)
-        && has_no_trailing_stop_market_fields(exit);
-    let is_stop_limit = (exit.order_type, exit.is_reduce_only, exit.is_quote_quantity)
-        == stop_limit
-        && has_positive_trigger_and_valid_expiry(exit)
-        && has_no_trailing_stop_market_fields(exit);
-    let is_limit_if_touched = (exit.order_type, exit.is_reduce_only, exit.is_quote_quantity)
-        == limit_if_touched
-        && has_positive_trigger_and_valid_expiry(exit)
-        && has_no_trailing_stop_market_fields(exit);
-    if !is_taker_market_ioc
-        && !is_maker_limit_gtc
-        && !is_gtd_limit
-        && !is_stop_market
-        && !is_market_if_touched
-        && !is_stop_limit
-        && !is_limit_if_touched
+fn check_enabled_order_template(context: &str, field: &str, order: &OrderParams) -> Vec<String> {
+    match order.order_type {
+        OrderType::Market => check_market_order_template(context, field, order),
+        OrderType::Limit => check_limit_order_template(context, field, order),
+        OrderType::StopMarket | OrderType::MarketIfTouched => {
+            check_triggered_market_order_template(context, field, order)
+        }
+        OrderType::StopLimit | OrderType::LimitIfTouched => {
+            check_triggered_limit_order_template(context, field, order)
+        }
+        OrderType::TrailingStopMarket => {
+            check_trailing_stop_market_combination(context, field, order)
+        }
+        _ => vec![format!(
+            "{context}: parameters.{field}.order_type `{}` is not enabled for `binary_oracle_edge_taker` through the pinned NT single-order OrderFactory",
+            order.order_type
+        )],
+    }
+}
+
+fn check_market_order_template(context: &str, field: &str, order: &OrderParams) -> Vec<String> {
+    let mut errors = Vec::new();
+    if order.time_in_force == TimeInForce::Gtd {
+        errors.push(format!(
+            "{context}: parameters.{field}.time_in_force=gtd is not supported for order_type=market"
+        ));
+    }
+    if order.is_post_only {
+        errors.push(format!(
+            "{context}: parameters.{field}.is_post_only must be false for order_type=market"
+        ));
+    }
+    errors.extend(check_no_trigger_or_trailing_fields(context, field, order));
+    errors
+}
+
+fn check_limit_order_template(context: &str, field: &str, order: &OrderParams) -> Vec<String> {
+    let mut errors = Vec::new();
+    if order.time_in_force == TimeInForce::Gtd
+        && order.expire_time_unix_nanos.is_none_or(|value| value == 0)
     {
-        vec![format!(
-            "{context}: parameters.exit_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only order_type=market with time_in_force=ioc, order_type=limit with time_in_force=gtc plus is_post_only=true, order_type=limit with time_in_force=gtd plus expire_time_unix_nanos, order_type=stop_market plus trigger_price, order_type=market_if_touched plus trigger_price, order_type=stop_limit plus trigger_price, order_type=limit_if_touched plus trigger_price, or order_type=trailing_stop_market plus trailing fields is allowed; \
-             is_reduce_only=false and is_quote_quantity=false are required"
-        )]
-    } else {
-        Vec::new()
+        errors.push(format!(
+            "{context}: parameters.{field}.expire_time_unix_nanos is required for GTD limit orders"
+        ));
     }
+    errors.extend(check_no_trigger_or_trailing_fields(context, field, order));
+    errors
 }
 
-fn has_positive_trigger_and_valid_expiry(order: &OrderParams) -> bool {
-    order
+fn check_triggered_market_order_template(
+    context: &str,
+    field: &str,
+    order: &OrderParams,
+) -> Vec<String> {
+    let mut errors = check_triggered_order_template(context, field, order);
+    if order.is_post_only {
+        errors.push(format!(
+            "{context}: parameters.{field}.is_post_only must be false for order_type={}",
+            order.order_type
+        ));
+    }
+    errors
+}
+
+fn check_triggered_limit_order_template(
+    context: &str,
+    field: &str,
+    order: &OrderParams,
+) -> Vec<String> {
+    check_triggered_order_template(context, field, order)
+}
+
+fn check_triggered_order_template(context: &str, field: &str, order: &OrderParams) -> Vec<String> {
+    let mut errors = Vec::new();
+    if order
         .trigger_price
-        .is_some_and(|value| value > Decimal::ZERO)
-        && (order.time_in_force != TimeInForce::Gtd
-            || order.expire_time_unix_nanos.is_some_and(|value| value > 0))
+        .is_none_or(|value| value <= Decimal::ZERO)
+    {
+        errors.push(format!(
+            "{context}: parameters.{field}.trigger_price must be positive for order_type={}",
+            order.order_type
+        ));
+    }
+    if order.time_in_force == TimeInForce::Gtd
+        && order.expire_time_unix_nanos.is_none_or(|value| value == 0)
+    {
+        errors.push(format!(
+            "{context}: parameters.{field}.expire_time_unix_nanos is required for GTD {} orders",
+            order.order_type
+        ));
+    }
+    errors.extend(check_no_trailing_stop_market_fields(context, field, order));
+    errors
 }
 
-fn has_no_trigger_or_trailing_fields(order: &OrderParams) -> bool {
-    order.trigger_price.is_none()
-        && order.activation_price.is_none()
-        && order.trigger_type.is_none()
-        && order.trailing_offset.is_none()
-        && order.trailing_offset_type.is_none()
+fn check_no_trigger_or_trailing_fields(
+    context: &str,
+    field: &str,
+    order: &OrderParams,
+) -> Vec<String> {
+    let mut errors = check_no_trailing_stop_market_fields(context, field, order);
+    if order.trigger_price.is_some() {
+        errors.push(format!(
+            "{context}: parameters.{field}.trigger_price is only supported for triggered orders"
+        ));
+    }
+    if order.trigger_type.is_some() {
+        errors.push(format!(
+            "{context}: parameters.{field}.trigger_type is only supported for triggered orders"
+        ));
+    }
+    errors
 }
 
-fn has_no_trailing_stop_market_fields(order: &OrderParams) -> bool {
-    order.activation_price.is_none()
-        && order.trailing_offset.is_none()
-        && order.trailing_offset_type.is_none()
+fn check_no_trailing_stop_market_fields(
+    context: &str,
+    field: &str,
+    order: &OrderParams,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if order.activation_price.is_some() {
+        errors.push(format!(
+            "{context}: parameters.{field}.activation_price is only supported for order_type=trailing_stop_market"
+        ));
+    }
+    if order.trailing_offset.is_some() {
+        errors.push(format!(
+            "{context}: parameters.{field}.trailing_offset is only supported for order_type=trailing_stop_market"
+        ));
+    }
+    if order.trailing_offset_type.is_some() {
+        errors.push(format!(
+            "{context}: parameters.{field}.trailing_offset_type is only supported for order_type=trailing_stop_market"
+        ));
+    }
+    errors
 }
 
 fn check_trailing_stop_market_combination(
@@ -1053,16 +1027,6 @@ fn check_trailing_stop_market_combination(
     if order.is_post_only {
         errors.push(format!(
             "{context}: parameters.{field}.is_post_only must be false for order_type=trailing_stop_market"
-        ));
-    }
-    if order.is_reduce_only {
-        errors.push(format!(
-            "{context}: parameters.{field}.is_reduce_only must be false for `binary_oracle_edge_taker` normal orders"
-        ));
-    }
-    if order.is_quote_quantity {
-        errors.push(format!(
-            "{context}: parameters.{field}.is_quote_quantity must be false for `binary_oracle_edge_taker` normal orders"
         ));
     }
     if order

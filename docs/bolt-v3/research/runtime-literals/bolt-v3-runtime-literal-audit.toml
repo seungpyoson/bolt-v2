@@ -159,6 +159,62 @@ reason = "This is the NT stop-order trigger price field projected from TOML into
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"activation_price"'''
+context = '''insert_float(&mut order_table, "activation_price", activation_price);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT trailing-stop activation price field projected from TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"entry_order"'''
+context = '''return check_trailing_stop_market_combination(context, "entry_order", entry);'''
+classification = "strategy_runtime_validation_field"
+reason = "This labels the existing nested entry order table in TrailingStopMarket validation diagnostics; the table values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_order"'''
+context = '''return check_trailing_stop_market_combination(context, "exit_order", exit);'''
+classification = "strategy_runtime_validation_field"
+reason = "This labels the existing nested exit order table in TrailingStopMarket validation diagnostics; the table values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trigger_type"'''
+context = '''"trigger_type",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT triggered-order trigger type field projected from TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trailing_offset"'''
+context = '''insert_float(&mut order_table, "trailing_offset", trailing_offset);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT trailing-stop offset field projected from TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trailing_offset_type"'''
+context = '''"trailing_offset_type",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT trailing-stop offset type field projected from TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0'''
+context = '''&& !order.expire_time_unix_nanos.is_some_and(|value| value > 0)'''
+classification = "nt_order_model_invariant"
+reason = "This enforces positive GTD expiry nanos for TrailingStopMarket before calling the NT order factory; the expiry value itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"external_order_claims"'''
 context = '''"external_order_claims",'''
 classification = "strategy_runtime_schema_field"
@@ -2984,8 +3040,56 @@ reason = "This is the stable NT stop-order trigger price field label used in val
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, or `limit_if_touched`, got `{order_type:?}`"'''
-context = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, or `limit_if_touched`, got `{order_type:?}`"'''
+literal = '''"activation_price"'''
+context = '''const ORDER_ACTIVATION_PRICE_FIELD: &str = "activation_price";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT trailing-stop activation price field label used in validation diagnostics; the price value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trigger_type"'''
+context = '''const ORDER_TRIGGER_TYPE_FIELD: &str = "trigger_type";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT triggered-order trigger type field label used in validation diagnostics; the trigger type value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trailing_offset"'''
+context = '''const ORDER_TRAILING_OFFSET_FIELD: &str = "trailing_offset";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT trailing-stop offset field label used in validation diagnostics; the offset value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trailing_offset_type"'''
+context = '''const ORDER_TRAILING_OFFSET_TYPE_FIELD: &str = "trailing_offset_type";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT trailing-stop offset type field label used in validation diagnostics; the offset type value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trigger_price"'''
+context = '''price_from_config(prefix, "trigger_price", trigger_price, price_precision)'''
+classification = "strategy_config_field_name"
+reason = "This labels the NT trigger-price field in shared price validation; the price value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"activation_price"'''
+context = '''"activation_price",'''
+classification = "strategy_config_field_name"
+reason = "This labels the NT trailing-stop activation-price field in shared price validation; the price value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, `limit_if_touched`, or `trailing_stop_market`, got `{order_type:?}`"'''
+context = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, `limit_if_touched`, or `trailing_stop_market`, got `{order_type:?}`"'''
 classification = "strategy_config_error_message"
 reason = "This is a stable validation diagnostic naming the NT factory variants enabled by this slice, not an operator runtime value."
 

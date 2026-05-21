@@ -39,7 +39,7 @@ use serde::Deserialize;
 use toml::{Value, map::Map};
 
 use nautilus_model::{
-    enums::{OrderSide, OrderType, PositionSide, TimeInForce},
+    enums::{OrderSide, OrderType, PositionSide, TimeInForce, TrailingOffsetType, TriggerType},
     identifiers::StrategyId,
 };
 
@@ -114,6 +114,10 @@ pub struct OrderParams {
     pub time_in_force: TimeInForce,
     pub expire_time_unix_nanos: Option<u64>,
     pub trigger_price: Option<Decimal>,
+    pub activation_price: Option<Decimal>,
+    pub trigger_type: Option<TriggerType>,
+    pub trailing_offset: Option<Decimal>,
+    pub trailing_offset_type: Option<TrailingOffsetType>,
     pub is_post_only: bool,
     pub is_reduce_only: bool,
     pub is_quote_quantity: bool,
@@ -703,6 +707,40 @@ fn insert_order_config(
         })?;
         insert_float(&mut order_table, "trigger_price", trigger_price);
     }
+    if let Some(activation_price) = order.activation_price {
+        let activation_price = activation_price.to_f64().ok_or_else(|| {
+            BinaryOracleEdgeTakerRuntimeConfigError::Numeric {
+                strategy_instance_id: strategy_instance_id.to_string(),
+                field: "activation_price",
+                value: activation_price.to_string(),
+            }
+        })?;
+        insert_float(&mut order_table, "activation_price", activation_price);
+    }
+    if let Some(trigger_type) = order.trigger_type {
+        insert_string(
+            &mut order_table,
+            "trigger_type",
+            enum_variant_lowercase(trigger_type),
+        );
+    }
+    if let Some(trailing_offset) = order.trailing_offset {
+        let trailing_offset = trailing_offset.to_f64().ok_or_else(|| {
+            BinaryOracleEdgeTakerRuntimeConfigError::Numeric {
+                strategy_instance_id: strategy_instance_id.to_string(),
+                field: "trailing_offset",
+                value: trailing_offset.to_string(),
+            }
+        })?;
+        insert_float(&mut order_table, "trailing_offset", trailing_offset);
+    }
+    if let Some(trailing_offset_type) = order.trailing_offset_type {
+        insert_string(
+            &mut order_table,
+            "trailing_offset_type",
+            enum_variant_lowercase(trailing_offset_type),
+        );
+    }
     insert_bool(&mut order_table, "is_post_only", order.is_post_only);
     insert_bool(&mut order_table, "is_reduce_only", order.is_reduce_only);
     insert_bool(
@@ -837,6 +875,10 @@ fn validate_parameter_bounds(
 }
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
+    if entry.order_type == OrderType::TrailingStopMarket {
+        return check_trailing_stop_market_combination(context, "entry_order", entry);
+    }
+
     let taker_limit_fok = (OrderType::Limit, TimeInForce::Fok, false, false, false);
     let maker_limit_gtc = (OrderType::Limit, TimeInForce::Gtc, true, false, false);
     let gtd_limit = (OrderType::Limit, TimeInForce::Gtd, false, false);
@@ -851,8 +893,8 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
         entry.is_reduce_only,
         entry.is_quote_quantity,
     );
-    let is_taker_limit_fok = actual == taker_limit_fok && entry.trigger_price.is_none();
-    let is_maker_limit_gtc = actual == maker_limit_gtc && entry.trigger_price.is_none();
+    let is_taker_limit_fok = actual == taker_limit_fok && has_no_trigger_or_trailing_fields(entry);
+    let is_maker_limit_gtc = actual == maker_limit_gtc && has_no_trigger_or_trailing_fields(entry);
     let is_gtd_limit_with_expiry = (
         entry.order_type,
         entry.time_in_force,
@@ -860,33 +902,37 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
         entry.is_quote_quantity,
     ) == gtd_limit
         && entry.expire_time_unix_nanos.is_some_and(|value| value > 0);
-    let is_gtd_limit = is_gtd_limit_with_expiry && entry.trigger_price.is_none();
+    let is_gtd_limit = is_gtd_limit_with_expiry && has_no_trigger_or_trailing_fields(entry);
     let is_stop_market = (
         entry.order_type,
         entry.is_post_only,
         entry.is_reduce_only,
         entry.is_quote_quantity,
     ) == stop_market
-        && has_positive_trigger_and_valid_expiry(entry);
+        && has_positive_trigger_and_valid_expiry(entry)
+        && has_no_trailing_stop_market_fields(entry);
     let is_market_if_touched = (
         entry.order_type,
         entry.is_post_only,
         entry.is_reduce_only,
         entry.is_quote_quantity,
     ) == market_if_touched
-        && has_positive_trigger_and_valid_expiry(entry);
+        && has_positive_trigger_and_valid_expiry(entry)
+        && has_no_trailing_stop_market_fields(entry);
     let is_stop_limit = (
         entry.order_type,
         entry.is_reduce_only,
         entry.is_quote_quantity,
     ) == stop_limit
-        && has_positive_trigger_and_valid_expiry(entry);
+        && has_positive_trigger_and_valid_expiry(entry)
+        && has_no_trailing_stop_market_fields(entry);
     let is_limit_if_touched = (
         entry.order_type,
         entry.is_reduce_only,
         entry.is_quote_quantity,
     ) == limit_if_touched
-        && has_positive_trigger_and_valid_expiry(entry);
+        && has_positive_trigger_and_valid_expiry(entry)
+        && has_no_trailing_stop_market_fields(entry);
     if !is_taker_limit_fok
         && !is_maker_limit_gtc
         && !is_gtd_limit
@@ -897,7 +943,7 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
     {
         vec![format!(
             "{context}: parameters.entry_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only order_type=limit with time_in_force=fok, time_in_force=gtc plus is_post_only=true, time_in_force=gtd plus expire_time_unix_nanos, order_type=stop_market plus trigger_price, order_type=market_if_touched plus trigger_price, order_type=stop_limit plus trigger_price, or order_type=limit_if_touched plus trigger_price is allowed; \
+             only order_type=limit with time_in_force=fok, time_in_force=gtc plus is_post_only=true, time_in_force=gtd plus expire_time_unix_nanos, order_type=stop_market plus trigger_price, order_type=market_if_touched plus trigger_price, order_type=stop_limit plus trigger_price, order_type=limit_if_touched plus trigger_price, or order_type=trailing_stop_market plus trailing fields is allowed; \
              is_reduce_only=false and is_quote_quantity=false are required"
         )]
     } else {
@@ -906,10 +952,15 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
 }
 
 fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {
+    if exit.order_type == OrderType::TrailingStopMarket {
+        return check_trailing_stop_market_combination(context, "exit_order", exit);
+    }
+
     let taker_market_ioc = (OrderType::Market, TimeInForce::Ioc, false, false, false);
     let maker_limit_gtc = (OrderType::Limit, TimeInForce::Gtc, true, false, false);
     let gtd_limit = (OrderType::Limit, TimeInForce::Gtd, false, false);
     let stop_market = (OrderType::StopMarket, false, false, false);
+    let market_if_touched = (OrderType::MarketIfTouched, false, false, false);
     let stop_limit = (OrderType::StopLimit, false, false);
     let limit_if_touched = (OrderType::LimitIfTouched, false, false);
     let actual = (
@@ -919,8 +970,8 @@ fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String
         exit.is_reduce_only,
         exit.is_quote_quantity,
     );
-    let is_taker_market_ioc = actual == taker_market_ioc && exit.trigger_price.is_none();
-    let is_maker_limit_gtc = actual == maker_limit_gtc && exit.trigger_price.is_none();
+    let is_taker_market_ioc = actual == taker_market_ioc && has_no_trigger_or_trailing_fields(exit);
+    let is_maker_limit_gtc = actual == maker_limit_gtc && has_no_trigger_or_trailing_fields(exit);
     let is_gtd_limit_with_expiry = (
         exit.order_type,
         exit.time_in_force,
@@ -928,30 +979,42 @@ fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String
         exit.is_quote_quantity,
     ) == gtd_limit
         && exit.expire_time_unix_nanos.is_some_and(|value| value > 0);
-    let is_gtd_limit = is_gtd_limit_with_expiry && exit.trigger_price.is_none();
+    let is_gtd_limit = is_gtd_limit_with_expiry && has_no_trigger_or_trailing_fields(exit);
     let is_stop_market = (
         exit.order_type,
         exit.is_post_only,
         exit.is_reduce_only,
         exit.is_quote_quantity,
     ) == stop_market
-        && has_positive_trigger_and_valid_expiry(exit);
+        && has_positive_trigger_and_valid_expiry(exit)
+        && has_no_trailing_stop_market_fields(exit);
+    let is_market_if_touched = (
+        exit.order_type,
+        exit.is_post_only,
+        exit.is_reduce_only,
+        exit.is_quote_quantity,
+    ) == market_if_touched
+        && has_positive_trigger_and_valid_expiry(exit)
+        && has_no_trailing_stop_market_fields(exit);
     let is_stop_limit = (exit.order_type, exit.is_reduce_only, exit.is_quote_quantity)
         == stop_limit
-        && has_positive_trigger_and_valid_expiry(exit);
+        && has_positive_trigger_and_valid_expiry(exit)
+        && has_no_trailing_stop_market_fields(exit);
     let is_limit_if_touched = (exit.order_type, exit.is_reduce_only, exit.is_quote_quantity)
         == limit_if_touched
-        && has_positive_trigger_and_valid_expiry(exit);
+        && has_positive_trigger_and_valid_expiry(exit)
+        && has_no_trailing_stop_market_fields(exit);
     if !is_taker_market_ioc
         && !is_maker_limit_gtc
         && !is_gtd_limit
         && !is_stop_market
+        && !is_market_if_touched
         && !is_stop_limit
         && !is_limit_if_touched
     {
         vec![format!(
             "{context}: parameters.exit_order combination is not allowed for `binary_oracle_edge_taker`; \
-             only order_type=market with time_in_force=ioc, order_type=limit with time_in_force=gtc plus is_post_only=true, order_type=limit with time_in_force=gtd plus expire_time_unix_nanos, order_type=stop_market plus trigger_price, order_type=stop_limit plus trigger_price, or order_type=limit_if_touched plus trigger_price is allowed; \
+             only order_type=market with time_in_force=ioc, order_type=limit with time_in_force=gtc plus is_post_only=true, order_type=limit with time_in_force=gtd plus expire_time_unix_nanos, order_type=stop_market plus trigger_price, order_type=market_if_touched plus trigger_price, order_type=stop_limit plus trigger_price, order_type=limit_if_touched plus trigger_price, or order_type=trailing_stop_market plus trailing fields is allowed; \
              is_reduce_only=false and is_quote_quantity=false are required"
         )]
     } else {
@@ -965,6 +1028,80 @@ fn has_positive_trigger_and_valid_expiry(order: &OrderParams) -> bool {
         .is_some_and(|value| value > Decimal::ZERO)
         && (order.time_in_force != TimeInForce::Gtd
             || order.expire_time_unix_nanos.is_some_and(|value| value > 0))
+}
+
+fn has_no_trigger_or_trailing_fields(order: &OrderParams) -> bool {
+    order.trigger_price.is_none()
+        && order.activation_price.is_none()
+        && order.trigger_type.is_none()
+        && order.trailing_offset.is_none()
+        && order.trailing_offset_type.is_none()
+}
+
+fn has_no_trailing_stop_market_fields(order: &OrderParams) -> bool {
+    order.activation_price.is_none()
+        && order.trailing_offset.is_none()
+        && order.trailing_offset_type.is_none()
+}
+
+fn check_trailing_stop_market_combination(
+    context: &str,
+    field: &str,
+    order: &OrderParams,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if order.is_post_only {
+        errors.push(format!(
+            "{context}: parameters.{field}.is_post_only must be false for order_type=trailing_stop_market"
+        ));
+    }
+    if order.is_reduce_only {
+        errors.push(format!(
+            "{context}: parameters.{field}.is_reduce_only must be false for `binary_oracle_edge_taker` normal orders"
+        ));
+    }
+    if order.is_quote_quantity {
+        errors.push(format!(
+            "{context}: parameters.{field}.is_quote_quantity must be false for `binary_oracle_edge_taker` normal orders"
+        ));
+    }
+    if !order
+        .trigger_price
+        .is_some_and(|value| value > Decimal::ZERO)
+        && !order
+            .activation_price
+            .is_some_and(|value| value > Decimal::ZERO)
+    {
+        errors.push(format!(
+            "{context}: parameters.{field}.trigger_price or activation_price must be positive for order_type=trailing_stop_market"
+        ));
+    }
+    if order.trigger_type.is_none() {
+        errors.push(format!(
+            "{context}: parameters.{field}.trigger_type is required for order_type=trailing_stop_market"
+        ));
+    }
+    if !order
+        .trailing_offset
+        .is_some_and(|value| value > Decimal::ZERO)
+    {
+        errors.push(format!(
+            "{context}: parameters.{field}.trailing_offset must be positive for order_type=trailing_stop_market"
+        ));
+    }
+    if order.trailing_offset_type.is_none() {
+        errors.push(format!(
+            "{context}: parameters.{field}.trailing_offset_type is required for order_type=trailing_stop_market"
+        ));
+    }
+    if order.time_in_force == TimeInForce::Gtd
+        && !order.expire_time_unix_nanos.is_some_and(|value| value > 0)
+    {
+        errors.push(format!(
+            "{context}: parameters.{field}.expire_time_unix_nanos is required for GTD trailing_stop_market orders"
+        ));
+    }
+    errors
 }
 
 fn check_strategy_position_contract(

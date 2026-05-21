@@ -12,7 +12,10 @@ use nautilus_core::{Params, UnixNanos};
 use nautilus_model::enums::BookType;
 use nautilus_model::{data::QuoteTick, enums::PositionSide};
 use nautilus_model::{
-    enums::{BookAction, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce},
+    enums::{
+        BookAction, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce, TrailingOffsetType,
+        TriggerType,
+    },
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
     instruments::{Instrument, InstrumentAny},
     orders::Order,
@@ -20,7 +23,10 @@ use nautilus_model::{
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, nautilus_strategy};
-use rust_decimal::{Decimal, prelude::ToPrimitive};
+use rust_decimal::{
+    Decimal,
+    prelude::{FromPrimitive, ToPrimitive},
+};
 use serde::Deserialize;
 use toml::Value;
 
@@ -107,6 +113,10 @@ struct BinaryOracleEdgeTakerOrderConfig {
     time_in_force: TimeInForce,
     expire_time_unix_nanos: Option<u64>,
     trigger_price: Option<f64>,
+    activation_price: Option<f64>,
+    trigger_type: Option<TriggerType>,
+    trailing_offset: Option<f64>,
+    trailing_offset_type: Option<TrailingOffsetType>,
     is_post_only: bool,
     is_reduce_only: bool,
     is_quote_quantity: bool,
@@ -240,6 +250,10 @@ macro_rules! binary_oracle_edge_taker_order_fields {
 
 const ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD: &str = "expire_time_unix_nanos";
 const ORDER_TRIGGER_PRICE_FIELD: &str = "trigger_price";
+const ORDER_ACTIVATION_PRICE_FIELD: &str = "activation_price";
+const ORDER_TRIGGER_TYPE_FIELD: &str = "trigger_type";
+const ORDER_TRAILING_OFFSET_FIELD: &str = "trailing_offset";
+const ORDER_TRAILING_OFFSET_TYPE_FIELD: &str = "trailing_offset_type";
 
 macro_rules! match_order_field_names {
     ($( $field:ident => $field_type:ident; )+) => {
@@ -2787,12 +2801,13 @@ impl BinaryOracleEdgeTaker {
     fn executable_entry_cost(&self, side: OutcomeSide) -> Option<f64> {
         if matches!(
             self.config.entry_order.order_type,
-            OrderType::StopMarket | OrderType::MarketIfTouched
+            OrderType::StopMarket | OrderType::MarketIfTouched | OrderType::TrailingStopMarket
         ) {
             return self
                 .config
                 .entry_order
                 .trigger_price
+                .or(self.config.entry_order.activation_price)
                 .filter(|value| is_positive_finite(*value));
         }
         let order_side = self.configured_entry_order_side().ok()?;
@@ -3387,6 +3402,10 @@ impl BinaryOracleEdgeTaker {
             is_quote_quantity: None,
             expire_time_unix_nanos: None,
             trigger_price: None,
+            activation_price: None,
+            trigger_type: None,
+            trailing_offset: None,
+            trailing_offset_type: None,
             blocked_reason: evaluation.blocked_reason,
             forced_flat_reasons: evaluation.forced_flat_reasons.clone(),
         };
@@ -3432,6 +3451,10 @@ impl BinaryOracleEdgeTaker {
         decision.is_quote_quantity = Some(order_config.is_quote_quantity);
         decision.expire_time_unix_nanos = order_config.expire_time_unix_nanos;
         decision.trigger_price = order_config.trigger_price;
+        decision.activation_price = order_config.activation_price;
+        decision.trigger_type = order_config.trigger_type;
+        decision.trailing_offset = order_config.trailing_offset;
+        decision.trailing_offset_type = order_config.trailing_offset_type;
         decision.blocked_reason = None;
         decision
     }
@@ -3661,6 +3684,17 @@ impl BinaryOracleEdgeTaker {
                 self.config.entry_order.trigger_price,
                 price.precision,
             )?,
+            activation_price_from_config(
+                ORDER_CONFIGURATION_PREFIX_ENTRY,
+                self.config.entry_order.activation_price,
+                price.precision,
+            )?,
+            self.config.entry_order.trigger_type,
+            trailing_offset_from_config(
+                ORDER_CONFIGURATION_PREFIX_ENTRY,
+                self.config.entry_order.trailing_offset,
+            )?,
+            self.config.entry_order.trailing_offset_type,
             self.config.entry_order.is_post_only,
             self.config.entry_order.is_reduce_only,
             self.config.entry_order.is_quote_quantity,
@@ -3678,6 +3712,10 @@ impl BinaryOracleEdgeTaker {
             time_in_force: self.config.exit_order.time_in_force,
             expire_time_unix_nanos: self.config.exit_order.expire_time_unix_nanos,
             trigger_price: self.config.exit_order.trigger_price,
+            activation_price: self.config.exit_order.activation_price,
+            trigger_type: self.config.exit_order.trigger_type,
+            trailing_offset: self.config.exit_order.trailing_offset,
+            trailing_offset_type: self.config.exit_order.trailing_offset_type,
             is_post_only: self.config.exit_order.is_post_only,
             is_reduce_only: self.config.exit_order.is_reduce_only,
             is_quote_quantity: self.config.exit_order.is_quote_quantity,
@@ -3693,6 +3731,10 @@ impl BinaryOracleEdgeTaker {
             )?,
             expire_time_unix_nanos: None,
             trigger_price: None,
+            activation_price: None,
+            trigger_type: None,
+            trailing_offset: None,
+            trailing_offset_type: None,
             is_post_only: false,
             is_reduce_only: self.config.market_exit_reduce_only,
             is_quote_quantity: false,
@@ -3746,6 +3788,17 @@ impl BinaryOracleEdgeTaker {
                 order_config.trigger_price,
                 price.precision,
             )?,
+            activation_price_from_config(
+                ORDER_CONFIGURATION_PREFIX_EXIT,
+                order_config.activation_price,
+                price.precision,
+            )?,
+            order_config.trigger_type,
+            trailing_offset_from_config(
+                ORDER_CONFIGURATION_PREFIX_EXIT,
+                order_config.trailing_offset,
+            )?,
+            order_config.trailing_offset_type,
             order_config.is_post_only,
             order_config.is_reduce_only,
             order_config.is_quote_quantity,
@@ -4626,6 +4679,10 @@ impl BinaryOracleEdgeTakerBuilder {
                 key.as_str(),
                 ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD
                     | ORDER_TRIGGER_PRICE_FIELD
+                    | ORDER_ACTIVATION_PRICE_FIELD
+                    | ORDER_TRIGGER_TYPE_FIELD
+                    | ORDER_TRAILING_OFFSET_FIELD
+                    | ORDER_TRAILING_OFFSET_TYPE_FIELD
                     | binary_oracle_edge_taker_order_fields!(match_order_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field}.{key}"), key);
@@ -4654,6 +4711,46 @@ impl BinaryOracleEdgeTakerBuilder {
                 errors,
                 format!("{field}.{ORDER_TRIGGER_PRICE_FIELD}"),
                 BinaryOracleEdgeTakerFieldType::Float,
+                value,
+            );
+        }
+        if let Some(value) = order_table.get(ORDER_ACTIVATION_PRICE_FIELD)
+            && !BinaryOracleEdgeTakerFieldType::Float.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field}.{ORDER_ACTIVATION_PRICE_FIELD}"),
+                BinaryOracleEdgeTakerFieldType::Float,
+                value,
+            );
+        }
+        if let Some(value) = order_table.get(ORDER_TRIGGER_TYPE_FIELD)
+            && !BinaryOracleEdgeTakerFieldType::String.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field}.{ORDER_TRIGGER_TYPE_FIELD}"),
+                BinaryOracleEdgeTakerFieldType::String,
+                value,
+            );
+        }
+        if let Some(value) = order_table.get(ORDER_TRAILING_OFFSET_FIELD)
+            && !BinaryOracleEdgeTakerFieldType::Float.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field}.{ORDER_TRAILING_OFFSET_FIELD}"),
+                BinaryOracleEdgeTakerFieldType::Float,
+                value,
+            );
+        }
+        if let Some(value) = order_table.get(ORDER_TRAILING_OFFSET_TYPE_FIELD)
+            && !BinaryOracleEdgeTakerFieldType::String.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field}.{ORDER_TRAILING_OFFSET_TYPE_FIELD}"),
+                BinaryOracleEdgeTakerFieldType::String,
                 value,
             );
         }
@@ -4981,6 +5078,11 @@ fn validate_configured_order_against_nt_model(
     time_in_force: TimeInForce,
     expire_time: Option<UnixNanos>,
     trigger_price: Option<Price>,
+    activation_price: Option<Price>,
+    trigger_type: Option<TriggerType>,
+    trailing_offset: Option<Decimal>,
+    trailing_offset_type: Option<TrailingOffsetType>,
+    is_post_only: bool,
     order_side: OrderSide,
     price: Price,
 ) -> Result<()> {
@@ -5005,6 +5107,11 @@ fn validate_configured_order_against_nt_model(
         {
             anyhow::bail!("{prefix}_expire_time is required for GTD LimitIfTouched orders")
         }
+        (OrderType::TrailingStopMarket, TimeInForce::Gtd, _)
+            if expire_time.is_none_or(|value| value.as_u64() == 0) =>
+        {
+            anyhow::bail!("{prefix}_expire_time is required for GTD TrailingStopMarket orders")
+        }
         (OrderType::Market, TimeInForce::Gtd, _) => {
             anyhow::bail!("GTD not supported for Market orders")
         }
@@ -5020,6 +5127,54 @@ fn validate_configured_order_against_nt_model(
             anyhow::bail!("{prefix}_trigger_price is only supported for triggered orders")
         }
         _ => {}
+    }
+
+    if !matches!(order_type, OrderType::TrailingStopMarket) {
+        anyhow::ensure!(
+            activation_price.is_none(),
+            "{prefix}_activation_price is only supported for TrailingStopMarket orders"
+        );
+        anyhow::ensure!(
+            trailing_offset.is_none(),
+            "{prefix}_trailing_offset is only supported for TrailingStopMarket orders"
+        );
+        anyhow::ensure!(
+            trailing_offset_type.is_none(),
+            "{prefix}_trailing_offset_type is only supported for TrailingStopMarket orders"
+        );
+    }
+
+    if matches!(order_type, OrderType::Limit | OrderType::Market) {
+        anyhow::ensure!(
+            trigger_type.is_none(),
+            "{prefix}_trigger_type is only supported for triggered orders"
+        );
+    }
+
+    if matches!(order_type, OrderType::TrailingStopMarket) {
+        anyhow::ensure!(
+            !is_post_only,
+            "{prefix}_is_post_only must be false for TrailingStopMarket orders"
+        );
+        anyhow::ensure!(
+            trigger_price.is_some() || activation_price.is_some(),
+            "{prefix}_trigger_price or {prefix}_activation_price is required for TrailingStopMarket orders"
+        );
+        anyhow::ensure!(
+            trigger_type.is_some(),
+            "{prefix}_trigger_type is required for TrailingStopMarket orders"
+        );
+        let trailing_offset = trailing_offset.ok_or_else(|| {
+            anyhow::anyhow!("{prefix}_trailing_offset is required for TrailingStopMarket orders")
+        })?;
+        anyhow::ensure!(
+            trailing_offset > Decimal::ZERO,
+            "{prefix}_trailing_offset must be positive"
+        );
+        anyhow::ensure!(
+            trailing_offset_type.is_some(),
+            "{prefix}_trailing_offset_type is required for TrailingStopMarket orders"
+        );
     }
 
     let Some(trigger_price) = trigger_price else {
@@ -5045,13 +5200,51 @@ fn trigger_price_from_config(
     trigger_price: Option<f64>,
     price_precision: u8,
 ) -> Result<Option<Price>> {
-    trigger_price
+    price_from_config(prefix, "trigger_price", trigger_price, price_precision)
+}
+
+fn activation_price_from_config(
+    prefix: &'static str,
+    activation_price: Option<f64>,
+    price_precision: u8,
+) -> Result<Option<Price>> {
+    price_from_config(
+        prefix,
+        "activation_price",
+        activation_price,
+        price_precision,
+    )
+}
+
+fn price_from_config(
+    prefix: &'static str,
+    field: &'static str,
+    value: Option<f64>,
+    price_precision: u8,
+) -> Result<Option<Price>> {
+    value
         .map(|value| {
             anyhow::ensure!(
                 is_positive_finite(value),
-                "{prefix}_trigger_price must be positive and finite"
+                "{prefix}_{field} must be positive and finite"
             );
             Ok(Price::new(value, price_precision))
+        })
+        .transpose()
+}
+
+fn trailing_offset_from_config(
+    prefix: &'static str,
+    trailing_offset: Option<f64>,
+) -> Result<Option<Decimal>> {
+    trailing_offset
+        .map(|value| {
+            anyhow::ensure!(
+                is_positive_finite(value),
+                "{prefix}_trailing_offset must be positive and finite"
+            );
+            Decimal::from_f64(value)
+                .ok_or_else(|| anyhow::anyhow!("{prefix}_trailing_offset must be decimal"))
         })
         .transpose()
 }
@@ -5064,6 +5257,10 @@ fn build_configured_order(
     time_in_force: TimeInForce,
     expire_time: Option<UnixNanos>,
     trigger_price: Option<Price>,
+    activation_price: Option<Price>,
+    trigger_type: Option<TriggerType>,
+    trailing_offset: Option<Decimal>,
+    trailing_offset_type: Option<TrailingOffsetType>,
     is_post_only: bool,
     is_reduce_only: bool,
     is_quote_quantity: bool,
@@ -5079,6 +5276,11 @@ fn build_configured_order(
         time_in_force,
         expire_time,
         trigger_price,
+        activation_price,
+        trigger_type,
+        trailing_offset,
+        trailing_offset_type,
+        is_post_only,
         order_side,
         price,
     )?;
@@ -5130,7 +5332,7 @@ fn build_configured_order(
                 order_side,
                 quantity,
                 trigger_price.expect("validated StopMarket trigger price"),
-                None,
+                trigger_type,
                 Some(time_in_force),
                 expire_time,
                 Some(is_reduce_only),
@@ -5154,7 +5356,7 @@ fn build_configured_order(
                 order_side,
                 quantity,
                 trigger_price.expect("validated MarketIfTouched trigger price"),
-                None,
+                trigger_type,
                 Some(time_in_force),
                 expire_time,
                 Some(is_reduce_only),
@@ -5173,7 +5375,7 @@ fn build_configured_order(
             quantity,
             price,
             trigger_price.expect("validated triggered order trigger price"),
-            None,
+            trigger_type,
             Some(time_in_force),
             expire_time,
             Some(is_post_only),
@@ -5193,7 +5395,7 @@ fn build_configured_order(
             quantity,
             price,
             trigger_price.expect("validated LimitIfTouched trigger price"),
-            None,
+            trigger_type,
             Some(time_in_force),
             expire_time,
             Some(is_post_only),
@@ -5207,9 +5409,36 @@ fn build_configured_order(
             None,
             Some(client_order_id),
         )),
+        OrderType::TrailingStopMarket => {
+            anyhow::ensure!(
+                !is_post_only,
+                "{prefix}_is_post_only must be false for TrailingStopMarket orders"
+            );
+            Ok(core.order_factory().trailing_stop_market(
+                instrument_id,
+                order_side,
+                quantity,
+                trailing_offset.expect("validated TrailingStopMarket trailing offset"),
+                trailing_offset_type,
+                activation_price,
+                trigger_price,
+                trigger_type,
+                Some(time_in_force),
+                expire_time,
+                Some(is_reduce_only),
+                Some(is_quote_quantity),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(client_order_id),
+            ))
+        }
         _ => {
             anyhow::bail!(
-                "{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, or `limit_if_touched`, got `{order_type:?}`"
+                "{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, `limit_if_touched`, or `trailing_stop_market`, got `{order_type:?}`"
             )
         }
     }
@@ -5788,6 +6017,10 @@ struct ExitOrderExecutionConfig {
     time_in_force: TimeInForce,
     expire_time_unix_nanos: Option<u64>,
     trigger_price: Option<f64>,
+    activation_price: Option<f64>,
+    trigger_type: Option<TriggerType>,
+    trailing_offset: Option<f64>,
+    trailing_offset_type: Option<TrailingOffsetType>,
     is_post_only: bool,
     is_reduce_only: bool,
     is_quote_quantity: bool,
@@ -5808,6 +6041,10 @@ struct ExitSubmissionDecision {
     is_quote_quantity: Option<bool>,
     expire_time_unix_nanos: Option<u64>,
     trigger_price: Option<f64>,
+    activation_price: Option<f64>,
+    trigger_type: Option<TriggerType>,
+    trailing_offset: Option<f64>,
+    trailing_offset_type: Option<TrailingOffsetType>,
     blocked_reason: Option<&'static str>,
     forced_flat_reasons: Vec<ForcedFlatReason>,
 }
@@ -5819,6 +6056,10 @@ impl ExitSubmissionDecision {
             time_in_force: self.time_in_force?,
             expire_time_unix_nanos: self.expire_time_unix_nanos,
             trigger_price: self.trigger_price,
+            activation_price: self.activation_price,
+            trigger_type: self.trigger_type,
+            trailing_offset: self.trailing_offset,
+            trailing_offset_type: self.trailing_offset_type,
             is_post_only: self.is_post_only?,
             is_reduce_only: self.is_reduce_only?,
             is_quote_quantity: self.is_quote_quantity?,
@@ -6367,6 +6608,10 @@ mod tests {
                     time_in_force: TimeInForce::Fok,
                     expire_time_unix_nanos: None,
                     trigger_price: None,
+                    activation_price: None,
+                    trigger_type: None,
+                    trailing_offset: None,
+                    trailing_offset_type: None,
                     is_post_only: false,
                     is_reduce_only: false,
                     is_quote_quantity: false,
@@ -6378,6 +6623,10 @@ mod tests {
                     time_in_force: TimeInForce::Ioc,
                     expire_time_unix_nanos: None,
                     trigger_price: None,
+                    activation_price: None,
+                    trigger_type: None,
+                    trailing_offset: None,
+                    trailing_offset_type: None,
                     is_post_only: false,
                     is_reduce_only: false,
                     is_quote_quantity: false,
@@ -9175,6 +9424,7 @@ mod tests {
         strategy.config.entry_order.order_type = OrderType::MarketIfTouched;
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::MarkPrice);
         strategy.active.books.down.best_bid = Some(0.40);
         strategy.active.books.down.best_ask = Some(0.41);
 
@@ -9220,6 +9470,7 @@ mod tests {
         assert_eq!(order.order_type(), OrderType::MarketIfTouched);
         assert_eq!(order.time_in_force(), TimeInForce::Gtc);
         assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
+        assert_eq!(order.trigger_type(), Some(TriggerType::MarkPrice));
         assert_eq!(order.price(), None);
         assert!(!order.is_post_only());
         assert!(!order.is_reduce_only());
@@ -9505,6 +9756,7 @@ mod tests {
         strategy.config.entry_order.order_type = OrderType::StopMarket;
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
 
         let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
         let quantity = Quantity::new(2.0, 2);
@@ -9539,6 +9791,7 @@ mod tests {
         assert_eq!(order.order_type(), OrderType::StopMarket);
         assert_eq!(order.time_in_force(), TimeInForce::Gtc);
         assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
+        assert_eq!(order.trigger_type(), Some(TriggerType::LastPrice));
         assert_eq!(order.price(), None);
         assert!(!order.is_reduce_only());
         assert!(!order.is_quote_quantity());
@@ -9557,11 +9810,13 @@ mod tests {
         strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
         strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
         strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
         strategy.config.entry_order.is_post_only = true;
         strategy.config.exit_order.order_type = OrderType::StopLimit;
         strategy.config.exit_order.time_in_force = TimeInForce::Gtd;
         strategy.config.exit_order.expire_time_unix_nanos = Some(expire_time.as_u64());
         strategy.config.exit_order.trigger_price = Some(0.48);
+        strategy.config.exit_order.trigger_type = Some(TriggerType::MarkPrice);
         strategy.config.exit_order.is_post_only = true;
 
         let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
@@ -9598,6 +9853,7 @@ mod tests {
         assert_eq!(order.time_in_force(), TimeInForce::Gtd);
         assert_eq!(order.price(), Some(price));
         assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
+        assert_eq!(order.trigger_type(), Some(TriggerType::LastPrice));
         assert_eq!(order.expire_time(), Some(expire_time));
         assert!(order.is_post_only());
         assert!(!order.is_reduce_only());
@@ -9626,6 +9882,7 @@ mod tests {
         assert_eq!(exit_order.time_in_force(), TimeInForce::Gtd);
         assert_eq!(exit_order.price(), Some(exit_price));
         assert_eq!(exit_order.trigger_price(), Some(Price::new(0.48, 2)));
+        assert_eq!(exit_order.trigger_type(), Some(TriggerType::MarkPrice));
         assert_eq!(exit_order.expire_time(), Some(expire_time));
         assert!(exit_order.is_post_only());
         assert!(!exit_order.is_reduce_only());
@@ -9641,11 +9898,13 @@ mod tests {
         strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
         strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
         strategy.config.entry_order.trigger_price = Some(0.39);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
         strategy.config.entry_order.is_post_only = true;
         strategy.config.exit_order.order_type = OrderType::LimitIfTouched;
         strategy.config.exit_order.time_in_force = TimeInForce::Gtd;
         strategy.config.exit_order.expire_time_unix_nanos = Some(expire_time.as_u64());
         strategy.config.exit_order.trigger_price = Some(0.46);
+        strategy.config.exit_order.trigger_type = Some(TriggerType::MarkPrice);
         strategy.config.exit_order.is_post_only = true;
 
         let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
@@ -9683,6 +9942,7 @@ mod tests {
         assert_eq!(order.time_in_force(), TimeInForce::Gtd);
         assert_eq!(order.price(), Some(price));
         assert_eq!(order.trigger_price(), Some(Price::new(0.39, 2)));
+        assert_eq!(order.trigger_type(), Some(TriggerType::LastPrice));
         assert_eq!(order.expire_time(), Some(expire_time));
         assert!(order.is_post_only());
         assert!(!order.is_reduce_only());
@@ -9711,6 +9971,7 @@ mod tests {
         assert_eq!(exit_order.time_in_force(), TimeInForce::Gtd);
         assert_eq!(exit_order.price(), Some(exit_price));
         assert_eq!(exit_order.trigger_price(), Some(Price::new(0.46, 2)));
+        assert_eq!(exit_order.trigger_type(), Some(TriggerType::MarkPrice));
         assert_eq!(exit_order.expire_time(), Some(expire_time));
         assert!(exit_order.is_post_only());
         assert!(!exit_order.is_reduce_only());
@@ -9761,6 +10022,217 @@ mod tests {
             sell_error.to_string().contains("trigger_price")
                 && sell_error.to_string().contains(">="),
             "{sell_error}"
+        );
+    }
+
+    #[test]
+    fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
+        strategy.config.entry_order.order_type = OrderType::TrailingStopMarket;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        strategy.config.entry_order.trailing_offset = Some(2.5);
+        strategy.config.entry_order.trailing_offset_type = Some(TrailingOffsetType::BasisPoints);
+        strategy.config.entry_order.is_post_only = false;
+        strategy.config.exit_order.order_type = OrderType::TrailingStopMarket;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.exit_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+        strategy.config.exit_order.activation_price = Some(0.48);
+        strategy.config.exit_order.trigger_type = Some(TriggerType::MarkPrice);
+        strategy.config.exit_order.trailing_offset = Some(3.0);
+        strategy.config.exit_order.trailing_offset_type = Some(TrailingOffsetType::Ticks);
+        strategy.config.exit_order.is_post_only = false;
+
+        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let quantity = Quantity::new(2.0, 2);
+        let fallback_price = Price::new(0.40, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                fallback_price,
+                ClientOrderId::from("O-19700101-000000-001-013-1"),
+            )
+            .expect("TrailingStopMarket entry order with explicit trailing fields should build");
+
+        let admission = submit_admission_request_from_order(
+            &BoltV3OrderIntentEvidence {
+                strategy_id: strategy.config.strategy_id.clone(),
+                intent_kind: BoltV3OrderIntentKind::Entry,
+                instrument_id: instrument_id.to_string(),
+                client_order_id: order.client_order_id().to_string(),
+                order_side: OrderSide::Buy.to_string(),
+                price: fallback_price.to_string(),
+                quantity: quantity.to_string(),
+            },
+            &order,
+        )
+        .expect("TrailingStopMarket admission should derive from compiled trigger price");
+
+        let OrderAny::TrailingStopMarket(order) = order else {
+            panic!("TrailingStopMarket config should build an NT trailing-stop-market order");
+        };
+        assert_eq!(order.order_side(), OrderSide::Buy);
+        assert_eq!(order.order_type(), OrderType::TrailingStopMarket);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtd);
+        assert_eq!(order.price(), None);
+        assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
+        assert_eq!(order.activation_price(), None);
+        assert_eq!(order.trigger_type(), Some(TriggerType::LastPrice));
+        assert_eq!(order.trailing_offset(), Some(Decimal::new(25, 1)));
+        assert_eq!(
+            order.trailing_offset_type(),
+            Some(TrailingOffsetType::BasisPoints)
+        );
+        assert_eq!(order.expire_time(), Some(expire_time));
+        assert!(!order.is_post_only());
+        assert!(!order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("1.040").expect("expected decimal should parse")
+        );
+
+        let exit_order = strategy
+            .build_configured_exit_order(
+                instrument_id,
+                OrderSide::Sell,
+                quantity,
+                Price::new(0.45, 2),
+                ClientOrderId::from("O-19700101-000000-001-014-1"),
+            )
+            .expect("TrailingStopMarket exit order with explicit activation price should build");
+
+        let OrderAny::TrailingStopMarket(exit_order) = exit_order else {
+            panic!("TrailingStopMarket exit config should build an NT trailing-stop-market order");
+        };
+        assert_eq!(exit_order.order_side(), OrderSide::Sell);
+        assert_eq!(exit_order.order_type(), OrderType::TrailingStopMarket);
+        assert_eq!(exit_order.time_in_force(), TimeInForce::Gtd);
+        assert_eq!(exit_order.price(), None);
+        assert_eq!(exit_order.trigger_price(), Some(Price::new(0.48, 2)));
+        assert_eq!(exit_order.activation_price(), Some(Price::new(0.48, 2)));
+        assert_eq!(exit_order.trigger_type(), Some(TriggerType::MarkPrice));
+        assert_eq!(exit_order.trailing_offset(), Some(Decimal::new(3, 0)));
+        assert_eq!(
+            exit_order.trailing_offset_type(),
+            Some(TrailingOffsetType::Ticks)
+        );
+        assert_eq!(exit_order.expire_time(), Some(expire_time));
+        assert!(!exit_order.is_post_only());
+        assert!(!exit_order.is_reduce_only());
+        assert!(!exit_order.is_quote_quantity());
+    }
+
+    #[test]
+    fn trailing_stop_market_rejects_required_nt_fields_before_factory() {
+        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(0.40, 2);
+
+        let mut missing_offset =
+            ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut missing_offset);
+        missing_offset.config.entry_order.order_type = OrderType::TrailingStopMarket;
+        missing_offset.config.entry_order.time_in_force = TimeInForce::Gtc;
+        missing_offset.config.entry_order.trigger_price = Some(0.52);
+        missing_offset.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        missing_offset.config.entry_order.trailing_offset_type = Some(TrailingOffsetType::Price);
+        let missing_offset_error = missing_offset
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-015-1"),
+            )
+            .expect_err("TrailingStopMarket without trailing_offset should fail before factory");
+        assert!(
+            missing_offset_error.to_string().contains("trailing_offset"),
+            "{missing_offset_error}"
+        );
+
+        for trailing_offset in [0.0, -0.01] {
+            let mut invalid_offset =
+                ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+            let _cache = register_test_strategy(&mut invalid_offset);
+            invalid_offset.config.entry_order.order_type = OrderType::TrailingStopMarket;
+            invalid_offset.config.entry_order.time_in_force = TimeInForce::Gtc;
+            invalid_offset.config.entry_order.trigger_price = Some(0.52);
+            invalid_offset.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+            invalid_offset.config.entry_order.trailing_offset = Some(trailing_offset);
+            invalid_offset.config.entry_order.trailing_offset_type =
+                Some(TrailingOffsetType::Price);
+            let invalid_offset_error = invalid_offset
+                .build_configured_entry_order(
+                    instrument_id,
+                    OrderSide::Buy,
+                    quantity,
+                    price,
+                    ClientOrderId::from("O-19700101-000000-001-016-1"),
+                )
+                .expect_err(
+                    "TrailingStopMarket with non-positive trailing_offset should fail before factory",
+                );
+            assert!(
+                invalid_offset_error.to_string().contains("trailing_offset"),
+                "{invalid_offset_error}"
+            );
+        }
+
+        let mut missing_trigger =
+            ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut missing_trigger);
+        missing_trigger.config.entry_order.order_type = OrderType::TrailingStopMarket;
+        missing_trigger.config.entry_order.time_in_force = TimeInForce::Gtc;
+        missing_trigger.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        missing_trigger.config.entry_order.trailing_offset = Some(1.0);
+        missing_trigger.config.entry_order.trailing_offset_type = Some(TrailingOffsetType::Price);
+        let missing_trigger_error = missing_trigger
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-017-1"),
+            )
+            .expect_err(
+                "TrailingStopMarket without trigger_price or activation_price should fail before factory",
+            );
+        assert!(
+            missing_trigger_error.to_string().contains("trigger_price")
+                && missing_trigger_error
+                    .to_string()
+                    .contains("activation_price"),
+            "{missing_trigger_error}"
+        );
+
+        let mut is_post_only = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut is_post_only);
+        is_post_only.config.entry_order.order_type = OrderType::TrailingStopMarket;
+        is_post_only.config.entry_order.time_in_force = TimeInForce::Gtc;
+        is_post_only.config.entry_order.trigger_price = Some(0.52);
+        is_post_only.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        is_post_only.config.entry_order.trailing_offset = Some(1.0);
+        is_post_only.config.entry_order.trailing_offset_type = Some(TrailingOffsetType::Price);
+        is_post_only.config.entry_order.is_post_only = true;
+        let is_post_only_error = is_post_only
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-018-1"),
+            )
+            .expect_err("TrailingStopMarket post-only should fail before factory");
+        assert!(
+            is_post_only_error.to_string().contains("is_post_only"),
+            "{is_post_only_error}"
         );
     }
 
@@ -9854,6 +10326,28 @@ mod tests {
         assert!(
             limit_if_touched_error.to_string().contains("expire_time"),
             "{limit_if_touched_error}"
+        );
+
+        strategy.config.entry_order.order_type = OrderType::TrailingStopMarket;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        strategy.config.entry_order.trailing_offset = Some(1.0);
+        strategy.config.entry_order.trailing_offset_type = Some(TrailingOffsetType::Price);
+        let trailing_stop_market_error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-009-1"),
+            )
+            .expect_err("TrailingStopMarket GTD without expire_time should fail before NT factory");
+        assert!(
+            trailing_stop_market_error
+                .to_string()
+                .contains("expire_time"),
+            "{trailing_stop_market_error}"
         );
     }
 

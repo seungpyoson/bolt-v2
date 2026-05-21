@@ -54,10 +54,11 @@ Factory-reachable order types with current source/unit construction coverage in 
 - StopLimit
 - MarketIfTouched
 - LimitIfTouched
+- TrailingStopMarket
 
 Remaining factory-reachable order types that still need one positive construction/admission slice before Bolt claims support:
 
-- TrailingStopMarket
+- None in the pinned single-order `OrderFactory` surface.
 
 Factory gaps requiring separate approval:
 

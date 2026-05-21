@@ -73,11 +73,11 @@
 
 **Goal**: Prevent false completion while non-limit/market NT factory variants remain unsupported.
 
-**Status**: Deferred after multi-agent review. The current highest-confidence implementation gate is GTD expiry for existing limit orders, followed by forced-exit/position semantics. Factory variant expansion remains a support-claim gate, not a prerequisite for the GTD slice.
+**Status**: Reconciled by later one-variant slices. The pinned single-order `OrderFactory` surface is exhausted for this spec boundary; `MarketToLimit` and `TrailingStopLimit` remain separate approval/upstream-factory-support scope because pinned NT exposes no single-order factory methods for them.
 
-- [ ] T027 [US2] RED: Add one positive construction/admission test for the next factory-supported NT order variant selected by user-approved scope
-- [ ] T028 [US2] GREEN: Enable that variant through the same normalized template path using NT `OrderFactory`
-- [ ] T029 [US2] Repeat T027-T028 one variant at a time before claiming support for additional NT factory variants
+- [x] T027 [US2] RED: Add one positive construction/admission test for each selected factory-supported NT order variant before claiming support
+- [x] T028 [US2] GREEN: Enable each selected variant through the same normalized template path using NT `OrderFactory`
+- [x] T029 [US2] Repeat T027-T028 one variant at a time before claiming support for additional NT factory variants
 
 ## Phase 8: GTD, OMS/Position, And Forced-Exit Gates
 
@@ -217,6 +217,35 @@
 - [x] T094 [US2] RED/GREEN: Add public archetype config and raw runtime round-trip coverage for `order_type=limit_if_touched`
 - [x] T095 [US2] Verify focused `LimitIfTouched` tests, runtime literal/source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and stale reviewer state
 
+## Phase 22: TDD Slice 18 - MarketIfTouched Exit Ledger Correction
+
+**Goal**: Close the reviewed entry/exit narrowing gap for `MarketIfTouched` without adding venue policy or changing its NT factory construction path.
+
+- [x] T096 [P] [US2] Record multi-agent finding that `MarketIfTouched` source/unit coverage was entry-only in public archetype validation
+- [x] T097 [US2] RED: Add public exit config and raw runtime round-trip coverage for `order_type=market_if_touched`
+- [x] T098 [US2] GREEN: Allow coherent `MarketIfTouched` exit configs through the same order-template path
+- [x] T099 [US2] Verify focused `MarketIfTouched` exit tests, source fences as possible, and branch cleanliness
+
+## Phase 23: TDD Slice 19 - TrailingStopMarket Factory Variant
+
+**Goal**: Enable NT `OrderFactory::trailing_stop_market` only after adding explicit TOML-owned trailing fields, without relying on hidden NT defaults, adding venue policy, direct NT constructors, or a parallel submit path.
+
+- [x] T100 [P] [US2] Record NT-source/Bolt-path/adversarial findings for `TrailingStopMarket`, `MarketToLimit`, and `TrailingStopLimit`
+- [x] T101 [US2] RED: Add positive `TrailingStopMarket` construction/admission coverage for entry and exit with TOML-owned trigger, trigger type, trailing offset, and trailing offset type
+- [x] T102 [US2] RED: Add public archetype config and raw runtime round-trip coverage for `order_type=trailing_stop_market`
+- [x] T103 [US2] RED/GREEN: Add negative coverage for missing/non-positive trailing offset, missing trigger or activation input, GTD without expiry, and unsupported post-only
+- [x] T104 [US2] GREEN: Construct `TrailingStopMarket` through `OrderFactory::trailing_stop_market` and validate pinned NT model invariants before factory calls
+- [x] T105 [US2] Verify focused `TrailingStopMarket` tests, runtime literal/source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and reviewer state
+
+## Phase 24: TDD Slice 20 - Explicit TriggerType For Existing Triggered Variants
+
+**Goal**: Resolve post-review scope ambiguity by proving optional NT `trigger_type` pass-through is intentional for already-enabled triggered factories, not accidental broadening.
+
+- [x] T106 [P] [US2] Record review finding that `trigger_type` pass-through now applies to `StopMarket`, `MarketIfTouched`, `StopLimit`, and `LimitIfTouched`
+- [x] T107 [US2] RED: Add trigger-type preservation coverage for already-enabled triggered variants and prove the tests fail if Bolt passes `None` to NT factories
+- [x] T108 [US2] GREEN: Keep explicit `trigger_type` threaded to existing triggered `OrderFactory` calls through the same order-template path
+- [x] T109 [US2] Verify focused trigger-type tests, source fences as possible, branch cleanliness, exact-head gate state, and reviewer state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -225,7 +254,7 @@
 - Phase 4 depends on Phase 3 because it changes the same order config path.
 - Phase 5 depends on the normalized template from Phase 4.
 - Phase 6 depends on compiled order behavior from Phase 4 and validation from Phase 5.
-- Phase 7 blocks broad NT order-variant support claims.
+- Phase 7 blocks broad NT order-variant support claims until reconciled against the pinned single-order `OrderFactory` surface.
 - Phase 8 blocks GTD, position-aware, and forced-exit support claims.
 - Phase 9 can run in parallel with later implementation planning but cannot claim live support.
 - Phase 10 blocks completion.
@@ -239,6 +268,9 @@
 - Phase 18 blocks completion because no-mistakes produced an optional-field validation finding after the MarketIfTouched exact-head review.
 - Phase 19 blocks completion because CI proved the Phase 18 characterization test was not isolated-green under nextest archive.
 - Phase 21 is the next deferred Phase 7 factory-variant slice and blocks LimitIfTouched support claims until verified and reviewed.
+- Phase 22 blocks broad MarketIfTouched source/unit support claims because public exit validation was still narrowed to reject it.
+- Phase 23 blocks TrailingStopMarket source/unit support claims until explicit trailing fields are tested, constructed, and reviewed.
+- Phase 24 blocks completion because post-review found `trigger_type` pass-through was broader than the TrailingStopMarket task text documented.
 
 ## Parallel Opportunities
 

@@ -801,6 +801,61 @@ fn bolt_v3_archetype_accepts_configured_forced_exit_order_template() {
 }
 
 #[test]
+fn bolt_v3_archetype_rejects_manage_stop_with_non_market_forced_exit_order() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    strategy.manage_stop = true;
+    let parameters = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table");
+    let forced_exit_table = parameters
+        .get_mut("forced_exit_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include forced_exit_order");
+    forced_exit_table.insert(
+        "order_type".to_string(),
+        toml::Value::String("limit".to_string()),
+    );
+    forced_exit_table.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    forced_exit_table.insert("is_post_only".to_string(), toml::Value::Boolean(true));
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("manage_stop")
+                && message.contains("forced_exit_order")
+                && message.contains("market")
+        }),
+        "manage_stop should reject forced_exit_order semantics NT close_all_positions cannot honor: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_archetype_rejects_reduce_only_entry_order() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},

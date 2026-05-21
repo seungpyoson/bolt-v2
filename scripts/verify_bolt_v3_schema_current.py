@@ -43,6 +43,9 @@ STALE_SCHEMA_PHRASES = (
     "Any other combination fails validation for this archetype.",
     "for the current `binary_oracle_edge_taker` archetype, the only allowed value is `false`",
     "The current archetype validates coherent long and short position contracts",
+    "market_exit_time_in_force",
+    "market_exit_reduce_only",
+    "separate market-exit TOML fields",
 )
 REQUIRED_SCHEMA_PHRASES = (
     "delegates accepted values to NautilusTrader `OmsType`",
@@ -52,6 +55,8 @@ REQUIRED_SCHEMA_PHRASES = (
     "Short-side position contracts are parsed but rejected until strategy-owned short economics, collateral, and exit semantics exist",
     "Entry `is_quote_quantity = true` is supported by sizing the entry quantity as quote notional",
     "Exit `is_quote_quantity = true` is rejected because exits are sized from held base position quantity",
+    "Forced-flat exits use the configured `forced_exit_order` template",
+    "When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders",
 )
 STALE_STATUS_MAP_PHRASES = (
     "Single-value enums (`RuntimeMode::Live`, `OmsType::Netting`, `CatalogFsProtocol::File`, `RotationKind::None`)",
@@ -169,7 +174,7 @@ def validate_docs(
 
     order_params_section = extract_section(
         schema,
-        "`[parameters.entry_order]` and `[parameters.exit_order]`",
+        "`[parameters.entry_order]`, `[parameters.exit_order]`, and `[parameters.forced_exit_order]`",
         next_heading_prefix="### ",
     )
     if not order_params_section:

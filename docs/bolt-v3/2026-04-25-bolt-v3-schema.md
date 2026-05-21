@@ -1047,8 +1047,6 @@ manage_gtd_expiry = false
 manage_stop = false
 market_exit_interval_ms = 100
 market_exit_max_attempts = 100
-market_exit_time_in_force = "gtc"
-market_exit_reduce_only = true
 log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
@@ -1084,6 +1082,15 @@ order_type = "market"
 time_in_force = "ioc"
 is_post_only = false
 is_reduce_only = false
+is_quote_quantity = false
+
+[parameters.forced_exit_order]
+side = "sell"
+position_side = "long"
+order_type = "market"
+time_in_force = "gtc"
+is_post_only = false
+is_reduce_only = true
 is_quote_quantity = false
 
 [parameters]
@@ -1172,8 +1179,6 @@ These fields map directly to pinned NautilusTrader strategy configuration and ar
 - `manage_stop`: boolean; required
 - `market_exit_interval_ms`: positive integer; required
 - `market_exit_max_attempts`: positive integer; required
-- `market_exit_time_in_force`: string enum; required; current allowed value `gtc`
-- `market_exit_reduce_only`: boolean; required
 - `log_events`: boolean; required
 - `log_commands`: boolean; required
 - `log_rejected_due_post_only_as_warning`: boolean; required
@@ -1302,12 +1307,18 @@ bolt does not define a second identifier format here.
 
 No archetype may hardcode its reference data source in code.
 
-### `[parameters.entry_order]` and `[parameters.exit_order]`
+### `[parameters.entry_order]`, `[parameters.exit_order]`, and `[parameters.forced_exit_order]`
 
 These are archetype-specific order-construction parameters for `binary_oracle_edge_taker`.
 They are not a bolt-wide executable-order schema.
 
 They must map directly to NautilusTrader-native order semantics used by the archetype.
+
+Entry orders use the configured `entry_order` template.
+Normal exits use the configured `exit_order` template.
+Forced-flat exits use the configured `forced_exit_order` template.
+When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders; config validation therefore requires `parameters.forced_exit_order.order_type = "market"` for that mode.
+Set `manage_stop = false` to use a non-market `forced_exit_order` through the strategy forced-flat path.
 
 #### `side`
 
@@ -1455,7 +1466,7 @@ Current validation rejects:
 - `limit_if_touched` templates whose trigger/limit relationship violates the pinned NT side invariant
 - `trailing_stop_market` templates without positive trigger or activation input, explicit trigger type, positive trailing offset, and trailing offset type
 
-Normal exits use the configured `exit_order` maker/taker shape. Forced-flat exits from freeze, stale-data, and thin-book predicates use the separate market-exit TOML fields: `market_exit_time_in_force` and `market_exit_reduce_only`.
+Forced-flat exits from freeze, stale-data, and thin-book predicates use the configured `forced_exit_order` template.
 
 ### `[parameters]`
 
@@ -1747,8 +1758,6 @@ manage_gtd_expiry = false
 manage_stop = false
 market_exit_interval_ms = 100
 market_exit_max_attempts = 100
-market_exit_time_in_force = "gtc"
-market_exit_reduce_only = true
 log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
@@ -1784,6 +1793,15 @@ order_type = "market"
 time_in_force = "ioc"
 is_post_only = false
 is_reduce_only = false
+is_quote_quantity = false
+
+[parameters.forced_exit_order]
+side = "sell"
+position_side = "long"
+order_type = "market"
+time_in_force = "gtc"
+is_post_only = false
+is_reduce_only = true
 is_quote_quantity = false
 
 [parameters]

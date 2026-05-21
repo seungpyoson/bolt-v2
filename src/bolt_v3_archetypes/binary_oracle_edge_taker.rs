@@ -163,6 +163,7 @@ pub fn validate_strategy(
 
     errors.extend(validate_order_parameters(
         context,
+        strategy.manage_stop,
         &parameters.entry_order,
         &parameters.exit_order,
         &parameters.forced_exit_order,
@@ -850,6 +851,7 @@ fn validate_required_reference_data(context: &str, strategy: &BoltV3StrategyConf
 
 fn validate_order_parameters(
     context: &str,
+    manage_stop: bool,
     entry: &OrderParams,
     exit: &OrderParams,
     forced_exit: &OrderParams,
@@ -860,6 +862,7 @@ fn validate_order_parameters(
     errors.extend(check_exit_order_combination(context, exit));
     errors.extend(check_forced_exit_order_combination(
         context,
+        manage_stop,
         exit,
         forced_exit,
     ));
@@ -927,6 +930,7 @@ fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String
 
 fn check_forced_exit_order_combination(
     context: &str,
+    manage_stop: bool,
     exit: &OrderParams,
     forced_exit: &OrderParams,
 ) -> Vec<String> {
@@ -939,6 +943,11 @@ fn check_forced_exit_order_combination(
     if forced_exit.side != exit.side || forced_exit.position_side != exit.position_side {
         errors.push(format!(
             "{context}: parameters.forced_exit_order side and position_side must match parameters.exit_order for `binary_oracle_edge_taker`"
+        ));
+    }
+    if manage_stop && forced_exit.order_type != OrderType::Market {
+        errors.push(format!(
+            "{context}: manage_stop=true uses NautilusTrader Strategy::close_all_positions market orders, so parameters.forced_exit_order.order_type must be `market`; set manage_stop=false to use a non-market forced_exit_order through the strategy forced-flat path"
         ));
     }
     errors

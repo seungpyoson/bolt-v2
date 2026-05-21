@@ -462,6 +462,25 @@
 - [x] T209 [US3] GREEN: Add a single TOML-owned forced-exit order template path and remove the hardcoded forced-flat market-order synthesis
 - [x] T210 [US3] Verify focused forced-flat/config/order-intent tests, source fences, formatting, branch cleanliness, exact-head PR state, and reviewer/no-mistakes state
 
+## Phase 48: TDD Slice 44 - Forced-Exit Schema Drift And NT Manage-Stop Boundary
+
+**Goal**: Resolve latest-head review evidence that active schema docs still describe the removed market-exit fields, and that `manage_stop=true` can silently route a configured non-market `forced_exit_order` through NT's built-in market close path. The fix must document the current TOML-owned forced-exit template and fail closed when NT `manage_stop` cannot honor the configured forced-exit order semantics.
+
+- [x] T211 [P] [US3] Record latest-head multi-agent evidence for stale schema docs and NT `manage_stop` market-close behavior
+- [x] T212 [US3] RED: Add schema-current verifier coverage for removed market-exit fields and required `forced_exit_order` docs
+- [x] T213 [US3] RED: Add public config validation coverage that rejects `manage_stop=true` with a non-market `forced_exit_order`
+- [x] T214 [US3] GREEN: Update active schema docs/verifier and add the NT manage-stop compatibility guard without adding venue or maker/taker policy
+- [x] T215 [US3] Verify focused schema/config tests, source fences, formatting, branch cleanliness, exact-head PR state, and reviewer/no-mistakes state
+
+## Phase 49: TDD Slice 45 - NT Order Model Surface Gap Review
+
+**Goal**: Investigate latest-head review evidence that the shared order-intent layer still follows the pinned NT single-order `OrderFactory` surface rather than every NT model builder variant, and that shared build inputs require a selected price even for NT market-like constructors that do not take a limit price. No implementation is approved until pinned NT source, strategy economics, submit/admission requirements, and TDD proof define the smallest architecture-safe slice.
+
+- [ ] T216 [P] [US2] Record pinned NT evidence for `MarketToLimit`, `TrailingStopLimit`, and order-builder versus order-factory construction paths
+- [ ] T217 [P] [US2] Record current Bolt evidence for mandatory `price` in shared build inputs and strategy admission/evidence dependencies
+- [ ] T218 [US2] Decide, with evidence, whether the next implementation slice should expand beyond `OrderFactory`, make runtime price optional for market-like NT constructors, or keep the current boundary as explicit residual scope
+- [ ] T219 [US2] Add RED tests only after the architecture decision identifies a concrete behavior gap
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -508,6 +527,8 @@
 - Phase 45 blocks completion because latest-head Claude review found remaining direct-builder validation arms and order-arm post-only fail-closed checks without direct shared-builder coverage.
 - Phase 46 closes the latest-head Claude review disposition because the real triggered-factory test gap is covered directly and the proposed price validation change was rejected against pinned NT evidence.
 - Phase 47 blocks completion because current-head multi-agent review found forced-flat exit order semantics still synthesized as Market/TIF/reduce-only fields in strategy code rather than carried as a TOML-owned NT order template.
+- Phase 48 blocks completion because latest-head multi-agent review found active schema docs still describe removed market-exit fields and `manage_stop=true` can silently route non-market `forced_exit_order` configs through NT's built-in market close path.
+- Phase 49 blocks broad "all NT order model surface" claims until pinned NT builder-vs-factory evidence and a TDD slice resolve or explicitly scope the remaining model-surface and runtime-price findings.
 
 ## Parallel Opportunities
 

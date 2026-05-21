@@ -23,7 +23,7 @@ CURRENT_SCHEMA = """
 This field delegates accepted values to NautilusTrader `OmsType`.
 The current source-level tests prove `netting`, `hedging`, and `unspecified` parse and validate.
 
-### `[parameters.entry_order]` and `[parameters.exit_order]`
+### `[parameters.entry_order]`, `[parameters.exit_order]`, and `[parameters.forced_exit_order]`
 
 The current archetype accepts the long position contract only.
 Short-side position contracts are parsed but rejected until strategy-owned short economics, collateral, and exit semantics exist.
@@ -64,6 +64,8 @@ Short-side position contracts are parsed but rejected until strategy-owned short
 
 Entry `is_quote_quantity = true` is supported by sizing the entry quantity as quote notional.
 Exit `is_quote_quantity = true` is rejected because exits are sized from held base position quantity.
+Forced-flat exits use the configured `forced_exit_order` template.
+When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders.
 
 ### `[parameters]`
 """
@@ -166,6 +168,34 @@ def test_validate_docs_rejects_blanket_non_gtd_expiry_claim() -> None:
         "data model" in finding and "expire_time_unix_nanos" in finding for finding in findings
     ):
         raise AssertionError(f"expected data-model expiry finding, got {findings!r}")
+
+
+def test_validate_docs_rejects_removed_market_exit_fields_and_requires_forced_exit_order() -> None:
+    stale_schema = (
+        CURRENT_SCHEMA
+        + """
+market_exit_time_in_force = "gtc"
+market_exit_reduce_only = true
+
+Normal exits use the configured `exit_order` maker/taker shape. Forced-flat exits from freeze, stale-data, and thin-book predicates use the separate market-exit TOML fields: `market_exit_time_in_force` and `market_exit_reduce_only`.
+"""
+    )
+    missing_forced_exit_schema = CURRENT_SCHEMA.replace("forced_exit_order", "")
+
+    stale_findings = VERIFIER.validate_docs(stale_schema, CURRENT_STATUS_MAP)
+    missing_findings = VERIFIER.validate_docs(missing_forced_exit_schema, CURRENT_STATUS_MAP)
+
+    expected_stale_fragments = [
+        "market_exit_time_in_force",
+        "market_exit_reduce_only",
+        "separate market-exit TOML fields",
+    ]
+    for fragment in expected_stale_fragments:
+        if not any(fragment in finding for finding in stale_findings):
+            raise AssertionError(f"expected stale forced-exit fragment {fragment!r}, got {stale_findings!r}")
+
+    if not any("forced_exit_order" in finding for finding in missing_findings):
+        raise AssertionError(f"expected missing forced_exit_order finding, got {missing_findings!r}")
 
 
 def test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere() -> None:
@@ -296,6 +326,7 @@ def main() -> int:
         test_validate_docs_rejects_stale_contract_short_side_claim,
         test_validate_docs_rejects_stale_spec_short_side_claim,
         test_validate_docs_rejects_blanket_non_gtd_expiry_claim,
+        test_validate_docs_rejects_removed_market_exit_fields_and_requires_forced_exit_order,
         test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere,
         test_validate_docs_rejects_gtd_broad_support_and_live_canary_overclaims,
         test_validate_docs_rejects_equivalent_live_canary_and_broad_venue_overclaims,

@@ -696,6 +696,21 @@ def python_constant_string(node: ast.AST) -> str | None:
     return None
 
 
+def python_command_string(node: ast.AST) -> str | None:
+    scalar = python_constant_string(node)
+    if scalar is not None:
+        return scalar
+    if isinstance(node, (ast.List, ast.Tuple)):
+        parts: list[str] = []
+        for element in node.elts:
+            part = python_constant_string(element)
+            if part is None:
+                return None
+            parts.append(part)
+        return shlex.join(parts)
+    return None
+
+
 def python_call_name(node: ast.AST) -> str:
     if isinstance(node, ast.Name):
         return node.id
@@ -726,7 +741,7 @@ def python_inline_command_payloads(tokens: list[str]) -> list[str]:
                 "subprocess.run",
             }:
                 continue
-            payload = python_constant_string(node.args[0])
+            payload = python_command_string(node.args[0])
             if payload is not None:
                 payloads.append(payload)
     return payloads
@@ -1100,9 +1115,14 @@ def exec_command_index(tokens: list[str]) -> int:
         if token in ("-c", "-l"):
             index += 1
             continue
-        if token.startswith("-") and not token.startswith("--") and set(token[1:]) <= {"c", "l"}:
-            index += 1
-            continue
+        if token.startswith("-") and not token.startswith("--"):
+            cluster = token[1:]
+            if set(cluster) <= {"c", "l"}:
+                index += 1
+                continue
+            if cluster.endswith("a") and set(cluster[:-1]) <= {"c", "l"} and index + 1 < len(tokens):
+                index += 2
+                continue
         return index
     return index
 

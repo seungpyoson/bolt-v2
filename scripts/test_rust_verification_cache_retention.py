@@ -1840,6 +1840,7 @@ def assert_v6_red_wrapped_renamed_cargo_launches_are_classified() -> None:
         "command /tmp/c test",
         "exec /tmp/c clean",
         "exec -lc /tmp/c clean",
+        "exec -cla name /tmp/c clean",
         "nohup /tmp/c build",
         "docker exec container /tmp/c build",
         "podman run --rm rust:latest /tmp/c build",
@@ -1852,6 +1853,7 @@ def assert_v6_red_wrapped_renamed_cargo_launches_are_classified() -> None:
         "chrt -r 10 /tmp/c build",
         "xargs /tmp/c build",
         "python -c \"import os; os.system('/tmp/c build')\"",
+        "python -c \"import subprocess; subprocess.run(['/tmp/c', 'build'])\"",
         "bash -c 'sleep 10 && /tmp/c test'",
         "bash -c 'echo ok ; /tmp/c build'",
     ]

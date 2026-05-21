@@ -2315,26 +2315,41 @@ def raw_cargo_storage_override_messages_from_tokens(
     tokens: list[str],
     *,
     aliases: set[str] | None = None,
+    variables: dict[str, str] | None = None,
     depth: int = 0,
 ) -> set[str]:
     if not tokens:
         return set()
     aliases = aliases or set()
-    expanded = expand_cargo_aliases(tokens, aliases)
+    variables = variables or {}
+    expanded = merge_split_shell_parameter_assignment_tokens(tokens)
+    expanded = expand_known_shell_assignment_names(expanded, variables)
+    expanded = expand_known_shell_command_variables(expanded, variables)
+    expanded = expand_known_shell_variables(expanded, variables)
+    expanded = expand_cargo_aliases(expanded, aliases)
+    if not expanded:
+        return set()
     if depth > 6:
         if tokens_have_raw_cargo_launch(expanded):
             return direct_raw_cargo_storage_override_messages(expanded)
         return set()
     messages: set[str] = set()
-    if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
+    if any(token in SHELL_COMMAND_BOUNDARIES for token in expanded):
         segment: list[str] = []
         segment_aliases = set(aliases)
-        for token in tokens:
+        segment_variables = dict(variables)
+        for token in expanded:
             if token in SHELL_COMMAND_BOUNDARIES:
+                shell_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
+                if is_persistent_assignment:
+                    segment_variables.update(shell_assignments)
+                    segment = []
+                    continue
                 messages.update(
                     raw_cargo_storage_override_messages_from_tokens(
                         segment,
                         aliases=segment_aliases,
+                        variables=segment_variables,
                         depth=depth + 1,
                     )
                 )
@@ -2347,17 +2362,21 @@ def raw_cargo_storage_override_messages_from_tokens(
             raw_cargo_storage_override_messages_from_tokens(
                 segment,
                 aliases=segment_aliases,
+                variables=segment_variables,
                 depth=depth + 1,
             )
         )
         return messages
-    if tokens and tokens[0] == "alias":
+    if expanded[0] == "alias":
         return messages
-    assignment_index = consume_assignment_words(expanded, 0)
+    shell_assignments, assignment_index = shell_assignment_values_from_tokens(expanded)
     if assignment_index:
+        local_variables = dict(variables)
+        local_variables.update(shell_assignments)
         return raw_cargo_storage_override_messages_from_tokens(
             expanded[assignment_index:],
             aliases=aliases,
+            variables=local_variables,
             depth=depth + 1,
         )
     executable = pathlib.Path(expanded[0]).name
@@ -2368,6 +2387,7 @@ def raw_cargo_storage_override_messages_from_tokens(
                 raw_cargo_storage_override_messages_from_tokens(
                     command_tokens(nested),
                     aliases=aliases,
+                    variables=variables,
                     depth=depth + 1,
                 )
             )
@@ -2395,6 +2415,7 @@ def raw_cargo_storage_override_messages_from_tokens(
                 raw_cargo_storage_override_messages_from_tokens(
                     inner,
                     aliases=aliases,
+                    variables=variables,
                     depth=depth + 1,
                 )
             )
@@ -2408,11 +2429,16 @@ def raw_cargo_storage_override_messages_from_tokens(
 def text_raw_cargo_storage_override_messages(text: str) -> set[str]:
     messages: set[str] = set()
     aliases: set[str] = set()
-    for line in text.splitlines():
-        if not line.strip():
+    variables: dict[str, str] = {}
+    for line in shell_logical_lines(text):
+        stripped = strip_comment(line).strip()
+        if not stripped:
             continue
-        tokens = command_tokens(line)
-        messages.update(raw_cargo_storage_override_messages_from_tokens(tokens, aliases=aliases))
+        tokens = command_tokens(stripped)
+        messages.update(raw_cargo_storage_override_messages_from_tokens(tokens, aliases=aliases, variables=variables))
+        shell_assignments, is_persistent_assignment = persistent_shell_assignment_values(tokens)
+        if is_persistent_assignment:
+            variables.update(shell_assignments)
         segment: list[str] = []
         for token in tokens:
             if token in SHELL_COMMAND_BOUNDARIES:
@@ -3144,7 +3170,7 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
     assignments: dict[str, str] = {}
     for name, value in storage_assignment_values(text):
         assignments[name] = shell_assignment_tracking_value(value, target_keys)
-    for line in text.splitlines():
+    for line in shell_logical_lines(text):
         line_tokens = command_tokens(strip_comment(line))
         line_assignments, is_persistent_assignment = persistent_shell_assignment_values(line_tokens)
         for name, value in line_assignments.items():
@@ -3154,21 +3180,25 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
                     assignments[name] = alias_value
                 elif name not in assignments:
                     assignments[name] = storage_strip_quotes(value)
-    segment: list[str] = []
-    for token in command_tokens(text) + [";"]:
-        if token in SHELL_COMMAND_BOUNDARIES:
-            segment_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
-            for name, value in segment_assignments.items():
-                if is_persistent_assignment:
-                    alias_value = shell_assignment_alias_value(value, target_keys)
-                    if alias_value is not None:
-                        assignments[name] = alias_value
-                    elif name not in assignments:
-                        assignments[name] = storage_strip_quotes(value)
-            segment = []
+    for line in shell_logical_lines(text):
+        stripped = strip_comment(line).strip()
+        if not stripped:
             continue
-        segment.append(token)
-    messages.update(dynamic_env_tokens_messages(command_tokens(text), assignments, target_keys))
+        segment: list[str] = []
+        for token in command_tokens(stripped) + [";"]:
+            if token in SHELL_COMMAND_BOUNDARIES:
+                segment_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
+                for name, value in segment_assignments.items():
+                    if is_persistent_assignment:
+                        alias_value = shell_assignment_alias_value(value, target_keys)
+                        if alias_value is not None:
+                            assignments[name] = alias_value
+                        elif name not in assignments:
+                            assignments[name] = storage_strip_quotes(value)
+                segment = []
+                continue
+            segment.append(token)
+        messages.update(dynamic_env_tokens_messages(command_tokens(stripped), assignments, target_keys))
     return messages
 
 

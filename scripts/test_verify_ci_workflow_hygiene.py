@@ -1201,6 +1201,22 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
+            "CMD=\"cargo check --target-dir /tmp/raw\"; eval \"$CMD\"",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "ARGS=\"--target-dir /tmp/raw\"; cargo check $ARGS",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "echo 'benign'\nE=CARGO_TARGET_DIR\nenv $E=/tmp/raw-target cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "run: |\n  C=cargo\n  $C check --target-dir /tmp/raw",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
             "E=$(echo CARGO_TARGET_DIR); export $E=/tmp/raw-target; cargo check",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),

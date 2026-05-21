@@ -254,7 +254,7 @@
 - [x] T111 [US2] RED: Add public config coverage for a model-valid enabled order template rejected only by the residual entry/exit tuple policy
 - [x] T112 [US2] GREEN: Replace entry/exit tuple allowlists with reusable enabled-order invariant validation matching the runtime NT-model checks for currently enabled order types
 - [x] T113 [US2] Refactor or retire tests that asserted old tuple policy while preserving negative coverage for real NT model invariants
-- [ ] T114 [US2] Verify focused config/runtime tests, source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and reviewer state
+- [x] T114 [US2] Verify focused config/runtime tests, source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and reviewer state
 
 ## Phase 26: TDD Slice 22 - No-Mistakes Runtime Exit Follow-Up
 
@@ -263,7 +263,7 @@
 - [x] T115 [P] [US3] Record no-mistakes review commit evidence and local triage for pending-entry exit blocking, non-resting entry liveness, and triggered-market exit pricing
 - [x] T116 [US3] RED: Add focused behavior regressions for resting pending-entry exit blocking, IOC entry fill cleanup, and triggered-market exit submission without book liquidity
 - [x] T117 [US3] GREEN: Apply minimal strategy fixes on the existing exit decision and NT `OrderFactory` construction path
-- [ ] T118 [US3] Verify focused runtime tests, source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
+- [x] T118 [US3] Verify focused runtime tests, source fences as possible, full local tests as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
 
 ## Dependencies & Execution Order
 

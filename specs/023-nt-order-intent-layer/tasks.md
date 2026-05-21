@@ -301,6 +301,15 @@
 - [x] T133 [US3] GREEN: Reject reduce-only entry orders on the existing strategy/archetype validation paths
 - [ ] T134 [US3] Verify focused config/runtime tests, source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
 
+## Phase 31: TDD Slice 27 - Market Expiry Rejection
+
+**Goal**: Resolve the no-mistakes market-expiry finding without narrowing NT order-template breadth: NT `OrderFactory::market` has no expiry argument, so market order templates must reject configured `expire_time_unix_nanos` instead of accepting and dropping it.
+
+- [x] T135 [P] [US3] Record no-mistakes evidence for market expiry being accepted and silently dropped
+- [x] T136 [US3] RED: Add public config and runtime builder regressions for market order expiry rejection
+- [x] T137 [US3] GREEN: Reject market order expiry on the existing strategy/archetype validation paths and update active contract/docs verifier coverage
+- [ ] T138 [US3] Verify focused config/runtime tests, docs/source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -330,6 +339,7 @@
 - Phase 26 blocks completion because no-mistakes produced runtime exit findings on top of the current branch.
 - Phase 27 blocks completion because no-mistakes and direct source inspection found active documentation still describing superseded config scope after the order-intent implementation.
 - Phase 28 blocks completion because no-mistakes found tuple-policy removal admitted short-side and quote-quantity configurations beyond current strategy economics and sizing/admission proof.
+- Phase 31 blocks completion because no-mistakes found market order expiry configs were accepted even though the pinned NT market factory drops expiry.
 
 ## Parallel Opportunities
 

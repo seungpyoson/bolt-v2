@@ -5280,6 +5280,9 @@ fn validate_configured_order_against_nt_model(input: ConfiguredOrderValidation) 
         (OrderType::Market, TimeInForce::Gtd, _) => {
             anyhow::bail!("GTD not supported for Market orders")
         }
+        (OrderType::Market, _, _) if expire_time.is_some() => {
+            anyhow::bail!("{prefix}_expire_time is not supported for Market orders")
+        }
         (
             OrderType::StopMarket
             | OrderType::StopLimit
@@ -10782,6 +10785,25 @@ mod tests {
             "{market_error}"
         );
 
+        strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+        strategy.config.entry_order.expire_time_unix_nanos = Some(4_102_444_800_000_000_000_u64);
+        let market_expiry_error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-005-1"),
+            )
+            .expect_err("market expire_time should fail before NT factory");
+        assert!(
+            market_expiry_error
+                .to_string()
+                .contains("expire_time is not supported for Market orders"),
+            "{market_expiry_error}"
+        );
+
+        strategy.config.entry_order.expire_time_unix_nanos = None;
         strategy.config.entry_order.order_type = OrderType::StopLimit;
         strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
         strategy.config.entry_order.trigger_price = Some(0.52);

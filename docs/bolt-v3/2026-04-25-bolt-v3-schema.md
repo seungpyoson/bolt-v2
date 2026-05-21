@@ -1441,7 +1441,7 @@ Current validation rejects:
 - short-side position contracts until strategy-owned short economics, collateral, and exit semantics exist
 - exit order templates with `is_quote_quantity = true`
 - GTD order templates without `expire_time_unix_nanos`
-- `market` order templates with GTD or post-only
+- `market` order templates with GTD, `expire_time_unix_nanos`, or post-only
 - market-style triggered orders with post-only
 - non-triggered `limit` and `market` order templates with trigger or trailing fields
 - triggered order templates without a positive `trigger_price`

@@ -13,6 +13,7 @@ SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-schema.md"
 STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
 RESEARCH_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/research.md"
 TASKS_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/tasks.md"
+CONTRACT_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/contracts/order-intent-layer.md"
 
 ENABLED_ORDER_TYPES = (
     "limit",
@@ -62,6 +63,9 @@ STALE_RESEARCH_PHRASES = (
 )
 STALE_TASKS_PHRASES = (
     "Allow coherent short-side contracts while keeping incoherent long/short contracts rejected",
+)
+STALE_CONTRACT_PHRASES = (
+    "Long and short position contracts are coherent.",
 )
 UNSUPPORTED_SCOPE_PATTERNS = (
     re.compile(
@@ -129,6 +133,7 @@ def validate_docs(
     status_map: str,
     research: str = "",
     tasks: str = "",
+    contract: str = "",
 ) -> list[str]:
     findings: list[str] = []
 
@@ -187,10 +192,15 @@ def validate_docs(
         if phrase in tasks:
             findings.append(f"tasks still contains stale phrase: {phrase}")
 
+    for phrase in STALE_CONTRACT_PHRASES:
+        if phrase in contract:
+            findings.append(f"contract still contains stale phrase: {phrase}")
+
     findings.extend(unsupported_scope_overclaims("schema", schema))
     findings.extend(unsupported_scope_overclaims("status map", status_map))
     findings.extend(unsupported_scope_overclaims("research", research))
     findings.extend(unsupported_scope_overclaims("tasks", tasks))
+    findings.extend(unsupported_scope_overclaims("contract", contract))
 
     return findings
 
@@ -201,6 +211,7 @@ def main() -> int:
         STATUS_MAP.read_text(encoding="utf-8"),
         RESEARCH_DOC.read_text(encoding="utf-8"),
         TASKS_DOC.read_text(encoding="utf-8"),
+        CONTRACT_DOC.read_text(encoding="utf-8"),
     )
     if findings:
         for finding in findings:

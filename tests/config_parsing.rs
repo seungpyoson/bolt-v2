@@ -1035,6 +1035,66 @@ fn bolt_v3_archetype_rejects_gtd_limit_without_expiry() {
 }
 
 #[test]
+fn bolt_v3_archetype_rejects_market_order_expiry() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let fixture = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+
+    let entry_market_with_expiry = fixture.replace(
+        "order_type = \"limit\"\ntime_in_force = \"fok\"",
+        "order_type = \"market\"\ntime_in_force = \"fok\"\nexpire_time_unix_nanos = 4102444800000000000",
+    );
+    let entry_strategy: BoltV3StrategyConfig = toml::from_str(&entry_market_with_expiry)
+        .expect("market entry expiry should parse through typed order config");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: entry_strategy,
+    }];
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|m| {
+            m.contains("entry_order")
+                && m.contains("expire_time_unix_nanos")
+                && m.contains("order_type=market")
+        }),
+        "expected entry_order market expiry rejection, got: {messages:#?}"
+    );
+
+    let exit_market_with_expiry = fixture.replace(
+        "time_in_force = \"ioc\"\nis_post_only = false",
+        "time_in_force = \"ioc\"\nexpire_time_unix_nanos = 4102444800000000000\nis_post_only = false",
+    );
+    let exit_strategy: BoltV3StrategyConfig = toml::from_str(&exit_market_with_expiry)
+        .expect("market exit expiry should parse through typed order config");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: exit_strategy,
+    }];
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|m| {
+            m.contains("exit_order")
+                && m.contains("expire_time_unix_nanos")
+                && m.contains("order_type=market")
+        }),
+        "expected exit_order market expiry rejection, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_archetype_accepts_gtd_limit_order_with_expiry() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},

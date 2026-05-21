@@ -132,6 +132,17 @@ def test_validate_docs_rejects_short_side_overclaims_in_scoped_docs() -> None:
             raise AssertionError(f"expected {fragment!r} in findings, got {findings!r}")
 
 
+def test_validate_docs_rejects_stale_contract_short_side_claim() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        contract="- Long and short position contracts are coherent.",
+    )
+
+    if not any("contract" in finding and "short" in finding for finding in findings):
+        raise AssertionError(f"expected contract short-side finding, got {findings!r}")
+
+
 def test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA,
@@ -246,6 +257,7 @@ def main() -> int:
         test_validate_docs_accepts_current_terms,
         test_validate_docs_rejects_superseded_tuple_policy_and_netting_only_status,
         test_validate_docs_rejects_short_side_overclaims_in_scoped_docs,
+        test_validate_docs_rejects_stale_contract_short_side_claim,
         test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere,
         test_validate_docs_rejects_gtd_broad_support_and_live_canary_overclaims,
         test_validate_docs_rejects_equivalent_live_canary_and_broad_venue_overclaims,

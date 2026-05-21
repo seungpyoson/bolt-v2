@@ -919,6 +919,11 @@ fn check_market_order_template(context: &str, field: &str, order: &OrderParams) 
             "{context}: parameters.{field}.time_in_force=gtd is not supported for order_type=market"
         ));
     }
+    if order.expire_time_unix_nanos.is_some() {
+        errors.push(format!(
+            "{context}: parameters.{field}.expire_time_unix_nanos is not supported for order_type=market"
+        ));
+    }
     if order.is_post_only {
         errors.push(format!(
             "{context}: parameters.{field}.is_post_only must be false for order_type=market"

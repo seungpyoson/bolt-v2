@@ -45,7 +45,7 @@ Taker behavior is not a separate mode. It is expressed through NT fields such as
 Bolt MUST validate:
 
 - Required TOML fields are present and parse as NT enums or documented Bolt config fields.
-- Long and short position contracts are coherent.
+- Strategy-owned position contracts match the current strategy economics; `binary_oracle_edge_taker` accepts the long contract and rejects short-side contracts until short economics, collateral, and exit semantics exist.
 - Required runtime price/quantity/trigger inputs are available for enabled order types.
 - NT model crash-prevention invariants before `OrderFactory` calls for enabled order types.
 - Admission caps and decision evidence completeness.

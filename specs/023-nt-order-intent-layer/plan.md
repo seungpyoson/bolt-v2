@@ -5,7 +5,7 @@
 
 ## Summary
 
-Build the smallest Bolt-owned order intent layer that converts TOML and strategy runtime facts into NT `OrderAny` and NT submit context. The design keeps maker and taker on one path, removes hardcoded tuple policy, uses NT `OrderFactory`, preserves NT submit/risk/execution/adapter ownership, and gates implementation through TDD plus multi-agent review.
+Build the smallest Bolt-owned order intent layer that converts TOML-derived NT order templates and strategy runtime order inputs into NT `OrderAny`. The design keeps maker and taker on one `OrderFactory` construction path, removes hardcoded tuple policy, keeps submit context outside the shared order-template module, preserves NT submit/risk/execution/adapter ownership, and gates implementation through TDD plus multi-agent review.
 
 ## Technical Context
 
@@ -52,16 +52,18 @@ specs/023-nt-order-intent-layer/
 src/
 ├── bolt_v3_archetypes/
 │   └── binary_oracle_edge_taker.rs
+├── bolt_v3_order_intent.rs
 ├── strategies/
 │   └── binary_oracle_edge_taker.rs
 └── bolt_v3_decision_evidence.rs
 
 tests/
+├── bolt_v3_order_intent.rs
 ├── config_parsing.rs
 └── bolt_v3_strategy_registration.rs
 ```
 
-**Structure Decision**: Start in the existing strategy/archetype path because that is where the current narrowing exists. Extract shared order-template modules only when a second strategy or test proves shared depth is needed.
+**Structure Decision**: Shared NT order-template mechanics live in `src/bolt_v3_order_intent.rs` and accept only typed NT template fields, typed runtime order inputs, and NT `OrderFactory`. Strategy/archetype modules own strategy economics, position contracts, evidence, admission, submit context, provider bindings, and live support claims.
 
 ## Phase 0: Research
 

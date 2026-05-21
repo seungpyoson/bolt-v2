@@ -7,7 +7,8 @@ git status --short --branch
 git rev-parse HEAD
 rg -n "pub enum OrderType|pub enum TimeInForce" /Users/spson/.cargo/git/checkouts/nautilus_trader-*/7c2aafb/crates/model/src/enums.rs
 rg -n "pub fn (market|limit|stop_market|stop_limit|market_if_touched|limit_if_touched|trailing_stop_market)" /Users/spson/.cargo/git/checkouts/nautilus_trader-*/7c2aafb/crates/common/src/factories/order.rs
-rg -n "check_entry_order_combination|check_exit_order_combination|build_configured_order|parse_configured_time_in_force" src/bolt_v3_archetypes/binary_oracle_edge_taker.rs src/strategies/binary_oracle_edge_taker.rs
+rg -n "build_nt_order|check_nt_order_template_config|parse_configured_time_in_force" src/bolt_v3_order_intent.rs src/bolt_v3_archetypes/binary_oracle_edge_taker.rs src/strategies/binary_oracle_edge_taker.rs
+rg -n "binary_oracle|polymarket|market_family|strategy_archetype|StrategyCore|StrategyId|PositionSide|SubmitContext|submit_order|submit_admission|BoltV3OrderIntentEvidence|Entry|Exit" src/bolt_v3_order_intent.rs
 ```
 
 ## TDD Commands
@@ -21,6 +22,7 @@ cargo test binary_oracle_edge_taker_exit_submit_threads_managed_position_id_to_n
 cargo test strategy_core_accepts_nt_hedging_oms_type -- --nocapture
 cargo test bolt_v3_strategy_oms_type_accepts_nt_variants -- --nocapture
 cargo test forced_flat_exit_order_object_preserves_market_reduce_only_config -- --nocapture
+cargo test --test bolt_v3_order_intent -- --nocapture
 ```
 
 After a green focused slice:

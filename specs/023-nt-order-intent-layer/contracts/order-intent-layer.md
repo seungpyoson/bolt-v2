@@ -30,11 +30,13 @@ TOML order table
   -> StrategyPositionContract + NtOrderTemplate
   -> OrderBuildInputs from strategy runtime state
   -> NT OrderFactory
-  -> optional SubmitContext
+  -> strategy-owned optional SubmitContext
   -> Bolt evidence
   -> Bolt admission
   -> NT submit_order(order, position_id, client_id, params)
 ```
+
+The shared order-template module stops at NT `OrderFactory` construction. It MUST NOT know strategy archetypes, venue/provider names, market families, evidence, admission, or submit policy.
 
 Maker behavior is not a mode. It is expressed through NT fields such as limit-like order type plus `is_post_only=true`.
 
@@ -70,7 +72,7 @@ Source-level NT model validity is not the same as live venue support.
 
 ## Submit Params Contract
 
-The generic order layer may carry NT submit params, but concrete param names and meanings belong to provider bindings or strategy-specific config. The generic layer MUST NOT hardcode adapter param keys.
+The shared order-template module does not carry NT submit params. The submit boundary may pass already-typed NT params to NT, but concrete param names and meanings belong to provider bindings or strategy-specific config. Bolt MUST NOT hardcode adapter param keys in the generic order-template module.
 
 ## Order Emulation Contract
 

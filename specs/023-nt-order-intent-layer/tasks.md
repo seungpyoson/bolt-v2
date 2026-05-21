@@ -398,6 +398,16 @@
 - [x] T180 [US3] GREEN: Use NT `cancel_order(...)` for forced-flat pending-entry cancellation and recover raced fills as residual managed exposure
 - [ ] T181 [US3] Verify focused exit lifecycle tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
+## Phase 41: TDD Slice 37 - Strategy/Venue/Market Agnostic NT Order Template
+
+**Goal**: Extract only the reusable NT order-template mechanics from the current `binary_oracle_edge_taker` implementation. The shared layer may validate NT model invariants and build orders through NT `OrderFactory`; it must not know strategy IDs, strategy archetypes, venue/provider names, market families, entry/exit economics, submit/admission policy, or live support claims.
+
+- [x] T182 [P] [US2] Record source and multi-agent evidence that generic NT order-template validation/building is still housed inside `binary_oracle_edge_taker`
+- [x] T183 [US2] RED: Add a strategy/venue/market agnostic regression proving the shared order-template module builds NT orders from `OrderFactory` without submission, admission, archetype, or provider dependencies
+- [x] T184 [US2] GREEN: Move NT order-template fields, validation, and `OrderFactory` construction into a shared module that accepts typed NT inputs and an NT `OrderFactory`
+- [x] T185 [US2] Wire `binary_oracle_edge_taker` to the shared builder while leaving position-contract checks, entry reduce-only rejection, exit quote-quantity sizing, forced-flat behavior, evidence, admission, and submit context in the strategy-owned path
+- [x] T186 [US2] Verify generic order-template tests, focused strategy regressions, source fences for forbidden coupling, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -437,6 +447,7 @@
 - Phase 38 blocks submit-context completion claims because current source inspection found no path that can set non-empty NT submit params.
 - Phase 39 blocks triggered-order field-completeness claims because pinned-NT review found `trigger_instrument_id` is accepted by enabled NT factories but currently dropped by Bolt, and `emulation_trigger` is not listed as residual scope.
 - Phase 40 blocks completion because Greptile found forced-flat exit submission was still blocked behind a resting managed pending-entry remainder.
+- Phase 41 blocks completion because multi-agent review found generic NT order-template mechanics still housed in `binary_oracle_edge_taker`; extraction must remain submission-agnostic, venue-agnostic, market-agnostic, and strategy-agnostic.
 
 ## Parallel Opportunities
 

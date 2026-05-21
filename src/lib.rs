@@ -9,6 +9,7 @@ pub mod bolt_v3_live_node;
 pub mod bolt_v3_market_families;
 pub mod bolt_v3_no_submit_readiness;
 pub mod bolt_v3_no_submit_readiness_schema;
+pub mod bolt_v3_order_intent;
 pub mod bolt_v3_providers;
 pub mod bolt_v3_readiness;
 pub mod bolt_v3_secrets;

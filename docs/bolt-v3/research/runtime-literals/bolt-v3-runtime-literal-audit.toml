@@ -189,7 +189,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the NT trailing-stop offset type field projected from TOML into the runtime strategy config."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_order_intent.rs"
 kind = "number"
 literal = '''0'''
 context = '''&& order.expire_time_unix_nanos.is_none_or(|value| value == 0)'''
@@ -3094,12 +3094,12 @@ classification = "strategy_config_field_name"
 reason = "This labels the NT trailing-stop activation-price field in shared price validation; the price value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_order_intent.rs"
 kind = "string"
-literal = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, `limit_if_touched`, or `trailing_stop_market`, got `{order_type:?}`"'''
-context = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, `limit_if_touched`, or `trailing_stop_market`, got `{order_type:?}`"'''
-classification = "strategy_config_error_message"
-reason = "This is a stable validation diagnostic naming the NT factory variants enabled by this slice, not an operator runtime value."
+literal = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, `limit_if_touched`, or `trailing_stop_market`, got `{:?}`"'''
+context = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, `limit_if_touched`, or `trailing_stop_market`, got `{:?}`",'''
+classification = "nt_order_model_invariant"
+reason = "This is a stable validation diagnostic naming the pinned NT single-order factory variants enabled by this slice, not an operator runtime value."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"

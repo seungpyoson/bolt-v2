@@ -87,6 +87,8 @@ Source:
 
 Submit-level context passed to NT after order construction and admission.
 
+This is outside `bolt_v3_order_intent`; the shared NT order-template module stops at `OrderFactory -> OrderAny`.
+
 Fields:
 
 - `client_id`: optional NT `ClientId`
@@ -97,7 +99,7 @@ Validation:
 
 - Admission uses the compiled order and Bolt risk/admission config.
 - NT execution engine validates venue/client match, OMS/position compatibility, and instrument presence.
-- Provider bindings own any concrete submit param schema. The generic order layer only carries already-typed params to NT.
+- Provider bindings own any concrete submit param schema. The strategy-owned submit boundary only carries already-typed params to NT.
 
 ## OrderIntentEvidence
 

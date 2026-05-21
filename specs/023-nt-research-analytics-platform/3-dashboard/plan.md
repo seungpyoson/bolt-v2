@@ -16,7 +16,7 @@ truth for PnL, positions, fills, orders, account state, or portfolio state.
 ## Source Roles And Data Status
 
 Keep source role separate from data status. Exact user-facing label names and
-legend text require a shared terminology pass before UI implementation.
+legend text require a cross-project terminology pass before UI implementation.
 
 Source roles:
 
@@ -37,7 +37,7 @@ Data status/gap reasons:
 Additional source rules:
 
 - Artifact links from Backtesting Engine or Research Analytics must point under
-  the shared S3 `artifact_root`; dashboard products do not own canonical
+  the configured S3 `artifact_root`; dashboard products do not own canonical
   artifact storage.
 - Dashboard may display explicit artifact-local handles passed by upstream
   producers; cross-run and bulk artifact lists use committed Artifact Index
@@ -75,7 +75,7 @@ Additional source rules:
    Plotly/Dash, and custom fallback.
 6. Define no-mutation controls for selected product/UI.
 7. Validate read-only source contract before UI implementation.
-8. Validate displayed artifact links resolve under shared S3 `artifact_root` and
+8. Validate displayed artifact links resolve under configured S3 `artifact_root` and
    that cross-run/bulk lists use committed Artifact Index snapshots when
    artifact lists are in scope.
 9. Validate dashboard has no artifact delete/expiration controls.

@@ -39,7 +39,7 @@ PnL/account truth.
   source(s), reference spot/perps price source(s), FX/quote conversion
   source(s), and point-in-time joins.
 - Research datasets must reference canonical raw, NT catalog, source-proof, and
-  backtest artifacts under the shared configured S3 `artifact_root`.
+  backtest artifacts under the configured S3 `artifact_root`.
 - Research datasets and experiment outputs must preserve upstream
   `SourceProofReport` ids, fidelity classes, and claim limits. Analytics may
   narrow claims but must not upgrade source/backtest fidelity.
@@ -93,7 +93,7 @@ PnL/account truth.
 | E-030 | SOURCE_PROVEN + DECISION_NEEDED | MarketLens, PMXT, PolyBackTest, PolymarketData, and Goldsky are candidates after schema/license/sample proof. |
 | E-031 | SOURCE_PROVEN | Lean, Qlib, Freqtrade, and Feast support separation of research/backtest/live lifecycle and leakage controls as prior art. |
 | E-033 | USER_ASSUMPTION + DECISION_NEEDED | Kimchi premium is a required cross-market feature/source family; Upbit/Bithumb-style Korean spot prices are candidate bindings, not hardcoded analytics branches. |
-| E-034 | USER_ASSUMPTION + DECISION_NEEDED | Analytics consumes raw, NT catalog, source-proof, and backtest artifact pointers under the shared S3 `artifact_root`; it must not create a second canonical storage root for the same artifacts. |
+| E-034 | USER_ASSUMPTION + DECISION_NEEDED | Analytics consumes raw, NT catalog, source-proof, and backtest artifact pointers under the configured S3 `artifact_root`; it must not create a second canonical storage root for the same artifacts. |
 | E-035 | USER_ASSUMPTION + DECISION_NEEDED | Analytics must preserve retain-forever lifecycle metadata and cannot introduce default artifact deletion. |
 | E-036 | USER_ASSUMPTION + DECISION_NEEDED | Analytics preserves the simple lifecycle state: artifacts start `active`; after configured quiet window they become `inactive`; inactive allows archive transition, not deletion. |
 | E-038 | SOURCE_PROVEN + DECISION_NEEDED | Analytics bulk discovery must consume the committed Artifact Index snapshot and must not scan S3 prefixes as its normal discovery path. |
@@ -130,7 +130,7 @@ promotion packages.
 ## Data Model
 
 - `ResearchDataset`: raw evidence records, catalog projections, NT result/report
-  references, artifact URIs under shared `artifact_root`, source hashes,
+  references, artifact URIs under configured `artifact_root`, source hashes,
   source proof ids, run purpose, proof pin reason code/detail when present,
   fidelity classes, claim limits, lifecycle metadata, and as-of bounds.
 - `RawEvidenceRecord`: source family, source URI or redacted pointer, capture
@@ -179,7 +179,7 @@ for later implementation/review. The status must not auto-merge, auto-enable a
 strategy, schedule live trading, touch SSM credentials, or mutate production
 runtime config.
 
-Generated promotion/config artifacts live under the shared S3 `artifact_root`
+Generated promotion/config artifacts live under the configured S3 `artifact_root`
 as RA-owned derived artifacts, e.g.
 `research-analytics/v1/promotion-packages/`.
 They must not be written directly into repo runtime config; importing them into

@@ -38,14 +38,14 @@ See `issue-audit.md` for command evidence.
 
 ## Proposed Creation Order
 
-1. Issue A: shared evidence gates and source contracts.
+1. Issue A: cross-project evidence gates and source contracts.
 2. Issue B: Backtesting Engine implementation-ready spec/plan in `1-backtesting-engine/`.
 3. Issue C: Research Analytics implementation-ready spec/plan in `2-research-analytics/`.
 4. Issue D: Dashboard implementation-ready spec/plan in `3-dashboard/`.
 5. Issue E: task-to-issues conversion after A-D are reviewed and user approves
    GitHub mutation.
 
-## Issue A: Shared NT/Data Evidence Gates
+## Issue A: Cross-Project NT/Data Evidence Gates
 
 Title: `Research gate: NT/data evidence gates for future backtesting, analytics, and dashboard`
 
@@ -59,7 +59,7 @@ and E-031.
 Problem:
 
 Future Backtesting Engine, Research Analytics, and Dashboard work cannot be
-implementation-ready until shared NT, source, fidelity, and issue-overlap gates
+implementation-ready until cross-project NT, source, fidelity, and issue-overlap gates
 are evidence-backed. Current docs must avoid one merged implementation project.
 
 Accepted scope:
@@ -180,7 +180,7 @@ Acceptance evidence:
 
 - `2-research-analytics/spec.md`, `2-research-analytics/plan.md`, and
   `2-research-analytics/tasks.md`.
-- Shared source notes in `research.md` and cross-project contract coverage in
+- Reference source notes in `research.md` and cross-project contract coverage in
   `contracts.md`.
 - Explicit forbidden claims for lower-fidelity inputs.
 - Spec Kit analysis shows analytics tasks are planning-only.
@@ -228,7 +228,7 @@ Out of scope:
 Acceptance evidence:
 
 - `3-dashboard/spec.md`, `3-dashboard/plan.md`, and `3-dashboard/tasks.md`.
-- Shared source notes in `research.md` and cross-project contract coverage in
+- Reference source notes in `research.md` and cross-project contract coverage in
   `contracts.md`.
 - Product-fit decision table with source-contract/security/query/UX/cost notes.
 - #409/#77/#36/#369 dependency decision table.

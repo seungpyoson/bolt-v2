@@ -92,7 +92,7 @@ create, close, or mutate issues.
 
 - Add #158 to provider/source capture relations.
 - Add #407, #127, and #254 to Polymarket data/fidelity relations.
-- Keep Tardis, Telonex, Goldsky, shared source-contract gates, Backtesting
+- Keep Tardis, Telonex, Goldsky, cross-project source-contract gates, Backtesting
   Engine spec/plan, Research Analytics spec/plan, and Dashboard spec/plan as
   proposed new slices unless later issue search finds direct duplicates.
 - Do not propose runtime runner, analytics read-model, or dashboard

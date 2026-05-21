@@ -32,7 +32,7 @@ scenarios are marked for user review before implementation.
 | Hyperliquid official archive | Provider fee not sourced here; requester pays transfer costs; monthly uploads can be missing. | Hyperliquid docs: https://hyperliquid.gitbook.io/hyperliquid-docs/historical-data lines 60-69. | Low provider-fee candidate but lower completeness/timeliness confidence; AWS transfer must be modeled. |
 | Kalshi official historical API | No paid provider price sourced in this pass; historical endpoints exist for cutoff, markets, candlesticks, trades, fills, orders. | Kalshi docs: https://docs.kalshi.com/getting_started/historical_data lines 67-92. | Use for lower-fidelity historical classes unless adapter/source proves historical L2. |
 | Polymarket official APIs | No paid provider price sourced in this pass; APIs cover discovery, CLOB orderbooks/prices/history, and data positions/trades/activity. | Polymarket docs: https://docs.polymarket.com/market-data/overview lines 176-212. | Useful baseline/source-of-truth API family, but public API cap/depth limits still gate fidelity. |
-| Shared S3 artifact root | Canonical raw payloads, NT catalog data, source proofs, and backtest outputs share one S3 root with typed subpaths. | E-034 user decision. AWS S3 pricing page points to pricing examples and calculator: https://aws.amazon.com/s3/pricing/ lines 576-578, 650-652. | Model storage, request, transfer, lifecycle, retention, and query costs together; do not hide them under provider cost. |
+| Canonical S3 artifact root | Canonical raw payloads, NT catalog data, source proofs, and backtest outputs share one S3 root with typed subpaths. | E-034 user decision. AWS S3 pricing page points to pricing examples and calculator: https://aws.amazon.com/s3/pricing/ lines 576-578, 650-652. | Model storage, request, transfer, lifecycle, retention, and query costs together; do not hide them under provider cost. |
 | S3 archive lifecycle | Retain forever, no automatic delete; colder S3 classes are lifecycle destinations for inactive artifacts. | E-035 user decision. AWS S3 docs state Deep Archive is the lowest-cost AWS storage option, has 180-day minimum duration, requires restore before access, and adds archive metadata overhead. | Treat archive storage under `$5/month` as zero for planning. Still model retrieval latency/cost, request/metadata overhead, and minimum-duration effects before relying on it operationally. |
 | AWS dashboard/compute/query | Must use AWS Pricing Calculator for final estimate. | AWS S3 pricing: https://aws.amazon.com/s3/pricing/ lines 576-578, 650-652. | Treat AWS as explicit reserve, not hidden residual. |
 | Grafana Cloud | Free visualization tier exists; Pro visualization is `$8/active user` plus `$19/month` platform fee, with usage-based observability costs. | Grafana pricing: https://grafana.com/pricing/ lines 1097-1159. | Strong ops metrics/logs candidate; do not use as independent trading truth. Model usage, retention, and alerting separately from data-provider cost. |
@@ -45,12 +45,12 @@ scenarios are marked for user review before implementation.
 
 | Scenario | Included sources | Known monthly cost | Required reserve | Cap status | Blocking unknowns |
 |---|---:|---:|---:|---|---|
-| Crypto/perps L2 replay first | Tardis Perpetuals Professional + shared S3 artifact root + AWS/dashboard reserve | `$900` provider | UNESTIMATED | OVER_TARGET_REVIEW | S3 storage/transfer/query/dashboard costs pending; selected venue replay proof pending. |
-| Broad crypto all-exchange replay | Tardis All Exchanges Professional + shared S3 artifact root + AWS/dashboard reserve | `$2200` provider | UNESTIMATED | OVER_TARGET_REVIEW | Requires explicit user review before implementation. |
-| Polymarket personal research | Telonex Plus + official APIs + shared S3 artifact root + AWS reserve | `$79` provider | UNESTIMATED | DECISION_NEEDED | Personal license only; S3/dashboard/log/query costs and NT projection/fidelity proof pending. |
-| Polymarket commercial/team | Telonex Enterprise and/or Goldsky + shared S3 artifact root + AWS reserve | Custom/metered | UNESTIMATED | DECISION_NEEDED | Enterprise quote or Goldsky event/storage estimate. |
-| HIP-4/Hyperliquid official archive | Official archive/API + shared S3 artifact root + AWS transfer/storage | No provider fee sourced | UNESTIMATED | DECISION_NEEDED | Missing/timeliness caveat; transfer/storage/modeling pending. |
-| Kalshi baseline | Official historical API + adapter/provider proof + shared S3 artifact root + AWS reserve | No provider fee sourced | UNESTIMATED | DECISION_NEEDED | Historical L2 not proven; adapter/source proof pending. |
+| Crypto/perps L2 replay first | Tardis Perpetuals Professional + canonical S3 artifact root + AWS/dashboard reserve | `$900` provider | UNESTIMATED | OVER_TARGET_REVIEW | S3 storage/transfer/query/dashboard costs pending; selected venue replay proof pending. |
+| Broad crypto all-exchange replay | Tardis All Exchanges Professional + canonical S3 artifact root + AWS/dashboard reserve | `$2200` provider | UNESTIMATED | OVER_TARGET_REVIEW | Requires explicit user review before implementation. |
+| Polymarket personal research | Telonex Plus + official APIs + canonical S3 artifact root + AWS reserve | `$79` provider | UNESTIMATED | DECISION_NEEDED | Personal license only; S3/dashboard/log/query costs and NT projection/fidelity proof pending. |
+| Polymarket commercial/team | Telonex Enterprise and/or Goldsky + canonical S3 artifact root + AWS reserve | Custom/metered | UNESTIMATED | DECISION_NEEDED | Enterprise quote or Goldsky event/storage estimate. |
+| HIP-4/Hyperliquid official archive | Official archive/API + canonical S3 artifact root + AWS transfer/storage | No provider fee sourced | UNESTIMATED | DECISION_NEEDED | Missing/timeliness caveat; transfer/storage/modeling pending. |
+| Kalshi baseline | Official historical API + adapter/provider proof + canonical S3 artifact root + AWS reserve | No provider fee sourced | UNESTIMATED | DECISION_NEEDED | Historical L2 not proven; adapter/source proof pending. |
 | Dashboard/BI managed baseline | Grafana/Metabase/Preset/Retool/Plotly managed product + AWS/query reserve | `$0` to custom before usage | UNESTIMATED | DECISION_NEEDED | Must be selected from source contract, query backend, security, and cost fit; custom UI is fallback only. |
 
 ## Provisional Cost Guardrails
@@ -79,7 +79,7 @@ scenarios are marked for user review before implementation.
 ## Next Proof
 
 1. Estimate selected-venue data volume per day and per month.
-2. Estimate shared S3 `artifact_root` storage, request, transfer, lifecycle,
+2. Estimate canonical S3 `artifact_root` storage, request, transfer, lifecycle,
    retention, Athena/DuckDB/ClickHouse/query, dashboard, and log costs.
 3. Define lifecycle transition windows for `active`, `archive`, and
    `deep_archive`; verify no default expiration/delete rule exists.

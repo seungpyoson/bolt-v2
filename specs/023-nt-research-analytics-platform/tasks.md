@@ -1,19 +1,20 @@
 # Tasks: NT Research Planning Package
 
-These are shared package tasks only. Project implementation tasks live in the
-numbered subdirectories.
+These are package reference tasks only. Project implementation tasks live in
+the numbered subdirectories.
 
-## Shared Tasks
+## Package Reference Tasks
 
 - [x] ROOT-001 Keep root package research/planning-only.
-- [x] ROOT-002 Keep original shared evidence in `shared/evidence.md`.
+- [x] ROOT-002 Keep original cross-project evidence in `reference/evidence.md`.
 - [x] ROOT-003 Fold useful evidence, issue dependencies, and residual risks into
   each numbered project spec/plan.
-- [x] ROOT-004 Keep venue/provider fidelity archive in `shared/fidelity-matrix.md`.
-- [x] ROOT-005 Keep cost/product review archive in `shared/cost-model.md`.
-- [x] ROOT-006 Keep existing issue audit and staged payloads in `shared/`.
+- [x] ROOT-004 Keep venue/provider fidelity archive in `reference/fidelity-matrix.md`.
+- [x] ROOT-005 Keep cost/product review archive in `reference/cost-model.md`.
+- [x] ROOT-006 Keep existing issue audit and staged payloads in `reference/`.
 - [x] ROOT-007 Split future implementation work into numbered project directories.
 - [x] ROOT-008 Provide human triage in `README.md`.
+- [x] ROOT-010 Move answered/open question trace into `reference/open-questions.md`.
 
 ## Project Task Lists
 
@@ -23,7 +24,7 @@ numbered subdirectories.
 
 ## Future Cross-Project Tasks
 
-- [ ] ROOT-009 Create a shared status/label/legend registry before
+- [ ] ROOT-009 Create a cross-project status/label/legend registry before
   implementation or UI work. It must define each internal enum/status, plain
   display label, tooltip/legend meaning, owner/source of truth, which vertical
   may set it, and which vertical may only display it. Covered concepts include
@@ -31,13 +32,13 @@ numbered subdirectories.
   run purposes, promotion statuses, artifact kinds, proof statuses, warning
   labels, and product-gate outcomes.
 
-## Shared Issue Summaries
+## Cross-Project Issue Summaries
 
-Canonical staged payloads remain in `shared/github-issues.md` until the user
+Canonical staged payloads remain in `reference/github-issues.md` until the user
 approves GitHub mutation. These summaries preserve the two cross-cutting
 payloads that are not owned by a numbered implementation project.
 
-### Issue A: Shared NT/Data Evidence Gates
+### Issue A: Cross-Project NT/Data Evidence Gates
 
 Title: `Research gate: NT/data evidence gates for future backtesting, analytics, and dashboard`
 
@@ -66,7 +67,7 @@ Accepted scope:
 Out of scope: runtime code, provider recorder, backtesting runner, dashboard
 UI, and GitHub issue mutation without approval.
 
-Acceptance evidence: updated shared evidence, research, fidelity, cost,
+Acceptance evidence: updated reference evidence, research, fidelity, cost,
 issue-audit, and contracts artifacts with every claim labeled
 `SOURCE_PROVEN`, `USER_ASSUMPTION`, `GAP`, or `DECISION_NEEDED`, plus
 follow-up adversarial review recorded in the analysis archive.

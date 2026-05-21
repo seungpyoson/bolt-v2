@@ -1,7 +1,7 @@
-# Data Model: Shared Research Package
+# Data Model: Cross-Project Reference Package
 
-This root data model contains shared entities only. Project-owned data models are
-defined inside the numbered project specs/plans:
+This reference data model contains cross-project entities only. Project-owned
+data models are defined inside the numbered project specs/plans:
 
 - `1-backtesting-engine/`
 - `2-research-analytics/`
@@ -139,7 +139,7 @@ defined inside the numbered project specs/plans:
 
 ## ResearchAnalyticsArtifact
 
-Research Analytics may write only these derived families under the shared
+Research Analytics may write only these derived families under the
 `artifact_root/research-analytics/v1/` prefix:
 
 - `datasets`: point-in-time research datasets.
@@ -156,7 +156,7 @@ does not write upstream raw, NT catalog, source-proof, or backtest records.
 
 - `issue_title`: Proposed title.
 - `project_directory`: One of `1-backtesting-engine`, `2-research-analytics`, or
-  `3-dashboard`, unless the issue is explicitly shared evidence work.
+  `3-dashboard`, unless the issue is explicitly cross-project evidence work.
 - `existing_issue_relation`: updates, depends-on, blocks, duplicates, or new.
 - `evidence_rows`: Ledger rows justifying the slice.
 - `accepted_scope`: Exact work included.

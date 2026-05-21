@@ -41,18 +41,20 @@ Root `spec.md`, `plan.md`, and `tasks.md` are Speckit compatibility pointers.
 They are not implementation specs.
 
 The numbered project docs contain the implementation-facing scope, gates, tasks,
-and local evidence summaries. The `shared/` directory has two roles:
+and local evidence summaries. The `reference/` directory is the package
+reference layer, not a fourth project. It has two roles:
 
-- `shared/evidence.md`, `shared/data-model.md`, and `shared/contracts.md` are
+- `reference/evidence.md`, `reference/data-model.md`, and `reference/contracts.md` are
   authoritative cross-project inputs inherited by the numbered project docs.
-  Per-project evidence tables are derived views of `shared/evidence.md`.
-- `shared/cost-model.md`, `shared/fidelity-matrix.md`,
-  `shared/github-issues.md`, `shared/issue-audit.md`, `shared/analysis.md`,
-  `shared/requirements-checklist.md`, and `shared/research.md` are the audit
-  archive for source rows, planning snapshots, staged issue payloads,
-  issue-search evidence, review notes, and checklist history.
+  Per-project evidence tables are derived views of `reference/evidence.md`.
+- `reference/cost-model.md`, `reference/fidelity-matrix.md`,
+  `reference/github-issues.md`, `reference/issue-audit.md`, `reference/analysis.md`,
+  `reference/open-questions.md`, `reference/requirements-checklist.md`, and
+  `reference/research.md` are the audit and decision-history record for source
+  rows, planning snapshots, staged issue payloads, issue-search evidence,
+  review notes, question triage, and checklist history.
 
-Consult `shared/` before issue creation, external review, or changing any
+Consult `reference/` before issue creation, external review, or changing any
 cross-project evidence, contract, data-model, or archived planning context.
 
 ## Project Boundaries

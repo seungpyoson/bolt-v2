@@ -78,7 +78,7 @@ notebooks, dashboard UI, provider capture, live trading, or a custom simulator.
   recommend whether to use or escalate a strategy.
 - Treat strategy escalation decisions as Research Analytics `PromotionPackage`
   or later review-artifact scope, not Backtesting Engine scope.
-- Publish canonical artifacts through the shared Artifact Index Contract; normal
+- Publish canonical artifacts through the cross-project Artifact Index Contract; normal
   discovery must use committed index snapshots, not recursive S3 listing.
 - Treat Artifact Index writes as producer-owned: Backtesting Engine writes
   records only for artifacts it produces and must not grant consumers authority
@@ -291,7 +291,7 @@ Backtesting Engine writes canonical artifacts only under configured
 - `artifact_root` must be a TOML/config-owned S3 URI.
 - The bucket and prefix are configured values, not code constants.
 - Typed subpaths are `raw/`, `nt-catalog/`, `source-proofs/`, and
-  `backtests/`; shared index records live under `artifact-index/`.
+  `backtests/`; index records live under `artifact-index/`.
 - Backtest run artifacts are written under `backtests/` by run id unless the
   manifest supplies an explicit output prefix under the same `artifact_root`.
 - Raw provider/API/archive payloads are referenced under `raw/`.
@@ -316,7 +316,7 @@ Backtesting Engine writes canonical artifacts only under configured
 
 ## Artifact Index Policy
 
-Backtesting Engine publishes canonical artifacts through the shared Artifact
+Backtesting Engine publishes canonical artifacts through the cross-project Artifact
 Index Contract. This remains a thin table of contents for S3 artifacts and must
 not become a warehouse, query engine, or replacement for NT `ParquetDataCatalog`.
 

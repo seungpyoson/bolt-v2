@@ -59,7 +59,7 @@ manifests, source proofs, and index metadata. The `nt-catalog/` prefix stops at
 the catalog projection root and lets NT write its native
 `data/<data_type>/<instrument_id>/...` tree below that root.
 
-Artifact discovery uses the shared Artifact Index Contract. The index is a thin
+Artifact discovery uses the cross-project Artifact Index Contract. The index is a thin
 table of contents: artifact-local structured manifests, immutable structured
 events, committed snapshots, and generated per-kind latest pointers at
 `artifact-index/v1/pointers/kind=<artifact_kind>/latest.json`. Event and
@@ -230,7 +230,7 @@ anchors or required fixtures.
 | Kalshi official historical API | No paid provider price sourced | `DECISION_NEEDED` | Lower-fidelity baseline unless historical L2 source is proven. |
 | Polymarket official APIs | No paid provider price sourced | `DECISION_NEEDED` | Baseline/source-of-truth API family; cap/depth limits still gate fidelity. |
 | AWS storage/compute/transfer/query/logs | Unestimated | `DECISION_NEEDED` | Must be explicit reserve, not hidden residual spend. |
-| Shared S3 artifact root | Unestimated | `DECISION_NEEDED` | Raw, catalog, source-proof, and backtest artifacts share one root; model storage, request, transfer, lifecycle, and retention cost together. |
+| Canonical S3 artifact root | Unestimated | `DECISION_NEEDED` | Raw, catalog, source-proof, and backtest artifacts share one root; model storage, request, transfer, lifecycle, and retention cost together. |
 | Artifact lifecycle | Unestimated | `DECISION_NEEDED` | Retain forever, no default delete; model active/archive/deep-archive transition and restore cost. |
 
 ## Issue Payload

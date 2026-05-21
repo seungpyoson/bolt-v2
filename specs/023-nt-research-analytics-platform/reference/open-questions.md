@@ -1,11 +1,13 @@
-# Open Questions And Review Prompts
+# Open Questions And Decision History
 
-This is the single root handoff for answered and remaining questions in the
-`023-nt-research-analytics-platform` planning package.
+This is the decision-history and question-triage record for the
+`023-nt-research-analytics-platform` planning package. It is not a root
+implementation backlog.
 
-Use it after reading `README.md`. Do not implement from this document. Pick one
-question, answer it with evidence, and then update the relevant project
-`spec.md`, `plan.md`, or `tasks.md`.
+Use it after reading `../README.md` when you need the reasoning behind an
+accepted or deferred decision. Do not implement from this document. Implement
+from the selected numbered project docs plus the authoritative files in this
+directory.
 
 ## Global Context
 
@@ -45,8 +47,8 @@ For every prompt below, require the responder to return:
 
 The first-pass response set from Claude, ChatGPT, Gemini, and Grok has been
 triaged. Accepted decisions are reflected in the numbered project docs and
-shared contracts. This table records decision state so future sessions do not
-restart from examples or model-specific drafts.
+reference contracts. This table records decision state so future sessions do
+not restart from examples or model-specific drafts.
 
 | Question | State | Outcome |
 |---|---|---|
@@ -67,7 +69,7 @@ restart from examples or model-specific drafts.
 | OQ-015 | Approved | Dashboard starts from field-source matrix and trade investigation fields before product choice. |
 | OQ-016 | Deferred product choice | Product choice waits for customer jobs and read-model shape. Trade monitor, trade investigation, optional annotation/review notes, and controlled action workflow must be specified before gate. |
 | OQ-017 | Approved | Dashboard may display strategy state/outlook only from upstream source contracts or RA artifacts; it must not infer promotion from BTE metrics or mutate promotion state. |
-| OQ-018 | Approved with naming caveat | Keep source role separate from data status/gap reason; final display names and legend require shared registry. |
+| OQ-018 | Approved with naming caveat | Keep source role separate from data status/gap reason; final display names and legend require cross-project registry. |
 | OQ-019 | Process complete | Gemini Code Assist comments were reviewed and resolved/disproved in PR cycle. |
 | OQ-020 | Process complete | External review packet was run for the PR cycle; future reviews should use current head and updated docs. |
 
@@ -75,7 +77,7 @@ restart from examples or model-specific drafts.
 
 ### OQ-001: Artifact Path Convention And Instrument Identity
 
-Question: What is the canonical path/key convention under the shared S3
+Question: What is the canonical path/key convention under the configured S3
 `artifact_root` for raw payloads, NT catalog data, source proofs, backtest
 outputs, and artifact-index objects when there may be hundreds or thousands of
 instruments?
@@ -89,7 +91,7 @@ recursive S3 listing for normal discovery.
 
 Prompt:
 
-> Review the current `1-backtesting-engine` docs and the shared artifact/index
+> Review the current `1-backtesting-engine` docs and the reference artifact/index
 > constraints. Research NT catalog path conventions and relevant data-provider
 > storage conventions, including but not limited to Nautilus Trader,
 > Databento, Tardis, cryptofeed, and public exchange/archive datasets. Recommend
@@ -339,7 +341,7 @@ must each artifact kind use?
 Context: RA may produce derived artifacts only after explicit artifact
 kind/schema is defined. RA must not mutate raw payloads, NT catalog artifacts,
 BTE source proofs, BTE result contracts, or upstream artifact-index truth.
-Generated promotion/config artifacts should live under the shared S3
+Generated promotion/config artifacts should live under the configured S3
 `artifact_root` in an RA-owned artifact family.
 
 Prompt:
@@ -495,7 +497,7 @@ Prompt:
 > tree. For each comment, classify as fixed, disproved/obsolete, or still open.
 > Provide exact file/path evidence and the reply text that should be posted. Do
 > not mutate GitHub unless explicitly authorized. If a doc change is needed,
-> identify the smallest project-local or shared doc patch.
+> identify the smallest project-local or reference doc patch.
 
 ### OQ-020: Final External Review Packet
 

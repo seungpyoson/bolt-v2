@@ -3,7 +3,7 @@
 ## Authority
 
 - `evidence.md` is the authority for claims.
-- Root shared docs, numbered project docs, and issue payloads must cite or
+- Root reference docs, numbered project docs, and issue payloads must cite or
   inherit ledger rows.
 - A `GAP` cannot be described as implemented scope.
 - A `USER_ASSUMPTION` can drive planning, but issue acceptance must say what proof will confirm or falsify it.

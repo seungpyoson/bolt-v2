@@ -7,7 +7,7 @@
 
 ## Evidence Quality
 
-- [x] CHK001 Does every major claim trace to `evidence.md`? [Evidence, root spec shared requirements]
+- [x] CHK001 Does every major claim trace to `evidence.md`? [Evidence, root spec cross-project requirements]
 - [x] CHK002 Is Kalshi adapter support labeled as a user assumption, not source proof? [Evidence, E-008]
 - [x] CHK003 Is upstream HIP-4 support treated as NT-first and not as a Bolt adapter build? [Evidence, E-003..E-006]
 - [x] CHK004 Is HIP-4 historical-data support separated from live adapter support? [Evidence, E-007]
@@ -19,7 +19,7 @@
 - [x] CHK007 Are provider cost-review and fidelity gates explicit? [`cost-model.md`, `fidelity-matrix.md`]
 - [x] CHK008 Is the dashboard read-only and NT-derived? [`3-dashboard/spec.md`, E-017, E-018]
 - [x] CHK009 Are existing issues identified before new issue payloads? [`issue-audit.md`, `github-issues.md`]
-- [x] CHK010 Is venue/product/provider identity config/registry-selected, not hardcoded into core logic? [E-026, root spec shared requirements]
+- [x] CHK010 Is venue/product/provider identity config/registry-selected, not hardcoded into core logic? [E-026, root spec cross-project requirements]
 - [x] CHK026 Does the research include external OSS and commercial prior art beyond user-provided examples? [E-030, E-031, research.md]
 - [x] CHK011 Does the plan require target `bolt-v2` NT-version compile/API proof before any vertical implementation starts? [E-027, analysis.md]
 

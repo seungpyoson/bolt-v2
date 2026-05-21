@@ -53,7 +53,7 @@ independent PnL/account truth.
 - Venue/provider identity must remain TOML/registry-selected data; dashboard
   field-source resolution must not branch on hardcoded venue/provider names.
 - Backtest/source-proof artifact links displayed by dashboard must reference
-  the shared S3 `artifact_root`; dashboard must not create a second canonical
+  the configured S3 `artifact_root`; dashboard must not create a second canonical
   artifact root.
 - Dashboard may display explicit artifact-local handles passed by upstream
   producers; cross-run and bulk artifact lists must come from committed
@@ -80,7 +80,7 @@ independent PnL/account truth.
 - Dashboard must preserve artifact lifecycle status and must not add delete or
   expiration behavior for canonical artifacts.
 - Dashboard user-facing labels, status names, and legends must be finalized in a
-  shared terminology/legend pass before UI implementation. Internal semantics
+  cross-project terminology/legend pass before UI implementation. Internal semantics
   must distinguish source role from data status/gap reason.
 
 ## Evidence And Decisions
@@ -97,9 +97,9 @@ independent PnL/account truth.
 | E-028 | SOURCE_PROVEN + DECISION_NEEDED | Grafana, Metabase, Superset/Preset, Retool, Plotly/Dash, and custom UI are candidates; product choice requires proof. |
 | E-029 | SOURCE_PROVEN | Live credentials must remain AWS SSM-only; dashboard must never display, mutate, or bypass the live secret path. |
 | E-031 | SOURCE_PROVEN | Mature systems separate research/backtest/live and analysis views; dashboard is not a trading control plane. |
-| E-034 | USER_ASSUMPTION + DECISION_NEEDED | Dashboard may display artifact pointers from Backtesting Engine or Research Analytics, but canonical artifacts stay under the shared S3 `artifact_root`. |
+| E-034 | USER_ASSUMPTION + DECISION_NEEDED | Dashboard may display artifact pointers from Backtesting Engine or Research Analytics, but canonical artifacts stay under the configured S3 `artifact_root`. |
 | E-035 | USER_ASSUMPTION + DECISION_NEEDED | Dashboard may show lifecycle/restore status, but it must not delete, expire, or mutate canonical artifacts. |
-| E-036 | USER_ASSUMPTION + DECISION_NEEDED | Dashboard may display lifecycle state, but lifecycle remains the shared simple rule: active, configured quiet window, inactive. |
+| E-036 | USER_ASSUMPTION + DECISION_NEEDED | Dashboard may display lifecycle state, but lifecycle remains the cross-project simple rule: active, configured quiet window, inactive. |
 | E-038 | SOURCE_PROVEN + DECISION_NEEDED | Dashboard may display explicit artifact-local handles, but cross-run/bulk artifact lists must consume committed Artifact Index snapshots; dashboard must not scan S3 prefixes as the normal discovery path. |
 | E-039 | USER_ASSUMPTION + DECISION_NEEDED | Dashboard is a read-only Artifact Index consumer; it must not publish, repair, invent, or mutate upstream artifact records. |
 | E-040 | USER_ASSUMPTION + DECISION_NEEDED | Dashboard may display source proof ids, fidelity classes, claim limits, and warnings, but it must not accept upstream proof, weaken forbidden claims, or upgrade proof strength. |
@@ -118,7 +118,7 @@ independent PnL/account truth.
 
 ## Data Model
 
-- `DashboardFieldSource`: field name, source type, source ref or shared
+- `DashboardFieldSource`: field name, source type, source ref or cross-project
   `artifact_root` URI, source proof id if applicable, fidelity class, claim
   limits, run purpose, proof pin reason code/detail when present, lifecycle
   status, promotion/status source if applicable, freshness rule, source role,

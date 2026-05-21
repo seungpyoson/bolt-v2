@@ -26,10 +26,10 @@ contracts.
   FX/quote source proofs; Upbit/Bithumb-style sources are candidate TOML
   bindings, not hardcoded analytics branches.
 - Canonical raw payloads, NT catalog data, source proof artifacts, and backtest
-  outputs are read by URI from the shared S3 `artifact_root`; analytics must not
+  outputs are read by URI from the configured S3 `artifact_root`; analytics must not
   fork those artifacts into a second canonical root.
 - Bulk artifact discovery uses the committed Artifact Index snapshot under the
-  shared `artifact_root`; analytics must not recursively scan S3 prefixes as its
+  configured `artifact_root`; analytics must not recursively scan S3 prefixes as its
   normal discovery path.
 - Direct producer/caller handoffs may pass explicit artifact-local handles;
   those handles do not replace the committed snapshot path for cross-run
@@ -70,7 +70,7 @@ contracts.
 4. Define claim-limit propagation from source fidelity to research result.
 5. Define notebook permission boundary.
 6. Define promotion package and review checklist.
-7. Define artifact URI and Artifact Index consumption rules for the shared S3
+7. Define artifact URI and Artifact Index consumption rules for the configured S3
    `artifact_root`.
 8. Define lifecycle metadata rules for retain-forever artifacts, quiet window,
    and active-to-inactive transition.
@@ -105,7 +105,7 @@ contracts.
   artifact for later implementation/review. It must not auto-merge,
   auto-enable a strategy, schedule live trading, touch SSM credentials, or
   mutate production runtime config.
-- Generated promotion/config artifacts live under the shared S3 `artifact_root`
+- Generated promotion/config artifacts live under the configured S3 `artifact_root`
   as RA-owned derived artifacts, for example
   `research-analytics/v1/promotion-packages/`. They must not be written
   directly into repo runtime config; importing them into production config is a

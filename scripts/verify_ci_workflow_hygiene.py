@@ -1717,6 +1717,19 @@ def exec_inner_tokens(tokens: list[str]) -> list[str] | None:
     return []
 
 
+def container_rust_payload_from_tokens(tokens: list[str], start: int) -> list[str] | None:
+    for index in range(start, len(tokens)):
+        token = tokens[index]
+        executable = pathlib.Path(token).name
+        if (
+            raw_rust_tool_token(executable)
+            or path_executable_looks_like_cargo(token)
+            or path_executable_looks_like_rustc(token)
+        ):
+            return tokens[index:]
+    return None
+
+
 def container_inner_tokens(tokens: list[str]) -> list[str] | None:
     if len(tokens) < 3:
         return None
@@ -1746,25 +1759,50 @@ def container_inner_tokens(tokens: list[str]) -> list[str] | None:
         "-w",
     }
     index = 2
+    entrypoint: str | None = None
+    uncertain_options = False
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
             index += 1
             break
         if token in options_with_argument and index + 1 < len(tokens):
+            if token == "--entrypoint":
+                entrypoint = tokens[index + 1]
             index += 2
+            continue
+        if token.startswith("--entrypoint="):
+            entrypoint = token.split("=", 1)[1]
+            index += 1
             continue
         if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
             index += 1
             continue
         if token.startswith("-"):
+            uncertain_options = True
             index += 1
             continue
         break
     if command == "run":
-        return tokens[index + 1 :] if index < len(tokens) else []
+        if index >= len(tokens):
+            return []
+        tail = tokens[index + 1 :]
+        if entrypoint is not None:
+            return [entrypoint, *tail]
+        if uncertain_options:
+            fallback = container_rust_payload_from_tokens(tokens, 2)
+            if fallback is not None:
+                return fallback
+        return tail
     if command == "exec":
-        return tokens[index + 1 :] if index < len(tokens) else []
+        if index >= len(tokens):
+            return []
+        tail = tokens[index + 1 :]
+        if uncertain_options:
+            fallback = container_rust_payload_from_tokens(tokens, 2)
+            if fallback is not None:
+                return fallback
+        return tail
     return None
 
 
@@ -2291,6 +2329,23 @@ def path_executable_looks_like_cargo(token: str) -> bool:
     return path_name_looks_like_renamed_cargo(resolved.name)
 
 
+def path_name_looks_like_renamed_rustc(name: str) -> bool:
+    return name == "r" or name.endswith("rustc") or name == "rustc"
+
+
+def path_executable_looks_like_rustc(token: str) -> bool:
+    if "/" not in token:
+        return False
+    path = pathlib.Path(token)
+    if path_name_looks_like_renamed_rustc(path.name):
+        return True
+    try:
+        resolved = path.expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return path_name_looks_like_renamed_rustc(resolved.name)
+
+
 def path_invocation_has_cargo_subcommand(tokens: list[str]) -> bool:
     if not tokens or "/" not in tokens[0]:
         return False
@@ -2557,6 +2612,12 @@ def tokens_have_raw_cargo(
     executable = pathlib.Path(tokens[0]).name
     if path_invocation_has_cargo_subcommand(tokens):
         return True
+    if path_executable_looks_like_rustc(tokens[0]) and any(
+        token in {"--crate-name", "--emit", "--out-dir", "--artifact-dir"}
+        or token.startswith(("--emit=", "--out-dir=", "--artifact-dir="))
+        for token in tokens[1:]
+    ):
+        return True
     if executable in ("bash", "dash", "fish", "sh", "zsh"):
         nested = shell_command(tokens)
         return nested is not None and tokens_have_raw_cargo(
@@ -2770,6 +2831,11 @@ def direct_raw_cargo_storage_override_messages(tokens: list[str]) -> set[str]:
     messages: set[str] = set()
     if any(token == "--target-dir" or token.startswith("--target-dir=") for token in tokens):
         messages.add("cargo --target-dir raw target override must be classified")
+    if tokens and (pathlib.Path(tokens[0]).name == "rustc" or path_executable_looks_like_rustc(tokens[0])):
+        if any(token == "--out-dir" or token.startswith("--out-dir=") for token in tokens):
+            messages.add("rustc --out-dir raw output override must be classified")
+        if any(token == "--artifact-dir" or token.startswith("--artifact-dir=") for token in tokens):
+            messages.add("rustc --artifact-dir raw output override must be classified")
     config_message = cargo_config_storage_override_message(tokens)
     if config_message is not None:
         messages.add(config_message)
@@ -3129,7 +3195,7 @@ def storage_command_substitution_has_target(value: str) -> bool:
 
 
 def storage_value_has_target_component(value: str) -> bool:
-    normalized = storage_strip_quotes(value).replace('"', "").replace("'", "")
+    normalized = storage_strip_quotes(value).replace('"', "").replace("'", "").lstrip("<>")
     if not normalized or normalized.startswith("s3://"):
         return False
     parts = [part for part in re.split(r"[\\/]+", normalized) if part and part not in {".", ".."}]
@@ -3242,6 +3308,26 @@ def record_active_copy_paths(
         active_paths.add(storage_path_key(destination))
 
 
+def tar_writes_archive_to_stdout(tail: list[str]) -> bool:
+    creates_archive = False
+    for index, token in enumerate(tail):
+        if token in {"c", "-c", "--create"}:
+            creates_archive = True
+            continue
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            creates_archive = True
+        if token in {"-f", "--file"}:
+            return index + 1 < len(tail) and tail[index + 1] == "-"
+        if token.startswith("--file="):
+            return token.split("=", 1)[1] == "-"
+        if token.startswith("-") and not token.startswith("--") and "f" in token[1:]:
+            suffix = token[1:].split("f", 1)[1]
+            if suffix:
+                return suffix == "-"
+            return index + 1 < len(tail) and tail[index + 1] == "-"
+    return creates_archive
+
+
 def command_streams_active_target_to_stdout(
     tokens: list[str],
     index: int,
@@ -3252,12 +3338,7 @@ def command_streams_active_target_to_stdout(
     command_name: str,
 ) -> bool:
     tail = command_tail_until_boundary(tokens, index + 1)
-    if command_name == "tar" and not (
-        "-" in tail
-        or "--file=-" in tail
-        or "-f-" in tail
-        or any(token.startswith("-") and "f-" in token[1:] for token in tail)
-    ):
+    if command_name == "tar" and not tar_writes_archive_to_stdout(tail):
         return False
     return any(
         STORAGE_ROLE_ACTIVE_TARGET

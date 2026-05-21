@@ -1139,6 +1139,19 @@ def exec_command_index(tokens: list[str]) -> int:
     return index
 
 
+def container_rust_payload_from_tokens(tokens: list[str], start: int) -> list[str] | None:
+    for index in range(start, len(tokens)):
+        token = tokens[index]
+        executable = basename_token(token)
+        if (
+            executable_is_rust_tool(executable)
+            or path_executable_looks_like_cargo(token)
+            or path_executable_looks_like_rustc(token)
+        ):
+            return tokens[index:]
+    return None
+
+
 def container_wrapped_tokens(tokens: list[str]) -> list[str] | None:
     if len(tokens) < 3:
         return None
@@ -1168,23 +1181,41 @@ def container_wrapped_tokens(tokens: list[str]) -> list[str] | None:
         "-w",
     }
     index = 2
+    entrypoint: str | None = None
+    uncertain_options = False
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
             index += 1
             break
         if token in options_with_argument and index + 1 < len(tokens):
+            if token == "--entrypoint":
+                entrypoint = tokens[index + 1]
             index += 2
+            continue
+        if token.startswith("--entrypoint="):
+            entrypoint = token.split("=", 1)[1]
+            index += 1
             continue
         if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
             index += 1
             continue
         if token.startswith("-"):
+            uncertain_options = True
             index += 1
             continue
         break
     if command in {"run", "exec"}:
-        return tokens[index + 1 :] if index < len(tokens) else []
+        if index >= len(tokens):
+            return []
+        tail = tokens[index + 1 :]
+        if entrypoint is not None:
+            return [entrypoint, *tail]
+        if uncertain_options:
+            fallback = container_rust_payload_from_tokens(tokens, 2)
+            if fallback is not None:
+                return fallback
+        return tail
     return None
 
 
@@ -1513,6 +1544,23 @@ def path_executable_looks_like_cargo(token: str) -> bool:
     return path_name_looks_like_renamed_cargo(resolved.name)
 
 
+def path_name_looks_like_renamed_rustc(executable: str) -> bool:
+    return executable == "r" or executable.endswith("rustc") or executable == "rustc"
+
+
+def path_executable_looks_like_rustc(token: str) -> bool:
+    if "/" not in token:
+        return False
+    executable = basename_token(token)
+    if path_name_looks_like_renamed_rustc(executable):
+        return True
+    try:
+        resolved = pathlib.Path(token).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return path_name_looks_like_renamed_rustc(resolved.name)
+
+
 RUSTC_SPECIFIC_TOKENS = {"--crate-name", "--emit", "--out-dir"}
 
 
@@ -1536,7 +1584,7 @@ def tokens_may_be_renamed_rustc(tokens: list[str], *, depth: int = 0) -> bool:
     segments = shell_command_segments(tokens)
     if segments:
         return any(tokens_may_be_renamed_rustc(segment, depth=depth + 1) for segment in segments)
-    if "/" in tokens[0] and basename_token(tokens[0]) == "r" and tokens_have_rustc_specific_flags(tokens[1:]):
+    if path_executable_looks_like_rustc(tokens[0]) and tokens_have_rustc_specific_flags(tokens[1:]):
         return True
     wrapped_tokens = process_wrapper_tokens(tokens)
     if wrapped_tokens is not None:

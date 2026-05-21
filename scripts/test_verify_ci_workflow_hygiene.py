@@ -1157,6 +1157,12 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         "active target streamed through tar long file stdout flag": """
             tar -c --file=- target | aws s3 cp - s3://bolt-v2-active-cache/target.tar.gz
         """,
+        "active target streamed through tar default stdout": """
+            tar c target | aws s3 cp - s3://bolt-v2-active-cache/target.tar
+        """,
+        "active target streamed through fused input redirection": """
+            cat <target/debug/libbolt_v2.rmeta | aws s3 cp - s3://bolt-v2-active-cache/cache
+        """,
     }
     misses: list[str] = []
     for name, script in workflows.items():
@@ -1608,6 +1614,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo rustc --out-dir raw output override must be classified",
         ),
         (
+            "/tmp/myrustc --out-dir /tmp/raw-out",
+            "rustc --out-dir raw output override must be classified",
+        ),
+        (
             "cargo rustc -- --artifact-dir /tmp/raw-artifacts",
             "cargo rustc --artifact-dir raw output override must be classified",
         ),
@@ -1645,6 +1655,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "docker run --rm -v $PWD:/workspace -w /workspace rust:latest cargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "docker run --label my-label rust cargo build --target-dir /tmp/raw-target",
             "cargo --target-dir raw target override must be classified",
         ),
         (

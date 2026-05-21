@@ -1854,6 +1854,7 @@ def assert_v6_red_wrapped_renamed_cargo_launches_are_classified() -> None:
         "xargs /tmp/c build",
         "python -c \"import os; os.system('/tmp/c build')\"",
         "python -c \"import subprocess; subprocess.run(['/tmp/c', 'build'])\"",
+        "python -c \"import subprocess; subprocess.run(args=['/tmp/c', 'build'])\"",
         "bash -c 'sleep 10 && /tmp/c test'",
         "bash -c 'echo ok ; /tmp/c build'",
     ]

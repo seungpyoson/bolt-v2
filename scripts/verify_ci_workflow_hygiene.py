@@ -1326,6 +1326,15 @@ def python_call_name(node: ast.AST) -> str:
     return ""
 
 
+def python_call_command_argument(node: ast.Call) -> ast.AST | None:
+    if node.args:
+        return node.args[0]
+    for keyword in node.keywords:
+        if keyword.arg in {"args", "command"}:
+            return keyword.value
+    return None
+
+
 def python_inline_command_payloads(tokens: list[str]) -> list[str]:
     payloads: list[str] = []
     for index, token in enumerate(tokens):
@@ -1336,7 +1345,7 @@ def python_inline_command_payloads(tokens: list[str]) -> list[str]:
         except SyntaxError:
             continue
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not node.args:
+            if not isinstance(node, ast.Call):
                 continue
             call_name = python_call_name(node.func)
             if call_name not in {
@@ -1348,7 +1357,10 @@ def python_inline_command_payloads(tokens: list[str]) -> list[str]:
                 "subprocess.run",
             }:
                 continue
-            payload = python_command_string(node.args[0])
+            command_argument = python_call_command_argument(node)
+            if command_argument is None:
+                continue
+            payload = python_command_string(command_argument)
             if payload is not None:
                 payloads.append(payload)
     return payloads
@@ -3242,6 +3254,7 @@ def command_streams_active_target_to_stdout(
     tail = command_tail_until_boundary(tokens, index + 1)
     if command_name == "tar" and not (
         "-" in tail
+        or "--file=-" in tail
         or "-f-" in tail
         or any(token.startswith("-") and "f-" in token[1:] for token in tail)
     ):
@@ -3694,6 +3707,22 @@ def dynamic_env_segment_messages(
             ):
                 index += 1
                 continue
+            if argument.startswith("-") and not argument.startswith("--"):
+                split_inner = env_short_split_tokens(expanded, index)
+                if split_inner is not None:
+                    messages.update(
+                        dynamic_env_tokens_messages(
+                            expand_known_shell_variables(split_inner, local_assignments),
+                            local_assignments,
+                            target_keys,
+                            depth=depth + 1,
+                        )
+                    )
+                    return messages
+                parsed_index = env_short_cluster_next_index(expanded, index, argument[1:])
+                if parsed_index is not None:
+                    index = parsed_index
+                    continue
             message = dynamic_env_assignment_message(argument, local_assignments, target_keys)
             if message is None:
                 break

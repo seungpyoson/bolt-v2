@@ -1154,6 +1154,9 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         "active target streamed through clustered tar stdout flag": """
             tar -czf- target | aws s3 cp - s3://bolt-v2-active-cache/target.tar.gz
         """,
+        "active target streamed through tar long file stdout flag": """
+            tar -c --file=- target | aws s3 cp - s3://bolt-v2-active-cache/target.tar.gz
+        """,
     }
     misses: list[str] = []
     for name, script in workflows.items():
@@ -1369,6 +1372,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
+            'E=CARGO_TARGET_DIR; env -iS "$E=/tmp/raw-target cargo test"',
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
             "E=CARGO_TARGET_DIR\nexport $E=/tmp/raw-target\ncargo check",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
@@ -1506,6 +1513,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             'python -c "import subprocess; subprocess.run([\'cargo\', \'build\', \'--target-dir\', \'/tmp/raw\'])"',
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            'python -c "import subprocess; subprocess.run(args=[\'cargo\', \'build\', \'--target-dir\', \'/tmp/raw\'])"',
             "cargo --target-dir raw target override must be classified",
         ),
         (

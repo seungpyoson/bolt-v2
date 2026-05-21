@@ -720,6 +720,15 @@ def python_call_name(node: ast.AST) -> str:
     return ""
 
 
+def python_call_command_argument(node: ast.Call) -> ast.AST | None:
+    if node.args:
+        return node.args[0]
+    for keyword in node.keywords:
+        if keyword.arg in {"args", "command"}:
+            return keyword.value
+    return None
+
+
 def python_inline_command_payloads(tokens: list[str]) -> list[str]:
     payloads: list[str] = []
     for index, token in enumerate(tokens):
@@ -730,7 +739,7 @@ def python_inline_command_payloads(tokens: list[str]) -> list[str]:
         except SyntaxError:
             continue
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not node.args:
+            if not isinstance(node, ast.Call):
                 continue
             if python_call_name(node.func) not in {
                 "os.system",
@@ -741,7 +750,10 @@ def python_inline_command_payloads(tokens: list[str]) -> list[str]:
                 "subprocess.run",
             }:
                 continue
-            payload = python_command_string(node.args[0])
+            command_argument = python_call_command_argument(node)
+            if command_argument is None:
+                continue
+            payload = python_command_string(command_argument)
             if payload is not None:
                 payloads.append(payload)
     return payloads

@@ -5,7 +5,7 @@
 //! reconciliation, and venue wire behavior.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     time::{SystemTime, SystemTimeError, UNIX_EPOCH},
 };
@@ -18,7 +18,8 @@ use crate::{
     bolt_v3_config::{LoadedBoltV3Config, resolve_root_relative_path},
     bolt_v3_live_node::{
         BoltV3LiveNodeError, BoltV3LiveNodeRuntime, BoltV3NoSubmitReferenceCacheEvidence,
-        build_bolt_v3_live_node, controlled_no_submit_readiness,
+        BoltV3NoSubmitReferenceQuote, BoltV3NoSubmitReferenceQuoteEvidence,
+        build_bolt_v3_no_submit_live_node, controlled_no_submit_readiness,
     },
     bolt_v3_no_submit_readiness_schema::{
         CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
@@ -28,6 +29,7 @@ use crate::{
 };
 
 const REFERENCE_CACHE_ONLY_LIMITATION_DETAIL: &str = "NT cache only proves required reference instrument IDs are present; no live reference-data freshness or timestamp surface is available";
+const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
 trait RedactionValue {
     fn as_redaction_str(&self) -> &str;
@@ -408,6 +410,86 @@ pub fn reference_readiness_from_cache_evidence(
     reference_readiness_from_cached_instrument_ids(loaded, evidence.cached_instrument_ids())
 }
 
+pub fn reference_readiness_from_quote_evidence(
+    loaded: &LoadedBoltV3Config,
+    evidence: &BoltV3NoSubmitReferenceQuoteEvidence,
+    observed_at_unix_nanos: u64,
+) -> Result<(), String> {
+    let max_age_seconds = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or_else(|| "reference quote freshness requires `[live_canary]`".to_string())?
+        .reference_quote_max_age_seconds;
+    if max_age_seconds == 0 {
+        return Err(
+            "[live_canary].reference_quote_max_age_seconds must be a positive integer".to_string(),
+        );
+    }
+    let max_age_nanos = max_age_seconds
+        .checked_mul(NANOS_PER_SECOND)
+        .ok_or_else(|| {
+            "[live_canary].reference_quote_max_age_seconds overflows nanoseconds".to_string()
+        })?;
+
+    let latest_quotes = latest_reference_quotes_by_key(evidence);
+    let mut failures = Vec::new();
+    let mut required_count = 0usize;
+    for strategy in &loaded.strategies {
+        for (role, reference) in &strategy.config.reference_data {
+            required_count += 1;
+            let data_client_id = reference.data_client_id.to_string();
+            let instrument_id = reference.instrument_id.to_string();
+            let label = format!(
+                "{} reference_data.{role} data_client_id `{data_client_id}` instrument_id `{instrument_id}`",
+                strategy.relative_path
+            );
+            let Some(quote) = latest_quotes.get(&(data_client_id, instrument_id)) else {
+                failures.push(format!("missing live quote evidence for {label}"));
+                continue;
+            };
+            let Some(age_nanos) = observed_at_unix_nanos.checked_sub(quote.ts_event_unix_nanos)
+            else {
+                failures.push(format!(
+                    "live quote evidence for {label} has future ts_event_unix_nanos {} > observed_at_unix_nanos {observed_at_unix_nanos}",
+                    quote.ts_event_unix_nanos
+                ));
+                continue;
+            };
+            if age_nanos > max_age_nanos {
+                failures.push(format!(
+                    "live quote evidence for {label} is stale: age_nanos={age_nanos} > max_age_nanos={max_age_nanos} ([live_canary].reference_quote_max_age_seconds={max_age_seconds})"
+                ));
+            }
+        }
+    }
+
+    if required_count == 0 {
+        failures.push("no configured reference_data requirements found".to_string());
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn latest_reference_quotes_by_key(
+    evidence: &BoltV3NoSubmitReferenceQuoteEvidence,
+) -> BTreeMap<(String, String), &BoltV3NoSubmitReferenceQuote> {
+    let mut latest: BTreeMap<(String, String), &BoltV3NoSubmitReferenceQuote> = BTreeMap::new();
+    for quote in &evidence.quotes {
+        let key = (quote.data_client_id.clone(), quote.instrument_id.clone());
+        match latest.get(&key) {
+            Some(existing) if existing.ts_event_unix_nanos >= quote.ts_event_unix_nanos => {}
+            _ => {
+                latest.insert(key, quote);
+            }
+        }
+    }
+    latest
+}
+
 pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
@@ -415,8 +497,11 @@ pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
     redacted_values: &[Zeroizing<String>],
 ) -> Result<BoltV3NoSubmitReadinessReport, BoltV3NoSubmitReadinessError> {
     let (connect, reference, disconnect) =
-        controlled_no_submit_readiness(runtime, loaded, |runtime| {
-            reference_readiness_from_cache_evidence(loaded, &runtime.reference_cache_evidence())
+        controlled_no_submit_readiness(runtime, loaded, |_runtime, quote_evidence| {
+            let observed_at_unix_nanos = quote_evidence
+                .observed_at_unix_nanos()
+                .ok_or_else(|| "no live reference quote evidence was captured".to_string())?;
+            reference_readiness_from_quote_evidence(loaded, quote_evidence, observed_at_unix_nanos)
         })
         .await;
     let generated_at_unix_seconds = current_unix_seconds()?;
@@ -438,7 +523,7 @@ pub fn run_bolt_v3_no_submit_readiness(
     }
     configured_operator_approval_hash(loaded)?;
 
-    let mut runtime = build_bolt_v3_live_node(loaded)
+    let mut runtime = build_bolt_v3_no_submit_live_node(loaded)
         .map_err(|source| BoltV3NoSubmitReadinessError::LiveNode { source })?;
     let redacted_values = runtime.redaction_values().to_vec();
 

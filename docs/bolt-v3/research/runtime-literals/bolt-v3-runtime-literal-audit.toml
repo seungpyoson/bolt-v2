@@ -1425,6 +1425,14 @@ classification = "live_node_fail_closed_diagnostic_template"
 reason = "This is fail-closed diagnostic text emitted when config-owned no-submit stop timeout fields overflow during checked addition."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''", "'''
+context = '''client_venues.join(", ")'''
+classification = "diagnostic_separator"
+reason = "This joins configured client venues for a fail-closed setup diagnostic; the venue values themselves come from TOML config."
+
+[[allowed]]
 path = "src/bolt_v3_market_families/mod.rs"
 kind = "string"
 literal = "\"strategy `{}`\""
@@ -1655,6 +1663,78 @@ literal = '''"{} reference_data.{role} instrument_id `{instrument_id}`"'''
 context = '''"{} reference_data.{role} instrument_id `{instrument_id}`",'''
 classification = "no_submit_readiness_diagnostic_template"
 reason = "This diagnostic identifies a configured strategy reference instrument missing from NT cache readiness evidence."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "number"
+literal = '''0usize'''
+context = '''let mut required_count = 0usize;'''
+classification = "no_submit_readiness_counter_initial_value"
+reason = "This initializes an internal count of configured reference-data requirements; the requirements themselves come from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "number"
+literal = '''1'''
+context = '''required_count += 1;'''
+classification = "no_submit_readiness_counter_increment"
+reason = "This increments the internal count for each configured reference-data requirement discovered from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "number"
+literal = '''1_000_000_000'''
+context = '''const NANOS_PER_SECOND: u64 = 1_000_000_000;'''
+classification = "time_unit_conversion"
+reason = "This converts config-owned seconds into nanoseconds for quote freshness comparison."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"; "'''
+context = '''Err(failures.join("; "))'''
+classification = "diagnostic_separator"
+reason = "This joins multiple no-submit reference-readiness diagnostics for display only."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"[live_canary].reference_quote_max_age_seconds overflows nanoseconds"'''
+context = '''"[live_canary].reference_quote_max_age_seconds overflows nanoseconds".to_string()'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This fail-closed diagnostic reports overflow while converting the TOML-owned quote freshness bound."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"live quote evidence for {label} has future ts_event_unix_nanos {} > observed_at_unix_nanos {observed_at_unix_nanos}"'''
+context = '''"live quote evidence for {label} has future ts_event_unix_nanos {} > observed_at_unix_nanos {observed_at_unix_nanos}",'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This fail-closed diagnostic reports quote evidence whose timestamp is later than the readiness observation time."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"live quote evidence for {label} is stale: age_nanos={age_nanos} > max_age_nanos={max_age_nanos} ([live_canary].reference_quote_max_age_seconds={max_age_seconds})"'''
+context = '''"live quote evidence for {label} is stale: age_nanos={age_nanos} > max_age_nanos={max_age_nanos} ([live_canary].reference_quote_max_age_seconds={max_age_seconds})"'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This fail-closed diagnostic reports quote evidence older than the TOML-owned quote freshness bound."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"no configured reference_data requirements found"'''
+context = '''failures.push("no configured reference_data requirements found".to_string());'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This fail-closed diagnostic reports that no configured strategy reference data exists to prove no-submit freshness."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"{} reference_data.{role} data_client_id `{data_client_id}` instrument_id `{instrument_id}`"'''
+context = '''"{} reference_data.{role} data_client_id `{data_client_id}` instrument_id `{instrument_id}`",'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This diagnostic identifies the configured strategy reference-data source whose live quote evidence is missing or stale."
 
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness_schema.rs"

@@ -350,6 +350,11 @@ pub fn validated_bolt_v3_live_canary_gate_report(
         max_notional_per_order: max_notional_per_order.to_string(),
         max_no_submit_readiness_report_bytes: 4096,
         readiness_report_max_age_seconds: 60,
+        reference_quote_max_age_seconds: 10,
+        reference_quote_wait_timeout_seconds: 10,
+        reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+        reference_quote_probe_log_events: true,
+        reference_quote_probe_log_commands: true,
         operator_evidence: Some(valid_live_canary_operator_evidence()),
     });
 

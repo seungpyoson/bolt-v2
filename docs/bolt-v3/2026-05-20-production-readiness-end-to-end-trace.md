@@ -106,18 +106,20 @@ Current source code contains the intended single bolt-v3 production path and loc
    - `NoSubmitReadiness` loads config, runs no-submit readiness, then writes the configured report.
 
 2. No-submit runner
-   - `src/bolt_v3_no_submit_readiness.rs:354-378`
+   - `src/bolt_v3_no_submit_readiness.rs:493-534`
    - Builds the live node, computes metadata, then runs readiness inside a dedicated Tokio runtime and `LocalSet`.
 
 3. Controlled connect/reference/disconnect stages
-   - `src/bolt_v3_no_submit_readiness.rs:244-281`
-   - `src/bolt_v3_no_submit_readiness.rs:291-331`
-   - `src/bolt_v3_no_submit_readiness.rs:334-352`
+   - `src/bolt_v3_no_submit_readiness.rs:275-311`
+   - `src/bolt_v3_no_submit_readiness.rs:413-508`
+   - `src/bolt_v3_live_node.rs:721-843`
    - Stage builder records operator approval, secret resolution, live-node build, controlled connect, reference readiness, controlled disconnect, report write, and top-level `generated_at_unix_seconds`.
-   - Current reference readiness is fail-closed when NT cache evidence only proves configured instrument IDs. Instrument-ID cache membership is not treated as live reference-data freshness.
+   - Reference readiness now requires configured quote evidence from the no-submit reference quote probe. Cache-only instrument-ID membership remains fail-closed and is not treated as live reference-data freshness.
+   - `[live_canary].reference_quote_max_age_seconds` bounds accepted quote age. `[live_canary].reference_quote_wait_timeout_seconds` bounds the probe wait before the runner stops. `[live_canary].reference_quote_probe_*` owns the NT `DataActorConfig` values.
 
 4. Gate consumption
-   - `src/bolt_v3_live_canary_gate.rs:588-690`
+   - `src/bolt_v3_live_canary_gate.rs:493-598`
+   - `src/bolt_v3_live_canary_gate.rs:1381`
    - Gate requires all readiness stages to be present and satisfied, the generated timestamp to be fresh under `[live_canary].readiness_report_max_age_seconds`, and the report linkage fields to match the current approval, executable identity, and config bundle checksum.
 
 Current hard-evidence requirements:

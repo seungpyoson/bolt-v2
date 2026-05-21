@@ -571,8 +571,9 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
     // approved NT runner entrypoint inside `run_bolt_v3_live_node`. The
     // runner call must remain behind the bolt-v3 live canary gate, and
     // this module must still never register a strategy actor, select a
-    // market, construct an order, submit one, or call any user-level
-    // market-data subscription API. The forbidden token list lives in
+    // market, construct an order, or submit one. The no-submit helper
+    // may use its dedicated quote-only reference probe; broader
+    // market-data subscription APIs stay forbidden. The forbidden token list lives in
     // this integration test (not in the module's own source) so the
     // assertion does not self-trip; production comments in
     // `bolt_v3_live_node.rs` must avoid these substrings on purpose.
@@ -580,37 +581,49 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
     // This is a best-effort source fence, not a compile-time proof. Adding another
     // gated NT runner call requires updating the invariant checked here.
     let source = include_str!("../src/bolt_v3_live_node.rs");
+    let live_run_body = source
+        .split("pub async fn run_bolt_v3_live_node")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub async fn controlled_no_submit_readiness")
+                .next()
+        })
+        .expect("run wrapper body must be present");
     let gate_index = source
         .find("check_bolt_v3_live_canary_gate(loaded)")
         .expect("run wrapper must call the live canary gate");
     let submit_admission_index = source
         .find(".arm(gate_report)")
         .expect("run wrapper must arm submit admission from the live canary gate report");
-    let run_index = source
-        .find("node.run()")
-        .expect("run wrapper must own the single NT runner call");
+    assert!(
+        live_run_body.contains("let run_future = node.run();"),
+        "run wrapper must own the production NT runner call"
+    );
+    let live_run_index = source
+        .find("let run_future = node.run();")
+        .expect("production run wrapper must contain the first NT runner call");
     let capture_index = source
         .find("wire_bolt_v3_runtime_capture(node, node_handle, loaded)")
         .expect("run wrapper must wire NT runtime capture from bolt-v3 persistence config");
     assert!(
-        gate_index < run_index,
+        gate_index < live_run_index,
         "live canary gate must execute before NT LiveNode::run"
     );
     assert!(
         gate_index < submit_admission_index
             && submit_admission_index < capture_index
-            && capture_index < run_index,
+            && capture_index < live_run_index,
         "submit admission must arm after the live canary gate and before NT runtime capture / LiveNode::run"
     );
     assert_eq!(
-        source.matches(".run(").count(),
-        1,
-        "bolt-v3 live node may only reference NT run through the gated wrapper"
+        source.matches("let run_future = node.run();").count(),
+        2,
+        "bolt-v3 live node may reference NT run only in the gated production wrapper and the strategy-free no-submit proof helper"
     );
     assert_eq!(
         source.matches("let start = node.start();").count(),
-        1,
-        "bolt-v3 live node may only reference NT start through the Phase 7 no-submit helper"
+        0,
+        "bolt-v3 live node must not use NT start for no-submit because it does not drain execution account events"
     );
 
     for forbidden in [

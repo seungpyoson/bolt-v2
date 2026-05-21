@@ -496,6 +496,46 @@ fn bolt_v3_reference_data_client_id_rejects_execution_only_client_with_client_vo
 }
 
 #[test]
+fn bolt_v3_reference_data_rejects_same_instrument_across_distinct_data_clients() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mutated_strategy = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace(
+        "[reference_data.primary]\ndata_client_id = \"binance_reference\"\ninstrument_id = \"BTCUSDT.BINANCE\"",
+        "[reference_data.primary]\ndata_client_id = \"binance_reference\"\ninstrument_id = \"BTCUSDT.BINANCE\"\n\n[reference_data.secondary]\ndata_client_id = \"polymarket_main\"\ninstrument_id = \"BTCUSDT.BINANCE\"",
+    );
+    let strategy: BoltV3StrategyConfig = toml::from_str(&mutated_strategy)
+        .expect("duplicate reference instrument strategy should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    let rendered = messages.join("\n");
+
+    assert!(
+        rendered.contains("reference_data.secondary.instrument_id `BTCUSDT.BINANCE`")
+            && rendered.contains("binance_reference")
+            && rendered.contains("polymarket_main")
+            && rendered.contains("QuoteTick does not carry data_client_id"),
+        "expected same-instrument/distinct-client rejection, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_runtime_mode_uses_nt_environment_enum() {
     // FINDING-1: `runtime.mode` is typed as `nautilus_common::enums::Environment`
     // (not a bolt shadow `RuntimeMode`). NT's `Environment` derives serde

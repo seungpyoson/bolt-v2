@@ -75,6 +75,7 @@ Preconditions:
 - submit admission consumes live canary report
 - production `Run` rejects before runner entry unless `[live_canary].operator_evidence` is present and the approval window is active
 - no-submit readiness report includes `generated_at_unix_seconds`; production gate rejects missing or expired reports using `[live_canary].readiness_report_max_age_seconds` at the late timestamp after report read and parse, so operators must leave report I/O headroom
+- no-submit `reference_readiness` requires fresh quote evidence for configured reference data under `[live_canary].reference_quote_max_age_seconds`; cache-only instrument IDs remain fail-closed; `[live_canary].reference_quote_wait_timeout_seconds` bounds the wait; `[live_canary].reference_quote_probe_*` owns the probe actor config
 - exact head bound by `[live_canary.operator_evidence].head_sha` matching the build-owned head; root TOML hash checked in the approval-consumption proof at `approval_consumption_path`; approval envelope content bound through `approval_envelope_path` and `approval_envelope_sha256`
 - redacted SSM manifest bound through `ssm_manifest_path` and `ssm_manifest_sha256`
 - strategy input evidence bound through `strategy_input_evidence_path` and `strategy_input_evidence_sha256`

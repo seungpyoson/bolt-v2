@@ -27,27 +27,43 @@
 //!   level is `INFO`
 //!
 //! The caller owns the `LiveNode`; the build path never opens an
-//! external network connection. The opt-in controlled-connect boundary
-//! may open adapter sockets. The sole approved NT runner entrypoint in
-//! this module is [`run_bolt_v3_live_node`], which first applies the
-//! bolt-v3 live canary gate. This module still never calls user-level
-//! market-data subscription APIs, registers a strategy actor, constructs
-//! an order, or enables any submit path.
+//! external network connection. Opt-in controlled-connect/no-submit
+//! readiness boundaries may open adapter sockets. The production
+//! trading runner entrypoint is [`run_bolt_v3_live_node`], which first
+//! applies the bolt-v3 live canary gate. The no-submit readiness path
+//! builds a strategy-free node before using NT's supported runner loop
+//! with handle-driven stop; its dedicated reference quote probe calls
+//! only NT quote subscribe/unsubscribe APIs for configured
+//! `[reference_data]` instruments. This module still never constructs an
+//! order or enables any submit path from its own boundary code.
 
-use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::{BTreeSet, HashMap},
+    rc::Rc,
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 
 use ahash::AHashMap;
 use anyhow::Result;
 use log::LevelFilter;
-use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
+use nautilus_common::{
+    actor::{DataActor, DataActorConfig, DataActorCore},
+    enums::Environment,
+    logging::logger::LoggerConfig,
+    nautilus_actor,
+};
 use nautilus_live::{
     builder::LiveNodeBuilder,
     config::LiveNodeConfig,
     node::{LiveNode, LiveNodeHandle, NodeState},
 };
 use nautilus_model::{
+    data::QuoteTick,
     enums::BarIntervalType,
-    identifiers::{ClientId, StrategyId},
+    identifiers::{ActorId, ClientId, InstrumentId, StrategyId},
 };
 use ustr::Ustr;
 use zeroize::Zeroizing;
@@ -86,6 +102,142 @@ pub struct BoltV3LiveNodeRuntime {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3NoSubmitReferenceCacheEvidence {
     cached_instrument_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3NoSubmitReferenceQuote {
+    pub data_client_id: String,
+    pub instrument_id: String,
+    pub ts_event_unix_nanos: u64,
+    pub ts_init_unix_nanos: u64,
+    pub captured_at_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3NoSubmitReferenceQuoteEvidence {
+    pub quotes: Vec<BoltV3NoSubmitReferenceQuote>,
+}
+
+impl BoltV3NoSubmitReferenceQuoteEvidence {
+    pub fn observed_at_unix_nanos(&self) -> Option<u64> {
+        self.quotes
+            .iter()
+            .map(|quote| quote.captured_at_unix_nanos)
+            .max()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NoSubmitReferenceQuoteSubscription {
+    data_client_id: ClientId,
+    instrument_id: InstrumentId,
+}
+
+#[derive(Debug, Clone)]
+struct BoltV3NoSubmitReferenceQuoteProbeHandle {
+    required: Vec<NoSubmitReferenceQuoteSubscription>,
+    quotes: Rc<RefCell<Vec<BoltV3NoSubmitReferenceQuote>>>,
+}
+
+impl BoltV3NoSubmitReferenceQuoteProbeHandle {
+    fn new(loaded: &LoadedBoltV3Config) -> Self {
+        Self {
+            required: no_submit_reference_quote_subscriptions(loaded),
+            quotes: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn has_all_required_quotes(&self) -> bool {
+        let quotes = self.quotes.borrow();
+        self.required.iter().all(|required| {
+            quotes.iter().any(|quote| {
+                quote.data_client_id == required.data_client_id.to_string()
+                    && quote.instrument_id == required.instrument_id.to_string()
+            })
+        })
+    }
+
+    fn evidence(&self) -> BoltV3NoSubmitReferenceQuoteEvidence {
+        BoltV3NoSubmitReferenceQuoteEvidence {
+            quotes: self.quotes.borrow().clone(),
+        }
+    }
+
+    fn record_quote(&self, quote: &QuoteTick, captured_at_unix_nanos: u64) {
+        let mut quotes = self.quotes.borrow_mut();
+        for required in &self.required {
+            if quote.instrument_id == required.instrument_id {
+                quotes.push(BoltV3NoSubmitReferenceQuote {
+                    data_client_id: required.data_client_id.to_string(),
+                    instrument_id: required.instrument_id.to_string(),
+                    ts_event_unix_nanos: quote.ts_event.as_u64(),
+                    ts_init_unix_nanos: quote.ts_init.as_u64(),
+                    captured_at_unix_nanos,
+                });
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct BoltV3NoSubmitReferenceQuoteProbe {
+    core: DataActorCore,
+    handle: BoltV3NoSubmitReferenceQuoteProbeHandle,
+}
+
+nautilus_actor!(BoltV3NoSubmitReferenceQuoteProbe);
+
+impl BoltV3NoSubmitReferenceQuoteProbe {
+    fn new(handle: BoltV3NoSubmitReferenceQuoteProbeHandle, config: DataActorConfig) -> Self {
+        Self {
+            core: DataActorCore::new(config),
+            handle,
+        }
+    }
+}
+
+impl DataActor for BoltV3NoSubmitReferenceQuoteProbe {
+    fn on_start(&mut self) -> anyhow::Result<()> {
+        for required in self.handle.required.clone() {
+            self.subscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+        }
+        Ok(())
+    }
+
+    fn on_stop(&mut self) -> anyhow::Result<()> {
+        for required in self.handle.required.clone() {
+            self.unsubscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+        }
+        Ok(())
+    }
+
+    fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
+        self.handle
+            .record_quote(quote, self.timestamp_ns().as_u64());
+        Ok(())
+    }
+}
+
+fn no_submit_reference_quote_subscriptions(
+    loaded: &LoadedBoltV3Config,
+) -> Vec<NoSubmitReferenceQuoteSubscription> {
+    let mut seen = BTreeSet::new();
+    let mut subscriptions = Vec::new();
+    for strategy in &loaded.strategies {
+        for reference in strategy.config.reference_data.values() {
+            let key = (
+                reference.data_client_id.to_string(),
+                reference.instrument_id.to_string(),
+            );
+            if seen.insert(key) {
+                subscriptions.push(NoSubmitReferenceQuoteSubscription {
+                    data_client_id: reference.data_client_id,
+                    instrument_id: reference.instrument_id,
+                });
+            }
+        }
+    }
+    subscriptions
 }
 
 impl BoltV3NoSubmitReferenceCacheEvidence {
@@ -295,6 +447,11 @@ pub enum BoltV3LiveNodeError {
         timeout_secs: u64,
     },
     NoSubmitStartTimeoutOverflow,
+    NoSubmitStartIncomplete,
+    NoSubmitExecutionAccountsMissing {
+        client_venues: Vec<String>,
+    },
+    NoSubmitReferenceProbeSetup(anyhow::Error),
     NoSubmitStartFailed(anyhow::Error),
     NoSubmitStopTimeout {
         timeout_secs: u64,
@@ -385,6 +542,21 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 "bolt-v3 no-submit controlled-start timeout sum overflowed \
                  config-owned nautilus timeout fields"
             ),
+            BoltV3LiveNodeError::NoSubmitStartIncomplete => write!(
+                f,
+                "bolt-v3 no-submit controlled-run exited before NT reached Running \
+                 with required startup evidence"
+            ),
+            BoltV3LiveNodeError::NoSubmitExecutionAccountsMissing { client_venues } => write!(
+                f,
+                "bolt-v3 no-submit controlled-run reached NT Running but required execution \
+                 account evidence was absent from NT cache for: {}",
+                client_venues.join(", ")
+            ),
+            BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(error) => write!(
+                f,
+                "bolt-v3 no-submit reference quote probe setup failed: {error}"
+            ),
             BoltV3LiveNodeError::NoSubmitStartFailed(error) => {
                 write!(f, "bolt-v3 no-submit controlled-start failed: {error}")
             }
@@ -429,9 +601,12 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::DisconnectTimeout { .. }
             | BoltV3LiveNodeError::NoSubmitStartTimeout { .. }
             | BoltV3LiveNodeError::NoSubmitStartTimeoutOverflow
+            | BoltV3LiveNodeError::NoSubmitStartIncomplete
+            | BoltV3LiveNodeError::NoSubmitExecutionAccountsMissing { .. }
             | BoltV3LiveNodeError::NoSubmitStopTimeout { .. }
             | BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow => None,
             BoltV3LiveNodeError::DisconnectFailed(error)
+            | BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(error)
             | BoltV3LiveNodeError::NoSubmitStartFailed(error)
             | BoltV3LiveNodeError::NoSubmitStopFailed(error) => Some(error.as_ref()),
         }
@@ -457,6 +632,19 @@ pub fn build_bolt_v3_live_node(
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
     let (runtime, _summary) = build_live_node_with_clients(loaded, &resolved, adapters)?;
     Ok(runtime)
+}
+
+pub fn build_bolt_v3_no_submit_live_node(
+    loaded: &LoadedBoltV3Config,
+) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
+    let no_submit_loaded = no_submit_transport_loaded_config(loaded);
+    build_bolt_v3_live_node(&no_submit_loaded)
+}
+
+fn no_submit_transport_loaded_config(loaded: &LoadedBoltV3Config) -> LoadedBoltV3Config {
+    let mut no_submit_loaded = loaded.clone();
+    no_submit_loaded.strategies.clear();
+    no_submit_loaded
 }
 
 /// Single bolt-v3 entrypoint for entering NT's runner loop.
@@ -514,67 +702,236 @@ pub async fn controlled_no_submit_readiness<F>(
     Result<(), BoltV3LiveNodeError>,
 )
 where
-    F: FnMut(&BoltV3LiveNodeRuntime) -> Result<(), String>,
+    F: FnMut(&BoltV3LiveNodeRuntime, &BoltV3NoSubmitReferenceQuoteEvidence) -> Result<(), String>,
 {
-    let start = start_bolt_v3_no_submit_readiness(&mut runtime.node, loaded).await;
-    let reference = if start.is_ok() {
-        bounded_no_submit_reference_readiness(runtime, loaded, &mut reference_readiness).await
-    } else {
-        Err("controlled start failed".to_string())
+    let (run, reference_quote_evidence, reference_quote_probe, stop) =
+        run_bolt_v3_no_submit_readiness_until_observed(&mut runtime.node, loaded).await;
+    let connect = match run {
+        Ok(()) => no_submit_required_execution_accounts_registered(runtime, loaded),
+        Err(error) => Err(error),
     };
-    let stop = stop_bolt_v3_no_submit_readiness(&mut runtime.node, loaded).await;
-    (start, reference, stop)
+    let reference = if connect.is_ok() {
+        reference_quote_probe.and_then(|()| reference_readiness(runtime, &reference_quote_evidence))
+    } else {
+        Err("controlled connect failed".to_string())
+    };
+    (connect, reference, stop)
 }
 
-async fn bounded_no_submit_reference_readiness<F>(
-    runtime: &BoltV3LiveNodeRuntime,
+async fn run_bolt_v3_no_submit_readiness_until_observed(
+    node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
-    reference_readiness: &mut F,
-) -> Result<(), String>
-where
-    F: FnMut(&BoltV3LiveNodeRuntime) -> Result<(), String>,
-{
-    let first_error = match reference_readiness(runtime) {
-        Ok(()) => return Ok(()),
-        Err(error) => error,
-    };
-    let timeout_secs = loaded.root.nautilus.timeout_connection_secs;
-    if timeout_secs == 0 {
-        return Err(first_error);
-    }
-    tokio::time::sleep(Duration::from_secs(timeout_secs)).await;
-    reference_readiness(runtime).map_err(|final_error| {
-        if final_error == first_error {
-            final_error
-        } else {
-            format!("{final_error}; initial reference-readiness error: {first_error}")
+) -> (
+    Result<(), BoltV3LiveNodeError>,
+    BoltV3NoSubmitReferenceQuoteEvidence,
+    Result<(), String>,
+    Result<(), BoltV3LiveNodeError>,
+) {
+    let reference_quote_probe = match install_no_submit_reference_quote_probe(node, loaded) {
+        Ok(probe) => probe,
+        Err(error) => {
+            return (
+                Err(error),
+                BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+                Err("reference quote probe setup failed".to_string()),
+                Err(BoltV3LiveNodeError::NoSubmitStopFailed(anyhow::anyhow!(
+                    "no-submit runner was not started because reference quote probe setup failed"
+                ))),
+            );
         }
+    };
+    let timeout_secs = match no_submit_start_timeout_secs(loaded) {
+        Ok(timeout_secs) => timeout_secs,
+        Err(error) => {
+            return (
+                Err(error),
+                reference_quote_probe.evidence(),
+                Err(
+                    "reference quote probe was not observed because start timeout overflowed"
+                        .to_string(),
+                ),
+                Err(BoltV3LiveNodeError::NoSubmitStopFailed(anyhow::anyhow!(
+                    "no-submit runner was not started because the configured start timeout overflowed"
+                ))),
+            );
+        }
+    };
+    let stop_timeout_secs = match no_submit_stop_timeout_secs(loaded) {
+        Ok(timeout_secs) => timeout_secs,
+        Err(_) => {
+            return (
+                Err(BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow),
+                reference_quote_probe.evidence(),
+                Err(
+                    "reference quote probe was not observed because stop timeout overflowed"
+                        .to_string(),
+                ),
+                Err(BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow),
+            );
+        }
+    };
+    let node_handle = node.handle();
+    let run_future = node.run();
+    tokio::pin!(run_future);
+
+    let connect = tokio::select! {
+        result = &mut run_future => {
+            let connect = match result {
+                Ok(()) => Err(BoltV3LiveNodeError::NoSubmitStartIncomplete),
+                Err(error) => Err(BoltV3LiveNodeError::NoSubmitStartFailed(error)),
+            };
+            return (
+                connect,
+                reference_quote_probe.evidence(),
+                Err("reference quote probe was not observed before runner exit".to_string()),
+                Ok(()),
+            );
+        }
+        result = tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            await_no_submit_running(&node_handle),
+        ) => {
+            match result {
+                Ok(()) => Ok(()),
+                Err(_) => {
+                    return (
+                        Err(BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_secs }),
+                        reference_quote_probe.evidence(),
+                        Err("reference quote probe was not observed because no-submit runner did not reach Running".to_string()),
+                        Err(BoltV3LiveNodeError::NoSubmitStopFailed(anyhow::anyhow!(
+                            "no-submit runner did not reach Running before the configured start timeout; NT does not observe stop signals during startup"
+                        ))),
+                    );
+                }
+            }
+        }
+    };
+
+    let reference_probe = tokio::select! {
+        result = &mut run_future => {
+            let stop = match result {
+                Ok(()) => Ok(()),
+                Err(error) => Err(BoltV3LiveNodeError::NoSubmitStopFailed(error)),
+            };
+            return (
+                connect,
+                reference_quote_probe.evidence(),
+                Err("reference quote probe was not observed before runner exit".to_string()),
+                stop,
+            );
+        }
+        result = await_no_submit_reference_quote_probe(&reference_quote_probe, loaded) => result,
+    };
+    let reference_quote_evidence = reference_quote_probe.evidence();
+    node_handle.stop();
+    let stop =
+        match tokio::time::timeout(Duration::from_secs(stop_timeout_secs), &mut run_future).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(BoltV3LiveNodeError::NoSubmitStopFailed(error)),
+            Err(_) => Err(BoltV3LiveNodeError::NoSubmitStopTimeout {
+                timeout_secs: stop_timeout_secs,
+            }),
+        };
+    (connect, reference_quote_evidence, reference_probe, stop)
+}
+
+fn install_no_submit_reference_quote_probe(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+) -> Result<BoltV3NoSubmitReferenceQuoteProbeHandle, BoltV3LiveNodeError> {
+    let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::new(loaded);
+    let config = no_submit_reference_quote_probe_config(loaded)?;
+    node.add_actor(BoltV3NoSubmitReferenceQuoteProbe::new(
+        handle.clone(),
+        config,
+    ))
+    .map_err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup)?;
+    Ok(handle)
+}
+
+fn no_submit_reference_quote_probe_config(
+    loaded: &LoadedBoltV3Config,
+) -> Result<DataActorConfig, BoltV3LiveNodeError> {
+    let live_canary = loaded.root.live_canary.as_ref().ok_or_else(|| {
+        BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+            "bolt-v3 no-submit reference quote probe requires [live_canary]"
+        ))
+    })?;
+    let actor_id_value = live_canary.reference_quote_probe_actor_id.as_str();
+    if actor_id_value.trim().is_empty() || actor_id_value.trim() != actor_id_value {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "[live_canary].reference_quote_probe_actor_id must be non-empty without surrounding whitespace"
+            ),
+        ));
+    }
+    let actor_id = ActorId::new_checked(actor_id_value).map_err(|error| {
+        BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+            "[live_canary].reference_quote_probe_actor_id is invalid: {error}"
+        ))
+    })?;
+
+    Ok(DataActorConfig {
+        actor_id: Some(actor_id),
+        log_events: live_canary.reference_quote_probe_log_events,
+        log_commands: live_canary.reference_quote_probe_log_commands,
     })
 }
 
-async fn start_bolt_v3_no_submit_readiness(
-    node: &mut LiveNode,
+async fn await_no_submit_reference_quote_probe(
+    probe: &BoltV3NoSubmitReferenceQuoteProbeHandle,
     loaded: &LoadedBoltV3Config,
-) -> Result<(), BoltV3LiveNodeError> {
-    let timeout_secs = no_submit_start_timeout_secs(loaded)?;
-    let start = node.start();
-    match tokio::time::timeout(Duration::from_secs(timeout_secs), start).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(BoltV3LiveNodeError::NoSubmitStartFailed(error)),
-        Err(_) => Err(BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_secs }),
+) -> Result<(), String> {
+    let timeout_secs = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or_else(|| "reference quote probe wait requires `[live_canary]`".to_string())?
+        .reference_quote_wait_timeout_seconds;
+    if timeout_secs == 0 {
+        return Err(
+            "[live_canary].reference_quote_wait_timeout_seconds must be a positive integer"
+                .to_string(),
+        );
+    }
+    tokio::time::timeout(Duration::from_secs(timeout_secs), async {
+        while !probe.has_all_required_quotes() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "reference quote probe did not observe all configured reference_data quotes within [live_canary].reference_quote_wait_timeout_seconds={timeout_secs}"
+        )
+    })
+}
+
+async fn await_no_submit_running(node_handle: &LiveNodeHandle) {
+    while node_handle.state() != NodeState::Running {
+        tokio::task::yield_now().await;
     }
 }
 
-async fn stop_bolt_v3_no_submit_readiness(
-    node: &mut LiveNode,
+fn no_submit_required_execution_accounts_registered(
+    runtime: &BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let timeout_secs = no_submit_stop_timeout_secs(loaded)?;
-    let stop = node.stop();
-    match tokio::time::timeout(Duration::from_secs(timeout_secs), stop).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(BoltV3LiveNodeError::NoSubmitStopFailed(error)),
-        Err(_) => Err(BoltV3LiveNodeError::NoSubmitStopTimeout { timeout_secs }),
+    let cache = runtime.node.kernel().cache();
+    let cache = cache.borrow();
+    let client_venues = loaded
+        .root
+        .clients
+        .iter()
+        .filter(|(_, client)| client.execution.is_some())
+        .filter(|(_, client)| cache.account_for_venue(&client.venue).is_none())
+        .map(|(client_key, client)| format!("clients.{client_key} ({})", client.venue))
+        .collect::<Vec<_>>();
+
+    if client_venues.is_empty() {
+        Ok(())
+    } else {
+        Err(BoltV3LiveNodeError::NoSubmitExecutionAccountsMissing { client_venues })
     }
 }
 
@@ -1064,6 +1421,38 @@ mod tests {
 
         assert_zeroize_on_drop::<Vec<Zeroizing<String>>>();
         let _ = redaction_values_field as fn(&BoltV3LiveNodeRuntime) -> &Vec<Zeroizing<String>>;
+    }
+
+    #[test]
+    fn no_submit_transport_config_preserves_identity_but_removes_strategy_instances() {
+        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        assert!(
+            !loaded.strategies.is_empty(),
+            "fixture must include strategy config to prove no-submit transport strips it"
+        );
+
+        let no_submit_loaded = no_submit_transport_loaded_config(&loaded);
+
+        assert!(
+            no_submit_loaded.strategies.is_empty(),
+            "no-submit transport runtime must not register strategy actors"
+        );
+        assert_eq!(no_submit_loaded.root_path, loaded.root_path);
+        assert_eq!(
+            no_submit_loaded.config_bundle_checksum,
+            loaded.config_bundle_checksum
+        );
+        assert_eq!(
+            no_submit_loaded.root.strategy_files,
+            loaded.root.strategy_files
+        );
+        assert!(
+            !loaded.strategies.is_empty(),
+            "helper must not mutate the caller's loaded config"
+        );
     }
 
     #[test]

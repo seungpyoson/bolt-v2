@@ -191,6 +191,11 @@ approval_id = "operator-approved-canary-001"
 no_submit_readiness_report_path = "reports/no-submit-readiness.json"
 max_no_submit_readiness_report_bytes = 65536
 readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 10
+reference_quote_wait_timeout_seconds = 20
+reference_quote_probe_actor_id = "no-submit-reference-quote-probe"
+reference_quote_probe_log_events = true
+reference_quote_probe_log_commands = true
 max_live_order_count = 1
 max_notional_per_order = "1.00"
 
@@ -672,6 +677,39 @@ This section is optional for parse/build-only checks and required before `run_bo
 - maximum accepted age for the referenced no-submit readiness report at late gate evaluation time, after report read and parse
 - reports older than this bound reject before live canary admission can arm
 - operators must leave headroom for report I/O and parse latency; effective headroom is lower than the raw cap by that latency
+
+#### `reference_quote_max_age_seconds`
+
+- type: positive integer
+- required: yes when `[live_canary]` is present
+- maximum accepted age for each configured no-submit reference quote at readiness evaluation time
+- cache-only instrument-ID membership is not accepted as freshness evidence
+
+#### `reference_quote_wait_timeout_seconds`
+
+- type: positive integer
+- required: yes when `[live_canary]` is present
+- maximum time the no-submit readiness runner waits for quote evidence from configured reference-data subscriptions before it stops the runner and fails closed
+- this timeout does not authorize order submission, cancellation, or broader market-data subscriptions
+
+#### `reference_quote_probe_actor_id`
+
+- type: non-empty ASCII actor identifier string without surrounding whitespace
+- required: yes when `[live_canary]` is present
+- NT `DataActorConfig.actor_id` used by the no-submit reference quote probe
+- this is an operator-visible runtime identifier and must be TOML-owned
+
+#### `reference_quote_probe_log_events`
+
+- type: boolean
+- required: yes when `[live_canary]` is present
+- NT `DataActorConfig.log_events` value used by the no-submit reference quote probe
+
+#### `reference_quote_probe_log_commands`
+
+- type: boolean
+- required: yes when `[live_canary]` is present
+- NT `DataActorConfig.log_commands` value used by the no-submit reference quote probe
 
 #### `max_live_order_count`
 
@@ -1334,6 +1372,7 @@ If present:
 
 - each block references a root client that includes `[data]`
 - each block declares the exact NautilusTrader `instrument_id` the strategy subscribes to
+- the same `instrument_id` must not be declared under more than one `data_client_id`, because NautilusTrader `QuoteTick` carries the instrument but not the producing data-client identifier and no-submit quote evidence must remain source-disambiguated
 - for the current `binary_oracle_edge_taker`, the required role name is `primary`
 
 Fields:
@@ -1653,6 +1692,11 @@ approval_id = "operator-approved-canary-001"
 no_submit_readiness_report_path = "reports/no-submit-readiness.json"
 max_no_submit_readiness_report_bytes = 65536
 readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 10
+reference_quote_wait_timeout_seconds = 20
+reference_quote_probe_actor_id = "no-submit-reference-quote-probe"
+reference_quote_probe_log_events = true
+reference_quote_probe_log_commands = true
 max_live_order_count = 1
 max_notional_per_order = "1.00"
 

@@ -3,11 +3,12 @@ mod support;
 use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_canary_gate::check_bolt_v3_live_canary_gate,
+    bolt_v3_live_node::{BoltV3NoSubmitReferenceQuote, BoltV3NoSubmitReferenceQuoteEvidence},
     bolt_v3_no_submit_readiness::{
         BoltV3NoSubmitReadinessError, BoltV3NoSubmitReadinessReport,
         BoltV3NoSubmitReadinessReportMetadata, BoltV3NoSubmitReadinessStatus,
-        reference_readiness_from_cached_instrument_ids, run_bolt_v3_no_submit_readiness,
-        run_bolt_v3_no_submit_readiness_from_stage_results,
+        reference_readiness_from_cached_instrument_ids, reference_readiness_from_quote_evidence,
+        run_bolt_v3_no_submit_readiness, run_bolt_v3_no_submit_readiness_from_stage_results,
         run_bolt_v3_no_submit_readiness_from_stage_results_at,
         run_bolt_v3_no_submit_readiness_on_runtime,
     },
@@ -20,6 +21,7 @@ use bolt_v2::{
 use sha2::{Digest, Sha256};
 
 const TEST_READINESS_REPORT_MAX_AGE_SECONDS: u64 = 60;
+const TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS: u64 = 5;
 
 #[tokio::test(flavor = "current_thread")]
 async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
@@ -36,6 +38,11 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         },
     );
@@ -478,6 +485,82 @@ fn no_submit_readiness_fails_closed_when_only_required_reference_instruments_are
 }
 
 #[test]
+fn no_submit_readiness_accepts_fresh_quote_evidence_for_all_configured_references() {
+    let loaded = loaded_with_test_live_canary();
+    let max_age_seconds = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should carry live canary config")
+        .reference_quote_max_age_seconds;
+    assert_eq!(
+        max_age_seconds, TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+        "fixture must make the reference quote freshness threshold TOML/config owned"
+    );
+    let observed_at_unix_nanos = 1_800_000_000_000_000_000_u64;
+    let fresh_event_unix_nanos = observed_at_unix_nanos - (max_age_seconds * 1_000_000_000_u64 / 2);
+    let quotes = loaded
+        .strategies
+        .iter()
+        .flat_map(|strategy| strategy.config.reference_data.values())
+        .map(|reference| BoltV3NoSubmitReferenceQuote {
+            data_client_id: reference.data_client_id.to_string(),
+            instrument_id: reference.instrument_id.to_string(),
+            ts_event_unix_nanos: fresh_event_unix_nanos,
+            ts_init_unix_nanos: observed_at_unix_nanos,
+            captured_at_unix_nanos: observed_at_unix_nanos,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !quotes.is_empty(),
+        "fixture must carry configured reference_data requirements"
+    );
+    let evidence = BoltV3NoSubmitReferenceQuoteEvidence { quotes };
+
+    reference_readiness_from_quote_evidence(&loaded, &evidence, observed_at_unix_nanos)
+        .expect("fresh NT-owned quote ticks should satisfy reference readiness");
+}
+
+#[test]
+fn no_submit_readiness_rejects_stale_quote_evidence_for_configured_references() {
+    let loaded = loaded_with_test_live_canary();
+    let max_age_seconds = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should carry live canary config")
+        .reference_quote_max_age_seconds;
+    let observed_at_unix_nanos = 1_800_000_000_000_000_000_u64;
+    let stale_event_unix_nanos =
+        observed_at_unix_nanos - ((max_age_seconds + 1) * 1_000_000_000_u64);
+    let quotes = loaded
+        .strategies
+        .iter()
+        .flat_map(|strategy| strategy.config.reference_data.values())
+        .map(|reference| BoltV3NoSubmitReferenceQuote {
+            data_client_id: reference.data_client_id.to_string(),
+            instrument_id: reference.instrument_id.to_string(),
+            ts_event_unix_nanos: stale_event_unix_nanos,
+            ts_init_unix_nanos: observed_at_unix_nanos,
+            captured_at_unix_nanos: observed_at_unix_nanos,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !quotes.is_empty(),
+        "fixture must carry configured reference_data requirements"
+    );
+    let evidence = BoltV3NoSubmitReferenceQuoteEvidence { quotes };
+
+    let error = reference_readiness_from_quote_evidence(&loaded, &evidence, observed_at_unix_nanos)
+        .expect_err("stale quote evidence must fail reference readiness");
+
+    assert!(
+        error.contains("is stale") && error.contains("reference_quote_max_age_seconds"),
+        "stale rejection should name quote freshness config, got: {error}"
+    );
+}
+
+#[test]
 fn no_submit_readiness_writer_enforces_configured_byte_cap() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("readiness").join("report.json");
@@ -522,6 +605,11 @@ fn no_submit_readiness_rejects_empty_configured_operator_approval_before_build()
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         },
     );
@@ -589,6 +677,195 @@ fn no_submit_readiness_runtime_source_does_not_treat_connect_as_reference_readin
 }
 
 #[test]
+fn no_submit_readiness_live_node_source_uses_strategy_free_run_stop_boundary() {
+    let source = support::repo_text("src/bolt_v3_live_node.rs");
+    let no_submit_body = source
+        .split("pub async fn controlled_no_submit_readiness")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("async fn run_bolt_v3_no_submit_readiness_until_observed")
+                .next()
+        })
+        .expect("controlled_no_submit_readiness body should be present");
+
+    assert!(
+        no_submit_body.contains(
+            "run_bolt_v3_no_submit_readiness_until_observed(&mut runtime.node, loaded).await"
+        ),
+        "no-submit controlled_connect must use NT's runner loop so execution account events are drained before readiness is judged"
+    );
+    assert!(
+        no_submit_body
+            .contains("no_submit_required_execution_accounts_registered(runtime, loaded)"),
+        "no-submit controlled_connect must prove execution account evidence from NT cache, not only lifecycle state"
+    );
+    assert!(
+        !no_submit_body.contains("connect_bolt_v3_clients(&mut runtime.node, loaded).await"),
+        "no-submit readiness must not use direct kernel connect; pinned NT does not expose the private runner flush it needs"
+    );
+    assert!(
+        !no_submit_body.contains("disconnect_bolt_v3_clients(&mut runtime.node, loaded).await"),
+        "no-submit readiness must not use direct kernel disconnect as its lifecycle counterpart"
+    );
+
+    let run_helper_body = source
+        .split("async fn run_bolt_v3_no_submit_readiness_until_observed")
+        .nth(1)
+        .and_then(|tail| tail.split("async fn await_no_submit_running").next())
+        .expect("no-submit run helper should be present");
+    assert!(
+        run_helper_body.contains("let node_handle = node.handle();"),
+        "no-submit run helper must clone LiveNodeHandle before node.run mutably borrows the node"
+    );
+    assert!(
+        run_helper_body.contains("let run_future = node.run();"),
+        "no-submit run helper must enter NT's supported runner loop"
+    );
+    assert!(
+        run_helper_body.contains("tokio::pin!(run_future);"),
+        "no-submit run helper must pin the runner future for bounded startup/stop select"
+    );
+    assert!(
+        run_helper_body.contains("node_handle.stop();"),
+        "no-submit run helper must stop through LiveNodeHandle after readiness observation"
+    );
+    assert!(
+        !run_helper_body.contains("let start = node.start();"),
+        "no-submit run helper must not use LiveNode::start because it does not drain execution account events"
+    );
+}
+
+#[test]
+fn no_submit_readiness_run_helper_waits_for_reference_quote_probe_before_stop() {
+    let source = support::repo_text("src/bolt_v3_live_node.rs");
+    let run_helper_body = source
+        .split("async fn run_bolt_v3_no_submit_readiness_until_observed")
+        .nth(1)
+        .and_then(|tail| tail.split("async fn await_no_submit_running").next())
+        .expect("no-submit run helper should be present");
+    let reference_probe_pos = run_helper_body
+        .find("await_no_submit_reference_quote_probe")
+        .expect("no-submit run helper must wait for reference quote probe completion or timeout before stopping");
+    let stop_pos = run_helper_body
+        .find("node_handle.stop();")
+        .expect("no-submit run helper must stop through LiveNodeHandle");
+
+    assert!(
+        reference_probe_pos < stop_pos,
+        "reference quote evidence must be observed while NT runner remains alive"
+    );
+    assert!(
+        run_helper_body.contains("reference_quote_wait_timeout_seconds"),
+        "reference quote probe wait timeout must be TOML/config owned"
+    );
+}
+
+#[test]
+fn no_submit_readiness_run_helper_polls_runner_while_waiting_for_reference_quotes() {
+    let source = support::repo_text("src/bolt_v3_live_node.rs");
+    let run_helper_body = source
+        .split("async fn run_bolt_v3_no_submit_readiness_until_observed")
+        .nth(1)
+        .and_then(|tail| tail.split("async fn await_no_submit_running").next())
+        .expect("no-submit run helper should be present");
+    let after_running = run_helper_body
+        .split("let connect = tokio::select!")
+        .nth(1)
+        .and_then(|tail| tail.split("let reference_quote_evidence").next())
+        .expect("no-submit run helper should keep a post-running observation phase");
+
+    assert!(
+        after_running.contains("tokio::select!"),
+        "reference quote observation must race against NT runner completion"
+    );
+    assert!(
+        after_running.contains("result = &mut run_future"),
+        "NT LiveNode::run future must stay polled while waiting for reference quote evidence"
+    );
+    assert!(
+        after_running.contains("await_no_submit_reference_quote_probe"),
+        "reference quote observation must remain bounded by the TOML-owned probe wait"
+    );
+}
+
+#[test]
+fn no_submit_reference_quote_probe_source_is_subscription_only() {
+    let source = support::repo_text("src/bolt_v3_live_node.rs");
+    let probe_source = source
+        .split("struct BoltV3NoSubmitReferenceQuoteProbe {")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("impl BoltV3NoSubmitReferenceCacheEvidence")
+                .next()
+        })
+        .expect("reference quote probe source should be present");
+
+    assert!(
+        probe_source.contains("subscribe_quotes"),
+        "reference probe must use NT quote subscription API"
+    );
+    assert!(
+        probe_source.contains("unsubscribe_quotes"),
+        "reference probe must unsubscribe its quote subscriptions on stop"
+    );
+    for forbidden in [
+        "submit_order",
+        "submit_order_list",
+        "cancel_order",
+        "cancel_all_orders",
+        "replace_order",
+        "amend_order",
+        "OrderFactory",
+        "run_bolt_v3_live_node",
+    ] {
+        assert!(
+            !probe_source.contains(forbidden),
+            "reference quote probe must not contain trade token `{forbidden}`"
+        );
+    }
+    for forbidden_subscription in [
+        "subscribe_instrument(",
+        "subscribe_trades(",
+        "subscribe_bars(",
+        "subscribe_book",
+    ] {
+        assert!(
+            !probe_source.contains(forbidden_subscription),
+            "reference quote probe must stay narrowed to quote subscriptions, not `{forbidden_subscription}`"
+        );
+    }
+}
+
+#[test]
+fn no_submit_reference_quote_probe_actor_config_is_toml_owned() {
+    let source = support::repo_text("src/bolt_v3_live_node.rs");
+    let probe_source = source
+        .split("struct BoltV3NoSubmitReferenceQuoteProbe {")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("async fn await_no_submit_reference_quote_probe")
+                .next()
+        })
+        .expect("reference quote probe source should be present");
+
+    assert!(
+        !probe_source.contains("DataActorConfig::default"),
+        "reference quote probe must not inherit NT DataActorConfig defaults"
+    );
+    for required in [
+        "reference_quote_probe_actor_id",
+        "reference_quote_probe_log_events",
+        "reference_quote_probe_log_commands",
+        "ActorId::new_checked",
+    ] {
+        assert!(
+            probe_source.contains(required),
+            "reference quote probe actor config must use TOML-owned field {required}"
+        );
+    }
+}
+
+#[test]
 fn no_submit_readiness_runtime_uses_resolved_secret_redaction_values() {
     let source = support::repo_text("src/bolt_v3_no_submit_readiness.rs");
 
@@ -633,8 +910,8 @@ fn no_submit_readiness_sync_runner_uses_localset_after_build() {
         "sync no-submit runner must enter the readiness future through LocalSet::run_until"
     );
     let build_pos = source
-        .find("build_bolt_v3_live_node(loaded)")
-        .expect("sync runner must build the live node");
+        .find("build_bolt_v3_no_submit_live_node(loaded)")
+        .expect("sync runner must build a strategy-free no-submit live node");
     let runner_source = source
         .split("pub fn run_bolt_v3_no_submit_readiness(")
         .nth(1)
@@ -643,8 +920,8 @@ fn no_submit_readiness_sync_runner_uses_localset_after_build() {
         .find("configured_operator_approval_hash(loaded)?")
         .expect("sync runner must validate configured operator approval");
     let runner_build_pos = runner_source
-        .find("build_bolt_v3_live_node(loaded)")
-        .expect("sync runner must build the live node");
+        .find("build_bolt_v3_no_submit_live_node(loaded)")
+        .expect("sync runner must build a strategy-free no-submit live node");
     assert!(
         approval_check_pos < runner_build_pos,
         "configured operator approval must be validated before live-node build"
@@ -730,6 +1007,11 @@ fn loaded_with_test_live_canary() -> LoadedBoltV3Config {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         },
     )
@@ -753,6 +1035,11 @@ async fn loaded_with_temp_live_canary() -> (
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         },
     );

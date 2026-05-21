@@ -93,6 +93,11 @@ approval_id = "operator-approved-canary-001"
 no_submit_readiness_report_path = "/var/lib/bolt/reports/no-submit-readiness.json"
 max_no_submit_readiness_report_bytes = 65536
 readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 10
+reference_quote_wait_timeout_seconds = 20
+reference_quote_probe_actor_id = "no-submit-reference-quote-probe"
+reference_quote_probe_log_events = true
+reference_quote_probe_log_commands = true
 max_live_order_count = 1
 max_notional_per_order = "1.00"
 

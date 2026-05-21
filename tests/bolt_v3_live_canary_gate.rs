@@ -64,6 +64,11 @@ async fn live_canary_gate_rejects_empty_approval_id() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -91,6 +96,11 @@ async fn live_canary_gate_rejects_empty_readiness_report_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -118,6 +128,11 @@ async fn live_canary_gate_rejects_parent_dir_readiness_report_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -152,6 +167,11 @@ async fn live_canary_gate_rejects_missing_operator_evidence_before_reading_repor
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: None,
         },
     );
@@ -181,6 +201,11 @@ async fn live_canary_gate_rejects_parent_dir_operator_evidence_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -217,6 +242,11 @@ async fn live_canary_gate_rejects_parent_dir_strategy_cancel_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -253,6 +283,11 @@ async fn live_canary_gate_rejects_malformed_operator_evidence_hash_shape() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -288,6 +323,11 @@ async fn live_canary_gate_rejects_uppercase_operator_evidence_hash_shape() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -325,6 +365,11 @@ async fn live_canary_gate_rejects_operator_evidence_file_hash_mismatch() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -363,6 +408,11 @@ async fn live_canary_gate_rejects_approval_envelope_hash_mismatch() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -405,6 +455,11 @@ async fn live_canary_gate_rejects_approval_consumption_hash_mismatch() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -451,6 +506,11 @@ async fn live_canary_gate_rejects_approval_consumption_strategy_cancel_path_hash
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -493,6 +553,11 @@ async fn live_canary_gate_rejects_approval_consumption_client_order_id_hash_mism
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -535,6 +600,11 @@ async fn live_canary_gate_rejects_approval_consumption_venue_order_id_hash_misma
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -573,6 +643,11 @@ async fn live_canary_gate_rejects_approval_consumption_missing_head_sha() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -612,6 +687,11 @@ async fn live_canary_gate_rejects_approval_consumption_head_sha_mismatch() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -651,6 +731,11 @@ async fn live_canary_gate_rejects_stale_self_consistent_head_sha() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -690,6 +775,11 @@ async fn live_canary_gate_rejects_malformed_operator_evidence_head_sha() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -748,6 +838,11 @@ async fn live_canary_gate_rejects_approval_consumption_root_toml_sha256_mismatch
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -792,6 +887,11 @@ async fn live_canary_gate_rejects_stale_approval_consumption_beyond_configured_m
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -951,6 +1051,11 @@ async fn live_canary_gate_rejects_symlinked_readiness_report_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -984,6 +1089,11 @@ async fn live_canary_gate_rejects_zero_order_count() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1014,6 +1124,11 @@ async fn live_canary_gate_rejects_zero_report_byte_cap() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 0,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1044,6 +1159,11 @@ async fn live_canary_gate_rejects_zero_readiness_report_max_age() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: 0,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1059,6 +1179,156 @@ async fn live_canary_gate_rejects_zero_readiness_report_max_age() {
         ),
         "expected readiness report max-age rejection, got {error:?}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_zero_reference_quote_max_age() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-read-before-reference-max-age-check.json"
+                .to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 0,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            operator_evidence: Some(valid_operator_evidence()),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("zero reference quote max age must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::InvalidReferenceQuoteMaxAge { value: 0 }
+        ),
+        "expected reference quote max-age rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_zero_reference_quote_wait_timeout() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-read-before-reference-wait-timeout-check.json"
+                .to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 0,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            operator_evidence: Some(valid_operator_evidence()),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("zero reference quote wait timeout must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::InvalidReferenceQuoteWaitTimeout { value: 0 }
+        ),
+        "expected reference quote wait-timeout rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_blank_reference_quote_probe_actor_id() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-read-before-reference-probe-actor-id-check.json"
+                .to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: " ".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            operator_evidence: Some(valid_operator_evidence()),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("blank reference quote probe actor id must fail closed");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::InvalidReferenceQuoteProbeActorId { .. }
+        ),
+        "expected reference quote probe actor-id rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_malformed_reference_quote_probe_actor_id() {
+    for actor_id in [
+        " no-submit-reference-quote-probe",
+        "no-submit-reference-quote-probe ",
+        "프로브",
+    ] {
+        let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+        let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+        let loaded = loaded_with_live_canary(
+            loaded,
+            LiveCanaryBlock {
+                approval_id: "operator-approved-canary-001".to_string(),
+                no_submit_readiness_report_path:
+                    "not-read-before-reference-probe-actor-id-check.json".to_string(),
+                max_live_order_count: 1,
+                max_notional_per_order: "1.00".to_string(),
+                max_no_submit_readiness_report_bytes: 4096,
+                readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+                reference_quote_max_age_seconds: 10,
+                reference_quote_wait_timeout_seconds: 10,
+                reference_quote_probe_actor_id: actor_id.to_string(),
+                reference_quote_probe_log_events: true,
+                reference_quote_probe_log_commands: true,
+                operator_evidence: Some(valid_operator_evidence()),
+            },
+        );
+
+        let error = check_bolt_v3_live_canary_gate(&loaded)
+            .await
+            .expect_err("malformed reference quote probe actor id must fail closed");
+
+        assert!(
+            matches!(
+                error,
+                BoltV3LiveCanaryGateError::InvalidReferenceQuoteProbeActorId { .. }
+            ),
+            "expected reference quote probe actor-id rejection for {actor_id:?}, got {error:?}"
+        );
+    }
 }
 
 #[test]
@@ -1121,6 +1391,11 @@ async fn live_canary_gate_rejects_invalid_canary_notional_values() {
                 max_notional_per_order: candidate.to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+                reference_quote_max_age_seconds: 10,
+                reference_quote_wait_timeout_seconds: 10,
+                reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+                reference_quote_probe_log_events: true,
+                reference_quote_probe_log_commands: true,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -1156,6 +1431,11 @@ async fn live_canary_gate_rejects_invalid_root_notional_values() {
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+                reference_quote_max_age_seconds: 10,
+                reference_quote_wait_timeout_seconds: 10,
+                reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+                reference_quote_probe_log_events: true,
+                reference_quote_probe_log_commands: true,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -1192,6 +1472,11 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
             max_notional_per_order: " 1.00 ".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1231,6 +1516,11 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
             max_notional_per_order: "10.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1261,6 +1551,11 @@ async fn live_canary_gate_rejects_report_expired_at_late_gate_timestamp() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence_for_window(
                 now as i64 - 10,
                 now as i64 + 3600,
@@ -1302,6 +1597,11 @@ async fn live_canary_gate_rejects_operator_window_expired_at_gate_timestamp() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: 3_600,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence_for_window(
                 now as i64 - 120,
                 now as i64 - 60,
@@ -1436,6 +1736,11 @@ async fn live_canary_gate_rejects_operator_evidence_window_without_positive_dura
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1476,6 +1781,11 @@ async fn live_canary_gate_rejects_operator_evidence_window_before_current_time()
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1517,6 +1827,11 @@ async fn live_canary_gate_rejects_operator_evidence_window_after_current_time() 
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1560,6 +1875,11 @@ async fn live_canary_gate_rejects_stale_no_submit_linkage_fields() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1588,6 +1908,11 @@ async fn live_canary_gate_rejects_no_submit_report_missing_generated_at() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1626,6 +1951,11 @@ async fn live_canary_gate_rejects_expired_no_submit_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1663,6 +1993,11 @@ async fn live_canary_gate_uses_toml_owned_readiness_report_max_age_seconds() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: configured_max_age_seconds,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1719,6 +2054,11 @@ async fn live_canary_gate_rejects_missing_wrong_or_non_string_schema_version() {
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+                reference_quote_max_age_seconds: 10,
+                reference_quote_wait_timeout_seconds: 10,
+                reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+                reference_quote_probe_log_events: true,
+                reference_quote_probe_log_commands: true,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -1754,6 +2094,11 @@ async fn live_canary_gate_rejects_notional_above_root_risk_cap() {
             max_notional_per_order: "11.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1787,6 +2132,11 @@ async fn live_canary_gate_rejects_empty_stage_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1822,6 +2172,11 @@ async fn live_canary_gate_rejects_report_missing_stages_key() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1859,6 +2214,11 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1896,6 +2256,11 @@ async fn live_canary_gate_reports_each_unsatisfied_required_stage_once() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1934,6 +2299,11 @@ async fn live_canary_gate_rejects_missing_no_submit_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1965,6 +2335,11 @@ async fn live_canary_gate_rejects_malformed_no_submit_report_json() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2001,6 +2376,11 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: report_len,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2026,6 +2406,11 @@ async fn live_canary_gate_rejects_no_submit_report_above_configured_byte_cap() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 1,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2060,6 +2445,11 @@ async fn live_canary_gate_distinguishes_non_object_report_from_missing_stages() 
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2103,6 +2493,11 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2140,6 +2535,11 @@ async fn live_canary_gate_rejects_name_only_stage_field() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2191,6 +2591,11 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2248,6 +2653,11 @@ async fn check_operator_evidence_rejection(
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             operator_evidence: Some(operator_evidence),
         },
     );

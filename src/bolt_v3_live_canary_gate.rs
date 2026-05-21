@@ -16,6 +16,7 @@ use std::{
     time::{SystemTime, SystemTimeError, UNIX_EPOCH},
 };
 
+use nautilus_model::identifiers::ActorId;
 use rust_decimal::Decimal;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -113,6 +114,16 @@ pub enum BoltV3LiveCanaryGateError {
     },
     InvalidReadinessReportMaxAge {
         value: u64,
+    },
+    InvalidReferenceQuoteMaxAge {
+        value: u64,
+    },
+    InvalidReferenceQuoteWaitTimeout {
+        value: u64,
+    },
+    InvalidReferenceQuoteProbeActorId {
+        value: String,
+        reason: String,
     },
     InvalidOperatorEvidenceSizeLimit {
         value: u64,
@@ -255,6 +266,20 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                 f,
                 "bolt-v3 live canary readiness_report_max_age_seconds must be positive, got {value}"
             ),
+            BoltV3LiveCanaryGateError::InvalidReferenceQuoteMaxAge { value } => write!(
+                f,
+                "bolt-v3 live canary reference_quote_max_age_seconds must be positive, got {value}"
+            ),
+            BoltV3LiveCanaryGateError::InvalidReferenceQuoteWaitTimeout { value } => write!(
+                f,
+                "bolt-v3 live canary reference_quote_wait_timeout_seconds must be positive, got {value}"
+            ),
+            BoltV3LiveCanaryGateError::InvalidReferenceQuoteProbeActorId { value, reason } => {
+                write!(
+                    f,
+                    "bolt-v3 live canary reference_quote_probe_actor_id `{value}` is invalid: {reason}"
+                )
+            }
             BoltV3LiveCanaryGateError::InvalidOperatorEvidenceSizeLimit { value } => write!(
                 f,
                 "bolt-v3 live canary `[live_canary].operator_evidence.max_operator_evidence_file_bytes` must be positive, got {value}"
@@ -507,6 +532,35 @@ async fn check_bolt_v3_live_canary_gate_with_clock(
             value: block.readiness_report_max_age_seconds,
         });
     }
+    if block.reference_quote_max_age_seconds == 0 {
+        return Err(BoltV3LiveCanaryGateError::InvalidReferenceQuoteMaxAge {
+            value: block.reference_quote_max_age_seconds,
+        });
+    }
+    if block.reference_quote_wait_timeout_seconds == 0 {
+        return Err(
+            BoltV3LiveCanaryGateError::InvalidReferenceQuoteWaitTimeout {
+                value: block.reference_quote_wait_timeout_seconds,
+            },
+        );
+    }
+    let reference_quote_probe_actor_id = block.reference_quote_probe_actor_id.as_str();
+    if reference_quote_probe_actor_id.trim().is_empty()
+        || reference_quote_probe_actor_id.trim() != reference_quote_probe_actor_id
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::InvalidReferenceQuoteProbeActorId {
+                value: block.reference_quote_probe_actor_id.clone(),
+                reason: "must be non-empty without surrounding whitespace".to_string(),
+            },
+        );
+    }
+    ActorId::new_checked(reference_quote_probe_actor_id).map_err(|error| {
+        BoltV3LiveCanaryGateError::InvalidReferenceQuoteProbeActorId {
+            value: block.reference_quote_probe_actor_id.clone(),
+            reason: error.to_string(),
+        }
+    })?;
 
     let max_notional_per_order = parse_positive_decimal(
         "max_notional_per_order",
@@ -1561,6 +1615,11 @@ mod tests {
             no_submit_readiness_report_path: "reports/no-submit-readiness.json".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: 60,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             operator_evidence: None,
@@ -1580,6 +1639,11 @@ mod tests {
             no_submit_readiness_report_path: " reports/no-submit-readiness.json ".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: 60,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
             operator_evidence: None,
@@ -1780,6 +1844,11 @@ mod tests {
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: 500,
+                reference_quote_max_age_seconds: 10,
+                reference_quote_wait_timeout_seconds: 10,
+                reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+                reference_quote_probe_log_events: true,
+                reference_quote_probe_log_commands: true,
                 operator_evidence: Some(operator_evidence),
             },
         );

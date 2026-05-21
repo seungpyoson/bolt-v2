@@ -4,8 +4,9 @@
 //!
 //! This module owns common strategy-envelope validation (schema
 //! version, uniqueness of instance / order-id-tag, client / execution
-//! lookup, per-role reference-data structural validation), root-block
-//! validation, and root risk decimal syntax only. Market-family-shaped
+//! lookup, per-role reference-data structural validation, reference quote
+//! probe source disambiguation), root-block validation, and root risk
+//! decimal syntax only. Market-family-shaped
 //! target rules
 //! (rotating-market kind, family discriminator, cadence policy,
 //! underlying-asset shape, retry / blocked timers, market-selection
@@ -526,6 +527,38 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             strategy,
             default_max_notional_decimal.as_ref(),
         ));
+    }
+    errors.extend(validate_reference_quote_probe_sources(strategies));
+
+    errors
+}
+
+fn validate_reference_quote_probe_sources(strategies: &[LoadedStrategy]) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut by_instrument: BTreeMap<String, (&str, String, String)> = BTreeMap::new();
+
+    for loaded in strategies {
+        let context = format!("strategy `{}`", loaded.relative_path);
+        for (role, block) in &loaded.config.reference_data {
+            let instrument_id = block.instrument_id.to_string();
+            let data_client_id = block.data_client_id.as_str();
+            match by_instrument.get(&instrument_id) {
+                Some((existing_data_client_id, existing_context, existing_role))
+                    if *existing_data_client_id != data_client_id =>
+                {
+                    errors.push(format!(
+                        "{context}: reference_data.{role}.instrument_id `{instrument_id}` with data_client_id `{data_client_id}` is also used by {existing_context}: reference_data.{existing_role}.instrument_id with data_client_id `{existing_data_client_id}`; QuoteTick does not carry data_client_id, so no-submit reference quote evidence cannot distinguish data clients for the same instrument"
+                    ));
+                }
+                None => {
+                    by_instrument.insert(
+                        instrument_id,
+                        (data_client_id, context.clone(), role.clone()),
+                    );
+                }
+                _ => {}
+            }
+        }
     }
 
     errors

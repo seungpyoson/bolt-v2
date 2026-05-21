@@ -3848,7 +3848,7 @@ impl BinaryOracleEdgeTaker {
                 instrument_id,
                 order_side,
                 quantity,
-                price,
+                price: Some(price),
                 client_order_id,
             },
         )
@@ -3947,7 +3947,7 @@ impl BinaryOracleEdgeTaker {
                 instrument_id,
                 order_side,
                 quantity,
-                price,
+                price: Some(price),
                 client_order_id,
             },
         )

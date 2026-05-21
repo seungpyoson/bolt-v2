@@ -476,10 +476,10 @@
 
 **Goal**: Investigate latest-head review evidence that the shared order-intent layer still follows the pinned NT single-order `OrderFactory` surface rather than every NT model builder variant, and that shared build inputs require a selected price even for NT market-like constructors that do not take a limit price. No implementation is approved until pinned NT source, strategy economics, submit/admission requirements, and TDD proof define the smallest architecture-safe slice.
 
-- [ ] T216 [P] [US2] Record pinned NT evidence for `MarketToLimit`, `TrailingStopLimit`, and order-builder versus order-factory construction paths
-- [ ] T217 [P] [US2] Record current Bolt evidence for mandatory `price` in shared build inputs and strategy admission/evidence dependencies
-- [ ] T218 [US2] Decide, with evidence, whether the next implementation slice should expand beyond `OrderFactory`, make runtime price optional for market-like NT constructors, or keep the current boundary as explicit residual scope
-- [ ] T219 [US2] Add RED tests only after the architecture decision identifies a concrete behavior gap
+- [x] T216 [P] [US2] Record pinned NT evidence for `MarketToLimit`, `TrailingStopLimit`, and order-builder versus order-factory construction paths
+- [x] T217 [P] [US2] Record current Bolt evidence for mandatory `price` in shared build inputs and strategy admission/evidence dependencies
+- [x] T218 [US2] Decide, with evidence, whether the next implementation slice should expand beyond `OrderFactory`, make runtime price optional for market-like NT constructors, or keep the current boundary as explicit residual scope
+- [x] T219 [US2] Add RED tests only after the architecture decision identifies a concrete behavior gap
 
 ## Dependencies & Execution Order
 

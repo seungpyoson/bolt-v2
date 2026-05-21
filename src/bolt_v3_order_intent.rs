@@ -30,7 +30,7 @@ pub struct NtOrderBuildInputs {
     pub instrument_id: InstrumentId,
     pub order_side: OrderSide,
     pub quantity: Quantity,
-    pub price: Price,
+    pub price: Option<Price>,
     pub client_order_id: ClientOrderId,
 }
 
@@ -399,19 +399,29 @@ pub fn validate_nt_order_template(
             "{prefix}_trigger_price must be positive"
         );
     }
-    match (template.order_type, inputs.order_side) {
-        (OrderType::LimitIfTouched, OrderSide::Buy) if trigger_price > inputs.price => {
-            anyhow::bail!(
+    if template.order_type == OrderType::LimitIfTouched {
+        let price = inputs.price.ok_or_else(|| {
+            anyhow::anyhow!("{prefix}_price is required for LimitIfTouched orders")
+        })?;
+        match inputs.order_side {
+            OrderSide::Buy if trigger_price > price => anyhow::bail!(
                 "{prefix}_trigger_price must be <= order price for BUY LimitIfTouched orders"
-            )
-        }
-        (OrderType::LimitIfTouched, OrderSide::Sell) if trigger_price < inputs.price => {
-            anyhow::bail!(
+            ),
+            OrderSide::Sell if trigger_price < price => anyhow::bail!(
                 "{prefix}_trigger_price must be >= order price for SELL LimitIfTouched orders"
-            )
+            ),
+            _ => {}
         }
-        _ => Ok(()),
     }
+    Ok(())
+}
+
+fn required_limit_price(
+    prefix: &str,
+    order_type: OrderType,
+    price: Option<Price>,
+) -> Result<Price> {
+    price.ok_or_else(|| anyhow::anyhow!("{prefix}_price is required for {order_type:?} orders"))
 }
 
 pub fn build_nt_order(
@@ -427,7 +437,7 @@ pub fn build_nt_order(
             inputs.instrument_id,
             inputs.order_side,
             inputs.quantity,
-            inputs.price,
+            required_limit_price(prefix, template.order_type, inputs.price)?,
             Some(template.time_in_force),
             template.expire_time,
             Some(template.is_post_only),
@@ -514,7 +524,7 @@ pub fn build_nt_order(
             inputs.instrument_id,
             inputs.order_side,
             inputs.quantity,
-            inputs.price,
+            required_limit_price(prefix, template.order_type, inputs.price)?,
             template
                 .trigger_price
                 .expect("validated triggered order trigger price"),
@@ -536,7 +546,7 @@ pub fn build_nt_order(
             inputs.instrument_id,
             inputs.order_side,
             inputs.quantity,
-            inputs.price,
+            required_limit_price(prefix, template.order_type, inputs.price)?,
             template
                 .trigger_price
                 .expect("validated LimitIfTouched trigger price"),

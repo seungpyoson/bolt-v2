@@ -49,13 +49,22 @@ fn base_inputs(order_side: OrderSide) -> NtOrderBuildInputs {
         instrument_id: InstrumentId::from("GENERIC.TEST"),
         order_side,
         quantity: Quantity::new(1.0, 2),
-        price: Price::new(10.0, 2),
+        price: Some(Price::new(10.0, 2)),
         client_order_id: ClientOrderId::from("O-19700101-000000-001-001-1"),
     }
 }
 
+fn base_inputs_without_price(order_side: OrderSide) -> NtOrderBuildInputs {
+    NtOrderBuildInputs {
+        price: None,
+        ..base_inputs(order_side)
+    }
+}
+
 fn limit_price() -> Price {
-    base_inputs(OrderSide::Buy).price
+    base_inputs(OrderSide::Buy)
+        .price
+        .expect("base inputs should include a limit price")
 }
 
 fn nonzero_expire_time() -> UnixNanos {
@@ -166,6 +175,43 @@ fn shared_nt_order_template_builds_sell_limit_if_touched_without_position_policy
     assert_eq!(order.order_side(), OrderSide::Sell);
     assert_eq!(order.price(), Some(limit_price()));
     assert_eq!(order.trigger_price(), Some(trigger_price_above_limit()));
+}
+
+#[test]
+fn shared_nt_order_template_price_is_required_only_for_limit_price_factories() {
+    let mut factory = generic_order_factory();
+
+    for order_type in [
+        OrderType::Market,
+        OrderType::StopMarket,
+        OrderType::MarketIfTouched,
+        OrderType::TrailingStopMarket,
+    ] {
+        let template = valid_template_for_direct_validation(order_type);
+        build_nt_order(
+            &mut factory,
+            "generic_order",
+            &template,
+            base_inputs_without_price(OrderSide::Buy),
+        )
+        .expect("market-like NT factory order should not require a limit price input");
+    }
+
+    for order_type in [
+        OrderType::Limit,
+        OrderType::StopLimit,
+        OrderType::LimitIfTouched,
+    ] {
+        let template = valid_template_for_direct_validation(order_type);
+        let error = build_nt_order(
+            &mut factory,
+            "generic_order",
+            &template,
+            base_inputs_without_price(OrderSide::Buy),
+        )
+        .expect_err("limit-price NT factory order should reject missing price input");
+        assert!(error.to_string().contains("price is required"), "{error}");
+    }
 }
 
 #[test]

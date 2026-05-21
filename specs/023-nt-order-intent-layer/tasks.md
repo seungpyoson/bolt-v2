@@ -443,6 +443,16 @@
 - [x] T200 [US2] REGRESSION: Add direct post-only fail-closed coverage for Market, StopMarket, and MarketIfTouched order-arm invariants and make the source fence less brittle for `Entry`/`Exit` tokens
 - [x] T201 [US2] Verify focused order-template tests, source fences, formatting, branch cleanliness, CI state, and latest-head reviewer state
 
+## Phase 46: TDD Slice 42 - Latest-Head Review Disposition Refresh
+
+**Goal**: Refresh latest-head multi-agent review evidence after Phase 45, resolve or disprove review findings without adding Bolt-only NT narrowing, and add regression coverage where the implementation is already correct.
+
+- [x] T202 [P] [US2] Record latest-head Gemini, Claude, Kimi, and Grok review slots for PR #434 head `9c57563d9717642d643f4c59d789a69ea64e588d`
+- [x] T203 [US2] Disprove the Claude runtime-literal/source-fence concern with exact-head `just source-fence`
+- [x] T204 [US2] REGRESSION: Add direct shared-builder coverage proving `trigger_instrument_id` is preserved for every enabled triggered NT factory
+- [x] T205 [US2] Disposition the non-positive limit-price suggestion against pinned NT evidence without adding a shared-layer price policy
+- [x] T206 [US2] Verify focused order-template tests, source fences, formatting, branch cleanliness, exact-head CI state, and reviewer state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -487,6 +497,7 @@
 - Phase 43 blocks completion because latest-head Claude review found the Phase 42 direct shared-builder regression did not enumerate every affected triggered factory variant.
 - Phase 44 blocks completion because latest-head Claude review found more direct shared-builder invariants still covered only indirectly through strategy/config paths.
 - Phase 45 blocks completion because latest-head Claude review found remaining direct-builder validation arms and order-arm post-only fail-closed checks without direct shared-builder coverage.
+- Phase 46 closes the latest-head Claude review disposition because the real triggered-factory test gap is covered directly and the proposed price validation change was rejected against pinned NT evidence.
 
 ## Parallel Opportunities
 

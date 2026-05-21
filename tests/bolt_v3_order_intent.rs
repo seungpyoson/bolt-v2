@@ -251,6 +251,31 @@ fn shared_nt_order_template_rejects_negative_trigger_inputs_before_nt_factory() 
 }
 
 #[test]
+fn shared_nt_order_template_preserves_trigger_instrument_id_for_triggered_factories() {
+    let mut factory = generic_order_factory();
+    let trigger_instrument_id = base_inputs(OrderSide::Buy).instrument_id;
+
+    for order_type in [
+        OrderType::StopMarket,
+        OrderType::StopLimit,
+        OrderType::MarketIfTouched,
+        OrderType::LimitIfTouched,
+        OrderType::TrailingStopMarket,
+    ] {
+        let mut template = valid_template_for_direct_validation(order_type);
+        template.trigger_instrument_id = Some(trigger_instrument_id);
+        let order = build_nt_order(
+            &mut factory,
+            "generic_order",
+            &template,
+            base_inputs(OrderSide::Buy),
+        )
+        .expect("triggered order should preserve NT trigger_instrument_id");
+        assert_eq!(order.trigger_instrument_id(), Some(trigger_instrument_id));
+    }
+}
+
+#[test]
 fn shared_nt_order_template_rejects_direct_caller_nt_model_invariants_before_nt_factory() {
     let mut factory = generic_order_factory();
 

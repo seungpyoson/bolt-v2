@@ -7017,7 +7017,7 @@ mod tests {
             RecordingFeeProvider::cold(),
             Arc::new(FailingDecisionEvidenceWriter),
         );
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -7085,7 +7085,7 @@ mod tests {
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -7157,7 +7157,7 @@ mod tests {
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -7237,7 +7237,7 @@ mod tests {
             risk_handler,
         );
 
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -7302,7 +7302,7 @@ mod tests {
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(2.0, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -7366,9 +7366,8 @@ mod tests {
         let cache = register_test_strategy(&mut strategy);
         add_active_instruments_to_cache(&strategy, &cache);
         strategy.config.entry_order.is_quote_quantity = true;
-        strategy.active.books.up.best_bid = Some(0.24);
-        strategy.active.books.up.best_ask = Some(0.25);
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let instrument_id = selected_entry_instrument(&strategy);
+        set_active_books_best_prices(&mut strategy, 0.24, 0.25);
         cache
             .borrow_mut()
             .add_quote(quote_tick(&instrument_id.to_string(), 0.24, 0.25, 1_200))
@@ -7410,9 +7409,8 @@ mod tests {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         register_test_strategy_with_active_instruments(&mut strategy);
         strategy.config.entry_order.is_quote_quantity = true;
-        strategy.active.books.up.best_bid = Some(0.24);
-        strategy.active.books.up.best_ask = Some(0.25);
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let instrument_id = selected_entry_instrument(&strategy);
+        set_active_books_best_prices(&mut strategy, 0.24, 0.25);
         let quantity = Quantity::new(25.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-2");
@@ -7453,7 +7451,7 @@ mod tests {
         strategy.config.entry_order.order_type = OrderType::Market;
         strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
         strategy.config.entry_order.is_quote_quantity = true;
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let instrument_id = selected_entry_instrument(&strategy);
         let quote = quote_tick(&instrument_id.to_string(), 0.32, 0.33, 1_200);
         let expected_price = quote.ask_price;
         cache
@@ -7510,7 +7508,7 @@ mod tests {
         strategy.config.entry_order.order_type = OrderType::Market;
         strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
         strategy.config.entry_order.is_quote_quantity = true;
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let instrument_id = selected_entry_instrument(&strategy);
         let trade = trade_tick(&instrument_id.to_string(), 0.33, 1_200);
         let expected_price = trade.price;
         cache
@@ -7574,7 +7572,7 @@ mod tests {
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -7656,7 +7654,7 @@ mod tests {
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -7830,13 +7828,116 @@ mod tests {
         (strategy, fee_provider)
     }
 
-    fn pending_entry_state(
-        strategy: &BinaryOracleEdgeTaker,
-        client_order_id: ClientOrderId,
+    fn selected_entry_side(strategy: &BinaryOracleEdgeTaker) -> OutcomeSide {
+        let evaluation = strategy.entry_evaluation_at(1_200);
+        evaluation
+            .selected_side
+            .expect("ready-to-trade fixture should select a configured outcome side")
+    }
+
+    fn selected_entry_instrument(strategy: &BinaryOracleEdgeTaker) -> InstrumentId {
+        strategy
+            .entry_evaluation_at(1_200)
+            .selected_side
+            .and_then(|side| strategy.instrument_id_for_side(side))
+            .or_else(|| configured_outcome_instruments(strategy).into_iter().next())
+            .expect("ready-to-trade fixture should expose a configured instrument")
+    }
+
+    fn configured_position_probe(
+        strategy: &mut BinaryOracleEdgeTaker,
         instrument_id: InstrumentId,
-        outcome_side: OutcomeSide,
-        book: OutcomeBookState,
+    ) -> OpenPositionState {
+        let original_exposure = strategy.exposure.clone();
+        strategy.materialize_position_from_event(
+            instrument_id,
+            PositionId::from("P-SIDE-PROBE"),
+            OrderSide::Buy,
+            PositionSide::Long,
+            Quantity::new(1.0, 2),
+            0.450,
+        );
+        let position = managed_position_ref(strategy)
+            .cloned()
+            .expect("configured instrument should materialize through production position path");
+        strategy.exposure = original_exposure;
+        strategy.refresh_book_subscriptions_for_current_state();
+        position
+    }
+
+    fn configured_side_for_instrument(
+        strategy: &mut BinaryOracleEdgeTaker,
+        instrument_id: InstrumentId,
+    ) -> OutcomeSide {
+        configured_position_probe(strategy, instrument_id)
+            .outcome_side
+            .expect("configured instrument should materialize with an outcome side")
+    }
+
+    fn configured_book_for_instrument(
+        strategy: &mut BinaryOracleEdgeTaker,
+        instrument_id: InstrumentId,
+    ) -> OutcomeBookState {
+        configured_position_probe(strategy, instrument_id).book
+    }
+
+    fn set_active_books_best_prices(strategy: &mut BinaryOracleEdgeTaker, bid: f64, ask: f64) {
+        let mut updates = Vec::new();
+        for instrument_id in configured_outcome_instruments(strategy) {
+            let book = configured_book_for_instrument(strategy, instrument_id);
+            let bid_size = book
+                .bid_levels
+                .last_key_value()
+                .map(|(_, size)| *size)
+                .expect("configured fixture book should expose bid liquidity");
+            let ask_size = book
+                .ask_levels
+                .first_key_value()
+                .map(|(_, size)| *size)
+                .expect("configured fixture book should expose ask liquidity");
+            updates.push((instrument_id, bid_size, ask_size));
+        }
+
+        for (instrument_id, bid_size, ask_size) in updates {
+            assert!(
+                strategy.active.books.update_from_deltas(&book_deltas(
+                    instrument_id,
+                    &[
+                        (BookAction::Clear, OrderSide::Buy, bid, bid_size),
+                        (BookAction::Add, OrderSide::Buy, bid, bid_size),
+                        (BookAction::Add, OrderSide::Sell, ask, ask_size),
+                    ],
+                )),
+                "configured fixture book should accept price update"
+            );
+        }
+    }
+
+    fn set_configured_books_depth(
+        strategy: &mut BinaryOracleEdgeTaker,
+        deltas: &[(BookAction, OrderSide, f64, f64)],
+    ) {
+        for instrument_id in configured_outcome_instruments(strategy) {
+            assert!(
+                strategy
+                    .active
+                    .books
+                    .update_from_deltas(&book_deltas(instrument_id, deltas)),
+                "configured fixture book should accept depth update"
+            );
+        }
+    }
+
+    fn pending_entry_state(
+        strategy: &mut BinaryOracleEdgeTaker,
+        client_order_id: ClientOrderId,
     ) -> PendingEntryState {
+        let instrument_id = selected_entry_instrument(strategy);
+        let probe = configured_position_probe(strategy, instrument_id);
+        let outcome_side = probe
+            .outcome_side
+            .expect("configured instrument should materialize with an outcome side");
+        let book = probe.book;
         PendingEntryState {
             client_order_id,
             market_id: Some("MKT-1".to_string()),
@@ -7851,6 +7952,38 @@ mod tests {
         }
     }
 
+    fn configured_instrument_except(
+        strategy: &BinaryOracleEdgeTaker,
+        instrument_id: InstrumentId,
+    ) -> InstrumentId {
+        configured_outcome_instruments(strategy)
+            .into_iter()
+            .find(|configured_instrument_id| *configured_instrument_id != instrument_id)
+            .expect("fixture should expose a second configured outcome instrument")
+    }
+
+    fn materialize_configured_position(
+        strategy: &mut BinaryOracleEdgeTaker,
+        instrument_id: InstrumentId,
+        position_id: PositionId,
+        quantity: Quantity,
+        avg_px_open: f64,
+    ) -> OpenPositionState {
+        strategy.materialize_position_from_event(
+            instrument_id,
+            position_id,
+            OrderSide::Buy,
+            PositionSide::Long,
+            quantity,
+            avg_px_open,
+        );
+        let mut position = managed_position_ref(strategy)
+            .cloned()
+            .expect("configured position should materialize as managed exposure");
+        position.historical_entry_fee_bps.get_or_insert(0.0);
+        position
+    }
+
     fn configured_outcome_instruments(strategy: &BinaryOracleEdgeTaker) -> Vec<InstrumentId> {
         let instrument_ids = strategy.active.outcome_fees.instrument_ids();
         assert!(
@@ -7858,16 +7991,6 @@ mod tests {
             "ready-to-trade fixture should expose configured outcome instruments"
         );
         instrument_ids
-    }
-
-    fn active_book_for_configured_instrument(
-        strategy: &BinaryOracleEdgeTaker,
-        instrument_id: InstrumentId,
-    ) -> &OutcomeBookState {
-        [&strategy.active.books.up, &strategy.active.books.down]
-            .into_iter()
-            .find(|book| book.instrument_id == Some(instrument_id))
-            .expect("configured outcome instrument should resolve through active books")
     }
 
     fn set_pending_entry(strategy: &mut BinaryOracleEdgeTaker, pending: PendingEntryState) {
@@ -7902,7 +8025,7 @@ mod tests {
     ) -> (InstrumentId, ClientOrderId) {
         let client_order_id =
             ClientOrderId::from(format!("ENTRY-WORKING-{instrument_id}").as_str());
-        let book = active_book_for_configured_instrument(strategy, instrument_id).clone();
+        let book = configured_book_for_instrument(strategy, instrument_id);
         let pending = PendingEntryState {
             client_order_id,
             market_id: Some("MKT-1".to_string()),
@@ -8721,7 +8844,7 @@ mod tests {
 
     #[test]
     fn outcome_book_state_applies_incremental_deltas_without_retaining_stale_levels() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let mut state = OutcomeBookState::from_instrument_id(instrument_id);
 
         state.update_from_deltas(&book_deltas(
@@ -9327,7 +9450,7 @@ mod tests {
     #[test]
     fn position_events_update_live_position_state() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let instrument_id = selected_entry_instrument(&strategy);
         let position_id = PositionId::from("P-001");
 
         strategy.on_position_opened(position_opened_event(
@@ -9342,25 +9465,24 @@ mod tests {
             strategy.managed_position().map(|managed| managed.origin),
             Some(ManagedPositionOrigin::RecoveryBootstrap)
         );
-        assert_eq!(
-            managed_position_ref(&strategy).cloned(),
-            Some(OpenPositionState {
-                market_id: Some("MKT-1".to_string()),
-                instrument_id,
-                position_id,
-                outcome_side: Some(OutcomeSide::Up),
-                outcome_fees: strategy.active.outcome_fees.clone(),
-                historical_entry_fee_bps: None,
-                entry_order_side: OrderSide::Buy,
-                side: PositionSide::Long,
-                quantity: Quantity::new(10.0, 2),
-                avg_px_open: 0.450,
-                interval_open: Some(3_100.0),
-                selection_published_at_ms: Some(1_000),
-                seconds_to_expiry_at_selection: Some(300),
-                book: strategy.active.books.up.clone(),
-            })
-        );
+        let managed_position =
+            managed_position_ref(&strategy).expect("position should be managed after open event");
+        assert_eq!(managed_position.market_id.as_deref(), Some("MKT-1"));
+        assert_eq!(managed_position.instrument_id, instrument_id);
+        assert_eq!(managed_position.position_id, position_id);
+        assert!(managed_position.outcome_side.is_some());
+        assert_eq!(managed_position.outcome_fees, strategy.active.outcome_fees);
+        assert_eq!(managed_position.historical_entry_fee_bps, None);
+        assert_eq!(managed_position.entry_order_side, OrderSide::Buy);
+        assert_eq!(managed_position.side, PositionSide::Long);
+        assert_eq!(managed_position.quantity, Quantity::new(10.0, 2));
+        assert_eq!(managed_position.avg_px_open, 0.450);
+        assert_eq!(managed_position.interval_open, Some(3_100.0));
+        assert_eq!(managed_position.selection_published_at_ms, Some(1_000));
+        assert_eq!(managed_position.seconds_to_expiry_at_selection, Some(300));
+        let managed_book = managed_position.book.clone();
+        let expected_book = configured_book_for_instrument(&mut strategy, instrument_id);
+        assert_eq!(managed_book, expected_book);
 
         let recovered_position = managed_position_ref(&strategy)
             .cloned()
@@ -9394,26 +9516,16 @@ mod tests {
     #[test]
     fn exit_fill_keeps_pending_exit_until_position_closed() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let instrument_id = selected_entry_instrument(&strategy);
         let position_id = PositionId::from("P-EXIT-001");
         let exit_client_order_id = ClientOrderId::from("EXIT-001");
-
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let open_position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
             position_id,
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -9454,25 +9566,16 @@ mod tests {
     #[test]
     fn position_change_preserves_pending_exit_correlation() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let instrument_id = selected_entry_instrument(&strategy);
         let position_id = PositionId::from("P-EXIT-CHANGE");
         let exit_client_order_id = ClientOrderId::from("EXIT-CHANGE");
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let open_position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
             position_id,
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -9515,23 +9618,14 @@ mod tests {
     #[test]
     fn unrelated_position_close_does_not_clear_pending_exit_before_fill() {
         let mut strategy = ready_to_trade_strategy();
-        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
-            instrument_id: tracked_instrument,
-            position_id: PositionId::from("P-TRACKED"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+        let tracked_instrument = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            tracked_instrument,
+            PositionId::from("P-TRACKED"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -9556,23 +9650,14 @@ mod tests {
     #[test]
     fn unrelated_position_close_does_not_clear_filled_pending_exit() {
         let mut strategy = ready_to_trade_strategy();
-        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
-            instrument_id: tracked_instrument,
-            position_id: PositionId::from("P-TRACKED"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+        let tracked_instrument = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            tracked_instrument,
+            PositionId::from("P-TRACKED"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -9600,26 +9685,17 @@ mod tests {
 
     #[test]
     fn exit_pending_state_clears_on_cancel_reject_and_expire() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
         let exit_client_order_id = ClientOrderId::from("EXIT-001");
 
         let mut canceled = ready_to_trade_strategy();
-        let canceled_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let instrument_id = selected_entry_instrument(&canceled);
+        let canceled_position = materialize_configured_position(
+            &mut canceled,
             instrument_id,
-            position_id: PositionId::from("P-CANCEL"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: canceled.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(1.0, 2),
-            avg_px_open: 0.45,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: canceled.active.books.up.clone(),
-        };
+            PositionId::from("P-CANCEL"),
+            Quantity::new(1.0, 2),
+            0.45,
+        );
         set_exit_pending(
             &mut canceled,
             canceled_position,
@@ -9635,22 +9711,13 @@ mod tests {
         assert!(canceled.managed_position().is_some());
 
         let mut rejected = ready_to_trade_strategy();
-        let rejected_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let rejected_position = materialize_configured_position(
+            &mut rejected,
             instrument_id,
-            position_id: PositionId::from("P-REJECT"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: rejected.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(1.0, 2),
-            avg_px_open: 0.45,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: rejected.active.books.up.clone(),
-        };
+            PositionId::from("P-REJECT"),
+            Quantity::new(1.0, 2),
+            0.45,
+        );
         set_exit_pending(
             &mut rejected,
             rejected_position,
@@ -9664,22 +9731,13 @@ mod tests {
         assert!(rejected.managed_position().is_some());
 
         let mut expired = ready_to_trade_strategy();
-        let expired_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let expired_position = materialize_configured_position(
+            &mut expired,
             instrument_id,
-            position_id: PositionId::from("P-EXPIRE"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: expired.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(1.0, 2),
-            avg_px_open: 0.45,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: expired.active.books.up.clone(),
-        };
+            PositionId::from("P-EXPIRE"),
+            Quantity::new(1.0, 2),
+            0.45,
+        );
         set_exit_pending(
             &mut expired,
             expired_position,
@@ -9695,26 +9753,17 @@ mod tests {
 
     #[test]
     fn filled_exit_pending_ignores_stale_cancel_until_position_close() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
         let exit_client_order_id = ClientOrderId::from("EXIT-FILLED-CANCEL");
 
         let mut strategy = ready_to_trade_strategy();
-        let position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
-            position_id: PositionId::from("P-FILLED-CANCEL"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(1.0, 2),
-            avg_px_open: 0.45,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            PositionId::from("P-FILLED-CANCEL"),
+            Quantity::new(1.0, 2),
+            0.45,
+        );
         set_exit_pending(
             &mut strategy,
             position,
@@ -9746,26 +9795,17 @@ mod tests {
 
     #[test]
     fn filled_exit_pending_ignores_stale_reject() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
         let exit_client_order_id = ClientOrderId::from("EXIT-FILLED-REJECT");
 
         let mut strategy = ready_to_trade_strategy();
-        let position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
-            position_id: PositionId::from("P-FILLED-REJECT"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(1.0, 2),
-            avg_px_open: 0.45,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            PositionId::from("P-FILLED-REJECT"),
+            Quantity::new(1.0, 2),
+            0.45,
+        );
         set_exit_pending(
             &mut strategy,
             position,
@@ -9788,26 +9828,17 @@ mod tests {
 
     #[test]
     fn filled_exit_pending_ignores_stale_expire() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
         let exit_client_order_id = ClientOrderId::from("EXIT-FILLED-EXPIRE");
 
         let mut strategy = ready_to_trade_strategy();
-        let position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
-            position_id: PositionId::from("P-FILLED-EXPIRE"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(1.0, 2),
-            avg_px_open: 0.45,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            PositionId::from("P-FILLED-EXPIRE"),
+            Quantity::new(1.0, 2),
+            0.45,
+        );
         set_exit_pending(
             &mut strategy,
             position,
@@ -9831,25 +9862,16 @@ mod tests {
     #[test]
     fn partial_exit_fill_then_expire_restores_managed_residual_position() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let instrument_id = selected_entry_instrument(&strategy);
         let position_id = PositionId::from("P-PARTIAL-EXIT-EXPIRE");
         let exit_client_order_id = ClientOrderId::from("EXIT-PARTIAL-EXPIRE");
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let open_position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
             position_id,
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.45,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            Quantity::new(10.0, 2),
+            0.45,
+        );
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -9894,30 +9916,18 @@ mod tests {
     #[test]
     fn down_entry_submission_price_uses_configured_order_side_price() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-        strategy.active.books.down.best_bid = Some(0.40);
-        strategy.active.books.down.best_ask = Some(0.41);
-        assert_eq!(
-            strategy.submission_entry_price(OutcomeSide::Down),
-            Some(0.41)
-        );
-        assert_eq!(
-            strategy.executable_entry_cost(OutcomeSide::Down),
-            Some(0.41)
-        );
+        set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+        let selected_side = selected_entry_side(&strategy);
+        assert_eq!(strategy.submission_entry_price(selected_side), Some(0.41));
+        assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.41));
 
         strategy.config.entry_order.side = "sell".to_string();
         strategy.config.entry_order.position_side = "short".to_string();
         strategy.config.exit_order.side = "buy".to_string();
         strategy.config.exit_order.position_side = "short".to_string();
 
-        assert_eq!(
-            strategy.submission_entry_price(OutcomeSide::Down),
-            Some(0.40)
-        );
-        assert_eq!(
-            strategy.executable_entry_cost(OutcomeSide::Down),
-            Some(0.40)
-        );
+        assert_eq!(strategy.submission_entry_price(selected_side), Some(0.40));
+        assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.40));
     }
 
     #[test]
@@ -9925,17 +9935,11 @@ mod tests {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
-        strategy.active.books.down.best_bid = Some(0.40);
-        strategy.active.books.down.best_ask = Some(0.41);
+        set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+        let selected_side = selected_entry_side(&strategy);
 
-        assert_eq!(
-            strategy.submission_entry_price(OutcomeSide::Down),
-            Some(0.40)
-        );
-        assert_eq!(
-            strategy.executable_entry_cost(OutcomeSide::Down),
-            Some(0.40)
-        );
+        assert_eq!(strategy.submission_entry_price(selected_side), Some(0.40));
+        assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.40));
     }
 
     #[test]
@@ -9944,17 +9948,12 @@ mod tests {
         strategy.config.entry_order.order_type = OrderType::StopMarket;
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.trigger_price = Some(0.52);
-        strategy.active.books.down.best_bid = Some(0.40);
-        strategy.active.books.down.best_ask = Some(0.41);
+        set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let selected_side = configured_side_for_instrument(&mut strategy, instrument_id);
 
-        assert_eq!(
-            strategy.submission_entry_price(OutcomeSide::Down),
-            Some(0.52)
-        );
-        assert_eq!(
-            strategy.executable_entry_cost(OutcomeSide::Down),
-            Some(0.52)
-        );
+        assert_eq!(strategy.submission_entry_price(selected_side), Some(0.52));
+        assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.52));
     }
 
     #[test]
@@ -9989,19 +9988,13 @@ mod tests {
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.trigger_price = Some(0.52);
         strategy.config.entry_order.trigger_type = Some(TriggerType::MarkPrice);
-        strategy.active.books.down.best_bid = Some(0.40);
-        strategy.active.books.down.best_ask = Some(0.41);
+        set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let selected_side = configured_side_for_instrument(&mut strategy, instrument_id);
 
-        assert_eq!(
-            strategy.submission_entry_price(OutcomeSide::Down),
-            Some(0.52)
-        );
-        assert_eq!(
-            strategy.executable_entry_cost(OutcomeSide::Down),
-            Some(0.52)
-        );
+        assert_eq!(strategy.submission_entry_price(selected_side), Some(0.52));
+        assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.52));
 
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
         let quantity = Quantity::new(2.0, 2);
         let fallback_price = Price::new(0.40, 2);
         let order = strategy
@@ -10052,7 +10045,7 @@ mod tests {
         strategy.config.entry_order.trigger_price = Some(0.52);
         strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
 
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&strategy);
         let quantity = Quantity::new(2.0, 2);
         let fallback_price = Price::new(0.40, 2);
         let order = strategy
@@ -10080,27 +10073,18 @@ mod tests {
         strategy.config.exit_order.order_type = OrderType::Limit;
         strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
         strategy.config.exit_order.is_post_only = true;
-        strategy.active.books.up.best_ask = Some(0.51);
+        set_active_books_best_prices(&mut strategy, 0.43, 0.51);
         strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
         strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
         strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let instrument_id = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
-            position_id: PositionId::from("P-UP-001"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            PositionId::from("P-EXIT-001"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         let expected_passive_price = open_position.book.best_ask;
         set_managed_position(
             &mut strategy,
@@ -10119,26 +10103,18 @@ mod tests {
     fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.config.exit_order.is_quote_quantity = true;
+        strategy.config.exit_hysteresis_bps = 1_000_000;
         strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
         strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
         strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let instrument_id = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
-            position_id: PositionId::from("P-UP-QUOTE-EXIT-001"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            PositionId::from("P-QUOTE-EXIT-001"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_managed_position(
             &mut strategy,
             open_position,
@@ -10160,9 +10136,10 @@ mod tests {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let _cache = register_test_strategy(&mut strategy);
         strategy.config.exit_order.is_quote_quantity = true;
+        let instrument_id = selected_entry_instrument(&strategy);
         let error = strategy
             .build_configured_exit_order(
-                InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET"),
+                instrument_id,
                 OrderSide::Sell,
                 Quantity::new(10.0, 2),
                 Price::new(0.50, 2),
@@ -10181,9 +10158,10 @@ mod tests {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let _cache = register_test_strategy(&mut strategy);
         strategy.config.entry_order.is_reduce_only = true;
+        let instrument_id = selected_entry_instrument(&strategy);
         let error = strategy
             .build_configured_entry_order(
-                InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET"),
+                instrument_id,
                 OrderSide::Buy,
                 Quantity::new(10.0, 2),
                 Price::new(0.50, 2),
@@ -10206,25 +10184,15 @@ mod tests {
         strategy.config.exit_order.is_post_only = true;
         strategy.config.market_exit_time_in_force = "ioc".to_string();
         strategy.config.market_exit_reduce_only = true;
-        strategy.active.books.up.best_bid = Some(0.44);
-        strategy.active.books.up.best_ask = Some(0.45);
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        set_active_books_best_prices(&mut strategy, 0.44, 0.45);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
-            position_id: PositionId::from("P-FORCED-EXIT-001"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            PositionId::from("P-FORCED-EXIT-001"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_managed_position(
             &mut strategy,
             open_position,
@@ -10251,23 +10219,14 @@ mod tests {
         strategy.config.exit_order.is_post_only = true;
         strategy.config.market_exit_time_in_force = "ioc".to_string();
         strategy.config.market_exit_reduce_only = true;
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let instrument_id = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
-            position_id: PositionId::from("P-FORCED-EXIT-ORDER-001"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            PositionId::from("P-FORCED-EXIT-ORDER-001"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_managed_position(
             &mut strategy,
             open_position,
@@ -10337,7 +10296,7 @@ mod tests {
         strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
         strategy.config.exit_order.is_post_only = true;
 
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&strategy);
         let quantity = Quantity::new(1.0, 2);
         let entry_price = Price::new(0.40, 2);
         let entry_order = strategy
@@ -10372,7 +10331,7 @@ mod tests {
         strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
         strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
 
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&strategy);
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.40, 2);
         let order = strategy
@@ -10399,10 +10358,11 @@ mod tests {
         let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+        let instrument_id = selected_entry_instrument(&strategy);
 
         let order = strategy
             .build_configured_entry_order(
-                InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET"),
+                instrument_id,
                 OrderSide::Buy,
                 Quantity::new(1.0, 2),
                 Price::new(0.40, 2),
@@ -10426,7 +10386,7 @@ mod tests {
         strategy.config.entry_order.trigger_price = Some(0.52);
         strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
 
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&strategy);
         let quantity = Quantity::new(2.0, 2);
         let admission_price = Price::new(0.40, 2);
         let order = strategy
@@ -10503,10 +10463,11 @@ mod tests {
         let mut strategy = BinaryOracleEdgeTaker::new(config, context);
         let _cache = register_test_strategy(&mut strategy);
         let trigger_instrument_id = InstrumentId::from("ETHUSDT.BINANCE");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
         let order = strategy
             .build_configured_entry_order(
-                InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET"),
+                instrument_id,
                 OrderSide::Buy,
                 Quantity::new(2.0, 2),
                 Price::new(0.40, 2),
@@ -10547,10 +10508,11 @@ mod tests {
         );
         let mut strategy = BinaryOracleEdgeTaker::new(config, context);
         let _cache = register_test_strategy(&mut strategy);
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
         let error = strategy
             .build_configured_entry_order(
-                InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET"),
+                instrument_id,
                 OrderSide::Buy,
                 Quantity::new(2.0, 2),
                 Price::new(0.40, 2),
@@ -10582,7 +10544,7 @@ mod tests {
         strategy.config.exit_order.trigger_type = Some(TriggerType::MarkPrice);
         strategy.config.exit_order.is_post_only = true;
 
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&strategy);
         let quantity = Quantity::new(2.0, 2);
         let price = Price::new(0.40, 2);
         let order = strategy
@@ -10667,7 +10629,7 @@ mod tests {
         strategy.config.exit_order.trigger_type = Some(TriggerType::MarkPrice);
         strategy.config.exit_order.is_post_only = true;
 
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&strategy);
         let quantity = Quantity::new(2.0, 2);
         let price = Price::new(0.40, 2);
         let order = strategy
@@ -10739,7 +10701,7 @@ mod tests {
     fn limit_if_touched_rejects_nt_side_price_invariants_before_factory() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let _cache = register_test_strategy(&mut strategy);
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&strategy);
         let quantity = Quantity::new(2.0, 2);
 
         strategy.config.entry_order.order_type = OrderType::LimitIfTouched;
@@ -10804,7 +10766,7 @@ mod tests {
         strategy.config.exit_order.trailing_offset_type = Some(TrailingOffsetType::Ticks);
         strategy.config.exit_order.is_post_only = false;
 
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&strategy);
         let quantity = Quantity::new(2.0, 2);
         let fallback_price = Price::new(0.40, 2);
         let order = strategy
@@ -10892,10 +10854,11 @@ mod tests {
         strategy.config.entry_order.trigger_price = Some(0.52);
         strategy.config.entry_order.trailing_offset = Some(2.5);
         strategy.config.entry_order.is_post_only = false;
+        let instrument_id = selected_entry_instrument(&strategy);
 
         let order = strategy
             .build_configured_entry_order(
-                InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET"),
+                instrument_id,
                 OrderSide::Buy,
                 Quantity::new(2.0, 2),
                 Price::new(0.40, 2),
@@ -10915,7 +10878,7 @@ mod tests {
 
     #[test]
     fn trailing_stop_market_rejects_required_nt_fields_before_factory() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.40, 2);
 
@@ -11024,7 +10987,7 @@ mod tests {
     fn configured_order_build_rejects_nt_model_invalid_tif_before_factory() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let _cache = register_test_strategy(&mut strategy);
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&strategy);
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.40, 2);
 
@@ -11157,36 +11120,24 @@ mod tests {
     #[test]
     fn entry_book_impact_cap_uses_configured_sell_side_book() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let selected_side = selected_entry_side(&strategy);
         strategy.config.entry_order.side = "sell".to_string();
         strategy.config.entry_order.position_side = "short".to_string();
         strategy.config.exit_order.side = "buy".to_string();
         strategy.config.exit_order.position_side = "short".to_string();
         strategy.config.book_impact_cap_bps = 0;
-        strategy.active.books.down.bid_levels.clear();
-        strategy.active.books.down.ask_levels.clear();
-        strategy
-            .active
-            .books
-            .down
-            .bid_levels
-            .insert(Price::new(0.44, 2), 7.0);
-        strategy
-            .active
-            .books
-            .down
-            .bid_levels
-            .insert(Price::new(0.42, 2), 100.0);
-        strategy
-            .active
-            .books
-            .down
-            .ask_levels
-            .insert(Price::new(0.60, 2), 100.0);
-        strategy.active.books.down.best_bid = Some(0.44);
-        strategy.active.books.down.best_ask = Some(0.60);
+        set_configured_books_depth(
+            &mut strategy,
+            &[
+                (BookAction::Clear, OrderSide::Buy, 0.44, 7.0),
+                (BookAction::Add, OrderSide::Buy, 0.44, 7.0),
+                (BookAction::Add, OrderSide::Buy, 0.42, 100.0),
+                (BookAction::Add, OrderSide::Sell, 0.60, 100.0),
+            ],
+        );
 
         assert_eq!(
-            strategy.visible_book_notional_cap(OutcomeSide::Down),
+            strategy.visible_book_notional_cap(selected_side),
             Some(3.08)
         );
     }
@@ -11257,7 +11208,7 @@ mod tests {
 
     #[test]
     fn book_impact_cap_is_derived_from_vwap_slippage_against_best_touch() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let mut state = OutcomeBookState::from_instrument_id(instrument_id);
         state.update_from_deltas(&book_deltas(
             instrument_id,
@@ -11287,12 +11238,11 @@ mod tests {
 
     #[test]
     fn book_impact_cap_config_changes_sizing_decision() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
-
         let mut loose = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         loose.config.book_impact_cap_bps = 5_000;
-        loose.active.books.up.update_from_deltas(&book_deltas(
-            instrument_id,
+        let loose_instrument_id = selected_entry_instrument(&loose);
+        loose.active.books.update_from_deltas(&book_deltas(
+            loose_instrument_id,
             &[
                 (BookAction::Add, OrderSide::Buy, 0.49, 10.0),
                 (BookAction::Add, OrderSide::Sell, 0.50, 10.0),
@@ -11302,8 +11252,9 @@ mod tests {
 
         let mut tight = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         tight.config.book_impact_cap_bps = 0;
-        tight.active.books.up.update_from_deltas(&book_deltas(
-            instrument_id,
+        let tight_instrument_id = selected_entry_instrument(&tight);
+        tight.active.books.update_from_deltas(&book_deltas(
+            tight_instrument_id,
             &[
                 (BookAction::Add, OrderSide::Buy, 0.49, 10.0),
                 (BookAction::Add, OrderSide::Sell, 0.50, 10.0),
@@ -11311,8 +11262,8 @@ mod tests {
             ],
         ));
 
-        let loose_cap = loose.visible_book_notional_cap(OutcomeSide::Up);
-        let tight_cap = tight.visible_book_notional_cap(OutcomeSide::Up);
+        let loose_cap = loose.visible_book_notional_cap(selected_entry_side(&loose));
+        let tight_cap = tight.visible_book_notional_cap(selected_entry_side(&tight));
 
         assert!(
             loose_cap
@@ -11327,14 +11278,8 @@ mod tests {
         let mut strategy = ready_to_trade_strategy();
         let entry_client_order_id = ClientOrderId::from("ENTRY-A");
         let position_id = PositionId::from("P-A");
-        let instrument_a = strategy.active.books.up.instrument_id.unwrap();
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_a,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_a = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
 
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
@@ -11355,25 +11300,16 @@ mod tests {
     #[test]
     fn exit_fill_arms_cooldown_for_position_market_not_current_selection() {
         let mut strategy = ready_to_trade_strategy();
-        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
+        let tracked_instrument = selected_entry_instrument(&strategy);
         let exit_client_order_id = ClientOrderId::from("EXIT-A");
         let position_id = PositionId::from("P-A");
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
-            instrument_id: tracked_instrument,
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            tracked_instrument,
             position_id,
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -11401,25 +11337,17 @@ mod tests {
     #[test]
     fn exit_fill_without_known_position_market_does_not_cool_down_active_selection() {
         let mut strategy = ready_to_trade_strategy();
-        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
+        let tracked_instrument = selected_entry_instrument(&strategy);
         let exit_client_order_id = ClientOrderId::from("EXIT-UNKNOWN");
         let position_id = PositionId::from("P-UNKNOWN");
-        let open_position = OpenPositionState {
-            market_id: None,
-            instrument_id: tracked_instrument,
+        let mut open_position = materialize_configured_position(
+            &mut strategy,
+            tracked_instrument,
             position_id,
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        open_position.market_id = None;
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -11444,25 +11372,16 @@ mod tests {
     #[test]
     fn delayed_exit_fill_after_position_closed_does_not_cool_down_active_selection() {
         let mut strategy = ready_to_trade_strategy();
-        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
+        let tracked_instrument = selected_entry_instrument(&strategy);
         let exit_client_order_id = ClientOrderId::from("EXIT-DELAYED");
         let position_id = PositionId::from("P-DELAYED");
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
-            instrument_id: tracked_instrument,
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            tracked_instrument,
             position_id,
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -11490,6 +11409,7 @@ mod tests {
     #[test]
     fn rotated_position_uses_position_book_for_thin_book_forced_flat() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let position_outcome_side = selected_entry_side(&strategy);
         let position_instrument = InstrumentId::from("condition-MKT-A-UP.POLYMARKET");
         let mut tracked_book = OutcomeBookState::from_instrument_id(position_instrument);
         tracked_book.last_observed_instrument_id = Some(position_instrument);
@@ -11500,7 +11420,7 @@ mod tests {
             market_id: Some("MKT-A".to_string()),
             instrument_id: position_instrument,
             position_id: PositionId::from("P-THIN-001"),
-            outcome_side: Some(OutcomeSide::Up),
+            outcome_side: Some(position_outcome_side),
             outcome_fees: strategy.active.outcome_fees.clone(),
             historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
@@ -11549,17 +11469,11 @@ mod tests {
     #[test]
     fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_a = strategy.active.books.up.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-A");
         let position_id = PositionId::from("P-A");
-        let original_book = strategy.active.books.up.clone();
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_a,
-            OutcomeSide::Up,
-            original_book.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_a = pending.instrument_id;
+        let original_book = pending.book.clone();
         set_pending_entry(&mut strategy, pending);
 
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
@@ -11609,16 +11523,10 @@ mod tests {
         let mut strategy = ready_to_trade_strategy();
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-PARTIAL");
         let position_id = PositionId::from("P-PARTIAL");
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
 
         let mut first_fill = order_filled_event(entry_client_order_id, instrument_id, position_id);
@@ -11800,7 +11708,7 @@ mod tests {
                     position_id,
                     position_quantity,
                 );
-            let entry_price = active_book_for_configured_instrument(&strategy, instrument_id)
+            let entry_price = configured_book_for_instrument(&mut strategy, instrument_id)
                 .best_ask
                 .expect("ready-to-trade fixture should expose an ask");
             let entry_order = strategy
@@ -11881,16 +11789,10 @@ mod tests {
         let mut strategy = ready_to_trade_strategy();
         let cache = register_test_strategy(&mut strategy);
         strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-IOC");
         let position_id = PositionId::from("P-IOC");
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
         let order = strategy
             .build_configured_entry_order(
@@ -11934,33 +11836,26 @@ mod tests {
         strategy.config.exit_order.trigger_price = Some(0.40);
         strategy.config.exit_order.trigger_type = Some(TriggerType::LastPrice);
         strategy.config.exit_order.is_post_only = false;
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let mut book = strategy.active.books.up.clone();
+        let instrument_id = selected_entry_instrument(&strategy);
+        let mut book = configured_book_for_instrument(&mut strategy, instrument_id);
         book.bid_levels.clear();
         book.ask_levels.clear();
         book.best_bid = None;
         book.best_ask = None;
         book.liquidity_available = Some(500.0);
-        strategy.exposure = ExposureState::Managed(ManagedPositionState {
-            position: OpenPositionState {
-                market_id: Some("MKT-1".to_string()),
-                instrument_id,
-                position_id: PositionId::from("P-STOP-EXIT"),
-                outcome_side: Some(OutcomeSide::Up),
-                outcome_fees: strategy.active.outcome_fees.clone(),
-                historical_entry_fee_bps: Some(0.0),
-                entry_order_side: OrderSide::Buy,
-                side: PositionSide::Long,
-                quantity: Quantity::new(4.0, 2),
-                avg_px_open: 0.450,
-                interval_open: Some(3_100.0),
-                selection_published_at_ms: Some(1_000),
-                seconds_to_expiry_at_selection: Some(300),
-                book,
-            },
-            origin: ManagedPositionOrigin::StrategyEntry,
-            pending_entry: None,
-        });
+        let mut position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            PositionId::from("P-STOP-EXIT"),
+            Quantity::new(4.0, 2),
+            0.450,
+        );
+        position.book = book;
+        set_managed_position(
+            &mut strategy,
+            position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
 
         let decision = strategy.exit_submission_decision_at(1_200);
 
@@ -11979,33 +11874,25 @@ mod tests {
         strategy.config.exit_order.trigger_price = Some(0.40);
         strategy.config.exit_order.trigger_type = Some(TriggerType::LastPrice);
         strategy.config.exit_order.is_post_only = false;
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        strategy.exposure = ExposureState::Managed(ManagedPositionState {
-            position: OpenPositionState {
-                market_id: Some("MKT-1".to_string()),
-                instrument_id,
-                position_id: PositionId::from("P-STOP-EV"),
-                outcome_side: Some(OutcomeSide::Up),
-                outcome_fees: strategy.active.outcome_fees.clone(),
-                historical_entry_fee_bps: Some(0.0),
-                entry_order_side: OrderSide::Buy,
-                side: PositionSide::Long,
-                quantity: Quantity::new(4.0, 2),
-                avg_px_open: 0.450,
-                interval_open: Some(3_100.0),
-                selection_published_at_ms: Some(1_000),
-                seconds_to_expiry_at_selection: Some(300),
-                book: strategy.active.books.up.clone(),
-            },
-            origin: ManagedPositionOrigin::StrategyEntry,
-            pending_entry: None,
-        });
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            PositionId::from("P-STOP-EV"),
+            Quantity::new(4.0, 2),
+            0.450,
+        );
+        set_managed_position(
+            &mut strategy,
+            position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
 
         let decision = strategy.exit_submission_decision_at(1_200);
         let exit_ev_bps = decision
             .evaluation
             .exit_ev_bps
-            .expect("triggered exit EV should be available");
+            .unwrap_or_else(|| panic!("triggered exit EV should be available: {decision:#?}"));
         let expected_exit_ev_bps = ((0.40 - 0.450) / 0.450) * BPS_DENOMINATOR;
 
         assert!((exit_ev_bps - expected_exit_ev_bps).abs() < 1e-9);
@@ -12014,16 +11901,10 @@ mod tests {
     #[test]
     fn entry_fill_without_position_id_stays_fail_closed_until_position_event_arrives() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-NO-POS");
-        let original_book = strategy.active.books.up.clone();
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            original_book.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
+        let original_book = pending.book.clone();
         set_pending_entry(&mut strategy, pending);
 
         strategy
@@ -12075,16 +11956,10 @@ mod tests {
     #[test]
     fn late_entry_terminal_events_preserve_entry_reconcile_fail_closed_state() {
         let entry_client_order_id = ClientOrderId::from("ENTRY-LATE-TERM");
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
 
         let mut canceled = ready_to_trade_strategy();
-        let canceled_pending = pending_entry_state(
-            &canceled,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            canceled.active.books.up.clone(),
-        );
+        let canceled_pending = pending_entry_state(&mut canceled, entry_client_order_id);
+        let instrument_id = canceled_pending.instrument_id;
         set_entry_reconcile_pending(
             &mut canceled,
             canceled_pending,
@@ -12099,13 +11974,7 @@ mod tests {
         ));
 
         let mut rejected = ready_to_trade_strategy();
-        let rejected_pending = pending_entry_state(
-            &rejected,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            rejected.active.books.up.clone(),
-        );
+        let rejected_pending = pending_entry_state(&mut rejected, entry_client_order_id);
         set_entry_reconcile_pending(
             &mut rejected,
             rejected_pending,
@@ -12118,13 +11987,7 @@ mod tests {
         ));
 
         let mut expired = ready_to_trade_strategy();
-        let expired_pending = pending_entry_state(
-            &expired,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            expired.active.books.up.clone(),
-        );
+        let expired_pending = pending_entry_state(&mut expired, entry_client_order_id);
         set_entry_reconcile_pending(
             &mut expired,
             expired_pending,
@@ -12153,7 +12016,7 @@ mod tests {
 
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         register_test_strategy_with_active_instruments(&mut strategy);
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let instrument_id = selected_entry_instrument(&strategy);
         let decision = strategy.entry_submission_decision_at(1_200);
         assert!(
             decision.instrument_id.is_some()
@@ -12180,26 +12043,17 @@ mod tests {
     fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.active.phase = SelectionPhase::Freeze;
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
-            position_id: PositionId::from("P-EXIT-SUBMIT-ERROR"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            PositionId::from("P-EXIT-SUBMIT-ERROR"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_managed_position(
             &mut strategy,
-            open_position,
+            position,
             ManagedPositionOrigin::StrategyEntry,
         );
         register_test_strategy_with_active_instruments(&mut strategy);
@@ -12230,14 +12084,11 @@ mod tests {
     fn book_delta_entry_reconcile_pending_does_not_try_new_entry() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         register_test_strategy_with_active_instruments(&mut strategy);
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let pending = pending_entry_state(
-            &strategy,
+            &mut strategy,
             ClientOrderId::from("ENTRY-RECONCILE-BOOK-DELTA"),
-            instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
         );
+        let instrument_id = pending.instrument_id;
         set_entry_reconcile_pending(
             &mut strategy,
             pending,
@@ -12264,14 +12115,8 @@ mod tests {
     fn position_closed_releases_entry_reconcile_pending_for_same_instrument() {
         let mut strategy = ready_to_trade_strategy();
         let entry_client_order_id = ClientOrderId::from("ENTRY-CLOSED-BEFORE-OPEN");
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
         set_entry_reconcile_pending(
             &mut strategy,
             pending,
@@ -12291,15 +12136,9 @@ mod tests {
     fn position_closed_keeps_entry_reconcile_pending_for_different_instrument() {
         let mut strategy = ready_to_trade_strategy();
         let entry_client_order_id = ClientOrderId::from("ENTRY-CLOSE-OTHER-INSTRUMENT");
-        let pending_instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let other_instrument_id = strategy.active.books.down.instrument_id.unwrap();
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            pending_instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let pending_instrument_id = pending.instrument_id;
+        let other_instrument_id = configured_instrument_except(&strategy, pending_instrument_id);
         set_entry_reconcile_pending(
             &mut strategy,
             pending,
@@ -12353,15 +12192,9 @@ mod tests {
     #[test]
     fn sell_fill_enters_recovery_without_materializing_position() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.down.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-SELL");
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Down,
-            strategy.active.books.down.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
 
         strategy
@@ -12392,16 +12225,10 @@ mod tests {
     #[test]
     fn unsupported_entry_fill_without_matching_context_keeps_unknown_side_absent() {
         let mut strategy = ready_to_trade_strategy();
-        let pending_instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let fill_instrument_id = strategy.active.books.down.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-MISMATCHED-FILL");
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            pending_instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let pending_instrument_id = pending.instrument_id;
+        let fill_instrument_id = configured_instrument_except(&strategy, pending_instrument_id);
         set_pending_entry(&mut strategy, pending);
 
         strategy
@@ -12429,15 +12256,9 @@ mod tests {
     #[test]
     fn pending_entry_short_position_event_stays_fail_closed_without_materializing_position() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.down.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-SELL");
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Down,
-            strategy.active.books.down.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
 
         strategy.on_position_opened(position_opened_event_with_details(
@@ -12468,15 +12289,9 @@ mod tests {
     #[test]
     fn pending_entry_unknown_position_side_stays_fail_closed_without_materializing_position() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-BAD-SIDE");
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
 
         strategy.on_position_opened(position_opened_event_with_details(
@@ -12501,24 +12316,15 @@ mod tests {
     #[test]
     fn position_opened_after_rotation_preserves_existing_position_context() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_a = strategy.active.books.up.instrument_id.unwrap();
-        let preserved_book = strategy.active.books.up.clone();
-        let preserved_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
-            instrument_id: instrument_a,
-            position_id: PositionId::from("P-A"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: preserved_book.clone(),
-        };
+        let instrument_a = selected_entry_instrument(&strategy);
+        let preserved_book = configured_book_for_instrument(&mut strategy, instrument_a);
+        let preserved_position = materialize_configured_position(
+            &mut strategy,
+            instrument_a,
+            PositionId::from("P-A"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_managed_position(
             &mut strategy,
             preserved_position,
@@ -13846,18 +13652,12 @@ mod tests {
     fn historical_entry_fee_rate_exit_ev_uses_entry_fee_from_submission_time() {
         let (mut strategy, fee_provider) =
             ready_to_trade_strategy_with_recording_fees(Decimal::new(100, 2), Decimal::ZERO);
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let client_order_id = ClientOrderId::from("ENTRY-HIST-FEE-001");
-        let pending = pending_entry_state(
-            &strategy,
-            client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, client_order_id);
+        let instrument_id = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
 
-        fee_provider.set_fee("condition-MKT-1-MKT-1-UP.POLYMARKET", Decimal::new(300, 2));
+        fee_provider.set_fee(&instrument_id.to_string(), Decimal::new(300, 2));
         strategy
             .on_order_filled(&order_filled_event(
                 client_order_id,
@@ -13867,8 +13667,11 @@ mod tests {
             .expect("entry fill should materialize position for exit EV test");
 
         let order_config = strategy.normal_exit_order_execution_config();
+        let outcome_side = managed_position_ref(&strategy)
+            .and_then(|position| position.outcome_side)
+            .expect("entry fill should preserve configured outcome side");
         let exit_ev_bps = strategy
-            .current_exit_ev_bps_at(OutcomeSide::Up, &order_config)
+            .current_exit_ev_bps_at(outcome_side, &order_config)
             .expect("historical entry fee test should produce exit EV");
         let total_entry_cost = 0.450 * (1.0 + 1.0 / BPS_DENOMINATOR);
         let net_exit_value = 0.500 * (1.0 - 3.0 / BPS_DENOMINATOR);
@@ -13882,18 +13685,12 @@ mod tests {
     fn historical_entry_fee_rate_logs_known_for_strategy_managed_positions() {
         let (mut strategy, fee_provider) =
             ready_to_trade_strategy_with_recording_fees(Decimal::new(100, 2), Decimal::ZERO);
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let client_order_id = ClientOrderId::from("ENTRY-HIST-LOG-001");
-        let pending = pending_entry_state(
-            &strategy,
-            client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, client_order_id);
+        let instrument_id = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
 
-        fee_provider.set_fee("condition-MKT-1-MKT-1-UP.POLYMARKET", Decimal::new(300, 2));
+        fee_provider.set_fee(&instrument_id.to_string(), Decimal::new(300, 2));
         strategy
             .on_order_filled(&order_filled_event(
                 client_order_id,

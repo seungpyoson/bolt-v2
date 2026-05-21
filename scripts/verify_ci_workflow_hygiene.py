@@ -1090,35 +1090,67 @@ def source_build_tool_from_token(token: str) -> str | None:
     return None
 
 
+def normalized_source_path(token: str) -> str:
+    return token.rstrip("/")
+
+
+def source_build_tool_for_path(token: str, source_path_tools: dict[str, str] | None) -> str | None:
+    normalized = normalized_source_path(token)
+    if source_path_tools and normalized in source_path_tools:
+        return source_path_tools[normalized]
+    return source_build_tool_from_token(token)
+
+
 def executable_name(token: str) -> str:
     return pathlib.Path(token).name
 
 
-def cargo_install_source_build_tools(tokens: list[str], command_index: int) -> set[str]:
+def cargo_install_source_build_tools(
+    tokens: list[str],
+    command_index: int,
+    source_path_tools: dict[str, str] | None = None,
+) -> set[str]:
     tools: set[str] = set()
     index = command_index + 1
     while index < len(tokens) and tokens[index] not in SHELL_COMMAND_BOUNDARIES:
         token = tokens[index]
         if token in ("--package", "-p") and index + 1 < len(tokens):
-            tool = source_build_tool_from_token(tokens[index + 1])
+            tool = source_build_tool_for_path(tokens[index + 1], source_path_tools)
             if tool is not None:
                 tools.add(tool)
             index += 2
             continue
         if token.startswith("--package="):
-            tool = source_build_tool_from_token(token.removeprefix("--package="))
+            tool = source_build_tool_for_path(token.removeprefix("--package="), source_path_tools)
             if tool is not None:
                 tools.add(tool)
             index += 1
             continue
-        tool = source_build_tool_from_token(token)
+        if token == "--path" and index + 1 < len(tokens):
+            tool = source_build_tool_for_path(tokens[index + 1], source_path_tools)
+            if tool is not None:
+                tools.add(tool)
+            index += 2
+            continue
+        if token.startswith("--path="):
+            tool = source_build_tool_for_path(token.removeprefix("--path="), source_path_tools)
+            if tool is not None:
+                tools.add(tool)
+            index += 1
+            continue
+        tool = source_build_tool_for_path(token, source_path_tools)
         if tool is not None:
             tools.add(tool)
         index += 1
     return tools
 
 
-def cargo_install_source_build_tools_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
+def cargo_install_source_build_tools_from_tokens(
+    tokens: list[str],
+    *,
+    depth: int = 0,
+    source_path_tools: dict[str, str] | None = None,
+) -> set[str]:
     if not tokens or depth > 6:
         return set()
     tools: set[str] = set()
@@ -1126,21 +1158,41 @@ def cargo_install_source_build_tools_from_tokens(tokens: list[str], *, depth: in
         segment: list[str] = []
         for token in tokens:
             if token in SHELL_COMMAND_BOUNDARIES:
-                tools.update(cargo_install_source_build_tools_from_tokens(segment, depth=depth + 1))
+                tools.update(
+                    cargo_install_source_build_tools_from_tokens(
+                        segment,
+                        depth=depth + 1,
+                        source_path_tools=source_path_tools,
+                    )
+                )
                 segment = []
                 continue
             segment.append(token)
-        tools.update(cargo_install_source_build_tools_from_tokens(segment, depth=depth + 1))
+        tools.update(
+            cargo_install_source_build_tools_from_tokens(
+                segment,
+                depth=depth + 1,
+                source_path_tools=source_path_tools,
+            )
+        )
         return tools
     assignment_index = consume_assignment_words(tokens, 0)
     if assignment_index:
-        return cargo_install_source_build_tools_from_tokens(tokens[assignment_index:], depth=depth + 1)
+        return cargo_install_source_build_tools_from_tokens(
+            tokens[assignment_index:],
+            depth=depth + 1,
+            source_path_tools=source_path_tools,
+        )
     executable = pathlib.Path(tokens[0]).name
     if executable in ("bash", "dash", "fish", "sh", "zsh"):
         nested = shell_command(tokens)
         if nested is None:
             return tools
-        return cargo_install_source_build_tools_from_tokens(command_tokens(nested), depth=depth + 1)
+        return cargo_install_source_build_tools_from_tokens(
+            command_tokens(nested),
+            depth=depth + 1,
+            source_path_tools=source_path_tools,
+        )
     if executable in {
         "catchsegv",
         "chrt",
@@ -1160,21 +1212,49 @@ def cargo_install_source_build_tools_from_tokens(tokens: list[str], *, depth: in
     }:
         inner = wrapper_inner_tokens(tokens)
         if inner is not None:
-            return cargo_install_source_build_tools_from_tokens(inner, depth=depth + 1)
+            return cargo_install_source_build_tools_from_tokens(
+                inner,
+                depth=depth + 1,
+                source_path_tools=source_path_tools,
+            )
         return tools
     if executable == "cargo":
         command_index = consume_cargo_global_options(tokens, 1)
         if command_index < len(tokens) and tokens[command_index] == "install":
-            tools.update(cargo_install_source_build_tools(tokens, command_index))
+            tools.update(cargo_install_source_build_tools(tokens, command_index, source_path_tools))
     elif path_invocation_has_cargo_subcommand(tokens):
         command_index = consume_cargo_global_options(tokens, 1)
         if command_index < len(tokens) and tokens[command_index] == "install":
-            tools.update(cargo_install_source_build_tools(tokens, command_index))
+            tools.update(cargo_install_source_build_tools(tokens, command_index, source_path_tools))
     return tools
+
+
+def source_build_clone_path_tools(text: str) -> dict[str, str]:
+    path_tools: dict[str, str] = {}
+    for line in text.replace("\\\n", " ").splitlines():
+        tokens = command_tokens(line)
+        for index, token in enumerate(tokens[:-2]):
+            if executable_name(token) != "git" or tokens[index + 1] != "clone":
+                continue
+            cursor = index + 2
+            while cursor < len(tokens) and tokens[cursor].startswith("-"):
+                if cursor + 1 < len(tokens) and not tokens[cursor + 1].startswith("-"):
+                    cursor += 2
+                else:
+                    cursor += 1
+            if cursor >= len(tokens):
+                continue
+            tool = source_build_tool_from_token(tokens[cursor])
+            if tool is None:
+                continue
+            if cursor + 1 < len(tokens) and tokens[cursor + 1] not in SHELL_COMMAND_BOUNDARIES:
+                path_tools[normalized_source_path(tokens[cursor + 1])] = tool
+    return path_tools
 
 
 def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
     tools: set[str] = set()
+    source_path_tools = source_build_clone_path_tools(text)
     for line in text.replace("\\\n", " ").splitlines():
         if "install" not in line:
             continue
@@ -1184,7 +1264,7 @@ def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
             tokens = list(lexer)
         except ValueError:
             continue
-        tools.update(cargo_install_source_build_tools_from_tokens(tokens))
+        tools.update(cargo_install_source_build_tools_from_tokens(tokens, source_path_tools=source_path_tools))
         for index, token in enumerate(tokens[:-1]):
             if executable_name(token) != "cargo":
                 continue
@@ -1193,7 +1273,7 @@ def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
             command_index = consume_cargo_global_options(tokens, index + 1)
             if command_index >= len(tokens) or tokens[command_index] != "install":
                 continue
-            tools.update(cargo_install_source_build_tools(tokens, command_index))
+            tools.update(cargo_install_source_build_tools(tokens, command_index, source_path_tools))
     return tools
 
 
@@ -1231,10 +1311,6 @@ def tokens_have_target_routing_override(tokens: list[str]) -> bool:
         if token == "--config" and index + 1 < len(tokens) and cargo_config_has_storage_override(tokens[index + 1]):
             return True
         if token.startswith("--config=") and cargo_config_has_storage_override(token.split("=", 1)[1]):
-            return True
-        if token == "-C" and index + 1 < len(tokens) and cargo_config_has_storage_override(tokens[index + 1]):
-            return True
-        if token.startswith("-C") and cargo_config_has_storage_override(token[2:]):
             return True
     return False
 
@@ -1699,7 +1775,16 @@ def raw_rust_tool_token(name: str) -> bool:
 
 
 def path_executable_looks_like_cargo(token: str) -> bool:
-    return "/" in token and (pathlib.Path(token).name == "c" or raw_rust_tool_token(pathlib.Path(token).name))
+    if "/" not in token:
+        return False
+    path = pathlib.Path(token)
+    if path.name == "c" or raw_rust_tool_token(path.name):
+        return True
+    try:
+        resolved = path.expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return raw_rust_tool_token(resolved.name)
 
 
 def path_invocation_has_cargo_subcommand(tokens: list[str]) -> bool:
@@ -1838,14 +1923,6 @@ def cargo_config_storage_override_message(tokens: list[str]) -> str | None:
                 if cargo_config_looks_like_path(config):
                     return "cargo --config file raw target override must be classified"
                 return "cargo --config build.target-dir raw target override must be classified"
-        if token == "-C" and index + 1 < len(tokens) and cargo_config_has_storage_override(tokens[index + 1]):
-            if cargo_config_looks_like_path(tokens[index + 1]):
-                return "cargo --config file raw target override must be classified"
-            return "cargo --config build.target-dir raw target override must be classified"
-        if token.startswith("-C") and cargo_config_has_storage_override(token[2:]):
-            if cargo_config_looks_like_path(token[2:]):
-                return "cargo --config file raw target override must be classified"
-            return "cargo --config build.target-dir raw target override must be classified"
     return None
 
 
@@ -1971,10 +2048,30 @@ def text_raw_cargo_storage_override_messages(text: str) -> set[str]:
     return messages
 
 
+def strip_yaml_anchor(value: str) -> tuple[str | None, str]:
+    match = re.match(r"&([A-Za-z0-9_.-]+)(?:\s+|$)(.*)", value)
+    if match is None:
+        return None, value
+    return match.group(1), match.group(2).strip()
+
+
+def resolve_no_mistakes_scalar(value: str, anchors: dict[str, str]) -> tuple[str, str | None]:
+    value = value.strip()
+    alias = re.fullmatch(r"\*([A-Za-z0-9_.-]+)", value)
+    if alias is not None:
+        return anchors.get(alias.group(1), value), None
+    anchor, value = strip_yaml_anchor(value)
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1]
+    return value, anchor
+
+
 def no_mistakes_commands(config_text: str) -> dict[str, str]:
     commands: dict[str, str] = {}
+    anchors: dict[str, str] = {}
     in_commands = False
     current_name: str | None = None
+    current_anchor: str | None = None
     current_indent = 0
     current_lines: list[str] = []
     for raw_line in config_text.splitlines():
@@ -1985,8 +2082,12 @@ def no_mistakes_commands(config_text: str) -> dict[str, str]:
         indent = len(line) - len(line.lstrip(" "))
         if indent == 0:
             if current_name is not None:
-                commands[current_name] = "\n".join(part.strip() for part in current_lines).strip()
+                command = "\n".join(part.strip() for part in current_lines).strip()
+                commands[current_name] = command
+                if current_anchor is not None:
+                    anchors[current_anchor] = command
                 current_name = None
+                current_anchor = None
                 current_lines = []
             name, separator, value = stripped.partition(":")
             in_commands = bool(separator) and name.strip() == "commands" and (
@@ -1997,23 +2098,35 @@ def no_mistakes_commands(config_text: str) -> dict[str, str]:
             continue
         if indent <= 2 and ":" in stripped:
             if current_name is not None:
-                commands[current_name] = "\n".join(part.strip() for part in current_lines).strip()
+                command = "\n".join(part.strip() for part in current_lines).strip()
+                commands[current_name] = command
+                if current_anchor is not None:
+                    anchors[current_anchor] = command
                 current_name = None
+                current_anchor = None
                 current_lines = []
             name, _, value = stripped.partition(":")
             value = value.strip()
+            anchor, stripped_value = strip_yaml_anchor(value)
+            if anchor is not None:
+                value = stripped_value
             if value in ("|", ">") or value.startswith(("|", ">")):
                 current_name = name.strip()
+                current_anchor = anchor
                 current_indent = indent
                 continue
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-                value = value[1:-1]
+            value, scalar_anchor = resolve_no_mistakes_scalar(value if anchor is None else f"&{anchor} {value}", anchors)
+            if scalar_anchor is not None:
+                anchors[scalar_anchor] = value
             commands[name.strip()] = value
             continue
         if current_name is not None and indent > current_indent:
             current_lines.append(stripped)
     if current_name is not None:
-        commands[current_name] = "\n".join(part.strip() for part in current_lines).strip()
+        command = "\n".join(part.strip() for part in current_lines).strip()
+        commands[current_name] = command
+        if current_anchor is not None:
+            anchors[current_anchor] = command
     return commands
 
 
@@ -2066,14 +2179,12 @@ def text_has_path_style_cargo_config(text: str) -> bool:
             cursor = index + 1
             while cursor < len(tokens) and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
                 option = tokens[cursor]
-                if option in ("--config", "-C") and cursor + 1 < len(tokens):
+                if option == "--config" and cursor + 1 < len(tokens):
                     if cargo_config_looks_like_path(tokens[cursor + 1]):
                         return True
                     cursor += 2
                     continue
                 if option.startswith("--config=") and cargo_config_looks_like_path(option.split("=", 1)[1]):
-                    return True
-                if option.startswith("-C") and option != "-C" and cargo_config_looks_like_path(option[2:]):
                     return True
                 cursor += 1
     return False
@@ -2104,6 +2215,46 @@ def s3_uri_variables(text: str) -> set[str]:
     return variables
 
 
+def active_target_value(value: str) -> bool:
+    stripped = value.strip().strip("\"'")
+    if stripped.startswith("s3://"):
+        return False
+    return any(
+        re.search(pattern, stripped)
+        for pattern in (
+            r"(?:^|[/.])target(?:/|$)",
+            r"\$CARGO_TARGET_DIR|\$\{CARGO_TARGET_DIR[^}]*\}",
+            r"\$GITHUB_WORKSPACE/[^\s\"']*target|\$\{GITHUB_WORKSPACE[^}]*\}/[^\s\"']*target",
+            r"\$\{\{\s*(?:github\.workspace|env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}",
+        )
+    )
+
+
+def active_target_variables(text: str) -> set[str]:
+    variables: set[str] = set()
+    patterns = (
+        re.compile(
+            r"(?:^|[;&|]\s*)(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)="
+            r"(\"[^\"]+\"|'[^']+'|[^\s;&|]+)",
+            re.MULTILINE,
+        ),
+        re.compile(
+            r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"
+            r"(\"[^\"]+\"|'[^']+'|[^\s#]+)",
+            re.MULTILINE,
+        ),
+        re.compile(
+            r"\becho\s+[\"']([A-Za-z_][A-Za-z0-9_]*)=([^\"']+)[\"']\s*>>\s*[\"']?\$GITHUB_ENV[\"']?",
+            re.MULTILINE,
+        ),
+    )
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            if active_target_value(match.group(2)):
+                variables.add(match.group(1))
+    return variables
+
+
 def shell_line_references_variable(line: str, variable: str) -> bool:
     escaped = re.escape(variable)
     return re.search(rf"\$(?:{escaped}\b|\{{{escaped}[^}}]*\}})", line) is not None or re.search(
@@ -2124,15 +2275,18 @@ def aws_s3_line_mentions_active_target(line: str) -> bool:
 
 
 def text_has_s3_variable_active_target_sync(text: str) -> bool:
-    variables = s3_uri_variables(text)
-    if not variables:
+    s3_variables = s3_uri_variables(text)
+    target_variables = active_target_variables(text)
+    if not s3_variables and not target_variables:
         return False
     for line in text.splitlines():
         if not re.search(r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b", line):
             continue
-        if not aws_s3_line_mentions_active_target(line):
-            continue
-        if any(shell_line_references_variable(line, variable) for variable in variables):
+        has_s3 = "s3://" in line or any(shell_line_references_variable(line, variable) for variable in s3_variables)
+        has_target = aws_s3_line_mentions_active_target(line) or any(
+            shell_line_references_variable(line, variable) for variable in target_variables
+        )
+        if has_s3 and has_target:
             return True
     return False
 
@@ -2188,8 +2342,7 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:\[build\]|build\s*=|build\.)[^\n;&|]*target-dir", "cargo --config build.target-dir raw target override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:\[build\]|build\s*=|build\.)[^\n;&|]*target\\(?:u002[Dd]|U0000002[Dd])dir", "cargo --config build.target-dir raw target override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:build\.rustflags|rustflags\s*=)[^\n;&|]*(?:--out-dir|--artifact-dir)", "cargo --config build.rustflags raw output override must be classified"),
-        (r"\bcargo\b[^\n;&|]*\s-C\s*[\"']?build\.target-dir", "cargo --config build.target-dir raw target override must be classified"),
-        (r"\bcargo\b[^\n;&|]*(?:\s--config(?:\s+|=)|\s-C\s+)[\"']?(?:/|\./|[^\s\n;&|\"']+\.toml\b)", "cargo --config file raw target override must be classified"),
+        (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[\"']?(?:/|\./|[^\s\n;&|\"']+\.toml\b)", "cargo --config file raw target override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s--target-dir\b", "cargo --target-dir raw target override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_TARGET_TMPDIR[\"']?\s*(?:=|:)", "CARGO_TARGET_TMPDIR raw target override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_INCREMENTAL[\"']?\s*(?:=|:)", "CARGO_INCREMENTAL raw cache override must be classified"),
@@ -2240,7 +2393,7 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
     s3_active_patterns = (
         r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])/[^\s\"']*/target(?:/[^\s\"']*)?(?:[\s\"']|$))",
         r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])\$\(pwd\)/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$))",
-        r"\bcd\s+[\"']?(?:\.?/)?target[\"']?\s*(?:&&|;|\|\|)[^\n]*\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)",
+        r"\bcd\s+[\"']?(?:\.?/)?target(?:/[^\s\"']*)?[\"']?\s*(?:&&|;|\|\|)[^\n]*\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)",
         r"\baws\b[^\n;&|]*\bs3\s+sync\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])(?:\.|\$GITHUB_WORKSPACE|\$\{GITHUB_WORKSPACE[^}]*\}|\$\{\{\s*github\.workspace\s*\}\}|\$PWD|\$\{PWD[^}]*\})(?:/(?:\./)?)?(?:[\s\"']|$))",
         r"\baws\b[^\n;&|]*\bs3api\b[^\n;&|]*(?:target(?:/|[\s\"']|$)|CARGO_TARGET_DIR|managed_target_dir|\$\{\{\s*(?:github\.workspace|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\})",
     )

@@ -1170,7 +1170,42 @@ def path_executable_looks_like_cargo(token: str) -> bool:
     if "/" not in token:
         return False
     executable = basename_token(token)
-    return executable == "c" or executable_is_rust_tool(executable)
+    if executable == "c" or executable_is_rust_tool(executable):
+        return True
+    try:
+        resolved = pathlib.Path(token).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return executable_is_rust_tool(resolved.name)
+
+
+RUSTC_SPECIFIC_TOKENS = {"--crate-name", "--emit", "--out-dir"}
+
+
+def tokens_have_rustc_specific_flags(tokens: list[str]) -> bool:
+    return any(
+        token in RUSTC_SPECIFIC_TOKENS or token.startswith("--emit=") or token.startswith("--out-dir=")
+        for token in tokens
+    )
+
+
+def tokens_may_be_renamed_rustc(tokens: list[str], *, depth: int = 0) -> bool:
+    if not tokens or depth > 6:
+        return False
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index >= len(tokens):
+        return False
+    if assignment_index:
+        return tokens_may_be_renamed_rustc(tokens[assignment_index:], depth=depth + 1)
+    segments = shell_command_segments(tokens)
+    if segments:
+        return any(tokens_may_be_renamed_rustc(segment, depth=depth + 1) for segment in segments)
+    if "/" in tokens[0] and basename_token(tokens[0]) == "r" and tokens_have_rustc_specific_flags(tokens[1:]):
+        return True
+    wrapped_tokens = process_wrapper_tokens(tokens)
+    if wrapped_tokens is not None:
+        return tokens_may_be_renamed_rustc(wrapped_tokens, depth=depth + 1)
+    return False
 
 
 def command_may_launch_rust(command: str) -> bool:
@@ -1178,6 +1213,8 @@ def command_may_launch_rust(command: str) -> bool:
     if not tokens:
         return False
     if command_may_be_renamed_cargo(command):
+        return True
+    if tokens_may_be_renamed_rustc(tokens):
         return True
     executable = basename_token(tokens[0])
     if executable_is_rust_tool(executable):
@@ -1189,9 +1226,6 @@ def command_may_launch_rust(command: str) -> bool:
     if any(token in cargo_specific_tokens for token in tokens):
         if any(token in CARGO_PROCESS_SUBCOMMANDS for token in tokens):
             return True
-    rustc_specific_tokens = {"--crate-name", "--emit", "--out-dir"}
-    if any(token in rustc_specific_tokens or token.startswith("--emit=") or token.startswith("--out-dir=") for token in tokens):
-        return True
     if executable not in OPAQUE_RUST_LAUNCHERS:
         return False
     return any(
@@ -1570,14 +1604,6 @@ def cargo_target_routing_override(cargo_args: list[str]) -> str | None:
             override = cargo_config_storage_override(token.split("=", 1)[1])
             if override is not None:
                 return f"--config={override}"
-        if token == "-C" and index + 1 < len(scan_args):
-            override = cargo_config_storage_override(scan_args[index + 1])
-            if override is not None:
-                return f"-C {override}"
-        if token.startswith("-C"):
-            override = cargo_config_storage_override(token[2:])
-            if override is not None:
-                return f"-C{override}"
     return None
 
 

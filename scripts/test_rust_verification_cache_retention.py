@@ -1814,6 +1814,18 @@ def assert_v6_red_wrapped_renamed_cargo_launches_are_classified() -> None:
                 f"may_launch={owner.command_may_launch_rust(command)!r} "
                 f"names={sorted(owner.command_process_names(command))!r}"
             )
+    with tempfile.TemporaryDirectory() as tmp:
+        cargo_target = pathlib.Path(tmp) / "cargo"
+        cargo_target.write_text("#!/bin/sh\n", encoding="utf-8")
+        renamed = pathlib.Path(tmp) / "mycargo"
+        renamed.symlink_to(cargo_target)
+        command = f"{renamed} test"
+        if not owner.command_may_be_renamed_cargo(command) or not owner.command_may_launch_rust(command):
+            misses.append(
+                f"{command!r}: renamed={owner.command_may_be_renamed_cargo(command)!r} "
+                f"may_launch={owner.command_may_launch_rust(command)!r} "
+                f"names={sorted(owner.command_process_names(command))!r}"
+            )
     if misses:
         raise AssertionError("wrapped renamed cargo launches must be classified: " + "; ".join(misses))
 
@@ -1894,7 +1906,13 @@ def assert_v6_red_active_process_fails_closed_for_attached_semicolon_shell_chain
 
 def assert_v6_red_active_process_parser_ignores_unscoped_opaque_build_without_cwd() -> None:
     failures: list[str] = []
-    for command in ("make build", "python -m build", "/usr/bin/make build", "/tmp/build-tool test"):
+    for command in (
+        "make build",
+        "python -m build",
+        "/usr/bin/make build",
+        "/tmp/build-tool test",
+        "timeout 30 ./my-script.sh --out-dir /tmp/output",
+    ):
         result, debug_file_exists = cache_prune_for_visible_command(command, expose_cwd=False)
         if result.returncode != 0 or debug_file_exists:
             failures.append(
@@ -2211,7 +2229,6 @@ def assert_v6_red_managed_cargo_rejects_target_routing_overrides() -> None:
         ["test", "--config", '[build]\ntarget-dir = "/tmp/raw-target"'],
         ["test", "--config", 'build.rustflags = ["--out-dir", "/tmp/raw-out"]'],
         ["test", "--config", 'build = { rustflags = ["--artifact-dir", "/tmp/raw-artifacts"] }'],
-        ["-C", "build.target-dir=/tmp/raw-target", "test"],
         ["rustc", "--", "--out-dir", "/tmp/raw-out"],
         ["rustc", "--", "--artifact-dir", "/tmp/raw-artifacts"],
         ["install", "ripgrep", "--root", "/tmp/install-root"],
@@ -2260,7 +2277,6 @@ def assert_managed_cargo_rejects_config_file_target_routing_override() -> None:
     cases = [
         ["test", "--config", "{config_file}"],
         ["test", "--config={config_file}"],
-        ["-C", "{config_file}", "test"],
     ]
     for cargo_args_template in cases:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2311,7 +2327,6 @@ def assert_v6_red_managed_run_rejects_target_routing_overrides() -> None:
         ["test", "--config", 'build = { target-dir = "/tmp/raw-target" }'],
         ["test", "--config", '[build]\ntarget-dir = "/tmp/raw-target"'],
         ["test", "--config", 'build.rustflags = ["--out-dir", "/tmp/raw-out"]'],
-        ["clippy", "-C", "build.target-dir=/tmp/raw-target"],
     ]
     for run_args in cases:
         with tempfile.TemporaryDirectory() as tmp:

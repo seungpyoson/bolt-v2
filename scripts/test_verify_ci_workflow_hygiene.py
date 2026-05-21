@@ -1158,14 +1158,6 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --config build.rustflags raw output override must be classified",
         ),
         (
-            "cargo -C build.target-dir=/tmp/raw-target check",
-            "cargo --config build.target-dir raw target override must be classified",
-        ),
-        (
-            "cargo -Cbuild.target-dir=/tmp/raw-target check",
-            "cargo --config build.target-dir raw target override must be classified",
-        ),
-        (
             "run: |\n  cargo check \\\n    --target-dir /tmp/raw-target",
             "cargo --target-dir raw target override must be classified",
         ),
@@ -1306,14 +1298,6 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --config file raw target override must be classified",
         ),
         (
-            "cargo -C .cargo/config.toml check",
-            "cargo --config file raw target override must be classified",
-        ),
-        (
-            "cargo -C myconfig.txt check",
-            "cargo --config file raw target override must be classified",
-        ),
-        (
             "cargo install ripgrep --root /tmp/install-root --target-dir /tmp/install-build",
             "cargo install build target and install root ownership must be classified separately",
         ),
@@ -1339,6 +1323,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "aws s3 sync target s3://some-bucket/linux-cache",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'SRC_DIR=target/debug\naws s3 sync "$SRC_DIR" s3://bolt-v2-active-cache/target/debug',
             "S3 active mutable target cache must be rejected",
         ),
         (
@@ -1482,6 +1470,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "S3 active mutable target cache must be rejected",
         ),
         (
+            "cd target/debug && aws s3 sync * s3://bolt-v2-active-cache/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
             "cd target ; aws s3 sync * s3://bolt-v2-active-cache/target",
             "S3 active mutable target cache must be rejected",
         ),
@@ -1520,7 +1512,7 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
     errors = verifier.raw_rust_storage_errors(false_positive)
     if "cargo --target-dir raw target override must be classified" in errors:
         misses.append(f"non-executed alias text was classified: errors={errors!r}")
-    for false_positive in ("/usr/bin/make build", "/tmp/build-tool test"):
+    for false_positive in ("/usr/bin/make build", "/tmp/build-tool test", "cargo -C /tmp/repo build"):
         errors = verifier.raw_rust_storage_errors(false_positive)
         if any("raw target override" in error or "raw Cargo drift" in error for error in errors):
             misses.append(f"path command was classified as raw cargo: {false_positive!r} errors={errors!r}")
@@ -1538,6 +1530,10 @@ def assert_v6_red_renamed_path_cargo_source_builds_are_reported() -> None:
         (
             "timeout 30 /tmp/c install cargo-nextest --version 0.9.132 --locked",
             "repo automation must not compile cargo-nextest from source",
+        ),
+        (
+            "git clone https://github.com/EmbarkStudios/cargo-deny /tmp/my-deny\ncargo install --path /tmp/my-deny",
+            "repo automation must not compile cargo-deny from source",
         ),
     ]
     for text, expected in cases:
@@ -1599,6 +1595,8 @@ commands:
   envsplit: env -S 'cargo test'
   envsplitunquoted: env -S timeout 30 cargo test
   envblocksignal: env --block-signal cargo test
+  anchored: &raw "cargo build --target-dir /tmp/raw"
+  anchoralias: *raw
   shellcheck: bash -lc 'cargo test --all'
   evalraw: eval "cargo test"
   evaldashdash: eval -- cargo test
@@ -1648,7 +1646,6 @@ commands:
     cargo test
   managedtarget: python3 scripts/rust_verification.py cargo --repo . -- test --target-dir /tmp/raw
   managedconfig: python3 scripts/rust_verification.py cargo --repo . -- --config=build.target-dir=/tmp/raw test
-  managedshortconfig: python3 scripts/rust_verification.py cargo --repo . -- -C build.target-dir=/tmp/raw test
   managedencodedrustflags: CARGO_ENCODED_RUSTFLAGS='--out-dir\\x1f/tmp/raw-out' python3 scripts/rust_verification.py cargo --repo . -- check
   managedinstallroot: python3 scripts/rust_verification.py cargo --repo . -- install ripgrep --root /tmp/install-root
   no-mistakes-clippy-command: no-mistakes run -- clippy
@@ -1680,6 +1677,8 @@ commands: { test: "cargo test" }
         "envsplit",
         "envsplitunquoted",
         "envblocksignal",
+        "anchored",
+        "anchoralias",
         "shellcheck",
         "evalraw",
         "evaldashdash",
@@ -1727,7 +1726,6 @@ commands: { test: "cargo test" }
         "blockmanagedhidden",
         "managedtarget",
         "managedconfig",
-        "managedshortconfig",
         "managedencodedrustflags",
         "managedinstallroot",
         "no-mistakes-clippy-command",

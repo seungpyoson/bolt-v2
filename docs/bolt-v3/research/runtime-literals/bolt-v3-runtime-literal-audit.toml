@@ -2667,6 +2667,22 @@ reason = "This label names the approval-bound financial envelope artifact in che
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
+literal = '''"`[live_canary].operator_evidence.approval_consumption_path`"'''
+context = '''"`[live_canary].operator_evidence.approval_consumption_path`",'''
+classification = "phase8_canary_operator_envelope_diagnostic"
+reason = "This labels the TOML approval-consumption path in fail-closed drift diagnostics; the path value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"operator approval approval_consumption_path"'''
+context = '''"operator approval approval_consumption_path",'''
+classification = "phase8_canary_operator_envelope_diagnostic"
+reason = "This labels the operator envelope approval-consumption path in fail-closed drift diagnostics; the path value remains evidence-owned and is compared against TOML."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
 literal = '''"phase8 market selection source evidence"'''
 context = '''"phase8 market selection source evidence",'''
 classification = "phase8_approval_bound_artifact_label"

@@ -21,6 +21,7 @@ use bolt_v2::{
 use rust_decimal::Decimal;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::path::Path;
 
 const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
 const PHASE8_TEST_APPROVAL_ENVELOPE_SHA256: &str =
@@ -110,7 +111,10 @@ fn tiny_canary_quickstart_names_conditional_strategy_cancel_artifact() {
 
 #[tokio::test]
 async fn preflight_blocks_missing_phase7_report_before_build() {
-    let loaded = loaded_with_live_canary("reports/missing-no-submit-readiness.json");
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+    let mut loaded = loaded_with_live_canary("reports/missing-no-submit-readiness.json");
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
     let audit = Phase8StrategyInputSafetyAudit::approved();
 
     let report = evaluate_phase8_canary_preflight(
@@ -136,8 +140,10 @@ async fn preflight_blocks_missing_phase7_report_before_build() {
 async fn preflight_blocks_strategy_input_safety_audit_before_build() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let report_path = temp.path().join("no-submit-readiness.json");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
     write_satisfied_no_submit_readiness_report(&report_path);
-    let loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
+    let mut loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
 
     let report = evaluate_phase8_canary_preflight(
         &loaded,
@@ -164,8 +170,10 @@ async fn preflight_blocks_strategy_input_safety_audit_before_build() {
 async fn preflight_blocks_live_order_count_above_one_before_build() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let report_path = temp.path().join("no-submit-readiness.json");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
     write_satisfied_no_submit_readiness_report(&report_path);
     let mut loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
     loaded
         .root
         .live_canary
@@ -1818,7 +1826,8 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     let abort_plan_hash = Phase8OperatorApprovalEnvelope::sha256_file(&abort_plan_path)
         .expect("abort plan hash should compute");
     let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
-    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
@@ -1886,6 +1895,8 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     );
 
     let zero_window_consumption_path = temp.path().join("phase8-zero-window-consumed.json");
+    let mut zero_window_loaded = loaded.clone();
+    bind_loaded_approval_consumption_path(&mut zero_window_loaded, &zero_window_consumption_path);
     let mut zero_window_envelope = envelope.clone();
     zero_window_envelope.approval_not_before_unix_secs = 1_500;
     zero_window_envelope.approval_not_after_unix_secs = 1_500;
@@ -1896,7 +1907,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
-            &loaded,
+            &zero_window_loaded,
             1_500,
         )
         .expect_err("zero-length approval window should fail closed");
@@ -1913,6 +1924,11 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
 
     let expired_with_drift_consumption_path =
         temp.path().join("phase8-expired-with-drift-consumed.json");
+    let mut expired_with_drift_loaded = loaded.clone();
+    bind_loaded_approval_consumption_path(
+        &mut expired_with_drift_loaded,
+        &expired_with_drift_consumption_path,
+    );
     let mut expired_with_drift_envelope = envelope.clone();
     expired_with_drift_envelope.financial_envelope_sha256 =
         "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
@@ -1924,7 +1940,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
-            &loaded,
+            &expired_with_drift_loaded,
             2_001,
         )
         .expect_err("expired approval with drifted evidence should fail closed");
@@ -2130,10 +2146,12 @@ fn operator_approval_consumption_rejects_strategy_cancel_path_drift_before_spend
         envelope.approval_consumption_path =
             approval_consumption_path.to_string_lossy().to_string();
         envelope.strategy_cancel_path = strategy_cancel_path;
+        let mut loaded_for_case = loaded.clone();
+        bind_loaded_approval_consumption_path(&mut loaded_for_case, &approval_consumption_path);
 
         let error = envelope
             .consume_approval_after_live_runner_entry_validation(
-                &loaded,
+                &loaded_for_case,
                 current_unix_seconds_for_test() as i64,
             )
             .expect_err("strategy_cancel_path drift must fail before spending approval");
@@ -2362,6 +2380,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         .expect("approval nonce hash should compute");
     let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
     let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
     loaded
         .root
         .live_canary
@@ -2711,6 +2730,10 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     multi_strategy_envelope.approval_consumption_path = multi_strategy_consumption_path
         .to_string_lossy()
         .to_string();
+    bind_loaded_approval_consumption_path(
+        &mut multi_strategy_loaded,
+        &multi_strategy_consumption_path,
+    );
     multi_strategy_envelope
         .validate_and_consume_against(
             "expected-head",
@@ -2785,7 +2808,8 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
     let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
     let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
-    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
@@ -2965,7 +2989,8 @@ fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
     let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
     let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
-    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
@@ -3053,7 +3078,8 @@ fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
     let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
     let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
-    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
@@ -3161,6 +3187,19 @@ fn loaded_with_live_canary(report_path: &str) -> LoadedBoltV3Config {
         max_notional_per_order: "0.25".to_string(),
     });
     loaded
+}
+
+fn bind_loaded_approval_consumption_path(
+    loaded: &mut LoadedBoltV3Config,
+    approval_consumption_path: &Path,
+) {
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("live canary operator evidence should exist")
+        .approval_consumption_path = approval_consumption_path.to_string_lossy().to_string();
 }
 
 fn live_canary_strategy_cancel_path(loaded: &LoadedBoltV3Config) -> Option<String> {

@@ -1242,10 +1242,13 @@ fn phase8_resolve_configured_path(root_path: &Path, configured: &str) -> PathBuf
     if path.is_absolute() {
         return path;
     }
-    root_path
+    match root_path
         .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(path)
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        Some(parent) => parent.join(path),
+        None => path,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2327,9 +2330,10 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        phase8_is_sha256_hex, validate_phase8_env_path_value, validate_phase8_sha256_env_value,
-        validate_phase8_sha256_field,
+        phase8_is_sha256_hex, phase8_resolve_configured_path, validate_phase8_env_path_value,
+        validate_phase8_sha256_env_value, validate_phase8_sha256_field,
     };
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn phase8_sha256_shape_rejects_uppercase_hex() {
@@ -2375,5 +2379,15 @@ mod tests {
                 .contains("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH"),
             "error should name the rejected phase8 env var, got {error:?}"
         );
+    }
+
+    #[test]
+    fn phase8_resolve_configured_path_preserves_relative_path_when_root_has_no_parent() {
+        let resolved = phase8_resolve_configured_path(
+            Path::new("root.toml"),
+            "reports/no-submit-readiness.json",
+        );
+
+        assert_eq!(resolved, PathBuf::from("reports/no-submit-readiness.json"));
     }
 }

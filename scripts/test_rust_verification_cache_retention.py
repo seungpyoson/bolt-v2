@@ -1751,6 +1751,7 @@ def assert_v6_red_active_process_wrapper_options_expose_cargo_pattern() -> None:
         "env --split-string='cargo build'",
         "env -S'cargo build'",
         "env -Scargo build",
+        "env -S timeout 30 cargo build",
         "env -iuLD_PRELOAD cargo build",
         "env -iu LD_PRELOAD cargo build",
         "env --block-signal cargo build",
@@ -1760,6 +1761,8 @@ def assert_v6_red_active_process_wrapper_options_expose_cargo_pattern() -> None:
         "flock --timeout 5 /tmp/bolt.lock cargo build",
         "flock --timeout=5 /tmp/bolt.lock cargo build",
         "flock -- -lockfile cargo build",
+        "flock /tmp/bolt.lock -c 'cargo build'",
+        "flock -xc 'cargo build' /tmp/bolt.lock",
     ]
     misses: list[str] = []
     for command in cases:

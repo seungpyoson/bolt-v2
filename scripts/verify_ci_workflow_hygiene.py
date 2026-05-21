@@ -905,10 +905,8 @@ ENV_OPTIONS_WITH_ARGUMENT = {
     "--split-string",
     "--unset",
     "--chdir",
-    "--block-signal",
-    "--default-signal",
-    "--ignore-signal",
 }
+ENV_SIGNAL_OPTIONS = {"--block-signal", "--default-signal", "--ignore-signal"}
 ENV_OPTIONS_WITHOUT_ARGUMENT = {
     "-0",
     "-i",
@@ -917,7 +915,8 @@ ENV_OPTIONS_WITHOUT_ARGUMENT = {
     "--ignore-environment",
     "--null",
 }
-TIME_OPTIONS_WITHOUT_ARGUMENT = {"-p"}
+TIME_OPTIONS_WITH_ARGUMENT = {"-f", "-o", "--format", "--output"}
+TIME_OPTIONS_WITHOUT_ARGUMENT = {"-a", "-p", "-v", "--append", "--portability", "--verbose"}
 SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")"}
 
 
@@ -988,7 +987,7 @@ def command_prefix_allows_cargo(prefix: list[str]) -> bool:
         if token == "command":
             index += 1
         elif token == "time":
-            index = consume_option_prefix(prefix, index + 1, set(), TIME_OPTIONS_WITHOUT_ARGUMENT)
+            index = consume_option_prefix(prefix, index + 1, TIME_OPTIONS_WITH_ARGUMENT, TIME_OPTIONS_WITHOUT_ARGUMENT)
         elif token == "nice":
             index = nice_command_index(prefix, index + 1)
         elif token == "sudo":
@@ -1002,13 +1001,17 @@ def command_prefix_allows_cargo(prefix: list[str]) -> bool:
         elif token == "doas":
             index = consume_option_prefix(prefix, index + 1, SUDO_OPTIONS_WITH_ARGUMENT, SUDO_OPTIONS_WITHOUT_ARGUMENT)
         elif token == "env":
-            index = consume_option_prefix(prefix, index + 1, ENV_OPTIONS_WITH_ARGUMENT, ENV_OPTIONS_WITHOUT_ARGUMENT)
+            index = env_command_prefix_index(prefix, index + 1)
         elif token == "flock":
             inner = flock_inner_tokens(prefix[index:])
             if inner is not None:
                 index = len(prefix) - len(inner)
             else:
                 return False
+        elif token == "eval":
+            index += 1
+            if index < len(prefix) and prefix[index] == "--":
+                index += 1
         else:
             return False
         if index is None:
@@ -1246,6 +1249,42 @@ def env_short_split_tokens(tokens: list[str], index: int) -> list[str] | None:
     return []
 
 
+def env_command_prefix_index(tokens: list[str], index: int) -> int | None:
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in ENV_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        if token in ENV_SIGNAL_OPTIONS:
+            index += 1
+            continue
+        if any(token.startswith(f"{option}=") for option in ENV_SIGNAL_OPTIONS):
+            index += 1
+            continue
+        if token in ENV_OPTIONS_WITH_ARGUMENT:
+            if index + 1 >= len(tokens):
+                return None
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in ENV_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        if token.startswith("-") and not token.startswith("--"):
+            if "S" in token[1:]:
+                return index
+            parsed_index = env_short_cluster_next_index(tokens, index, token[1:])
+            if parsed_index is not None:
+                index = parsed_index
+                continue
+        if shell_assignment_word(token):
+            index += 1
+            continue
+        return index
+    return index
+
+
 def env_inner_tokens(tokens: list[str]) -> list[str] | None:
     index = 1
     while index < len(tokens):
@@ -1253,6 +1292,12 @@ def env_inner_tokens(tokens: list[str]) -> list[str] | None:
         if token == "--":
             return tokens[index + 1 :]
         if token in ENV_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        if token in ENV_SIGNAL_OPTIONS:
+            index += 1
+            continue
+        if any(token.startswith(f"{option}=") for option in ENV_SIGNAL_OPTIONS):
             index += 1
             continue
         if token in ("-S", "--split-string") and index + 1 < len(tokens):
@@ -1303,6 +1348,9 @@ def nice_command_index(tokens: list[str], index: int) -> int | None:
 
 
 def flock_inner_tokens(tokens: list[str]) -> list[str] | None:
+    command_option_tokens = flock_command_option_tokens(tokens)
+    if command_option_tokens is not None:
+        return command_option_tokens
     index = 1
     separator_seen = False
     while index < len(tokens):
@@ -1330,6 +1378,22 @@ def flock_inner_tokens(tokens: list[str]) -> list[str] | None:
     return tokens[index:]
 
 
+def flock_command_option_tokens(tokens: list[str]) -> list[str] | None:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return None
+        if token in ("-c", "--command") and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        if token.startswith("--command="):
+            return command_tokens(token.split("=", 1)[1])
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:] and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        index += 1
+    return None
+
+
 def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
     if not tokens:
         return False
@@ -1354,7 +1418,10 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
         nested = shell_command(tokens)
         return nested is not None and tokens_have_raw_cargo(command_tokens(nested), depth=depth + 1)
     if executable == "eval":
-        return len(tokens) > 1 and tokens_have_raw_cargo(command_tokens(" ".join(tokens[1:])), depth=depth + 1)
+        inner = tokens[1:]
+        if inner and inner[0] == "--":
+            inner = inner[1:]
+        return bool(inner) and tokens_have_raw_cargo(command_tokens(" ".join(inner)), depth=depth + 1)
     if executable == "env":
         inner = env_inner_tokens(tokens)
         return inner is not None and tokens_have_raw_cargo(inner, depth=depth + 1)
@@ -1539,6 +1606,8 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
     ):
         errors.append("S3 active mutable target cache must be rejected")
     s3_active_patterns = (
+        r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])/[^\s\"']*/target(?:/[^\s\"']*)?(?:[\s\"']|$))",
+        r"\bcd\s+[\"']?(?:\.?/)?target[\"']?\s*&&[^\n]*\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)",
         r"\baws\b[^\n;&|]*\bs3\s+sync\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])(?:\.|\$GITHUB_WORKSPACE|\$\{GITHUB_WORKSPACE[^}]*\}|\$\{\{\s*github\.workspace\s*\}\}|\$PWD|\$\{PWD[^}]*\})(?:/(?:\./)?)?(?:[\s\"']|$))",
         r"\baws\b[^\n;&|]*\bs3api\b[^\n;&|]*(?:target(?:/|[\s\"']|$)|CARGO_TARGET_DIR|managed_target_dir|\$\{\{\s*(?:github\.workspace|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\})",
     )

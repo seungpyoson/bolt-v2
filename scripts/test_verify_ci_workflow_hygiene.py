@@ -1426,6 +1426,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "S3 active mutable target cache must be rejected",
         ),
         (
+            "aws s3 sync /home/runner/work/bolt-v2/bolt-v2/target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "cd target && aws s3 sync * s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
             "aws s3 sync s3://bolt-v2-active-cache/target \"$CARGO_TARGET_DIR\"",
             "S3 active mutable target cache must be rejected",
         ),
@@ -1507,14 +1515,22 @@ commands:
     cargo clippy --workspace
   envcheck: env CARGO_TARGET_DIR=target cargo test
   envsplit: env -S 'cargo test'
+  envsplitunquoted: env -S timeout 30 cargo test
+  envblocksignal: env --block-signal cargo test
   shellcheck: bash -lc 'cargo test --all'
   evalraw: eval "cargo test"
+  evaldashdash: eval -- cargo test
+  evalprefix: A=B eval cargo test
   shellevalraw: bash -lc 'eval "cargo test"'
   wrapped: command cargo fmt --check
   nicewrap: nice cargo test
   timeniceadjust: time nice --adjustment 10 cargo test
+  timeverbose: A=B time -v cargo test
+  timeoutput: A=B time -o /tmp/bolt-time cargo test
   doaswrap: doas cargo test
   flockwrap: flock "$TMPDIR/bolt.lock" cargo test
+  flockfilec: flock "$TMPDIR/bolt.lock" -c 'cargo test'
+  flockshortc: flock -xc 'cargo test' "$TMPDIR/bolt.lock"
   timeflocktimeout: time flock --timeout 5 "$TMPDIR/bolt.lock" cargo test
   flockclose: flock -o "$TMPDIR/bolt.lock" cargo test
   sudoflock: sudo flock -o "$TMPDIR/bolt.lock" cargo test
@@ -1562,14 +1578,22 @@ commands: { test: "cargo test" }
         "ci",
         "envcheck",
         "envsplit",
+        "envsplitunquoted",
+        "envblocksignal",
         "shellcheck",
         "evalraw",
+        "evaldashdash",
+        "evalprefix",
         "shellevalraw",
         "wrapped",
         "nicewrap",
         "timeniceadjust",
+        "timeverbose",
+        "timeoutput",
         "doaswrap",
         "flockwrap",
+        "flockfilec",
+        "flockshortc",
         "timeflocktimeout",
         "flockclose",
         "sudoflock",

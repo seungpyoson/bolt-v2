@@ -614,9 +614,9 @@ def env_wrapped_tokens(tokens: list[str]) -> list[str]:
         token = tokens[index]
         split_command: str | None = None
         if (token == "-S" or token == "--split-string") and index + 1 < len(tokens):
-            split_command = tokens[index + 1]
+            split_command = " ".join(tokens[index + 1 :])
         elif token.startswith("--split-string="):
-            split_command = token.split("=", 1)[1]
+            split_command = " ".join([token.split("=", 1)[1], *tokens[index + 1 :]]).strip()
         elif token.startswith("-") and not token.startswith("--"):
             split_command = env_short_split_command(token, tokens[index + 1 :])
         if split_command is not None:
@@ -700,6 +700,9 @@ def nice_command_index(tokens: list[str]) -> int:
 
 
 def flock_wrapped_tokens(tokens: list[str]) -> list[str]:
+    command_option_tokens = flock_command_option_tokens(tokens)
+    if command_option_tokens is not None:
+        return command_option_tokens
     index = 1
     separator_seen = False
     while index < len(tokens):
@@ -727,6 +730,22 @@ def flock_wrapped_tokens(tokens: list[str]) -> list[str]:
     return tokens[index:]
 
 
+def flock_command_option_tokens(tokens: list[str]) -> list[str] | None:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return None
+        if token in ("-c", "--command") and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        if token.startswith("--command="):
+            return command_tokens(token.split("=", 1)[1])
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:] and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        index += 1
+    return None
+
+
 def rustup_run_tokens(tokens: list[str]) -> list[str]:
     index = 2
     while index < len(tokens) and tokens[index].startswith("-"):
@@ -737,6 +756,27 @@ def rustup_run_tokens(tokens: list[str]) -> list[str]:
     while index < len(tokens) and tokens[index] == "--":
         index += 1
     return tokens[index:]
+
+
+def timeout_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in ("-k", "--kill-after", "-s", "--signal") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--kill-after=", "--signal=")):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        index += 1
+        break
+    return index
 
 
 def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
@@ -758,6 +798,8 @@ def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
         names.update(process_names_from_tokens(flock_wrapped_tokens(tokens), depth=depth + 1))
     elif executable == "rustup" and len(tokens) >= 4 and tokens[1] == "run":
         names.update(process_names_from_tokens(rustup_run_tokens(tokens), depth=depth + 1))
+    elif executable == "timeout":
+        names.update(process_names_from_tokens(tokens[timeout_command_index(tokens) :], depth=depth + 1))
     elif executable in ("bash", "dash", "fish", "sh", "zsh"):
         command = shell_command(tokens)
         if command is not None:

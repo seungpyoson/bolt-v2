@@ -90,6 +90,7 @@ Migration note for v1.1.0: affected planning artifacts are
 `specs/023-nt-research-analytics-platform/plan.md`,
 `specs/023-nt-research-analytics-platform/shared/research.md`,
 `specs/023-nt-research-analytics-platform/shared/evidence.md`,
+`specs/023-nt-research-analytics-platform/shared/data-model.md`,
 `specs/023-nt-research-analytics-platform/shared/contracts.md`,
 and `specs/023-nt-research-analytics-platform/tasks.md`. Runtime code is not
 changed by this amendment; implementation remains gated by feature-branch

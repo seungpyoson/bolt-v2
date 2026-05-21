@@ -443,7 +443,10 @@ Prompt:
 > missing `PortfolioSnapshot`, unresolved redemption PnL, stale source proof,
 > non-latest proof pin, and exploratory strategy outlook.
 
-## Cross-Project Process
+## Cross-Project Process Handoff
+
+These items are PR-cycle/process handoff questions, not design blockers for the
+three implementation verticals.
 
 ### OQ-019: Gemini Code Assist Comment Resolution
 

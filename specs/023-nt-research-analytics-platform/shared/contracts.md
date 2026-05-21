@@ -237,7 +237,7 @@ Required lifecycle fields or tags:
 - `retention = "forever"`
 - `storage_profile = "active" | "archive" | "deep_archive"`
 - `artifact_kind = "raw" | "nt_catalog" | "source_proof" | "backtest" | "artifact_index"`
-- `lifecycle_state = "active" | "inactive" | "archived"`
+- `lifecycle_state = "active" | "inactive"`
 - `quiet_window`
 - `project`, plus run/source/dataset id when available.
 
@@ -258,6 +258,8 @@ Lifecycle state rule:
 - Every canonical artifact starts as `active`.
 - After its configured `quiet_window` passes, it becomes `inactive`.
 - `inactive` means eligible for archive/deep-archive transition, not deletion.
+- Archive and deep-archive placement are `storage_profile` changes; they do not
+  introduce additional lifecycle states.
 - Future implementation sessions must define the exact quiet-window values and
   timestamp basis for each artifact kind.
 

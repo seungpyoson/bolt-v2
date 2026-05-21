@@ -2552,6 +2552,12 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         ),
         (
             "entry_order",
+            "trigger_instrument_id",
+            "entry_trigger_instrument_id",
+            toml::Value::String("ETHUSDT.BINANCE".to_string()),
+        ),
+        (
+            "entry_order",
             "trailing_offset",
             "entry_trailing_offset",
             toml::Value::Float(2.5),
@@ -2585,6 +2591,12 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "trigger_type",
             "exit_trigger_type",
             toml::Value::String("default".to_string()),
+        ),
+        (
+            "exit_order",
+            "trigger_instrument_id",
+            "exit_trigger_instrument_id",
+            toml::Value::String("ETHUSDT.BINANCE".to_string()),
         ),
         (
             "exit_order",

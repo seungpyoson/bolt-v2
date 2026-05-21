@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use crate::bolt_v3_config::LoadedBoltV3Config;
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 3;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 4;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
@@ -72,6 +72,7 @@ pub struct BoltV3OrderIntentOrderFields {
     pub trigger_price: Option<String>,
     pub activation_price: Option<String>,
     pub trigger_type: Option<String>,
+    pub trigger_instrument_id: Option<String>,
     pub trailing_offset: Option<String>,
     pub trailing_offset_type: Option<String>,
     pub expire_time_unix_nanos: Option<String>,
@@ -91,6 +92,9 @@ impl BoltV3OrderIntentOrderFields {
             trigger_type: order
                 .trigger_type()
                 .map(|trigger_type| trigger_type.to_string()),
+            trigger_instrument_id: order
+                .trigger_instrument_id()
+                .map(|trigger_instrument_id| trigger_instrument_id.to_string()),
             trailing_offset: order
                 .trailing_offset()
                 .map(|trailing_offset| trailing_offset.to_string()),
@@ -292,6 +296,7 @@ mod tests {
                 trigger_price: None,
                 activation_price: None,
                 trigger_type: None,
+                trigger_instrument_id: None,
                 trailing_offset: None,
                 trailing_offset_type: None,
                 expire_time_unix_nanos: None,
@@ -348,6 +353,7 @@ mod tests {
     fn order_intent_from_compiled_order_binds_selected_nt_order_fields() {
         let quantity = Quantity::new(2.0, 2);
         let trigger_price = Price::new(0.52, 2);
+        let trigger_instrument_id = InstrumentId::from("trigger-instrument.SIM");
         let order = OrderAny::StopMarket(
             StopMarketOrder::new_checked(
                 TraderId::from("TRADER-001"),
@@ -364,7 +370,7 @@ mod tests {
                 false,
                 None,
                 None,
-                None,
+                Some(trigger_instrument_id),
                 None,
                 None,
                 None,
@@ -407,6 +413,10 @@ mod tests {
         assert_eq!(
             intent.order_fields.trigger_type,
             Some(TriggerType::LastPrice.to_string())
+        );
+        assert_eq!(
+            intent.order_fields.trigger_instrument_id,
+            Some(trigger_instrument_id.to_string())
         );
         assert_eq!(intent.order_fields.is_post_only, false);
         assert_eq!(intent.order_fields.is_reduce_only, false);

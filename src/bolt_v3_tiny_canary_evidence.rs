@@ -1634,6 +1634,7 @@ struct Phase8FinancialEnvelopeEvidenceFile {
     entry_trigger_price: Option<f64>,
     entry_activation_price: Option<f64>,
     entry_trigger_type: Option<String>,
+    entry_trigger_instrument_id: Option<String>,
     entry_trailing_offset: Option<f64>,
     entry_trailing_offset_type: Option<String>,
     entry_is_post_only: bool,
@@ -1647,6 +1648,7 @@ struct Phase8FinancialEnvelopeEvidenceFile {
     exit_trigger_price: Option<f64>,
     exit_activation_price: Option<f64>,
     exit_trigger_type: Option<String>,
+    exit_trigger_instrument_id: Option<String>,
     exit_trailing_offset: Option<f64>,
     exit_trailing_offset_type: Option<String>,
     exit_is_post_only: bool,
@@ -1756,6 +1758,10 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             entry_trigger_price: optional_toml_float(entry_order, stringify!(trigger_price))?,
             entry_activation_price: optional_toml_float(entry_order, stringify!(activation_price))?,
             entry_trigger_type: optional_toml_string(entry_order, stringify!(trigger_type))?,
+            entry_trigger_instrument_id: optional_toml_string(
+                entry_order,
+                stringify!(trigger_instrument_id),
+            )?,
             entry_trailing_offset: optional_toml_float(entry_order, stringify!(trailing_offset))?,
             entry_trailing_offset_type: optional_toml_string(
                 entry_order,
@@ -1778,6 +1784,10 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             exit_trigger_price: optional_toml_float(exit_order, stringify!(trigger_price))?,
             exit_activation_price: optional_toml_float(exit_order, stringify!(activation_price))?,
             exit_trigger_type: optional_toml_string(exit_order, stringify!(trigger_type))?,
+            exit_trigger_instrument_id: optional_toml_string(
+                exit_order,
+                stringify!(trigger_instrument_id),
+            )?,
             exit_trailing_offset: optional_toml_float(exit_order, stringify!(trailing_offset))?,
             exit_trailing_offset_type: optional_toml_string(
                 exit_order,
@@ -1889,6 +1899,11 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         if self.entry_trigger_type != loaded.entry_trigger_type {
             return Err(financial_envelope_mismatch(stringify!(entry_trigger_type)));
         }
+        if self.entry_trigger_instrument_id != loaded.entry_trigger_instrument_id {
+            return Err(financial_envelope_mismatch(stringify!(
+                entry_trigger_instrument_id
+            )));
+        }
         if self.entry_trailing_offset != loaded.entry_trailing_offset {
             return Err(financial_envelope_mismatch(stringify!(
                 entry_trailing_offset
@@ -1939,6 +1954,11 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         }
         if self.exit_trigger_type != loaded.exit_trigger_type {
             return Err(financial_envelope_mismatch(stringify!(exit_trigger_type)));
+        }
+        if self.exit_trigger_instrument_id != loaded.exit_trigger_instrument_id {
+            return Err(financial_envelope_mismatch(stringify!(
+                exit_trigger_instrument_id
+            )));
         }
         if self.exit_trailing_offset != loaded.exit_trailing_offset {
             return Err(financial_envelope_mismatch(stringify!(

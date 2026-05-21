@@ -32,6 +32,7 @@ ORDER_TEMPLATE_FIELDS = (
     "trigger_price",
     "activation_price",
     "trigger_type",
+    "trigger_instrument_id",
     "trailing_offset",
     "trailing_offset_type",
 )

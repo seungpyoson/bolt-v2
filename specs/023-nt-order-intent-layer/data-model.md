@@ -39,6 +39,7 @@ Fields:
 - `display_qty` only when an iceberg/display quantity slice is enabled
 - `trailing_offset` and related fields only when a trailing slice is enabled
 - `exec_algorithm_id`, `exec_algorithm_params`, and `tags` only when an execution algorithm slice is enabled
+- `emulation_trigger` only when a separate NT order-emulation slice is enabled; it is not part of the current source/unit order-template support claim
 
 Validation:
 
@@ -111,7 +112,7 @@ Fields:
 - order side
 - selected price from the compiled order price or trigger price when NT exposes one, otherwise the configured fallback price used by admission fallback paths
 - compiled NT order quantity
-- selected compiled NT order fields needed to explain Bolt admission, without duplicating NT `OrderInitialized`: order type, TIF, compiled price, trigger price, activation price, trigger type, trailing offset, trailing offset type, expiry, post-only, reduce-only, and quote-quantity flags
+- selected compiled NT order fields needed to explain Bolt admission, without duplicating NT `OrderInitialized`: order type, TIF, compiled price, trigger price, activation price, trigger type, trigger instrument id, trailing offset, trailing offset type, expiry, post-only, reduce-only, and quote-quantity flags
 
 Boundary:
 

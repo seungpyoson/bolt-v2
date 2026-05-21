@@ -115,6 +115,7 @@ struct BinaryOracleEdgeTakerOrderConfig {
     trigger_price: Option<f64>,
     activation_price: Option<f64>,
     trigger_type: Option<TriggerType>,
+    trigger_instrument_id: Option<InstrumentId>,
     trailing_offset: Option<f64>,
     trailing_offset_type: Option<TrailingOffsetType>,
     is_post_only: bool,
@@ -256,6 +257,7 @@ const ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD: &str = "expire_time_unix_nanos";
 const ORDER_TRIGGER_PRICE_FIELD: &str = "trigger_price";
 const ORDER_ACTIVATION_PRICE_FIELD: &str = "activation_price";
 const ORDER_TRIGGER_TYPE_FIELD: &str = "trigger_type";
+const ORDER_TRIGGER_INSTRUMENT_ID_FIELD: &str = "trigger_instrument_id";
 const ORDER_TRAILING_OFFSET_FIELD: &str = "trailing_offset";
 const ORDER_TRAILING_OFFSET_TYPE_FIELD: &str = "trailing_offset_type";
 
@@ -3358,17 +3360,18 @@ impl BinaryOracleEdgeTaker {
             evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING);
             return evaluation;
         }
+
+        if !evaluation.forced_flat_reasons.is_empty() {
+            evaluation.exit_decision = Some(ExitDecision::Exit);
+            return evaluation;
+        }
+
         if self
             .managed_position()
             .and_then(|managed| managed.pending_entry.as_ref())
             .is_some()
         {
             evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING);
-            return evaluation;
-        }
-
-        if !evaluation.forced_flat_reasons.is_empty() {
-            evaluation.exit_decision = Some(ExitDecision::Exit);
             return evaluation;
         }
 
@@ -3406,6 +3409,7 @@ impl BinaryOracleEdgeTaker {
             trigger_price: None,
             activation_price: None,
             trigger_type: None,
+            trigger_instrument_id: None,
             trailing_offset: None,
             trailing_offset_type: None,
             blocked_reason: evaluation.blocked_reason,
@@ -3463,6 +3467,7 @@ impl BinaryOracleEdgeTaker {
         decision.trigger_price = order_config.trigger_price;
         decision.activation_price = order_config.activation_price;
         decision.trigger_type = order_config.trigger_type;
+        decision.trigger_instrument_id = order_config.trigger_instrument_id;
         decision.trailing_offset = order_config.trailing_offset;
         decision.trailing_offset_type = order_config.trailing_offset_type;
         decision.blocked_reason = None;
@@ -3821,6 +3826,7 @@ impl BinaryOracleEdgeTaker {
                 price.precision,
             )?,
             self.config.entry_order.trigger_type,
+            self.config.entry_order.trigger_instrument_id,
             trailing_offset_from_config(
                 ORDER_CONFIGURATION_PREFIX_ENTRY,
                 self.config.entry_order.trailing_offset,
@@ -3845,6 +3851,7 @@ impl BinaryOracleEdgeTaker {
             trigger_price: self.config.exit_order.trigger_price,
             activation_price: self.config.exit_order.activation_price,
             trigger_type: self.config.exit_order.trigger_type,
+            trigger_instrument_id: self.config.exit_order.trigger_instrument_id,
             trailing_offset: self.config.exit_order.trailing_offset,
             trailing_offset_type: self.config.exit_order.trailing_offset_type,
             is_post_only: self.config.exit_order.is_post_only,
@@ -3864,6 +3871,7 @@ impl BinaryOracleEdgeTaker {
             trigger_price: None,
             activation_price: None,
             trigger_type: None,
+            trigger_instrument_id: None,
             trailing_offset: None,
             trailing_offset_type: None,
             is_post_only: false,
@@ -3929,6 +3937,7 @@ impl BinaryOracleEdgeTaker {
                 price.precision,
             )?,
             order_config.trigger_type,
+            order_config.trigger_instrument_id,
             trailing_offset_from_config(
                 ORDER_CONFIGURATION_PREFIX_EXIT,
                 order_config.trailing_offset,
@@ -3987,6 +3996,17 @@ impl BinaryOracleEdgeTaker {
         let Some(managed_position) = self.managed_position().cloned() else {
             anyhow::bail!("exit submit requires managed position state");
         };
+        if !decision.forced_flat_reasons.is_empty()
+            && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+        {
+            self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+                .with_context(|| {
+                    format!(
+                        "forced-flat exit could not cancel pending entry client_order_id={}",
+                        pending_entry.client_order_id
+                    )
+                })?;
+        }
         self.exposure = ExposureState::ExitPending(ExitPendingState {
             position: Some(managed_position.clone()),
             pending_exit: PendingExitState {
@@ -4535,6 +4555,11 @@ impl DataActor for BinaryOracleEdgeTaker {
                     )
                 });
             if managed_entry_fill {
+                if let Some(exit_pending) = self.exposure.exit_pending_mut() {
+                    exit_pending
+                        .pending_exit
+                        .residual_position_observed_after_fill = true;
+                }
                 if !keep_pending_entry {
                     self.clear_managed_pending_entry_for_client_order(event.client_order_id);
                 }
@@ -4814,6 +4839,7 @@ impl BinaryOracleEdgeTakerBuilder {
                     | ORDER_TRIGGER_PRICE_FIELD
                     | ORDER_ACTIVATION_PRICE_FIELD
                     | ORDER_TRIGGER_TYPE_FIELD
+                    | ORDER_TRIGGER_INSTRUMENT_ID_FIELD
                     | ORDER_TRAILING_OFFSET_FIELD
                     | ORDER_TRAILING_OFFSET_TYPE_FIELD
                     | binary_oracle_edge_taker_order_fields!(match_order_field_names)
@@ -4863,6 +4889,16 @@ impl BinaryOracleEdgeTakerBuilder {
             Self::push_wrong_type(
                 errors,
                 format!("{field}.{ORDER_TRIGGER_TYPE_FIELD}"),
+                BinaryOracleEdgeTakerFieldType::String,
+                value,
+            );
+        }
+        if let Some(value) = order_table.get(ORDER_TRIGGER_INSTRUMENT_ID_FIELD)
+            && !BinaryOracleEdgeTakerFieldType::String.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field}.{ORDER_TRIGGER_INSTRUMENT_ID_FIELD}"),
                 BinaryOracleEdgeTakerFieldType::String,
                 value,
             );
@@ -5213,6 +5249,7 @@ struct ConfiguredOrderValidation {
     trigger_price: Option<Price>,
     activation_price: Option<Price>,
     trigger_type: Option<TriggerType>,
+    trigger_instrument_id: Option<InstrumentId>,
     trailing_offset: Option<Decimal>,
     trailing_offset_type: Option<TrailingOffsetType>,
     is_post_only: bool,
@@ -5229,6 +5266,7 @@ fn validate_configured_order_against_nt_model(input: ConfiguredOrderValidation) 
         trigger_price,
         activation_price,
         trigger_type,
+        trigger_instrument_id,
         trailing_offset,
         trailing_offset_type,
         is_post_only,
@@ -5301,6 +5339,10 @@ fn validate_configured_order_against_nt_model(input: ConfiguredOrderValidation) 
         anyhow::ensure!(
             trigger_type.is_none(),
             "{prefix}_trigger_type is only supported for triggered orders"
+        );
+        anyhow::ensure!(
+            trigger_instrument_id.is_none(),
+            "{prefix}_trigger_instrument_id is only supported for triggered orders"
         );
     }
 
@@ -5404,6 +5446,7 @@ fn build_configured_order(
     trigger_price: Option<Price>,
     activation_price: Option<Price>,
     trigger_type: Option<TriggerType>,
+    trigger_instrument_id: Option<InstrumentId>,
     trailing_offset: Option<Decimal>,
     trailing_offset_type: Option<TrailingOffsetType>,
     is_post_only: bool,
@@ -5423,6 +5466,7 @@ fn build_configured_order(
         trigger_price,
         activation_price,
         trigger_type,
+        trigger_instrument_id,
         trailing_offset,
         trailing_offset_type,
         is_post_only,
@@ -5484,7 +5528,7 @@ fn build_configured_order(
                 Some(is_quote_quantity),
                 None,
                 None,
-                None,
+                trigger_instrument_id,
                 None,
                 None,
                 None,
@@ -5507,7 +5551,7 @@ fn build_configured_order(
                 Some(is_reduce_only),
                 Some(is_quote_quantity),
                 None,
-                None,
+                trigger_instrument_id,
                 None,
                 None,
                 None,
@@ -5528,7 +5572,7 @@ fn build_configured_order(
             Some(is_quote_quantity),
             None,
             None,
-            None,
+            trigger_instrument_id,
             None,
             None,
             None,
@@ -5548,7 +5592,7 @@ fn build_configured_order(
             Some(is_quote_quantity),
             None,
             None,
-            None,
+            trigger_instrument_id,
             None,
             None,
             None,
@@ -5574,7 +5618,7 @@ fn build_configured_order(
                 Some(is_quote_quantity),
                 None,
                 None,
-                None,
+                trigger_instrument_id,
                 None,
                 None,
                 None,
@@ -6166,6 +6210,7 @@ struct ExitOrderExecutionConfig {
     trigger_price: Option<f64>,
     activation_price: Option<f64>,
     trigger_type: Option<TriggerType>,
+    trigger_instrument_id: Option<InstrumentId>,
     trailing_offset: Option<f64>,
     trailing_offset_type: Option<TrailingOffsetType>,
     is_post_only: bool,
@@ -6190,6 +6235,7 @@ struct ExitSubmissionDecision {
     trigger_price: Option<f64>,
     activation_price: Option<f64>,
     trigger_type: Option<TriggerType>,
+    trigger_instrument_id: Option<InstrumentId>,
     trailing_offset: Option<f64>,
     trailing_offset_type: Option<TrailingOffsetType>,
     blocked_reason: Option<&'static str>,
@@ -6205,6 +6251,7 @@ impl ExitSubmissionDecision {
             trigger_price: self.trigger_price,
             activation_price: self.activation_price,
             trigger_type: self.trigger_type,
+            trigger_instrument_id: self.trigger_instrument_id,
             trailing_offset: self.trailing_offset,
             trailing_offset_type: self.trailing_offset_type,
             is_post_only: self.is_post_only?,
@@ -6770,6 +6817,7 @@ mod tests {
                     trigger_price: None,
                     activation_price: None,
                     trigger_type: None,
+                    trigger_instrument_id: None,
                     trailing_offset: None,
                     trailing_offset_type: None,
                     is_post_only: false,
@@ -6785,6 +6833,7 @@ mod tests {
                     trigger_price: None,
                     activation_price: None,
                     trigger_type: None,
+                    trigger_instrument_id: None,
                     trailing_offset: None,
                     trailing_offset_type: None,
                     is_post_only: false,
@@ -7802,6 +7851,25 @@ mod tests {
         }
     }
 
+    fn configured_outcome_instruments(strategy: &BinaryOracleEdgeTaker) -> Vec<InstrumentId> {
+        let instrument_ids = strategy.active.outcome_fees.instrument_ids();
+        assert!(
+            !instrument_ids.is_empty(),
+            "ready-to-trade fixture should expose configured outcome instruments"
+        );
+        instrument_ids
+    }
+
+    fn active_book_for_configured_instrument(
+        strategy: &BinaryOracleEdgeTaker,
+        instrument_id: InstrumentId,
+    ) -> &OutcomeBookState {
+        [&strategy.active.books.up, &strategy.active.books.down]
+            .into_iter()
+            .find(|book| book.instrument_id == Some(instrument_id))
+            .expect("configured outcome instrument should resolve through active books")
+    }
+
     fn set_pending_entry(strategy: &mut BinaryOracleEdgeTaker, pending: PendingEntryState) {
         strategy.exposure = ExposureState::PendingEntry(pending);
     }
@@ -7824,6 +7892,44 @@ mod tests {
             origin,
             pending_entry: None,
         });
+    }
+
+    fn materialize_managed_position_with_resting_pending_entry(
+        strategy: &mut BinaryOracleEdgeTaker,
+        instrument_id: InstrumentId,
+        position_id: PositionId,
+        quantity: Quantity,
+    ) -> (InstrumentId, ClientOrderId) {
+        let client_order_id =
+            ClientOrderId::from(format!("ENTRY-WORKING-{instrument_id}").as_str());
+        let book = active_book_for_configured_instrument(strategy, instrument_id).clone();
+        let pending = PendingEntryState {
+            client_order_id,
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            outcome_side: None,
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: strategy
+                .context
+                .fee_provider()
+                .fee_bps(instrument_id)
+                .and_then(|value| value.to_f64()),
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: book.clone(),
+        };
+        let avg_px_open = book
+            .best_ask
+            .expect("ready-to-trade fixture should expose an ask");
+        set_pending_entry(strategy, pending);
+        strategy.on_position_opened(position_opened_event(
+            instrument_id,
+            position_id,
+            quantity,
+            avg_px_open,
+        ));
+        (instrument_id, client_order_id)
     }
 
     fn set_exit_pending(
@@ -10361,6 +10467,104 @@ mod tests {
     }
 
     #[test]
+    fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
+        let mut raw = valid_raw_config();
+        let entry_order = raw
+            .as_table_mut()
+            .expect("valid config must be a table")
+            .get_mut("entry_order")
+            .expect("valid config should include entry_order")
+            .as_table_mut()
+            .expect("entry_order should be a table");
+        entry_order.insert(
+            "order_type".to_string(),
+            Value::String("stop_market".to_string()),
+        );
+        entry_order.insert(
+            "time_in_force".to_string(),
+            Value::String("gtc".to_string()),
+        );
+        entry_order.insert("trigger_price".to_string(), Value::Float(0.52));
+        entry_order.insert(
+            "trigger_instrument_id".to_string(),
+            Value::String("ETHUSDT.BINANCE".to_string()),
+        );
+        let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect("trigger_instrument_id should parse through runtime config");
+        let context = StrategyBuildContext::new(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                    RecordingDecisionEvidenceWriter,
+                )),
+            ),
+        );
+        let mut strategy = BinaryOracleEdgeTaker::new(config, context);
+        let _cache = register_test_strategy(&mut strategy);
+        let trigger_instrument_id = InstrumentId::from("ETHUSDT.BINANCE");
+
+        let order = strategy
+            .build_configured_entry_order(
+                InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET"),
+                OrderSide::Buy,
+                Quantity::new(2.0, 2),
+                Price::new(0.40, 2),
+                ClientOrderId::from("O-19700101-000000-001-021-1"),
+            )
+            .expect("triggered order should build with NT trigger_instrument_id");
+
+        let OrderAny::StopMarket(order) = order else {
+            panic!("StopMarket config should build an NT stop-market order");
+        };
+        assert_eq!(order.trigger_instrument_id(), Some(trigger_instrument_id));
+    }
+
+    #[test]
+    fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
+        let mut raw = valid_raw_config();
+        let entry_order = raw
+            .as_table_mut()
+            .expect("valid config must be a table")
+            .get_mut("entry_order")
+            .expect("valid config should include entry_order")
+            .as_table_mut()
+            .expect("entry_order should be a table");
+        entry_order.insert(
+            "trigger_instrument_id".to_string(),
+            Value::String("ETHUSDT.BINANCE".to_string()),
+        );
+        let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect("trigger_instrument_id should parse through runtime config");
+        let context = StrategyBuildContext::new(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                    RecordingDecisionEvidenceWriter,
+                )),
+            ),
+        );
+        let mut strategy = BinaryOracleEdgeTaker::new(config, context);
+        let _cache = register_test_strategy(&mut strategy);
+
+        let error = strategy
+            .build_configured_entry_order(
+                InstrumentId::from("condition-MKT-1-MKT-1-DOWN.POLYMARKET"),
+                OrderSide::Buy,
+                Quantity::new(2.0, 2),
+                Price::new(0.40, 2),
+                ClientOrderId::from("O-19700101-000000-001-022-1"),
+            )
+            .expect_err("non-triggered order must not silently carry trigger_instrument_id");
+
+        assert!(
+            error.to_string().contains("trigger_instrument_id"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let _cache = register_test_strategy(&mut strategy);
@@ -11444,53 +11648,232 @@ mod tests {
     }
 
     #[test]
-    fn managed_partial_entry_blocks_exit_until_entry_order_resolves() {
-        let mut strategy = ready_to_trade_strategy();
-        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
-        strategy.config.entry_order.is_post_only = true;
-        strategy.active.phase = SelectionPhase::Freeze;
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let entry_client_order_id = ClientOrderId::from("ENTRY-WORKING");
-        let position_id = PositionId::from("P-WORKING");
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
-        strategy.exposure = ExposureState::Managed(ManagedPositionState {
-            position: OpenPositionState {
-                market_id: Some("MKT-1".to_string()),
+    fn managed_partial_entry_blocks_normal_exit_until_entry_order_resolves() {
+        let configured_instruments = configured_outcome_instruments(&ready_to_trade_strategy());
+        for instrument_id in configured_instruments {
+            let mut strategy = ready_to_trade_strategy();
+            strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+            strategy.config.entry_order.is_post_only = true;
+            strategy.active.phase = SelectionPhase::Active;
+            let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+            materialize_managed_position_with_resting_pending_entry(
+                &mut strategy,
                 instrument_id,
-                position_id,
-                outcome_side: Some(OutcomeSide::Up),
-                outcome_fees: strategy.active.outcome_fees.clone(),
-                historical_entry_fee_bps: Some(0.0),
-                entry_order_side: OrderSide::Buy,
-                side: PositionSide::Long,
-                quantity: Quantity::new(4.0, 2),
-                avg_px_open: 0.450,
-                interval_open: Some(3_100.0),
-                selection_published_at_ms: Some(1_000),
-                seconds_to_expiry_at_selection: Some(300),
-                book: strategy.active.books.up.clone(),
-            },
-            origin: ManagedPositionOrigin::StrategyEntry,
-            pending_entry: Some(pending),
-        });
+                PositionId::from(format!("POSITION-NORMAL-WORKING-{instrument_id}").as_str()),
+                position_quantity,
+            );
 
-        let decision = strategy.exit_submission_decision_at(1_200);
+            let decision = strategy.exit_submission_decision_at(1_200);
 
-        assert_eq!(decision.blocked_reason, Some("entry_order_still_working"));
-        assert_eq!(
-            decision.evaluation.blocked_reason,
-            Some("entry_order_still_working")
+            assert_eq!(
+                decision.blocked_reason,
+                Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING),
+                "{instrument_id}"
+            );
+            assert_eq!(
+                decision.evaluation.blocked_reason,
+                Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING),
+                "{instrument_id}"
+            );
+            assert_eq!(decision.instrument_id, None, "{instrument_id}");
+            assert_eq!(decision.order_side, None, "{instrument_id}");
+            assert_eq!(decision.quantity, None, "{instrument_id}");
+            assert!(decision.forced_flat_reasons.is_empty(), "{instrument_id}");
+        }
+    }
+
+    #[test]
+    fn forced_flat_exit_submits_despite_resting_pending_entry() {
+        let configured_instruments = configured_outcome_instruments(
+            &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
         );
-        assert_eq!(decision.instrument_id, None);
-        assert_eq!(decision.order_side, None);
-        assert_eq!(decision.quantity, None);
-        assert_eq!(decision.forced_flat_reasons, vec![ForcedFlatReason::Freeze]);
+        for instrument_id in configured_instruments {
+            let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+            strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+            strategy.config.entry_order.is_post_only = true;
+            strategy.config.exit_order.order_type = OrderType::Limit;
+            strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+            strategy.config.exit_order.is_post_only = true;
+            strategy.active.phase = SelectionPhase::Freeze;
+            let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+            let expected_exit_time_in_force = strategy.core.config.market_exit_time_in_force;
+            let expected_exit_reduce_only = strategy.core.config.market_exit_reduce_only;
+            materialize_managed_position_with_resting_pending_entry(
+                &mut strategy,
+                instrument_id,
+                PositionId::from(format!("POSITION-FORCED-WORKING-{instrument_id}").as_str()),
+                position_quantity,
+            );
+            let expected_exit_price = strategy
+                .managed_position()
+                .and_then(|managed| managed.position.book.best_bid);
+            let expected_quantity = strategy
+                .managed_position()
+                .expect("fixture should materialize managed position")
+                .position
+                .quantity;
+
+            let decision = strategy.exit_submission_decision_at(1_200);
+
+            assert_eq!(decision.blocked_reason, None, "{instrument_id}");
+            assert_eq!(decision.evaluation.blocked_reason, None, "{instrument_id}");
+            assert_eq!(
+                decision.forced_flat_reasons,
+                vec![ForcedFlatReason::Freeze],
+                "{instrument_id}"
+            );
+            assert_eq!(
+                decision.order_type,
+                Some(OrderType::Market),
+                "{instrument_id}"
+            );
+            assert_eq!(
+                decision.time_in_force,
+                Some(expected_exit_time_in_force),
+                "{instrument_id}"
+            );
+            assert_eq!(
+                decision.order_side,
+                Some(OrderSide::Sell),
+                "{instrument_id}"
+            );
+            assert_eq!(
+                decision.quantity,
+                Some(expected_quantity),
+                "{instrument_id}"
+            );
+            assert_eq!(decision.price, expected_exit_price, "{instrument_id}");
+            assert_eq!(decision.is_post_only, Some(false), "{instrument_id}");
+            assert_eq!(
+                decision.is_reduce_only,
+                Some(expected_exit_reduce_only),
+                "{instrument_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
+        let configured_instruments = configured_outcome_instruments(
+            &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
+        );
+        for instrument_id in configured_instruments {
+            let submit_admission = Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                    RecordingDecisionEvidenceWriter,
+                )),
+            );
+            submit_admission
+                .arm(live_canary_gate_report(1, Decimal::new(10_000, 0)))
+                .expect("valid gate report should arm submit admission");
+            let (mut strategy, fee_provider) =
+                ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
+            strategy.context = StrategyBuildContext::new(
+                fee_provider,
+                Arc::new(RecordingDecisionEvidenceWriter),
+                submit_admission,
+            );
+            strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+            strategy.config.entry_order.is_post_only = true;
+            strategy.active.phase = SelectionPhase::Freeze;
+            let cache = register_test_strategy(&mut strategy);
+            add_active_instruments_to_cache(&strategy, &cache);
+            let (risk_handler, risk_messages) =
+                get_typed_into_message_saving_handler::<TradingCommand>(None);
+            msgbus::register_trading_command_endpoint(
+                MessagingSwitchboard::risk_engine_queue_execute(),
+                risk_handler,
+            );
+            let (exec_handler, exec_messages) =
+                get_typed_into_message_saving_handler::<TradingCommand>(None);
+            msgbus::register_trading_command_endpoint(
+                MessagingSwitchboard::exec_engine_queue_execute(),
+                exec_handler,
+            );
+            let position_id =
+                PositionId::from(format!("POSITION-FORCED-RACE-{instrument_id}").as_str());
+            let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+            let (instrument_id, entry_client_order_id) =
+                materialize_managed_position_with_resting_pending_entry(
+                    &mut strategy,
+                    instrument_id,
+                    position_id,
+                    position_quantity,
+                );
+            let entry_price = active_book_for_configured_instrument(&strategy, instrument_id)
+                .best_ask
+                .expect("ready-to-trade fixture should expose an ask");
+            let entry_order = strategy
+                .build_configured_entry_order(
+                    instrument_id,
+                    strategy
+                        .configured_entry_order_side()
+                        .expect("test config should carry entry order side"),
+                    position_quantity,
+                    Price::new(entry_price, 2),
+                    entry_client_order_id,
+                )
+                .expect("resting entry order should build through NT factory");
+            cache
+                .borrow_mut()
+                .add_order(
+                    entry_order,
+                    None,
+                    Some(ClientId::from(strategy.config.client_id.as_str())),
+                    true,
+                )
+                .expect("test cache should accept resting entry order");
+
+            let exit_client_order_id = strategy
+                .try_submit_exit_order(1_200)
+                .expect("forced-flat exit submit should not fail")
+                .expect("forced-flat exit should submit");
+
+            let exec_messages = exec_messages.get_messages();
+            assert!(
+                exec_messages.iter().any(|message| matches!(
+                    message,
+                    TradingCommand::CancelOrder(command)
+                        if command.client_order_id == entry_client_order_id
+                )),
+                "forced-flat submit should cancel the resting entry before relying on exit: {instrument_id}"
+            );
+            let risk_messages = risk_messages.get_messages();
+            assert!(
+                risk_messages.iter().any(|message| matches!(
+                    message,
+                    TradingCommand::SubmitOrder(command)
+                        if command.client_order_id == exit_client_order_id
+                )),
+                "forced-flat exit should still submit after the entry cancel request: {instrument_id}"
+            );
+
+            strategy
+                .on_order_filled(&order_filled_event(
+                    entry_client_order_id,
+                    instrument_id,
+                    position_id,
+                ))
+                .expect("racing entry fill should be handled while exit is pending");
+            strategy
+                .on_order_filled(&order_filled_event_with_details(
+                    exit_client_order_id,
+                    instrument_id,
+                    Some(position_id),
+                    OrderSide::Sell,
+                ))
+                .expect("exit fill should be handled");
+            strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+
+            assert!(
+                strategy.managed_position().is_some(),
+                "entry remainder fill racing the first forced-flat exit should recover to managed residual exposure: {instrument_id}"
+            );
+            assert!(
+                strategy.exposure.exit_pending().is_none(),
+                "terminal forced-flat exit with residual exposure must not stay exit-pending forever: {instrument_id}"
+            );
+        }
     }
 
     #[test]

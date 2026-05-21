@@ -72,15 +72,22 @@ Source-level NT model validity is not the same as live venue support.
 
 The generic order layer may carry NT submit params, but concrete param names and meanings belong to provider bindings or strategy-specific config. The generic layer MUST NOT hardcode adapter param keys.
 
+## Order Emulation Contract
+
+`emulation_trigger` changes NT submit routing through the order-emulation path and is not enabled by this source/unit order-template slice. It requires a separate TDD slice with NT emulator source evidence, strategy configuration ownership, and no live-support claim without an exact smoke/canary artifact.
+
 ## Forced Exit Contract
 
 Passive maker exit is not forced-flat. Forced exit behavior MUST be separately configured if the strategy requires urgent flattening.
+For an already-open managed position, a forced-flat reason MUST take precedence over normal discretionary-exit guards such as a resting pending-entry remainder. The pending-entry guard still applies to normal non-forced exits.
+When forced-flat submission finds a managed pending-entry remainder, it MUST use NT's cancel-order path for that pending entry before relying on the forced exit. If a pending-entry fill races while the forced exit is pending, the terminal exit update MUST recover to managed residual exposure instead of remaining exit-pending.
 
 ## Non-Goals
 
 - No maker-only order intent layer.
 - No Bolt venue capability matrix for runtime policy.
 - No direct NT order constructors unless separately approved.
+- No NT order-emulation surface without a separate approved slice.
 - No second submit path.
 - No mock exchange universe as live-readiness proof.
 - No live/canary claim without exact-head no-submit or canary artifact.

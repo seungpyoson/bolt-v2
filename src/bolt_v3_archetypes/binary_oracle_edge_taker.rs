@@ -38,7 +38,7 @@ use toml::{Value, map::Map};
 
 use nautilus_model::{
     enums::{OrderSide, OrderType, PositionSide, TimeInForce, TrailingOffsetType, TriggerType},
-    identifiers::StrategyId,
+    identifiers::{InstrumentId, StrategyId},
 };
 
 use crate::{
@@ -114,6 +114,7 @@ pub struct OrderParams {
     pub trigger_price: Option<Decimal>,
     pub activation_price: Option<Decimal>,
     pub trigger_type: Option<TriggerType>,
+    pub trigger_instrument_id: Option<InstrumentId>,
     pub trailing_offset: Option<Decimal>,
     pub trailing_offset_type: Option<TrailingOffsetType>,
     pub is_post_only: bool,
@@ -722,6 +723,13 @@ fn insert_order_config(
             enum_variant_lowercase(trigger_type),
         );
     }
+    if let Some(trigger_instrument_id) = order.trigger_instrument_id {
+        insert_string(
+            &mut order_table,
+            "trigger_instrument_id",
+            trigger_instrument_id.to_string(),
+        );
+    }
     if let Some(trailing_offset) = order.trailing_offset {
         let trailing_offset = trailing_offset.to_f64().ok_or_else(|| {
             BinaryOracleEdgeTakerRuntimeConfigError::Numeric {
@@ -1006,6 +1014,11 @@ fn check_no_trigger_or_trailing_fields(
     if order.trigger_type.is_some() {
         errors.push(format!(
             "{context}: parameters.{field}.trigger_type is only supported for triggered orders"
+        ));
+    }
+    if order.trigger_instrument_id.is_some() {
+        errors.push(format!(
+            "{context}: parameters.{field}.trigger_instrument_id is only supported for triggered orders"
         ));
     }
     errors

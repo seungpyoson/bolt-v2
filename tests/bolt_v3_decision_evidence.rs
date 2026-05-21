@@ -150,6 +150,7 @@ fn strategy_build_context_requires_decision_evidence_value() {
                     trigger_price: None,
                     activation_price: None,
                     trigger_type: None,
+                    trigger_instrument_id: None,
                     trailing_offset: None,
                     trailing_offset_type: None,
                     expire_time_unix_nanos: None,

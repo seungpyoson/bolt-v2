@@ -381,11 +381,22 @@
 
 **Goal**: Resolve the accepted triggered-order field gap found by pinned-NT review: enabled triggered order slices should either pass through NT `trigger_instrument_id` or explicitly residualize why the current strategy does not expose it yet. `emulation_trigger` remains a separate residual order-emulation slice unless positive tests enable it.
 
-- [ ] T171 [P] [US2] Record pinned NT and local source evidence for `trigger_instrument_id` and `emulation_trigger` against enabled factory variants
-- [ ] T172 [US2] RED: Add public/runtime regressions for the chosen `trigger_instrument_id` boundary before production code changes
-- [ ] T173 [US2] GREEN: Either pass TOML-owned `trigger_instrument_id` through the existing order-template path or update the contract to residualize it without claiming full triggered-field support
-- [ ] T174 [US2] Record `emulation_trigger` as an explicit deferred order-emulation slice unless it is enabled through TDD in this phase
+- [x] T171 [P] [US2] Record pinned NT and local source evidence for `trigger_instrument_id` and `emulation_trigger` against enabled factory variants
+- [x] T172 [US2] RED: Add public/runtime regressions for the chosen `trigger_instrument_id` boundary before production code changes
+- [x] T173 [US2] GREEN: Either pass TOML-owned `trigger_instrument_id` through the existing order-template path or update the contract to residualize it without claiming full triggered-field support
+- [x] T174 [US2] Record `emulation_trigger` as an explicit deferred order-emulation slice unless it is enabled through TDD in this phase
 - [ ] T175 [US2] Verify focused triggered-order tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+
+## Phase 40: TDD Slice 36 - Forced-Flat Pending Entry Review Blocker
+
+**Goal**: Resolve the Greptile finding that a resting GTC/GTD pending entry can suppress forced-flat exit submission for an already-open managed position. Normal exits still block while the entry remainder may fill; forced-flat liquidation must take precedence.
+
+- [x] T176 [P] [US3] Record source and multi-agent evidence that the pending-entry block returned before forced-flat evaluation
+- [x] T177 [US3] RED: Split the existing pending-entry regression into normal-exit blocking and forced-flat override coverage
+- [x] T178 [US3] GREEN: Give forced-flat exit precedence over the managed pending-entry guard without changing the normal-exit guard
+- [x] T179 [US3] RED: Add a forced-flat submit lifecycle regression proving NT cancel emission for the resting entry and residual recovery if an entry fill races while exit is pending
+- [x] T180 [US3] GREEN: Use NT `cancel_order(...)` for forced-flat pending-entry cancellation and recover raced fills as residual managed exposure
+- [ ] T181 [US3] Verify focused exit lifecycle tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
 ## Dependencies & Execution Order
 
@@ -425,6 +436,7 @@
 - Phase 37 blocks completion because read-only audit found the pre-admission order-intent evidence did not include the compiled NT order fields needed to explain Bolt admission.
 - Phase 38 blocks submit-context completion claims because current source inspection found no path that can set non-empty NT submit params.
 - Phase 39 blocks triggered-order field-completeness claims because pinned-NT review found `trigger_instrument_id` is accepted by enabled NT factories but currently dropped by Bolt, and `emulation_trigger` is not listed as residual scope.
+- Phase 40 blocks completion because Greptile found forced-flat exit submission was still blocked behind a resting managed pending-entry remainder.
 
 ## Parallel Opportunities
 

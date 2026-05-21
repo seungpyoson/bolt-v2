@@ -58,6 +58,7 @@ Short-side position contracts are parsed but rejected until strategy-owned short
 - `trigger_price`
 - `activation_price`
 - `trigger_type`
+- `trigger_instrument_id`
 - `trailing_offset`
 - `trailing_offset_type`
 

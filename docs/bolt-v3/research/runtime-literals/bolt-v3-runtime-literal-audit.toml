@@ -167,6 +167,14 @@ reason = "This is the NT triggered-order trigger type field projected from TOML 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"trigger_instrument_id"'''
+context = '''"trigger_instrument_id",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT triggered-order trigger instrument field projected from TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"trailing_offset"'''
 context = '''insert_float(&mut order_table, "trailing_offset", trailing_offset);'''
 classification = "strategy_runtime_schema_field"
@@ -639,10 +647,10 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''3'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 3;'''
+literal = '''4'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 4;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v3 adds compiled NT order fields to order-intent evidence; it is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v4 adds compiled NT trigger_instrument_id to order-intent evidence; it is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -3044,6 +3052,14 @@ literal = '''"trigger_type"'''
 context = '''const ORDER_TRIGGER_TYPE_FIELD: &str = "trigger_type";'''
 classification = "strategy_config_field_name"
 reason = "This is the stable NT triggered-order trigger type field label used in validation diagnostics; the trigger type value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trigger_instrument_id"'''
+context = '''const ORDER_TRIGGER_INSTRUMENT_ID_FIELD: &str = "trigger_instrument_id";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT triggered-order trigger instrument field label used in validation diagnostics; the instrument id value is TOML-owned."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"

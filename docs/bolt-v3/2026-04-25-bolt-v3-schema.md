@@ -1390,6 +1390,13 @@ GTD order templates require `expire_time_unix_nanos` when the selected NT order 
 - forbidden on non-triggered `limit` and `market` order templates
 - maps to the NT order factory `trigger_type` argument
 
+#### `trigger_instrument_id`
+
+- type: string backed by NautilusTrader `InstrumentId`
+- optional for triggered order types supported by the current archetype
+- forbidden on non-triggered `limit` and `market` order templates
+- maps to the NT order factory `trigger_instrument_id` argument
+
 #### `trailing_offset`
 
 - type: decimal string or TOML number

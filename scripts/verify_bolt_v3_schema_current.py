@@ -116,6 +116,14 @@ UNSUPPORTED_SCOPE_GUARD_PATTERN = re.compile(
     r"before|outside|beyond|fails?|failed|wrong|instead of)\b",
     re.IGNORECASE,
 )
+REQUIRES_DEFAULTED_TRAILING_STOP_MARKET_FIELD_PATTERN = re.compile(
+    r"\b(required|mandatory)\b|\bmust\s+be\s+(provided|set|configured|supplied)\b",
+    re.IGNORECASE,
+)
+OPTIONAL_OR_DEFAULT_GUARD_PATTERN = re.compile(
+    r"\b(optional|not\s+required|defaults?|defaulted|omitted)\b",
+    re.IGNORECASE,
+)
 
 
 def extract_section(text: str, heading: str, next_heading_prefix: str = "#### ") -> str:
@@ -144,6 +152,17 @@ def unsupported_scope_overclaims(label: str, text: str) -> list[str]:
     return findings
 
 
+def section_requires_defaulted_trailing_stop_market_field(section: str) -> bool:
+    for line in section.splitlines():
+        if "`trailing_stop_market`" not in line:
+            continue
+        if OPTIONAL_OR_DEFAULT_GUARD_PATTERN.search(line):
+            continue
+        if REQUIRES_DEFAULTED_TRAILING_STOP_MARKET_FIELD_PATTERN.search(line):
+            return True
+    return False
+
+
 def validate_docs(
     schema: str,
     status_map: str,
@@ -164,11 +183,11 @@ def validate_docs(
             findings.append(f"schema missing current phrase: {phrase}")
 
     trigger_type_section = extract_section(schema, "`trigger_type`")
-    if "- required for `trailing_stop_market`" in trigger_type_section:
+    if section_requires_defaulted_trailing_stop_market_field(trigger_type_section):
         findings.append("schema trigger_type section still requires TrailingStopMarket NT-defaulted field")
 
     trailing_offset_type_section = extract_section(schema, "`trailing_offset_type`")
-    if "- required for `trailing_stop_market`" in trailing_offset_type_section:
+    if section_requires_defaulted_trailing_stop_market_field(trailing_offset_type_section):
         findings.append(
             "schema trailing_offset_type section still requires TrailingStopMarket NT-defaulted field"
         )

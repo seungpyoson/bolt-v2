@@ -499,6 +499,8 @@
 - [x] T226 [US2] RED: Add schema-current verifier regression proving stale required default-field wording is not caught
 - [x] T227 [US2] GREEN: Update the verifier and active schema docs to describe NT default pass-through for omitted `trigger_type` and `trailing_offset_type`
 - [ ] T228 [US2] Verify schema-current tests, active schema verifier, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+- [x] T229 [US2] RED: Add schema-current verifier regression for equivalent required/default-field wording that does not reuse the exact stale line
+- [x] T230 [US2] GREEN: Generalize the verifier to reject equivalent TrailingStopMarket default-field requirement wording without flagging optional/default-pass-through wording
 
 ## Dependencies & Execution Order
 

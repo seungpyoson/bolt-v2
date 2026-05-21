@@ -230,6 +230,32 @@ Current validation rejects:
             raise AssertionError(f"expected stale TrailingStopMarket fragment {fragment!r}, got {findings!r}")
 
 
+def test_validate_docs_rejects_equivalent_trailing_stop_market_default_field_requirements() -> None:
+    stale_schema = (
+        CURRENT_SCHEMA
+        + """
+#### `trigger_type`
+
+- `trigger_type` is required for `trailing_stop_market`
+
+#### `trailing_offset_type`
+
+- `trailing_offset_type` must be provided when order_type is `trailing_stop_market`
+"""
+    )
+
+    findings = VERIFIER.validate_docs(stale_schema, CURRENT_STATUS_MAP)
+    expected_fragments = [
+        "trigger_type",
+        "trailing_offset_type",
+    ]
+    for fragment in expected_fragments:
+        if not any(fragment in finding for finding in findings):
+            raise AssertionError(
+                f"expected equivalent stale TrailingStopMarket fragment {fragment!r}, got {findings!r}"
+            )
+
+
 def test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA,
@@ -360,6 +386,7 @@ def main() -> int:
         test_validate_docs_rejects_blanket_non_gtd_expiry_claim,
         test_validate_docs_rejects_removed_market_exit_fields_and_requires_forced_exit_order,
         test_validate_docs_rejects_trailing_stop_market_required_default_field_claims,
+        test_validate_docs_rejects_equivalent_trailing_stop_market_default_field_requirements,
         test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere,
         test_validate_docs_rejects_gtd_broad_support_and_live_canary_overclaims,
         test_validate_docs_rejects_equivalent_live_canary_and_broad_venue_overclaims,

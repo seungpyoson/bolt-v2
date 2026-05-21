@@ -1140,6 +1140,14 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
             printf 'DEST=%s\\n' "s3://bolt-v2-active-cache/target" >> "$GITHUB_ENV"
             aws s3 sync target "$DEST"
         """,
+        "active target copied through neutral staging path": """
+            mkdir /tmp/deploy
+            cp -r target/debug /tmp/deploy/
+            aws s3 sync /tmp/deploy s3://bolt-v2-active-cache/cache
+        """,
+        "active target streamed through s3 stdin": """
+            tar -czf - target | aws s3 cp - s3://bolt-v2-active-cache/target.tar.gz
+        """,
     }
     misses: list[str] = []
     for name, script in workflows.items():
@@ -1347,6 +1355,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
+            'E=CARGO_TARGET_DIR; C=cargo; env -S "env $E=/tmp/raw-target $C check"',
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
             "E=CARGO_TARGET_DIR\nexport $E=/tmp/raw-target\ncargo check",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
@@ -1479,6 +1491,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --target-dir raw target override must be classified",
         ),
         (
+            "python -c \"import os; os.system('c' + 'argo build --target-dir /tmp/raw')\"",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
             "echo 'cargo \"$@\"' | bash -s -- build --target-dir /tmp/raw-target",
             "cargo --target-dir raw target override must be classified",
         ),
@@ -1588,6 +1604,18 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "/tmp/mycargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "/tmp/builder build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "exec -a name cargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "docker run --rm -v $PWD:/workspace -w /workspace rust:latest cargo build --target-dir /tmp/raw-target",
             "cargo --target-dir raw target override must be classified",
         ),
         (
@@ -3414,6 +3442,26 @@ def main() -> int:
             "      - run: just deny",
             """      - run: |
           rustup run stable cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          /tmp/builder install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          docker run --rm rust:latest cargo install cargo-deny --locked
           just deny""",
         ),
     )

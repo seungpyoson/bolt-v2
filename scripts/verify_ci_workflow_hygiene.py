@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Iterable
 import pathlib
 import re
@@ -955,13 +956,16 @@ RECURSIVE_WRAPPER_EXECUTABLES = {
     "catchsegv",
     "chrt",
     "command",
+    "chroot",
     "doas",
+    "docker",
     "env",
     "exec",
     "flock",
     "ionice",
     "nice",
     "nohup",
+    "podman",
     "runuser",
     "rustup",
     "setsid",
@@ -1279,6 +1283,62 @@ def shell_command(tokens: list[str]) -> str | None:
     return None
 
 
+def python_constant_string(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = python_constant_string(node.left)
+        right = python_constant_string(node.right)
+        if left is not None and right is not None:
+            return left + right
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            else:
+                return None
+        return "".join(parts)
+    return None
+
+
+def python_call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = python_call_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    return ""
+
+
+def python_inline_command_payloads(tokens: list[str]) -> list[str]:
+    payloads: list[str] = []
+    for index, token in enumerate(tokens):
+        if token != "-c" or index + 1 >= len(tokens):
+            continue
+        try:
+            tree = ast.parse(tokens[index + 1])
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            call_name = python_call_name(node.func)
+            if call_name not in {
+                "os.system",
+                "subprocess.call",
+                "subprocess.check_call",
+                "subprocess.check_output",
+                "subprocess.Popen",
+                "subprocess.run",
+            }:
+                continue
+            payload = python_constant_string(node.args[0])
+            if payload is not None:
+                payloads.append(payload)
+    return payloads
+
+
 def source_build_tool_from_token(token: str) -> str | None:
     token = token.rstrip("/")
     lower_token = token.lower()
@@ -1438,6 +1498,17 @@ def cargo_install_source_build_tools_from_tokens(
             source_path_tools=source_path_tools,
             cwd_source_tool=cwd_source_tool,
         )
+    if executable.startswith("python"):
+        for payload in python_inline_command_payloads(tokens):
+            tools.update(
+                cargo_install_source_build_tools_from_tokens(
+                    command_tokens(payload),
+                    depth=depth + 1,
+                    source_path_tools=source_path_tools,
+                    cwd_source_tool=cwd_source_tool,
+                )
+            )
+        return tools
     if executable in RECURSIVE_WRAPPER_EXECUTABLES:
         inner = wrapper_inner_tokens(tokens)
         if inner is not None:
@@ -1595,6 +1666,96 @@ def rustup_run_inner_tokens(tokens: list[str]) -> list[str]:
     return tokens[index:]
 
 
+def exec_inner_tokens(tokens: list[str]) -> list[str] | None:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return tokens[index + 1 :]
+        if token == "-a" and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token in {"-c", "-l"}:
+            index += 1
+            continue
+        if token.startswith("-") and not token.startswith("--") and set(token[1:]) <= {"c", "l"}:
+            index += 1
+            continue
+        return tokens[index:]
+    return []
+
+
+def container_inner_tokens(tokens: list[str]) -> list[str] | None:
+    if len(tokens) < 3:
+        return None
+    executable = pathlib.Path(tokens[0]).name
+    if executable not in {"docker", "podman"}:
+        return None
+    command = tokens[1]
+    options_with_argument = {
+        "--add-host",
+        "--cpus",
+        "--entrypoint",
+        "--env",
+        "--env-file",
+        "--hostname",
+        "--mount",
+        "--name",
+        "--network",
+        "--platform",
+        "--user",
+        "--volume",
+        "--workdir",
+        "-e",
+        "-h",
+        "-m",
+        "-u",
+        "-v",
+        "-w",
+    }
+    index = 2
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in options_with_argument and index + 1 < len(tokens):
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    if command == "run":
+        return tokens[index + 1 :] if index < len(tokens) else []
+    if command == "exec":
+        return tokens[index + 1 :] if index < len(tokens) else []
+    return None
+
+
+def chroot_inner_tokens(tokens: list[str]) -> list[str] | None:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token.startswith("--userspec=") or token.startswith("--groups="):
+            index += 1
+            continue
+        if token in {"--userspec", "--groups"} and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    return tokens[index + 1 :] if index < len(tokens) else []
+
+
 def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
     executable = pathlib.Path(tokens[0]).name if tokens else ""
     if executable == "command":
@@ -1655,7 +1816,20 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
                 continue
             return tokens[index:]
         return []
-    if executable in {"catchsegv", "exec", "nohup"}:
+    if executable == "env":
+        return env_inner_tokens(tokens)
+    if executable == "nice":
+        index = nice_command_index(tokens, 1)
+        return tokens[index:] if index is not None else None
+    if executable == "rustup" and len(tokens) >= 3 and tokens[1] == "run":
+        return rustup_run_inner_tokens(tokens)
+    if executable == "exec":
+        return exec_inner_tokens(tokens)
+    if executable in {"docker", "podman"}:
+        return container_inner_tokens(tokens)
+    if executable == "chroot":
+        return chroot_inner_tokens(tokens)
+    if executable in {"catchsegv", "nohup"}:
         return tokens[1:]
     if executable == "time":
         index = consume_option_prefix(tokens, 1, TIME_OPTIONS_WITH_ARGUMENT, TIME_OPTIONS_WITHOUT_ARGUMENT)
@@ -1962,8 +2136,7 @@ def nice_command_index(tokens: list[str], index: int) -> int | None:
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
-            index += 1
-            continue
+            return index + 1
         if token == "-n" and index + 1 < len(tokens):
             index += 2
             continue
@@ -2087,7 +2260,7 @@ def path_executable_looks_like_cargo(token: str) -> bool:
 
 
 def path_invocation_has_cargo_subcommand(tokens: list[str]) -> bool:
-    if not tokens or not path_executable_looks_like_cargo(tokens[0]):
+    if not tokens or "/" not in tokens[0]:
         return False
     command_index = consume_cargo_global_options(tokens, 1)
     return command_index < len(tokens) and tokens[command_index] in CARGO_PROCESS_SUBCOMMANDS
@@ -2398,9 +2571,15 @@ def tokens_have_raw_cargo(
             variables=variables,
         )
     if executable.startswith("python"):
-        for index, token in enumerate(tokens):
-            if token == "-c" and index + 1 < len(tokens) and "cargo" in tokens[index + 1]:
-                return True
+        return any(
+            tokens_have_raw_cargo(
+                command_tokens(payload),
+                depth=depth + 1,
+                allow_storage_only=allow_storage_only,
+                variables=variables,
+            )
+            for payload in python_inline_command_payloads(tokens)
+        )
     if executable == "flock":
         inner = flock_inner_tokens(tokens)
         if inner is not None:
@@ -2420,26 +2599,7 @@ def tokens_have_raw_cargo(
             )
             for payload in find_exec_payloads(tokens)
         )
-    if executable in {
-        "catchsegv",
-        "chrt",
-        "command",
-        "doas",
-        "exec",
-        "ionice",
-        "nice",
-        "nohup",
-        "setsid",
-        "sg",
-        "stdbuf",
-        "sudo",
-        "taskset",
-        "time",
-        "timeout",
-        "runuser",
-        "su",
-        "xargs",
-    }:
+    if executable in RECURSIVE_WRAPPER_EXECUTABLES:
         inner = wrapper_inner_tokens(tokens)
         if inner is not None:
             return tokens_have_raw_cargo(
@@ -2664,6 +2824,17 @@ def raw_cargo_storage_override_messages_from_tokens(
             messages.update(
                 raw_cargo_storage_override_messages_from_tokens(
                     command_tokens(nested),
+                    aliases=aliases,
+                    variables=variables,
+                    depth=depth + 1,
+                )
+            )
+        return messages
+    if executable.startswith("python"):
+        for payload in python_inline_command_payloads(expanded):
+            messages.update(
+                raw_cargo_storage_override_messages_from_tokens(
+                    command_tokens(payload),
                     aliases=aliases,
                     variables=variables,
                     depth=depth + 1,
@@ -2938,10 +3109,13 @@ def storage_value_roles(
     variable_roles: dict[str, set[str]],
     *,
     cwd_is_active_target: bool = False,
+    active_paths: set[str] | None = None,
 ) -> set[str]:
     compact = storage_strip_quotes(value).replace('"', "").replace("'", "")
     root_compact = storage_without_trailing_current_dir(value)
     roles: set[str] = set()
+    if active_paths is not None and storage_path_is_inside_active_path(root_compact, active_paths):
+        roles.add(STORAGE_ROLE_ACTIVE_TARGET)
     if "s3://" in compact:
         roles.add(STORAGE_ROLE_S3)
     if "rust_verification.py" in compact and "target-dir" in compact:
@@ -2974,6 +3148,90 @@ def storage_value_roles(
     if cwd_is_active_target and compact and not compact.startswith("-") and STORAGE_ROLE_S3 not in roles:
         roles.add(STORAGE_ROLE_ACTIVE_TARGET)
     return roles
+
+
+def storage_path_key(value: str) -> str:
+    return storage_without_trailing_current_dir(value).replace('"', "").replace("'", "")
+
+
+def storage_path_is_inside_active_path(value: str, active_paths: set[str]) -> bool:
+    key = storage_path_key(value)
+    return any(key == active_path or key.startswith(f"{active_path}/") for active_path in active_paths if active_path)
+
+
+def command_tail_until_boundary(tokens: list[str], start: int) -> list[str]:
+    tail: list[str] = []
+    cursor = start
+    while cursor < len(tokens) and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
+        tail.append(tokens[cursor])
+        cursor += 1
+    return tail
+
+
+def command_operand_roles(
+    operand: str,
+    variable_roles: dict[str, set[str]],
+    *,
+    cwd_is_active_target: bool,
+    active_paths: set[str],
+) -> set[str]:
+    return storage_value_roles(
+        operand,
+        variable_roles,
+        cwd_is_active_target=cwd_is_active_target,
+        active_paths=active_paths,
+    )
+
+
+def record_active_copy_paths(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> None:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    operands = [token for token in tail if not token.startswith("-")]
+    if len(operands) < 2:
+        return
+    sources = operands[:-1]
+    destination = operands[-1]
+    if any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in command_operand_roles(
+            source,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for source in sources
+    ):
+        active_paths.add(storage_path_key(destination))
+
+
+def command_streams_active_target_to_stdout(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    active_paths: set[str],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    tail = command_tail_until_boundary(tokens, index + 1)
+    if "-" not in tail:
+        return False
+    return any(
+        STORAGE_ROLE_ACTIVE_TARGET
+        in command_operand_roles(
+            token,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
+        for token in tail
+        if token != "-" and not token.startswith("-")
+    )
 
 
 def shell_assignment_from_tokens(tokens: list[str], index: int) -> tuple[str, str, int] | None:
@@ -3093,6 +3351,10 @@ def aws_s3_operands(tokens: list[str]) -> list[str]:
         token = tokens[cursor]
         if token in SHELL_COMMAND_BOUNDARIES:
             break
+        if token == "-":
+            operands.append(token)
+            cursor += 1
+            continue
         if token.startswith("-"):
             cursor = consume_storage_option(tokens, cursor, AWS_S3_OPTIONS_WITH_ARGUMENT)
             continue
@@ -3130,6 +3392,8 @@ def aws_s3_transfer_touches_active_target(
     variable_roles: dict[str, set[str]],
     *,
     cwd_is_active_target: bool,
+    active_paths: set[str],
+    stdin_is_active_target: bool = False,
 ) -> bool:
     service_index = aws_service_index(tokens, index)
     if service_index is None:
@@ -3159,7 +3423,13 @@ def aws_s3_transfer_touches_active_target(
         cursor += 1
     if service == "s3api":
         return any(
-            STORAGE_ROLE_ACTIVE_TARGET in storage_value_roles(token, variable_roles, cwd_is_active_target=cwd_is_active_target)
+            STORAGE_ROLE_ACTIVE_TARGET
+            in storage_value_roles(
+                token,
+                variable_roles,
+                cwd_is_active_target=cwd_is_active_target,
+                active_paths=active_paths,
+            )
             for token in tail
         )
     if operation not in AWS_S3_TRANSFER_COMMANDS:
@@ -3167,8 +3437,15 @@ def aws_s3_transfer_touches_active_target(
     operands = aws_s3_operands(tail)
     if len(operands) < 2:
         return False
+    if stdin_is_active_target and operation == "cp" and "-" in operands:
+        return True
     endpoint_roles = [
-        storage_value_roles(endpoint, variable_roles, cwd_is_active_target=cwd_is_active_target)
+        storage_value_roles(
+            endpoint,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+        )
         for endpoint in operands
     ]
     return any(STORAGE_ROLE_ACTIVE_TARGET in roles for roles in endpoint_roles)
@@ -3179,6 +3456,9 @@ def storage_transfer_policy_errors(text: str) -> list[str]:
     tokens = command_tokens(text)
     cursor = 0
     cwd_is_active_target = False
+    active_paths: set[str] = set()
+    pipe_stdout_is_active_target = False
+    pipe_stdin_is_active_target = False
     while cursor < len(tokens):
         assignment = shell_assignment_from_tokens(tokens, cursor)
         if assignment is not None:
@@ -3186,21 +3466,51 @@ def storage_transfer_policy_errors(text: str) -> list[str]:
             continue
         token = tokens[cursor]
         if token in SHELL_COMMAND_BOUNDARIES:
+            if token == "|":
+                pipe_stdin_is_active_target = pipe_stdout_is_active_target
+            else:
+                pipe_stdin_is_active_target = False
+            pipe_stdout_is_active_target = False
             cursor += 1
             continue
         name = executable_name(token)
         if name in {"cd", "pushd"} and cursor + 1 < len(tokens):
-            target_roles = storage_value_roles(tokens[cursor + 1], variable_roles, cwd_is_active_target=cwd_is_active_target)
+            target_roles = storage_value_roles(
+                tokens[cursor + 1],
+                variable_roles,
+                cwd_is_active_target=cwd_is_active_target,
+                active_paths=active_paths,
+            )
             cwd_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in target_roles
             cursor += 2
             continue
+        if name in {"cp", "rsync"}:
+            record_active_copy_paths(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            )
+        if name == "tar":
+            pipe_stdout_is_active_target = command_streams_active_target_to_stdout(
+                tokens,
+                cursor,
+                variable_roles,
+                active_paths,
+                cwd_is_active_target=cwd_is_active_target,
+            )
         if name == "aws" and aws_s3_transfer_touches_active_target(
             tokens,
             cursor,
             variable_roles,
             cwd_is_active_target=cwd_is_active_target,
+            active_paths=active_paths,
+            stdin_is_active_target=pipe_stdin_is_active_target,
         ):
             return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
+        if name == "aws":
+            pipe_stdin_is_active_target = False
         cursor += 1
     return []
 
@@ -3326,6 +3636,28 @@ def dynamic_env_segment_messages(
             if any(argument.startswith(f"{option}=") for option in ENV_SIGNAL_OPTIONS):
                 index += 1
                 continue
+            if argument in {"-S", "--split-string"} and index + 1 < len(expanded):
+                split_inner = command_tokens(expanded[index + 1]) + expanded[index + 2 :]
+                messages.update(
+                    dynamic_env_tokens_messages(
+                        expand_known_shell_variables(split_inner, local_assignments),
+                        local_assignments,
+                        target_keys,
+                        depth=depth + 1,
+                    )
+                )
+                return messages
+            if argument.startswith("--split-string="):
+                split_inner = command_tokens(argument.split("=", 1)[1]) + expanded[index + 1 :]
+                messages.update(
+                    dynamic_env_tokens_messages(
+                        expand_known_shell_variables(split_inner, local_assignments),
+                        local_assignments,
+                        target_keys,
+                        depth=depth + 1,
+                    )
+                )
+                return messages
             if argument in ENV_OPTIONS_WITH_ARGUMENT and index + 1 < len(expanded):
                 index += 2
                 continue

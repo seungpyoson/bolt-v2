@@ -1096,8 +1096,14 @@ def normalized_source_path(token: str) -> str:
     return token.rstrip("/")
 
 
-def source_build_tool_for_path(token: str, source_path_tools: dict[str, str] | None) -> str | None:
+def source_build_tool_for_path(
+    token: str,
+    source_path_tools: dict[str, str] | None,
+    cwd_source_tool: str | None = None,
+) -> str | None:
     normalized = normalized_source_path(token)
+    if normalized == "." and cwd_source_tool is not None:
+        return cwd_source_tool
     if source_path_tools and normalized in source_path_tools:
         return source_path_tools[normalized]
     return source_build_tool_from_token(token)
@@ -1111,36 +1117,37 @@ def cargo_install_source_build_tools(
     tokens: list[str],
     command_index: int,
     source_path_tools: dict[str, str] | None = None,
+    cwd_source_tool: str | None = None,
 ) -> set[str]:
     tools: set[str] = set()
     index = command_index + 1
     while index < len(tokens) and tokens[index] not in SHELL_COMMAND_BOUNDARIES:
         token = tokens[index]
         if token in ("--package", "-p") and index + 1 < len(tokens):
-            tool = source_build_tool_for_path(tokens[index + 1], source_path_tools)
+            tool = source_build_tool_for_path(tokens[index + 1], source_path_tools, cwd_source_tool)
             if tool is not None:
                 tools.add(tool)
             index += 2
             continue
         if token.startswith("--package="):
-            tool = source_build_tool_for_path(token.removeprefix("--package="), source_path_tools)
+            tool = source_build_tool_for_path(token.removeprefix("--package="), source_path_tools, cwd_source_tool)
             if tool is not None:
                 tools.add(tool)
             index += 1
             continue
         if token == "--path" and index + 1 < len(tokens):
-            tool = source_build_tool_for_path(tokens[index + 1], source_path_tools)
+            tool = source_build_tool_for_path(tokens[index + 1], source_path_tools, cwd_source_tool)
             if tool is not None:
                 tools.add(tool)
             index += 2
             continue
         if token.startswith("--path="):
-            tool = source_build_tool_for_path(token.removeprefix("--path="), source_path_tools)
+            tool = source_build_tool_for_path(token.removeprefix("--path="), source_path_tools, cwd_source_tool)
             if tool is not None:
                 tools.add(tool)
             index += 1
             continue
-        tool = source_build_tool_for_path(token, source_path_tools)
+        tool = source_build_tool_for_path(token, source_path_tools, cwd_source_tool)
         if tool is not None:
             tools.add(tool)
         index += 1
@@ -1150,15 +1157,27 @@ def cargo_install_source_build_tools(
 def source_build_tools_from_depth_exceeded_tokens(
     tokens: list[str],
     source_path_tools: dict[str, str] | None,
+    cwd_source_tool: str | None,
 ) -> set[str]:
     if "install" not in tokens:
         return set()
     tools: set[str] = set()
     for token in tokens:
-        tool = source_build_tool_for_path(token, source_path_tools)
+        tool = source_build_tool_for_path(token, source_path_tools, cwd_source_tool)
         if tool is not None:
             tools.add(tool)
     return tools
+
+
+def cd_source_tool(tokens: list[str], source_path_tools: dict[str, str] | None) -> tuple[bool, str | None]:
+    if not tokens or tokens[0] != "cd":
+        return False, None
+    index = 1
+    while index < len(tokens) and tokens[index].startswith("-"):
+        index += 1
+    if index >= len(tokens):
+        return True, None
+    return True, source_build_tool_for_path(tokens[index], source_path_tools)
 
 
 def cargo_install_source_build_tools_from_tokens(
@@ -1166,14 +1185,16 @@ def cargo_install_source_build_tools_from_tokens(
     *,
     depth: int = 0,
     source_path_tools: dict[str, str] | None = None,
+    cwd_source_tool: str | None = None,
 ) -> set[str]:
     if not tokens:
         return set()
     if depth > 6:
-        return source_build_tools_from_depth_exceeded_tokens(tokens, source_path_tools)
+        return source_build_tools_from_depth_exceeded_tokens(tokens, source_path_tools, cwd_source_tool)
     tools: set[str] = set()
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
+        segment_cwd_source_tool = cwd_source_tool
         for token in tokens:
             if token in SHELL_COMMAND_BOUNDARIES:
                 tools.update(
@@ -1181,8 +1202,12 @@ def cargo_install_source_build_tools_from_tokens(
                         segment,
                         depth=depth + 1,
                         source_path_tools=source_path_tools,
+                        cwd_source_tool=segment_cwd_source_tool,
                     )
                 )
+                changed, cd_tool = cd_source_tool(segment, source_path_tools)
+                if changed:
+                    segment_cwd_source_tool = cd_tool
                 segment = []
                 continue
             segment.append(token)
@@ -1191,6 +1216,7 @@ def cargo_install_source_build_tools_from_tokens(
                 segment,
                 depth=depth + 1,
                 source_path_tools=source_path_tools,
+                cwd_source_tool=segment_cwd_source_tool,
             )
         )
         return tools
@@ -1200,6 +1226,7 @@ def cargo_install_source_build_tools_from_tokens(
             tokens[assignment_index:],
             depth=depth + 1,
             source_path_tools=source_path_tools,
+            cwd_source_tool=cwd_source_tool,
         )
     executable = pathlib.Path(tokens[0]).name
     if executable in ("bash", "dash", "fish", "sh", "zsh"):
@@ -1210,6 +1237,7 @@ def cargo_install_source_build_tools_from_tokens(
             command_tokens(nested),
             depth=depth + 1,
             source_path_tools=source_path_tools,
+            cwd_source_tool=cwd_source_tool,
         )
     if executable in {
         "catchsegv",
@@ -1234,16 +1262,17 @@ def cargo_install_source_build_tools_from_tokens(
                 inner,
                 depth=depth + 1,
                 source_path_tools=source_path_tools,
+                cwd_source_tool=cwd_source_tool,
             )
         return tools
     if executable == "cargo":
         command_index = consume_cargo_global_options(tokens, 1)
         if command_index < len(tokens) and tokens[command_index] == "install":
-            tools.update(cargo_install_source_build_tools(tokens, command_index, source_path_tools))
+            tools.update(cargo_install_source_build_tools(tokens, command_index, source_path_tools, cwd_source_tool))
     elif path_invocation_has_cargo_subcommand(tokens):
         command_index = consume_cargo_global_options(tokens, 1)
         if command_index < len(tokens) and tokens[command_index] == "install":
-            tools.update(cargo_install_source_build_tools(tokens, command_index, source_path_tools))
+            tools.update(cargo_install_source_build_tools(tokens, command_index, source_path_tools, cwd_source_tool))
     return tools
 
 
@@ -1273,16 +1302,22 @@ def source_build_clone_path_tools(text: str) -> dict[str, str]:
 def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
     tools: set[str] = set()
     source_path_tools = source_build_clone_path_tools(text)
+    cwd_source_tool: str | None = None
     for line in text.replace("\\\n", " ").splitlines():
-        if "install" not in line:
-            continue
         lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
         try:
             tokens = list(lexer)
         except ValueError:
             continue
-        tools.update(cargo_install_source_build_tools_from_tokens(tokens, source_path_tools=source_path_tools))
+        if "install" in line:
+            tools.update(
+                cargo_install_source_build_tools_from_tokens(
+                    tokens,
+                    source_path_tools=source_path_tools,
+                    cwd_source_tool=cwd_source_tool,
+                )
+            )
         for index, token in enumerate(tokens[:-1]):
             if executable_name(token) != "cargo":
                 continue
@@ -1291,7 +1326,10 @@ def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
             command_index = consume_cargo_global_options(tokens, index + 1)
             if command_index >= len(tokens) or tokens[command_index] != "install":
                 continue
-            tools.update(cargo_install_source_build_tools(tokens, command_index, source_path_tools))
+            tools.update(cargo_install_source_build_tools(tokens, command_index, source_path_tools, cwd_source_tool))
+        changed, cd_tool = cd_source_tool(tokens, source_path_tools)
+        if changed:
+            cwd_source_tool = cd_tool
     return tools
 
 
@@ -1927,6 +1965,64 @@ def command_has_raw_cargo(command: str) -> bool:
 
 def tokens_have_raw_cargo_launch(tokens: list[str]) -> bool:
     return tokens_have_raw_cargo(tokens, allow_storage_only=False)
+
+
+def tokens_are_rust_version_probe(tokens: list[str]) -> bool:
+    if not tokens:
+        return False
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index:
+        return tokens_are_rust_version_probe(tokens[assignment_index:])
+    executable = pathlib.Path(tokens[0]).name
+    if executable == "cargo":
+        command_index = consume_cargo_global_options(tokens, 1)
+        probe_commands = {"--version", "-V", "version", "--help", "-h", "help"}
+        return command_index < len(tokens) and tokens[command_index] in probe_commands
+    if raw_rust_tool_token(executable):
+        return any(token in {"--version", "-V", "--help", "-h"} for token in tokens[1:])
+    return False
+
+
+def tokens_have_repo_automation_raw_cargo(tokens: list[str]) -> bool:
+    if not tokens:
+        return False
+    if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
+        segment: list[str] = []
+        for token in tokens:
+            if token in SHELL_COMMAND_BOUNDARIES:
+                if tokens_have_repo_automation_raw_cargo(segment):
+                    return True
+                segment = []
+                continue
+            segment.append(token)
+        return tokens_have_repo_automation_raw_cargo(segment)
+    if tokens_are_rust_version_probe(tokens):
+        return False
+    return tokens_have_raw_cargo_launch(tokens)
+
+
+def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
+    errors: list[str] = []
+    managed_just_recipe = False
+    is_justfile = file_name == "justfile" or file_name.startswith("justfile.")
+    for line in text.replace("\\\n", " ").splitlines():
+        stripped = strip_comment(line).strip()
+        if not stripped:
+            continue
+        if is_justfile and not line[:1].isspace():
+            if stripped.startswith("["):
+                continue
+            if ":" in stripped:
+                managed_just_recipe = False
+        if "BOLT_MANAGED_JUST" in stripped and "exit" in stripped:
+            managed_just_recipe = True
+            continue
+        if managed_just_recipe:
+            continue
+        if tokens_have_repo_automation_raw_cargo(command_tokens(stripped)):
+            errors.append("repo automation raw Cargo must use managed rust_verification wrapper")
+            break
+    return errors
 
 
 def cargo_config_storage_override_message(tokens: list[str]) -> str | None:
@@ -3178,6 +3274,7 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for file_name, text in texts.items():
         errors.extend(f"{file_name}: {error}" for error in raw_rust_storage_errors(text))
+        errors.extend(f"{file_name}: {error}" for error in repo_automation_raw_cargo_errors(file_name, text))
         errors.extend(f"{file_name}: {error}" for error in repo_automation_source_build_errors(text))
     return errors
 

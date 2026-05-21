@@ -1540,6 +1540,14 @@ def assert_v6_red_renamed_path_cargo_source_builds_are_reported() -> None:
             "repo automation must not compile cargo-deny from source",
         ),
         (
+            "git clone https://github.com/EmbarkStudios/cargo-deny /tmp/my-deny\ncd /tmp/my-deny && cargo install --path .",
+            "repo automation must not compile cargo-deny from source",
+        ),
+        (
+            "git clone https://github.com/EmbarkStudios/cargo-deny.git\ncd cargo-deny && cargo install --path .",
+            "repo automation must not compile cargo-deny from source",
+        ),
+        (
             "cargo install --git https://github.com/EmbarkStudios/Cargo-Deny --locked",
             "repo automation must not compile cargo-deny from source",
         ),
@@ -1838,6 +1846,8 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
     repo_errors = verifier.verify_repo_automation_texts(
         {
             "justfile": "check:\n    CARGO_TARGET_DIR=/tmp/raw cargo check\n",
+            "justfile.raw": "test:\n    cargo test\n",
+            "scripts/raw.sh": "#!/usr/bin/env bash\ncargo build\n",
             "justfile.setup": "setup:\n    cargo install cargo-nextest --version 0.9.132 --locked\n",
             "justfile.setup.absolute": "setup:\n    /usr/bin/cargo install cargo-nextest --version 0.9.132 --locked\n",
             "justfile.setup.timeout": "setup:\n    timeout 30 cargo install cargo-deny --version 0.18.2\n",
@@ -1856,6 +1866,11 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"setup action raw-storage drift was silent: {action_errors!r}")
     if not any("justfile" in error and expected in error for error in repo_errors):
         raise AssertionError(f"justfile raw-storage drift was silent: {repo_errors!r}")
+    expected = "repo automation raw Cargo must use managed rust_verification wrapper"
+    if not any("justfile.raw" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"justfile raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script raw-cargo drift was silent: {repo_errors!r}")
     expected = "repo automation must not compile cargo-nextest from source"
     if not any("justfile.setup" in error and expected in error for error in repo_errors):
         raise AssertionError(f"justfile cargo-install drift was silent: {repo_errors!r}")

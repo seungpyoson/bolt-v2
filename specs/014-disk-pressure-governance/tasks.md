@@ -96,7 +96,7 @@ Explicit #374 residuals from #286 / PR #404 review:
 - [ ] T025 Run `git diff --check`.
 - [ ] T026 Open draft PR early enough for exact-head CI to run.
 - [ ] T027 Push branch and verify exact-head CI green.
-- [ ] T028 Run no-mistakes on exact PR head only after #374 has removed raw local Cargo drift or with an explicit skip/CI-evidence policy.
+- [x] T028 Record explicit no-mistakes skip/CI-evidence policy for this PR slice: do not use no-mistakes per operator instruction; T027 exact-head CI remains required before review/ready.
 - [ ] T029 Get Claude review and Claude adversarial review.
 - [ ] T030 Get Gemini review and Gemini adversarial review.
 - [ ] T031 Get DeepSeek, GLM, and Kimi review plus adversarial review for every implementation PR.

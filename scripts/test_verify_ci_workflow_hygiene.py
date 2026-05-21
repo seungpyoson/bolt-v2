@@ -1092,11 +1092,38 @@ def assert_v6_deploy_artifact_s3_stays_allowed() -> None:
         """
         mkdir -p dist
         aws s3 cp dist/bolt-v2.tar.zst s3://bolt-v2-deploy-artifacts/bolt-v2.tar.zst
+        aws s3 cp "$PWD/dist/bolt-v2.sha256" s3://bolt-v2-deploy-artifacts/bolt-v2.sha256
         """
     )
     s3_errors = [error for error in verifier.verify_text(workflow, BASE_ACTION, BASE_NEXTEST_CONFIG) if "s3" in error.lower()]
     if s3_errors:
         raise AssertionError(f"deploy artifact S3 publication must stay allowed, got: {s3_errors!r}")
+
+
+def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
+    verifier = load_verifier()
+    expected = "S3 active mutable target cache must be rejected"
+    workflows = {
+        "s3 destination hidden behind an env value": """
+            DEST=s3://bolt-v2-active-cache/workspace
+            aws s3 sync "$GITHUB_WORKSPACE" "$DEST"
+        """,
+        "workspace source hidden behind an env value": """
+            SRC=$PWD
+            aws s3 sync "$SRC" s3://bolt-v2-active-cache/workspace
+        """,
+        "managed target hidden behind command substitution": """
+            TARGET=`python3 scripts/rust_verification.py target-dir --repo .`
+            aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+        """,
+    }
+    misses: list[str] = []
+    for name, script in workflows.items():
+        errors = verifier.raw_rust_storage_errors(textwrap.dedent(script))
+        if expected not in errors:
+            misses.append(f"{name}: {errors!r}")
+    if misses:
+        raise AssertionError("storage-transfer policy did not classify semantic active-cache flows: " + "; ".join(misses))
 
 
 def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
@@ -1856,6 +1883,7 @@ def assert_v6_red_exact_head_governance_inputs_are_cache_keyed() -> None:
 
 def assert_v6_red_workflow_policy_gaps() -> None:
     checks = [
+        assert_v6_red_s3_storage_transfer_policy_is_semantic,
         assert_v6_red_raw_rust_storage_overrides_are_reported,
         assert_v6_red_renamed_path_cargo_source_builds_are_reported,
         assert_v6_red_no_mistakes_raw_cargo_is_reported,
@@ -2706,6 +2734,20 @@ def main() -> int:
             BASE_WORKFLOW,
             '"${{ needs.build.result }}" != "skipped"',
             '"${{ needs.build.result }}" != "success"',
+        ),
+    )
+    check_aarch64_condition = '"${{ needs.check-aarch64.result }}" != "success"'
+    tag_check = BASE_WORKFLOW.find(check_aarch64_condition)
+    standard_check = BASE_WORKFLOW.find(check_aarch64_condition, tag_check + len(check_aarch64_condition))
+    if tag_check < 0 or standard_check < 0:
+        raise AssertionError("gate check-aarch64 fixture must include tag and standard topology checks")
+    assert_error(
+        "gate must check needs.check-aarch64.result",
+        BASE_WORKFLOW[:standard_check]
+        + BASE_WORKFLOW[standard_check:].replace(
+            check_aarch64_condition,
+            '"${{ omitted.check-aarch64.result }}" != "success"',
+            1,
         ),
     )
     assert_error(

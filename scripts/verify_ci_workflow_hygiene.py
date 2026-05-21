@@ -24,6 +24,7 @@ DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / "scripts", "*.sh"),
     (REPO_ROOT / "tests", "*.sh"),
 )
+S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
 
 REQUIRED_JOBS = (
     "detector",
@@ -2327,106 +2328,304 @@ def text_has_path_style_cargo_config(text: str) -> bool:
     return False
 
 
-def s3_uri_variables(text: str) -> set[str]:
-    variables: set[str] = set()
-    patterns = (
-        re.compile(
-            r"(?:^\s*|[;&|]\s*)(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)="
-            r"(?:\"s3://[^\"]+\"|'s3://[^']+'|s3://[^\s;&|]+)",
-            re.MULTILINE,
-        ),
-        re.compile(
-            r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"
-            r"(?:\"s3://[^\"]+\"|'s3://[^']+'|s3://[^\s#]+)",
-            re.MULTILINE,
-        ),
-        re.compile(
-            r"\becho\s+[\"']([A-Za-z_][A-Za-z0-9_]*)="
-            r"s3://[^\"']+[\"']\s*>>\s*[\"']?\$GITHUB_ENV[\"']?",
-            re.MULTILINE,
-        ),
-    )
-    for pattern in patterns:
-        for match in pattern.finditer(text):
-            variables.add(match.group(1))
-    return variables
+STORAGE_ROLE_S3 = "s3"
+STORAGE_ROLE_ACTIVE_TARGET = "active_target"
+AWS_S3_TRANSFER_COMMANDS = {"cp", "mv", "sync"}
+AWS_S3_OPTIONS_WITH_ARGUMENT = {
+    "--acl",
+    "--cache-control",
+    "--content-disposition",
+    "--content-encoding",
+    "--content-language",
+    "--content-type",
+    "--copy-props",
+    "--exclude",
+    "--expires",
+    "--expected-size",
+    "--include",
+    "--metadata",
+    "--metadata-directive",
+    "--page-size",
+    "--profile",
+    "--region",
+    "--request-payer",
+    "--sse",
+    "--sse-c",
+    "--sse-c-copy-source",
+    "--sse-c-copy-source-key",
+    "--sse-c-key",
+    "--sse-kms-key-id",
+    "--storage-class",
+    "--website-redirect",
+}
 
 
-def active_target_value(value: str) -> bool:
-    stripped = value.strip().strip("\"'")
-    quote_joined = stripped.replace('"', "").replace("'", "")
-    if stripped.startswith("s3://"):
+def storage_strip_quotes(value: str) -> str:
+    return value.strip().strip("\"'")
+
+
+def storage_variable_names(value: str) -> set[str]:
+    names = {match.group(1) for match in re.finditer(r"\$([A-Za-z_][A-Za-z0-9_]*)\b", value)}
+    names.update(match.group(1) for match in re.finditer(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:[^}]*)\}", value))
+    names.update(match.group(1) for match in re.finditer(r"\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}", value))
+    return names
+
+
+def storage_value_has_target_component(value: str) -> bool:
+    normalized = storage_strip_quotes(value).replace('"', "").replace("'", "")
+    if not normalized or normalized.startswith("s3://"):
         return False
-    return any(
-        re.search(pattern, quote_joined)
-        for pattern in (
-            r"(?:^|[/.])target(?:/|$)",
-            r"\$CARGO_TARGET_DIR|\$\{CARGO_TARGET_DIR[^}]*\}",
-            r"\$GITHUB_WORKSPACE/[^\s\"']*target|\$\{GITHUB_WORKSPACE[^}]*\}/[^\s\"']*target",
-            r"\$\{\{\s*(?:github\.workspace|env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}",
-        )
-    )
+    parts = [part for part in re.split(r"[\\/]+", normalized) if part and part not in {".", ".."}]
+    return "target" in parts
 
 
-def active_target_variables(text: str) -> set[str]:
-    variables: set[str] = set()
-    patterns = (
-        re.compile(
-            r"(?:^\s*|[;&|]\s*)(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)="
-            r"((?:\"[^\"]*\"|'[^']*'|[^\s;&|])*)",
-            re.MULTILINE,
-        ),
-        re.compile(
-            r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"
-            r"(\"[^\"]+\"|'[^']+'|[^\s#]+)",
-            re.MULTILINE,
-        ),
-        re.compile(
-            r"\becho\s+[\"']([A-Za-z_][A-Za-z0-9_]*)=([^\"']+)[\"']\s*>>\s*[\"']?\$GITHUB_ENV[\"']?",
-            re.MULTILINE,
-        ),
-    )
-    for pattern in patterns:
-        for match in pattern.finditer(text):
-            if active_target_value(match.group(2)):
-                variables.add(match.group(1))
-    return variables
+def storage_value_roles(
+    value: str,
+    variable_roles: dict[str, set[str]],
+    *,
+    cwd_is_active_target: bool = False,
+) -> set[str]:
+    compact = storage_strip_quotes(value).replace('"', "").replace("'", "")
+    roles: set[str] = set()
+    if "s3://" in compact:
+        roles.add(STORAGE_ROLE_S3)
+    if "rust_verification.py" in compact and "target-dir" in compact:
+        roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+    if ("$(" in compact or compact.startswith("$ (")) and re.search(r"(?:^|[\s/])target(?:[\s/]|$)", compact):
+        roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+    for variable in storage_variable_names(compact):
+        if variable in {"CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_TARGET_TMPDIR"}:
+            roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+        if variable in {"GITHUB_WORKSPACE", "PWD"} and compact in {
+            f"${variable}",
+            f"${{{variable}}}",
+            f"${variable}/",
+            f"${{{variable}}}/",
+        }:
+            roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+        roles.update(variable_roles.get(variable, set()))
+    if re.search(r"\$\{\{\s*(?:env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}", compact):
+        roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+    if re.search(r"\$\{\{\s*github\.workspace\s*\}\}", compact) and (
+        re.fullmatch(r"\$\{\{\s*github\.workspace\s*\}\}", compact.strip()) is not None
+        or storage_value_has_target_component(compact)
+    ):
+        roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+    if compact in {".", "./", "*", "$PWD", "${PWD}", "$GITHUB_WORKSPACE", "${GITHUB_WORKSPACE}"}:
+        roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+    if storage_value_has_target_component(compact):
+        roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+    if cwd_is_active_target and compact and not compact.startswith("-") and STORAGE_ROLE_S3 not in roles:
+        roles.add(STORAGE_ROLE_ACTIVE_TARGET)
+    return roles
 
 
-def shell_line_references_variable(line: str, variable: str) -> bool:
-    escaped = re.escape(variable)
-    return re.search(rf"\$(?:{escaped}\b|\{{{escaped}[^}}]*\}})", line) is not None or re.search(
-        rf"\$\{{\{{\s*env\.{escaped}\s*\}}\}}",
-        line,
-    ) is not None
+def shell_assignment_from_tokens(tokens: list[str], index: int) -> tuple[str, str, int] | None:
+    if index >= len(tokens) or not shell_assignment_word(tokens[index]):
+        return None
+    name, value = tokens[index].split("=", 1)
+    cursor = index + 1
+    if value == "$" and cursor < len(tokens) and tokens[cursor] == "(":
+        depth = 1
+        parts = [value, tokens[cursor]]
+        cursor += 1
+        while cursor < len(tokens) and depth:
+            token = tokens[cursor]
+            parts.append(token)
+            if token == "(":
+                depth += 1
+            elif token == ")":
+                depth -= 1
+            cursor += 1
+        value = " ".join(parts)
+    elif value.startswith("`") and not value.endswith("`"):
+        parts = [value]
+        while cursor < len(tokens):
+            token = tokens[cursor]
+            parts.append(token)
+            cursor += 1
+            if token.endswith("`"):
+                break
+        value = " ".join(parts)
+    return name, value, cursor
 
 
-def aws_s3_line_mentions_active_target(line: str) -> bool:
-    active_target_patterns = (
-        r"(?:^|[\s\"'])(?:\.?/)?target(?:[\s/\"');&|{}]|$)",
-        r"(?:^|[\s\"'])(?:[\"']?\$CARGO_TARGET_DIR[\"']?|\$\{CARGO_TARGET_DIR[^}]*\})(?:/(?:\./)?[^\s\"']*)?(?:[\s\"');&|{}]|$)",
-        r"(?:^|[\s\"'])(?:[\"']?\$GITHUB_WORKSPACE[\"']?|\$\{GITHUB_WORKSPACE[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"');&|{}]|$)",
-        r"(?:^|[\s\"'])(?:[\"']?\$PWD[\"']?|\$\{PWD[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"');&|{}]|$)",
-        r"(?:^|[\s\"'])\$\{\{\s*(?:github\.workspace|env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}(?:/(?:\./)?(?:target(?:/[^\s\"']*)?|[^\s\"']*))?(?:[\s\"');&|{}]|$)",
-    )
-    return any(re.search(pattern, line) for pattern in active_target_patterns)
-
-
-def text_has_s3_variable_active_target_sync(text: str) -> bool:
-    s3_variables = s3_uri_variables(text)
-    target_variables = active_target_variables(text)
-    if not s3_variables and not target_variables:
-        return False
-    for line in text.splitlines():
-        if not re.search(r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b", line):
+def storage_assignment_values(text: str) -> list[tuple[str, str]]:
+    assignments: list[tuple[str, str]] = []
+    tokens = command_tokens(text)
+    cursor = 0
+    while cursor < len(tokens):
+        assignment = shell_assignment_from_tokens(tokens, cursor)
+        if assignment is None:
+            cursor += 1
             continue
-        has_s3 = "s3://" in line or any(shell_line_references_variable(line, variable) for variable in s3_variables)
-        has_target = aws_s3_line_mentions_active_target(line) or any(
-            shell_line_references_variable(line, variable) for variable in target_variables
+        name, value, cursor = assignment
+        assignments.append((name, value))
+    for line in text.splitlines():
+        clean = strip_comment(line).strip()
+        match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$", clean)
+        if match:
+            assignments.append((match.group(1), match.group(2)))
+            continue
+        match = re.search(r"\becho\s+[\"']([A-Za-z_][A-Za-z0-9_]*)=([^\"']+)[\"']\s*>>\s*[\"']?\$GITHUB_ENV[\"']?", clean)
+        if match:
+            assignments.append((match.group(1), match.group(2)))
+    return assignments
+
+
+def storage_variable_roles(text: str) -> dict[str, set[str]]:
+    assignments = storage_assignment_values(text)
+    roles: dict[str, set[str]] = {}
+    for _ in range(4):
+        changed = False
+        for name, value in assignments:
+            new_roles = storage_value_roles(value, roles)
+            if new_roles and not new_roles.issubset(roles.get(name, set())):
+                roles.setdefault(name, set()).update(new_roles)
+                changed = True
+        if not changed:
+            break
+    return roles
+
+
+def consume_storage_option(tokens: list[str], index: int, options_with_argument: set[str]) -> int:
+    token = tokens[index]
+    if token in options_with_argument and index + 1 < len(tokens):
+        return index + 2
+    return index + 1
+
+
+def aws_service_index(tokens: list[str], start: int) -> int | None:
+    cursor = start + 1
+    while cursor < len(tokens) and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
+        token = tokens[cursor]
+        if token in {"s3", "s3api"}:
+            return cursor
+        if token.startswith("-"):
+            if (
+                "=" not in token
+                and cursor + 1 < len(tokens)
+                and tokens[cursor + 1] not in {"s3", "s3api"}
+                and not tokens[cursor + 1].startswith("-")
+            ):
+                cursor += 2
+            else:
+                cursor += 1
+            continue
+        cursor += 1
+    return None
+
+
+def aws_s3_operands(tokens: list[str]) -> list[str]:
+    operands: list[str] = []
+    cursor = 0
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if token in SHELL_COMMAND_BOUNDARIES:
+            break
+        if token.startswith("-"):
+            cursor = consume_storage_option(tokens, cursor, AWS_S3_OPTIONS_WITH_ARGUMENT)
+            continue
+        if token == "$" and cursor + 1 < len(tokens) and tokens[cursor + 1] == "(":
+            depth = 1
+            parts = [token, tokens[cursor + 1]]
+            cursor += 2
+            while cursor < len(tokens) and depth:
+                parts.append(tokens[cursor])
+                if tokens[cursor] == "(":
+                    depth += 1
+                elif tokens[cursor] == ")":
+                    depth -= 1
+                cursor += 1
+            operands.append(" ".join(parts))
+            continue
+        operands.append(token)
+        cursor += 1
+    return operands
+
+
+def aws_s3_transfer_touches_active_target(
+    tokens: list[str],
+    index: int,
+    variable_roles: dict[str, set[str]],
+    *,
+    cwd_is_active_target: bool,
+) -> bool:
+    service_index = aws_service_index(tokens, index)
+    if service_index is None:
+        return False
+    service = tokens[service_index]
+    op_index = service_index + 1
+    if op_index >= len(tokens) or tokens[op_index] in SHELL_COMMAND_BOUNDARIES:
+        return False
+    operation = tokens[op_index]
+    tail: list[str] = []
+    cursor = op_index + 1
+    command_substitution_depth = 0
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if token == "$" and cursor + 1 < len(tokens) and tokens[cursor + 1] == "(":
+            tail.extend([token, tokens[cursor + 1]])
+            command_substitution_depth += 1
+            cursor += 2
+            continue
+        if token == "(" and command_substitution_depth:
+            command_substitution_depth += 1
+        elif token == ")" and command_substitution_depth:
+            command_substitution_depth -= 1
+        elif token in SHELL_COMMAND_BOUNDARIES:
+            break
+        tail.append(token)
+        cursor += 1
+    if service == "s3api":
+        return any(
+            STORAGE_ROLE_ACTIVE_TARGET in storage_value_roles(token, variable_roles, cwd_is_active_target=cwd_is_active_target)
+            for token in tail
         )
-        if has_s3 and has_target:
-            return True
-    return False
+    if operation not in AWS_S3_TRANSFER_COMMANDS:
+        return False
+    operands = aws_s3_operands(tail)
+    if len(operands) < 2:
+        return False
+    endpoint_roles = [
+        storage_value_roles(endpoint, variable_roles, cwd_is_active_target=cwd_is_active_target)
+        for endpoint in operands[:2]
+    ]
+    return (
+        any(STORAGE_ROLE_S3 in roles for roles in endpoint_roles)
+        and any(STORAGE_ROLE_ACTIVE_TARGET in roles for roles in endpoint_roles)
+    )
+
+
+def storage_transfer_policy_errors(text: str) -> list[str]:
+    variable_roles = storage_variable_roles(text)
+    tokens = command_tokens(text)
+    cursor = 0
+    cwd_is_active_target = False
+    while cursor < len(tokens):
+        assignment = shell_assignment_from_tokens(tokens, cursor)
+        if assignment is not None:
+            cursor = assignment[2]
+            continue
+        token = tokens[cursor]
+        if token in SHELL_COMMAND_BOUNDARIES:
+            cursor += 1
+            continue
+        name = executable_name(token)
+        if name in {"cd", "pushd"} and cursor + 1 < len(tokens):
+            target_roles = storage_value_roles(tokens[cursor + 1], variable_roles, cwd_is_active_target=cwd_is_active_target)
+            cwd_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in target_roles
+            cursor += 2
+            continue
+        if name == "aws" and aws_s3_transfer_touches_active_target(
+            tokens,
+            cursor,
+            variable_roles,
+            cwd_is_active_target=cwd_is_active_target,
+        ):
+            return [S3_ACTIVE_TARGET_CACHE_MESSAGE]
+        cursor += 1
+    return []
 
 
 def dynamic_env_target_override_messages(text: str) -> set[str]:
@@ -2549,7 +2748,6 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         (r"(^|[^A-Za-z0-9_$\{])[\"']?BOLT_MANAGED_JUST[\"']?\s*(?:=|:|<<)", "BOLT_MANAGED_JUST private just recipe bypass must be classified"),
         (r"\bno-mistakes\b[^\n]*\bcargo\b", "no-mistakes raw Cargo drift must be classified"),
         (r"\bno-mistakes\b[^\n]*--worktree[^\n]*(?:--target-dir\s+target|\btarget\b)", "no-mistakes worktree-local target path evidence must be reported"),
-        (r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])(?:\.?/)?target(?:[\s/\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$CARGO_TARGET_DIR[\"']?|\$\{CARGO_TARGET_DIR[^}]*\})(?:/(?:\./)?[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$GITHUB_WORKSPACE[\"']?|\$\{GITHUB_WORKSPACE[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$PWD[\"']?|\$\{PWD[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])\$\{\{\s*(?:github\.workspace|env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}(?:/(?:\./)?(?:target(?:/[^\s\"']*)?|[^\s\"']*))?(?:[\s\"']|$))", "S3 active mutable target cache must be rejected"),
         (r"\bcargo\b[^\n|]*\$@[^|]*\|\s*bash\b[^\n;&|]*\s-s\b[^\n;&|]*\s--target-dir\b", "cargo --target-dir raw target override must be classified"),
     )
     errors: list[str] = []
@@ -2571,38 +2769,9 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         and target_override_message not in errors
     ):
         errors.append(target_override_message)
-    if (
-        re.search(r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)", text)
-        and re.search(r"\$\([^)\n]*\brust_verification\.py\s+target-dir\b[^)\n]*\)", text)
-        and "S3 active mutable target cache must be rejected" not in errors
-    ):
-        errors.append("S3 active mutable target cache must be rejected")
-    if "S3 active mutable target cache must be rejected" not in errors:
-        for line in text.splitlines():
-            if (
-                re.search(r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b", line)
-                and "s3://" in line
-                and aws_s3_line_mentions_active_target(line)
-            ):
-                errors.append("S3 active mutable target cache must be rejected")
-                break
-    if (
-        text_has_s3_variable_active_target_sync(text)
-        and "S3 active mutable target cache must be rejected" not in errors
-    ):
-        errors.append("S3 active mutable target cache must be rejected")
-    s3_active_patterns = (
-        r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])/[^\s\"']*/target(?:/[^\s\"']*)?(?:[\s\"']|$))",
-        r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])\$\(pwd\)/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$))",
-        r"\bcd\s+[\"']?(?:\.?/)?target(?:/[^\s\"']*)?[\"']?\s*(?:&&|;|\|\|)[^\n]*\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)",
-        r"\b(?:cd|pushd)\s+[\"']?(?:\.?/)?target(?:/[^\s\"']*)?[\"']?\s*(?:(?:&&|;|\|\|)[^\n]*|\n\s*)\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)",
-        r"\baws\b[^\n;&|]*\bs3\s+sync\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])(?:\.|\$GITHUB_WORKSPACE|\$\{GITHUB_WORKSPACE[^}]*\}|\$\{\{\s*github\.workspace\s*\}\}|\$PWD|\$\{PWD[^}]*\})(?:/(?:\./)?)?(?:[\s\"']|$))",
-        r"\baws\b[^\n;&|]*\bs3api\b[^\n;&|]*(?:target(?:/|[\s\"']|$)|CARGO_TARGET_DIR|managed_target_dir|\$\{\{\s*(?:github\.workspace|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\})",
-    )
-    if "S3 active mutable target cache must be rejected" not in errors and any(
-        re.search(pattern, text) for pattern in s3_active_patterns
-    ):
-        errors.append("S3 active mutable target cache must be rejected")
+    for message in storage_transfer_policy_errors(text):
+        if message not in errors:
+            errors.append(message)
     return errors
 
 
@@ -2722,9 +2891,46 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
     return errors
 
 
+GATE_TAG_REUSE_CONDITION = '"$tag_ref" == "true"'
+
+
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
     condition = f'"${{{{ needs.{job}.result }}}}" != "success"'
     return branch_exits(gate_text, "if", condition)
+
+
+def top_level_if_body_and_remainder(gate_text: str, condition: str) -> tuple[str, str] | None:
+    lines = gate_text.splitlines()
+    for start, line in enumerate(lines):
+        match = IF_OR_ELIF_RE.match(line)
+        if not match or match.group(1) != "if" or match.group("condition") != condition:
+            continue
+        depth = 0
+        for index in range(start + 1, len(lines)):
+            nested_match = IF_OR_ELIF_RE.match(lines[index])
+            if nested_match and nested_match.group(1) == "if":
+                depth += 1
+                continue
+            if not FI_RE.match(lines[index]):
+                continue
+            if depth == 0:
+                return "\n".join(lines[start + 1 : index]), "\n".join(lines[index + 1 :])
+            depth -= 1
+    return None
+
+
+def gate_tag_reuse_body(gate_text: str) -> str:
+    sections = top_level_if_body_and_remainder(gate_text, GATE_TAG_REUSE_CONDITION)
+    return sections[0] if sections is not None else ""
+
+
+def gate_standard_body(gate_text: str) -> str:
+    sections = top_level_if_body_and_remainder(gate_text, GATE_TAG_REUSE_CONDITION)
+    return sections[1] if sections is not None else ""
+
+
+def gate_checks_standard_lane_success(gate_text: str, job: str) -> bool:
+    return gate_checks_lane_success(gate_standard_body(gate_text), job)
 
 
 def gate_checks_build_result(gate_text: str) -> bool:
@@ -2789,18 +2995,20 @@ def collect_if_chain_bodies(lines: list[str], start: int, condition: str) -> dic
 
 def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
     errors: list[str] = []
+    tag_body = gate_tag_reuse_body(gate_text)
+    standard_body = gate_standard_body(gate_text)
     if 'tag_ref="${{ startsWith(github.ref, \'refs/tags/v\') }}"' not in gate_text and (
         'tag_ref="${{ startsWith(github.ref, "refs/tags/v") }}"' not in gate_text
     ):
         errors.append("gate must compute tag_ref")
-    if not branch_exits(gate_text, "if", '"${{ needs.same-sha-main-evidence.result }}" != "success"'):
+    if not branch_exits(tag_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "success"'):
         errors.append("gate must check same-sha-main-evidence success")
-    if not branch_exits(gate_text, "if", '"${{ needs.same-sha-main-evidence.result }}" != "skipped"'):
+    if not branch_exits(standard_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "skipped"'):
         errors.append("gate must check same-sha-main-evidence skip on non-tag")
     for job in TAG_SKIPPED_JOBS:
-        if not branch_exits(gate_text, "if", f'"${{{{ needs.{job}.result }}}}" != "skipped"'):
+        if not branch_exits(tag_body, "if", f'"${{{{ needs.{job}.result }}}}" != "skipped"'):
             errors.append(f"gate must require {job} skipped on tag reuse")
-    if not branch_exits(gate_text, "if", '"${{ needs.check-aarch64.result }}" != "success"'):
+    if not branch_exits(tag_body, "if", '"${{ needs.check-aarch64.result }}" != "success"'):
         errors.append("gate must require check-aarch64 success on tag reuse")
     return errors
 
@@ -3095,8 +3303,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"gate needs {job}")
             if job == "build":
                 checks_result = gate_checks_build_result(gate_text)
-            else:
+            elif job == "detector":
                 checks_result = gate_checks_lane_success(gate_text, job)
+            else:
+                checks_result = gate_checks_standard_lane_success(gate_text, job)
             if not checks_result:
                 errors.append(f"gate must check needs.{job}.result")
         if "same-sha-main-evidence" not in gate_needs:

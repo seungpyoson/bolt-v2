@@ -41,11 +41,19 @@ Root `spec.md`, `plan.md`, and `tasks.md` are Speckit compatibility pointers.
 They are not implementation specs.
 
 The numbered project docs contain the implementation-facing scope, gates, tasks,
-and local evidence summaries. The `shared/` directory remains the audit archive
-for original source rows, full cost/fidelity tables, staged issue payloads,
-issue-search evidence, review notes, and checklist history. Consult `shared/`
-before issue creation, external review, or deleting any archived planning
-context.
+and local evidence summaries. The `shared/` directory has two roles:
+
+- `shared/evidence.md`, `shared/data-model.md`, and `shared/contracts.md` are
+  authoritative cross-project inputs inherited by the numbered project docs.
+  Per-project evidence tables are derived views of `shared/evidence.md`.
+- `shared/cost-model.md`, `shared/fidelity-matrix.md`,
+  `shared/github-issues.md`, `shared/issue-audit.md`, `shared/analysis.md`,
+  `shared/requirements-checklist.md`, and `shared/research.md` are the audit
+  archive for source rows, planning snapshots, staged issue payloads,
+  issue-search evidence, review notes, and checklist history.
+
+Consult `shared/` before issue creation, external review, or changing any
+cross-project evidence, contract, data-model, or archived planning context.
 
 ## Project Boundaries
 

@@ -11,10 +11,14 @@ Use the numbered project directories:
 
 Human triage starts at [README.md](README.md).
 
-Shared audit material remains in `shared/` for source evidence, issue payloads,
-cost/fidelity archives, and review history. Project-specific requirements,
-architecture, tasks, and acceptance criteria live in the numbered project
-directories.
+Shared cross-project authority remains in `shared/evidence.md`,
+`shared/data-model.md`, and `shared/contracts.md`. The numbered project docs
+inherit those files and expose project-specific derived views, requirements,
+architecture, tasks, and acceptance criteria.
+
+Other `shared/` files preserve audit and planning history: cost/fidelity
+archives, issue payload drafts, issue-search evidence, review notes, and
+checklist history.
 
 No runtime implementation, GitHub issue mutation, provider recorder, dashboard
 UI, backtesting runner, or analytics implementation is authorized by this root

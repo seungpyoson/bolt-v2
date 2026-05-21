@@ -643,7 +643,7 @@ fn resolve_report_path(
         "no_submit_readiness_report_path",
         &block.no_submit_readiness_report_path,
     )?;
-    let configured = PathBuf::from(&block.no_submit_readiness_report_path);
+    let configured = PathBuf::from(block.no_submit_readiness_report_path.trim());
     if configured.is_absolute() {
         return Ok(configured);
     }
@@ -1559,6 +1559,25 @@ mod tests {
         let block = LiveCanaryBlock {
             approval_id: "operator-approved-canary-001".to_string(),
             no_submit_readiness_report_path: "reports/no-submit-readiness.json".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: 60,
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            operator_evidence: None,
+        };
+
+        assert_eq!(
+            resolve_report_path(Path::new(""), &block)
+                .expect("relative report path should resolve"),
+            PathBuf::from(".").join("reports/no-submit-readiness.json")
+        );
+    }
+
+    #[test]
+    fn relative_report_path_trims_configured_whitespace() {
+        let block = LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: " reports/no-submit-readiness.json ".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: 60,
             max_live_order_count: 1,

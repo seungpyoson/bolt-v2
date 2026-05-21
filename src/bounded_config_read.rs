@@ -22,6 +22,9 @@ pub(crate) enum ConfigFileReadError {
         length: u64,
         limit: u64,
     },
+    NotRegularFile {
+        path: PathBuf,
+    },
     Utf8 {
         path: PathBuf,
         source: std::string::FromUtf8Error,
@@ -42,6 +45,9 @@ impl std::fmt::Display for ConfigFileReadError {
                 "{} exceeds config file size limit {limit} bytes (read at least {length} bytes)",
                 path.display()
             ),
+            Self::NotRegularFile { path } => {
+                write!(f, "{} is not a regular config file", path.display())
+            }
             Self::Utf8 { path, source } => {
                 write!(f, "{} is not valid UTF-8: {source}", path.display())
             }
@@ -54,7 +60,7 @@ impl std::error::Error for ConfigFileReadError {
         match self {
             Self::Open { source, .. } | Self::Read { source, .. } => Some(source),
             Self::Utf8 { source, .. } => Some(source),
-            Self::TooLarge { .. } => None,
+            Self::TooLarge { .. } | Self::NotRegularFile { .. } => None,
         }
     }
 }
@@ -64,6 +70,17 @@ pub(crate) fn read_to_string(path: &Path) -> Result<String, ConfigFileReadError>
         path: path.to_path_buf(),
         source,
     })?;
+    let metadata = file
+        .metadata()
+        .map_err(|source| ConfigFileReadError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if !metadata.is_file() {
+        return Err(ConfigFileReadError::NotRegularFile {
+            path: path.to_path_buf(),
+        });
+    }
     let mut bytes = Vec::new();
     file.take(CONFIG_FILE_SIZE_LIMIT_BYTES.saturating_add(OVERSIZE_DETECTION_EXTRA_BYTE))
         .read_to_end(&mut bytes)
@@ -83,6 +100,18 @@ pub(crate) async fn read_to_string_async(path: &Path) -> Result<String, ConfigFi
             path: path.to_path_buf(),
             source,
         })?;
+    let metadata = file
+        .metadata()
+        .await
+        .map_err(|source| ConfigFileReadError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if !metadata.is_file() {
+        return Err(ConfigFileReadError::NotRegularFile {
+            path: path.to_path_buf(),
+        });
+    }
     let mut bytes = Vec::new();
     file.take(CONFIG_FILE_SIZE_LIMIT_BYTES.saturating_add(OVERSIZE_DETECTION_EXTRA_BYTE))
         .read_to_end(&mut bytes)
@@ -116,6 +145,32 @@ mod tests {
     };
 
     #[test]
+    fn sync_reader_accepts_config_exactly_at_size_limit() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let path = temp.path().join("exact-limit-root.toml");
+        std::fs::write(&path, vec![b'x'; CONFIG_FILE_SIZE_LIMIT_BYTES as usize])
+            .expect("exact-limit config fixture should write");
+
+        let contents =
+            read_to_string(&path).expect("sync config reader must accept exact-limit files");
+
+        assert_eq!(contents.len() as u64, CONFIG_FILE_SIZE_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn sync_reader_rejects_directory_path() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+
+        let error = read_to_string(temp.path())
+            .expect_err("sync config reader must reject non-regular files before reading");
+
+        assert!(
+            matches!(error, ConfigFileReadError::NotRegularFile { .. }),
+            "expected NotRegularFile, got {error:?}"
+        );
+    }
+
+    #[test]
     fn sync_reader_rejects_config_over_size_limit() {
         let temp = tempfile::tempdir().expect("tempdir should create");
         let path = temp.path().join("oversized-root.toml");
@@ -146,6 +201,34 @@ mod tests {
         assert!(
             matches!(error, ConfigFileReadError::Utf8 { .. }),
             "expected Utf8, got {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn async_reader_accepts_config_exactly_at_size_limit() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let path = temp.path().join("exact-limit-root.toml");
+        std::fs::write(&path, vec![b'x'; CONFIG_FILE_SIZE_LIMIT_BYTES as usize])
+            .expect("exact-limit config fixture should write");
+
+        let contents = read_to_string_async(&path)
+            .await
+            .expect("async config reader must accept exact-limit files");
+
+        assert_eq!(contents.len() as u64, CONFIG_FILE_SIZE_LIMIT_BYTES);
+    }
+
+    #[tokio::test]
+    async fn async_reader_rejects_directory_path() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+
+        let error = read_to_string_async(temp.path())
+            .await
+            .expect_err("async config reader must reject non-regular files before reading");
+
+        assert!(
+            matches!(error, ConfigFileReadError::NotRegularFile { .. }),
+            "expected NotRegularFile, got {error:?}"
         );
     }
 

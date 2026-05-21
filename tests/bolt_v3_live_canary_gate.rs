@@ -202,6 +202,42 @@ async fn live_canary_gate_rejects_parent_dir_operator_evidence_path() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_parent_dir_strategy_cancel_path() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.strategy_cancel_path = Some("../strategy-cancel.json".to_string());
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-read-before-strategy-cancel-path-check.json"
+                .to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("parent directory strategy_cancel_path must fail closed before report read");
+
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::InvalidConfiguredPath {
+                field: "strategy_cancel_path",
+                ..
+            }
+        ),
+        "expected invalid strategy_cancel_path rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_malformed_operator_evidence_hash_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

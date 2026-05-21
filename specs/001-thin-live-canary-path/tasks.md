@@ -206,7 +206,9 @@ blockers, not as deferred approval to trade.
 - [x] T107 [US5] Address T106 read-only review findings: prevent Phase 8 `strategy_cancel_path` env/TOML drift from spending approval, add async bounded-reader behavior coverage, and make source-shape tests repo-root anchored.
 - [x] T108 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, reply to Greptile inline findings, and run targeted external-review consensus for the T106/T107 gate-hardening slice.
 - [x] T109 [US5] Address T108 external-review hardening notes: align Phase 8 SHA-256 shape validation with the live gate lowercase-only policy, add sync bounded config reader regression coverage, and reject parent-directory traversal in live-canary gate configured paths.
-- [ ] T110 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T109 hardening slice.
+- [x] T110 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T109 hardening slice.
+- [x] T111 [US5] Address T110 external-review hardening notes: consolidate duplicate Phase 8 SHA-256 shape helpers, reject parent-directory traversal in Phase 8 env-owned paths including optional `strategy_cancel_path`, add exact-limit bounded config reader coverage, add direct `strategy_cancel_path` traversal coverage, and regular-file-check bounded config reads.
+- [ ] T112 [US5] Verify, push, re-check PR #388 exact-head CI/Greptile, and run targeted external-review consensus for the T111 hardening slice.
 
 ## Out Of Scope For MVP
 

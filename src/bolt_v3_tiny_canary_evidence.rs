@@ -1266,24 +1266,24 @@ impl Phase8OperatorApprovalEnvelope {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
             head_sha: required_env("BOLT_V3_PHASE8_HEAD_SHA")?,
-            root_toml_path: required_env("BOLT_V3_PHASE8_ROOT_TOML_PATH")?,
+            root_toml_path: required_path_env("BOLT_V3_PHASE8_ROOT_TOML_PATH")?,
             root_toml_sha256: required_env("BOLT_V3_PHASE8_ROOT_TOML_SHA256")?,
             approval_envelope_sha256: required_sha256_env(
                 "BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256",
             )?,
-            ssm_manifest_path: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_PATH")?,
+            ssm_manifest_path: required_path_env("BOLT_V3_PHASE8_SSM_MANIFEST_PATH")?,
             ssm_manifest_sha256: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_SHA256")?,
-            strategy_input_evidence_path: required_env(
+            strategy_input_evidence_path: required_path_env(
                 "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH",
             )?,
             strategy_input_evidence_sha256: required_env(
                 "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256",
             )?,
-            financial_envelope_path: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH")?,
+            financial_envelope_path: required_path_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH")?,
             financial_envelope_sha256: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256")?,
-            pre_run_state_path: required_env("BOLT_V3_PHASE8_PRE_RUN_STATE_PATH")?,
+            pre_run_state_path: required_path_env("BOLT_V3_PHASE8_PRE_RUN_STATE_PATH")?,
             pre_run_state_sha256: required_env("BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256")?,
-            abort_plan_path: required_env("BOLT_V3_PHASE8_ABORT_PLAN_PATH")?,
+            abort_plan_path: required_path_env("BOLT_V3_PHASE8_ABORT_PLAN_PATH")?,
             abort_plan_sha256: required_env("BOLT_V3_PHASE8_ABORT_PLAN_SHA256")?,
             operator_approval_id: required_env("BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID")?,
             approval_not_before_unix_secs: required_i64_env(
@@ -1292,11 +1292,13 @@ impl Phase8OperatorApprovalEnvelope {
             approval_not_after_unix_secs: required_i64_env(
                 "BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS",
             )?,
-            approval_nonce_path: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_PATH")?,
+            approval_nonce_path: required_path_env("BOLT_V3_PHASE8_APPROVAL_NONCE_PATH")?,
             approval_nonce_sha256: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256")?,
-            approval_consumption_path: required_env("BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH")?,
-            canary_evidence_path: required_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,
-            strategy_cancel_path: optional_env("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH")?,
+            approval_consumption_path: required_path_env(
+                "BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH",
+            )?,
+            canary_evidence_path: required_path_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,
+            strategy_cancel_path: optional_path_env("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH")?,
             client_order_id_hash: required_sha256_env("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH")?,
             venue_order_id_hash: required_sha256_env("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH")?,
         })
@@ -2223,7 +2225,26 @@ fn required_i64_env(name: &str) -> Result<i64> {
 
 fn required_sha256_env(name: &str) -> Result<String> {
     let value = required_env(name)?;
-    if phase8_is_lowercase_sha256_hex(&value) {
+    validate_phase8_sha256_env_value(name, value)
+}
+
+fn required_path_env(name: &str) -> Result<String> {
+    let value = required_env(name)?;
+    validate_phase8_env_path_value(name, &value)?;
+    Ok(value)
+}
+
+fn optional_path_env(name: &str) -> Result<Option<String>> {
+    optional_env(name)?
+        .map(|value| {
+            validate_phase8_env_path_value(name, &value)?;
+            Ok(value)
+        })
+        .transpose()
+}
+
+fn validate_phase8_sha256_env_value(name: &str, value: String) -> Result<String> {
+    if phase8_is_sha256_hex(&value) {
         Ok(value)
     } else {
         Err(anyhow!(
@@ -2232,12 +2253,8 @@ fn required_sha256_env(name: &str) -> Result<String> {
     }
 }
 
-fn phase8_is_lowercase_sha256_hex(value: &str) -> bool {
-    let digest = Sha256::digest([]);
-    value.len() == digest.len() + digest.len()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+fn validate_phase8_env_path_value(name: &str, value: &str) -> Result<()> {
+    phase8_reject_parent_dir(value, name)
 }
 
 pub fn phase8_required_env(name: &str) -> Result<String> {
@@ -2259,7 +2276,10 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{phase8_is_sha256_hex, validate_phase8_sha256_field};
+    use super::{
+        phase8_is_sha256_hex, validate_phase8_env_path_value, validate_phase8_sha256_env_value,
+        validate_phase8_sha256_field,
+    };
 
     #[test]
     fn phase8_sha256_shape_rejects_uppercase_hex() {
@@ -2272,6 +2292,38 @@ mod tests {
         assert!(
             validate_phase8_sha256_field("test_hash", &uppercase).is_err(),
             "uppercase sha256 fields must fail before live-gate consumption"
+        );
+    }
+
+    #[test]
+    fn phase8_sha256_env_value_rejects_uppercase_hex() {
+        let uppercase = "A".repeat(64);
+
+        let error =
+            validate_phase8_sha256_env_value("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH", uppercase)
+                .expect_err("phase8 env sha256 values must use live-gate lowercase policy");
+
+        assert!(
+            error
+                .to_string()
+                .contains("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH"),
+            "error should name the rejected phase8 env var, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn phase8_env_path_value_rejects_parent_dir() {
+        let error = validate_phase8_env_path_value(
+            "BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH",
+            "../strategy-cancel.json",
+        )
+        .expect_err("phase8 env paths must reject parent directory traversal");
+
+        assert!(
+            error
+                .to_string()
+                .contains("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH"),
+            "error should name the rejected phase8 env var, got {error:?}"
         );
     }
 }

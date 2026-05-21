@@ -1142,6 +1142,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --config build.target-dir raw target override must be classified",
         ),
         (
+            "cargo --config 'build = { \"target\\u002Ddir\" = \"/tmp/raw-target\" }' check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
             "cargo --config 'build.rustflags = [\"--out-dir\", \"/tmp/raw-out\"]' check",
             "cargo --config build.rustflags raw output override must be classified",
         ),
@@ -1260,6 +1264,22 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         (
             "cargo --config=build.target-dir=/tmp/raw-target check",
             "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "cargo --config /tmp/cargo-config.toml check",
+            "cargo --config file raw target override must be classified",
+        ),
+        (
+            "cargo -C .cargo/config.toml check",
+            "cargo --config file raw target override must be classified",
+        ),
+        (
+            "cargo install ripgrep --root /tmp/install-root --target-dir /tmp/install-build",
+            "cargo install build target and install root ownership must be classified separately",
+        ),
+        (
+            "BOLT_MANAGED_JUST=1 just managed-build",
+            "BOLT_MANAGED_JUST private just recipe bypass must be classified",
         ),
         (
             "no-mistakes run -- cargo check",
@@ -1468,10 +1488,14 @@ commands:
   doaswrap: doas cargo test
   flockwrap: flock "$TMPDIR/bolt.lock" cargo test
   flockclose: flock -o "$TMPDIR/bolt.lock" cargo test
+  sudoflock: sudo flock -o "$TMPDIR/bolt.lock" cargo test
+  sudoshell: sudo bash -lc 'cargo test --all'
+  envshell: env -i bash -lc 'cargo test --all'
   hyphenated: cargo-clippy --workspace
   rustup: rustup run stable cargo test
   pyinline: python -c 'import os; os.system("cargo test")'
   timeout: timeout 30 cargo test
+  managedjustenv: BOLT_MANAGED_JUST=1 just managed-build
   chained: python3 scripts/rust_verification.py cargo --repo . -- test && cargo test
   compact_and: python3 scripts/rust_verification.py cargo --repo . -- test&&cargo test
   compact_semicolon: python3 scripts/rust_verification.py cargo --repo . -- test;cargo test
@@ -1514,10 +1538,14 @@ commands: { test: "cargo test" }
         "doaswrap",
         "flockwrap",
         "flockclose",
+        "sudoflock",
+        "sudoshell",
+        "envshell",
         "hyphenated",
         "rustup",
         "pyinline",
         "timeout",
+        "managedjustenv",
         "chained",
         "compact_and",
         "compact_semicolon",
@@ -2676,6 +2704,26 @@ def main() -> int:
             "      - run: just deny",
             """      - run: |
           sudo --background cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          flock -o /tmp/bolt.lock cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sudo flock -o /tmp/bolt.lock cargo install cargo-deny --locked
           just deny""",
         ),
     )

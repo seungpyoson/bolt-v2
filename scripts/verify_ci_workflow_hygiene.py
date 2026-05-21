@@ -1005,7 +1005,7 @@ def command_prefix_allows_cargo(prefix: list[str]) -> bool:
             index = consume_option_prefix(prefix, index + 1, ENV_OPTIONS_WITH_ARGUMENT, ENV_OPTIONS_WITHOUT_ARGUMENT)
         elif token == "flock":
             inner = flock_inner_tokens(prefix[index:])
-            if inner:
+            if inner is not None:
                 index = len(prefix) - len(inner)
             else:
                 return False
@@ -1119,6 +1119,7 @@ def managed_rust_verification_tokens(tokens: list[str]) -> bool:
 
 def tokens_have_target_routing_override(tokens: list[str]) -> bool:
     env_prefixes = (
+        "BOLT_MANAGED_JUST=",
         "CARGO_BUILD_RUSTFLAGS=",
         "CARGO_BUILD_TARGET_DIR=",
         "CARGO_ENCODED_RUSTFLAGS=",
@@ -1150,9 +1151,32 @@ def tokens_have_target_routing_override(tokens: list[str]) -> bool:
 
 
 def cargo_config_has_storage_override(config: str) -> bool:
-    if "target-dir" in config and ("build" in config or "[build]" in config):
+    if cargo_config_looks_like_path(config):
         return True
-    return "rustflags" in config and ("--out-dir" in config or "--artifact-dir" in config)
+    scan_config = decode_toml_unicode_escapes(config)
+    if "target-dir" in scan_config and ("build" in scan_config or "[build]" in scan_config):
+        return True
+    return "rustflags" in scan_config and ("--out-dir" in scan_config or "--artifact-dir" in scan_config)
+
+
+def decode_toml_unicode_escapes(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        digits = match.group(1) or match.group(2)
+        return chr(int(digits, 16))
+
+    return re.sub(r"\\u([0-9A-Fa-f]{4})|\\U([0-9A-Fa-f]{8})", lambda match: replace(match), value)
+
+
+def cargo_config_looks_like_path(config: str) -> bool:
+    stripped = config.strip()
+    if not stripped:
+        return False
+    if stripped.startswith(("[", "{")):
+        return False
+    if "=" not in stripped:
+        return True
+    key_prefix = stripped.split("=", 1)[0]
+    return "/" in key_prefix or "\\" in key_prefix or key_prefix.endswith(".toml")
 
 
 def rustup_run_inner_tokens(tokens: list[str]) -> list[str]:
@@ -1248,7 +1272,7 @@ def tokens_have_raw_cargo(tokens: list[str], *, depth: int = 0) -> bool:
         inner = flock_inner_tokens(tokens)
         if inner is not None:
             return tokens_have_raw_cargo(inner, depth=depth + 1)
-    if executable in {"chrt", "command", "doas", "exec", "ionice", "nice", "nohup", "setsid", "taskset", "timeout", "xargs"}:
+    if executable in {"chrt", "command", "doas", "env", "exec", "ionice", "nice", "nohup", "setsid", "sudo", "taskset", "timeout", "xargs"}:
         inner = wrapper_inner_tokens(tokens)
         if inner is not None:
             return tokens_have_raw_cargo(inner, depth=depth + 1)
@@ -1359,8 +1383,10 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         (r"(?:target-dir|build\.target-dir)[^\n]*>\s*\.cargo/config\.toml|\.cargo/config\.toml[^\n]*(?:target-dir|build\.target-dir)", ".cargo/config.toml build.target-dir raw target override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[\"']?build\.target-dir", "cargo --config build.target-dir raw target override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:\[build\]|build\s*=|build\.)[^\n;&|]*target-dir", "cargo --config build.target-dir raw target override must be classified"),
+        (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:\[build\]|build\s*=|build\.)[^\n;&|]*target\\u(?:002[Dd]|002d)dir", "cargo --config build.target-dir raw target override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:build\.rustflags|rustflags\s*=)[^\n;&|]*(?:--out-dir|--artifact-dir)", "cargo --config build.rustflags raw output override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s-C\s*[\"']?build\.target-dir", "cargo --config build.target-dir raw target override must be classified"),
+        (r"\bcargo\b[^\n;&|]*(?:\s--config(?:\s+|=)|\s-C\s+)[\"']?(?:/|\./|[^\s\n;&|\"']+\.toml\b)", "cargo --config file raw target override must be classified"),
         (r"\bcargo\b[^\n;&|]*\s--target-dir\b", "cargo --target-dir raw target override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_TARGET_TMPDIR[\"']?\s*(?:=|:)", "CARGO_TARGET_TMPDIR raw target override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_INCREMENTAL[\"']?\s*(?:=|:)", "CARGO_INCREMENTAL raw cache override must be classified"),
@@ -1374,8 +1400,9 @@ def raw_rust_storage_errors(workflow_text: str) -> list[str]:
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WORKSPACE_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified"),
         (r"\bcargo\b[^\n;&|]*\brustc\b[^\n;&|]*\s--out-dir\b", "cargo rustc --out-dir raw output override must be classified"),
         (r"\bcargo\b[^\n;&|]*\brustc\b[^\n;&|]*\s--artifact-dir\b", "cargo rustc --artifact-dir raw output override must be classified"),
-        (r"\bcargo\b[^\n;&|]*\binstall\b[^\n;&|]*\s--target-dir\b[^\n;&|]*\s--root\b", "cargo install build target and install root ownership must be classified separately"),
+        (r"\bcargo\b[^\n;&|]*\binstall\b(?=[^\n;&|]*\s--target-dir\b)(?=[^\n;&|]*\s--root\b)", "cargo install build target and install root ownership must be classified separately"),
         (r"\bcargo\b[^\n;&|]*\binstall\b[^\n;&|]*\s--root\b[^\n;&|]*\bs3://", "cargo install S3 install root must be classified"),
+        (r"(^|[^A-Za-z0-9_$\{])[\"']?BOLT_MANAGED_JUST[\"']?\s*(?:=|:)", "BOLT_MANAGED_JUST private just recipe bypass must be classified"),
         (r"\bno-mistakes\b[^\n]*\bcargo\b", "no-mistakes raw Cargo drift must be classified"),
         (r"\bno-mistakes\b[^\n]*--worktree[^\n]*(?:--target-dir\s+target|\btarget\b)", "no-mistakes worktree-local target path evidence must be reported"),
         (r"\baws\b[^\n;&|]*\bs3\s+(?:cp|mv|sync)\b(?=[^\n]*\bs3://)(?=[^\n]*(?:^|[\s\"'])(?:\.?/)?target(?:[\s/\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$CARGO_TARGET_DIR[\"']?|\$\{CARGO_TARGET_DIR[^}]*\})(?:/(?:\./)?[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$GITHUB_WORKSPACE[\"']?|\$\{GITHUB_WORKSPACE[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])(?:[\"']?\$PWD[\"']?|\$\{PWD[^}]*\})/(?:\./)?target(?:/[^\s\"']*)?(?:[\s\"']|$)|[^\n]*(?:^|[\s\"'])\$\{\{\s*(?:github\.workspace|env\.CARGO_TARGET_DIR|steps\.setup\.outputs\.managed_target_dir(?:_relative)?)\s*\}\}(?:/(?:\./)?(?:target(?:/[^\s\"']*)?|[^\s\"']*))?(?:[\s\"']|$))", "S3 active mutable target cache must be rejected"),

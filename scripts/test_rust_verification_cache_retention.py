@@ -1846,6 +1846,7 @@ def assert_managed_env_scrubs_build_target_dir_and_routes_target_dir() -> None:
         write_policy(repo)
         root_base = tmp_path / "rust-root"
         leaky_env = {
+            "BOLT_MANAGED_JUST": "1",
             "CARGO_BUILD_TARGET_DIR": str(tmp_path / "leaked-build-target"),
             "CARGO_BUILD_RUSTFLAGS": "--out-dir /tmp/raw-out",
             "CARGO_ENCODED_RUSTFLAGS": "--out-dir\x1f/tmp/raw-out",
@@ -2097,6 +2098,7 @@ def assert_v6_red_managed_cargo_rejects_target_routing_overrides() -> None:
         ["test", "--config", "build.target-dir=/tmp/raw-target"],
         ["test", "--config=build.target-dir=/tmp/raw-target"],
         ["test", "--config", 'build = { target-dir = "/tmp/raw-target" }'],
+        ["test", "--config", 'build = { "target\\u002Ddir" = "/tmp/raw-target" }'],
         ["test", "--config", '[build]\ntarget-dir = "/tmp/raw-target"'],
         ["test", "--config", 'build.rustflags = ["--out-dir", "/tmp/raw-out"]'],
         ["test", "--config", 'build = { rustflags = ["--artifact-dir", "/tmp/raw-artifacts"] }'],
@@ -2142,6 +2144,53 @@ exit 0
                 )
     if failures:
         raise AssertionError("managed cargo must reject target/output routing overrides before invoking Cargo: " + "; ".join(failures))
+
+
+def assert_managed_cargo_rejects_config_file_target_routing_override() -> None:
+    failures: list[str] = []
+    cases = [
+        ["test", "--config", "{config_file}"],
+        ["test", "--config={config_file}"],
+        ["-C", "{config_file}", "test"],
+    ]
+    for cargo_args_template in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+            root_base = tmp_path / "rust-root"
+            (root_base / "bolt-v2" / "target").mkdir(parents=True)
+            config_file = tmp_path / "cargo-config.toml"
+            config_file.write_text('[build]\ntarget-dir = "/tmp/raw-target"\n', encoding="utf-8")
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            marker = tmp_path / "started"
+            write_executable(
+                bin_dir / "cargo",
+                f"""#!/usr/bin/env bash
+touch {marker}
+exit 0
+""",
+            )
+
+            env = os.environ.copy()
+            env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            cargo_args = [
+                str(config_file) if token == "{config_file}" else token.replace("{config_file}", str(config_file))
+                for token in cargo_args_template
+            ]
+            result = run_owner(["cargo", "--repo", str(repo), "--", *cargo_args], env=env)
+            combined = f"{result.stdout}\n{result.stderr}".lower()
+            if result.returncode == 0 or marker.exists() or "config" not in combined or "routing" not in combined:
+                failures.append(
+                    f"{cargo_args!r}: returncode={result.returncode} runner_started={marker.exists()} "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+    if failures:
+        raise AssertionError("managed cargo must reject path-style cargo --config before invoking Cargo: " + "; ".join(failures))
 
 
 def assert_v6_red_managed_run_rejects_target_routing_overrides() -> None:
@@ -2320,6 +2369,7 @@ def assert_v6_red_policy_gaps() -> None:
         assert_v6_red_disk_preflight_before_managed_cargo_and_run,
         assert_managed_cargo_rejects_alias_subcommands,
         assert_v6_red_managed_cargo_rejects_target_routing_overrides,
+        assert_managed_cargo_rejects_config_file_target_routing_override,
         assert_v6_red_managed_run_rejects_target_routing_overrides,
         assert_managed_run_authorizes_private_just_recipes,
         assert_direct_private_managed_just_recipes_require_wrapper_env,

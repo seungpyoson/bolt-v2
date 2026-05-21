@@ -31,6 +31,7 @@ POLICY_RELATIVE_PATH = pathlib.Path("ci/rust-verification.toml")
 MAX_POLICY_BYTES = 1024 * 1024
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SCRUB_ENV_KEYS = (
+    "BOLT_MANAGED_JUST",
     "BOLT_RUST_VERIFICATION_ROOT",
     "CARGO_BUILD_RUSTFLAGS",
     "CARGO_BUILD_TARGET",
@@ -1079,10 +1080,33 @@ def cargo_target_routing_override(cargo_args: list[str]) -> str | None:
     return None
 
 
+def decode_toml_unicode_escapes(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        digits = match.group(1) or match.group(2)
+        return chr(int(digits, 16))
+
+    return re.sub(r"\\u([0-9A-Fa-f]{4})|\\U([0-9A-Fa-f]{8})", lambda match: replace(match), value)
+
+
+def cargo_config_looks_like_path(config: str) -> bool:
+    stripped = config.strip()
+    if not stripped:
+        return False
+    if stripped.startswith(("[", "{")):
+        return False
+    if "=" not in stripped:
+        return True
+    key_prefix = stripped.split("=", 1)[0]
+    return "/" in key_prefix or "\\" in key_prefix or key_prefix.endswith(".toml")
+
+
 def cargo_config_storage_override(config: str) -> str | None:
-    if "target-dir" in config and ("build" in config or "[build]" in config):
+    if cargo_config_looks_like_path(config):
+        return "config-file"
+    scan_config = decode_toml_unicode_escapes(config)
+    if "target-dir" in scan_config and ("build" in scan_config or "[build]" in scan_config):
         return "build.target-dir"
-    if "rustflags" in config and ("--out-dir" in config or "--artifact-dir" in config):
+    if "rustflags" in scan_config and ("--out-dir" in scan_config or "--artifact-dir" in scan_config):
         return "build.rustflags"
     return None
 

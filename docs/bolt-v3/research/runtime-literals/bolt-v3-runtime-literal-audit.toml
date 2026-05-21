@@ -208,7 +208,7 @@ reason = "This is the NT trailing-stop offset type field projected from TOML int
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "number"
 literal = '''0'''
-context = '''&& !order.expire_time_unix_nanos.is_some_and(|value| value > 0)'''
+context = '''&& order.expire_time_unix_nanos.is_none_or(|value| value == 0)'''
 classification = "nt_order_model_invariant"
 reason = "This enforces positive GTD expiry nanos for TrailingStopMarket before calling the NT order factory; the expiry value itself is TOML-owned."
 

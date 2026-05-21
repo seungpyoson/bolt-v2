@@ -5072,7 +5072,7 @@ fn expire_time_from_config(value: Option<u64>) -> Option<UnixNanos> {
     value.map(UnixNanos::from)
 }
 
-fn validate_configured_order_against_nt_model(
+struct ConfiguredOrderValidation {
     prefix: &'static str,
     order_type: OrderType,
     time_in_force: TimeInForce,
@@ -5085,7 +5085,24 @@ fn validate_configured_order_against_nt_model(
     is_post_only: bool,
     order_side: OrderSide,
     price: Price,
-) -> Result<()> {
+}
+
+fn validate_configured_order_against_nt_model(input: ConfiguredOrderValidation) -> Result<()> {
+    let ConfiguredOrderValidation {
+        prefix,
+        order_type,
+        time_in_force,
+        expire_time,
+        trigger_price,
+        activation_price,
+        trigger_type,
+        trailing_offset,
+        trailing_offset_type,
+        is_post_only,
+        order_side,
+        price,
+    } = input;
+
     match (order_type, time_in_force, trigger_price) {
         (OrderType::Limit, TimeInForce::Gtd, _)
             if expire_time.is_none_or(|value| value.as_u64() == 0) =>
@@ -5270,7 +5287,7 @@ fn build_configured_order(
     price: Price,
     client_order_id: ClientOrderId,
 ) -> Result<nautilus_model::orders::OrderAny> {
-    validate_configured_order_against_nt_model(
+    validate_configured_order_against_nt_model(ConfiguredOrderValidation {
         prefix,
         order_type,
         time_in_force,
@@ -5283,7 +5300,7 @@ fn build_configured_order(
         is_post_only,
         order_side,
         price,
-    )?;
+    })?;
 
     match order_type {
         OrderType::Limit => Ok(core.order_factory().limit(

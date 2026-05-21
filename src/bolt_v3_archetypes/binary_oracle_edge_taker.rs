@@ -1065,12 +1065,12 @@ fn check_trailing_stop_market_combination(
             "{context}: parameters.{field}.is_quote_quantity must be false for `binary_oracle_edge_taker` normal orders"
         ));
     }
-    if !order
+    if order
         .trigger_price
-        .is_some_and(|value| value > Decimal::ZERO)
-        && !order
+        .is_none_or(|value| value <= Decimal::ZERO)
+        && order
             .activation_price
-            .is_some_and(|value| value > Decimal::ZERO)
+            .is_none_or(|value| value <= Decimal::ZERO)
     {
         errors.push(format!(
             "{context}: parameters.{field}.trigger_price or activation_price must be positive for order_type=trailing_stop_market"
@@ -1081,9 +1081,9 @@ fn check_trailing_stop_market_combination(
             "{context}: parameters.{field}.trigger_type is required for order_type=trailing_stop_market"
         ));
     }
-    if !order
+    if order
         .trailing_offset
-        .is_some_and(|value| value > Decimal::ZERO)
+        .is_none_or(|value| value <= Decimal::ZERO)
     {
         errors.push(format!(
             "{context}: parameters.{field}.trailing_offset must be positive for order_type=trailing_stop_market"
@@ -1095,7 +1095,7 @@ fn check_trailing_stop_market_combination(
         ));
     }
     if order.time_in_force == TimeInForce::Gtd
-        && !order.expire_time_unix_nanos.is_some_and(|value| value > 0)
+        && order.expire_time_unix_nanos.is_none_or(|value| value == 0)
     {
         errors.push(format!(
             "{context}: parameters.{field}.expire_time_unix_nanos is required for GTD trailing_stop_market orders"

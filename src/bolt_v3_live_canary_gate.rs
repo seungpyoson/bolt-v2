@@ -992,11 +992,6 @@ async fn validate_operator_approval_consumption(
             "canary_evidence_path_hash",
             canary_evidence_path_hash.as_str(),
         ),
-        (
-            "client_order_id_hash",
-            evidence.client_order_id_hash.as_str(),
-        ),
-        ("venue_order_id_hash", evidence.venue_order_id_hash.as_str()),
     ] {
         validate_consumption_string_field(&path, object, field, expected)?;
     }
@@ -1249,7 +1244,7 @@ async fn root_toml_sha256(root_path: &Path) -> Result<String, BoltV3LiveCanaryGa
 
 fn required_operator_evidence_fields(
     evidence: &LiveCanaryOperatorEvidenceBlock,
-) -> [(&'static str, &str); 24] {
+) -> [(&'static str, &str); 22] {
     [
         ("head_sha", &evidence.head_sha),
         ("approval_envelope_path", &evidence.approval_envelope_path),
@@ -1284,8 +1279,6 @@ fn required_operator_evidence_fields(
             &evidence.approval_consumption_path,
         ),
         ("decision_evidence_path", &evidence.decision_evidence_path),
-        ("client_order_id_hash", &evidence.client_order_id_hash),
-        ("venue_order_id_hash", &evidence.venue_order_id_hash),
         ("nt_submit_event_path", &evidence.nt_submit_event_path),
         ("venue_order_state_path", &evidence.venue_order_state_path),
         (
@@ -1340,7 +1333,7 @@ fn operator_evidence_path_fields(
 
 fn operator_evidence_hash_fields(
     evidence: &LiveCanaryOperatorEvidenceBlock,
-) -> [(&'static str, &str); 9] {
+) -> [(&'static str, &str); 7] {
     [
         (
             "approval_envelope_sha256",
@@ -1358,8 +1351,6 @@ fn operator_evidence_hash_fields(
         ("pre_run_state_sha256", &evidence.pre_run_state_sha256),
         ("abort_plan_sha256", &evidence.abort_plan_sha256),
         ("approval_nonce_sha256", &evidence.approval_nonce_sha256),
-        ("client_order_id_hash", &evidence.client_order_id_hash),
-        ("venue_order_id_hash", &evidence.venue_order_id_hash),
     ]
 }
 
@@ -1808,8 +1799,6 @@ mod tests {
                 .join("decision-evidence.jsonl")
                 .to_string_lossy()
                 .to_string(),
-            client_order_id_hash: "1".repeat(64),
-            venue_order_id_hash: "2".repeat(64),
             nt_submit_event_path: tempdir
                 .path()
                 .join("nt-submit-event.json")
@@ -1848,8 +1837,6 @@ mod tests {
                 "approval_nonce_sha256": evidence.approval_nonce_sha256.as_str(),
                 "approval_id_hash": approval_id_hash,
                 "canary_evidence_path_hash": canary_evidence_path_hash,
-                "client_order_id_hash": evidence.client_order_id_hash.as_str(),
-                "venue_order_id_hash": evidence.venue_order_id_hash.as_str(),
                 "approval_not_before_unix_secs": evidence.approval_not_before_unix_seconds,
                 "approval_not_after_unix_secs": evidence.approval_not_after_unix_seconds,
                 "consumed_unix_secs": consumed_unix_secs,
@@ -1975,8 +1962,6 @@ mod tests {
             .join("canary-evidence.json")
             .to_string_lossy()
             .to_string();
-        let client_order_id_hash = sha256_hex(b"test-client-order-id");
-        let venue_order_id_hash = sha256_hex(b"test-venue-order-id");
         let evidence = LiveCanaryOperatorEvidenceBlock {
             head_sha: current_build_head_sha()
                 .expect("build head sha should be compiled for gate tests")
@@ -2005,8 +1990,6 @@ mod tests {
                 .join("decision-evidence.jsonl")
                 .to_string_lossy()
                 .to_string(),
-            client_order_id_hash,
-            venue_order_id_hash,
             nt_submit_event_path: dir
                 .join("nt-submit-event.json")
                 .to_string_lossy()
@@ -2042,8 +2025,6 @@ mod tests {
                 "approval_nonce_sha256": evidence.approval_nonce_sha256,
                 "approval_id_hash": sha256_hex(approval_id.as_bytes()),
                 "canary_evidence_path_hash": sha256_hex(canary_evidence_path.as_bytes()),
-                "client_order_id_hash": evidence.client_order_id_hash,
-                "venue_order_id_hash": evidence.venue_order_id_hash,
                 "approval_not_before_unix_secs": evidence.approval_not_before_unix_seconds,
                 "approval_not_after_unix_secs": evidence.approval_not_after_unix_seconds,
                 "consumed_unix_secs": consumed_unix_secs,

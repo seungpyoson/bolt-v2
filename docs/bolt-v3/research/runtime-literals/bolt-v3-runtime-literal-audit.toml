@@ -920,22 +920,6 @@ reason = "This names an approval-consumption proof field required when a strateg
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
-literal = '''"client_order_id_hash"'''
-context = '''"client_order_id_hash",'''
-classification = "phase8_approval_consumption_schema_field"
-reason = "This names a required approval-consumption proof field validated by the live canary gate."
-
-[[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
-kind = "string"
-literal = '''"venue_order_id_hash"'''
-context = '''("venue_order_id_hash", evidence.venue_order_id_hash.as_str()),'''
-classification = "phase8_approval_consumption_schema_field"
-reason = "This names a required approval-consumption proof field validated by the live canary gate."
-
-[[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
-kind = "string"
 literal = '''"approval_not_before_unix_secs"'''
 context = '''"approval_not_before_unix_secs",'''
 classification = "phase8_approval_consumption_schema_field"
@@ -1000,8 +984,8 @@ reason = "This is fail-closed diagnostic text; compared values come from TOML, b
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "number"
-literal = "24"
-context = ''') -> [(&'static str, &str); 24] {'''
+literal = "22"
+context = ''') -> [(&'static str, &str); 22] {'''
 classification = "operator_evidence_required_field_count"
 reason = "This is the compile-time size of the required operator evidence field table; field values are TOML-owned."
 
@@ -1168,22 +1152,6 @@ reason = "This is an operator evidence schema field name; the runtime value come
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
-literal = '''"client_order_id_hash"'''
-context = '''("client_order_id_hash", &evidence.client_order_id_hash),'''
-classification = "operator_evidence_schema_field"
-reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
-
-[[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
-kind = "string"
-literal = '''"venue_order_id_hash"'''
-context = '''("venue_order_id_hash", &evidence.venue_order_id_hash),'''
-classification = "operator_evidence_schema_field"
-reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
-
-[[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
-kind = "string"
 literal = '''"nt_submit_event_path"'''
 context = '''("nt_submit_event_path", &evidence.nt_submit_event_path),'''
 classification = "operator_evidence_schema_field"
@@ -1216,8 +1184,8 @@ reason = "This is an operator evidence schema field name; the runtime value come
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "number"
-literal = "9"
-context = ''') -> [(&'static str, &str); 9] {'''
+literal = "7"
+context = ''') -> [(&'static str, &str); 7] {'''
 classification = "operator_evidence_hash_field_count"
 reason = "This is the compile-time size of the operator evidence hash field table; hash values are TOML-owned."
 
@@ -2419,14 +2387,6 @@ reason = "This names the non-secret operator envelope field pointing to the nonc
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH"'''
-context = '''client_order_id_hash: required_sha256_env("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field containing the client order id hash used to bind the approval-consumption proof."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
 literal = '''"BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256"'''
 context = '''approval_nonce_sha256: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256")?,'''
 classification = "phase8_canary_operator_envelope_env_name"
@@ -2559,14 +2519,6 @@ literal = '''"BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH"'''
 context = '''strategy_cancel_path: optional_path_env("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH")?,'''
 classification = "phase8_canary_operator_envelope_env_name"
 reason = "This names the optional non-secret operator envelope field whose path hash is bound when a strategy cancel artifact is expected."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
-literal = '''"BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH"'''
-context = '''venue_order_id_hash: required_sha256_env("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field containing the venue order id hash used to bind the approval-consumption proof."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"

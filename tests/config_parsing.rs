@@ -200,6 +200,27 @@ fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
 }
 
 #[test]
+fn bolt_v3_operator_evidence_allows_unassigned_order_ids() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+
+    let example = std::fs::read_to_string(support::repo_path("config/root.example.toml"))
+        .expect("root example should be readable");
+    assert!(!example.contains("client_order_id_hash"));
+    assert!(!example.contains("venue_order_id_hash"));
+
+    let parsed = toml::from_str::<BoltV3RootConfig>(&example)
+        .expect("operator evidence should not require order IDs before submit");
+
+    assert!(
+        parsed
+            .live_canary
+            .and_then(|live_canary| live_canary.operator_evidence)
+            .is_some(),
+        "operator evidence should remain configured"
+    );
+}
+
+#[test]
 fn bolt_v3_reference_data_instrument_id_uses_nt_typed_identifier() {
     // `ReferenceDataBlock.instrument_id` is typed as
     // `nautilus_model::identifiers::InstrumentId`. The strategy block is

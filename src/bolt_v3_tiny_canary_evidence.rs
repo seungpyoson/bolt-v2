@@ -1275,8 +1275,6 @@ pub struct Phase8OperatorApprovalEnvelope {
     pub approval_consumption_path: String,
     pub canary_evidence_path: String,
     pub strategy_cancel_path: Option<String>,
-    pub client_order_id_hash: String,
-    pub venue_order_id_hash: String,
 }
 
 impl Phase8OperatorApprovalEnvelope {
@@ -1316,8 +1314,6 @@ impl Phase8OperatorApprovalEnvelope {
             )?,
             canary_evidence_path: required_path_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,
             strategy_cancel_path: optional_path_env("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH")?,
-            client_order_id_hash: required_sha256_env("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH")?,
-            venue_order_id_hash: required_sha256_env("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH")?,
         })
     }
 
@@ -1604,8 +1600,6 @@ impl Phase8OperatorApprovalEnvelope {
             approval_not_after_unix_secs: self.approval_not_after_unix_secs,
             canary_evidence_path_hash: sha256_text(&self.canary_evidence_path),
             strategy_cancel_path_hash: strategy_cancel_path.map(sha256_text),
-            client_order_id_hash: &self.client_order_id_hash,
-            venue_order_id_hash: &self.venue_order_id_hash,
             consumed_unix_secs: current_unix_secs,
         };
         let bytes = serde_json::to_vec_pretty(&evidence).map_err(|source| {
@@ -2240,8 +2234,6 @@ struct Phase8ApprovalConsumptionEvidence<'a> {
     canary_evidence_path_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     strategy_cancel_path_hash: Option<String>,
-    client_order_id_hash: &'a str,
-    venue_order_id_hash: &'a str,
     consumed_unix_secs: i64,
 }
 
@@ -2354,13 +2346,13 @@ mod tests {
         let uppercase = "A".repeat(64);
 
         let error =
-            validate_phase8_sha256_env_value("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH", uppercase)
+            validate_phase8_sha256_env_value("BOLT_V3_PHASE8_SSM_MANIFEST_SHA256", uppercase)
                 .expect_err("phase8 env sha256 values must use live-gate lowercase policy");
 
         assert!(
             error
                 .to_string()
-                .contains("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH"),
+                .contains("BOLT_V3_PHASE8_SSM_MANIFEST_SHA256"),
             "error should name the rejected phase8 env var, got {error:?}"
         );
     }

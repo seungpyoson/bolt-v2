@@ -118,8 +118,6 @@ These `BOLT_V3_PHASE8_*` values are harness-only operator artifact inputs for th
 - `BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH`
 - `BOLT_V3_PHASE8_EVIDENCE_PATH`
 - `BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH`
-- `BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH`
-- `BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH`
 - `BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH`
 - `BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH`
 - `BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH`
@@ -129,7 +127,7 @@ These `BOLT_V3_PHASE8_*` values are harness-only operator artifact inputs for th
 Expected result:
 - at most one NT-submitted order
 - decision evidence at `decision_evidence_path`
-- client and venue ids recorded as `client_order_id_hash` and `venue_order_id_hash`
+- client and venue ids recorded after submit as `client_order_id_hash` and `venue_order_id_hash`
 - NT submit event captured at `nt_submit_event_path`
 - venue accept, fill, or reject captured at `venue_order_state_path`
 - canary evidence writer binds the approved financial-envelope strategy-instance hash to the live-order proof strategy-instance hash

@@ -224,8 +224,6 @@ approval_nonce_path = "operator-evidence/approval-nonce.json"
 approval_nonce_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 approval_consumption_path = "operator-evidence/approval-consumed.json"
 decision_evidence_path = "operator-evidence/decision-evidence.jsonl"
-client_order_id_hash = "1111111111111111111111111111111111111111111111111111111111111111"
-venue_order_id_hash = "2222222222222222222222222222222222222222222222222222222222222222"
 nt_submit_event_path = "operator-evidence/nt-submit-event.json"
 venue_order_state_path = "operator-evidence/venue-order-state.json"
 restart_reconciliation_path = "operator-evidence/restart-reconciliation.json"
@@ -742,7 +740,7 @@ Required control fields:
 - `max_operator_evidence_file_bytes`: positive integer cap applied to every operator evidence file read by the gate: `approval_envelope_path`, sha256-bound pre-run artifacts, and `approval_consumption_path`
 - `approval_consumption_max_age_seconds`: positive integer maximum age between `consumed_unix_secs` and gate evaluation time
 
-The approval-consumption JSON at `approval_consumption_path` must be a JSON object with `schema_version = 1`, `record_kind = "phase8_operator_approval_consumption"`, `head_sha`, `root_toml_sha256`, all configured evidence sha256 fields including `approval_envelope_sha256`, `approval_id_hash`, `approval_not_before_unix_secs`, `approval_not_after_unix_secs`, `canary_evidence_path_hash`, optional `strategy_cancel_path_hash` when `strategy_cancel_path` is configured, `client_order_id_hash`, `venue_order_id_hash`, and `consumed_unix_secs`. The gate compares `head_sha` to both TOML operator evidence and the build-owned head captured at compile time. The gate computes `root_toml_sha256` from the loaded root TOML path at evaluation time and compares it to the proof; this value is not configured in TOML because hashing the file into itself would be circular.
+The approval-consumption JSON at `approval_consumption_path` must be a JSON object with `schema_version = 1`, `record_kind = "phase8_operator_approval_consumption"`, `head_sha`, `root_toml_sha256`, all configured evidence sha256 fields including `approval_envelope_sha256`, `approval_id_hash`, `approval_not_before_unix_secs`, `approval_not_after_unix_secs`, `canary_evidence_path_hash`, optional `strategy_cancel_path_hash` when `strategy_cancel_path` is configured, and `consumed_unix_secs`. The gate compares `head_sha` to both TOML operator evidence and the build-owned head captured at compile time. The gate computes `root_toml_sha256` from the loaded root TOML path at evaluation time and compares it to the proof; this value is not configured in TOML because hashing the file into itself would be circular.
 
 #### Approval and preflight fields
 
@@ -774,13 +772,12 @@ The approval-consumption JSON at `approval_consumption_path` must be a JSON obje
 #### Live-result fields
 
 - `BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH`: persisted decision evidence proof path under the NT runtime capture spool
-- `BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH`: client order identifier hash
-- `BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH`: venue order identifier hash
 - `BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH`: NT submit-event evidence path
 - `BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH`: venue accept/fill/reject evidence path
 - `BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH`: optional strategy-driven cancel evidence path when an order remains open
 - `BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH`: restart reconciliation evidence path
 - `BOLT_V3_PHASE8_POST_RUN_HYGIENE_PATH`: post-run raw-secret residue scan and retention/purge evidence path
+- Live client and venue order hashes are derived from post-run proof files, not from pre-run operator-provided values.
 
 #### Phase 8 artifact JSON schemas
 
@@ -1727,8 +1724,6 @@ approval_nonce_path = "operator-evidence/approval-nonce.json"
 approval_nonce_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 approval_consumption_path = "operator-evidence/approval-consumed.json"
 decision_evidence_path = "operator-evidence/decision-evidence.jsonl"
-client_order_id_hash = "1111111111111111111111111111111111111111111111111111111111111111"
-venue_order_id_hash = "2222222222222222222222222222222222222222222222222222222222222222"
 nt_submit_event_path = "operator-evidence/nt-submit-event.json"
 venue_order_state_path = "operator-evidence/venue-order-state.json"
 restart_reconciliation_path = "operator-evidence/restart-reconciliation.json"

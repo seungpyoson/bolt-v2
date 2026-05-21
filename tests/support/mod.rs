@@ -229,8 +229,6 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         .to_string();
     let root_toml_sha256 = sha256_file(&repo_path("tests/fixtures/bolt_v3/root.toml"));
     let approval_envelope_sha256 = sha256_file(&approval_envelope_path);
-    let client_order_id_hash = sha256_hex(b"client-order-id");
-    let venue_order_id_hash = sha256_hex(b"venue-order-id");
     let head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA").unwrap_or_else(|| {
         panic!(
             "BOLT_V3_BUILD_HEAD_SHA is not compiled in; \
@@ -254,8 +252,6 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         "approval_not_after_unix_secs": approval_not_after_unix_seconds,
         "canary_evidence_path_hash": sha256_hex(canary_evidence_path.as_bytes()),
         "strategy_cancel_path_hash": sha256_hex(strategy_cancel_path.as_bytes()),
-        "client_order_id_hash": client_order_id_hash,
-        "venue_order_id_hash": venue_order_id_hash,
         "consumed_unix_secs": now,
     });
     fs::write(
@@ -291,8 +287,6 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
             .join("decision-evidence.jsonl")
             .to_string_lossy()
             .to_string(),
-        client_order_id_hash,
-        venue_order_id_hash,
         nt_submit_event_path: case_dir
             .join("nt-submit-event.json")
             .to_string_lossy()

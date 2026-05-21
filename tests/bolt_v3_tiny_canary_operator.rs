@@ -24,10 +24,6 @@ const PHASE8_VALIDATION_HEAD_SHA: &str = "expected-head";
 const PHASE8_VALIDATION_ROOT_TOML_SHA256: &str = "expected-config-hash";
 const PHASE8_TEST_APPROVAL_ENVELOPE_SHA256: &str =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const PHASE8_TEST_CLIENT_ORDER_ID_HASH: &str =
-    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-const PHASE8_TEST_VENUE_ORDER_ID_HASH: &str =
-    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 const PHASE8_OPERATOR_APPROVAL_ID: &str = "operator-approved-canary-001";
 const PHASE8_VALIDATION_UNIX_SECS: i64 = 1_500;
 
@@ -177,6 +173,8 @@ fn phase8_operator_harness_binds_live_proof_to_runtime_admission_and_spool() {
         "BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH",
         "\")?"
     )));
+    assert!(!source.contains(&format!("{}{}", "BOLT_V3_PHASE8_CLIENT_", "ORDER_ID_HASH")));
+    assert!(!source.contains(&format!("{}{}", "BOLT_V3_PHASE8_VENUE_", "ORDER_ID_HASH")));
 }
 
 #[test]
@@ -397,8 +395,6 @@ impl Phase8OperatorEnvelopeFixture {
                     .to_string_lossy()
                     .to_string(),
                 strategy_cancel_path: phase8_live_canary_strategy_cancel_path(&loaded),
-                client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
-                venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
             },
             loaded,
             _temp: temp,
@@ -680,8 +676,6 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
     let post_hygiene_path = temp.path().join("post-hygiene.json");
     let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
-        client_order_id_hash: client_order_id_hash.clone(),
-        venue_order_id_hash: venue_order_id_hash.clone(),
         nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
         venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
         strategy_cancel_path: None,
@@ -778,8 +772,6 @@ fn live_result_paths_reject_restart_reconciliation_outside_runtime_capture() {
             .join("decision.json")
             .to_string_lossy()
             .to_string(),
-        client_order_id_hash: "c".repeat(64),
-        venue_order_id_hash: "d".repeat(64),
         nt_submit_event_path: spool_root
             .join("nt-submit.json")
             .to_string_lossy()
@@ -819,8 +811,6 @@ fn live_result_paths_reject_decision_evidence_outside_runtime_capture() {
             .join("decision.json")
             .to_string_lossy()
             .to_string(),
-        client_order_id_hash: "c".repeat(64),
-        venue_order_id_hash: "d".repeat(64),
         nt_submit_event_path: spool_root
             .join("nt-submit.json")
             .to_string_lossy()
@@ -865,8 +855,6 @@ fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
     let post_hygiene_path = temp.path().join("post-hygiene.json");
     let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
-        client_order_id_hash: client_order_id_hash.clone(),
-        venue_order_id_hash: venue_order_id_hash.clone(),
         nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
         venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
         strategy_cancel_path: None,
@@ -972,8 +960,6 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
     let post_hygiene_path = temp.path().join("post-hygiene.json");
     let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
-        client_order_id_hash: client_order_id_hash.clone(),
-        venue_order_id_hash: venue_order_id_hash.clone(),
         nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
         venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
         strategy_cancel_path: Some(cancel_path.to_string_lossy().to_string()),
@@ -1089,8 +1075,6 @@ fn live_result_paths_reject_open_restart_reconciliation() {
     let post_hygiene_path = temp.path().join("post-hygiene.json");
     let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
-        client_order_id_hash: client_order_id_hash.clone(),
-        venue_order_id_hash: venue_order_id_hash.clone(),
         nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
         venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
         strategy_cancel_path: None,
@@ -1209,8 +1193,6 @@ fn live_result_paths_reject_unapproved_post_run_hygiene_strategy_hash() {
     let post_hygiene_path = temp.path().join("post-hygiene.json");
     let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
-        client_order_id_hash: client_order_id_hash.clone(),
-        venue_order_id_hash: venue_order_id_hash.clone(),
         nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
         venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
         strategy_cancel_path: None,
@@ -1313,8 +1295,6 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
     let post_hygiene_path = temp.path().join("post-hygiene.json");
     let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
-        client_order_id_hash: client_order_id_hash.clone(),
-        venue_order_id_hash: venue_order_id_hash.clone(),
         nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
         venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
         strategy_cancel_path: None,
@@ -1697,8 +1677,6 @@ fn phase8_optional_env(name: &str) -> anyhow::Result<Option<String>> {
 
 struct Phase8OperatorLiveResultPaths {
     decision_evidence_path: String,
-    client_order_id_hash: String,
-    venue_order_id_hash: String,
     nt_submit_event_path: String,
     venue_order_state_path: String,
     strategy_cancel_path: Option<String>,
@@ -1749,10 +1727,6 @@ impl Phase8OperatorLiveResultPaths {
     fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
             decision_evidence_path: phase8_required_env("BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH")?,
-            client_order_id_hash: phase8_required_sha256_env(
-                "BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH",
-            )?,
-            venue_order_id_hash: phase8_required_sha256_env("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH")?,
             nt_submit_event_path: phase8_required_env("BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH")?,
             venue_order_state_path: phase8_required_env("BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH")?,
             strategy_cancel_path: phase8_optional_env("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH")?,
@@ -1865,14 +1839,11 @@ impl Phase8OperatorLiveResultPaths {
         Phase8LiveCanaryResultRefs,
     )> {
         self.assert_changed_after_run(snapshot)?;
-        self.assert_proof_content(run_id, expected_strategy_instance_id_hash)?;
+        let live_order_ref =
+            self.assert_proof_content(run_id, expected_strategy_instance_id_hash)?;
         Ok((
             phase8_operator_evidence_ref(&self.decision_evidence_path)?,
-            Phase8LiveOrderRef {
-                strategy_instance_id_hash: expected_strategy_instance_id_hash.to_string(),
-                client_order_id_hash: self.client_order_id_hash.clone(),
-                venue_order_id_hash: self.venue_order_id_hash.clone(),
-            },
+            live_order_ref,
             Phase8LiveCanaryResultRefs {
                 nt_submit_event_ref: phase8_operator_evidence_ref(&self.nt_submit_event_path)?,
                 venue_order_state_ref: phase8_operator_evidence_ref(&self.venue_order_state_path)?,
@@ -1931,14 +1902,21 @@ impl Phase8OperatorLiveResultPaths {
         &self,
         run_id: &str,
         expected_strategy_instance_id_hash: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Phase8LiveOrderRef> {
+        let decision_proof =
+            phase8_read_operator_evidence_proof(&self.decision_evidence_path, "decision_evidence")?;
+        let client_order_id_hash = phase8_required_proof_sha256(
+            decision_proof.client_order_id_hash.as_deref(),
+            "decision_evidence",
+            "client_order_id_hash",
+        )?;
         phase8_assert_operator_evidence_proof(
             &self.decision_evidence_path,
             "decision_evidence",
             Some(run_id),
             None,
             Some(expected_strategy_instance_id_hash),
-            Some(&self.client_order_id_hash),
+            Some(&client_order_id_hash),
             None,
         )?;
         phase8_assert_operator_evidence_proof(
@@ -1947,8 +1925,15 @@ impl Phase8OperatorLiveResultPaths {
             Some(run_id),
             None,
             Some(expected_strategy_instance_id_hash),
-            Some(&self.client_order_id_hash),
+            Some(&client_order_id_hash),
             None,
+        )?;
+        let venue_state_proof =
+            phase8_read_operator_evidence_proof(&self.venue_order_state_path, "venue_order_state")?;
+        let venue_order_id_hash = phase8_required_proof_sha256(
+            venue_state_proof.venue_order_id_hash.as_deref(),
+            "venue_order_state",
+            "venue_order_id_hash",
         )?;
         phase8_assert_operator_evidence_proof(
             &self.venue_order_state_path,
@@ -1956,8 +1941,8 @@ impl Phase8OperatorLiveResultPaths {
             Some(run_id),
             None,
             Some(expected_strategy_instance_id_hash),
-            Some(&self.client_order_id_hash),
-            Some(&self.venue_order_id_hash),
+            Some(&client_order_id_hash),
+            Some(&venue_order_id_hash),
         )?;
         phase8_assert_venue_order_state_proof(
             &self.venue_order_state_path,
@@ -1970,8 +1955,8 @@ impl Phase8OperatorLiveResultPaths {
                 Some(run_id),
                 None,
                 Some(expected_strategy_instance_id_hash),
-                Some(&self.client_order_id_hash),
-                Some(&self.venue_order_id_hash),
+                Some(&client_order_id_hash),
+                Some(&venue_order_id_hash),
             )?;
         }
         phase8_assert_operator_evidence_proof(
@@ -1980,18 +1965,38 @@ impl Phase8OperatorLiveResultPaths {
             None,
             Some(run_id),
             Some(expected_strategy_instance_id_hash),
-            Some(&self.client_order_id_hash),
-            Some(&self.venue_order_id_hash),
+            Some(&client_order_id_hash),
+            Some(&venue_order_id_hash),
         )?;
         phase8_assert_restart_reconciliation_proof(&self.restart_reconciliation_path)?;
         phase8_assert_post_run_hygiene_proof(
             &self.post_run_hygiene_path,
             run_id,
             expected_strategy_instance_id_hash,
-            &self.client_order_id_hash,
-            &self.venue_order_id_hash,
-        )
+            &client_order_id_hash,
+            &venue_order_id_hash,
+        )?;
+        Ok(Phase8LiveOrderRef {
+            strategy_instance_id_hash: expected_strategy_instance_id_hash.to_string(),
+            client_order_id_hash,
+            venue_order_id_hash,
+        })
     }
+}
+
+fn phase8_required_proof_sha256(
+    value: Option<&str>,
+    expected_kind: &str,
+    field: &str,
+) -> anyhow::Result<String> {
+    let value =
+        value.ok_or_else(|| anyhow::anyhow!("phase8 {expected_kind} proof {field} is missing"))?;
+    if !phase8_is_sha256_hex(value) {
+        return Err(anyhow::anyhow!(
+            "phase8 {expected_kind} proof {field} must be a sha256 hash"
+        ));
+    }
+    Ok(value.to_string())
 }
 
 fn phase8_assert_venue_order_state_proof(
@@ -2055,16 +2060,6 @@ fn phase8_operator_evidence_ref(path: &str) -> anyhow::Result<Phase8EvidenceRef>
         path_hash: phase8_sha256_text(path),
         record_hash: Phase8OperatorApprovalEnvelope::sha256_file(path)?,
     })
-}
-
-fn phase8_required_sha256_env(name: &str) -> anyhow::Result<String> {
-    let value = phase8_required_env(name)?;
-    if !phase8_is_sha256_hex(&value) {
-        return Err(anyhow::anyhow!(
-            "required phase8 env `{name}` must be a sha256 hex digest"
-        ));
-    }
-    Ok(value)
 }
 
 #[test]

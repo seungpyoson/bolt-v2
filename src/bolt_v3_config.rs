@@ -218,8 +218,6 @@ pub struct LiveCanaryOperatorEvidenceBlock {
     pub approval_nonce_sha256: String,
     pub approval_consumption_path: String,
     pub decision_evidence_path: String,
-    pub client_order_id_hash: String,
-    pub venue_order_id_hash: String,
     pub nt_submit_event_path: String,
     pub venue_order_state_path: String,
     pub strategy_cancel_path: Option<String>,

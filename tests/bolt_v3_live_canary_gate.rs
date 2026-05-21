@@ -4,7 +4,10 @@ use bolt_v2::{
     bolt_v3_config::{
         LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, load_bolt_v3_config,
     },
-    bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
+    bolt_v3_live_canary_gate::{
+        BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate,
+        check_bolt_v3_live_canary_pre_consumption_gate,
+    },
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
@@ -272,7 +275,7 @@ async fn live_canary_gate_rejects_malformed_operator_evidence_hash_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let mut operator_evidence = valid_operator_evidence();
-    operator_evidence.client_order_id_hash = "not-a-sha256".to_string();
+    operator_evidence.ssm_manifest_sha256 = "not-a-sha256".to_string();
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -300,7 +303,7 @@ async fn live_canary_gate_rejects_malformed_operator_evidence_hash_shape() {
         matches!(
             error,
             BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape {
-                field: "client_order_id_hash"
+                field: "ssm_manifest_sha256"
             }
         ),
         "expected malformed operator evidence hash rejection, got {error:?}"
@@ -312,7 +315,7 @@ async fn live_canary_gate_rejects_uppercase_operator_evidence_hash_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let mut operator_evidence = valid_operator_evidence();
-    operator_evidence.client_order_id_hash = "A".repeat(64);
+    operator_evidence.ssm_manifest_sha256 = "A".repeat(64);
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -340,7 +343,7 @@ async fn live_canary_gate_rejects_uppercase_operator_evidence_hash_shape() {
         matches!(
             error,
             BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape {
-                field: "client_order_id_hash"
+                field: "ssm_manifest_sha256"
             }
         ),
         "expected uppercase operator evidence hash rejection, got {error:?}"
@@ -528,100 +531,6 @@ async fn live_canary_gate_rejects_approval_consumption_strategy_cancel_path_hash
             }
         ),
         "expected strategy_cancel_path_hash mismatch, got {error:?}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn live_canary_gate_rejects_approval_consumption_client_order_id_hash_mismatch() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report(&report_path, &[]);
-    let operator_evidence = valid_operator_evidence();
-    write_approval_consumption_proof_with_override(
-        &operator_evidence,
-        "client_order_id_hash",
-        serde_json::json!(sha256_hex(b"wrong-client-order-id")),
-    );
-    let loaded = loaded_with_live_canary(
-        loaded,
-        LiveCanaryBlock {
-            approval_id: "operator-approved-canary-001".to_string(),
-            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
-            max_live_order_count: 1,
-            max_notional_per_order: "1.00".to_string(),
-            max_no_submit_readiness_report_bytes: 4096,
-            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
-            reference_quote_wait_timeout_seconds: 10,
-            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
-            reference_quote_probe_log_events: true,
-            reference_quote_probe_log_commands: true,
-            operator_evidence: Some(operator_evidence),
-        },
-    );
-
-    let error = check_bolt_v3_live_canary_gate(&loaded)
-        .await
-        .expect_err("client_order_id_hash proof mismatch must fail closed");
-
-    assert!(
-        matches!(
-            error,
-            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMismatch {
-                field: "client_order_id_hash",
-                ..
-            }
-        ),
-        "expected client_order_id_hash proof mismatch, got {error:?}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn live_canary_gate_rejects_approval_consumption_venue_order_id_hash_mismatch() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let report_path = tempdir.path().join("no-submit-readiness.json");
-    write_no_submit_report(&report_path, &[]);
-    let operator_evidence = valid_operator_evidence();
-    write_approval_consumption_proof_with_override(
-        &operator_evidence,
-        "venue_order_id_hash",
-        serde_json::json!(sha256_hex(b"wrong-venue-order-id")),
-    );
-    let loaded = loaded_with_live_canary(
-        loaded,
-        LiveCanaryBlock {
-            approval_id: "operator-approved-canary-001".to_string(),
-            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
-            max_live_order_count: 1,
-            max_notional_per_order: "1.00".to_string(),
-            max_no_submit_readiness_report_bytes: 4096,
-            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
-            reference_quote_wait_timeout_seconds: 10,
-            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
-            reference_quote_probe_log_events: true,
-            reference_quote_probe_log_commands: true,
-            operator_evidence: Some(operator_evidence),
-        },
-    );
-
-    let error = check_bolt_v3_live_canary_gate(&loaded)
-        .await
-        .expect_err("venue_order_id_hash proof mismatch must fail closed");
-
-    assert!(
-        matches!(
-            error,
-            BoltV3LiveCanaryGateError::OperatorApprovalConsumptionMismatch {
-                field: "venue_order_id_hash",
-                ..
-            }
-        ),
-        "expected venue_order_id_hash proof mismatch, got {error:?}"
     );
 }
 
@@ -1013,6 +922,28 @@ async fn live_canary_gate_rejects_missing_approval_consumption_proof() {
         }
         other => panic!("expected missing approval consumption proof rejection, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_pre_consumption_gate_accepts_without_pre_run_order_id_hashes() {
+    let mut loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(
+        1,
+        rust_decimal::Decimal::new(25, 2),
+    );
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|block| block.operator_evidence.as_mut())
+        .expect("fixture should include operator evidence");
+    std::fs::remove_file(&operator_evidence.approval_consumption_path)
+        .expect("fixture should start with removable approval consumption proof");
+
+    let report = check_bolt_v3_live_canary_pre_consumption_gate(&loaded)
+        .await
+        .expect("pre-consumption gate must not require order IDs before live runner entry");
+
+    assert_eq!(report.approval_id(), "operator-approved-canary-001");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1707,12 +1638,6 @@ async fn live_canary_gate_rejects_blank_operator_evidence_string_fields() {
         }),
         ("decision_evidence_path", |e| {
             e.decision_evidence_path = blank_operator_evidence_value()
-        }),
-        ("client_order_id_hash", |e| {
-            e.client_order_id_hash = blank_operator_evidence_value()
-        }),
-        ("venue_order_id_hash", |e| {
-            e.venue_order_id_hash = blank_operator_evidence_value()
         }),
         ("nt_submit_event_path", |e| {
             e.nt_submit_event_path = blank_operator_evidence_value()
@@ -2826,8 +2751,6 @@ fn approval_consumption_proof(evidence: &LiveCanaryOperatorEvidenceBlock) -> ser
         "approval_not_before_unix_secs": evidence.approval_not_before_unix_seconds,
         "approval_not_after_unix_secs": evidence.approval_not_after_unix_seconds,
         "canary_evidence_path_hash": sha256_hex(evidence.canary_evidence_path.as_bytes()),
-        "client_order_id_hash": evidence.client_order_id_hash,
-        "venue_order_id_hash": evidence.venue_order_id_hash,
         "consumed_unix_secs": current_unix_seconds_for_test() as i64,
     });
     if let Some(strategy_cancel_path) = &evidence.strategy_cancel_path {

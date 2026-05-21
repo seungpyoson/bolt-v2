@@ -26,12 +26,7 @@ use std::path::Path;
 const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
 const PHASE8_TEST_APPROVAL_ENVELOPE_SHA256: &str =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const PHASE8_TEST_CLIENT_ORDER_ID_HASH: &str =
-    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-const PHASE8_TEST_VENUE_ORDER_ID_HASH: &str =
-    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
-
-fn phase8_required_operator_artifact_terms() -> [&'static str; 28] {
+fn phase8_required_operator_artifact_terms() -> [&'static str; 26] {
     [
         "BOLT_V3_PHASE8_HEAD_SHA",
         "BOLT_V3_PHASE8_ROOT_TOML_PATH",
@@ -55,8 +50,6 @@ fn phase8_required_operator_artifact_terms() -> [&'static str; 28] {
         "BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH",
         "BOLT_V3_PHASE8_EVIDENCE_PATH",
         "BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH",
-        "BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH",
-        "BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH",
         "BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH",
         "BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH",
         "BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH",
@@ -85,6 +78,8 @@ fn tiny_canary_quickstart_names_required_operator_artifacts() {
             "phase8 quickstart must name required operator artifact `{term}`"
         );
     }
+    assert!(!quickstart.contains("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH"));
+    assert!(!quickstart.contains("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH"));
 }
 
 #[test]
@@ -97,6 +92,8 @@ fn tiny_canary_schema_doc_names_required_operator_artifacts() {
             "phase8 schema doc must name required operator artifact `{term}`"
         );
     }
+    assert!(!schema_doc.contains("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH"));
+    assert!(!schema_doc.contains("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH"));
 }
 
 #[test]
@@ -1766,8 +1763,6 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
         approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
         strategy_cancel_path: None,
-        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
-        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     let error = envelope
@@ -1851,8 +1846,6 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
         strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
-        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
-        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     let too_early_error = envelope
@@ -1982,14 +1975,8 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         consumption["approval_envelope_sha256"],
         PHASE8_TEST_APPROVAL_ENVELOPE_SHA256
     );
-    assert_eq!(
-        consumption["client_order_id_hash"],
-        PHASE8_TEST_CLIENT_ORDER_ID_HASH
-    );
-    assert_eq!(
-        consumption["venue_order_id_hash"],
-        PHASE8_TEST_VENUE_ORDER_ID_HASH
-    );
+    assert!(consumption.get("client_order_id_hash").is_none());
+    assert!(consumption.get("venue_order_id_hash").is_none());
 
     let expired_after_consumption_error = envelope
         .validate_and_consume_against(
@@ -2065,8 +2052,6 @@ async fn operator_approval_consumption_writer_output_is_accepted_by_live_gate() 
         approval_consumption_path: operator_evidence.approval_consumption_path.clone(),
         canary_evidence_path: operator_evidence.canary_evidence_path.clone(),
         strategy_cancel_path: operator_evidence.strategy_cancel_path.clone(),
-        client_order_id_hash: operator_evidence.client_order_id_hash.clone(),
-        venue_order_id_hash: operator_evidence.venue_order_id_hash.clone(),
     };
 
     envelope
@@ -2123,8 +2108,6 @@ fn operator_approval_consumption_rejects_strategy_cancel_path_drift_before_spend
         approval_consumption_path: String::new(),
         canary_evidence_path: operator_evidence.canary_evidence_path.clone(),
         strategy_cancel_path: operator_evidence.strategy_cancel_path.clone(),
-        client_order_id_hash: operator_evidence.client_order_id_hash.clone(),
-        venue_order_id_hash: operator_evidence.venue_order_id_hash.clone(),
     };
 
     for (case, strategy_cancel_path) in [
@@ -2209,8 +2192,6 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
         approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
         strategy_cancel_path: None,
-        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
-        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     envelope
@@ -2278,8 +2259,6 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
         approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
         strategy_cancel_path: None,
-        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
-        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     envelope
@@ -2410,8 +2389,6 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
         strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
-        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
-        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     let mut wrong_hash_envelope = envelope.clone();
@@ -2833,8 +2810,6 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
         strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
-        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
-        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     let mut wrong_hash_envelope = envelope.clone();
@@ -3014,8 +2989,6 @@ fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
         strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
-        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
-        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     let error = envelope
@@ -3103,8 +3076,6 @@ fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
         strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
-        client_order_id_hash: PHASE8_TEST_CLIENT_ORDER_ID_HASH.to_string(),
-        venue_order_id_hash: PHASE8_TEST_VENUE_ORDER_ID_HASH.to_string(),
     };
 
     let mut wrong_hash_envelope = envelope.clone();

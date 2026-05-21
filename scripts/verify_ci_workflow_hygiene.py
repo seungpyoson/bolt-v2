@@ -1086,6 +1086,36 @@ def command_tokens(command: str) -> list[str]:
         return command.split()
 
 
+def shell_quotes_are_balanced(text: str) -> bool:
+    quote: str | None = None
+    escaped = False
+    for char in text:
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote == '"':
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+    return quote is None
+
+
+def shell_logical_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    pending = ""
+    for line in shell_logical_lines(text):
+        pending = f"{pending}\n{line}" if pending else line
+        if shell_quotes_are_balanced(pending):
+            lines.append(pending)
+            pending = ""
+    if pending:
+        lines.append(pending)
+    return lines
+
+
 def shell_command(tokens: list[str]) -> str | None:
     index = 1
     while index < len(tokens):
@@ -1917,6 +1947,9 @@ def shell_variable_reference_token(token: str) -> str | None:
     if match:
         return match.group(1)
     match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", clean)
+    if match:
+        return match.group(1)
+    match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?[-?+=].*)\}", clean)
     if match:
         return match.group(1)
     return None
@@ -3290,9 +3323,31 @@ def branch_exits(gate_text: str, keyword: str, condition: str) -> bool:
     return body_exits(body)
 
 
+def shell_line_exit_codes(line: str) -> list[str | None]:
+    codes: list[str | None] = []
+    tokens = command_tokens(line)
+    cursor = 0
+    at_command_start = True
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if token in SHELL_COMMAND_BOUNDARIES:
+            at_command_start = True
+            cursor += 1
+            continue
+        if at_command_start and pathlib.Path(token).name == "exit":
+            code = tokens[cursor + 1] if cursor + 1 < len(tokens) and re.fullmatch(r"[0-9]+", tokens[cursor + 1]) else None
+            codes.append(code)
+        at_command_start = False
+        cursor += 1
+    return codes
+
+
 def branch_is_reachable_before_top_level_exit(gate_text: str, keyword: str, condition: str) -> bool:
     depth = 0
     for line in gate_text.splitlines():
+        clean = strip_comment(line).strip()
+        if not clean:
+            continue
         if FI_RE.match(line):
             depth = max(0, depth - 1)
             continue
@@ -3309,7 +3364,7 @@ def branch_is_reachable_before_top_level_exit(gate_text: str, keyword: str, cond
             continue
         if ELSE_RE.match(line):
             continue
-        if depth == 0 and EXIT_RE.match(line):
+        if depth == 0 and shell_line_exit_codes(clean):
             return False
     return False
 
@@ -3337,11 +3392,11 @@ def body_exits(body: str) -> bool:
             continue
         if ELSE_RE.match(line):
             continue
-        match = EXIT_RE.match(line)
+        line_exit_codes = shell_line_exit_codes(clean)
         if depth != 0:
             continue
-        if match:
-            exit_codes.append(match.group(1))
+        if line_exit_codes:
+            exit_codes.extend(line_exit_codes)
             continue
         if clean.startswith("echo "):
             continue

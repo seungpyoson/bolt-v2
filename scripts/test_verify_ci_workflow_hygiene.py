@@ -1169,6 +1169,12 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
             cp -r target/debug /tmp/deploy/
             aws s3 sync /tmp/deploy s3://bolt-v2-active-cache/cache
         """,
+        "active target cwd hidden behind env chdir wrapper": """
+            env -C target aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
+        "active target cwd hidden behind sudo chdir wrapper": """
+            sudo --chdir target aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
         "active target streamed through s3 stdin": """
             tar -czf - target | aws s3 cp - s3://bolt-v2-active-cache/target.tar.gz
         """,

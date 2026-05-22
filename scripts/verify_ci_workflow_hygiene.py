@@ -4037,17 +4037,62 @@ def command_prefix_before_token(tokens: list[str], index: int) -> list[str]:
     return tokens[cursor + 1 : index]
 
 
+def env_chdir_value(tokens: list[str]) -> str | None:
+    command_index = env_command_prefix_index(tokens, 1)
+    if command_index is None:
+        return None
+    for index, token in enumerate(tokens[1:command_index], start=1):
+        if token in ("-C", "--chdir") and index + 1 < command_index:
+            return tokens[index + 1]
+        if token.startswith("--chdir="):
+            return token.split("=", 1)[1]
+    return None
+
+
+def sudo_chdir_value(tokens: list[str]) -> str | None:
+    command_index = consume_option_prefix(
+        tokens,
+        1,
+        SUDO_OPTIONS_WITH_ARGUMENT,
+        SUDO_OPTIONS_WITHOUT_ARGUMENT,
+        SUDO_OPTIONS_WITH_OPTIONAL_ARGUMENT,
+    )
+    if command_index is None:
+        return None
+    for index, token in enumerate(tokens[1:command_index], start=1):
+        if token in ("-D", "--chdir") and index + 1 < command_index:
+            return tokens[index + 1]
+        if token.startswith("--chdir="):
+            return token.split("=", 1)[1]
+        if token.startswith("-D") and len(token) > 2:
+            return token[2:]
+    return None
+
+
+def directory_wrapper_chdir_value(tokens: list[str]) -> str | None:
+    if not tokens:
+        return None
+    executable = executable_name(tokens[0])
+    if executable == "env":
+        return env_chdir_value(tokens)
+    if executable == "sudo":
+        return sudo_chdir_value(tokens)
+    return None
+
+
 def storage_transfer_policy_errors_from_tokens(
     tokens: list[str],
     variable_roles: dict[str, set[str]],
     *,
     depth: int = 0,
+    initial_cwd_is_active_target: bool = False,
+    initial_active_paths: set[str] | None = None,
 ) -> list[str]:
     if depth > 6:
         return []
     cursor = 0
-    cwd_is_active_target = False
-    active_paths: set[str] = set()
+    cwd_is_active_target = initial_cwd_is_active_target
+    active_paths: set[str] = set(initial_active_paths or set())
     pipe_stdout_is_active_target = False
     pipe_stdin_is_active_target = False
     while cursor < len(tokens):
@@ -4074,6 +4119,8 @@ def storage_transfer_policy_errors_from_tokens(
                     command_tokens(nested),
                     variable_roles,
                     depth=depth + 1,
+                    initial_cwd_is_active_target=cwd_is_active_target,
+                    initial_active_paths=active_paths,
                 )
                 if nested_errors:
                     return nested_errors
@@ -4086,6 +4133,28 @@ def storage_transfer_policy_errors_from_tokens(
                     command_tokens(" ".join(inner)),
                     variable_roles,
                     depth=depth + 1,
+                    initial_cwd_is_active_target=cwd_is_active_target,
+                    initial_active_paths=active_paths,
+                )
+                if nested_errors:
+                    return nested_errors
+        chdir_value = directory_wrapper_chdir_value([token] + command_tail_until_boundary(tokens, cursor + 1))
+        if chdir_value is not None:
+            segment = [token] + command_tail_until_boundary(tokens, cursor + 1)
+            inner = wrapper_inner_tokens(segment)
+            if inner:
+                chdir_roles = storage_value_roles(
+                    chdir_value,
+                    variable_roles,
+                    cwd_is_active_target=cwd_is_active_target,
+                    active_paths=active_paths,
+                )
+                nested_errors = storage_transfer_policy_errors_from_tokens(
+                    inner,
+                    variable_roles,
+                    depth=depth + 1,
+                    initial_cwd_is_active_target=STORAGE_ROLE_ACTIVE_TARGET in chdir_roles,
+                    initial_active_paths=active_paths,
                 )
                 if nested_errors:
                     return nested_errors

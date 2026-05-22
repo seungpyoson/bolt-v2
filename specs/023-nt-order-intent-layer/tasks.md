@@ -527,6 +527,14 @@
 - [x] T239 [US3] GREEN: Bind required and optional `forced_exit_order` order-shape fields in `Phase8FinancialEnvelopeEvidenceFile`
 - [x] T240 [US3] Verify focused tiny-canary tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
 
+## Phase 55: TDD Slice 51 - Active Speckit Context Pointer
+
+**Goal**: Resolve current-head Speckit workflow drift where the checked-in active feature pointer still targets `specs/023-nt-research-analytics-platform/` even though this branch's controlling plan/tasks are `specs/023-nt-order-intent-layer/`. The fix is docs/verifier-only and must not change runtime order construction or narrow NT order-template support.
+
+- [x] T241 [US3] RED: Add schema-current verifier regression proving wrong `AGENTS.md` and `.specify/feature.json` active Speckit pointers are not caught
+- [x] T242 [US3] GREEN: Update the verifier and active Speckit context pointers so future `$speckit-plan` and `$speckit-tasks` commands target `specs/023-nt-order-intent-layer/`
+- [x] T243 [US3] Verify schema-current tests, active verifier, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -580,6 +588,7 @@
 - Phase 52 is closed by T233 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.
 - Phase 53 is closed by T236 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.
 - Phase 54 is closed by T240 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.
+- Phase 55 is closed by T243 verification at 2026-05-22 14:03:07 KST: schema-current self-tests and active verifier passed after RED coverage for stale active pointers, outside-block historical pointers, same-block false negatives, empty context files, and non-object feature JSON; `git diff --check`, `cargo fmt -- --check`, and `just source-fence` passed; Franklin and Kant reported no findings after Ampere and Beauvoir findings were fixed. Exact-head PR and no-mistakes state must be refreshed after committing and pushing this docs/verifier-only follow-up head.
 
 ## Parallel Opportunities
 

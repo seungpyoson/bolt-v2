@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -16,6 +17,15 @@ TASKS_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/tasks.md"
 CONTRACT_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/contracts/order-intent-layer.md"
 SPEC_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/spec.md"
 DATA_MODEL_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/data-model.md"
+AGENTS_DOC = REPO_ROOT / "AGENTS.md"
+FEATURE_JSON = REPO_ROOT / ".specify/feature.json"
+ORDER_INTENT_FEATURE_DIR = "specs/023-nt-order-intent-layer"
+ORDER_INTENT_PLAN = f"{ORDER_INTENT_FEATURE_DIR}/plan.md"
+SPECKIT_BLOCK_PATTERN = re.compile(
+    r"<!-- SPECKIT START -->(?P<body>.*?)<!-- SPECKIT END -->",
+    re.DOTALL,
+)
+BACKTICKED_PLAN_PATTERN = re.compile(r"`(?P<path>specs/[^`]+/plan\.md)`")
 
 ENABLED_ORDER_TYPES = (
     "limit",
@@ -179,6 +189,53 @@ def section_requires_defaulted_trailing_stop_market_field(section: str) -> bool:
     return False
 
 
+def validate_speckit_context(agents_doc: str | None, feature_json: str | None) -> list[str]:
+    findings: list[str] = []
+
+    if agents_doc is not None:
+        if not agents_doc.strip():
+            findings.append("AGENTS.md is empty; missing active Speckit block")
+        else:
+            match = SPECKIT_BLOCK_PATTERN.search(agents_doc)
+            if match is None:
+                findings.append("AGENTS.md missing active Speckit block")
+            else:
+                speckit_block = match.group("body")
+                plan_paths = [
+                    plan_match.group("path") for plan_match in BACKTICKED_PLAN_PATTERN.finditer(speckit_block)
+                ]
+                if plan_paths != [ORDER_INTENT_PLAN]:
+                    findings.append(
+                        "AGENTS.md active Speckit block must contain exactly "
+                        f"`{ORDER_INTENT_PLAN}` as its plan pointer, got {plan_paths!r}"
+                    )
+                if "specs/023-nt-research-analytics-platform/plan.md" in speckit_block:
+                    findings.append(
+                        "AGENTS.md active Speckit block still points at stale research-analytics plan"
+                    )
+
+    if feature_json is not None:
+        if not feature_json.strip():
+            findings.append(".specify/feature.json is empty; missing feature_directory")
+            return findings
+        try:
+            parsed = json.loads(feature_json)
+        except json.JSONDecodeError as exc:
+            findings.append(f".specify/feature.json is not valid JSON: {exc.msg}")
+        else:
+            if not isinstance(parsed, dict):
+                findings.append(".specify/feature.json must be a JSON object")
+                return findings
+            feature_directory = parsed.get("feature_directory")
+            if feature_directory != ORDER_INTENT_FEATURE_DIR:
+                findings.append(
+                    ".specify/feature.json points to "
+                    f"{feature_directory!r}, expected {ORDER_INTENT_FEATURE_DIR!r}"
+                )
+
+    return findings
+
+
 def validate_docs(
     schema: str,
     status_map: str,
@@ -187,6 +244,8 @@ def validate_docs(
     contract: str = "",
     spec: str = "",
     data_model: str = "",
+    agents_doc: str | None = None,
+    feature_json: str | None = None,
 ) -> list[str]:
     findings: list[str] = []
 
@@ -287,6 +346,7 @@ def validate_docs(
     findings.extend(unsupported_scope_overclaims("contract", contract))
     findings.extend(unsupported_scope_overclaims("spec", spec))
     findings.extend(unsupported_scope_overclaims("data model", data_model))
+    findings.extend(validate_speckit_context(agents_doc, feature_json))
 
     return findings
 
@@ -300,6 +360,8 @@ def main() -> int:
         CONTRACT_DOC.read_text(encoding="utf-8"),
         SPEC_DOC.read_text(encoding="utf-8"),
         DATA_MODEL_DOC.read_text(encoding="utf-8"),
+        AGENTS_DOC.read_text(encoding="utf-8"),
+        FEATURE_JSON.read_text(encoding="utf-8"),
     )
     if findings:
         for finding in findings:

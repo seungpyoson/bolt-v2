@@ -30,6 +30,7 @@ Fields:
 - `codex_log.retained_rotations`
 - `codex_log.active_writer_processes`
 - `codex_sessions.ttl_days`
+- `codex_sessions.active_writer_processes`
 - `factory_log.max_bytes`
 - `factory_log.retained_rotations`
 - `factory_log.active_writer_processes`

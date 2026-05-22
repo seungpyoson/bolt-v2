@@ -27,7 +27,7 @@
 - [ ] T009 Request DeepSeek plan/spec/tasks adversarial review for `specs/024-developer-tool-storage-hygiene/`.
 - [ ] T010 Record model, head SHA, scope, verdict, blockers, and skipped reviewers in `specs/024-developer-tool-storage-hygiene/evidence.md`.
 - [ ] T011 Resolve or explicitly classify every source-proven planning blocker in `specs/024-developer-tool-storage-hygiene/`.
-- [ ] T012 If implementation requires an operator-facing cleanup command, obtain explicit operator approval before editing `scripts/developer_tool_storage_hygiene.py`.
+- [ ] T012 If implementation exposes or changes any operator-facing cleanup/status/dry-run/apply command surface or host process-table collection, obtain explicit operator approval before adding that interface; scratch-only tests, policy loading, and report construction remain allowed without new command semantics.
 
 **Checkpoint**: No implementation starts until T006 through T012 are complete.
 

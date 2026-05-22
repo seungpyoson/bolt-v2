@@ -4774,6 +4774,24 @@ def github_env_assignments_from_line(line: str) -> list[str]:
     return assignments
 
 
+def github_env_line_assignments_around_cat_heredoc(
+    line: str,
+) -> tuple[list[str], tuple[str, bool, bool] | None, list[str]]:
+    clean = strip_comment(line).strip()
+    before: list[str] = []
+    after: list[str] = []
+    heredoc_spec: tuple[str, bool, bool] | None = None
+    for segment in shell_command_segments_from_tokens(command_tokens(clean)):
+        spec = github_env_cat_heredoc_spec(segment, clean)
+        if spec is not None and heredoc_spec is None:
+            heredoc_spec = spec
+            continue
+        target = after if heredoc_spec is not None else before
+        for extractor in (github_env_assignments_from_echo_tokens, github_env_assignments_from_printf_tokens):
+            target.extend(extractor(segment))
+    return before, heredoc_spec, after
+
+
 def shell_heredoc_quoted_delimiters(line: str) -> dict[str, bool]:
     delimiters: dict[str, bool] = {}
     for match in re.finditer(r"<<(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_-]*)\2", line):
@@ -4838,12 +4856,54 @@ def github_env_assignment_line(line: str) -> str | None:
     return assignments[0] if assignments else None
 
 
-def github_env_assignment_lines(text: str) -> list[str]:
-    lines: list[str] = []
-    lines.extend(github_env_assignments_from_cat_heredocs(text))
+def github_env_assignments_from_logical_text(text: str) -> list[str]:
+    assignments: list[str] = []
     for line in shell_logical_lines(text):
-        lines.extend(github_env_assignments_from_line(line))
-    return lines
+        assignments.extend(github_env_assignments_from_line(line))
+    return assignments
+
+
+def github_env_assignment_lines(text: str) -> list[str]:
+    assignments: list[str] = []
+    pending = ""
+    raw_lines = text.splitlines()
+    index = 0
+    while index < len(raw_lines):
+        line = raw_lines[index]
+        before, heredoc_spec, after = github_env_line_assignments_around_cat_heredoc(line)
+        if heredoc_spec is None:
+            pending = f"{pending}\n{line}" if pending else line
+            balance_text = "\n".join(strip_comment(pending_line) for pending_line in pending.splitlines())
+            if shell_quotes_are_balanced(balance_text) and not line.rstrip().endswith("\\"):
+                assignments.extend(github_env_assignments_from_logical_text(pending))
+                pending = ""
+            index += 1
+            continue
+
+        if pending:
+            assignments.extend(github_env_assignments_from_logical_text(pending))
+            pending = ""
+        assignments.extend(before)
+        delimiter, strip_tabs, quoted_delimiter = heredoc_spec
+        payload: list[str] = []
+        index += 1
+        while index < len(raw_lines):
+            candidate = raw_lines[index]
+            comparable = candidate.lstrip("\t") if strip_tabs else candidate
+            if comparable == delimiter:
+                break
+            payload.append(candidate.lstrip("\t") if strip_tabs else candidate)
+            index += 1
+        payload_text = "\n".join(payload)
+        if not quoted_delimiter:
+            payload_text = payload_text.replace("\\\n", "")
+        assignments.extend(github_env_payload_assignments(payload_text))
+        assignments.extend(after)
+        if index < len(raw_lines):
+            index += 1
+    if pending:
+        assignments.extend(github_env_assignments_from_logical_text(pending))
+    return assignments
 
 
 def workflow_run_shell_texts(workflow_text: str) -> list[str]:

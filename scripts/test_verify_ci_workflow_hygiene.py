@@ -1522,6 +1522,23 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
             True,
         ),
         (
+            "github env heredoc must overwrite earlier inline assignment",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo "SRC=benign" >> "$GITHUB_ENV"
+                      cat >> "$GITHUB_ENV" <<ENV
+                      SRC=target
+                      ENV
+                  - run: |
+                      aws s3 sync "$SRC" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            True,
+        ),
+        (
             "github env heredoc delimiter must be exact and preserve continuation",
             """
             jobs:

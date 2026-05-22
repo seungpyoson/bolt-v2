@@ -13,11 +13,9 @@ import tomllib
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-DEFAULT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
-DEFAULT_WORKFLOWS = (
-    DEFAULT_WORKFLOW,
-    REPO_ROOT / ".github" / "workflows" / "advisory.yml",
-)
+DEFAULT_WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
+DEFAULT_WORKFLOW = DEFAULT_WORKFLOW_DIR / "ci.yml"
+DEFAULT_WORKFLOW_GLOBS = ("*.yml", "*.yaml")
 DEFAULT_SETUP_ACTION = REPO_ROOT / ".github" / "actions" / "setup-environment" / "action.yml"
 DEFAULT_NEXTEST_CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 DEFAULT_NO_MISTAKES_CONFIG = REPO_ROOT / ".no-mistakes.yaml"
@@ -3463,6 +3461,8 @@ def verify_no_mistakes_config(config_text: str, config_name: str = ".no-mistakes
             "BOLT_MANAGED_JUST private just recipe bypass" in error for error in storage_errors
         ):
             errors.append(f"{config_name} commands.{command_name} raw Cargo drift must be classified")
+        if S3_ACTIVE_TARGET_CACHE_MESSAGE in storage_errors:
+            errors.append(f"{config_name} commands.{command_name} {S3_ACTIVE_TARGET_CACHE_MESSAGE}")
     return errors
 
 
@@ -5652,13 +5652,20 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
 def verify_workflows(workflows: dict[str, str], action_text: str, nextest_config_text: str) -> list[str]:
     errors: list[str] = []
     for workflow_name, workflow_text in workflows.items():
+        is_managed_workflow = workflow_name in {
+            "ci.yml",
+            ".github/workflows/ci.yml",
+            "advisory.yml",
+            ".github/workflows/advisory.yml",
+        }
         if workflow_name == "ci.yml" or workflow_name.endswith("/ci.yml"):
             errors.extend(verify_workflow(workflow_text))
         else:
-            errors.extend(raw_rust_storage_errors(workflow_text))
-        errors.extend(verify_managed_workflow(workflow_text, workflow_name))
-        errors.extend(verify_build_artifacts(workflow_text, workflow_name))
-        errors.extend(verify_prebuilt_tool_installs(workflow_text, workflow_name))
+            errors.extend(verify_repo_automation_texts({workflow_name: workflow_text}))
+        if is_managed_workflow:
+            errors.extend(verify_managed_workflow(workflow_text, workflow_name))
+            errors.extend(verify_build_artifacts(workflow_text, workflow_name))
+            errors.extend(verify_prebuilt_tool_installs(workflow_text, workflow_name))
     errors.extend(raw_rust_storage_errors(action_text))
     errors.extend(verify_setup_action(action_text))
     errors.extend(verify_nextest_config(nextest_config_text))
@@ -5708,8 +5715,17 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
     return errors
 
 
+def repo_workflow_texts() -> dict[str, str]:
+    if not DEFAULT_WORKFLOW_DIR.exists():
+        return {}
+    paths: set[pathlib.Path] = set()
+    for pattern in DEFAULT_WORKFLOW_GLOBS:
+        paths.update(DEFAULT_WORKFLOW_DIR.glob(pattern))
+    return {path.relative_to(REPO_ROOT).as_posix(): path.read_text() for path in sorted(paths)}
+
+
 def main() -> int:
-    workflow_texts = {workflow.relative_to(REPO_ROOT).as_posix(): workflow.read_text() for workflow in DEFAULT_WORKFLOWS if workflow.exists()}
+    workflow_texts = repo_workflow_texts()
     action_text = DEFAULT_SETUP_ACTION.read_text()
     nextest_config_text = DEFAULT_NEXTEST_CONFIG.read_text()
     repo_automation_texts = {

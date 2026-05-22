@@ -2184,6 +2184,34 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         return result, stdout.getvalue() + stderr.getvalue()
 
 
+def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str) -> tuple[int, str]:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        verifier_path = tmp_path / "scripts" / "verify_ci_workflow_hygiene.py"
+        verifier_path.parent.mkdir(parents=True)
+        verifier_path.write_text(VERIFIER_PATH.read_text())
+
+        workflow_dir = tmp_path / ".github" / "workflows"
+        workflow_dir.mkdir(parents=True)
+        (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+        (workflow_dir / workflow_name).write_text(workflow_text)
+
+        action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
+        action_path.parent.mkdir(parents=True)
+        action_path.write_text(BASE_ACTION)
+
+        nextest_path = tmp_path / ".config" / "nextest.toml"
+        nextest_path.parent.mkdir(parents=True)
+        nextest_path.write_text(BASE_NEXTEST_CONFIG)
+
+        temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_workflow_entrypoint")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = temp_verifier.main()
+        return result, stdout.getvalue() + stderr.getvalue()
+
+
 def assert_v6_red_yaml_anchor_jobs_do_not_hide_raw_storage() -> None:
     verifier = load_verifier()
     workflow = """
@@ -2239,6 +2267,24 @@ runs:
     expected_s3 = ".github/actions/evade/action.yml: S3 active mutable target cache must be rejected"
     if result == 0 or expected_raw_cargo not in output or expected_s3 not in output:
         raise AssertionError(f"local composite action drift was silent: exit={result}, output={output!r}")
+
+
+def assert_v6_red_additional_workflows_are_scanned() -> None:
+    extra_workflow = """
+name: Release
+on: [workflow_dispatch]
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo build
+      - run: aws s3 sync target s3://bolt-v2-active-cache/target
+"""
+    result, output = run_verifier_main_with_extra_workflow("release.yml", textwrap.dedent(extra_workflow))
+    expected_raw_cargo = ".github/workflows/release.yml: repo automation raw Cargo must use managed rust_verification wrapper"
+    expected_s3 = ".github/workflows/release.yml: S3 active mutable target cache must be rejected"
+    if result == 0 or expected_raw_cargo not in output or expected_s3 not in output:
+        raise AssertionError(f"additional workflow drift was silent: exit={result}, output={output!r}")
 
 
 def assert_v6_red_no_mistakes_raw_cargo_is_reported() -> None:
@@ -2338,6 +2384,7 @@ commands:
   managedinstallroot: python3 scripts/rust_verification.py cargo --repo . -- install ripgrep --root /tmp/install-root
   no-mistakes-clippy-command: no-mistakes run -- clippy
   no-mistakes-nextest-command: no-mistakes run -- nextest run
+  s3cache: aws s3 sync target s3://bolt-v2-active-cache/target
   docs: just docs
 """
     allowed_fixture = """
@@ -2451,6 +2498,7 @@ commands: { test: "cargo test" }
         f".no-mistakes.yaml commands.{command_name} raw Cargo drift must be classified"
         for command_name in fixture_expected_raw_keys
     ]
+    expected_s3 = ".no-mistakes.yaml commands.s3cache S3 active mutable target cache must be rejected"
     fixture_result, fixture_errors = run_verifier_main_with_no_mistakes(raw_fixture)
     missing_fixture = [fragment for fragment in expected if fragment not in fixture_errors]
     false_fixture = ".no-mistakes.yaml commands.docs raw Cargo drift must be classified" in fixture_errors
@@ -2467,6 +2515,7 @@ commands: { test: "cargo test" }
     if (
         fixture_result == 0
         or missing_fixture
+        or expected_s3 not in fixture_errors
         or false_fixture
         or allowed_result != 0
         or false_allowed
@@ -2479,7 +2528,7 @@ commands: { test: "cargo test" }
             "no-mistakes raw-Cargo drift must fail through verifier main() while managed-wrapper "
             "and exact-head CI evidence commands stay allowed: "
             f"fixture_result={fixture_result} missing_fixture={missing_fixture!r} "
-            f"false_fixture={false_fixture} fixture_errors={fixture_errors!r} "
+            f"expected_s3={expected_s3!r} false_fixture={false_fixture} fixture_errors={fixture_errors!r} "
             f"fixture_expected_raw_keys={fixture_expected_raw_keys!r} "
             f"allowed_result={allowed_result} false_allowed={false_allowed!r} "
             f"allowed_errors={allowed_errors!r} "
@@ -2679,6 +2728,7 @@ def main() -> int:
     assert_v6_red_yaml_anchor_jobs_do_not_hide_raw_storage()
     assert_v6_red_yaml_anchor_steps_do_not_hide_raw_storage()
     assert_v6_red_local_composite_actions_are_scanned()
+    assert_v6_red_additional_workflows_are_scanned()
     assert_shell_logical_lines_handles_crlf_continuations()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(

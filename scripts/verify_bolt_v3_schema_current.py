@@ -19,6 +19,7 @@ SPEC_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/spec.md"
 DATA_MODEL_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/data-model.md"
 AGENTS_DOC = REPO_ROOT / "AGENTS.md"
 FEATURE_JSON = REPO_ROOT / ".specify/feature.json"
+TINY_CANARY_EVIDENCE = REPO_ROOT / "src/bolt_v3_tiny_canary_evidence.rs"
 ORDER_INTENT_FEATURE_DIR = "specs/023-nt-order-intent-layer"
 ORDER_INTENT_PLAN = f"{ORDER_INTENT_FEATURE_DIR}/plan.md"
 SPECKIT_BLOCK_PATTERN = re.compile(
@@ -26,6 +27,7 @@ SPECKIT_BLOCK_PATTERN = re.compile(
     re.DOTALL,
 )
 BACKTICKED_PLAN_PATTERN = re.compile(r"`(?P<path>specs/[^`]+/plan\.md)`")
+RUST_STRUCT_FIELD_PATTERN = re.compile(r"^\s*(?P<field>[a-z][a-z0-9_]*):\s*[^,]+,\s*$")
 
 ENABLED_ORDER_TYPES = (
     "limit",
@@ -163,6 +165,33 @@ def extract_section(text: str, heading: str, next_heading_prefix: str = "#### ")
     return text[start:next_start]
 
 
+def extract_labeled_section(text: str, marker: str) -> str:
+    start = text.find(marker)
+    if start == -1:
+        return ""
+    next_start = text.find("\n`", start + len(marker))
+    if next_start == -1:
+        return text[start:]
+    return text[start:next_start]
+
+
+def extract_phase8_financial_envelope_fields(rust_source: str) -> list[str]:
+    struct_marker = "struct Phase8FinancialEnvelopeEvidenceFile {"
+    start = rust_source.find(struct_marker)
+    if start == -1:
+        return []
+
+    fields: list[str] = []
+    for line in rust_source[start + len(struct_marker) :].splitlines():
+        if line.strip() == "}":
+            break
+        match = RUST_STRUCT_FIELD_PATTERN.match(line)
+        if match is None:
+            continue
+        fields.append(match.group("field"))
+    return fields
+
+
 def unsupported_scope_overclaims(label: str, text: str) -> list[str]:
     findings: list[str] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
@@ -246,6 +275,7 @@ def validate_docs(
     data_model: str = "",
     agents_doc: str | None = None,
     feature_json: str | None = None,
+    financial_envelope_source: str = "",
 ) -> list[str]:
     findings: list[str] = []
 
@@ -306,6 +336,22 @@ def validate_docs(
                     f"schema order-parameters section missing position_side value {position_side}"
                 )
 
+    if financial_envelope_source:
+        financial_envelope_fields = extract_phase8_financial_envelope_fields(
+            financial_envelope_source
+        )
+        if not financial_envelope_fields:
+            findings.append(
+                "source missing Phase8FinancialEnvelopeEvidenceFile fields for schema validation"
+            )
+        financial_envelope_section = extract_labeled_section(schema, "`financial_envelope` fields:")
+        if not financial_envelope_section:
+            findings.append("schema missing `financial_envelope` fields section")
+        else:
+            for field in financial_envelope_fields:
+                if f"`{field}`" not in financial_envelope_section:
+                    findings.append(f"schema financial_envelope section missing `{field}`")
+
     for phrase in STALE_STATUS_MAP_PHRASES:
         if phrase in status_map:
             findings.append(f"status map still contains stale phrase: {phrase}")
@@ -362,6 +408,7 @@ def main() -> int:
         DATA_MODEL_DOC.read_text(encoding="utf-8"),
         AGENTS_DOC.read_text(encoding="utf-8"),
         FEATURE_JSON.read_text(encoding="utf-8"),
+        TINY_CANARY_EVIDENCE.read_text(encoding="utf-8"),
     )
     if findings:
         for finding in findings:

@@ -739,8 +739,15 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 - `edge_threshold_basis_points`: integer matching loaded strategy parameters
 - `order_notional_target`, `maximum_position_notional`: decimal strings matching loaded strategy parameters
 - `book_impact_cap_bps`: integer matching `[parameters.runtime].book_impact_cap_bps`
-- `entry_order_type`, `entry_time_in_force`, `exit_order_type`, `exit_time_in_force`: strings matching loaded order parameters
-- `entry_is_post_only`, `entry_is_reduce_only`, `entry_is_quote_quantity`, `exit_is_post_only`, `exit_is_reduce_only`, `exit_is_quote_quantity`: booleans matching loaded order parameters
+- `entry_side`, `entry_position_side`, `entry_order_type`, `entry_time_in_force`: strings matching loaded `[parameters.entry_order]` values
+- `entry_expire_time_unix_nanos`, `entry_trigger_price`, `entry_activation_price`, `entry_trigger_type`, `entry_trigger_instrument_id`, `entry_trailing_offset`, `entry_trailing_offset_type`: optional values matching loaded `[parameters.entry_order]` values
+- `entry_is_post_only`, `entry_is_reduce_only`, `entry_is_quote_quantity`: booleans matching loaded `[parameters.entry_order]` values
+- `exit_side`, `exit_position_side`, `exit_order_type`, `exit_time_in_force`: strings matching loaded `[parameters.exit_order]` values
+- `exit_expire_time_unix_nanos`, `exit_trigger_price`, `exit_activation_price`, `exit_trigger_type`, `exit_trigger_instrument_id`, `exit_trailing_offset`, `exit_trailing_offset_type`: optional values matching loaded `[parameters.exit_order]` values
+- `exit_is_post_only`, `exit_is_reduce_only`, `exit_is_quote_quantity`: booleans matching loaded `[parameters.exit_order]` values
+- `forced_exit_side`, `forced_exit_position_side`, `forced_exit_order_type`, `forced_exit_time_in_force`: strings matching loaded `[parameters.forced_exit_order]` values
+- `forced_exit_expire_time_unix_nanos`, `forced_exit_trigger_price`, `forced_exit_activation_price`, `forced_exit_trigger_type`, `forced_exit_trigger_instrument_id`, `forced_exit_trailing_offset`, `forced_exit_trailing_offset_type`: optional values matching loaded `[parameters.forced_exit_order]` values
+- `forced_exit_is_post_only`, `forced_exit_is_reduce_only`, `forced_exit_is_quote_quantity`: booleans matching loaded `[parameters.forced_exit_order]` values
 
 `pre_run_state` fields:
 

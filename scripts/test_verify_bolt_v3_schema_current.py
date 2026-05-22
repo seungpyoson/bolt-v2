@@ -613,6 +613,71 @@ def test_validate_docs_requires_all_enabled_and_factory_gap_order_types() -> Non
         raise AssertionError(f"expected missing TrailingStopLimit finding, got {gap_findings!r}")
 
 
+def test_extracts_phase8_financial_envelope_fields_from_source_struct() -> None:
+    rust_source = """
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct Phase8FinancialEnvelopeEvidenceFile {
+    max_live_order_count: u32,
+    entry_side: String,
+    entry_activation_price: Option<f64>,
+}
+
+impl Phase8FinancialEnvelopeEvidenceFile {
+"""
+
+    fields = VERIFIER.extract_phase8_financial_envelope_fields(rust_source)
+
+    expected_fields = [
+        "max_live_order_count",
+        "entry_side",
+        "entry_activation_price",
+    ]
+    if fields != expected_fields:
+        raise AssertionError(f"expected source-derived fields {expected_fields!r}, got {fields!r}")
+
+
+def test_validate_docs_rejects_financial_envelope_schema_missing_source_field() -> None:
+    rust_source = """
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct Phase8FinancialEnvelopeEvidenceFile {
+    max_live_order_count: u32,
+    entry_side: String,
+}
+
+impl Phase8FinancialEnvelopeEvidenceFile {
+"""
+    complete_schema = (
+        CURRENT_SCHEMA
+        + """
+`financial_envelope` fields:
+
+- `max_live_order_count`: integer
+- `entry_side`: string
+
+`pre_run_state` fields:
+"""
+    )
+    missing_schema = complete_schema.replace("- `entry_side`: string\n", "")
+
+    complete_findings = VERIFIER.validate_docs(
+        complete_schema,
+        CURRENT_STATUS_MAP,
+        financial_envelope_source=rust_source,
+    )
+    if complete_findings:
+        raise AssertionError(f"expected complete synthetic schema to pass, got {complete_findings!r}")
+
+    missing_findings = VERIFIER.validate_docs(
+        missing_schema,
+        CURRENT_STATUS_MAP,
+        financial_envelope_source=rust_source,
+    )
+    if not any("financial_envelope" in finding and "`entry_side`" in finding for finding in missing_findings):
+        raise AssertionError(f"expected missing source-derived field finding, got {missing_findings!r}")
+
+
 def main() -> int:
     tests = [
         test_extract_section_stops_at_next_matching_heading,
@@ -643,6 +708,8 @@ def main() -> int:
         test_validate_docs_allows_live_trading_config_value_without_support_claim,
         test_validate_docs_allows_spec_architecture_risk_context,
         test_validate_docs_requires_all_enabled_and_factory_gap_order_types,
+        test_extracts_phase8_financial_envelope_fields_from_source_struct,
+        test_validate_docs_rejects_financial_envelope_schema_missing_source_field,
     ]
     for test in tests:
         test()

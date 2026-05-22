@@ -628,6 +628,15 @@
 - [x] T285 [US2] GREEN: Centralize compiled-order price-source selection as `price -> trigger_price -> activation_price -> fallback` and reuse it for order-intent evidence plus submit-admission notional
 - [ ] T286 [US2] Verify focused admission tests, schema/runtime verifiers, source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
+## Phase 66: TDD Slice 62 - Source-Derived Financial Envelope Schema Guard
+
+**Goal**: Resolve no-mistakes review evidence for Phase 8 financial-envelope schema drift without adding another static schema field allowlist. The verifier must derive the required fields from the Rust `Phase8FinancialEnvelopeEvidenceFile` source struct and compare the active schema docs against that source of truth.
+
+- [x] T287 [P] [US2] Record no-mistakes review commit `d537b295` and financial-envelope schema drift evidence in `specs/023-nt-order-intent-layer/research.md`
+- [x] T288 [US2] RED: Add a verifier regression proving active schema docs must include every field from the Rust `Phase8FinancialEnvelopeEvidenceFile` source struct
+- [x] T289 [US2] GREEN: Derive required financial-envelope schema fields from the Rust source struct and update docs to match current Phase 8 financial-envelope source
+- [ ] T290 [US2] Verify schema tests/verifier, focused admission tests, schema/runtime verifiers, source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -693,6 +702,7 @@
 - Phase 63 is closed by T278 verification: invalid-OMS fail-closed coverage, helper disproof coverage, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state were refreshed by the final exact-head evidence recorded in `research.md`.
 - Phase 64 blocks final Phase 8 approval-envelope completion until focused tests, verifiers, source fences, exact-head PR checks, external reviewer state, and no-mistakes state are refreshed for the order-enum canonicalization head.
 - Phase 65 blocks final branch completion because no-mistakes produced activation-price admission evidence on top of the Phase 64 head.
+- Phase 66 blocks final branch completion because no-mistakes produced financial-envelope schema-field drift evidence on top of the Phase 65 head.
 
 ## Parallel Opportunities
 

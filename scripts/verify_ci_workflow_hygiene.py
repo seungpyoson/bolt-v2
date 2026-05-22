@@ -1194,6 +1194,21 @@ def command_tokens(command: str) -> list[str]:
         return command.split()
 
 
+def command_tokens_with_line_boundaries(command: str) -> list[str]:
+    tokens: list[str] = []
+    for line in shell_logical_lines(command):
+        stripped = strip_comment(line).strip()
+        if not stripped:
+            continue
+        line_tokens = command_tokens(stripped)
+        if not line_tokens:
+            continue
+        if tokens:
+            tokens.append(";")
+        tokens.extend(line_tokens)
+    return tokens
+
+
 def backtick_command_payloads(tokens: list[str]) -> list[list[str]]:
     payloads: list[list[str]] = []
     index = 0
@@ -3461,8 +3476,10 @@ def verify_no_mistakes_config(config_text: str, config_name: str = ".no-mistakes
             "BOLT_MANAGED_JUST private just recipe bypass" in error for error in storage_errors
         ):
             errors.append(f"{config_name} commands.{command_name} raw Cargo drift must be classified")
-        if S3_ACTIVE_TARGET_CACHE_MESSAGE in storage_errors:
-            errors.append(f"{config_name} commands.{command_name} {S3_ACTIVE_TARGET_CACHE_MESSAGE}")
+        for storage_error in storage_errors:
+            if storage_error == "BOLT_MANAGED_JUST private just recipe bypass must be classified":
+                continue
+            errors.append(f"{config_name} commands.{command_name} {storage_error}")
     return errors
 
 
@@ -4106,7 +4123,7 @@ def storage_transfer_policy_errors_from_tokens(
 
 def storage_transfer_policy_errors(text: str) -> list[str]:
     variable_roles = storage_variable_roles(text)
-    return storage_transfer_policy_errors_from_tokens(command_tokens(text), variable_roles)
+    return storage_transfer_policy_errors_from_tokens(command_tokens_with_line_boundaries(text), variable_roles)
 
 
 def target_env_key_alias(value: str, target_keys: dict[str, str]) -> str | None:

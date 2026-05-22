@@ -2135,6 +2135,7 @@ CARGO_PROCESS_SUBCOMMANDS = CARGO_DISK_PREFLIGHT_SUBCOMMANDS | {"clean", "fmt"}
 CARGO_ALIAS_SUBCOMMANDS = {"b", "c", "d", "r", "t"}
 CARGO_CONFIG_RELATIVE_PATHS = (pathlib.Path(".cargo/config.toml"), pathlib.Path(".cargo/config"))
 CARGO_HOME_CONFIG_NAMES = ("config.toml", "config")
+NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT = {"--config-file", "--profile"}
 
 
 def cargo_subcommand_with_index(cargo_args: list[str]) -> tuple[int, str] | None:
@@ -2179,9 +2180,28 @@ def cargo_args_need_exclusive_cache_lock(cargo_args: list[str]) -> bool:
     if subcommand is None:
         return False
     index, command = subcommand
-    if command != "nextest" or index + 1 >= len(cargo_args) or cargo_args[index + 1] != "run":
+    if command != "nextest":
         return False
-    tail = cargo_args[index + 2 :]
+    nextest_index = index + 1
+    while nextest_index < len(cargo_args):
+        token = cargo_args[nextest_index]
+        if token == "--":
+            return False
+        if token in NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT:
+            nextest_index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT):
+            nextest_index += 1
+            continue
+        if token.startswith("-"):
+            nextest_index += 1
+            continue
+        break
+    if nextest_index >= len(cargo_args) or cargo_args[nextest_index] != "run":
+        return False
+    tail = cargo_args[nextest_index + 1 :]
+    if "--" in tail:
+        tail = tail[: tail.index("--")]
     has_archive_file = any(token == "--archive-file" or token.startswith("--archive-file=") for token in tail)
     has_extract = any(
         token in {"--extract-to", "--extract-overwrite"} or token.startswith("--extract-to=")

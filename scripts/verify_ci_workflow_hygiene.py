@@ -3445,13 +3445,10 @@ def storage_variable_names(value: str) -> set[str]:
 
 def storage_command_substitution_has_target(value: str) -> bool:
     compact = storage_strip_quotes(value).replace('"', "").replace("'", "")
-    for match in re.finditer(r"`([^`]*)`", compact):
-        if re.search(r"(?:^|[\s/])target(?:[\s/]|$)", match.group(1)):
+    for payload in shell_command_substitution_payloads(command_tokens(compact)):
+        if any(storage_value_has_target_component(token) for token in payload):
             return True
-    return (
-        ("$(" in compact or compact.startswith("$ ("))
-        and re.search(r"(?:^|[\s/])target(?:[\s/]|$)", compact) is not None
-    )
+    return False
 
 
 def storage_value_has_target_component(value: str) -> bool:
@@ -3750,30 +3747,40 @@ def aws_s3_operands(tokens: list[str]) -> list[str]:
         if token.startswith("-"):
             cursor = consume_storage_option(tokens, cursor, AWS_S3_OPTIONS_WITH_ARGUMENT)
             continue
-        if (token == "$" or token.endswith("$")) and cursor + 1 < len(tokens) and tokens[cursor + 1] == "(":
-            depth = 1
-            parts = [token, tokens[cursor + 1]]
-            cursor += 2
-            while cursor < len(tokens) and depth:
+        if "`" in token:
+            parts = [token]
+            cursor += 1
+            backtick_count = token.count("`")
+            while cursor < len(tokens) and backtick_count % 2 == 1:
                 parts.append(tokens[cursor])
-                if tokens[cursor] == "(":
-                    depth += 1
-                elif tokens[cursor] == ")":
-                    depth -= 1
-                cursor += 1
-            if cursor < len(tokens) and tokens[cursor].startswith("/"):
-                parts.append(tokens[cursor])
+                backtick_count += tokens[cursor].count("`")
                 cursor += 1
             operands.append(" ".join(parts))
             continue
-        if token.startswith("`") and not token.endswith("`"):
-            parts = [token]
-            cursor += 1
-            while cursor < len(tokens):
+        if (token == "$" or token.endswith("$")) and cursor + 1 < len(tokens) and tokens[cursor + 1] == "(":
+            depth = 1
+            parts = [token, tokens[cursor + 1]]
+            substitution_tokens: list[str] = []
+            cursor += 2
+            while cursor < len(tokens) and depth:
+                current = tokens[cursor]
+                parts.append(current)
+                if current != ")" or depth > 1:
+                    substitution_tokens.append(current)
+                if current == "(":
+                    depth += 1
+                elif current == ")":
+                    depth -= 1
+                cursor += 1
+            if (
+                cursor < len(tokens)
+                and not any(part in SHELL_COMMAND_BOUNDARIES for part in substitution_tokens)
+                and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES
+                and not tokens[cursor].startswith("-")
+                and not tokens[cursor].startswith("s3://")
+            ):
                 parts.append(tokens[cursor])
                 cursor += 1
-                if parts[-1].endswith("`"):
-                    break
             operands.append(" ".join(parts))
             continue
         operands.append(token)

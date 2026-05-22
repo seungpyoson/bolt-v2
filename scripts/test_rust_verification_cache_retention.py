@@ -2520,6 +2520,33 @@ def assert_v6_red_nextest_archive_extraction_uses_exclusive_cache_lock() -> None
         archive_result = owner.cmd_cargo(archive_args)
         normal_args = types.SimpleNamespace(repo=str(repo), args=["nextest", "run", "--locked"])
         normal_result = owner.cmd_cargo(normal_args)
+        configured_archive_args = types.SimpleNamespace(
+            repo=str(repo),
+            args=[
+                "nextest",
+                "--config-file",
+                ".config/nextest.toml",
+                "run",
+                "--archive-file",
+                ".nextest-archive/nextest-archive.tar.zst",
+                "--extract-to",
+                str(tmp_path / "configured-managed-target-parent"),
+            ],
+        )
+        configured_archive_result = owner.cmd_cargo(configured_archive_args)
+        separator_args = types.SimpleNamespace(
+            repo=str(repo),
+            args=[
+                "nextest",
+                "run",
+                "--",
+                "--archive-file",
+                ".nextest-archive/nextest-archive.tar.zst",
+                "--extract-to",
+                str(tmp_path / "test-binary-output"),
+            ],
+        )
+        separator_result = owner.cmd_cargo(separator_args)
         managed_run_archive_args = types.SimpleNamespace(
             repo=str(repo),
             command="test",
@@ -2550,14 +2577,18 @@ def assert_v6_red_nextest_archive_extraction_uses_exclusive_cache_lock() -> None
         if (
             archive_result != 0
             or normal_result != 0
+            or configured_archive_result != 0
+            or separator_result != 0
             or managed_run_archive_result != 0
             or managed_run_separator_result != 0
-            or lock_modes != [True, False, True, False]
+            or lock_modes != [True, False, True, False, True, False]
         ):
             raise AssertionError(
                 "nextest archive extraction must serialize on the managed cache lock while ordinary nextest "
                 "and post-separator test args remain shared: "
                 f"archive_result={archive_result} normal_result={normal_result} "
+                f"configured_archive_result={configured_archive_result} "
+                f"separator_result={separator_result} "
                 f"managed_run_archive_result={managed_run_archive_result} "
                 f"managed_run_separator_result={managed_run_separator_result} "
                 f"lock_modes={lock_modes!r}"

@@ -1181,6 +1181,9 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         "active target cwd hidden behind cd option and separator": """
             cd -L -- target && aws s3 sync debug s3://bolt-v2-active-cache/target/debug
         """,
+        "active target cwd hidden behind combined cd options": """
+            cd -LP target && aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
         "active target streamed through s3 stdin": """
             tar -czf - target | aws s3 cp - s3://bolt-v2-active-cache/target.tar.gz
         """,
@@ -2627,6 +2630,40 @@ jobs:
     errors = verifier.verify_workflow(textwrap.dedent(workflow))
     if expected not in errors:
         raise AssertionError(f"workflow steps alias was not rejected: {errors!r}")
+    workflow = """
+name: Probe
+on: [push]
+.raw_step: &raw_step
+  run: cargo build --target-dir /tmp/raw
+jobs:
+  hidden:
+    runs-on: ubuntu-latest
+    steps:
+      - *raw_step
+"""
+    errors = verifier.verify_workflow(textwrap.dedent(workflow))
+    if expected not in errors:
+        raise AssertionError(f"workflow step item alias was not rejected: {errors!r}")
+
+
+def assert_v6_red_static_path_classifier_ignores_host_filesystem_resolution() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        cargo_target = tmp_path / "cargo"
+        cargo_target.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        cargo_link = tmp_path / "builder"
+        cargo_link.symlink_to(cargo_target)
+        rustc_target = tmp_path / "rustc"
+        rustc_target.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        rustc_link = tmp_path / "compiler"
+        rustc_link.symlink_to(rustc_target)
+        if verifier.path_executable_looks_like_cargo(str(cargo_link)):
+            raise AssertionError("static cargo classifier must not inspect host filesystem symlink targets")
+        if verifier.path_executable_looks_like_rustc(str(rustc_link)):
+            raise AssertionError("static rustc classifier must not inspect host filesystem symlink targets")
+        if not verifier.path_executable_looks_like_cargo(str(tmp_path / "mycargo")):
+            raise AssertionError("static cargo classifier must still classify path names that look like cargo")
 
 
 def assert_v6_red_local_composite_actions_are_scanned() -> None:
@@ -2689,6 +2726,7 @@ commands:
   anchored: &raw "cargo build --target-dir /tmp/raw"
   anchoralias: *raw
   topanchoralias: *raw_top
+  topanchoraliascomment: *raw_top # inline comment
   topblockanchoralias: *raw_top_block
   shellcheck: bash -lc 'cargo test --all'
   evalraw: eval "cargo test"
@@ -2805,6 +2843,7 @@ commands: { test: "cargo test" }
         "anchored",
         "anchoralias",
         "topanchoralias",
+        "topanchoraliascomment",
         "topblockanchoralias",
         "shellcheck",
         "evalraw",
@@ -3011,6 +3050,7 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "scripts/non-rust-make.sh": "/usr/bin/make test\n",
             "scripts/non-rust-gradle.sh": "./gradlew build\n",
             "scripts/non-rust-cargo-build-script.sh": "/tmp/cargo-build.sh test\n",
+            "scripts/non-rust-cargo-build-uppercase-py.sh": "/tmp/cargo-build.PY test\n",
             "scripts/non-rust-cargo-tests-py.sh": "tests/cargo-tests.py build\n",
             "justfile.setup": "setup:\n    cargo install cargo-nextest --version 0.9.132 --locked\n",
             "justfile.setup.absolute": "setup:\n    /usr/bin/cargo install cargo-nextest --version 0.9.132 --locked\n",
@@ -3129,6 +3169,7 @@ def main() -> int:
     assert_v6_red_yaml_anchor_jobs_do_not_hide_raw_storage()
     assert_v6_red_yaml_anchor_steps_do_not_hide_raw_storage()
     assert_v6_red_yaml_steps_aliases_are_rejected()
+    assert_v6_red_static_path_classifier_ignores_host_filesystem_resolution()
     assert_v6_red_local_composite_actions_are_scanned()
     assert_v6_red_additional_workflows_are_scanned()
     assert_shell_logical_lines_handles_crlf_continuations()

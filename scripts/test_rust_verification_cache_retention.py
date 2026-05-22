@@ -2254,6 +2254,7 @@ def assert_v6_red_active_process_parser_does_not_treat_rust_named_scripts_as_rus
     failures: list[str] = []
     for command in (
         "/tmp/cargo-build.sh test",
+        "/tmp/cargo-build.PY test",
         "tests/cargo-tests.py build",
         "./rust-tests.sh check",
         "tools/clippy.bash --dry-run",

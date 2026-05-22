@@ -518,10 +518,28 @@ def job_header_indent_errors(workflow_text: str) -> list[str]:
 
 
 def workflow_steps_alias_errors(workflow_text: str) -> list[str]:
+    in_steps = False
+    steps_indent: int | None = None
     for line in workflow_text.splitlines():
         clean = strip_comment(line)
+        stripped = clean.lstrip()
+        if not stripped:
+            continue
+        indent = len(clean) - len(stripped)
         if re.match(r"^\s*steps:\s*\*[A-Za-z0-9_.-]+\s*$", clean):
             return ["workflow steps must be explicit; YAML steps aliases are unsupported"]
+        if re.match(r"^\s*steps:\s*$", clean):
+            in_steps = True
+            steps_indent = indent
+            continue
+        if in_steps and steps_indent is not None:
+            is_item = stripped.startswith("-")
+            if indent <= steps_indent and not (indent == steps_indent and is_item):
+                in_steps = False
+                steps_indent = None
+                continue
+            if re.match(r"^-\s*\*[A-Za-z0-9_.-]+\s*$", stripped):
+                return ["workflow steps must be explicit; YAML steps aliases are unsupported"]
     return []
 
 
@@ -2573,7 +2591,7 @@ def no_mistakes_inner_tokens(tokens: list[str]) -> list[str] | None:
 
 
 def rust_tool_name_has_script_extension(name: str) -> bool:
-    return pathlib.Path(name).suffix in {".bash", ".fish", ".ksh", ".ps1", ".py", ".rb", ".sh", ".zsh"}
+    return pathlib.Path(name).suffix.lower() in {".bash", ".fish", ".ksh", ".ps1", ".py", ".rb", ".sh", ".zsh"}
 
 
 def raw_rust_tool_token(name: str) -> bool:
@@ -2594,11 +2612,7 @@ def path_executable_looks_like_cargo(token: str) -> bool:
     path = pathlib.Path(token)
     if path_name_looks_like_renamed_cargo(path.name):
         return True
-    try:
-        resolved = path.expanduser().resolve(strict=True)
-    except (OSError, RuntimeError):
-        return False
-    return path_name_looks_like_renamed_cargo(resolved.name)
+    return False
 
 
 def path_name_looks_like_renamed_rustc(name: str) -> bool:
@@ -2611,11 +2625,7 @@ def path_executable_looks_like_rustc(token: str) -> bool:
     path = pathlib.Path(token)
     if path_name_looks_like_renamed_rustc(path.name):
         return True
-    try:
-        resolved = path.expanduser().resolve(strict=True)
-    except (OSError, RuntimeError):
-        return False
-    return path_name_looks_like_renamed_rustc(resolved.name)
+    return False
 
 
 def path_invocation_has_cargo_subcommand(tokens: list[str]) -> bool:
@@ -3428,7 +3438,7 @@ def no_mistakes_commands(config_text: str) -> dict[str, str]:
     index = 0
     while index < len(lines):
         raw_line = lines[index]
-        line = raw_line.rstrip()
+        line = strip_comment(raw_line).rstrip()
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             index += 1
@@ -4145,12 +4155,18 @@ def directory_wrapper_chdir_value(tokens: list[str]) -> str | None:
     return None
 
 
+def cd_option_token(token: str) -> bool:
+    if token in {"-L", "-P", "-e"}:
+        return True
+    return token.startswith("-") and not token.startswith("--") and len(token) > 1 and set(token[1:]) <= {"L", "P", "e"}
+
+
 def shell_directory_change_target(tokens: list[str], cursor: int) -> tuple[str | None, int]:
     if cursor >= len(tokens):
         return None, cursor + 1
     name = executable_name(tokens[cursor])
     index = cursor + 1
-    while name == "cd" and index < len(tokens) and tokens[index] in {"-L", "-P", "-e"}:
+    while name == "cd" and index < len(tokens) and cd_option_token(tokens[index]):
         index += 1
     while name == "pushd" and index < len(tokens) and tokens[index] == "-n":
         index += 1

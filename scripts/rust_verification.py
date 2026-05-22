@@ -1611,7 +1611,7 @@ def command_process_names(command: str) -> set[str]:
 
 
 def rust_tool_name_has_script_extension(name: str) -> bool:
-    return pathlib.Path(name).suffix in {".bash", ".fish", ".ksh", ".ps1", ".py", ".rb", ".sh", ".zsh"}
+    return pathlib.Path(name).suffix.lower() in {".bash", ".fish", ".ksh", ".ps1", ".py", ".rb", ".sh", ".zsh"}
 
 
 def executable_is_rust_tool(executable: str) -> bool:

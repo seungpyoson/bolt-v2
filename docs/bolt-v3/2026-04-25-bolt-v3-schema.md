@@ -572,6 +572,28 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - local decision-evidence JSONL path under `catalog_directory`
 - must remain relative so a root catalog move changes only one config location
 
+Decision-evidence JSONL records use `schema_version = 4` for `order_intent` and `admission_decision` envelopes.
+Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent` or `decision`.
+The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.
+`order_intent` payloads carry the configured strategy/order identity plus compiled NT order semantics under `order_fields`.
+`admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id`.
+
+`order_intent.order_fields` fields:
+
+- `order_type`: compiled NT order type
+- `time_in_force`: compiled NT time-in-force
+- `price`: optional compiled limit price
+- `trigger_price`: optional compiled trigger price
+- `activation_price`: optional compiled activation price
+- `trigger_type`: optional compiled trigger type
+- `trigger_instrument_id`: optional compiled trigger instrument id
+- `trailing_offset`: optional compiled trailing offset
+- `trailing_offset_type`: optional compiled trailing offset type
+- `expire_time_unix_nanos`: optional compiled NT expiry timestamp
+- `is_post_only`: compiled NT post-only flag
+- `is_reduce_only`: compiled NT reduce-only flag
+- `is_quote_quantity`: compiled NT quote-quantity flag
+
 There is no `state_directory` in the current bolt-v3 scope. NT's pinned `LiveNodeBuilder` does not expose a state-directory wiring (load/save state are booleans only), so a TOML key would not flow to NT. A future slice may reintroduce this once a supported path exists.
 
 ### `[persistence.streaming]`
@@ -732,15 +754,22 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 
 - `max_live_order_count`: integer, must equal `1`
 - `max_notional_per_order`: decimal string matching `[live_canary].max_notional_per_order`
-- `strategy_instance_id`, `execution_client_id`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`: strings matching the loaded strategy/TOML
+- `strategy_instance_id`, `oms_type`, `execution_client_id`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`: strings matching the loaded strategy/TOML
 - `cadence_secs`, `retry_interval_secs`, `blocked_after_secs`: integer seconds matching the loaded target runtime
 - `market_selection_rule`: string matching the loaded target runtime
 - `price_to_beat_source`: string matching `[parameters.runtime].price_to_beat_source`
 - `edge_threshold_basis_points`: integer matching loaded strategy parameters
 - `order_notional_target`, `maximum_position_notional`: decimal strings matching loaded strategy parameters
 - `book_impact_cap_bps`: integer matching `[parameters.runtime].book_impact_cap_bps`
-- `entry_order_type`, `entry_time_in_force`, `exit_order_type`, `exit_time_in_force`: strings matching loaded order parameters
-- `entry_is_post_only`, `entry_is_reduce_only`, `entry_is_quote_quantity`, `exit_is_post_only`, `exit_is_reduce_only`, `exit_is_quote_quantity`: booleans matching loaded order parameters
+- `entry_side`, `entry_position_side`, `entry_order_type`, `entry_time_in_force`: strings matching loaded `[parameters.entry_order]` values
+- `entry_expire_time_unix_nanos`, `entry_trigger_price`, `entry_activation_price`, `entry_trigger_type`, `entry_trigger_instrument_id`, `entry_trailing_offset`, `entry_trailing_offset_type`: optional values matching loaded `[parameters.entry_order]` values
+- `entry_is_post_only`, `entry_is_reduce_only`, `entry_is_quote_quantity`: booleans matching loaded `[parameters.entry_order]` values
+- `exit_side`, `exit_position_side`, `exit_order_type`, `exit_time_in_force`: strings matching loaded `[parameters.exit_order]` values
+- `exit_expire_time_unix_nanos`, `exit_trigger_price`, `exit_activation_price`, `exit_trigger_type`, `exit_trigger_instrument_id`, `exit_trailing_offset`, `exit_trailing_offset_type`: optional values matching loaded `[parameters.exit_order]` values
+- `exit_is_post_only`, `exit_is_reduce_only`, `exit_is_quote_quantity`: booleans matching loaded `[parameters.exit_order]` values
+- `forced_exit_side`, `forced_exit_position_side`, `forced_exit_order_type`, `forced_exit_time_in_force`: strings matching loaded `[parameters.forced_exit_order]` values
+- `forced_exit_expire_time_unix_nanos`, `forced_exit_trigger_price`, `forced_exit_activation_price`, `forced_exit_trigger_type`, `forced_exit_trigger_instrument_id`, `forced_exit_trailing_offset`, `forced_exit_trailing_offset_type`: optional values matching loaded `[parameters.forced_exit_order]` values
+- `forced_exit_is_post_only`, `forced_exit_is_reduce_only`, `forced_exit_is_quote_quantity`: booleans matching loaded `[parameters.forced_exit_order]` values
 
 `pre_run_state` fields:
 
@@ -1034,7 +1063,7 @@ For current Binance reference-data use:
 ## 6. Strategy File: Candidate Schema
 
 ```toml
-schema_version = 1
+schema_version = 2
 strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
@@ -1047,8 +1076,6 @@ manage_gtd_expiry = false
 manage_stop = false
 market_exit_interval_ms = 100
 market_exit_max_attempts = 100
-market_exit_time_in_force = "gtc"
-market_exit_reduce_only = true
 log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
@@ -1086,6 +1113,15 @@ is_post_only = false
 is_reduce_only = false
 is_quote_quantity = false
 
+[parameters.forced_exit_order]
+side = "sell"
+position_side = "long"
+order_type = "market"
+time_in_force = "gtc"
+is_post_only = false
+is_reduce_only = true
+is_quote_quantity = false
+
 [parameters]
 edge_threshold_basis_points = 100
 order_notional_target = "5.00"
@@ -1120,6 +1156,7 @@ lead_jitter_max_ms = 250
 - type: integer
 - required: yes
 - versions the strategy-file schema only
+- current supported value: `2`
 
 #### `strategy_instance_id`
 
@@ -1154,9 +1191,12 @@ Nautilus strategy identity mapping for live trading:
 
 - type: string enum
 - required: yes
-- current allowed value:
-  - `netting`
-- maps directly to Nautilus `StrategyConfig.oms_type`
+- delegates accepted values to NautilusTrader `OmsType`
+- maps directly to NautilusTrader `StrategyConfig.oms_type`
+
+The current source-level tests prove `netting`, `hedging`, and `unspecified` parse and validate.
+Phase 8 approval-envelope validation canonicalizes this field through NautilusTrader `OmsType` before comparing it with loaded TOML.
+This is source/config validation proof only; it does not prove live venue behavior for every OMS mode.
 
 #### Other Nautilus `StrategyConfig` fields
 
@@ -1170,8 +1210,6 @@ These fields map directly to pinned NautilusTrader strategy configuration and ar
 - `manage_stop`: boolean; required
 - `market_exit_interval_ms`: positive integer; required
 - `market_exit_max_attempts`: positive integer; required
-- `market_exit_time_in_force`: string enum; required; current allowed value `gtc`
-- `market_exit_reduce_only`: boolean; required
 - `log_events`: boolean; required
 - `log_commands`: boolean; required
 - `log_rejected_due_post_only_as_warning`: boolean; required
@@ -1300,36 +1338,57 @@ bolt does not define a second identifier format here.
 
 No archetype may hardcode its reference data source in code.
 
-### `[parameters.entry_order]` and `[parameters.exit_order]`
+### `[parameters.entry_order]`, `[parameters.exit_order]`, and `[parameters.forced_exit_order]`
 
 These are archetype-specific order-construction parameters for `binary_oracle_edge_taker`.
 They are not a bolt-wide executable-order schema.
 
 They must map directly to NautilusTrader-native order semantics used by the archetype.
 
+Entry orders use the configured `entry_order` template.
+Normal exits use the configured `exit_order` template.
+Forced-flat exits use the configured `forced_exit_order` template.
+When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders; config validation therefore requires `parameters.forced_exit_order.order_type = "market"` for that mode.
+Set `manage_stop = false` to use a non-market `forced_exit_order` through the strategy forced-flat path.
+
 #### `side`
 
 - type: string enum
 - required
 - current allowed values:
-  - entry order: `buy`
-  - exit order: `sell`
+  - `buy`
+  - `sell`
 - maps to the order side used by the archetype
 
 #### `position_side`
 
 - type: string enum
 - required
-- current allowed value:
+- parsed values:
   - `long`
+  - `short`
 - maps to the position side used by the archetype
+
+The current archetype accepts the long position contract only:
+
+- long position contract: entry side `buy`, exit side `sell`, both with `position_side = "long"`
+
+Short-side position contracts are parsed but rejected until strategy-owned short economics, collateral, and exit semantics exist.
 
 #### `order_type`
 
 - type: string enum
-- allowed values for the current archetype:
+- enabled through the pinned NT single-order `OrderFactory` for current source/unit config validation:
   - `limit`
   - `market`
+  - `stop_market`
+  - `stop_limit`
+  - `market_if_touched`
+  - `limit_if_touched`
+  - `trailing_stop_market`
+- parsed by NT but unsupported for this archetype because the pinned NT single-order `OrderFactory` exposes no public constructor:
+  - `market_to_limit`
+  - `trailing_stop_limit`
 
 #### `time_in_force`
 
@@ -1338,16 +1397,75 @@ They must map directly to NautilusTrader-native order semantics used by the arch
   - `gtc`
   - `fok`
   - `ioc`
+  - `gtd`
+
+GTD order templates require `expire_time_unix_nanos` when the selected NT order type supports GTD.
+`market` order templates reject GTD.
+
+#### `expire_time_unix_nanos`
+
+- type: integer
+- required: no
+- required for GTD order templates accepted by the current archetype
+- maps to the NT order factory `expire_time` argument
+
+#### `trigger_price`
+
+- type: decimal string or TOML number
+- required for `stop_market`, `stop_limit`, `market_if_touched`, and `limit_if_touched`
+- required for `trailing_stop_market` unless `activation_price` is provided
+- forbidden on non-triggered `limit` and `market` order templates
+- maps to the NT order factory `trigger_price` argument
+
+#### `activation_price`
+
+- type: decimal string or TOML number
+- required for `trailing_stop_market` when `trigger_price` is absent
+- forbidden on other order types
+- maps to the NT order factory `activation_price` argument
+
+#### `trigger_type`
+
+- type: string enum backed by NautilusTrader `TriggerType`
+- optional for triggered order types supported by the current archetype
+- `trigger_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TriggerType::Default`
+- forbidden on non-triggered `limit` and `market` order templates
+- maps to the NT order factory `trigger_type` argument
+
+#### `trigger_instrument_id`
+
+- type: string backed by NautilusTrader `InstrumentId`
+- optional for triggered order types supported by the current archetype
+- forbidden on non-triggered `limit` and `market` order templates
+- maps to the NT order factory `trigger_instrument_id` argument
+
+#### `trailing_offset`
+
+- type: decimal string or TOML number
+- required for `trailing_stop_market`
+- forbidden on other order types
+- maps to the NT order factory `trailing_offset` argument
+
+#### `trailing_offset_type`
+
+- type: string enum backed by NautilusTrader `TrailingOffsetType`
+- optional for `trailing_stop_market`
+- `trailing_offset_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TrailingOffsetType::Price`
+- forbidden on other order types
+- maps to the NT order factory `trailing_offset_type` argument
 
 #### `is_post_only`
 
 - type: boolean
 - required
+- maps to the NT order factory post-only flag for order types that expose it
+- must be false for current market-style order types that do not support post-only behavior
 
 #### `is_reduce_only`
 
 - type: boolean
 - required
+- maps to the NT order factory reduce-only flag
 
 #### `is_quote_quantity`
 
@@ -1358,31 +1476,29 @@ Meaning:
 
 - this is the NautilusTrader-native quote/base quantity toggle used by the archetype
 - it is not a bolt-owned translation field
-- for the current `binary_oracle_edge_taker` archetype, the only allowed value is `false`
+- maps to the NT order factory quote-quantity flag
+- Entry `is_quote_quantity = true` is supported by sizing the entry quantity as quote notional
+- Exit `is_quote_quantity = true` is rejected because exits are sized from held base position quantity
 
-### Current valid order combinations for `binary_oracle_edge_taker`
+### Current order template validation for `binary_oracle_edge_taker`
 
-To avoid hidden policy, the current archetype supports only these combinations:
+Order construction uses one TOML-to-template-to-NT path for entry and exit orders.
+The archetype validates current pinned NT model invariants before calling `OrderFactory`; it does not maintain a maker/taker tuple allowlist.
 
-- `[parameters.entry_order]`
-  - `side = "buy"`
-  - `position_side = "long"`
-  - `order_type = "limit"`
-  - `time_in_force = "fok"`
-  - `is_post_only = false`
-  - `is_reduce_only = false`
-  - `is_quote_quantity = false`
+Current validation rejects:
 
-- `[parameters.exit_order]`
-  - `side = "sell"`
-  - `position_side = "long"`
-  - `order_type = "market"`
-  - `time_in_force = "ioc"`
-  - `is_post_only = false`
-  - `is_reduce_only = false`
-  - `is_quote_quantity = false`
+- unsupported NT enum variants without a pinned single-order `OrderFactory` constructor
+- short-side position contracts until strategy-owned short economics, collateral, and exit semantics exist
+- exit order templates with `is_quote_quantity = true`
+- GTD order templates without `expire_time_unix_nanos`
+- `market` order templates with GTD, `expire_time_unix_nanos`, or post-only
+- market-style triggered orders with post-only
+- non-triggered `limit` and `market` order templates with trigger or trailing fields
+- triggered order templates without a positive `trigger_price`
+- `limit_if_touched` templates whose trigger/limit relationship violates the pinned NT side invariant
+- `trailing_stop_market` templates without positive trigger or activation input or positive trailing offset
 
-Any other combination fails validation for this archetype.
+Forced-flat exits from freeze, stale-data, and thin-book predicates use the configured `forced_exit_order` template.
 
 ### `[parameters]`
 
@@ -1661,7 +1777,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 ### Strategy
 
 ```toml
-schema_version = 1
+schema_version = 2
 strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
@@ -1674,8 +1790,6 @@ manage_gtd_expiry = false
 manage_stop = false
 market_exit_interval_ms = 100
 market_exit_max_attempts = 100
-market_exit_time_in_force = "gtc"
-market_exit_reduce_only = true
 log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
@@ -1711,6 +1825,15 @@ order_type = "market"
 time_in_force = "ioc"
 is_post_only = false
 is_reduce_only = false
+is_quote_quantity = false
+
+[parameters.forced_exit_order]
+side = "sell"
+position_side = "long"
+order_type = "market"
+time_in_force = "gtc"
+is_post_only = false
+is_reduce_only = true
 is_quote_quantity = false
 
 [parameters]

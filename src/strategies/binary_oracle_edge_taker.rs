@@ -7,24 +7,39 @@ use std::{
 
 use anyhow::{Context, Result};
 use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
+use nautilus_core::{Params, UnixNanos};
 #[cfg(not(test))]
 use nautilus_model::enums::BookType;
 use nautilus_model::{data::QuoteTick, enums::PositionSide};
 use nautilus_model::{
-    enums::{BookAction, OmsType as NtOmsType, OrderSide, TimeInForce},
+    enums::{
+        BookAction, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce, TrailingOffsetType,
+        TriggerType,
+    },
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
     instruments::{Instrument, InstrumentAny},
+    orders::{Order, OrderAny},
     types::{Price, Quantity},
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, nautilus_strategy};
-use rust_decimal::{Decimal, prelude::ToPrimitive};
+use rust_decimal::{
+    Decimal,
+    prelude::{FromPrimitive, ToPrimitive},
+};
 use serde::Deserialize;
 use toml::Value;
 
 use crate::{
-    bolt_v3_decision_evidence::{BoltV3OrderIntentEvidence, BoltV3OrderIntentKind},
+    bolt_v3_decision_evidence::{
+        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, compiled_order_price_source,
+    },
     bolt_v3_market_families::{self, MarketSelectionTarget},
+    bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
+    bolt_v3_position_contract::{
+        expected_exit_order_side_for_position, expected_position_side_for_entry_order,
+        is_observed_open_side,
+    },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest,
     strategies::registry::{
         BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
@@ -68,8 +83,6 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             manage_stop: bool => Boolean;
             market_exit_interval_ms: u64 => Integer;
             market_exit_max_attempts: u64 => Integer;
-            market_exit_time_in_force: String => String;
-            market_exit_reduce_only: bool => Boolean;
             log_events: bool => Boolean;
             log_commands: bool => Boolean;
             log_rejected_due_post_only_as_warning: bool => Boolean;
@@ -101,11 +114,119 @@ macro_rules! binary_oracle_edge_taker_config_fields {
 struct BinaryOracleEdgeTakerOrderConfig {
     side: String,
     position_side: String,
-    order_type: String,
-    time_in_force: String,
+    order_type: OrderType,
+    time_in_force: TimeInForce,
+    expire_time_unix_nanos: Option<u64>,
+    trigger_price: Option<f64>,
+    activation_price: Option<f64>,
+    trigger_type: Option<TriggerType>,
+    trigger_instrument_id: Option<InstrumentId>,
+    trailing_offset: Option<f64>,
+    trailing_offset_type: Option<TrailingOffsetType>,
     is_post_only: bool,
     is_reduce_only: bool,
     is_quote_quantity: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ConfiguredNtOrderTemplate {
+    order_type: OrderType,
+    time_in_force: TimeInForce,
+    expire_time_unix_nanos: Option<u64>,
+    trigger_price: Option<f64>,
+    activation_price: Option<f64>,
+    trigger_type: Option<TriggerType>,
+    trigger_instrument_id: Option<InstrumentId>,
+    trailing_offset: Option<f64>,
+    trailing_offset_type: Option<TrailingOffsetType>,
+    is_post_only: bool,
+    is_reduce_only: bool,
+    is_quote_quantity: bool,
+}
+
+impl ConfiguredNtOrderTemplate {
+    fn nt_order_template(
+        &self,
+        prefix: &'static str,
+        price_precision: u8,
+    ) -> Result<NtOrderTemplate> {
+        Ok(NtOrderTemplate {
+            order_type: self.order_type,
+            time_in_force: self.time_in_force,
+            expire_time: expire_time_from_config(self.expire_time_unix_nanos),
+            trigger_price: trigger_price_from_config(prefix, self.trigger_price, price_precision)?,
+            activation_price: activation_price_from_config(
+                prefix,
+                self.activation_price,
+                price_precision,
+            )?,
+            trigger_type: self.trigger_type,
+            trigger_instrument_id: self.trigger_instrument_id,
+            trailing_offset: trailing_offset_from_config(prefix, self.trailing_offset)?,
+            trailing_offset_type: self.trailing_offset_type,
+            is_post_only: self.is_post_only,
+            is_reduce_only: self.is_reduce_only,
+            is_quote_quantity: self.is_quote_quantity,
+        })
+    }
+}
+
+impl From<&BinaryOracleEdgeTakerOrderConfig> for ConfiguredNtOrderTemplate {
+    fn from(order: &BinaryOracleEdgeTakerOrderConfig) -> Self {
+        Self {
+            order_type: order.order_type,
+            time_in_force: order.time_in_force,
+            expire_time_unix_nanos: order.expire_time_unix_nanos,
+            trigger_price: order.trigger_price,
+            activation_price: order.activation_price,
+            trigger_type: order.trigger_type,
+            trigger_instrument_id: order.trigger_instrument_id,
+            trailing_offset: order.trailing_offset,
+            trailing_offset_type: order.trailing_offset_type,
+            is_post_only: order.is_post_only,
+            is_reduce_only: order.is_reduce_only,
+            is_quote_quantity: order.is_quote_quantity,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SubmitContext {
+    client_id: Option<ClientId>,
+    position_id: Option<PositionId>,
+    params: Option<Params>,
+}
+
+impl SubmitContext {
+    fn from_parts(
+        client_id: Option<ClientId>,
+        position_id: Option<PositionId>,
+        params: Option<Params>,
+    ) -> Self {
+        Self {
+            client_id,
+            position_id,
+            params,
+        }
+    }
+
+    fn with_client_id(client_id: ClientId) -> Self {
+        Self::from_parts(Some(client_id), None, None)
+    }
+
+    fn with_client_id_and_position_id(client_id: ClientId, position_id: PositionId) -> Self {
+        Self::from_parts(Some(client_id), Some(position_id), None)
+    }
+}
+
+impl BinaryOracleEdgeTakerOrderConfig {
+    fn nt_order_template(
+        &self,
+        prefix: &'static str,
+        price_precision: u8,
+    ) -> Result<NtOrderTemplate> {
+        ConfiguredNtOrderTemplate::from(self).nt_order_template(prefix, price_precision)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +278,7 @@ macro_rules! define_config_struct {
             $( $field: $ty, )+
             entry_order: BinaryOracleEdgeTakerOrderConfig,
             exit_order: BinaryOracleEdgeTakerOrderConfig,
+            forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
         }
     };
 }
@@ -208,6 +330,14 @@ macro_rules! binary_oracle_edge_taker_order_fields {
         }
     };
 }
+
+const ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD: &str = "expire_time_unix_nanos";
+const ORDER_TRIGGER_PRICE_FIELD: &str = "trigger_price";
+const ORDER_ACTIVATION_PRICE_FIELD: &str = "activation_price";
+const ORDER_TRIGGER_TYPE_FIELD: &str = "trigger_type";
+const ORDER_TRIGGER_INSTRUMENT_ID_FIELD: &str = "trigger_instrument_id";
+const ORDER_TRAILING_OFFSET_FIELD: &str = "trailing_offset";
+const ORDER_TRAILING_OFFSET_TYPE_FIELD: &str = "trailing_offset_type";
 
 macro_rules! match_order_field_names {
     ($( $field:ident => $field_type:ident; )+) => {
@@ -422,6 +552,15 @@ impl OutcomeBookState {
         match order_side {
             OrderSide::Buy => self.best_ask,
             OrderSide::Sell => self.best_bid,
+            _ => None,
+        }
+        .filter(|value| is_positive_finite(*value))
+    }
+
+    fn passive_price_for_order_side(&self, order_side: OrderSide) -> Option<f64> {
+        match order_side {
+            OrderSide::Buy => self.best_bid,
+            OrderSide::Sell => self.best_ask,
             _ => None,
         }
         .filter(|value| is_positive_finite(*value))
@@ -849,6 +988,8 @@ struct PendingExitState {
     position_id: Option<PositionId>,
     fill_received: bool,
     close_received: bool,
+    terminal_received: bool,
+    residual_position_observed_after_fill: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -861,6 +1002,7 @@ enum ManagedPositionOrigin {
 struct ManagedPositionState {
     position: OpenPositionState,
     origin: ManagedPositionOrigin,
+    pending_entry: Option<PendingEntryState>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -872,6 +1014,22 @@ struct ExitPendingState {
 impl ExitPendingState {
     fn is_terminal(&self) -> bool {
         self.pending_exit.fill_received && self.pending_exit.close_received
+    }
+
+    fn into_state_after_exit_update(self) -> ExposureState {
+        if self.is_terminal() {
+            return ExposureState::Flat;
+        }
+        if self.pending_exit.terminal_received
+            && (!self.pending_exit.fill_received
+                || self.pending_exit.residual_position_observed_after_fill)
+        {
+            return match self.position {
+                Some(position) => ExposureState::Managed(position),
+                None => ExposureState::Flat,
+            };
+        }
+        ExposureState::ExitPending(self)
     }
 }
 
@@ -940,6 +1098,11 @@ impl ExposureState {
             Self::PendingEntry(pending) | Self::EntryReconcilePending { pending, .. } => {
                 Some(pending)
             }
+            Self::Managed(position) => position.pending_entry.as_ref(),
+            Self::ExitPending(exit) => exit
+                .position
+                .as_ref()
+                .and_then(|position| position.pending_entry.as_ref()),
             _ => None,
         }
     }
@@ -949,6 +1112,11 @@ impl ExposureState {
             Self::PendingEntry(pending) | Self::EntryReconcilePending { pending, .. } => {
                 Some(pending)
             }
+            Self::Managed(position) => position.pending_entry.as_mut(),
+            Self::ExitPending(exit) => exit
+                .position
+                .as_mut()
+                .and_then(|position| position.pending_entry.as_mut()),
             _ => None,
         }
     }
@@ -957,6 +1125,14 @@ impl ExposureState {
         match self {
             Self::Managed(position) => Some(position),
             Self::ExitPending(exit) => exit.position.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn managed_position_mut(&mut self) -> Option<&mut ManagedPositionState> {
+        match self {
+            Self::Managed(position) => Some(position),
+            Self::ExitPending(exit) => exit.position.as_mut(),
             _ => None,
         }
     }
@@ -1056,6 +1232,11 @@ fn supports_strategy_managed_position(
 }
 
 fn supports_strategy_position_contract(contract: ConfiguredPositionContract) -> bool {
+    if contract.entry_position_side == PositionSide::Short
+        || contract.exit_position_side == PositionSide::Short
+    {
+        return false;
+    }
     expected_position_side_for_entry_order(contract.entry_order_side)
         .is_some_and(|side| side == contract.entry_position_side)
         && expected_exit_order_side_for_position(contract.exit_position_side)
@@ -1064,28 +1245,27 @@ fn supports_strategy_position_contract(contract: ConfiguredPositionContract) -> 
         && is_observed_open_side(contract.entry_position_side)
 }
 
-fn expected_position_side_for_entry_order(order_side: OrderSide) -> Option<PositionSide> {
-    match order_side {
-        OrderSide::Buy => Some(PositionSide::Long),
-        OrderSide::Sell => Some(PositionSide::Short),
-        _ => None,
+fn order_price_for_side(
+    book: &OutcomeBookState,
+    order_side: OrderSide,
+    is_post_only: bool,
+) -> Option<f64> {
+    if is_post_only {
+        book.passive_price_for_order_side(order_side)
+    } else {
+        book.executable_price_for_order_side(order_side)
     }
 }
 
-fn expected_exit_order_side_for_position(position_side: PositionSide) -> Option<OrderSide> {
-    match position_side {
-        PositionSide::Long => Some(OrderSide::Sell),
-        PositionSide::Short => Some(OrderSide::Buy),
+fn visible_book_depth_side_for_order(
+    order_side: OrderSide,
+    is_post_only: bool,
+) -> Option<OrderSide> {
+    match (order_side, is_post_only) {
+        (OrderSide::Buy, false) | (OrderSide::Sell, true) => Some(OrderSide::Buy),
+        (OrderSide::Sell, false) | (OrderSide::Buy, true) => Some(OrderSide::Sell),
         _ => None,
     }
-}
-
-fn is_observed_open_side(side: PositionSide) -> bool {
-    matches!(side, PositionSide::Long | PositionSide::Short)
-}
-
-fn order_price_for_side(book: &OutcomeBookState, order_side: OrderSide) -> Option<f64> {
-    book.executable_price_for_order_side(order_side)
 }
 
 fn infer_strategy_position_side_from_entry_fill(
@@ -1105,30 +1285,6 @@ fn managed_position_effective_entry_cost(
         && position.side == configured_position_side)
         .then_some(position.avg_px_open)
         .filter(|effective_cost| is_positive_finite(*effective_cost))
-}
-
-fn managed_position_exit_order(
-    position: &OpenPositionState,
-    configured_order_side: OrderSide,
-    configured_position_side: PositionSide,
-) -> Option<(OrderSide, f64)> {
-    (position.side == configured_position_side)
-        .then_some((
-            configured_order_side,
-            order_price_for_side(&position.book, configured_order_side)?,
-        ))
-        .filter(|(_, price)| is_positive_finite(*price))
-}
-
-fn managed_position_exit_value(
-    position: &OpenPositionState,
-    configured_order_side: OrderSide,
-    configured_position_side: PositionSide,
-) -> Option<f64> {
-    let value = (position.side == configured_position_side)
-        .then(|| order_price_for_side(&position.book, configured_order_side))
-        .flatten()?;
-    Some(value).filter(|value| is_positive_finite(*value))
 }
 
 impl PricingState {
@@ -1679,11 +1835,7 @@ impl BinaryOracleEdgeTaker {
         let pricing = PricingState::from_config(&config);
         let oms_type = parse_configured_oms_type(CONFIG_FIELD_OMS_TYPE, &config.oms_type)
             .expect("validated binary_oracle_edge_taker oms_type");
-        let market_exit_time_in_force = parse_configured_time_in_force(
-            CONFIG_FIELD_MARKET_EXIT_TIME_IN_FORCE,
-            &config.market_exit_time_in_force,
-        )
-        .expect("validated binary_oracle_edge_taker market_exit_time_in_force");
+        let market_exit_time_in_force = config.forced_exit_order.time_in_force;
         let external_order_claims = config
             .external_order_claims
             .iter()
@@ -1703,7 +1855,7 @@ impl BinaryOracleEdgeTaker {
                 market_exit_interval_ms: config.market_exit_interval_ms,
                 market_exit_max_attempts: config.market_exit_max_attempts,
                 market_exit_time_in_force,
-                market_exit_reduce_only: config.market_exit_reduce_only,
+                market_exit_reduce_only: config.forced_exit_order.is_reduce_only,
                 log_events: config.log_events,
                 log_commands: config.log_commands,
                 log_rejected_due_post_only_as_warning: config.log_rejected_due_post_only_as_warning,
@@ -1964,6 +2116,60 @@ impl BinaryOracleEdgeTaker {
         self.exposure.pending_entry_mut()
     }
 
+    fn entry_order_may_remain_working(&self, client_order_id: &ClientOrderId) -> bool {
+        if !matches!(
+            self.config.entry_order.time_in_force,
+            TimeInForce::Gtc | TimeInForce::Gtd
+        ) {
+            return false;
+        }
+
+        let cached_closed = if self.is_registered() {
+            self.cache()
+                .order(client_order_id)
+                .map(|order| order.is_closed())
+        } else {
+            None
+        };
+
+        match cached_closed {
+            Some(closed) => !closed,
+            None => true,
+        }
+    }
+
+    fn clear_managed_pending_entry_for_client_order(&mut self, client_order_id: ClientOrderId) {
+        if let Some(managed) = self.exposure.managed_position_mut()
+            && managed
+                .pending_entry
+                .as_ref()
+                .is_some_and(|pending| pending.client_order_id == client_order_id)
+        {
+            managed.pending_entry = None;
+            self.prune_market_lifecycle_at_current_time();
+        }
+    }
+
+    fn clear_pending_entry_for_client_order(&mut self, client_order_id: ClientOrderId) {
+        if matches!(
+            &self.exposure,
+            ExposureState::PendingEntry(pending) if pending.client_order_id == client_order_id
+        ) {
+            self.exposure = ExposureState::Flat;
+            self.prune_market_lifecycle_at_current_time();
+            return;
+        }
+
+        self.clear_managed_pending_entry_for_client_order(client_order_id);
+    }
+
+    fn prune_market_lifecycle_at_current_time(&mut self) {
+        if self.is_registered() {
+            let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
+            self.prune_market_lifecycle(now_ms);
+        }
+    }
+
     fn set_unsupported_observed_exposure(
         &mut self,
         observed: OpenPositionState,
@@ -2051,6 +2257,7 @@ impl BinaryOracleEdgeTaker {
             self.exposure = ExposureState::Managed(ManagedPositionState {
                 position: open_position.clone(),
                 origin: ManagedPositionOrigin::RecoveryBootstrap,
+                pending_entry: None,
             });
             log::warn!(
                 "binary_oracle_edge_taker recovery bootstrap loaded cached open position: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?} quantity={} avg_px_open={}",
@@ -2102,8 +2309,7 @@ impl BinaryOracleEdgeTaker {
     fn clear_pending_entry_state(&mut self) {
         if matches!(self.exposure, ExposureState::PendingEntry(_)) {
             self.exposure = ExposureState::Flat;
-            let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
-            self.prune_market_lifecycle(now_ms);
+            self.prune_market_lifecycle_at_current_time();
         }
     }
 
@@ -2647,9 +2853,20 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn executable_entry_cost(&self, side: OutcomeSide) -> Option<f64> {
+        if matches!(
+            self.config.entry_order.order_type,
+            OrderType::StopMarket | OrderType::MarketIfTouched | OrderType::TrailingStopMarket
+        ) {
+            return self
+                .config
+                .entry_order
+                .trigger_price
+                .or(self.config.entry_order.activation_price)
+                .filter(|value| is_positive_finite(*value));
+        }
         let order_side = self.configured_entry_order_side().ok()?;
-        self.active_book_for_outcome(side)
-            .executable_price_for_order_side(order_side)
+        let book = self.active_book_for_outcome(side);
+        order_price_for_side(book, order_side, self.config.entry_order.is_post_only)
     }
 
     fn submission_entry_price(&self, side: OutcomeSide) -> Option<f64> {
@@ -2658,9 +2875,14 @@ impl BinaryOracleEdgeTaker {
 
     fn visible_book_notional_cap(&self, side: OutcomeSide) -> Option<f64> {
         let order_side = self.configured_entry_order_side().ok()?;
+        let book_depth_side =
+            visible_book_depth_side_for_order(order_side, self.config.entry_order.is_post_only)?;
         let capped_execution = self
             .active_book_for_outcome(side)
-            .max_execution_within_vwap_slippage_bps(order_side, self.config.book_impact_cap_bps)
+            .max_execution_within_vwap_slippage_bps(
+                book_depth_side,
+                self.config.book_impact_cap_bps,
+            )
             .filter(|execution| is_positive_finite(execution.quantity))?;
         Some(match side {
             OutcomeSide::Up => capped_execution.quantity * capped_execution.vwap_price,
@@ -2862,6 +3084,9 @@ impl BinaryOracleEdgeTaker {
             },
             pending_matches,
         );
+        let pending_entry = pending_context
+            .clone()
+            .filter(|pending| self.entry_order_may_remain_working(&pending.client_order_id));
         self.exposure = match self.exposure.exit_pending().cloned() {
             Some(exit_pending)
                 if exit_pending.position.as_ref().is_some_and(|managed| {
@@ -2869,19 +3094,41 @@ impl BinaryOracleEdgeTaker {
                         && managed.position.instrument_id == instrument_id
                 }) =>
             {
-                ExposureState::ExitPending(ExitPendingState {
+                let mut pending_exit = exit_pending.pending_exit;
+                if pending_exit.fill_received {
+                    // NT position updates are produced from fills; once an exit fill is known,
+                    // an open position event here is authoritative residual exposure.
+                    pending_exit.residual_position_observed_after_fill = true;
+                }
+                ExitPendingState {
                     position: Some(ManagedPositionState {
                         position: materialized_position,
                         origin,
+                        pending_entry,
                     }),
-                    pending_exit: exit_pending.pending_exit,
-                })
+                    pending_exit,
+                }
+                .into_state_after_exit_update()
             }
             _ => ExposureState::Managed(ManagedPositionState {
                 position: materialized_position,
                 origin,
+                pending_entry,
             }),
         };
+        self.sync_exposure_context_from_active();
+        self.refresh_book_subscriptions_for_current_state();
+    }
+
+    fn mark_exit_order_terminal(&mut self, client_order_id: ClientOrderId) {
+        let Some(mut exit_pending) = self.exposure.exit_pending().cloned() else {
+            return;
+        };
+        if exit_pending.pending_exit.client_order_id != client_order_id {
+            return;
+        }
+        exit_pending.pending_exit.terminal_received = true;
+        self.exposure = exit_pending.into_state_after_exit_update();
         self.sync_exposure_context_from_active();
         self.refresh_book_subscriptions_for_current_state();
     }
@@ -2996,24 +3243,40 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn current_exit_order_for_open_position(&self) -> Option<(OrderSide, f64)> {
+    fn current_exit_order_for_open_position_with_config(
+        &self,
+        order_config: &ExitOrderExecutionConfig,
+    ) -> Option<(OrderSide, f64)> {
         let open_position = &self.managed_position()?.position;
-        let contract = self.configured_position_contract().ok()?;
-        managed_position_exit_order(
-            open_position,
-            contract.exit_order_side,
-            contract.exit_position_side,
-        )
+        if open_position.side != order_config.position_side {
+            return None;
+        }
+
+        let order_side = order_config.side;
+        let price = match order_config.order_template.order_type {
+            OrderType::StopMarket | OrderType::MarketIfTouched => {
+                order_config.order_template.trigger_price
+            }
+            OrderType::TrailingStopMarket => order_config
+                .order_template
+                .trigger_price
+                .or(order_config.order_template.activation_price),
+            _ => order_price_for_side(
+                &open_position.book,
+                order_side,
+                order_config.order_template.is_post_only,
+            ),
+        }?;
+
+        Some((order_side, price)).filter(|(_, price)| is_positive_finite(*price))
     }
 
-    fn current_exit_value_for_open_position(&self) -> Option<f64> {
-        let open_position = &self.managed_position()?.position;
-        let contract = self.configured_position_contract().ok()?;
-        managed_position_exit_value(
-            open_position,
-            contract.exit_order_side,
-            contract.exit_position_side,
-        )
+    fn current_exit_value_for_open_position_with_config(
+        &self,
+        order_config: &ExitOrderExecutionConfig,
+    ) -> Option<f64> {
+        self.current_exit_order_for_open_position_with_config(order_config)
+            .map(|(_, price)| price)
     }
 
     fn current_position_market_id(&self) -> Option<String> {
@@ -3097,7 +3360,11 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn current_exit_ev_bps_at(&self, side: OutcomeSide) -> Option<f64> {
+    fn current_exit_ev_bps_at(
+        &self,
+        side: OutcomeSide,
+        order_config: &ExitOrderExecutionConfig,
+    ) -> Option<f64> {
         let effective_entry_cost = self.open_position_effective_entry_cost()?;
         let historical_entry_fee_bps = self.open_position_historical_entry_fee_bps()?;
         let current_exit_fee_bps = self.position_outcome_fee_bps(side)?;
@@ -3107,7 +3374,8 @@ impl BinaryOracleEdgeTaker {
             return None;
         }
 
-        let current_exit_value = self.current_exit_value_for_open_position()?;
+        let current_exit_value =
+            self.current_exit_value_for_open_position_with_config(order_config)?;
         let net_exit_value =
             current_exit_value * (UNIT_F64 - current_exit_fee_bps / BPS_DENOMINATOR);
         if !is_positive_finite(net_exit_value) {
@@ -3174,13 +3442,26 @@ impl BinaryOracleEdgeTaker {
             return evaluation;
         }
 
+        if self
+            .managed_position()
+            .and_then(|managed| managed.pending_entry.as_ref())
+            .is_some()
+        {
+            evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING);
+            return evaluation;
+        }
+
         let Some(position_outcome_side) = evaluation.position_outcome_side else {
             evaluation.exit_decision = Some(ExitDecision::ExitFailClosed);
             return evaluation;
         };
 
+        let Ok(order_config) = self.normal_exit_order_execution_config() else {
+            evaluation.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID);
+            return evaluation;
+        };
         evaluation.hold_ev_bps = self.current_hold_ev_bps_at(now_ms, position_outcome_side);
-        evaluation.exit_ev_bps = self.current_exit_ev_bps_at(position_outcome_side);
+        evaluation.exit_ev_bps = self.current_exit_ev_bps_at(position_outcome_side, &order_config);
         evaluation.exit_decision = Some(evaluate_exit_decision(
             evaluation.hold_ev_bps,
             evaluation.exit_ev_bps,
@@ -3194,13 +3475,30 @@ impl BinaryOracleEdgeTaker {
         let mut decision = ExitSubmissionDecision {
             evaluation: evaluation.clone(),
             instrument_id: None,
+            order_type: None,
             order_side: None,
+            position_side: None,
+            time_in_force: None,
             price: None,
             quantity: None,
             client_order_id: None,
+            is_post_only: None,
+            is_reduce_only: None,
+            is_quote_quantity: None,
+            expire_time_unix_nanos: None,
+            trigger_price: None,
+            activation_price: None,
+            trigger_type: None,
+            trigger_instrument_id: None,
+            trailing_offset: None,
+            trailing_offset_type: None,
             blocked_reason: evaluation.blocked_reason,
             forced_flat_reasons: evaluation.forced_flat_reasons.clone(),
         };
+
+        if evaluation.blocked_reason == Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING) {
+            return decision;
+        }
 
         let Some(exit_decision) = evaluation.exit_decision else {
             decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE);
@@ -3215,7 +3513,19 @@ impl BinaryOracleEdgeTaker {
             decision.blocked_reason = Some(EXIT_BLOCK_REASON_OPEN_POSITION_MISSING);
             return decision;
         };
-        let Some((order_side, price)) = self.current_exit_order_for_open_position() else {
+        let Ok(order_config) =
+            self.exit_order_execution_config(!evaluation.forced_flat_reasons.is_empty())
+        else {
+            decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID);
+            return decision;
+        };
+        if order_config.order_template.is_quote_quantity {
+            decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED);
+            return decision;
+        }
+        let Some((order_side, price)) =
+            self.current_exit_order_for_open_position_with_config(&order_config)
+        else {
             decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_PRICE_MISSING);
             return decision;
         };
@@ -3225,9 +3535,22 @@ impl BinaryOracleEdgeTaker {
         }
 
         decision.instrument_id = Some(open_position.instrument_id);
+        decision.order_type = Some(order_config.order_template.order_type);
         decision.order_side = Some(order_side);
+        decision.position_side = Some(order_config.position_side);
+        decision.time_in_force = Some(order_config.order_template.time_in_force);
         decision.price = Some(price);
         decision.quantity = Some(open_position.quantity);
+        decision.is_post_only = Some(order_config.order_template.is_post_only);
+        decision.is_reduce_only = Some(order_config.order_template.is_reduce_only);
+        decision.is_quote_quantity = Some(order_config.order_template.is_quote_quantity);
+        decision.expire_time_unix_nanos = order_config.order_template.expire_time_unix_nanos;
+        decision.trigger_price = order_config.order_template.trigger_price;
+        decision.activation_price = order_config.order_template.activation_price;
+        decision.trigger_type = order_config.order_template.trigger_type;
+        decision.trigger_instrument_id = order_config.order_template.trigger_instrument_id;
+        decision.trailing_offset = order_config.order_template.trailing_offset;
+        decision.trailing_offset_type = order_config.order_template.trailing_offset_type;
         decision.blocked_reason = None;
         decision
     }
@@ -3423,14 +3746,132 @@ impl BinaryOracleEdgeTaker {
         &mut self,
         intent: BoltV3OrderIntentEvidence,
         order: nautilus_model::orders::OrderAny,
-        client_id: ClientId,
+        submit_context: SubmitContext,
     ) -> Result<()> {
         self.context
             .decision_evidence()
             .record_order_intent(&intent)?;
-        let request = submit_admission_request_from_intent(&intent)?;
+        let request = self.submit_admission_request_from_order(&intent, &order)?;
         let _permit = self.context.submit_admission().admit(&request)?;
-        self.submit_order(order, None, Some(client_id), None)
+        self.submit_order(
+            order,
+            submit_context.position_id,
+            submit_context.client_id,
+            submit_context.params,
+        )
+    }
+
+    fn submit_admission_request_from_order(
+        &self,
+        intent: &BoltV3OrderIntentEvidence,
+        order: &nautilus_model::orders::OrderAny,
+    ) -> Result<BoltV3SubmitAdmissionRequest> {
+        let client_order_id = order.client_order_id().to_string();
+        let quantity_source = order.quantity().to_string();
+        let quantity = Decimal::from_str(quantity_source.trim()).with_context(|| {
+            format!(
+                "bolt-v3 submit admission quantity is not a decimal for client_order_id={}",
+                client_order_id
+            )
+        })?;
+        let price_source = compiled_order_price_source(intent.price.clone(), order);
+        let price = Decimal::from_str(price_source.trim()).with_context(|| {
+            format!(
+                "bolt-v3 submit admission price is not a decimal for client_order_id={}",
+                client_order_id
+            )
+        })?;
+        let notional = if order.is_quote_quantity() {
+            self.quote_quantity_last_price_for_order(order)
+                .and_then(|last_px| self.quote_quantity_submit_notional(order, last_px))
+                .unwrap_or(quantity)
+        } else {
+            price * quantity
+        };
+
+        Ok(BoltV3SubmitAdmissionRequest {
+            strategy_id: intent.strategy_id.clone(),
+            client_order_id,
+            instrument_id: order.instrument_id().to_string(),
+            notional,
+        })
+    }
+
+    fn quote_quantity_last_price_for_order(
+        &self,
+        order: &nautilus_model::orders::OrderAny,
+    ) -> Option<Price> {
+        match order {
+            OrderAny::Market(_) | OrderAny::MarketToLimit(_) => {
+                self.market_order_cache_price_for_order(order)
+            }
+            OrderAny::StopMarket(_) | OrderAny::MarketIfTouched(_) => order.trigger_price(),
+            OrderAny::TrailingStopMarket(_) | OrderAny::TrailingStopLimit(_) => {
+                order.trigger_price()
+            }
+            _ => order.price(),
+        }
+    }
+
+    fn market_order_cache_price_for_order(
+        &self,
+        order: &nautilus_model::orders::OrderAny,
+    ) -> Option<Price> {
+        let cache = self.cache();
+        if let Some(last_quote) = cache.quote(&order.instrument_id()) {
+            return match order.order_side() {
+                OrderSide::Buy => Some(last_quote.ask_price),
+                OrderSide::Sell => Some(last_quote.bid_price),
+                _ => None,
+            };
+        }
+        cache
+            .trade(&order.instrument_id())
+            .map(|last_trade| last_trade.price)
+    }
+
+    fn quote_quantity_submit_notional(
+        &self,
+        order: &nautilus_model::orders::OrderAny,
+        last_px: Price,
+    ) -> Option<Decimal> {
+        let instrument = self.current_instrument(order.instrument_id())?;
+        let effective_price =
+            self.quote_quantity_effective_price_for_order(order, &instrument, last_px);
+        let effective_quantity = if order.is_quote_quantity() && !instrument.is_inverse() {
+            instrument.calculate_base_quantity(order.quantity(), effective_price)
+        } else {
+            order.quantity()
+        };
+        Some(
+            instrument
+                .calculate_notional_value(effective_quantity, last_px, Some(true))
+                .as_decimal(),
+        )
+    }
+
+    fn quote_quantity_effective_price_for_order(
+        &self,
+        order: &nautilus_model::orders::OrderAny,
+        instrument: &InstrumentAny,
+        last_px: Price,
+    ) -> Price {
+        if !order.is_quote_quantity()
+            || instrument.is_inverse()
+            || !matches!(order, OrderAny::Limit(_) | OrderAny::StopLimit(_))
+        {
+            return last_px;
+        }
+
+        let cache = self.cache();
+        let Some(quote_tick) = cache.quote(&order.instrument_id()) else {
+            return last_px;
+        };
+        match order.order_side() {
+            OrderSide::Buy => last_px.min(quote_tick.ask_price),
+            OrderSide::Sell => last_px.max(quote_tick.bid_price),
+            _ => last_px,
+        }
     }
 
     fn build_configured_entry_order(
@@ -3441,22 +3882,69 @@ impl BinaryOracleEdgeTaker {
         price: Price,
         client_order_id: ClientOrderId,
     ) -> Result<nautilus_model::orders::OrderAny> {
-        build_configured_order(
-            &mut self.core,
+        anyhow::ensure!(
+            !self.config.entry_order.is_reduce_only,
+            "entry_is_reduce_only must be false because binary_oracle_edge_taker entry orders open the managed position"
+        );
+        let template = self
+            .config
+            .entry_order
+            .nt_order_template(ORDER_CONFIGURATION_PREFIX_ENTRY, price.precision)?;
+        build_nt_order(
+            self.core.order_factory(),
             ORDER_CONFIGURATION_PREFIX_ENTRY,
-            &self.config.entry_order.order_type,
-            &self.config.entry_order.time_in_force,
-            self.config.entry_order.is_post_only,
-            self.config.entry_order.is_reduce_only,
-            self.config.entry_order.is_quote_quantity,
-            instrument_id,
-            order_side,
-            quantity,
-            price,
-            client_order_id,
+            &template,
+            NtOrderBuildInputs {
+                instrument_id,
+                order_side,
+                quantity,
+                price: Some(price),
+                client_order_id,
+            },
         )
     }
 
+    fn exit_order_execution_config_from_order(
+        &self,
+        order: &BinaryOracleEdgeTakerOrderConfig,
+        side_field: &'static str,
+        position_side_field: &'static str,
+    ) -> Result<ExitOrderExecutionConfig> {
+        Ok(ExitOrderExecutionConfig {
+            side: parse_configured_order_side(side_field, &order.side)?,
+            position_side: parse_configured_position_side(
+                position_side_field,
+                &order.position_side,
+            )?,
+            order_template: ConfiguredNtOrderTemplate::from(order),
+        })
+    }
+
+    fn normal_exit_order_execution_config(&self) -> Result<ExitOrderExecutionConfig> {
+        self.exit_order_execution_config_from_order(
+            &self.config.exit_order,
+            CONFIG_FIELD_EXIT_ORDER_SIDE,
+            CONFIG_FIELD_EXIT_ORDER_POSITION_SIDE,
+        )
+    }
+
+    fn forced_exit_order_execution_config(&self) -> Result<ExitOrderExecutionConfig> {
+        self.exit_order_execution_config_from_order(
+            &self.config.forced_exit_order,
+            CONFIG_FIELD_FORCED_EXIT_ORDER_SIDE,
+            CONFIG_FIELD_FORCED_EXIT_ORDER_POSITION_SIDE,
+        )
+    }
+
+    fn exit_order_execution_config(&self, forced_flat: bool) -> Result<ExitOrderExecutionConfig> {
+        if forced_flat {
+            self.forced_exit_order_execution_config()
+        } else {
+            self.normal_exit_order_execution_config()
+        }
+    }
+
+    #[cfg(test)]
     fn build_configured_exit_order(
         &mut self,
         instrument_id: InstrumentId,
@@ -3465,19 +3953,42 @@ impl BinaryOracleEdgeTaker {
         price: Price,
         client_order_id: ClientOrderId,
     ) -> Result<nautilus_model::orders::OrderAny> {
-        build_configured_order(
-            &mut self.core,
-            ORDER_CONFIGURATION_PREFIX_EXIT,
-            &self.config.exit_order.order_type,
-            &self.config.exit_order.time_in_force,
-            self.config.exit_order.is_post_only,
-            self.config.exit_order.is_reduce_only,
-            self.config.exit_order.is_quote_quantity,
+        self.build_exit_order_with_execution_config(
+            self.normal_exit_order_execution_config()?,
             instrument_id,
             order_side,
             quantity,
             price,
             client_order_id,
+        )
+    }
+
+    fn build_exit_order_with_execution_config(
+        &mut self,
+        order_config: ExitOrderExecutionConfig,
+        instrument_id: InstrumentId,
+        order_side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        client_order_id: ClientOrderId,
+    ) -> Result<nautilus_model::orders::OrderAny> {
+        anyhow::ensure!(
+            !order_config.order_template.is_quote_quantity,
+            "exit_is_quote_quantity must be false because exits are sized from base position quantity"
+        );
+        let template =
+            order_config.nt_order_template(ORDER_CONFIGURATION_PREFIX_EXIT, price.precision)?;
+        build_nt_order(
+            self.core.order_factory(),
+            ORDER_CONFIGURATION_PREFIX_EXIT,
+            &template,
+            NtOrderBuildInputs {
+                instrument_id,
+                order_side,
+                quantity,
+                price: Some(price),
+                client_order_id,
+            },
         )
     }
 
@@ -3500,6 +4011,9 @@ impl BinaryOracleEdgeTaker {
             self.log_exit_evaluation(now_ms, &decision);
             return Ok(None);
         };
+        let order_config = decision
+            .execution_config()
+            .ok_or_else(|| anyhow::anyhow!("exit submission decision missing order config"))?;
         let instrument = self
             .current_instrument(instrument_id)
             .ok_or_else(|| anyhow::anyhow!("exit instrument missing from cache"))?;
@@ -3507,7 +4021,8 @@ impl BinaryOracleEdgeTaker {
         let client_order_id = self.core.order_factory().generate_client_order_id();
         decision.client_order_id = Some(client_order_id);
         self.log_exit_evaluation(now_ms, &decision);
-        let order = self.build_configured_exit_order(
+        let order = self.build_exit_order_with_execution_config(
+            order_config,
             instrument_id,
             order_side,
             quantity,
@@ -3519,6 +4034,17 @@ impl BinaryOracleEdgeTaker {
         let Some(managed_position) = self.managed_position().cloned() else {
             anyhow::bail!("exit submit requires managed position state");
         };
+        if !decision.forced_flat_reasons.is_empty()
+            && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+        {
+            self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+                .with_context(|| {
+                    format!(
+                        "forced-flat exit could not cancel pending entry client_order_id={}",
+                        pending_entry.client_order_id
+                    )
+                })?;
+        }
         self.exposure = ExposureState::ExitPending(ExitPendingState {
             position: Some(managed_position.clone()),
             pending_exit: PendingExitState {
@@ -3527,6 +4053,8 @@ impl BinaryOracleEdgeTaker {
                 position_id: Some(managed_position.position.position_id),
                 fill_received: false,
                 close_received: false,
+                terminal_received: false,
+                residual_position_observed_after_fill: false,
             },
         });
         log::info!(
@@ -3539,17 +4067,21 @@ impl BinaryOracleEdgeTaker {
             client_order_id,
         );
 
-        let intent = BoltV3OrderIntentEvidence {
-            strategy_id: self.config.strategy_id.clone(),
-            intent_kind: BoltV3OrderIntentKind::Exit,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: order_side.to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+            self.config.strategy_id.clone(),
+            BoltV3OrderIntentKind::Exit,
+            price.to_string(),
+            &order,
+        );
 
-        if let Err(error) = self.submit_order_with_decision_evidence(intent, order, client_id) {
+        if let Err(error) = self.submit_order_with_decision_evidence(
+            intent,
+            order,
+            SubmitContext::with_client_id_and_position_id(
+                client_id,
+                managed_position.position.position_id,
+            ),
+        ) {
             self.exposure = ExposureState::Managed(managed_position);
             return Err(error);
         }
@@ -3611,7 +4143,11 @@ impl BinaryOracleEdgeTaker {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_COST_MISSING);
             return decision;
         };
-        let shares_value = sized_notional / entry_cost;
+        let shares_value = if self.config.entry_order.is_quote_quantity {
+            sized_notional
+        } else {
+            sized_notional / entry_cost
+        };
         let Ok(quantity) = instrument.try_make_qty(shares_value, Some(true)) else {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
             return decision;
@@ -3750,17 +4286,18 @@ impl BinaryOracleEdgeTaker {
             client_order_id,
         );
 
-        let intent = BoltV3OrderIntentEvidence {
-            strategy_id: self.config.strategy_id.clone(),
-            intent_kind: BoltV3OrderIntentKind::Entry,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: order_side.to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+            self.config.strategy_id.clone(),
+            BoltV3OrderIntentKind::Entry,
+            price.to_string(),
+            &order,
+        );
 
-        if let Err(error) = self.submit_order_with_decision_evidence(intent, order, client_id) {
+        if let Err(error) = self.submit_order_with_decision_evidence(
+            intent,
+            order,
+            SubmitContext::with_client_id(client_id),
+        ) {
             self.clear_pending_entry_state();
             return Err(error);
         }
@@ -4031,6 +4568,12 @@ impl DataActor for BinaryOracleEdgeTaker {
         let entry_fill = self
             .pending_entry()
             .is_some_and(|pending| pending.client_order_id == event.client_order_id);
+        let managed_entry_fill = self.managed_position().is_some_and(|managed| {
+            managed
+                .pending_entry
+                .as_ref()
+                .is_some_and(|pending| pending.client_order_id == event.client_order_id)
+        });
         let exit_fill = self
             .exposure
             .exit_pending()
@@ -4038,6 +4581,7 @@ impl DataActor for BinaryOracleEdgeTaker {
 
         if entry_fill {
             let pending_context = self.pending_entry_context_for(event.instrument_id);
+            let keep_pending_entry = self.entry_order_may_remain_working(&event.client_order_id);
             let position_side = self
                 .configured_position_contract()
                 .ok()
@@ -4048,7 +4592,18 @@ impl DataActor for BinaryOracleEdgeTaker {
                         contract.entry_position_side,
                     )
                 });
-            if let (Some(position_id), Some(position_side)) = (event.position_id, position_side) {
+            if managed_entry_fill {
+                if let Some(exit_pending) = self.exposure.exit_pending_mut() {
+                    exit_pending
+                        .pending_exit
+                        .residual_position_observed_after_fill = true;
+                }
+                if !keep_pending_entry {
+                    self.clear_managed_pending_entry_for_client_order(event.client_order_id);
+                }
+            } else if let (Some(position_id), Some(position_side)) =
+                (event.position_id, position_side)
+            {
                 self.exposure = ExposureState::Managed(ManagedPositionState {
                     position: self.build_open_position_state(
                         None,
@@ -4064,6 +4619,7 @@ impl DataActor for BinaryOracleEdgeTaker {
                         true,
                     ),
                     origin: ManagedPositionOrigin::StrategyEntry,
+                    pending_entry: pending_context.clone().filter(|_| keep_pending_entry),
                 });
                 self.sync_exposure_context_from_active();
                 self.refresh_book_subscriptions_for_current_state();
@@ -4122,21 +4678,8 @@ impl DataActor for BinaryOracleEdgeTaker {
         &mut self,
         event: &nautilus_model::events::OrderCanceled,
     ) -> anyhow::Result<()> {
-        if matches!(
-            &self.exposure,
-            ExposureState::PendingEntry(pending) if pending.client_order_id == event.client_order_id
-        ) {
-            self.clear_pending_entry_state();
-        }
-        if let Some(exit_pending) = self.exposure.exit_pending().cloned()
-            && exit_pending.pending_exit.client_order_id == event.client_order_id
-            && !exit_pending.pending_exit.fill_received
-        {
-            self.exposure = match exit_pending.position {
-                Some(position) => ExposureState::Managed(position),
-                None => ExposureState::Flat,
-            };
-        }
+        self.clear_pending_entry_for_client_order(event.client_order_id);
+        self.mark_exit_order_terminal(event.client_order_id);
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
         Ok(())
     }
@@ -4144,40 +4687,14 @@ impl DataActor for BinaryOracleEdgeTaker {
 
 nautilus_strategy!(BinaryOracleEdgeTaker, {
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
-        if matches!(
-            &self.exposure,
-            ExposureState::PendingEntry(pending) if pending.client_order_id == event.client_order_id
-        ) {
-            self.clear_pending_entry_state();
-        }
-        if let Some(exit_pending) = self.exposure.exit_pending().cloned()
-            && exit_pending.pending_exit.client_order_id == event.client_order_id
-            && !exit_pending.pending_exit.fill_received
-        {
-            self.exposure = match exit_pending.position {
-                Some(position) => ExposureState::Managed(position),
-                None => ExposureState::Flat,
-            };
-        }
+        self.clear_pending_entry_for_client_order(event.client_order_id);
+        self.mark_exit_order_terminal(event.client_order_id);
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
     }
 
     fn on_order_expired(&mut self, event: nautilus_model::events::OrderExpired) {
-        if matches!(
-            &self.exposure,
-            ExposureState::PendingEntry(pending) if pending.client_order_id == event.client_order_id
-        ) {
-            self.clear_pending_entry_state();
-        }
-        if let Some(exit_pending) = self.exposure.exit_pending().cloned()
-            && exit_pending.pending_exit.client_order_id == event.client_order_id
-            && !exit_pending.pending_exit.fill_received
-        {
-            self.exposure = match exit_pending.position {
-                Some(position) => ExposureState::Managed(position),
-                None => ExposureState::Flat,
-            };
-        }
+        self.clear_pending_entry_for_client_order(event.client_order_id);
+        self.mark_exit_order_terminal(event.client_order_id);
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
     }
 
@@ -4204,12 +4721,29 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
     }
 
     fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
-        match &mut self.exposure {
-            ExposureState::Managed(position)
-                if position.position.position_id == event.position_id =>
-            {
+        if let ExposureState::Managed(position) = &self.exposure
+            && position.position.position_id == event.position_id
+        {
+            if let Some(pending_entry) = position.pending_entry.clone() {
+                let client_order_id = pending_entry.client_order_id;
+                self.exposure = ExposureState::PendingEntry(pending_entry);
+                let client_id = ClientId::from(self.config.client_id.as_str());
+                if let Err(error) = self.cancel_order(client_order_id, Some(client_id), None) {
+                    log::error!(
+                        "binary_oracle_edge_taker external position close could not cancel pending entry: strategy_id={} client_order_id={} error={error}",
+                        self.config.strategy_id,
+                        client_order_id,
+                    );
+                }
+            } else {
                 self.exposure = ExposureState::Flat;
             }
+            self.refresh_book_subscriptions_for_current_state();
+            self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
+            return;
+        }
+
+        match &mut self.exposure {
             ExposureState::ExitPending(exit_pending)
                 if exit_pending.pending_exit.position_id == Some(event.position_id) =>
             {
@@ -4244,6 +4778,7 @@ pub struct BinaryOracleEdgeTakerBuilder;
 pub const KEY: &str = stringify!(binary_oracle_edge_taker);
 const ENTRY_ORDER_FIELD: &str = stringify!(entry_order);
 const EXIT_ORDER_FIELD: &str = stringify!(exit_order);
+const FORCED_EXIT_ORDER_FIELD: &str = stringify!(forced_exit_order);
 const WRONG_TYPE_CODE: &str = stringify!(wrong_type);
 const UNKNOWN_FIELD_CODE: &str = stringify!(unknown_field);
 const TARGET_MARKET_NOT_FOUND_REASON: &str = stringify!(target_market_not_found);
@@ -4304,6 +4839,7 @@ impl BinaryOracleEdgeTakerBuilder {
                 key.as_str(),
                 ENTRY_ORDER_FIELD
                     | EXIT_ORDER_FIELD
+                    | FORCED_EXIT_ORDER_FIELD
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -4327,6 +4863,13 @@ impl BinaryOracleEdgeTakerBuilder {
             field_prefix,
             EXIT_ORDER_FIELD,
             concat!(stringify!(missing_), stringify!(exit_order)),
+            errors,
+        );
+        Self::validate_order_table(
+            table,
+            field_prefix,
+            FORCED_EXIT_ORDER_FIELD,
+            concat!(stringify!(missing_), stringify!(forced_exit_order)),
             errors,
         );
     }
@@ -4356,7 +4899,14 @@ impl BinaryOracleEdgeTakerBuilder {
         for key in order_table.keys() {
             if !matches!(
                 key.as_str(),
-                binary_oracle_edge_taker_order_fields!(match_order_field_names)
+                ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD
+                    | ORDER_TRIGGER_PRICE_FIELD
+                    | ORDER_ACTIVATION_PRICE_FIELD
+                    | ORDER_TRIGGER_TYPE_FIELD
+                    | ORDER_TRIGGER_INSTRUMENT_ID_FIELD
+                    | ORDER_TRAILING_OFFSET_FIELD
+                    | ORDER_TRAILING_OFFSET_TYPE_FIELD
+                    | binary_oracle_edge_taker_order_fields!(match_order_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field}.{key}"), key);
             }
@@ -4367,6 +4917,76 @@ impl BinaryOracleEdgeTakerBuilder {
             &field,
             errors,
         );
+        if let Some(value) = order_table.get(ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD)
+            && !BinaryOracleEdgeTakerFieldType::Integer.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field}.{ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD}"),
+                BinaryOracleEdgeTakerFieldType::Integer,
+                value,
+            );
+        }
+        if let Some(value) = order_table.get(ORDER_TRIGGER_PRICE_FIELD)
+            && !BinaryOracleEdgeTakerFieldType::Float.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field}.{ORDER_TRIGGER_PRICE_FIELD}"),
+                BinaryOracleEdgeTakerFieldType::Float,
+                value,
+            );
+        }
+        if let Some(value) = order_table.get(ORDER_ACTIVATION_PRICE_FIELD)
+            && !BinaryOracleEdgeTakerFieldType::Float.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field}.{ORDER_ACTIVATION_PRICE_FIELD}"),
+                BinaryOracleEdgeTakerFieldType::Float,
+                value,
+            );
+        }
+        if let Some(value) = order_table.get(ORDER_TRIGGER_TYPE_FIELD)
+            && !BinaryOracleEdgeTakerFieldType::String.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field}.{ORDER_TRIGGER_TYPE_FIELD}"),
+                BinaryOracleEdgeTakerFieldType::String,
+                value,
+            );
+        }
+        if let Some(value) = order_table.get(ORDER_TRIGGER_INSTRUMENT_ID_FIELD)
+            && !BinaryOracleEdgeTakerFieldType::String.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field}.{ORDER_TRIGGER_INSTRUMENT_ID_FIELD}"),
+                BinaryOracleEdgeTakerFieldType::String,
+                value,
+            );
+        }
+        if let Some(value) = order_table.get(ORDER_TRAILING_OFFSET_FIELD)
+            && !BinaryOracleEdgeTakerFieldType::Float.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field}.{ORDER_TRAILING_OFFSET_FIELD}"),
+                BinaryOracleEdgeTakerFieldType::Float,
+                value,
+            );
+        }
+        if let Some(value) = order_table.get(ORDER_TRAILING_OFFSET_TYPE_FIELD)
+            && !BinaryOracleEdgeTakerFieldType::String.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field}.{ORDER_TRAILING_OFFSET_TYPE_FIELD}"),
+                BinaryOracleEdgeTakerFieldType::String,
+                value,
+            );
+        }
     }
 
     fn validate_order_field(
@@ -4642,22 +5262,10 @@ impl BinaryOracleEdgeTaker {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConfiguredOrderType {
-    Limit,
-    Market,
-}
-
 const ORDER_SIDE_BUY_VALUE: &str = stringify!(buy);
 const ORDER_SIDE_SELL_VALUE: &str = stringify!(sell);
 const POSITION_SIDE_LONG_VALUE: &str = stringify!(long);
 const POSITION_SIDE_SHORT_VALUE: &str = stringify!(short);
-const ORDER_TYPE_LIMIT_VALUE: &str = stringify!(limit);
-const ORDER_TYPE_MARKET_VALUE: &str = stringify!(market);
-const TIME_IN_FORCE_GTC_VALUE: &str = stringify!(gtc);
-const TIME_IN_FORCE_FOK_VALUE: &str = stringify!(fok);
-const TIME_IN_FORCE_IOC_VALUE: &str = stringify!(ioc);
-const OMS_TYPE_NETTING_VALUE: &str = stringify!(netting);
 
 fn parse_configured_order_side(field: &str, value: &str) -> Result<OrderSide> {
     match value {
@@ -4675,86 +5283,68 @@ fn parse_configured_position_side(field: &str, value: &str) -> Result<PositionSi
     }
 }
 
-fn parse_configured_order_type(field: &str, value: &str) -> Result<ConfiguredOrderType> {
-    match value {
-        ORDER_TYPE_LIMIT_VALUE => Ok(ConfiguredOrderType::Limit),
-        ORDER_TYPE_MARKET_VALUE => Ok(ConfiguredOrderType::Market),
-        _ => anyhow::bail!("{field} must be `limit` or `market`, got `{value}`"),
-    }
-}
-
-fn parse_configured_time_in_force(field: &str, value: &str) -> Result<TimeInForce> {
-    match value {
-        TIME_IN_FORCE_GTC_VALUE => Ok(TimeInForce::Gtc),
-        TIME_IN_FORCE_FOK_VALUE => Ok(TimeInForce::Fok),
-        TIME_IN_FORCE_IOC_VALUE => Ok(TimeInForce::Ioc),
-        _ => anyhow::bail!("{field} must be `gtc`, `fok`, or `ioc`, got `{value}`"),
-    }
-}
-
 fn parse_configured_oms_type(field: &str, value: &str) -> Result<NtOmsType> {
-    match value {
-        OMS_TYPE_NETTING_VALUE => Ok(NtOmsType::Netting),
-        _ => anyhow::bail!("{field} must be `netting`, got `{value}`"),
-    }
+    value
+        .parse::<NtOmsType>()
+        .with_context(|| format!("{field} must be a NautilusTrader OmsType, got `{value}`"))
 }
 
-#[expect(clippy::too_many_arguments)]
-fn build_configured_order(
-    core: &mut StrategyCore,
+fn expire_time_from_config(value: Option<u64>) -> Option<UnixNanos> {
+    value.map(UnixNanos::from)
+}
+
+fn trigger_price_from_config(
     prefix: &'static str,
-    order_type: &str,
-    time_in_force: &str,
-    is_post_only: bool,
-    is_reduce_only: bool,
-    is_quote_quantity: bool,
-    instrument_id: InstrumentId,
-    order_side: OrderSide,
-    quantity: Quantity,
-    price: Price,
-    client_order_id: ClientOrderId,
-) -> Result<nautilus_model::orders::OrderAny> {
-    let order_type = parse_configured_order_type(&format!("{prefix}_order_type"), order_type)?;
-    let time_in_force =
-        parse_configured_time_in_force(&format!("{prefix}_time_in_force"), time_in_force)?;
-    match order_type {
-        ConfiguredOrderType::Limit => Ok(core.order_factory().limit(
-            instrument_id,
-            order_side,
-            quantity,
-            price,
-            Some(time_in_force),
-            None,
-            Some(is_post_only),
-            Some(is_reduce_only),
-            Some(is_quote_quantity),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(client_order_id),
-        )),
-        ConfiguredOrderType::Market => {
+    trigger_price: Option<f64>,
+    price_precision: u8,
+) -> Result<Option<Price>> {
+    price_from_config(prefix, "trigger_price", trigger_price, price_precision)
+}
+
+fn activation_price_from_config(
+    prefix: &'static str,
+    activation_price: Option<f64>,
+    price_precision: u8,
+) -> Result<Option<Price>> {
+    price_from_config(
+        prefix,
+        "activation_price",
+        activation_price,
+        price_precision,
+    )
+}
+
+fn price_from_config(
+    prefix: &'static str,
+    field: &'static str,
+    value: Option<f64>,
+    price_precision: u8,
+) -> Result<Option<Price>> {
+    value
+        .map(|value| {
             anyhow::ensure!(
-                !is_post_only,
-                "{prefix}_is_post_only must be false for market orders"
+                is_positive_finite(value),
+                "{prefix}_{field} must be positive and finite"
             );
-            Ok(core.order_factory().market(
-                instrument_id,
-                order_side,
-                quantity,
-                Some(time_in_force),
-                Some(is_reduce_only),
-                Some(is_quote_quantity),
-                None,
-                None,
-                None,
-                Some(client_order_id),
-            ))
-        }
-    }
+            Ok(Price::new(value, price_precision))
+        })
+        .transpose()
+}
+
+fn trailing_offset_from_config(
+    prefix: &'static str,
+    trailing_offset: Option<f64>,
+) -> Result<Option<Decimal>> {
+    trailing_offset
+        .map(|value| {
+            anyhow::ensure!(
+                is_positive_finite(value),
+                "{prefix}_trailing_offset must be positive and finite"
+            );
+            Decimal::from_f64(value)
+                .ok_or_else(|| anyhow::anyhow!("{prefix}_trailing_offset must be decimal"))
+        })
+        .transpose()
 }
 
 fn refresh_fee_readiness_for_active(
@@ -4804,11 +5394,12 @@ const NORMAL_CDF_POLY_A3: f64 = 1.781_478;
 const NORMAL_CDF_POLY_A4: f64 = -1.821_256;
 const NORMAL_CDF_POLY_A5: f64 = 1.330_274;
 const CONFIG_FIELD_OMS_TYPE: &str = "oms_type";
-const CONFIG_FIELD_MARKET_EXIT_TIME_IN_FORCE: &str = "market_exit_time_in_force";
 const CONFIG_FIELD_ENTRY_ORDER_SIDE: &str = "entry_order_side";
 const CONFIG_FIELD_ENTRY_ORDER_POSITION_SIDE: &str = "entry_order_position_side";
 const CONFIG_FIELD_EXIT_ORDER_SIDE: &str = "exit_order_side";
 const CONFIG_FIELD_EXIT_ORDER_POSITION_SIDE: &str = "exit_order_position_side";
+const CONFIG_FIELD_FORCED_EXIT_ORDER_SIDE: &str = "forced_exit_order_side";
+const CONFIG_FIELD_FORCED_EXIT_ORDER_POSITION_SIDE: &str = "forced_exit_order_position_side";
 const ORDER_CONFIGURATION_PREFIX_ENTRY: &str = "entry";
 const ORDER_CONFIGURATION_PREFIX_EXIT: &str = "exit";
 const SELECTION_BLOCK_REASON_TARGET_SELECTION_BLOCKED: &str = "target_selection_blocked";
@@ -4846,9 +5437,12 @@ const ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED: &str =
     "entry_position_contract_unsupported";
 const EXIT_BLOCK_REASON_NO_OPEN_POSITION: &str = "no_open_position";
 const EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING: &str = "exit_already_pending";
+const EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING: &str = "entry_order_still_working";
 const EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE: &str = "exit_decision_unavailable";
 const EXIT_BLOCK_REASON_EXIT_HOLD: &str = "exit_hold";
 const EXIT_BLOCK_REASON_OPEN_POSITION_MISSING: &str = "open_position_missing";
+const EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID: &str = "exit_order_config_invalid";
+const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quantity_unsupported";
 const EXIT_BLOCK_REASON_EXIT_PRICE_MISSING: &str = "exit_price_missing";
 const EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE: &str = "exit_quantity_not_positive";
 
@@ -5323,16 +5917,70 @@ struct ExitEvaluation {
     blocked_reason: Option<&'static str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ExitOrderExecutionConfig {
+    side: OrderSide,
+    position_side: PositionSide,
+    order_template: ConfiguredNtOrderTemplate,
+}
+
+impl ExitOrderExecutionConfig {
+    fn nt_order_template(
+        &self,
+        prefix: &'static str,
+        price_precision: u8,
+    ) -> Result<NtOrderTemplate> {
+        self.order_template
+            .nt_order_template(prefix, price_precision)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct ExitSubmissionDecision {
     evaluation: ExitEvaluation,
     instrument_id: Option<InstrumentId>,
+    order_type: Option<OrderType>,
     order_side: Option<OrderSide>,
+    position_side: Option<PositionSide>,
+    time_in_force: Option<TimeInForce>,
     price: Option<f64>,
     quantity: Option<Quantity>,
     client_order_id: Option<ClientOrderId>,
+    is_post_only: Option<bool>,
+    is_reduce_only: Option<bool>,
+    is_quote_quantity: Option<bool>,
+    expire_time_unix_nanos: Option<u64>,
+    trigger_price: Option<f64>,
+    activation_price: Option<f64>,
+    trigger_type: Option<TriggerType>,
+    trigger_instrument_id: Option<InstrumentId>,
+    trailing_offset: Option<f64>,
+    trailing_offset_type: Option<TrailingOffsetType>,
     blocked_reason: Option<&'static str>,
     forced_flat_reasons: Vec<ForcedFlatReason>,
+}
+
+impl ExitSubmissionDecision {
+    fn execution_config(&self) -> Option<ExitOrderExecutionConfig> {
+        Some(ExitOrderExecutionConfig {
+            side: self.order_side?,
+            position_side: self.position_side?,
+            order_template: ConfiguredNtOrderTemplate {
+                order_type: self.order_type?,
+                time_in_force: self.time_in_force?,
+                expire_time_unix_nanos: self.expire_time_unix_nanos,
+                trigger_price: self.trigger_price,
+                activation_price: self.activation_price,
+                trigger_type: self.trigger_type,
+                trigger_instrument_id: self.trigger_instrument_id,
+                trailing_offset: self.trailing_offset,
+                trailing_offset_type: self.trailing_offset_type,
+                is_post_only: self.is_post_only?,
+                is_reduce_only: self.is_reduce_only?,
+                is_quote_quantity: self.is_quote_quantity?,
+            },
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -5440,14 +6088,11 @@ fn should_report_one_position_gate_violation(occupancy: ExposureOccupancy) -> bo
     )
 }
 
-const NO_OPEN_POSITION_REASON: &str = stringify!(no_open_position);
-const EXIT_ALREADY_PENDING_REASON: &str = stringify!(exit_already_pending);
-const EXIT_HOLD_REASON: &str = stringify!(exit_hold);
-
 fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
-    !matches!(reason, Some(reason) if reason == NO_OPEN_POSITION_REASON
-        || reason == EXIT_ALREADY_PENDING_REASON
-        || reason == EXIT_HOLD_REASON)
+    !matches!(reason, Some(reason) if reason == EXIT_BLOCK_REASON_NO_OPEN_POSITION
+        || reason == EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING
+        || reason == EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING
+        || reason == EXIT_BLOCK_REASON_EXIT_HOLD)
 }
 
 fn evaluate_exit_decision(
@@ -5512,27 +6157,37 @@ fn evaluate_forced_flat_predicates(inputs: &ForcedFlatInputs) -> Vec<ForcedFlatR
     reasons
 }
 
-fn submit_admission_request_from_intent(
+#[cfg(test)]
+fn submit_admission_request_from_order(
     intent: &BoltV3OrderIntentEvidence,
+    order: &nautilus_model::orders::OrderAny,
 ) -> Result<BoltV3SubmitAdmissionRequest> {
-    let price = Decimal::from_str(intent.price.trim()).with_context(|| {
-        format!(
-            "bolt-v3 submit admission price is not a decimal for client_order_id={}",
-            intent.client_order_id
-        )
-    })?;
-    let quantity = Decimal::from_str(intent.quantity.trim()).with_context(|| {
+    let client_order_id = order.client_order_id().to_string();
+    let quantity_source = order.quantity().to_string();
+    let quantity = Decimal::from_str(quantity_source.trim()).with_context(|| {
         format!(
             "bolt-v3 submit admission quantity is not a decimal for client_order_id={}",
-            intent.client_order_id
+            client_order_id
         )
     })?;
+    anyhow::ensure!(
+        !order.is_quote_quantity(),
+        "test submit admission helper requires strategy cache context for quote-quantity orders"
+    );
+    let price_source = compiled_order_price_source(intent.price.clone(), order);
+    let price = Decimal::from_str(price_source.trim()).with_context(|| {
+        format!(
+            "bolt-v3 submit admission price is not a decimal for client_order_id={}",
+            client_order_id
+        )
+    })?;
+    let notional = price * quantity;
 
     Ok(BoltV3SubmitAdmissionRequest {
         strategy_id: intent.strategy_id.clone(),
-        client_order_id: intent.client_order_id.clone(),
-        instrument_id: intent.instrument_id.clone(),
-        notional: price * quantity,
+        client_order_id,
+        instrument_id: order.instrument_id().to_string(),
+        notional,
     })
 }
 
@@ -5545,12 +6200,18 @@ mod tests {
 
     use anyhow::Result;
     use futures_util::future::{BoxFuture, FutureExt};
-    use nautilus_common::{cache::Cache, clock::TestClock};
+    use nautilus_common::{
+        cache::Cache,
+        clock::TestClock,
+        messages::execution::TradingCommand,
+        msgbus::{self, MessagingSwitchboard, stubs::get_typed_into_message_saving_handler},
+    };
     use nautilus_core::{Params, UnixNanos};
     use nautilus_model::{
         enums::AssetClass,
         identifiers::{Symbol, TraderId},
         instruments::BinaryOption,
+        orders::{Order, OrderAny},
         types::{Currency, Price, Quantity},
     };
     use nautilus_portfolio::portfolio::Portfolio;
@@ -5595,8 +6256,6 @@ mod tests {
             manage_stop = true
             market_exit_interval_ms = 250
             market_exit_max_attempts = 7
-            market_exit_time_in_force = "ioc"
-            market_exit_reduce_only = false
             log_events = false
             log_commands = false
             log_rejected_due_post_only_as_warning = false
@@ -5625,6 +6284,15 @@ mod tests {
             position_side = "long"
             order_type = "limit"
             time_in_force = "fok"
+            is_post_only = false
+            is_reduce_only = false
+            is_quote_quantity = false
+
+            [forced_exit_order]
+            side = "sell"
+            position_side = "long"
+            order_type = "market"
+            time_in_force = "ioc"
             is_post_only = false
             is_reduce_only = false
             is_quote_quantity = false
@@ -5855,16 +6523,21 @@ mod tests {
                 manage_stop: true,
                 market_exit_interval_ms: 250,
                 market_exit_max_attempts: 7,
-                market_exit_time_in_force: "ioc".to_string(),
-                market_exit_reduce_only: false,
                 log_events: false,
                 log_commands: false,
                 log_rejected_due_post_only_as_warning: false,
                 entry_order: BinaryOracleEdgeTakerOrderConfig {
                     side: "buy".to_string(),
                     position_side: "long".to_string(),
-                    order_type: "limit".to_string(),
-                    time_in_force: "fok".to_string(),
+                    order_type: OrderType::Limit,
+                    time_in_force: TimeInForce::Fok,
+                    expire_time_unix_nanos: None,
+                    trigger_price: None,
+                    activation_price: None,
+                    trigger_type: None,
+                    trigger_instrument_id: None,
+                    trailing_offset: None,
+                    trailing_offset_type: None,
                     is_post_only: false,
                     is_reduce_only: false,
                     is_quote_quantity: false,
@@ -5872,8 +6545,31 @@ mod tests {
                 exit_order: BinaryOracleEdgeTakerOrderConfig {
                     side: "sell".to_string(),
                     position_side: "long".to_string(),
-                    order_type: "market".to_string(),
-                    time_in_force: "ioc".to_string(),
+                    order_type: OrderType::Market,
+                    time_in_force: TimeInForce::Ioc,
+                    expire_time_unix_nanos: None,
+                    trigger_price: None,
+                    activation_price: None,
+                    trigger_type: None,
+                    trigger_instrument_id: None,
+                    trailing_offset: None,
+                    trailing_offset_type: None,
+                    is_post_only: false,
+                    is_reduce_only: false,
+                    is_quote_quantity: false,
+                },
+                forced_exit_order: BinaryOracleEdgeTakerOrderConfig {
+                    side: "sell".to_string(),
+                    position_side: "long".to_string(),
+                    order_type: OrderType::Market,
+                    time_in_force: TimeInForce::Ioc,
+                    expire_time_unix_nanos: None,
+                    trigger_price: None,
+                    activation_price: None,
+                    trigger_type: None,
+                    trigger_instrument_id: None,
+                    trailing_offset: None,
+                    trailing_offset_type: None,
                     is_post_only: false,
                     is_reduce_only: false,
                     is_quote_quantity: false,
@@ -5908,6 +6604,40 @@ mod tests {
 
         assert_eq!(strategy.core.config.order_id_tag.as_deref(), Some("001"));
         assert_eq!(strategy.core.config.oms_type, Some(NtOmsType::Netting));
+    }
+
+    #[test]
+    fn strategy_core_accepts_nt_hedging_oms_type() {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert("oms_type".to_string(), Value::String("hedging".to_string()));
+        let config =
+            BinaryOracleEdgeTakerBuilder::parse_config(&raw).expect("Hedging OMS should parse");
+        let context = StrategyBuildContext::new(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                    RecordingDecisionEvidenceWriter,
+                )),
+            ),
+        );
+
+        let strategy = BinaryOracleEdgeTaker::new(config, context);
+
+        assert_eq!(strategy.core.config.oms_type, Some(NtOmsType::Hedging));
+    }
+
+    #[test]
+    fn runtime_config_parse_normalizes_order_fields_to_nt_enums() {
+        let config = BinaryOracleEdgeTakerBuilder::parse_config(&valid_raw_config())
+            .expect("valid raw config should parse into runtime config");
+
+        assert_eq!(config.entry_order.order_type, OrderType::Limit);
+        assert_eq!(config.entry_order.time_in_force, TimeInForce::Fok);
+        assert_eq!(config.exit_order.order_type, OrderType::Market);
+        assert_eq!(config.exit_order.time_in_force, TimeInForce::Ioc);
     }
 
     #[test]
@@ -5965,6 +6695,19 @@ mod tests {
         .expect("test quote tick should be valid")
     }
 
+    fn trade_tick(instrument_id: &str, price: f64, ts_ms: u64) -> nautilus_model::data::TradeTick {
+        nautilus_model::data::TradeTick::new_checked(
+            InstrumentId::from(instrument_id),
+            Price::new(price, 2),
+            Quantity::new(1.0, 0),
+            nautilus_model::enums::AggressorSide::Buyer,
+            nautilus_model::identifiers::TradeId::from("TRADE-TICK-001"),
+            nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+            nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        )
+        .expect("test trade tick should be valid")
+    }
+
     #[test]
     fn reference_quote_tick_updates_pricing_from_configured_reference_data() {
         let mut strategy = test_strategy();
@@ -6008,7 +6751,7 @@ mod tests {
             RecordingFeeProvider::cold(),
             Arc::new(FailingDecisionEvidenceWriter),
         );
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -6042,18 +6785,20 @@ mod tests {
             )
             .expect("limit order should be valid"),
         );
-        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-            strategy_id: strategy.config.strategy_id.clone(),
-            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: "Buy".to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
 
         let error = strategy
-            .submit_order_with_decision_evidence(intent, order, ClientId::from("POLYMARKET"))
+            .submit_order_with_decision_evidence(
+                intent,
+                order,
+                SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            )
             .expect_err("evidence failure must reject before NT submit");
 
         assert!(
@@ -6074,7 +6819,7 @@ mod tests {
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -6108,18 +6853,20 @@ mod tests {
             )
             .expect("limit order should be valid"),
         );
-        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-            strategy_id: strategy.config.strategy_id.clone(),
-            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: "Buy".to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
 
         let error = strategy
-            .submit_order_with_decision_evidence(intent, order, ClientId::from("POLYMARKET"))
+            .submit_order_with_decision_evidence(
+                intent,
+                order,
+                SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            )
             .expect_err("unarmed submit admission must reject before NT submit");
 
         assert!(
@@ -6144,7 +6891,7 @@ mod tests {
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -6178,21 +6925,19 @@ mod tests {
             )
             .expect("limit order should be valid"),
         );
-        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-            strategy_id: strategy.config.strategy_id.clone(),
-            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: "Buy".to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             strategy.submit_order_with_decision_evidence(
                 intent,
                 order,
-                ClientId::from("POLYMARKET"),
+                SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
             )
         }));
 
@@ -6201,6 +6946,349 @@ mod tests {
             "test strategy is intentionally not registered with NT; reaching NT submit should panic"
         );
         assert_eq!(submit_admission.admitted_order_count(), 1);
+    }
+
+    #[test]
+    fn submit_context_routes_non_empty_nt_params_to_submit_order() {
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
+            .expect("valid gate report should arm submit admission");
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+        let _cache = register_test_strategy(&mut strategy);
+        let (risk_handler, risk_messages) =
+            get_typed_into_message_saving_handler::<TradingCommand>(None);
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::risk_engine_queue_execute(),
+            risk_handler,
+        );
+
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order_side = strategy
+            .configured_entry_order_side()
+            .expect("test config should carry an entry order side");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                order_side,
+                quantity,
+                price,
+                client_order_id,
+            )
+            .expect("entry order should build through NT OrderFactory");
+        let mut params = Params::new();
+        params.insert(
+            strategy.config.strategy_id.to_string(),
+            serde_json::Value::Bool(true),
+        );
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
+
+        strategy
+            .submit_order_with_decision_evidence(
+                intent,
+                order,
+                SubmitContext::from_parts(
+                    Some(ClientId::from("POLYMARKET")),
+                    None,
+                    Some(params.clone()),
+                ),
+            )
+            .expect("non-empty submit params should reach NT submit");
+
+        let messages = risk_messages.get_messages();
+        let Some(TradingCommand::SubmitOrder(command)) = messages.first() else {
+            panic!("expected one NT SubmitOrder command, got {messages:#?}");
+        };
+        assert_eq!(messages.len(), 1);
+        assert_eq!(command.params.as_ref(), Some(&params));
+        assert_eq!(submit_admission.admitted_order_count(), 1);
+    }
+
+    #[test]
+    fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
+            .expect("valid gate report should arm submit admission");
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(2.0, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order = nautilus_model::orders::OrderAny::Limit(
+            nautilus_model::orders::LimitOrder::new_checked(
+                nautilus_model::identifiers::TraderId::from("TRADER-001"),
+                StrategyId::from(strategy.config.strategy_id.as_str()),
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                TimeInForce::Fok,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("limit order should be valid"),
+        );
+        let mut understated_intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
+        understated_intent.price = "0.50".to_string();
+
+        let error = strategy
+            .submit_order_with_decision_evidence(
+                understated_intent,
+                order,
+                SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            )
+            .expect_err("compiled order notional above cap must reject before NT submit");
+
+        assert!(
+            error.to_string().contains("notional cap is exceeded"),
+            "{error:#}"
+        );
+        assert_eq!(submit_admission.admitted_order_count(), 0);
+    }
+
+    #[test]
+    fn quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        strategy.config.entry_order.is_quote_quantity = true;
+        let instrument_id = selected_entry_instrument(&strategy);
+        set_active_books_best_prices(&mut strategy, 0.24, 0.25);
+        cache
+            .borrow_mut()
+            .add_quote(quote_tick(&instrument_id.to_string(), 0.24, 0.25, 1_200))
+            .expect("test cache should accept quote tick");
+        let quantity = Quantity::new(25.0, 2);
+        let price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-1");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                client_order_id,
+            )
+            .expect("quote-quantity limit order should build through the strategy factory path");
+        assert!(order.is_quote_quantity());
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    price.to_string(),
+                    &order,
+                ),
+                &order,
+            )
+            .expect("quote-quantity admission should use NT effective notional");
+
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("50.00").expect("expected decimal should parse")
+        );
+    }
+
+    #[test]
+    fn quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.config.entry_order.is_quote_quantity = true;
+        let instrument_id = selected_entry_instrument(&strategy);
+        set_active_books_best_prices(&mut strategy, 0.24, 0.25);
+        let quantity = Quantity::new(25.0, 2);
+        let price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-2");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                client_order_id,
+            )
+            .expect("quote-quantity limit order should build through the strategy factory path");
+        assert!(order.is_quote_quantity());
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    price.to_string(),
+                    &order,
+                ),
+                &order,
+            )
+            .expect("quote-quantity admission should use NT no-quote fallback");
+
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("25.00").expect("expected decimal should parse")
+        );
+    }
+
+    #[test]
+    fn quote_quantity_market_submit_admission_uses_nt_cache_quote_ask() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        strategy.config.entry_order.order_type = OrderType::Market;
+        strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
+        strategy.config.entry_order.is_quote_quantity = true;
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quote = quote_tick(&instrument_id.to_string(), 0.32, 0.33, 1_200);
+        let expected_price = quote.ask_price;
+        cache
+            .borrow_mut()
+            .add_quote(quote)
+            .expect("test cache should accept quote tick");
+        let quantity = Quantity::new(25.019, 3);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-3");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                Price::new(0.99, 2),
+                client_order_id,
+            )
+            .expect("quote-quantity market order should build through the strategy factory path");
+        assert!(matches!(order, OrderAny::Market(_)));
+        assert!(order.is_quote_quantity());
+        let instrument = strategy
+            .current_instrument(instrument_id)
+            .expect("registered instrument should be available");
+        let expected_notional = instrument
+            .calculate_notional_value(
+                instrument.calculate_base_quantity(order.quantity(), expected_price),
+                expected_price,
+                Some(true),
+            )
+            .as_decimal();
+        let raw_quote_quantity = Decimal::from_str(order.quantity().to_string().trim())
+            .expect("order quantity should parse");
+        assert_ne!(expected_notional, raw_quote_quantity);
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    "0.99".to_string(),
+                    &order,
+                ),
+                &order,
+            )
+            .expect("quote-quantity market admission should use NT cache quote price");
+
+        assert_eq!(admission.notional, expected_notional);
+    }
+
+    #[test]
+    fn quote_quantity_market_submit_admission_uses_nt_cache_trade_when_quote_missing() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        strategy.config.entry_order.order_type = OrderType::Market;
+        strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
+        strategy.config.entry_order.is_quote_quantity = true;
+        let instrument_id = selected_entry_instrument(&strategy);
+        let trade = trade_tick(&instrument_id.to_string(), 0.33, 1_200);
+        let expected_price = trade.price;
+        cache
+            .borrow_mut()
+            .add_trade(trade)
+            .expect("test cache should accept trade tick");
+        let quantity = Quantity::new(25.019, 3);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-4");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                Price::new(0.99, 2),
+                client_order_id,
+            )
+            .expect("quote-quantity market order should build through the strategy factory path");
+        assert!(matches!(order, OrderAny::Market(_)));
+        assert!(order.is_quote_quantity());
+        let instrument = strategy
+            .current_instrument(instrument_id)
+            .expect("registered instrument should be available");
+        let expected_notional = instrument
+            .calculate_notional_value(
+                instrument.calculate_base_quantity(order.quantity(), expected_price),
+                expected_price,
+                Some(true),
+            )
+            .as_decimal();
+        let raw_quote_quantity = Decimal::from_str(order.quantity().to_string().trim())
+            .expect("order quantity should parse");
+        assert_ne!(expected_notional, raw_quote_quantity);
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    "0.99".to_string(),
+                    &order,
+                ),
+                &order,
+            )
+            .expect("quote-quantity market admission should use NT cache trade fallback");
+
+        assert_eq!(admission.notional, expected_notional);
     }
 
     #[test]
@@ -6218,7 +7306,7 @@ mod tests {
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -6252,18 +7340,20 @@ mod tests {
             )
             .expect("limit order should be valid"),
         );
-        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-            strategy_id: strategy.config.strategy_id.clone(),
-            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: "Buy".to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
 
         let error = strategy
-            .submit_order_with_decision_evidence(intent, order, ClientId::from("POLYMARKET"))
+            .submit_order_with_decision_evidence(
+                intent,
+                order,
+                SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            )
             .expect_err("over-cap notional must reject before NT submit");
 
         assert!(
@@ -6298,7 +7388,7 @@ mod tests {
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -6332,18 +7422,20 @@ mod tests {
             )
             .expect("limit order should be valid"),
         );
-        let intent = crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence {
-            strategy_id: strategy.config.strategy_id.clone(),
-            intent_kind: crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
-            instrument_id: instrument_id.to_string(),
-            client_order_id: client_order_id.to_string(),
-            order_side: "Buy".to_string(),
-            price: price.to_string(),
-            quantity: quantity.to_string(),
-        };
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
 
         let error = strategy
-            .submit_order_with_decision_evidence(intent, order, ClientId::from("POLYMARKET"))
+            .submit_order_with_decision_evidence(
+                intent,
+                order,
+                SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            )
             .expect_err("exhausted count cap must reject before NT submit");
 
         assert!(
@@ -6470,13 +7562,116 @@ mod tests {
         (strategy, fee_provider)
     }
 
-    fn pending_entry_state(
-        strategy: &BinaryOracleEdgeTaker,
-        client_order_id: ClientOrderId,
+    fn selected_entry_side(strategy: &BinaryOracleEdgeTaker) -> OutcomeSide {
+        let evaluation = strategy.entry_evaluation_at(1_200);
+        evaluation
+            .selected_side
+            .expect("ready-to-trade fixture should select a configured outcome side")
+    }
+
+    fn selected_entry_instrument(strategy: &BinaryOracleEdgeTaker) -> InstrumentId {
+        strategy
+            .entry_evaluation_at(1_200)
+            .selected_side
+            .and_then(|side| strategy.instrument_id_for_side(side))
+            .or_else(|| configured_outcome_instruments(strategy).into_iter().next())
+            .expect("ready-to-trade fixture should expose a configured instrument")
+    }
+
+    fn configured_position_probe(
+        strategy: &mut BinaryOracleEdgeTaker,
         instrument_id: InstrumentId,
-        outcome_side: OutcomeSide,
-        book: OutcomeBookState,
+    ) -> OpenPositionState {
+        let original_exposure = strategy.exposure.clone();
+        strategy.materialize_position_from_event(
+            instrument_id,
+            PositionId::from("P-SIDE-PROBE"),
+            OrderSide::Buy,
+            PositionSide::Long,
+            Quantity::new(1.0, 2),
+            0.450,
+        );
+        let position = managed_position_ref(strategy)
+            .cloned()
+            .expect("configured instrument should materialize through production position path");
+        strategy.exposure = original_exposure;
+        strategy.refresh_book_subscriptions_for_current_state();
+        position
+    }
+
+    fn configured_side_for_instrument(
+        strategy: &mut BinaryOracleEdgeTaker,
+        instrument_id: InstrumentId,
+    ) -> OutcomeSide {
+        configured_position_probe(strategy, instrument_id)
+            .outcome_side
+            .expect("configured instrument should materialize with an outcome side")
+    }
+
+    fn configured_book_for_instrument(
+        strategy: &mut BinaryOracleEdgeTaker,
+        instrument_id: InstrumentId,
+    ) -> OutcomeBookState {
+        configured_position_probe(strategy, instrument_id).book
+    }
+
+    fn set_active_books_best_prices(strategy: &mut BinaryOracleEdgeTaker, bid: f64, ask: f64) {
+        let mut updates = Vec::new();
+        for instrument_id in configured_outcome_instruments(strategy) {
+            let book = configured_book_for_instrument(strategy, instrument_id);
+            let bid_size = book
+                .bid_levels
+                .last_key_value()
+                .map(|(_, size)| *size)
+                .expect("configured fixture book should expose bid liquidity");
+            let ask_size = book
+                .ask_levels
+                .first_key_value()
+                .map(|(_, size)| *size)
+                .expect("configured fixture book should expose ask liquidity");
+            updates.push((instrument_id, bid_size, ask_size));
+        }
+
+        for (instrument_id, bid_size, ask_size) in updates {
+            assert!(
+                strategy.active.books.update_from_deltas(&book_deltas(
+                    instrument_id,
+                    &[
+                        (BookAction::Clear, OrderSide::Buy, bid, bid_size),
+                        (BookAction::Add, OrderSide::Buy, bid, bid_size),
+                        (BookAction::Add, OrderSide::Sell, ask, ask_size),
+                    ],
+                )),
+                "configured fixture book should accept price update"
+            );
+        }
+    }
+
+    fn set_configured_books_depth(
+        strategy: &mut BinaryOracleEdgeTaker,
+        deltas: &[(BookAction, OrderSide, f64, f64)],
+    ) {
+        for instrument_id in configured_outcome_instruments(strategy) {
+            assert!(
+                strategy
+                    .active
+                    .books
+                    .update_from_deltas(&book_deltas(instrument_id, deltas)),
+                "configured fixture book should accept depth update"
+            );
+        }
+    }
+
+    fn pending_entry_state(
+        strategy: &mut BinaryOracleEdgeTaker,
+        client_order_id: ClientOrderId,
     ) -> PendingEntryState {
+        let instrument_id = selected_entry_instrument(strategy);
+        let probe = configured_position_probe(strategy, instrument_id);
+        let outcome_side = probe
+            .outcome_side
+            .expect("configured instrument should materialize with an outcome side");
+        let book = probe.book;
         PendingEntryState {
             client_order_id,
             market_id: Some("MKT-1".to_string()),
@@ -6489,6 +7684,47 @@ mod tests {
             seconds_to_expiry_at_selection: Some(300),
             book,
         }
+    }
+
+    fn configured_instrument_except(
+        strategy: &BinaryOracleEdgeTaker,
+        instrument_id: InstrumentId,
+    ) -> InstrumentId {
+        configured_outcome_instruments(strategy)
+            .into_iter()
+            .find(|configured_instrument_id| *configured_instrument_id != instrument_id)
+            .expect("fixture should expose a second configured outcome instrument")
+    }
+
+    fn materialize_configured_position(
+        strategy: &mut BinaryOracleEdgeTaker,
+        instrument_id: InstrumentId,
+        position_id: PositionId,
+        quantity: Quantity,
+        avg_px_open: f64,
+    ) -> OpenPositionState {
+        strategy.materialize_position_from_event(
+            instrument_id,
+            position_id,
+            OrderSide::Buy,
+            PositionSide::Long,
+            quantity,
+            avg_px_open,
+        );
+        let mut position = managed_position_ref(strategy)
+            .cloned()
+            .expect("configured position should materialize as managed exposure");
+        position.historical_entry_fee_bps.get_or_insert(0.0);
+        position
+    }
+
+    fn configured_outcome_instruments(strategy: &BinaryOracleEdgeTaker) -> Vec<InstrumentId> {
+        let instrument_ids = strategy.active.outcome_fees.instrument_ids();
+        assert!(
+            !instrument_ids.is_empty(),
+            "ready-to-trade fixture should expose configured outcome instruments"
+        );
+        instrument_ids
     }
 
     fn set_pending_entry(strategy: &mut BinaryOracleEdgeTaker, pending: PendingEntryState) {
@@ -6508,7 +7744,49 @@ mod tests {
         position: OpenPositionState,
         origin: ManagedPositionOrigin,
     ) {
-        strategy.exposure = ExposureState::Managed(ManagedPositionState { position, origin });
+        strategy.exposure = ExposureState::Managed(ManagedPositionState {
+            position,
+            origin,
+            pending_entry: None,
+        });
+    }
+
+    fn materialize_managed_position_with_resting_pending_entry(
+        strategy: &mut BinaryOracleEdgeTaker,
+        instrument_id: InstrumentId,
+        position_id: PositionId,
+        quantity: Quantity,
+    ) -> (InstrumentId, ClientOrderId) {
+        let client_order_id =
+            ClientOrderId::from(format!("ENTRY-WORKING-{instrument_id}").as_str());
+        let book = configured_book_for_instrument(strategy, instrument_id);
+        let pending = PendingEntryState {
+            client_order_id,
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            outcome_side: None,
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: strategy
+                .context
+                .fee_provider()
+                .fee_bps(instrument_id)
+                .and_then(|value| value.to_f64()),
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: book.clone(),
+        };
+        let avg_px_open = book
+            .best_ask
+            .expect("ready-to-trade fixture should expose an ask");
+        set_pending_entry(strategy, pending);
+        strategy.on_position_opened(position_opened_event(
+            instrument_id,
+            position_id,
+            quantity,
+            avg_px_open,
+        ));
+        (instrument_id, client_order_id)
     }
 
     fn set_exit_pending(
@@ -6526,8 +7804,14 @@ mod tests {
                 position_id: Some(position.position_id),
                 fill_received,
                 close_received,
+                terminal_received: false,
+                residual_position_observed_after_fill: false,
             },
-            position: Some(ManagedPositionState { position, origin }),
+            position: Some(ManagedPositionState {
+                position,
+                origin,
+                pending_entry: None,
+            }),
         });
     }
 
@@ -7294,7 +8578,7 @@ mod tests {
 
     #[test]
     fn outcome_book_state_applies_incremental_deltas_without_retaining_stale_levels() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let mut state = OutcomeBookState::from_instrument_id(instrument_id);
 
         state.update_from_deltas(&book_deltas(
@@ -7900,7 +9184,7 @@ mod tests {
     #[test]
     fn position_events_update_live_position_state() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let instrument_id = selected_entry_instrument(&strategy);
         let position_id = PositionId::from("P-001");
 
         strategy.on_position_opened(position_opened_event(
@@ -7915,25 +9199,24 @@ mod tests {
             strategy.managed_position().map(|managed| managed.origin),
             Some(ManagedPositionOrigin::RecoveryBootstrap)
         );
-        assert_eq!(
-            managed_position_ref(&strategy).cloned(),
-            Some(OpenPositionState {
-                market_id: Some("MKT-1".to_string()),
-                instrument_id,
-                position_id,
-                outcome_side: Some(OutcomeSide::Up),
-                outcome_fees: strategy.active.outcome_fees.clone(),
-                historical_entry_fee_bps: None,
-                entry_order_side: OrderSide::Buy,
-                side: PositionSide::Long,
-                quantity: Quantity::new(10.0, 2),
-                avg_px_open: 0.450,
-                interval_open: Some(3_100.0),
-                selection_published_at_ms: Some(1_000),
-                seconds_to_expiry_at_selection: Some(300),
-                book: strategy.active.books.up.clone(),
-            })
-        );
+        let managed_position =
+            managed_position_ref(&strategy).expect("position should be managed after open event");
+        assert_eq!(managed_position.market_id.as_deref(), Some("MKT-1"));
+        assert_eq!(managed_position.instrument_id, instrument_id);
+        assert_eq!(managed_position.position_id, position_id);
+        assert!(managed_position.outcome_side.is_some());
+        assert_eq!(managed_position.outcome_fees, strategy.active.outcome_fees);
+        assert_eq!(managed_position.historical_entry_fee_bps, None);
+        assert_eq!(managed_position.entry_order_side, OrderSide::Buy);
+        assert_eq!(managed_position.side, PositionSide::Long);
+        assert_eq!(managed_position.quantity, Quantity::new(10.0, 2));
+        assert_eq!(managed_position.avg_px_open, 0.450);
+        assert_eq!(managed_position.interval_open, Some(3_100.0));
+        assert_eq!(managed_position.selection_published_at_ms, Some(1_000));
+        assert_eq!(managed_position.seconds_to_expiry_at_selection, Some(300));
+        let managed_book = managed_position.book.clone();
+        let expected_book = configured_book_for_instrument(&mut strategy, instrument_id);
+        assert_eq!(managed_book, expected_book);
 
         let recovered_position = managed_position_ref(&strategy)
             .cloned()
@@ -7967,26 +9250,16 @@ mod tests {
     #[test]
     fn exit_fill_keeps_pending_exit_until_position_closed() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let instrument_id = selected_entry_instrument(&strategy);
         let position_id = PositionId::from("P-EXIT-001");
         let exit_client_order_id = ClientOrderId::from("EXIT-001");
-
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let open_position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
             position_id,
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -8027,25 +9300,16 @@ mod tests {
     #[test]
     fn position_change_preserves_pending_exit_correlation() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let instrument_id = selected_entry_instrument(&strategy);
         let position_id = PositionId::from("P-EXIT-CHANGE");
         let exit_client_order_id = ClientOrderId::from("EXIT-CHANGE");
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let open_position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
             position_id,
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -8088,23 +9352,14 @@ mod tests {
     #[test]
     fn unrelated_position_close_does_not_clear_pending_exit_before_fill() {
         let mut strategy = ready_to_trade_strategy();
-        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
-            instrument_id: tracked_instrument,
-            position_id: PositionId::from("P-TRACKED"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+        let tracked_instrument = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            tracked_instrument,
+            PositionId::from("P-TRACKED"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -8129,23 +9384,14 @@ mod tests {
     #[test]
     fn unrelated_position_close_does_not_clear_filled_pending_exit() {
         let mut strategy = ready_to_trade_strategy();
-        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
-            instrument_id: tracked_instrument,
-            position_id: PositionId::from("P-TRACKED"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+        let tracked_instrument = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            tracked_instrument,
+            PositionId::from("P-TRACKED"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -8173,26 +9419,17 @@ mod tests {
 
     #[test]
     fn exit_pending_state_clears_on_cancel_reject_and_expire() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
         let exit_client_order_id = ClientOrderId::from("EXIT-001");
 
         let mut canceled = ready_to_trade_strategy();
-        let canceled_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let instrument_id = selected_entry_instrument(&canceled);
+        let canceled_position = materialize_configured_position(
+            &mut canceled,
             instrument_id,
-            position_id: PositionId::from("P-CANCEL"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: canceled.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(1.0, 2),
-            avg_px_open: 0.45,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: canceled.active.books.up.clone(),
-        };
+            PositionId::from("P-CANCEL"),
+            Quantity::new(1.0, 2),
+            0.45,
+        );
         set_exit_pending(
             &mut canceled,
             canceled_position,
@@ -8208,22 +9445,13 @@ mod tests {
         assert!(canceled.managed_position().is_some());
 
         let mut rejected = ready_to_trade_strategy();
-        let rejected_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let rejected_position = materialize_configured_position(
+            &mut rejected,
             instrument_id,
-            position_id: PositionId::from("P-REJECT"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: rejected.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(1.0, 2),
-            avg_px_open: 0.45,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: rejected.active.books.up.clone(),
-        };
+            PositionId::from("P-REJECT"),
+            Quantity::new(1.0, 2),
+            0.45,
+        );
         set_exit_pending(
             &mut rejected,
             rejected_position,
@@ -8237,22 +9465,13 @@ mod tests {
         assert!(rejected.managed_position().is_some());
 
         let mut expired = ready_to_trade_strategy();
-        let expired_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let expired_position = materialize_configured_position(
+            &mut expired,
             instrument_id,
-            position_id: PositionId::from("P-EXPIRE"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: expired.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(1.0, 2),
-            avg_px_open: 0.45,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: expired.active.books.up.clone(),
-        };
+            PositionId::from("P-EXPIRE"),
+            Quantity::new(1.0, 2),
+            0.45,
+        );
         set_exit_pending(
             &mut expired,
             expired_position,
@@ -8268,26 +9487,17 @@ mod tests {
 
     #[test]
     fn filled_exit_pending_ignores_stale_cancel_until_position_close() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
         let exit_client_order_id = ClientOrderId::from("EXIT-FILLED-CANCEL");
 
         let mut strategy = ready_to_trade_strategy();
-        let position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
-            position_id: PositionId::from("P-FILLED-CANCEL"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(1.0, 2),
-            avg_px_open: 0.45,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            PositionId::from("P-FILLED-CANCEL"),
+            Quantity::new(1.0, 2),
+            0.45,
+        );
         set_exit_pending(
             &mut strategy,
             position,
@@ -8319,26 +9529,17 @@ mod tests {
 
     #[test]
     fn filled_exit_pending_ignores_stale_reject() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
         let exit_client_order_id = ClientOrderId::from("EXIT-FILLED-REJECT");
 
         let mut strategy = ready_to_trade_strategy();
-        let position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
-            position_id: PositionId::from("P-FILLED-REJECT"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(1.0, 2),
-            avg_px_open: 0.45,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            PositionId::from("P-FILLED-REJECT"),
+            Quantity::new(1.0, 2),
+            0.45,
+        );
         set_exit_pending(
             &mut strategy,
             position,
@@ -8361,26 +9562,17 @@ mod tests {
 
     #[test]
     fn filled_exit_pending_ignores_stale_expire() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
         let exit_client_order_id = ClientOrderId::from("EXIT-FILLED-EXPIRE");
 
         let mut strategy = ready_to_trade_strategy();
-        let position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
-            position_id: PositionId::from("P-FILLED-EXPIRE"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(1.0, 2),
-            avg_px_open: 0.45,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            PositionId::from("P-FILLED-EXPIRE"),
+            Quantity::new(1.0, 2),
+            0.45,
+        );
         set_exit_pending(
             &mut strategy,
             position,
@@ -8402,73 +9594,1403 @@ mod tests {
     }
 
     #[test]
+    fn partial_exit_fill_then_expire_restores_managed_residual_position() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("P-PARTIAL-EXIT-EXPIRE");
+        let exit_client_order_id = ClientOrderId::from("EXIT-PARTIAL-EXPIRE");
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            Quantity::new(10.0, 2),
+            0.45,
+        );
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            exit_client_order_id,
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        let mut fill = order_filled_event_with_details(
+            exit_client_order_id,
+            instrument_id,
+            Some(position_id),
+            OrderSide::Sell,
+        );
+        fill.last_qty = Quantity::new(4.0, 2);
+        strategy
+            .on_order_filled(&fill)
+            .expect("partial exit fill bookkeeping should succeed");
+        strategy.materialize_position_from_event(
+            instrument_id,
+            position_id,
+            OrderSide::Buy,
+            PositionSide::Long,
+            Quantity::new(6.0, 2),
+            0.45,
+        );
+
+        strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+
+        assert!(pending_exit_ref(&strategy).is_none());
+        assert_eq!(
+            strategy.exposure_occupancy(),
+            Some(ExposureOccupancy::ManagedPosition)
+        );
+        assert_eq!(
+            managed_position_ref(&strategy).map(|position| position.quantity),
+            Some(Quantity::new(6.0, 2))
+        );
+    }
+
+    #[test]
     fn down_entry_submission_price_uses_configured_order_side_price() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-        strategy.active.books.down.best_bid = Some(0.40);
-        strategy.active.books.down.best_ask = Some(0.41);
-        assert_eq!(
-            strategy.submission_entry_price(OutcomeSide::Down),
-            Some(0.41)
-        );
-        assert_eq!(
-            strategy.executable_entry_cost(OutcomeSide::Down),
-            Some(0.41)
-        );
+        set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+        let selected_side = selected_entry_side(&strategy);
+        assert_eq!(strategy.submission_entry_price(selected_side), Some(0.41));
+        assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.41));
 
         strategy.config.entry_order.side = "sell".to_string();
         strategy.config.entry_order.position_side = "short".to_string();
         strategy.config.exit_order.side = "buy".to_string();
         strategy.config.exit_order.position_side = "short".to_string();
 
-        assert_eq!(
-            strategy.submission_entry_price(OutcomeSide::Down),
-            Some(0.40)
+        assert_eq!(strategy.submission_entry_price(selected_side), Some(0.40));
+        assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.40));
+    }
+
+    #[test]
+    fn post_only_entry_submission_price_uses_passive_book_price() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.is_post_only = true;
+        set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+        let selected_side = selected_entry_side(&strategy);
+
+        assert_eq!(strategy.submission_entry_price(selected_side), Some(0.40));
+        assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.40));
+    }
+
+    #[test]
+    fn stop_market_entry_submission_price_uses_trigger_price_for_notional_sizing() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.config.entry_order.order_type = OrderType::StopMarket;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let selected_side = configured_side_for_instrument(&mut strategy, instrument_id);
+
+        assert_eq!(strategy.submission_entry_price(selected_side), Some(0.52));
+        assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.52));
+    }
+
+    #[test]
+    fn quote_quantity_entry_submission_sizes_quantity_as_quote_notional() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.config.entry_order.is_quote_quantity = true;
+        strategy.config.order_notional_target = 25.0;
+        strategy.config.maximum_position_notional = 25.0;
+        strategy.config.risk_lambda = 0.0001;
+
+        let decision = strategy.entry_submission_decision_at(1_200);
+        let sized_notional = decision
+            .evaluation
+            .sized_notional
+            .expect("test setup should produce a positive sized notional");
+
+        assert_eq!(decision.blocked_reason, None);
+        assert!(
+            decision
+                .quantity_value
+                .is_some_and(|quantity| (quantity - sized_notional).abs() < 1e-9),
+            "quote-quantity entry should send quote notional as NT quantity, got {decision:#?}"
         );
+    }
+
+    #[test]
+    fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        strategy.config.entry_order.order_type = OrderType::MarketIfTouched;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::MarkPrice);
+        set_active_books_best_prices(&mut strategy, 0.40, 0.41);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let selected_side = configured_side_for_instrument(&mut strategy, instrument_id);
+
+        assert_eq!(strategy.submission_entry_price(selected_side), Some(0.52));
+        assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.52));
+
+        let quantity = Quantity::new(2.0, 2);
+        let fallback_price = Price::new(0.40, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                fallback_price,
+                ClientOrderId::from("O-19700101-000000-001-006-1"),
+            )
+            .expect("MarketIfTouched order with explicit trigger price should build");
+
+        let admission = submit_admission_request_from_order(
+            &BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                BoltV3OrderIntentKind::Entry,
+                fallback_price.to_string(),
+                &order,
+            ),
+            &order,
+        )
+        .expect("MarketIfTouched admission should derive from compiled trigger price");
+
+        let OrderAny::MarketIfTouched(order) = order else {
+            panic!("MarketIfTouched config should build an NT market-if-touched order");
+        };
+        assert_eq!(order.order_type(), OrderType::MarketIfTouched);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtc);
+        assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
+        assert_eq!(order.trigger_type(), Some(TriggerType::MarkPrice));
+        assert_eq!(order.price(), None);
+        assert!(!order.is_post_only());
+        assert!(!order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
         assert_eq!(
-            strategy.executable_entry_cost(OutcomeSide::Down),
-            Some(0.40)
+            admission.notional,
+            Decimal::from_str("1.040").expect("expected decimal should parse")
+        );
+    }
+
+    #[test]
+    fn market_if_touched_gtd_order_objects_preserve_nt_expire_time() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
+        strategy.config.entry_order.order_type = OrderType::MarketIfTouched;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(2.0, 2);
+        let fallback_price = Price::new(0.40, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                fallback_price,
+                ClientOrderId::from("O-19700101-000000-001-008-1"),
+            )
+            .expect("MarketIfTouched GTD order with explicit expiry should build");
+
+        let OrderAny::MarketIfTouched(order) = order else {
+            panic!("MarketIfTouched GTD config should build an NT market-if-touched order");
+        };
+        assert_eq!(order.order_type(), OrderType::MarketIfTouched);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtd);
+        assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
+        assert_eq!(order.expire_time(), Some(expire_time));
+    }
+
+    #[test]
+    fn post_only_exit_submission_price_uses_passive_book_price() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.config.exit_order.order_type = OrderType::Limit;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.exit_order.is_post_only = true;
+        set_active_books_best_prices(&mut strategy, 0.43, 0.51);
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
+        strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
+        strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            PositionId::from("P-EXIT-001"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        let expected_passive_price = open_position.book.best_ask;
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        let decision = strategy.exit_submission_decision_at(1_200);
+
+        assert!(decision.forced_flat_reasons.is_empty());
+        assert_eq!(decision.order_side, Some(OrderSide::Sell));
+        assert_eq!(decision.price, expected_passive_price);
+    }
+
+    #[test]
+    fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.config.exit_order.is_quote_quantity = true;
+        strategy.config.exit_hysteresis_bps = 1_000_000;
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
+        strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
+        strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            PositionId::from("P-QUOTE-EXIT-001"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        let decision = strategy.exit_submission_decision_at(1_200);
+
+        assert_eq!(
+            decision.blocked_reason,
+            Some("exit_quote_quantity_unsupported")
+        );
+        assert_eq!(decision.quantity, None);
+        assert_eq!(decision.is_quote_quantity, None);
+    }
+
+    #[test]
+    fn exit_quote_quantity_order_build_is_rejected_before_nt_factory() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        strategy.config.exit_order.is_quote_quantity = true;
+        let instrument_id = selected_entry_instrument(&strategy);
+        let error = strategy
+            .build_configured_exit_order(
+                instrument_id,
+                OrderSide::Sell,
+                Quantity::new(10.0, 2),
+                Price::new(0.50, 2),
+                ClientOrderId::from("O-19700101-000000-001-QQE-1"),
+            )
+            .expect_err("exit quote-quantity should fail before NT factory construction");
+
+        assert!(
+            error.to_string().contains("exit_is_quote_quantity"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn reduce_only_entry_order_build_is_rejected_before_nt_factory() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        strategy.config.entry_order.is_reduce_only = true;
+        let instrument_id = selected_entry_instrument(&strategy);
+        let error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                Quantity::new(10.0, 2),
+                Price::new(0.50, 2),
+                ClientOrderId::from("O-19700101-000000-001-ROE-1"),
+            )
+            .expect_err("reduce-only entry should fail before NT factory construction");
+
+        assert!(
+            error.to_string().contains("entry_is_reduce_only"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.active.phase = SelectionPhase::Freeze;
+        strategy.config.exit_order.order_type = OrderType::Limit;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.exit_order.is_post_only = true;
+        strategy.config.forced_exit_order = strategy.config.exit_order.clone();
+        strategy.config.forced_exit_order.order_type = OrderType::Market;
+        strategy.config.forced_exit_order.time_in_force = TimeInForce::Ioc;
+        strategy.config.forced_exit_order.is_post_only = false;
+        strategy.config.forced_exit_order.is_reduce_only = true;
+        set_active_books_best_prices(&mut strategy, 0.44, 0.45);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            PositionId::from("P-FORCED-EXIT-001"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        let decision = strategy.exit_submission_decision_at(1_200);
+
+        assert_eq!(decision.forced_flat_reasons, vec![ForcedFlatReason::Freeze]);
+        assert_eq!(decision.order_type, Some(OrderType::Market));
+        assert_eq!(decision.time_in_force, Some(TimeInForce::Ioc));
+        assert_eq!(decision.is_post_only, Some(false));
+        assert_eq!(decision.is_reduce_only, Some(true));
+        assert_eq!(decision.price, Some(0.44));
+    }
+
+    #[test]
+    fn forced_flat_exit_order_object_preserves_forced_exit_reduce_only_config() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.active.phase = SelectionPhase::Freeze;
+        strategy.config.exit_order.order_type = OrderType::Limit;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.exit_order.is_post_only = true;
+        strategy.config.forced_exit_order = strategy.config.exit_order.clone();
+        strategy.config.forced_exit_order.order_type = OrderType::Market;
+        strategy.config.forced_exit_order.time_in_force = TimeInForce::Ioc;
+        strategy.config.forced_exit_order.is_post_only = false;
+        strategy.config.forced_exit_order.is_reduce_only = true;
+        let instrument_id = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            PositionId::from("P-FORCED-EXIT-ORDER-001"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+        let decision = strategy.exit_submission_decision_at(1_200);
+        let price = Price::new(
+            decision
+                .price
+                .expect("forced-flat decision should choose price"),
+            strategy
+                .current_instrument(instrument_id)
+                .expect("test instrument should be registered")
+                .price_precision(),
+        );
+
+        let order = strategy
+            .build_exit_order_with_execution_config(
+                decision
+                    .execution_config()
+                    .expect("forced-flat decision should carry order config"),
+                instrument_id,
+                decision.order_side.expect("forced-flat should choose side"),
+                decision
+                    .quantity
+                    .expect("forced-flat should choose quantity"),
+                price,
+                ClientOrderId::from("O-19700101-000000-001-005-1"),
+            )
+            .expect("forced-flat market exit order should build");
+
+        let OrderAny::Market(order) = order else {
+            panic!("forced-flat exit should build an NT market order");
+        };
+        assert_eq!(order.order_type(), OrderType::Market);
+        assert_eq!(order.time_in_force(), TimeInForce::Ioc);
+        assert_eq!(order.price(), None);
+        assert!(order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
+    }
+
+    #[test]
+    fn forced_flat_exit_order_object_uses_configured_forced_exit_template() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.active.phase = SelectionPhase::Freeze;
+        strategy.config.exit_order.order_type = OrderType::Market;
+        strategy.config.exit_order.time_in_force = TimeInForce::Ioc;
+        strategy.config.exit_order.is_post_only = false;
+        strategy.config.forced_exit_order = strategy.config.exit_order.clone();
+        strategy.config.forced_exit_order.order_type = OrderType::Limit;
+        strategy.config.forced_exit_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.forced_exit_order.is_post_only = true;
+        strategy.config.forced_exit_order.is_reduce_only = true;
+        let instrument_id = selected_entry_instrument(&strategy);
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            PositionId::from("P-FORCED-EXIT-CONFIGURED-001"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        set_managed_position(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+        let decision = strategy.exit_submission_decision_at(1_200);
+        let price = Price::new(
+            decision
+                .price
+                .expect("forced-flat decision should choose price"),
+            strategy
+                .current_instrument(instrument_id)
+                .expect("test instrument should be registered")
+                .price_precision(),
+        );
+
+        let order = strategy
+            .build_exit_order_with_execution_config(
+                decision
+                    .execution_config()
+                    .expect("forced-flat decision should carry order config"),
+                instrument_id,
+                decision.order_side.expect("forced-flat should choose side"),
+                decision
+                    .quantity
+                    .expect("forced-flat should choose quantity"),
+                price,
+                ClientOrderId::from("O-19700101-000000-001-006-1"),
+            )
+            .expect("configured forced-flat exit order should build");
+
+        let OrderAny::Limit(order) = order else {
+            panic!("forced-flat exit should use configured NT order type");
+        };
+        assert_eq!(order.order_type(), OrderType::Limit);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtc);
+        assert_eq!(order.price(), Some(price));
+        assert!(order.is_post_only());
+        assert!(order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
+    }
+
+    fn assert_limit_gtc_post_only_order(
+        order: OrderAny,
+        expected_side: OrderSide,
+        expected_price: Price,
+    ) {
+        let OrderAny::Limit(order) = order else {
+            panic!("maker order should be built as an NT limit order");
+        };
+        assert_eq!(order.order_side(), expected_side);
+        assert_eq!(order.order_type(), OrderType::Limit);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtc);
+        assert_eq!(order.price(), Some(expected_price));
+        assert!(order.is_post_only());
+        assert!(!order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
+        assert_eq!(order.expire_time(), None);
+    }
+
+    #[test]
+    fn post_only_maker_order_objects_preserve_nt_limit_gtc_fields() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.is_post_only = true;
+        strategy.config.exit_order.order_type = OrderType::Limit;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.exit_order.is_post_only = true;
+
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(1.0, 2);
+        let entry_price = Price::new(0.40, 2);
+        let entry_order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                entry_price,
+                ClientOrderId::from("O-19700101-000000-001-001-1"),
+            )
+            .expect("maker entry order should build");
+        assert_limit_gtc_post_only_order(entry_order, OrderSide::Buy, entry_price);
+
+        let exit_price = Price::new(0.45, 2);
+        let exit_order = strategy
+            .build_configured_exit_order(
+                instrument_id,
+                OrderSide::Sell,
+                quantity,
+                exit_price,
+                ClientOrderId::from("O-19700101-000000-001-002-1"),
+            )
+            .expect("maker exit order should build");
+        assert_limit_gtc_post_only_order(exit_order, OrderSide::Sell, exit_price);
+    }
+
+    #[test]
+    fn gtd_limit_order_objects_preserve_nt_expire_time() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(0.40, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-003-1"),
+            )
+            .expect("GTD limit order with explicit expiry should build");
+
+        let OrderAny::Limit(order) = order else {
+            panic!("GTD limit config should build an NT limit order");
+        };
+        assert_eq!(order.time_in_force(), TimeInForce::Gtd);
+        assert_eq!(order.expire_time(), Some(expire_time));
+    }
+
+    #[test]
+    fn non_gtd_limit_order_objects_preserve_nt_expire_time() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+        let instrument_id = selected_entry_instrument(&strategy);
+
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                Quantity::new(1.0, 2),
+                Price::new(0.40, 2),
+                ClientOrderId::from("O-19700101-000000-001-020-1"),
+            )
+            .expect("non-GTD limit expiry should pass through to NT");
+
+        let OrderAny::Limit(order) = order else {
+            panic!("non-GTD limit config should build an NT limit order");
+        };
+        assert_eq!(order.time_in_force(), TimeInForce::Gtc);
+        assert_eq!(order.expire_time(), Some(expire_time));
+    }
+
+    #[test]
+    fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        strategy.config.entry_order.order_type = OrderType::StopMarket;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(2.0, 2);
+        let admission_price = Price::new(0.40, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                admission_price,
+                ClientOrderId::from("O-19700101-000000-001-005-1"),
+            )
+            .expect("StopMarket order with explicit trigger price should build");
+
+        let admission = submit_admission_request_from_order(
+            &BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                BoltV3OrderIntentKind::Entry,
+                admission_price.to_string(),
+                &order,
+            ),
+            &order,
+        )
+        .expect("StopMarket admission should derive from compiled order plus fallback price");
+
+        let OrderAny::StopMarket(order) = order else {
+            panic!("StopMarket config should build an NT stop-market order");
+        };
+        assert_eq!(order.order_type(), OrderType::StopMarket);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtc);
+        assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
+        assert_eq!(order.trigger_type(), Some(TriggerType::LastPrice));
+        assert_eq!(order.price(), None);
+        assert!(!order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("1.040").expect("expected decimal should parse")
+        );
+    }
+
+    #[test]
+    fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
+        let mut raw = valid_raw_config();
+        let entry_order = raw
+            .as_table_mut()
+            .expect("valid config must be a table")
+            .get_mut("entry_order")
+            .expect("valid config should include entry_order")
+            .as_table_mut()
+            .expect("entry_order should be a table");
+        entry_order.insert(
+            "order_type".to_string(),
+            Value::String("stop_market".to_string()),
+        );
+        entry_order.insert(
+            "time_in_force".to_string(),
+            Value::String("gtc".to_string()),
+        );
+        entry_order.insert("trigger_price".to_string(), Value::Float(0.52));
+        entry_order.insert(
+            "trigger_instrument_id".to_string(),
+            Value::String("ETHUSDT.BINANCE".to_string()),
+        );
+        let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect("trigger_instrument_id should parse through runtime config");
+        let context = StrategyBuildContext::new(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                    RecordingDecisionEvidenceWriter,
+                )),
+            ),
+        );
+        let mut strategy = BinaryOracleEdgeTaker::new(config, context);
+        let _cache = register_test_strategy(&mut strategy);
+        let trigger_instrument_id = InstrumentId::from("ETHUSDT.BINANCE");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                Quantity::new(2.0, 2),
+                Price::new(0.40, 2),
+                ClientOrderId::from("O-19700101-000000-001-021-1"),
+            )
+            .expect("triggered order should build with NT trigger_instrument_id");
+
+        let OrderAny::StopMarket(order) = order else {
+            panic!("StopMarket config should build an NT stop-market order");
+        };
+        assert_eq!(order.trigger_instrument_id(), Some(trigger_instrument_id));
+    }
+
+    #[test]
+    fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
+        let mut raw = valid_raw_config();
+        let entry_order = raw
+            .as_table_mut()
+            .expect("valid config must be a table")
+            .get_mut("entry_order")
+            .expect("valid config should include entry_order")
+            .as_table_mut()
+            .expect("entry_order should be a table");
+        entry_order.insert(
+            "trigger_instrument_id".to_string(),
+            Value::String("ETHUSDT.BINANCE".to_string()),
+        );
+        let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect("trigger_instrument_id should parse through runtime config");
+        let context = StrategyBuildContext::new(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                    RecordingDecisionEvidenceWriter,
+                )),
+            ),
+        );
+        let mut strategy = BinaryOracleEdgeTaker::new(config, context);
+        let _cache = register_test_strategy(&mut strategy);
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+
+        let error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                Quantity::new(2.0, 2),
+                Price::new(0.40, 2),
+                ClientOrderId::from("O-19700101-000000-001-022-1"),
+            )
+            .expect_err("non-triggered order must not silently carry trigger_instrument_id");
+
+        assert!(
+            error.to_string().contains("trigger_instrument_id"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
+        strategy.config.entry_order.order_type = OrderType::StopLimit;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        strategy.config.entry_order.is_post_only = true;
+        strategy.config.exit_order.order_type = OrderType::StopLimit;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.exit_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+        strategy.config.exit_order.trigger_price = Some(0.48);
+        strategy.config.exit_order.trigger_type = Some(TriggerType::MarkPrice);
+        strategy.config.exit_order.is_post_only = true;
+
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(2.0, 2);
+        let price = Price::new(0.40, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-006-1"),
+            )
+            .expect("StopLimit order with explicit trigger price should build");
+
+        let admission = submit_admission_request_from_order(
+            &BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            ),
+            &order,
+        )
+        .expect("StopLimit admission should derive from the compiled NT order");
+
+        let OrderAny::StopLimit(order) = order else {
+            panic!("StopLimit config should build an NT stop-limit order");
+        };
+        assert_eq!(order.order_type(), OrderType::StopLimit);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtd);
+        assert_eq!(order.price(), Some(price));
+        assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
+        assert_eq!(order.trigger_type(), Some(TriggerType::LastPrice));
+        assert_eq!(order.expire_time(), Some(expire_time));
+        assert!(order.is_post_only());
+        assert!(!order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("0.800").expect("expected decimal should parse")
+        );
+
+        let exit_price = Price::new(0.45, 2);
+        let exit_order = strategy
+            .build_configured_exit_order(
+                instrument_id,
+                OrderSide::Sell,
+                quantity,
+                exit_price,
+                ClientOrderId::from("O-19700101-000000-001-007-1"),
+            )
+            .expect("StopLimit exit order with explicit trigger price should build");
+
+        let OrderAny::StopLimit(exit_order) = exit_order else {
+            panic!("StopLimit exit config should build an NT stop-limit order");
+        };
+        assert_eq!(exit_order.order_side(), OrderSide::Sell);
+        assert_eq!(exit_order.order_type(), OrderType::StopLimit);
+        assert_eq!(exit_order.time_in_force(), TimeInForce::Gtd);
+        assert_eq!(exit_order.price(), Some(exit_price));
+        assert_eq!(exit_order.trigger_price(), Some(Price::new(0.48, 2)));
+        assert_eq!(exit_order.trigger_type(), Some(TriggerType::MarkPrice));
+        assert_eq!(exit_order.expire_time(), Some(expire_time));
+        assert!(exit_order.is_post_only());
+        assert!(!exit_order.is_reduce_only());
+        assert!(!exit_order.is_quote_quantity());
+    }
+
+    #[test]
+    fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
+        strategy.config.entry_order.order_type = OrderType::LimitIfTouched;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+        strategy.config.entry_order.trigger_price = Some(0.39);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        strategy.config.entry_order.is_post_only = true;
+        strategy.config.exit_order.order_type = OrderType::LimitIfTouched;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.exit_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+        strategy.config.exit_order.trigger_price = Some(0.46);
+        strategy.config.exit_order.trigger_type = Some(TriggerType::MarkPrice);
+        strategy.config.exit_order.is_post_only = true;
+
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(2.0, 2);
+        let price = Price::new(0.40, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-009-1"),
+            )
+            .expect("LimitIfTouched entry order with explicit trigger price should build");
+
+        let admission = submit_admission_request_from_order(
+            &BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            ),
+            &order,
+        )
+        .expect("LimitIfTouched admission should derive from the compiled NT order");
+
+        let OrderAny::LimitIfTouched(order) = order else {
+            panic!("LimitIfTouched config should build an NT limit-if-touched order");
+        };
+        assert_eq!(order.order_side(), OrderSide::Buy);
+        assert_eq!(order.order_type(), OrderType::LimitIfTouched);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtd);
+        assert_eq!(order.price(), Some(price));
+        assert_eq!(order.trigger_price(), Some(Price::new(0.39, 2)));
+        assert_eq!(order.trigger_type(), Some(TriggerType::LastPrice));
+        assert_eq!(order.expire_time(), Some(expire_time));
+        assert!(order.is_post_only());
+        assert!(!order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("0.800").expect("expected decimal should parse")
+        );
+
+        let exit_price = Price::new(0.45, 2);
+        let exit_order = strategy
+            .build_configured_exit_order(
+                instrument_id,
+                OrderSide::Sell,
+                quantity,
+                exit_price,
+                ClientOrderId::from("O-19700101-000000-001-010-1"),
+            )
+            .expect("LimitIfTouched exit order with explicit trigger price should build");
+
+        let OrderAny::LimitIfTouched(exit_order) = exit_order else {
+            panic!("LimitIfTouched exit config should build an NT limit-if-touched order");
+        };
+        assert_eq!(exit_order.order_side(), OrderSide::Sell);
+        assert_eq!(exit_order.order_type(), OrderType::LimitIfTouched);
+        assert_eq!(exit_order.time_in_force(), TimeInForce::Gtd);
+        assert_eq!(exit_order.price(), Some(exit_price));
+        assert_eq!(exit_order.trigger_price(), Some(Price::new(0.46, 2)));
+        assert_eq!(exit_order.trigger_type(), Some(TriggerType::MarkPrice));
+        assert_eq!(exit_order.expire_time(), Some(expire_time));
+        assert!(exit_order.is_post_only());
+        assert!(!exit_order.is_reduce_only());
+        assert!(!exit_order.is_quote_quantity());
+    }
+
+    #[test]
+    fn limit_if_touched_rejects_nt_side_price_invariants_before_factory() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(2.0, 2);
+
+        strategy.config.entry_order.order_type = OrderType::LimitIfTouched;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.trigger_price = Some(0.41);
+        let buy_error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                Price::new(0.40, 2),
+                ClientOrderId::from("O-19700101-000000-001-011-1"),
+            )
+            .expect_err(
+                "BUY LimitIfTouched with trigger above limit should fail before NT factory",
+            );
+        assert!(
+            buy_error.to_string().contains("trigger_price") && buy_error.to_string().contains("<="),
+            "{buy_error}"
+        );
+
+        strategy.config.exit_order.order_type = OrderType::LimitIfTouched;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.exit_order.trigger_price = Some(0.44);
+        let sell_error = strategy
+            .build_configured_exit_order(
+                instrument_id,
+                OrderSide::Sell,
+                quantity,
+                Price::new(0.45, 2),
+                ClientOrderId::from("O-19700101-000000-001-012-1"),
+            )
+            .expect_err(
+                "SELL LimitIfTouched with trigger below limit should fail before NT factory",
+            );
+        assert!(
+            sell_error.to_string().contains("trigger_price")
+                && sell_error.to_string().contains(">="),
+            "{sell_error}"
+        );
+    }
+
+    #[test]
+    fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
+        strategy.config.entry_order.order_type = OrderType::TrailingStopMarket;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        strategy.config.entry_order.trailing_offset = Some(2.5);
+        strategy.config.entry_order.trailing_offset_type = Some(TrailingOffsetType::BasisPoints);
+        strategy.config.entry_order.is_post_only = false;
+        strategy.config.exit_order.order_type = OrderType::TrailingStopMarket;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.exit_order.expire_time_unix_nanos = Some(expire_time.as_u64());
+        strategy.config.exit_order.activation_price = Some(0.48);
+        strategy.config.exit_order.trigger_type = Some(TriggerType::MarkPrice);
+        strategy.config.exit_order.trailing_offset = Some(3.0);
+        strategy.config.exit_order.trailing_offset_type = Some(TrailingOffsetType::Ticks);
+        strategy.config.exit_order.is_post_only = false;
+
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(2.0, 2);
+        let fallback_price = Price::new(0.40, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                fallback_price,
+                ClientOrderId::from("O-19700101-000000-001-013-1"),
+            )
+            .expect("TrailingStopMarket entry order with explicit trailing fields should build");
+
+        let admission = submit_admission_request_from_order(
+            &BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                BoltV3OrderIntentKind::Entry,
+                fallback_price.to_string(),
+                &order,
+            ),
+            &order,
+        )
+        .expect("TrailingStopMarket admission should derive from compiled trigger price");
+
+        let OrderAny::TrailingStopMarket(order) = order else {
+            panic!("TrailingStopMarket config should build an NT trailing-stop-market order");
+        };
+        assert_eq!(order.order_side(), OrderSide::Buy);
+        assert_eq!(order.order_type(), OrderType::TrailingStopMarket);
+        assert_eq!(order.time_in_force(), TimeInForce::Gtd);
+        assert_eq!(order.price(), None);
+        assert_eq!(order.trigger_price(), Some(Price::new(0.52, 2)));
+        assert_eq!(order.activation_price(), None);
+        assert_eq!(order.trigger_type(), Some(TriggerType::LastPrice));
+        assert_eq!(order.trailing_offset(), Some(Decimal::new(25, 1)));
+        assert_eq!(
+            order.trailing_offset_type(),
+            Some(TrailingOffsetType::BasisPoints)
+        );
+        assert_eq!(order.expire_time(), Some(expire_time));
+        assert!(!order.is_post_only());
+        assert!(!order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("1.040").expect("expected decimal should parse")
+        );
+
+        let exit_fallback_price = Price::new(0.45, 2);
+        let exit_order = strategy
+            .build_configured_exit_order(
+                instrument_id,
+                OrderSide::Sell,
+                quantity,
+                exit_fallback_price,
+                ClientOrderId::from("O-19700101-000000-001-014-1"),
+            )
+            .expect("TrailingStopMarket exit order with explicit activation price should build");
+
+        let exit_admission = submit_admission_request_from_order(
+            &BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                BoltV3OrderIntentKind::Exit,
+                exit_fallback_price.to_string(),
+                &exit_order,
+            ),
+            &exit_order,
+        )
+        .expect("TrailingStopMarket activation-only exit admission should derive from compiled activation price");
+
+        let OrderAny::TrailingStopMarket(exit_order) = exit_order else {
+            panic!("TrailingStopMarket exit config should build an NT trailing-stop-market order");
+        };
+        assert_eq!(exit_order.order_side(), OrderSide::Sell);
+        assert_eq!(exit_order.order_type(), OrderType::TrailingStopMarket);
+        assert_eq!(exit_order.time_in_force(), TimeInForce::Gtd);
+        assert_eq!(exit_order.price(), None);
+        assert_eq!(exit_order.trigger_price(), Some(Price::new(0.48, 2)));
+        assert_eq!(exit_order.activation_price(), Some(Price::new(0.48, 2)));
+        let expected_exit_notional = Decimal::from_str(
+            exit_order
+                .activation_price()
+                .expect("activation-only trailing-stop exit should retain activation price")
+                .to_string()
+                .trim(),
+        )
+        .expect("activation price should parse")
+            * Decimal::from_str(quantity.to_string().trim()).expect("quantity should parse");
+        assert_eq!(exit_admission.notional, expected_exit_notional);
+        assert_eq!(exit_order.trigger_type(), Some(TriggerType::MarkPrice));
+        assert_eq!(exit_order.trailing_offset(), Some(Decimal::new(3, 0)));
+        assert_eq!(
+            exit_order.trailing_offset_type(),
+            Some(TrailingOffsetType::Ticks)
+        );
+        assert_eq!(exit_order.expire_time(), Some(expire_time));
+        assert!(!exit_order.is_post_only());
+        assert!(!exit_order.is_reduce_only());
+        assert!(!exit_order.is_quote_quantity());
+    }
+
+    #[test]
+    fn trailing_stop_market_order_objects_use_nt_default_types_when_omitted() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        strategy.config.entry_order.order_type = OrderType::TrailingStopMarket;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trailing_offset = Some(2.5);
+        strategy.config.entry_order.is_post_only = false;
+        let instrument_id = selected_entry_instrument(&strategy);
+
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                Quantity::new(2.0, 2),
+                Price::new(0.40, 2),
+                ClientOrderId::from("O-19700101-000000-001-019-1"),
+            )
+            .expect("TrailingStopMarket should use NT defaults for omitted type fields");
+
+        let OrderAny::TrailingStopMarket(order) = order else {
+            panic!("TrailingStopMarket config should build an NT trailing-stop-market order");
+        };
+        assert_eq!(order.trigger_type(), Some(TriggerType::Default));
+        assert_eq!(
+            order.trailing_offset_type(),
+            Some(TrailingOffsetType::Price)
+        );
+    }
+
+    #[test]
+    fn trailing_stop_market_rejects_required_nt_fields_before_factory() {
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(0.40, 2);
+
+        let mut missing_offset =
+            ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut missing_offset);
+        missing_offset.config.entry_order.order_type = OrderType::TrailingStopMarket;
+        missing_offset.config.entry_order.time_in_force = TimeInForce::Gtc;
+        missing_offset.config.entry_order.trigger_price = Some(0.52);
+        missing_offset.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        missing_offset.config.entry_order.trailing_offset_type = Some(TrailingOffsetType::Price);
+        let missing_offset_error = missing_offset
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-015-1"),
+            )
+            .expect_err("TrailingStopMarket without trailing_offset should fail before factory");
+        assert!(
+            missing_offset_error.to_string().contains("trailing_offset"),
+            "{missing_offset_error}"
+        );
+
+        for trailing_offset in [0.0, -0.01] {
+            let mut invalid_offset =
+                ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+            let _cache = register_test_strategy(&mut invalid_offset);
+            invalid_offset.config.entry_order.order_type = OrderType::TrailingStopMarket;
+            invalid_offset.config.entry_order.time_in_force = TimeInForce::Gtc;
+            invalid_offset.config.entry_order.trigger_price = Some(0.52);
+            invalid_offset.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+            invalid_offset.config.entry_order.trailing_offset = Some(trailing_offset);
+            invalid_offset.config.entry_order.trailing_offset_type =
+                Some(TrailingOffsetType::Price);
+            let invalid_offset_error = invalid_offset
+                .build_configured_entry_order(
+                    instrument_id,
+                    OrderSide::Buy,
+                    quantity,
+                    price,
+                    ClientOrderId::from("O-19700101-000000-001-016-1"),
+                )
+                .expect_err(
+                    "TrailingStopMarket with non-positive trailing_offset should fail before factory",
+                );
+            assert!(
+                invalid_offset_error.to_string().contains("trailing_offset"),
+                "{invalid_offset_error}"
+            );
+        }
+
+        let mut missing_trigger =
+            ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut missing_trigger);
+        missing_trigger.config.entry_order.order_type = OrderType::TrailingStopMarket;
+        missing_trigger.config.entry_order.time_in_force = TimeInForce::Gtc;
+        missing_trigger.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        missing_trigger.config.entry_order.trailing_offset = Some(1.0);
+        missing_trigger.config.entry_order.trailing_offset_type = Some(TrailingOffsetType::Price);
+        let missing_trigger_error = missing_trigger
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-017-1"),
+            )
+            .expect_err(
+                "TrailingStopMarket without trigger_price or activation_price should fail before factory",
+            );
+        assert!(
+            missing_trigger_error.to_string().contains("trigger_price")
+                && missing_trigger_error
+                    .to_string()
+                    .contains("activation_price"),
+            "{missing_trigger_error}"
+        );
+
+        let mut is_post_only = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut is_post_only);
+        is_post_only.config.entry_order.order_type = OrderType::TrailingStopMarket;
+        is_post_only.config.entry_order.time_in_force = TimeInForce::Gtc;
+        is_post_only.config.entry_order.trigger_price = Some(0.52);
+        is_post_only.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        is_post_only.config.entry_order.trailing_offset = Some(1.0);
+        is_post_only.config.entry_order.trailing_offset_type = Some(TrailingOffsetType::Price);
+        is_post_only.config.entry_order.is_post_only = true;
+        let is_post_only_error = is_post_only
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-018-1"),
+            )
+            .expect_err("TrailingStopMarket post-only should fail before factory");
+        assert!(
+            is_post_only_error.to_string().contains("is_post_only"),
+            "{is_post_only_error}"
+        );
+    }
+
+    #[test]
+    fn configured_order_build_rejects_nt_model_invalid_tif_before_factory() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(0.40, 2);
+
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        let limit_error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-003-1"),
+            )
+            .expect_err("limit GTD without expire_time should fail before NT factory");
+        assert!(
+            limit_error.to_string().contains("expire_time"),
+            "{limit_error}"
+        );
+
+        strategy.config.entry_order.order_type = OrderType::Market;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        let market_error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-004-1"),
+            )
+            .expect_err("market GTD should fail before NT factory");
+        assert!(
+            market_error
+                .to_string()
+                .contains("GTD not supported for Market orders"),
+            "{market_error}"
+        );
+
+        strategy.config.entry_order.time_in_force = TimeInForce::Fok;
+        strategy.config.entry_order.expire_time_unix_nanos = Some(4_102_444_800_000_000_000_u64);
+        let market_expiry_error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-005-1"),
+            )
+            .expect_err("market expire_time should fail before NT factory");
+        assert!(
+            market_expiry_error
+                .to_string()
+                .contains("expire_time is not supported for Market orders"),
+            "{market_expiry_error}"
+        );
+
+        strategy.config.entry_order.expire_time_unix_nanos = None;
+        strategy.config.entry_order.order_type = OrderType::StopLimit;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        let stop_limit_error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-005-1"),
+            )
+            .expect_err("StopLimit GTD without expire_time should fail before NT factory");
+        assert!(
+            stop_limit_error.to_string().contains("expire_time"),
+            "{stop_limit_error}"
+        );
+
+        strategy.config.entry_order.order_type = OrderType::MarketIfTouched;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        let market_if_touched_error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-007-1"),
+            )
+            .expect_err("MarketIfTouched GTD without expire_time should fail before NT factory");
+        assert!(
+            market_if_touched_error.to_string().contains("expire_time"),
+            "{market_if_touched_error}"
+        );
+
+        strategy.config.entry_order.order_type = OrderType::LimitIfTouched;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.trigger_price = Some(0.39);
+        let limit_if_touched_error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-008-1"),
+            )
+            .expect_err("LimitIfTouched GTD without expire_time should fail before NT factory");
+        assert!(
+            limit_if_touched_error.to_string().contains("expire_time"),
+            "{limit_if_touched_error}"
+        );
+
+        strategy.config.entry_order.order_type = OrderType::TrailingStopMarket;
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        strategy.config.entry_order.trailing_offset = Some(1.0);
+        strategy.config.entry_order.trailing_offset_type = Some(TrailingOffsetType::Price);
+        let trailing_stop_market_error = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-009-1"),
+            )
+            .expect_err("TrailingStopMarket GTD without expire_time should fail before NT factory");
+        assert!(
+            trailing_stop_market_error
+                .to_string()
+                .contains("expire_time"),
+            "{trailing_stop_market_error}"
         );
     }
 
     #[test]
     fn entry_book_impact_cap_uses_configured_sell_side_book() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let selected_side = selected_entry_side(&strategy);
         strategy.config.entry_order.side = "sell".to_string();
         strategy.config.entry_order.position_side = "short".to_string();
         strategy.config.exit_order.side = "buy".to_string();
         strategy.config.exit_order.position_side = "short".to_string();
         strategy.config.book_impact_cap_bps = 0;
-        strategy.active.books.down.bid_levels.clear();
-        strategy.active.books.down.ask_levels.clear();
-        strategy
-            .active
-            .books
-            .down
-            .bid_levels
-            .insert(Price::new(0.44, 2), 7.0);
-        strategy
-            .active
-            .books
-            .down
-            .bid_levels
-            .insert(Price::new(0.42, 2), 100.0);
-        strategy
-            .active
-            .books
-            .down
-            .ask_levels
-            .insert(Price::new(0.60, 2), 100.0);
-        strategy.active.books.down.best_bid = Some(0.44);
-        strategy.active.books.down.best_ask = Some(0.60);
+        set_configured_books_depth(
+            &mut strategy,
+            &[
+                (BookAction::Clear, OrderSide::Buy, 0.44, 7.0),
+                (BookAction::Add, OrderSide::Buy, 0.44, 7.0),
+                (BookAction::Add, OrderSide::Buy, 0.42, 100.0),
+                (BookAction::Add, OrderSide::Sell, 0.60, 100.0),
+            ],
+        );
 
         assert_eq!(
-            strategy.visible_book_notional_cap(OutcomeSide::Down),
+            strategy.visible_book_notional_cap(selected_side),
             Some(3.08)
         );
     }
 
     #[test]
-    fn configured_short_position_contract_is_supported_when_entry_exit_contract_is_coherent() {
+    fn post_only_entry_book_impact_cap_uses_passive_side_book() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let selected_side = selected_entry_side(&strategy);
+        strategy.config.entry_order.is_post_only = true;
+        strategy.config.book_impact_cap_bps = 0;
+        set_configured_books_depth(
+            &mut strategy,
+            &[
+                (BookAction::Clear, OrderSide::Buy, 0.44, 7.0),
+                (BookAction::Add, OrderSide::Buy, 0.44, 7.0),
+                (BookAction::Add, OrderSide::Buy, 0.42, 100.0),
+                (BookAction::Add, OrderSide::Sell, 0.60, 100.0),
+            ],
+        );
+
+        assert_eq!(
+            strategy.visible_book_notional_cap(selected_side),
+            Some(3.08)
+        );
+    }
+
+    #[test]
+    fn configured_short_position_contract_is_rejected_until_short_economics_exists() {
         let contract = ConfiguredPositionContract {
             entry_order_side: OrderSide::Sell,
             entry_position_side: PositionSide::Short,
@@ -8476,7 +10998,7 @@ mod tests {
             exit_position_side: PositionSide::Short,
         };
 
-        assert!(supports_strategy_managed_position(
+        assert!(!supports_strategy_managed_position(
             OrderSide::Sell,
             PositionSide::Short,
             contract
@@ -8533,7 +11055,7 @@ mod tests {
 
     #[test]
     fn book_impact_cap_is_derived_from_vwap_slippage_against_best_touch() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let mut state = OutcomeBookState::from_instrument_id(instrument_id);
         state.update_from_deltas(&book_deltas(
             instrument_id,
@@ -8563,12 +11085,11 @@ mod tests {
 
     #[test]
     fn book_impact_cap_config_changes_sizing_decision() {
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
-
         let mut loose = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         loose.config.book_impact_cap_bps = 5_000;
-        loose.active.books.up.update_from_deltas(&book_deltas(
-            instrument_id,
+        let loose_instrument_id = selected_entry_instrument(&loose);
+        loose.active.books.update_from_deltas(&book_deltas(
+            loose_instrument_id,
             &[
                 (BookAction::Add, OrderSide::Buy, 0.49, 10.0),
                 (BookAction::Add, OrderSide::Sell, 0.50, 10.0),
@@ -8578,8 +11099,9 @@ mod tests {
 
         let mut tight = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         tight.config.book_impact_cap_bps = 0;
-        tight.active.books.up.update_from_deltas(&book_deltas(
-            instrument_id,
+        let tight_instrument_id = selected_entry_instrument(&tight);
+        tight.active.books.update_from_deltas(&book_deltas(
+            tight_instrument_id,
             &[
                 (BookAction::Add, OrderSide::Buy, 0.49, 10.0),
                 (BookAction::Add, OrderSide::Sell, 0.50, 10.0),
@@ -8587,8 +11109,8 @@ mod tests {
             ],
         ));
 
-        let loose_cap = loose.visible_book_notional_cap(OutcomeSide::Up);
-        let tight_cap = tight.visible_book_notional_cap(OutcomeSide::Up);
+        let loose_cap = loose.visible_book_notional_cap(selected_entry_side(&loose));
+        let tight_cap = tight.visible_book_notional_cap(selected_entry_side(&tight));
 
         assert!(
             loose_cap
@@ -8603,14 +11125,8 @@ mod tests {
         let mut strategy = ready_to_trade_strategy();
         let entry_client_order_id = ClientOrderId::from("ENTRY-A");
         let position_id = PositionId::from("P-A");
-        let instrument_a = strategy.active.books.up.instrument_id.unwrap();
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_a,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_a = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
 
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
@@ -8631,25 +11147,16 @@ mod tests {
     #[test]
     fn exit_fill_arms_cooldown_for_position_market_not_current_selection() {
         let mut strategy = ready_to_trade_strategy();
-        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
+        let tracked_instrument = selected_entry_instrument(&strategy);
         let exit_client_order_id = ClientOrderId::from("EXIT-A");
         let position_id = PositionId::from("P-A");
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
-            instrument_id: tracked_instrument,
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            tracked_instrument,
             position_id,
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -8677,25 +11184,17 @@ mod tests {
     #[test]
     fn exit_fill_without_known_position_market_does_not_cool_down_active_selection() {
         let mut strategy = ready_to_trade_strategy();
-        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
+        let tracked_instrument = selected_entry_instrument(&strategy);
         let exit_client_order_id = ClientOrderId::from("EXIT-UNKNOWN");
         let position_id = PositionId::from("P-UNKNOWN");
-        let open_position = OpenPositionState {
-            market_id: None,
-            instrument_id: tracked_instrument,
+        let mut open_position = materialize_configured_position(
+            &mut strategy,
+            tracked_instrument,
             position_id,
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        open_position.market_id = None;
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -8720,25 +11219,16 @@ mod tests {
     #[test]
     fn delayed_exit_fill_after_position_closed_does_not_cool_down_active_selection() {
         let mut strategy = ready_to_trade_strategy();
-        let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
+        let tracked_instrument = selected_entry_instrument(&strategy);
         let exit_client_order_id = ClientOrderId::from("EXIT-DELAYED");
         let position_id = PositionId::from("P-DELAYED");
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
-            instrument_id: tracked_instrument,
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            tracked_instrument,
             position_id,
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_exit_pending(
             &mut strategy,
             open_position,
@@ -8766,6 +11256,7 @@ mod tests {
     #[test]
     fn rotated_position_uses_position_book_for_thin_book_forced_flat() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let position_outcome_side = selected_entry_side(&strategy);
         let position_instrument = InstrumentId::from("condition-MKT-A-UP.POLYMARKET");
         let mut tracked_book = OutcomeBookState::from_instrument_id(position_instrument);
         tracked_book.last_observed_instrument_id = Some(position_instrument);
@@ -8776,7 +11267,7 @@ mod tests {
             market_id: Some("MKT-A".to_string()),
             instrument_id: position_instrument,
             position_id: PositionId::from("P-THIN-001"),
-            outcome_side: Some(OutcomeSide::Up),
+            outcome_side: Some(position_outcome_side),
             outcome_fees: strategy.active.outcome_fees.clone(),
             historical_entry_fee_bps: Some(0.0),
             entry_order_side: OrderSide::Buy,
@@ -8825,17 +11316,11 @@ mod tests {
     #[test]
     fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_a = strategy.active.books.up.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-A");
         let position_id = PositionId::from("P-A");
-        let original_book = strategy.active.books.up.clone();
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_a,
-            OutcomeSide::Up,
-            original_book.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_a = pending.instrument_id;
+        let original_book = pending.book.clone();
         set_pending_entry(&mut strategy, pending);
 
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
@@ -8880,18 +11365,393 @@ mod tests {
     }
 
     #[test]
+    fn maker_entry_partial_fills_keep_entry_fill_accounting_without_overwriting_position_event_quantity()
+     {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.is_post_only = true;
+        let entry_client_order_id = ClientOrderId::from("ENTRY-PARTIAL");
+        let position_id = PositionId::from("P-PARTIAL");
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
+        set_pending_entry(&mut strategy, pending);
+
+        let mut first_fill = order_filled_event(entry_client_order_id, instrument_id, position_id);
+        first_fill.last_qty = Quantity::new(4.0, 2);
+        strategy
+            .on_order_filled(&first_fill)
+            .expect("first maker partial fill should be recorded");
+        strategy.on_position_opened(position_opened_event(
+            instrument_id,
+            position_id,
+            Quantity::new(4.0, 2),
+            0.450,
+        ));
+
+        let mut second_fill = order_filled_event(entry_client_order_id, instrument_id, position_id);
+        second_fill.last_qty = Quantity::new(6.0, 2);
+        strategy
+            .on_order_filled(&second_fill)
+            .expect("later maker partial fill for same order should be recorded");
+
+        assert_eq!(strategy.market_churn_count("MKT-1"), 2);
+        assert_eq!(
+            managed_position_ref(&strategy).map(|position| position.quantity),
+            Some(Quantity::new(4.0, 2)),
+            "OrderFilled carries last fill quantity; NT position events remain authoritative for aggregate position quantity"
+        );
+    }
+
+    #[test]
+    fn managed_partial_entry_blocks_normal_exit_until_entry_order_resolves() {
+        let configured_instruments = configured_outcome_instruments(&ready_to_trade_strategy());
+        for instrument_id in configured_instruments {
+            let mut strategy = ready_to_trade_strategy();
+            strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+            strategy.config.entry_order.is_post_only = true;
+            strategy.active.phase = SelectionPhase::Active;
+            let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+            materialize_managed_position_with_resting_pending_entry(
+                &mut strategy,
+                instrument_id,
+                PositionId::from(format!("POSITION-NORMAL-WORKING-{instrument_id}").as_str()),
+                position_quantity,
+            );
+
+            let decision = strategy.exit_submission_decision_at(1_200);
+
+            assert_eq!(
+                decision.blocked_reason,
+                Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING),
+                "{instrument_id}"
+            );
+            assert_eq!(
+                decision.evaluation.blocked_reason,
+                Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING),
+                "{instrument_id}"
+            );
+            assert_eq!(decision.instrument_id, None, "{instrument_id}");
+            assert_eq!(decision.order_side, None, "{instrument_id}");
+            assert_eq!(decision.quantity, None, "{instrument_id}");
+            assert!(decision.forced_flat_reasons.is_empty(), "{instrument_id}");
+        }
+    }
+
+    #[test]
+    fn forced_flat_exit_submits_despite_resting_pending_entry() {
+        let configured_instruments = configured_outcome_instruments(
+            &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
+        );
+        for instrument_id in configured_instruments {
+            let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+            strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+            strategy.config.entry_order.is_post_only = true;
+            strategy.config.exit_order.order_type = OrderType::Limit;
+            strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+            strategy.config.exit_order.is_post_only = true;
+            strategy.active.phase = SelectionPhase::Freeze;
+            let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+            let expected_exit_time_in_force = strategy.config.forced_exit_order.time_in_force;
+            let expected_exit_reduce_only = strategy.config.forced_exit_order.is_reduce_only;
+            materialize_managed_position_with_resting_pending_entry(
+                &mut strategy,
+                instrument_id,
+                PositionId::from(format!("POSITION-FORCED-WORKING-{instrument_id}").as_str()),
+                position_quantity,
+            );
+            let expected_exit_price = strategy
+                .managed_position()
+                .and_then(|managed| managed.position.book.best_bid);
+            let expected_quantity = strategy
+                .managed_position()
+                .expect("fixture should materialize managed position")
+                .position
+                .quantity;
+
+            let decision = strategy.exit_submission_decision_at(1_200);
+
+            assert_eq!(decision.blocked_reason, None, "{instrument_id}");
+            assert_eq!(decision.evaluation.blocked_reason, None, "{instrument_id}");
+            assert_eq!(
+                decision.forced_flat_reasons,
+                vec![ForcedFlatReason::Freeze],
+                "{instrument_id}"
+            );
+            assert_eq!(
+                decision.order_type,
+                Some(OrderType::Market),
+                "{instrument_id}"
+            );
+            assert_eq!(
+                decision.time_in_force,
+                Some(expected_exit_time_in_force),
+                "{instrument_id}"
+            );
+            assert_eq!(
+                decision.order_side,
+                Some(OrderSide::Sell),
+                "{instrument_id}"
+            );
+            assert_eq!(
+                decision.quantity,
+                Some(expected_quantity),
+                "{instrument_id}"
+            );
+            assert_eq!(decision.price, expected_exit_price, "{instrument_id}");
+            assert_eq!(decision.is_post_only, Some(false), "{instrument_id}");
+            assert_eq!(
+                decision.is_reduce_only,
+                Some(expected_exit_reduce_only),
+                "{instrument_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
+        let configured_instruments = configured_outcome_instruments(
+            &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
+        );
+        for instrument_id in configured_instruments {
+            let submit_admission = Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                    RecordingDecisionEvidenceWriter,
+                )),
+            );
+            submit_admission
+                .arm(live_canary_gate_report(1, Decimal::new(10_000, 0)))
+                .expect("valid gate report should arm submit admission");
+            let (mut strategy, fee_provider) =
+                ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
+            strategy.context = StrategyBuildContext::new(
+                fee_provider,
+                Arc::new(RecordingDecisionEvidenceWriter),
+                submit_admission,
+            );
+            strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+            strategy.config.entry_order.is_post_only = true;
+            strategy.active.phase = SelectionPhase::Freeze;
+            let cache = register_test_strategy(&mut strategy);
+            add_active_instruments_to_cache(&strategy, &cache);
+            let (risk_handler, risk_messages) =
+                get_typed_into_message_saving_handler::<TradingCommand>(None);
+            msgbus::register_trading_command_endpoint(
+                MessagingSwitchboard::risk_engine_queue_execute(),
+                risk_handler,
+            );
+            let (exec_handler, exec_messages) =
+                get_typed_into_message_saving_handler::<TradingCommand>(None);
+            msgbus::register_trading_command_endpoint(
+                MessagingSwitchboard::exec_engine_queue_execute(),
+                exec_handler,
+            );
+            let position_id =
+                PositionId::from(format!("POSITION-FORCED-RACE-{instrument_id}").as_str());
+            let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+            let (instrument_id, entry_client_order_id) =
+                materialize_managed_position_with_resting_pending_entry(
+                    &mut strategy,
+                    instrument_id,
+                    position_id,
+                    position_quantity,
+                );
+            let entry_price = configured_book_for_instrument(&mut strategy, instrument_id)
+                .best_ask
+                .expect("ready-to-trade fixture should expose an ask");
+            let entry_order = strategy
+                .build_configured_entry_order(
+                    instrument_id,
+                    strategy
+                        .configured_entry_order_side()
+                        .expect("test config should carry entry order side"),
+                    position_quantity,
+                    Price::new(entry_price, 2),
+                    entry_client_order_id,
+                )
+                .expect("resting entry order should build through NT factory");
+            cache
+                .borrow_mut()
+                .add_order(
+                    entry_order,
+                    None,
+                    Some(ClientId::from(strategy.config.client_id.as_str())),
+                    true,
+                )
+                .expect("test cache should accept resting entry order");
+
+            let exit_client_order_id = strategy
+                .try_submit_exit_order(1_200)
+                .expect("forced-flat exit submit should not fail")
+                .expect("forced-flat exit should submit");
+
+            let exec_messages = exec_messages.get_messages();
+            assert!(
+                exec_messages.iter().any(|message| matches!(
+                    message,
+                    TradingCommand::CancelOrder(command)
+                        if command.client_order_id == entry_client_order_id
+                )),
+                "forced-flat submit should cancel the resting entry before relying on exit: {instrument_id}"
+            );
+            let risk_messages = risk_messages.get_messages();
+            assert!(
+                risk_messages.iter().any(|message| matches!(
+                    message,
+                    TradingCommand::SubmitOrder(command)
+                        if command.client_order_id == exit_client_order_id
+                )),
+                "forced-flat exit should still submit after the entry cancel request: {instrument_id}"
+            );
+
+            strategy
+                .on_order_filled(&order_filled_event(
+                    entry_client_order_id,
+                    instrument_id,
+                    position_id,
+                ))
+                .expect("racing entry fill should be handled while exit is pending");
+            strategy
+                .on_order_filled(&order_filled_event_with_details(
+                    exit_client_order_id,
+                    instrument_id,
+                    Some(position_id),
+                    OrderSide::Sell,
+                ))
+                .expect("exit fill should be handled");
+            strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+
+            assert!(
+                strategy.managed_position().is_some(),
+                "entry remainder fill racing the first forced-flat exit should recover to managed residual exposure: {instrument_id}"
+            );
+            assert!(
+                strategy.exposure.exit_pending().is_none(),
+                "terminal forced-flat exit with residual exposure must not stay exit-pending forever: {instrument_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_resting_entry_fill_does_not_keep_pending_entry_from_cache_state() {
+        let mut strategy = ready_to_trade_strategy();
+        let cache = register_test_strategy(&mut strategy);
+        strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
+        let entry_client_order_id = ClientOrderId::from("ENTRY-IOC");
+        let position_id = PositionId::from("P-IOC");
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
+        set_pending_entry(&mut strategy, pending);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                Quantity::new(10.0, 2),
+                Price::new(0.45, 2),
+                entry_client_order_id,
+            )
+            .expect("IOC entry order should build");
+        cache
+            .borrow_mut()
+            .add_order(order, None, Some(ClientId::from("POLYMARKET")), true)
+            .expect("test cache should accept entry order");
+
+        strategy
+            .on_order_filled(&order_filled_event(
+                entry_client_order_id,
+                instrument_id,
+                position_id,
+            ))
+            .expect("IOC entry fill should materialize a managed position");
+
+        assert_eq!(
+            strategy
+                .managed_position()
+                .and_then(|managed| managed.pending_entry.as_ref()),
+            None
+        );
+        assert_eq!(
+            strategy.exit_submission_decision_at(1_200).blocked_reason,
+            None
+        );
+    }
+
+    #[test]
+    fn stop_market_exit_submission_uses_trigger_price_without_book_liquidity() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.config.exit_order.order_type = OrderType::StopMarket;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.exit_order.trigger_price = Some(0.40);
+        strategy.config.exit_order.trigger_type = Some(TriggerType::LastPrice);
+        strategy.config.exit_order.is_post_only = false;
+        let instrument_id = selected_entry_instrument(&strategy);
+        let mut book = configured_book_for_instrument(&mut strategy, instrument_id);
+        book.bid_levels.clear();
+        book.ask_levels.clear();
+        book.best_bid = None;
+        book.best_ask = None;
+        book.liquidity_available = Some(500.0);
+        let mut position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            PositionId::from("P-STOP-EXIT"),
+            Quantity::new(4.0, 2),
+            0.450,
+        );
+        position.book = book;
+        set_managed_position(
+            &mut strategy,
+            position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        let decision = strategy.exit_submission_decision_at(1_200);
+
+        assert_eq!(decision.blocked_reason, None);
+        assert_eq!(decision.order_type, Some(OrderType::StopMarket));
+        assert_eq!(decision.order_side, Some(OrderSide::Sell));
+        assert_eq!(decision.price, Some(0.40));
+        assert_eq!(decision.quantity, Some(Quantity::new(4.0, 2)));
+    }
+
+    #[test]
+    fn stop_market_exit_ev_uses_trigger_price_instead_of_live_book() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.config.exit_order.order_type = OrderType::StopMarket;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.exit_order.trigger_price = Some(0.40);
+        strategy.config.exit_order.trigger_type = Some(TriggerType::LastPrice);
+        strategy.config.exit_order.is_post_only = false;
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            PositionId::from("P-STOP-EV"),
+            Quantity::new(4.0, 2),
+            0.450,
+        );
+        set_managed_position(
+            &mut strategy,
+            position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
+        let decision = strategy.exit_submission_decision_at(1_200);
+        let exit_ev_bps = decision
+            .evaluation
+            .exit_ev_bps
+            .unwrap_or_else(|| panic!("triggered exit EV should be available: {decision:#?}"));
+        let expected_exit_ev_bps = ((0.40 - 0.450) / 0.450) * BPS_DENOMINATOR;
+
+        assert!((exit_ev_bps - expected_exit_ev_bps).abs() < 1e-9);
+    }
+
+    #[test]
     fn entry_fill_without_position_id_stays_fail_closed_until_position_event_arrives() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-NO-POS");
-        let original_book = strategy.active.books.up.clone();
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            original_book.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
+        let original_book = pending.book.clone();
         set_pending_entry(&mut strategy, pending);
 
         strategy
@@ -8943,16 +11803,10 @@ mod tests {
     #[test]
     fn late_entry_terminal_events_preserve_entry_reconcile_fail_closed_state() {
         let entry_client_order_id = ClientOrderId::from("ENTRY-LATE-TERM");
-        let instrument_id = InstrumentId::from("condition-MKT-1-MKT-1-UP.POLYMARKET");
 
         let mut canceled = ready_to_trade_strategy();
-        let canceled_pending = pending_entry_state(
-            &canceled,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            canceled.active.books.up.clone(),
-        );
+        let canceled_pending = pending_entry_state(&mut canceled, entry_client_order_id);
+        let instrument_id = canceled_pending.instrument_id;
         set_entry_reconcile_pending(
             &mut canceled,
             canceled_pending,
@@ -8967,13 +11821,7 @@ mod tests {
         ));
 
         let mut rejected = ready_to_trade_strategy();
-        let rejected_pending = pending_entry_state(
-            &rejected,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            rejected.active.books.up.clone(),
-        );
+        let rejected_pending = pending_entry_state(&mut rejected, entry_client_order_id);
         set_entry_reconcile_pending(
             &mut rejected,
             rejected_pending,
@@ -8986,13 +11834,7 @@ mod tests {
         ));
 
         let mut expired = ready_to_trade_strategy();
-        let expired_pending = pending_entry_state(
-            &expired,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            expired.active.books.up.clone(),
-        );
+        let expired_pending = pending_entry_state(&mut expired, entry_client_order_id);
         set_entry_reconcile_pending(
             &mut expired,
             expired_pending,
@@ -9021,7 +11863,7 @@ mod tests {
 
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         register_test_strategy_with_active_instruments(&mut strategy);
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let instrument_id = selected_entry_instrument(&strategy);
         let decision = strategy.entry_submission_decision_at(1_200);
         assert!(
             decision.instrument_id.is_some()
@@ -9048,26 +11890,17 @@ mod tests {
     fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.active.phase = SelectionPhase::Freeze;
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let open_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position = materialize_configured_position(
+            &mut strategy,
             instrument_id,
-            position_id: PositionId::from("P-EXIT-SUBMIT-ERROR"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: strategy.active.books.up.clone(),
-        };
+            PositionId::from("P-EXIT-SUBMIT-ERROR"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_managed_position(
             &mut strategy,
-            open_position,
+            position,
             ManagedPositionOrigin::StrategyEntry,
         );
         register_test_strategy_with_active_instruments(&mut strategy);
@@ -9098,14 +11931,11 @@ mod tests {
     fn book_delta_entry_reconcile_pending_does_not_try_new_entry() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         register_test_strategy_with_active_instruments(&mut strategy);
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let pending = pending_entry_state(
-            &strategy,
+            &mut strategy,
             ClientOrderId::from("ENTRY-RECONCILE-BOOK-DELTA"),
-            instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
         );
+        let instrument_id = pending.instrument_id;
         set_entry_reconcile_pending(
             &mut strategy,
             pending,
@@ -9132,14 +11962,8 @@ mod tests {
     fn position_closed_releases_entry_reconcile_pending_for_same_instrument() {
         let mut strategy = ready_to_trade_strategy();
         let entry_client_order_id = ClientOrderId::from("ENTRY-CLOSED-BEFORE-OPEN");
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
         set_entry_reconcile_pending(
             &mut strategy,
             pending,
@@ -9156,18 +11980,86 @@ mod tests {
     }
 
     #[test]
+    fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.is_post_only = true;
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        let (exec_handler, exec_messages) =
+            get_typed_into_message_saving_handler::<TradingCommand>(None);
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::exec_engine_queue_execute(),
+            exec_handler,
+        );
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("POSITION-CLOSED-CANCELS-ENTRY");
+        let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+        let (instrument_id, entry_client_order_id) =
+            materialize_managed_position_with_resting_pending_entry(
+                &mut strategy,
+                instrument_id,
+                position_id,
+                position_quantity,
+            );
+        let entry_price = configured_book_for_instrument(&mut strategy, instrument_id)
+            .best_ask
+            .expect("ready-to-trade fixture should expose an ask");
+        let entry_order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                strategy
+                    .configured_entry_order_side()
+                    .expect("test config should carry entry order side"),
+                position_quantity,
+                Price::new(entry_price, 2),
+                entry_client_order_id,
+            )
+            .expect("resting entry order should build through NT factory");
+        cache
+            .borrow_mut()
+            .add_order(
+                entry_order,
+                None,
+                Some(ClientId::from(strategy.config.client_id.as_str())),
+                true,
+            )
+            .expect("test cache should accept resting entry order");
+
+        strategy.on_position_closed(position_closed_event(instrument_id, position_id));
+
+        let exec_messages = exec_messages.get_messages();
+        assert!(
+            exec_messages.iter().any(|message| matches!(
+                message,
+                TradingCommand::CancelOrder(command)
+                    if command.client_order_id == entry_client_order_id
+            )),
+            "external position close should cancel the resting entry"
+        );
+        assert!(matches!(
+            strategy.exposure,
+            ExposureState::PendingEntry(PendingEntryState {
+                client_order_id,
+                ..
+            }) if client_order_id == entry_client_order_id
+        ));
+        assert!(strategy.pending_entry().is_some());
+
+        strategy
+            .on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id))
+            .expect("entry cancel should clear retained pending-entry context");
+        assert!(matches!(strategy.exposure, ExposureState::Flat));
+        assert!(strategy.pending_entry().is_none());
+    }
+
+    #[test]
     fn position_closed_keeps_entry_reconcile_pending_for_different_instrument() {
         let mut strategy = ready_to_trade_strategy();
         let entry_client_order_id = ClientOrderId::from("ENTRY-CLOSE-OTHER-INSTRUMENT");
-        let pending_instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let other_instrument_id = strategy.active.books.down.instrument_id.unwrap();
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            pending_instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let pending_instrument_id = pending.instrument_id;
+        let other_instrument_id = configured_instrument_except(&strategy, pending_instrument_id);
         set_entry_reconcile_pending(
             &mut strategy,
             pending,
@@ -9221,15 +12113,9 @@ mod tests {
     #[test]
     fn sell_fill_enters_recovery_without_materializing_position() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.down.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-SELL");
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Down,
-            strategy.active.books.down.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
 
         strategy
@@ -9260,16 +12146,10 @@ mod tests {
     #[test]
     fn unsupported_entry_fill_without_matching_context_keeps_unknown_side_absent() {
         let mut strategy = ready_to_trade_strategy();
-        let pending_instrument_id = strategy.active.books.up.instrument_id.unwrap();
-        let fill_instrument_id = strategy.active.books.down.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-MISMATCHED-FILL");
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            pending_instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let pending_instrument_id = pending.instrument_id;
+        let fill_instrument_id = configured_instrument_except(&strategy, pending_instrument_id);
         set_pending_entry(&mut strategy, pending);
 
         strategy
@@ -9297,15 +12177,9 @@ mod tests {
     #[test]
     fn pending_entry_short_position_event_stays_fail_closed_without_materializing_position() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.down.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-SELL");
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Down,
-            strategy.active.books.down.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
 
         strategy.on_position_opened(position_opened_event_with_details(
@@ -9336,15 +12210,9 @@ mod tests {
     #[test]
     fn pending_entry_unknown_position_side_stays_fail_closed_without_materializing_position() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let entry_client_order_id = ClientOrderId::from("ENTRY-BAD-SIDE");
-        let pending = pending_entry_state(
-            &strategy,
-            entry_client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
 
         strategy.on_position_opened(position_opened_event_with_details(
@@ -9369,24 +12237,15 @@ mod tests {
     #[test]
     fn position_opened_after_rotation_preserves_existing_position_context() {
         let mut strategy = ready_to_trade_strategy();
-        let instrument_a = strategy.active.books.up.instrument_id.unwrap();
-        let preserved_book = strategy.active.books.up.clone();
-        let preserved_position = OpenPositionState {
-            market_id: Some("MKT-1".to_string()),
-            instrument_id: instrument_a,
-            position_id: PositionId::from("P-A"),
-            outcome_side: Some(OutcomeSide::Up),
-            outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: Some(0.0),
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
-            quantity: Quantity::new(10.0, 2),
-            avg_px_open: 0.450,
-            interval_open: Some(3_100.0),
-            selection_published_at_ms: Some(1_000),
-            seconds_to_expiry_at_selection: Some(300),
-            book: preserved_book.clone(),
-        };
+        let instrument_a = selected_entry_instrument(&strategy);
+        let preserved_book = configured_book_for_instrument(&mut strategy, instrument_a);
+        let preserved_position = materialize_configured_position(
+            &mut strategy,
+            instrument_a,
+            PositionId::from("P-A"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
         set_managed_position(
             &mut strategy,
             preserved_position,
@@ -10325,14 +13184,19 @@ mod tests {
     #[test]
     fn expected_exit_submission_blocks_do_not_warn() {
         assert!(!should_warn_on_exit_submission_block(Some(
-            "no_open_position"
+            EXIT_BLOCK_REASON_NO_OPEN_POSITION
         )));
         assert!(!should_warn_on_exit_submission_block(Some(
-            "exit_already_pending"
+            EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING
         )));
-        assert!(!should_warn_on_exit_submission_block(Some("exit_hold")));
+        assert!(!should_warn_on_exit_submission_block(Some(
+            EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING
+        )));
+        assert!(!should_warn_on_exit_submission_block(Some(
+            EXIT_BLOCK_REASON_EXIT_HOLD
+        )));
         assert!(should_warn_on_exit_submission_block(Some(
-            "exit_price_missing"
+            EXIT_BLOCK_REASON_EXIT_PRICE_MISSING
         )));
     }
 
@@ -10711,18 +13575,12 @@ mod tests {
     fn historical_entry_fee_rate_exit_ev_uses_entry_fee_from_submission_time() {
         let (mut strategy, fee_provider) =
             ready_to_trade_strategy_with_recording_fees(Decimal::new(100, 2), Decimal::ZERO);
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let client_order_id = ClientOrderId::from("ENTRY-HIST-FEE-001");
-        let pending = pending_entry_state(
-            &strategy,
-            client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, client_order_id);
+        let instrument_id = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
 
-        fee_provider.set_fee("condition-MKT-1-MKT-1-UP.POLYMARKET", Decimal::new(300, 2));
+        fee_provider.set_fee(&instrument_id.to_string(), Decimal::new(300, 2));
         strategy
             .on_order_filled(&order_filled_event(
                 client_order_id,
@@ -10731,8 +13589,14 @@ mod tests {
             ))
             .expect("entry fill should materialize position for exit EV test");
 
+        let order_config = strategy
+            .normal_exit_order_execution_config()
+            .expect("normal exit order config should parse");
+        let outcome_side = managed_position_ref(&strategy)
+            .and_then(|position| position.outcome_side)
+            .expect("entry fill should preserve configured outcome side");
         let exit_ev_bps = strategy
-            .current_exit_ev_bps_at(OutcomeSide::Up)
+            .current_exit_ev_bps_at(outcome_side, &order_config)
             .expect("historical entry fee test should produce exit EV");
         let total_entry_cost = 0.450 * (1.0 + 1.0 / BPS_DENOMINATOR);
         let net_exit_value = 0.500 * (1.0 - 3.0 / BPS_DENOMINATOR);
@@ -10746,18 +13610,12 @@ mod tests {
     fn historical_entry_fee_rate_logs_known_for_strategy_managed_positions() {
         let (mut strategy, fee_provider) =
             ready_to_trade_strategy_with_recording_fees(Decimal::new(100, 2), Decimal::ZERO);
-        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
         let client_order_id = ClientOrderId::from("ENTRY-HIST-LOG-001");
-        let pending = pending_entry_state(
-            &strategy,
-            client_order_id,
-            instrument_id,
-            OutcomeSide::Up,
-            strategy.active.books.up.clone(),
-        );
+        let pending = pending_entry_state(&mut strategy, client_order_id);
+        let instrument_id = pending.instrument_id;
         set_pending_entry(&mut strategy, pending);
 
-        fee_provider.set_fee("condition-MKT-1-MKT-1-UP.POLYMARKET", Decimal::new(300, 2));
+        fee_provider.set_fee(&instrument_id.to_string(), Decimal::new(300, 2));
         strategy
             .on_order_filled(&order_filled_event(
                 client_order_id,
@@ -11073,6 +13931,7 @@ mod tests {
                 book: strategy.active.books.up.clone(),
             },
             origin: ManagedPositionOrigin::StrategyEntry,
+            pending_entry: None,
         };
         let mut exit_pending = ExitPendingState {
             position: Some(managed.clone()),
@@ -11082,6 +13941,8 @@ mod tests {
                 position_id: Some(PositionId::from("P-EXIT-STATE-001")),
                 fill_received: false,
                 close_received: false,
+                terminal_received: false,
+                residual_position_observed_after_fill: false,
             },
         };
 
@@ -11121,6 +13982,7 @@ mod tests {
                 book: strategy.active.books.up.clone(),
             },
             origin: ManagedPositionOrigin::RecoveryBootstrap,
+            pending_entry: None,
         });
 
         let managed = managed

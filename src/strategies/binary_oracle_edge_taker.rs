@@ -9965,7 +9965,7 @@ mod tests {
     #[test]
     fn forced_flat_exit_order_object_preserves_forced_exit_reduce_only_config() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-        let _cache = register_test_strategy_with_active_instruments(&mut strategy);
+        register_test_strategy_with_active_instruments(&mut strategy);
         strategy.active.phase = SelectionPhase::Freeze;
         strategy.config.exit_order.order_type = OrderType::Limit;
         strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
@@ -10027,7 +10027,7 @@ mod tests {
     #[test]
     fn forced_flat_exit_order_object_uses_configured_forced_exit_template() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-        let _cache = register_test_strategy_with_active_instruments(&mut strategy);
+        register_test_strategy_with_active_instruments(&mut strategy);
         strategy.active.phase = SelectionPhase::Freeze;
         strategy.config.exit_order.order_type = OrderType::Market;
         strategy.config.exit_order.time_in_force = TimeInForce::Ioc;

@@ -435,9 +435,9 @@ mod tests {
             intent.order_fields.trigger_instrument_id,
             Some(trigger_instrument_id.to_string())
         );
-        assert_eq!(intent.order_fields.is_post_only, false);
-        assert_eq!(intent.order_fields.is_reduce_only, false);
-        assert_eq!(intent.order_fields.is_quote_quantity, false);
+        assert!(!intent.order_fields.is_post_only);
+        assert!(!intent.order_fields.is_reduce_only);
+        assert!(!intent.order_fields.is_quote_quantity);
     }
 
     #[test]

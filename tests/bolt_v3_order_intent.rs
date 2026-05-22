@@ -96,7 +96,7 @@ fn nonzero_expire_time() -> UnixNanos {
 
 fn zero_price() -> Price {
     let price = limit_price();
-    Price::from_raw(price.raw - price.raw, price.precision)
+    Price::from_raw(Default::default(), price.precision)
 }
 
 fn negative_price() -> Price {

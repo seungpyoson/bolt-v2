@@ -673,6 +673,15 @@
 - [x] T305 [US2] GREEN: Update shipped example strategy schema version and decision-evidence docs/verifier to the actual serializer envelope
 - [ ] T306 [US2] Verify focused config/doc tests, schema/runtime verifiers, source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
+## Phase 71: TDD Slice 67 - External Review Clippy Follow-Up
+
+**Goal**: Resolve exact-head Gemini relay evidence that all-targets clippy fails on test-only helper/assertion patterns, without changing runtime behavior or adding venue, market, strategy, maker-only, or taker-only policy.
+
+- [x] T307 [P] [US2] Record Gemini relay, Claude/Gemini/Kimi/Grok, and no-mistakes review state in `specs/023-nt-order-intent-layer/research.md`
+- [x] T308 [US2] RED: Reproduce all-targets clippy failures for equal-operand zero-price construction, boolean assertion comparisons, and unit let-bindings
+- [x] T309 [US2] GREEN: Apply mechanical test-only clippy fixes without changing order-intent runtime behavior
+- [ ] T310 [US2] Verify focused tests, all-targets clippy, formatting/diff checks, schema/runtime verifiers, source fences, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -743,6 +752,7 @@
 - Phase 68 blocks final branch completion because exact-head no-mistakes document review found active docs/specs still omitted decision-evidence JSONL v4/order-template fields and retained stale Phase 022 forced-exit/GTD text.
 - Phase 69 blocks final branch completion because exact-head no-mistakes found the strategy schema version still advertised the previous forced-exit schema shape.
 - Phase 70 blocks final branch completion because exact-head no-mistakes found the shipped example strategy schema and decision-evidence envelope docs lagged current source.
+- Phase 71 blocks final branch completion because exact-head Gemini relay review found all-targets clippy failures in test-only helper/assertion code after Phase 70.
 
 ## Parallel Opportunities
 

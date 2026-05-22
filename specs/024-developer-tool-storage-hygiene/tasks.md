@@ -69,7 +69,7 @@
 - [ ] T022 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex archived sessions are report-only.
 - [ ] T023 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for active, default, and project-pinned rustup toolchain protection.
 - [ ] T024 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for malformed, incomplete, or missing-required-key policy fail-closed validation.
-- [ ] T025 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving dry-run output includes every contract-required field and leaves the scratch filesystem unchanged.
+- [ ] T025 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving dry-run output includes policy path, evaluated root, per-surface bytes/eligibility, candidate actions/reasons/estimated bytes, Codex history native-config status, report-only archived sessions, protected rustup toolchains, report-only large surfaces, out-of-scope adjacent surfaces, and leaves the scratch filesystem unchanged.
 
 ### Implementation for User Story 2
 
@@ -121,12 +121,13 @@
 - [ ] T042 [US4] Add RED scratch apply test proving apply revalidates policy immediately before mutation and fails closed if policy becomes malformed or incomplete.
 - [ ] T043 [US4] Add RED scratch apply test proving apply re-scans immediately before mutation and fails closed if candidate state changed after dry-run.
 - [ ] T044 [US4] Add RED scratch apply test proving configured active writer processes from synthetic process snapshots refuse mutable Codex and Factory actions before mutation.
+- [ ] T045 [US4] Add RED scratch apply test proving successful apply emits a post-apply summary with actions taken, bytes reclaimed, skipped protected/report-only targets, and refusal reasons.
 
 ### Implementation for User Story 4
 
-- [ ] T045 [US4] Implement apply behavior over scratch/configured roots with immediate policy revalidation, filesystem re-scan, and process-snapshot active-writer refusal in `scripts/developer_tool_storage_hygiene.py` only if T012 approval permits the command surface.
-- [ ] T046 [US4] Update `docs/ops/developer-tool-storage-hygiene.md` with dry-run/apply safety contract and native macOS config guidance.
-- [ ] T047 [US4] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` and record final green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [ ] T046 [US4] Implement apply behavior over scratch/configured roots with immediate policy revalidation, filesystem re-scan, process-snapshot active-writer refusal, and post-apply summary output in `scripts/developer_tool_storage_hygiene.py` only if T012 approval permits the command surface.
+- [ ] T047 [US4] Update `docs/ops/developer-tool-storage-hygiene.md` with dry-run/apply safety contract and native macOS config guidance.
+- [ ] T048 [US4] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` and record final green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
 
 **Checkpoint**: User Story 4 is complete when apply behavior is proven safe on scratch fixtures or explicitly scoped out by operator decision.
 
@@ -136,18 +137,18 @@
 
 **Purpose**: Make the #375 branch review-ready without merging and without starting #454.
 
-- [ ] T048 Run `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py`.
-- [ ] T049 Run `git diff --check origin/main...HEAD`.
-- [ ] T050 Run relevant full Rust verification or record source-backed N/A in `specs/024-developer-tool-storage-hygiene/evidence.md`.
-- [ ] T051 Run source-fence/schema/runtime literal checks if touched and record results in `specs/024-developer-tool-storage-hygiene/evidence.md`.
-- [ ] T052 Run `$ai-slop-cleaner` on changed files and record the cleanup report in `specs/024-developer-tool-storage-hygiene/evidence.md`.
-- [ ] T053 Run unresolved-marker scan over `specs/024-developer-tool-storage-hygiene/`, `ci/`, `scripts/`, and `docs/ops/` after #375 edits.
-- [ ] T054 Commit and push branch `codex/375-developer-tool-storage-hygiene`.
-- [ ] T055 Open the #375 PR and include issue scope, exact head SHA, evidence map, Speckit paths, tests, review status, no-mistakes status, remaining risk, and stop-before-merge note in the PR body.
-- [ ] T056 Run no-mistakes on the exact PR head and verify the no-mistakes head equals the PR head.
-- [ ] T057 Confirm exact-head GitHub CI is green for the #375 PR.
-- [ ] T058 Request exact-PR-head external adversarial review and record Claude, Gemini, GLM, DeepSeek, and any skipped reviewers in `specs/024-developer-tool-storage-hygiene/evidence.md`.
-- [ ] T059 Stop for operator approval before merge and before any #454 branch or implementation work.
+- [ ] T049 Run `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py`.
+- [ ] T050 Run `git diff --check origin/main...HEAD`.
+- [ ] T051 Run relevant full Rust verification or record source-backed N/A in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [ ] T052 Run source-fence/schema/runtime literal checks if touched and record results in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [ ] T053 Run `$ai-slop-cleaner` on changed files and record the cleanup report in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [ ] T054 Run unresolved-marker scan over `specs/024-developer-tool-storage-hygiene/`, `ci/`, `scripts/`, and `docs/ops/` after #375 edits.
+- [ ] T055 Commit and push branch `codex/375-developer-tool-storage-hygiene`.
+- [ ] T056 Open the #375 PR and include issue scope, exact head SHA, evidence map, Speckit paths, tests, review status, no-mistakes status, remaining risk, and stop-before-merge note in the PR body.
+- [ ] T057 Run no-mistakes on the exact PR head and verify the no-mistakes head equals the PR head.
+- [ ] T058 Confirm exact-head GitHub CI is green for the #375 PR.
+- [ ] T059 Request exact-PR-head external adversarial review and record Claude, Gemini, GLM, DeepSeek, and any skipped reviewers in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [ ] T060 Stop for operator approval before merge and before any #454 branch or implementation work.
 
 ## Dependencies & Execution Order
 
@@ -156,7 +157,7 @@
 - User Story 1 must complete before User Stories 2 through 4.
 - User Story 2 must complete before User Story 4 apply behavior.
 - Final Phase must complete before #375 is considered review-ready.
-- #454 remains blocked until T055 through T059 are complete and the operator has not objected.
+- #454 remains blocked until T056 through T060 are complete and the operator has not objected.
 
 ## Parallel Opportunities
 

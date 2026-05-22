@@ -77,6 +77,24 @@ fn bolt_v3_cli_exposes_static_operator_artifacts_command() {
 }
 
 #[test]
+fn bolt_v3_cli_exposes_final_operator_packet_verifier_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args(["operator-artifacts", "verify-final", "--help"])
+        .output()
+        .expect("bolt-v3 final operator packet verifier help should run");
+
+    assert!(
+        output.status.success(),
+        "expected operator-artifacts verify-final help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--operator-packet"));
+}
+
+#[test]
 fn bolt_v3_static_operator_artifacts_command_fails_closed_on_abort_blocker() {
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(

@@ -1449,6 +1449,432 @@ fn approval_packet_assembly_rejects_symlinked_static_artifact_before_writes() {
 }
 
 #[test]
+fn final_packet_verifier_accepts_t128_packet_bound_to_current_config() {
+    let fixture = assembled_final_packet_fixture();
+
+    let outcome = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect("final packet verifier should accept current config-bound packet");
+
+    assert_eq!(outcome.operator_packet.path, fixture.operator_packet_path);
+    assert_eq!(outcome.static_manifest.path, fixture.static_manifest_path);
+    assert_eq!(
+        outcome.approval_envelope.path,
+        std::path::PathBuf::from(
+            &fixture
+                .loaded
+                .root
+                .live_canary
+                .as_ref()
+                .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+                .expect("operator evidence should remain configured")
+                .approval_envelope_path
+        )
+    );
+}
+
+#[test]
+fn final_packet_verifier_redacted_summary_omits_artifact_paths() {
+    let fixture = assembled_final_packet_fixture();
+    let outcome = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect("final packet verifier should accept current config-bound packet");
+
+    let summary_json =
+        serde_json::to_value(outcome.redacted_summary()).expect("summary should serialize");
+    let summary_text = serde_json::to_string(&summary_json).expect("summary should stringify");
+
+    assert!(
+        !summary_text.contains(&fixture.temp.path().to_string_lossy().to_string()),
+        "redacted summary must not print artifact paths: {summary_text}"
+    );
+    let artifacts = summary_json["verified_artifacts"]
+        .as_array()
+        .expect("summary should expose verified artifact list");
+    assert_eq!(artifacts.len(), 3);
+    for artifact in artifacts {
+        let artifact = artifact.as_object().expect("artifact summary is object");
+        assert_eq!(
+            artifact.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["name", "sha256"]
+        );
+        assert_eq!(
+            artifact["sha256"]
+                .as_str()
+                .expect("summary sha should be string")
+                .len(),
+            64
+        );
+    }
+}
+
+#[test]
+fn final_packet_verifier_rejects_missing_operator_evidence() {
+    let mut fixture = assembled_final_packet_fixture();
+    fixture
+        .loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should exist")
+        .operator_evidence = None;
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("missing operator evidence should fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("[live_canary.operator_evidence]"),
+        "missing operator evidence error should cite config block: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_packet_config_bundle_drift() {
+    let mut fixture = assembled_final_packet_fixture();
+    fixture.loaded.config_bundle_checksum = sha256_text("different-config-bundle");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("packet config-bundle drift should fail closed");
+
+    assert!(
+        error.to_string().contains("config_bundle_checksum"),
+        "config drift error should name checksum field: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_static_manifest_sha_mismatch() {
+    let fixture = assembled_final_packet_fixture();
+    let mut manifest = read_json_value(&fixture.static_manifest_path);
+    manifest["generated_artifacts"]
+        .as_array_mut()
+        .expect("generated artifacts should be array")
+        .push(serde_json::json!({
+            "name": "duplicate-extra",
+            "path": fixture.temp.path().join("extra.json").to_string_lossy(),
+            "sha256": "0".repeat(64),
+        }));
+    write_json_value_and_hash(&fixture.static_manifest_path, &manifest);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("static manifest SHA drift should fail closed");
+
+    assert!(
+        error.to_string().contains("static_manifest_sha256"),
+        "static manifest SHA drift should name linkage hash: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_static_manifest_config_bundle_drift() {
+    let fixture = assembled_final_packet_fixture();
+    let mut manifest = read_json_value(&fixture.static_manifest_path);
+    manifest["config_bundle_checksum"] = serde_json::json!(sha256_text("different-static-config"));
+    let manifest_sha = write_json_value_and_hash(&fixture.static_manifest_path, &manifest);
+    mutate_packet_json(&fixture.operator_packet_path, |packet| {
+        packet["static_manifest_sha256"] = serde_json::json!(manifest_sha);
+    });
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("static manifest config-bundle drift should fail closed");
+
+    assert!(
+        error.to_string().contains("config_bundle_checksum"),
+        "static manifest config drift should name checksum: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_static_manifest_blockers_without_echoing_text() {
+    let fixture = assembled_final_packet_fixture();
+    let secret_like_blocker = "/bolt/not-a-real-secret-path";
+    let mut manifest = read_json_value(&fixture.static_manifest_path);
+    manifest["blockers"] = serde_json::json!([secret_like_blocker]);
+    let manifest_sha = write_json_value_and_hash(&fixture.static_manifest_path, &manifest);
+    mutate_packet_json(&fixture.operator_packet_path, |packet| {
+        packet["static_manifest_sha256"] = serde_json::json!(manifest_sha);
+    });
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("static manifest blockers should fail closed");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("static manifest blockers"),
+        "blocker error should name static manifest blockers: {message}"
+    );
+    assert!(
+        !message.contains(secret_like_blocker),
+        "blocker error must not echo supplied blocker text: {message}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_missing_operator_packet_file() {
+    let fixture = assembled_final_packet_fixture();
+    std::fs::remove_file(&fixture.operator_packet_path).expect("operator packet should remove");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("missing operator packet should fail closed");
+
+    assert!(
+        error.to_string().contains("operator packet"),
+        "missing packet error should name operator packet: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_missing_static_manifest_file() {
+    let fixture = assembled_final_packet_fixture();
+    std::fs::remove_file(&fixture.static_manifest_path).expect("static manifest should remove");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("missing static manifest should fail closed");
+
+    assert!(
+        error.to_string().contains("static manifest"),
+        "missing manifest error should name static manifest: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_missing_approval_envelope_file() {
+    let fixture = assembled_final_packet_fixture();
+    let evidence = fixture.operator_evidence();
+    std::fs::remove_file(&evidence.approval_envelope_path)
+        .expect("approval envelope should remove");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("missing approval envelope should fail closed");
+
+    assert!(
+        error.to_string().contains("approval envelope"),
+        "missing approval envelope error should name approval envelope: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_stale_approval_envelope_file_hash() {
+    let fixture = assembled_final_packet_fixture();
+    let approval_envelope_path =
+        std::path::PathBuf::from(&fixture.operator_evidence().approval_envelope_path);
+    let mut envelope = read_json_value(&approval_envelope_path);
+    envelope["approval_nonce_sha256"] = serde_json::json!("1".repeat(64));
+    write_json_value_and_hash(&approval_envelope_path, &envelope);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("stale approval envelope hash should fail closed");
+
+    assert!(
+        error.to_string().contains("approval envelope file hash"),
+        "stale approval envelope hash should name file-hash mismatch: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_oversized_operator_packet_before_parsing() {
+    let mut fixture = assembled_final_packet_fixture();
+    let packet_len = std::fs::metadata(&fixture.operator_packet_path)
+        .expect("operator packet metadata should read")
+        .len();
+    fixture
+        .loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("operator evidence should exist")
+        .max_operator_evidence_file_bytes = packet_len.saturating_sub(1);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("oversized operator packet should fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("max_operator_evidence_file_bytes"),
+        "oversized packet should cite configured cap: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_deleted_required_artifact() {
+    let fixture = assembled_final_packet_fixture();
+    let evidence = fixture.operator_evidence();
+    std::fs::remove_file(&evidence.strategy_input_evidence_path)
+        .expect("strategy input artifact should remove");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("deleted required artifact should fail closed");
+
+    assert!(
+        error.to_string().contains("strategy-input"),
+        "deleted artifact error should name artifact: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_mutated_required_artifact_hash() {
+    let fixture = assembled_final_packet_fixture();
+    let evidence = fixture.operator_evidence();
+    std::fs::write(
+        &evidence.financial_envelope_path,
+        b"different-financial-envelope-bytes",
+    )
+    .expect("financial envelope artifact should mutate");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("mutated required artifact should fail closed");
+
+    assert!(
+        error.to_string().contains("financial-envelope"),
+        "mutated artifact error should name artifact: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_packet_operator_evidence_mismatch() {
+    let fixture = assembled_final_packet_fixture();
+    mutate_packet_json(&fixture.operator_packet_path, |packet| {
+        packet["live_canary_operator_evidence"]["ssm_manifest_path"] =
+            serde_json::json!("/bolt/not-a-real-secret-path");
+    });
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("packet and TOML operator evidence mismatch should fail closed");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("ssm_manifest_path"),
+        "packet mismatch should name field: {message}"
+    );
+    assert!(
+        !message.contains("/bolt/not-a-real-secret-path"),
+        "packet mismatch must not echo supplied unsafe path: {message}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_approval_envelope_body_mismatch() {
+    let mut fixture = assembled_final_packet_fixture();
+    let evidence = fixture.operator_evidence().clone();
+    let approval_envelope_path = std::path::PathBuf::from(&evidence.approval_envelope_path);
+    let mut envelope = read_json_value(&approval_envelope_path);
+    envelope["head_sha"] = serde_json::json!("abcdefabcdefabcdefabcdefabcdefabcdefabcd");
+    let envelope_sha = write_json_value_and_hash(&approval_envelope_path, &envelope);
+    fixture
+        .loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("operator evidence should exist")
+        .approval_envelope_sha256 = envelope_sha.clone();
+    mutate_packet_json(&fixture.operator_packet_path, |packet| {
+        packet["live_canary_operator_evidence"]["approval_envelope_sha256"] =
+            serde_json::json!(envelope_sha);
+    });
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("approval envelope body mismatch should fail closed");
+
+    assert!(
+        error.to_string().contains("head_sha"),
+        "approval envelope body mismatch should name field: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_unknown_packet_runtime_policy_fields() {
+    let fixture = assembled_final_packet_fixture();
+    mutate_packet_json(&fixture.operator_packet_path, |packet| {
+        packet["live_canary_operator_evidence"]["max_operator_evidence_file_bytes"] =
+            serde_json::json!(4096);
+    });
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("unknown runtime policy field in packet should fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("max_operator_evidence_file_bytes"),
+        "unknown field parse error should name unexpected field: {error}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn final_packet_verifier_rejects_symlinked_operator_packet_before_parsing() {
+    let fixture = assembled_final_packet_fixture();
+    let symlink_path = fixture.temp.path().join("operator-packet-link.json");
+    std::os::unix::fs::symlink(&fixture.operator_packet_path, &symlink_path)
+        .expect("operator packet symlink should create");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &symlink_path,
+    )
+    .expect_err("symlinked operator packet should fail closed");
+
+    assert!(
+        error.to_string().contains("regular file"),
+        "symlinked packet should cite regular-file policy: {error}"
+    );
+}
+
+#[test]
 fn market_selection_source_builder_binds_configured_target_to_nt_instruments() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded
@@ -1580,6 +2006,111 @@ fn load_fixture_with_live_canary() -> bolt_v2::bolt_v3_config::LoadedBoltV3Confi
         operator_evidence: None,
     });
     loaded
+}
+
+struct FinalPacketFixture {
+    temp: tempfile::TempDir,
+    loaded: bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    static_manifest_path: std::path::PathBuf,
+    operator_packet_path: std::path::PathBuf,
+}
+
+impl FinalPacketFixture {
+    fn operator_evidence(&self) -> &LiveCanaryOperatorEvidenceBlock {
+        self.loaded
+            .root
+            .live_canary
+            .as_ref()
+            .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+            .expect("final packet fixture should configure operator evidence")
+    }
+}
+
+fn assembled_final_packet_fixture() -> FinalPacketFixture {
+    let mut loaded = load_fixture_with_live_canary();
+    loaded.config_bundle_checksum = sha256_text("final-packet-config-bundle");
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
+        .expect("build head sha should be compiled for final-packet verifier tests")
+        .to_string();
+    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs.clone(),
+        Vec::new(),
+    );
+
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should exist")
+        .operator_evidence = Some(operator_evidence.clone());
+    let draft_packet_path = temp.path().join("draft-operator-evidence-packet.json");
+    let draft = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+        &loaded,
+        &manifest_path,
+        &draft_packet_path,
+    )
+    .expect("draft packet should compute approval envelope hash");
+    std::fs::remove_file(&draft.operator_packet.path).expect("draft packet should remove");
+    std::fs::remove_file(&draft.approval_envelope.path).expect("draft envelope should remove");
+
+    operator_evidence.approval_envelope_sha256 = draft.approval_envelope.sha256;
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should exist")
+        .operator_evidence = Some(operator_evidence.clone());
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs,
+        Vec::new(),
+    );
+    let operator_packet_path = temp.path().join("operator-evidence-packet.json");
+    let final_packet =
+        bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+            &loaded,
+            &manifest_path,
+            &operator_packet_path,
+        )
+        .expect("final packet should assemble");
+    assert_eq!(
+        final_packet.approval_envelope.sha256,
+        operator_evidence.approval_envelope_sha256
+    );
+
+    FinalPacketFixture {
+        temp,
+        loaded,
+        static_manifest_path: manifest_path,
+        operator_packet_path,
+    }
+}
+
+fn read_json_value(path: &std::path::Path) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(path).expect("JSON artifact should read"))
+        .expect("JSON artifact should parse")
+}
+
+fn write_json_value_and_hash(path: &std::path::Path, value: &serde_json::Value) -> String {
+    let bytes = serde_json::to_vec_pretty(value).expect("JSON artifact should serialize");
+    std::fs::write(path, &bytes).expect("JSON artifact should write");
+    sha256_bytes(&bytes)
+}
+
+fn mutate_packet_json<F>(path: &std::path::Path, mutate: F)
+where
+    F: FnOnce(&mut serde_json::Value),
+{
+    let mut value = read_json_value(path);
+    mutate(&mut value);
+    write_json_value_and_hash(path, &value);
 }
 
 fn updown_binary_option(

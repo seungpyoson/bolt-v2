@@ -4243,6 +4243,30 @@ reason = "This is the stable record-kind discriminator for the path/SHA-only ope
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"approval-envelope"'''
+context = '''final_packet_summary_artifact("approval-envelope", &self.approval_envelope.sha256),'''
+classification = "operator_artifact_summary_label"
+reason = "This labels a redacted final-packet verification summary entry; the runtime path is not printed and the value is not operator-tunable."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"operator-evidence-packet"'''
+context = '''"operator-evidence-packet",'''
+classification = "operator_artifact_summary_label"
+reason = "This labels a redacted final-packet verification summary entry; the runtime path is not printed and the value is not operator-tunable."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"static-artifacts-manifest"'''
+context = '''"static-artifacts-manifest",'''
+classification = "operator_artifact_summary_label"
+reason = "This labels a redacted final-packet verification summary entry; the runtime path is not printed and the value is not operator-tunable."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"panic gate and service policy"'''
 context = '''prerequisite: "panic gate and service policy",'''
 classification = "operator_artifact_blocker_label"
@@ -4335,6 +4359,150 @@ literal = '''"approval_nonce_sha256"'''
 context = '''"approval_nonce_sha256",'''
 classification = "operator_evidence_schema_field"
 reason = "This names the TOML-owned approval-nonce SHA field while validating packet assembly; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"static_manifest_sha256"'''
+context = '''"static_manifest_sha256",'''
+classification = "operator_packet_schema_field"
+reason = "This names the operator-packet static-manifest SHA field while validating final-packet linkage; the value remains evidence-owned and is checked against file content."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"head_sha"'''
+context = '''"head_sha",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the operator-evidence build-head field while validating final-packet linkage; the value remains build/config evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_envelope_sha256"'''
+context = '''"approval_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned approval-envelope SHA field while validating final-packet linkage; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"ssm_manifest_path"'''
+context = '''"ssm_manifest_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned redacted SSM manifest artifact path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_path"'''
+context = '''"strategy_input_evidence_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned strategy-input evidence artifact path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"financial_envelope_path"'''
+context = '''"financial_envelope_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned financial-envelope artifact path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"pre_run_state_path"'''
+context = '''"pre_run_state_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned pre-run-state artifact path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"abort_plan_path"'''
+context = '''"abort_plan_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned abort-plan artifact path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path"'''
+context = '''"canary_evidence_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned canary evidence path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_nonce_path"'''
+context = '''"approval_nonce_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned approval-nonce artifact path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path"'''
+context = '''"approval_consumption_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned approval-consumption proof path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"decision_evidence_path"'''
+context = '''"decision_evidence_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned decision-evidence path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"nt_submit_event_path"'''
+context = '''"nt_submit_event_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned NT submit-event proof path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"venue_order_state_path"'''
+context = '''"venue_order_state_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned venue-order-state proof path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"restart_reconciliation_path"'''
+context = '''"restart_reconciliation_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned restart-reconciliation proof path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"post_run_hygiene_path"'''
+context = '''"post_run_hygiene_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned post-run-hygiene proof path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_id_hash"'''
+context = '''"approval_id_hash",'''
+classification = "operator_approval_envelope_schema_field"
+reason = "This names the approval-envelope approval-id hash field while validating final-packet linkage; the raw approval id remains hashed evidence."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path_hash"'''
+context = '''"canary_evidence_path_hash",'''
+classification = "operator_approval_envelope_schema_field"
+reason = "This names the approval-envelope canary evidence path hash field while validating final-packet linkage; the raw path remains compared through its hash."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

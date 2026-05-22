@@ -1203,7 +1203,7 @@ def command_tokens_with_line_boundaries(command: str) -> list[str]:
         line_tokens = command_tokens(stripped)
         if not line_tokens:
             continue
-        if tokens:
+        if tokens and tokens[-1] not in {"|", "&&", "||"}:
             tokens.append(";")
         tokens.extend(line_tokens)
     return tokens

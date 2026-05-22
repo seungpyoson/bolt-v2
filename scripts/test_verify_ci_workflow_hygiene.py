@@ -2034,6 +2034,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "S3 active mutable target cache must be rejected",
         ),
         (
+            "tar c target |\naws s3 cp - s3://bolt-v2-active-cache/target.tar",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
             "aws s3 cp $(echo ;) target s3://bolt-v2-active-cache/target",
             "S3 active mutable target cache must be rejected",
         ),

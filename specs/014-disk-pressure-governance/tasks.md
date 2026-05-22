@@ -60,6 +60,14 @@ Explicit #374 residuals from #286 / PR #404 review:
 - wrapper inventory for `timeout`, `xargs`, `setsid`, `taskset`, `ionice`, `chrt`, `make`, `python -c` / `os.system(...)`, and symlink-renamed `cargo` or `rustc`
 - destructive managed cargo subcommands, especially `cargo clean`, and required exclusive cache-clean/cache-reset behavior
 
+#374 cleanup/preflight follow-up:
+
+- [x] T033 [US2] Add failing cleanup tests for configured stale `/private/tmp/bolt-v2-*` bundles and registered worktree `target/` directories before changing cleanup behavior.
+- [x] T034 [US2] Implement config-driven `cleanup --repo ... --dry-run|--apply --json` reporting/removal for stale tmp bundles and worktree `target/` directories, with apply-mode active-process refusal before deletion.
+- [x] T035 [US2] Add failing cache-reset tests for dry-run reporting, active-process refusal, and managed-target-only apply behavior before changing destructive cache reset behavior.
+- [x] T036 [US2] Implement dedicated `cache-reset --repo ... --dry-run|--apply --json` with exclusive lock, active-process refusal, and managed-target child-only removal.
+- [ ] T037 [US2] Push the cleanup/preflight follow-up branch only after PR #436 is merged or after the stacked-base strategy is explicitly accepted.
+
 ---
 
 ## Phase 5: User Story 3 - Right-Size Known Caches And Logs (Priority: P2)

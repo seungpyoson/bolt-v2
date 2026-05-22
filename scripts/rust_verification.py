@@ -253,6 +253,16 @@ def target_dir(repo: pathlib.Path, policy: dict[str, Any] | None = None) -> path
     return root_base() / namespace / "target"
 
 
+def validate_managed_target_path(target: pathlib.Path, policy: dict[str, Any]) -> None:
+    if target.is_symlink():
+        raise PolicyError("managed target directory is a symlink")
+    namespace_root = root_base() / policy["target_namespace"]
+    resolved_namespace = namespace_root.resolve(strict=False)
+    resolved_target = target.resolve(strict=False)
+    if target.name != "target" or not is_direct_child(resolved_target, resolved_namespace):
+        raise PolicyError("managed target directory is outside the cache namespace")
+
+
 def cache_lock_path(policy: dict[str, Any]) -> pathlib.Path:
     return root_base() / policy["target_namespace"] / "cache.lock"
 
@@ -342,6 +352,7 @@ def scan_cache_tree(path: pathlib.Path) -> tuple[int, float, int]:
 def cache_status_payload(repo: pathlib.Path) -> dict[str, Any]:
     policy = load_policy(repo)
     target = target_dir(repo, policy)
+    validate_managed_target_path(target, policy)
     filesystem = shutil.disk_usage(existing_disk_path(target))
     subtrees: list[dict[str, Any]] = []
     total_bytes = 0
@@ -2049,6 +2060,279 @@ def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
         }
 
 
+def cache_reset_candidates(target: pathlib.Path) -> tuple[list[dict[str, Any]], int]:
+    candidates: list[dict[str, Any]] = []
+    reclaimable_bytes = 0
+    if not target.exists():
+        return candidates, reclaimable_bytes
+    for child in sorted(target.iterdir(), key=lambda item: item.name):
+        child_bytes, latest_mtime, skipped = scan_cache_tree(child)
+        entry = {
+            "bytes": child_bytes,
+            "class": "cache_reset",
+            "latest_mtime": latest_mtime,
+            "path": str(child),
+            "reason": "explicit managed cache reset",
+            "skipped_special_entries": skipped,
+        }
+        candidates.append(entry)
+        reclaimable_bytes += child_bytes
+    return candidates, reclaimable_bytes
+
+
+def cache_reset_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
+    policy = load_policy(repo)
+    validate_cache_policy(policy)
+    lock_context = cache_lock(policy, exclusive=True) if not dry_run else contextlib.nullcontext()
+    with lock_context:
+        target = target_dir(repo, policy)
+        validate_managed_target_path(target, policy)
+        if not dry_run:
+            refusal = active_process_refusal_payload(repo, target, policy)
+            if refusal is not None:
+                return refusal
+        candidates, reclaimable_bytes = cache_reset_candidates(target)
+        removed: list[dict[str, Any]] = []
+        if not dry_run:
+            refusal = active_process_refusal_payload(repo, target, policy)
+            if refusal is not None:
+                return refusal
+            for entry in candidates:
+                remove_cache_candidate(entry, target)
+                removed.append(entry)
+        return {
+            "candidates": candidates,
+            "dry_run": dry_run,
+            "rebuild_required": bool(candidates),
+            "reclaimable_bytes": reclaimable_bytes,
+            "refused": False,
+            "removed": removed,
+            "target_dir": str(target),
+        }
+
+
+def cleanup_config(policy: dict[str, Any]) -> dict[str, Any]:
+    cleanup = policy.get("cleanup", {})
+    if not isinstance(cleanup, dict):
+        raise PolicyError("cleanup table must be a table")
+    return cleanup
+
+
+def cleanup_tmp_bundle_config(policy: dict[str, Any]) -> dict[str, Any] | None:
+    cleanup = cleanup_config(policy)
+    tmp_bundles = cleanup.get("tmp_bundles")
+    if tmp_bundles is None:
+        return None
+    if not isinstance(tmp_bundles, dict):
+        raise PolicyError("cleanup.tmp_bundles must be a table")
+    parent = tmp_bundles.get("parent")
+    prefix = tmp_bundles.get("prefix")
+    prune_after_days = tmp_bundles.get("prune_after_days")
+    if not isinstance(parent, str) or not parent:
+        raise PolicyError("cleanup.tmp_bundles.parent must be a non-empty string")
+    if not isinstance(prefix, str) or not prefix:
+        raise PolicyError("cleanup.tmp_bundles.prefix must be a non-empty string")
+    if not is_non_negative_int(prune_after_days):
+        raise PolicyError("cleanup.tmp_bundles.prune_after_days must be a non-negative integer")
+    return tmp_bundles
+
+
+def cleanup_worktree_target_config(policy: dict[str, Any]) -> dict[str, Any] | None:
+    cleanup = cleanup_config(policy)
+    worktree_targets = cleanup.get("worktree_targets")
+    if worktree_targets is None:
+        return None
+    if not isinstance(worktree_targets, dict):
+        raise PolicyError("cleanup.worktree_targets must be a table")
+    dirname = worktree_targets.get("dirname")
+    if not isinstance(dirname, str) or not dirname or "/" in dirname:
+        raise PolicyError("cleanup.worktree_targets.dirname must be a non-empty path name")
+    return worktree_targets
+
+
+def registered_worktree_paths(repo: pathlib.Path) -> set[pathlib.Path]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as exc:
+        raise PolicyError(f"unable to inspect registered worktrees: {exc}") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise PolicyError(f"unable to inspect registered worktrees: {detail}")
+    paths: set[pathlib.Path] = set()
+    for line in result.stdout.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        try:
+            paths.add(pathlib.Path(line.removeprefix("worktree ")).resolve())
+        except (OSError, RuntimeError):
+            continue
+    return paths
+
+
+def cleanup_worktree_target_candidates(
+    repo: pathlib.Path,
+    policy: dict[str, Any],
+    *,
+    registered: set[pathlib.Path],
+) -> list[dict[str, Any]]:
+    config = cleanup_worktree_target_config(policy)
+    if config is None:
+        return []
+    dirname = str(config["dirname"])
+    managed_target = target_dir(repo, policy).resolve()
+    candidates: list[dict[str, Any]] = []
+    for worktree in sorted(registered, key=lambda item: str(item)):
+        candidate = worktree / dirname
+        try:
+            candidate_lstat = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        if not candidate.is_dir() or candidate.is_symlink():
+            continue
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError):
+            resolved = candidate
+        if resolved == managed_target:
+            continue
+        child_bytes, latest_mtime, skipped = scan_cache_tree(candidate)
+        candidates.append(
+            {
+                "bytes": child_bytes,
+                "class": "worktree_target",
+                "dirname": dirname,
+                "latest_mtime": latest_mtime,
+                "path": str(candidate),
+                "reason": f"registered worktree contains cleanup.worktree_targets.dirname ({dirname})",
+                "skipped_special_entries": skipped,
+                "worktree": str(worktree),
+            }
+        )
+    return candidates
+
+
+def cleanup_tmp_bundle_candidates(
+    repo: pathlib.Path,
+    policy: dict[str, Any],
+    *,
+    now: float,
+    registered: set[pathlib.Path],
+) -> list[dict[str, Any]]:
+    config = cleanup_tmp_bundle_config(policy)
+    if config is None:
+        return []
+    parent = pathlib.Path(str(config["parent"])).expanduser()
+    if not parent.exists():
+        return []
+    if not parent.is_dir():
+        raise PolicyError("cleanup.tmp_bundles.parent must be a directory")
+    prefix = str(config["prefix"])
+    prune_after_seconds = int(config["prune_after_days"]) * 24 * 60 * 60
+    candidates: list[dict[str, Any]] = []
+    for child in sorted(parent.iterdir(), key=lambda item: item.name):
+        if not child.name.startswith(prefix):
+            continue
+        try:
+            child_lstat = child.lstat()
+        except FileNotFoundError:
+            continue
+        if not child.is_dir() or child.is_symlink():
+            continue
+        try:
+            resolved = child.resolve()
+        except (OSError, RuntimeError):
+            resolved = child
+        if resolved in registered:
+            continue
+        age_seconds = now - child_lstat.st_mtime
+        if age_seconds < prune_after_seconds:
+            continue
+        child_bytes, latest_mtime, skipped = scan_cache_tree(child)
+        candidates.append(
+            {
+                "bytes": child_bytes,
+                "class": "tmp_bundle",
+                "latest_mtime": latest_mtime,
+                "parent": str(parent),
+                "path": str(child),
+                "reason": f"tmp bundle older than cleanup.tmp_bundles.prune_after_days ({config['prune_after_days']})",
+                "skipped_special_entries": skipped,
+            }
+        )
+    return candidates
+
+
+def remove_cleanup_candidate(entry: dict[str, Any]) -> None:
+    path = pathlib.Path(entry["path"])
+    class_name = entry.get("class")
+    if class_name == "tmp_bundle":
+        parent = pathlib.Path(str(entry.get("parent", ""))).expanduser()
+        if not is_direct_child(path.resolve(), parent.resolve()):
+            raise PolicyError("refusing to remove tmp bundle outside configured parent")
+    elif class_name == "worktree_target":
+        worktree = pathlib.Path(str(entry.get("worktree", ""))).expanduser()
+        dirname = str(entry.get("dirname", ""))
+        if not dirname or path.name != dirname or not is_direct_child(path.resolve(), worktree.resolve()):
+            raise PolicyError("refusing to remove worktree target outside registered worktree")
+    else:
+        raise PolicyError("refusing to remove unknown cleanup candidate class")
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        raise PolicyError("refusing to remove non-directory cleanup candidate")
+
+
+def cleanup_candidate_refusal_payload(entry: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any] | None:
+    path = pathlib.Path(str(entry["path"]))
+    if entry.get("class") == "worktree_target":
+        scope = pathlib.Path(str(entry.get("worktree", path.parent)))
+    else:
+        scope = path
+    return active_process_refusal_payload(scope, path, policy)
+
+
+def cleanup_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
+    policy = load_policy(repo)
+    lock_context = cache_lock(policy, exclusive=True) if not dry_run else contextlib.nullcontext()
+    with lock_context:
+        target = target_dir(repo, policy)
+        registered = registered_worktree_paths(repo)
+        candidates = [
+            *cleanup_tmp_bundle_candidates(repo, policy, now=time.time(), registered=registered),
+            *cleanup_worktree_target_candidates(repo, policy, registered=registered),
+        ]
+        reclaimable_bytes = sum(int(entry["bytes"]) for entry in candidates)
+        removed: list[dict[str, Any]] = []
+        if not dry_run:
+            refusal = active_process_refusal_payload(repo, target, policy)
+            if refusal is not None:
+                return refusal
+            for entry in candidates:
+                refusal = cleanup_candidate_refusal_payload(entry, policy)
+                if refusal is not None:
+                    return refusal
+            for entry in candidates:
+                refusal = cleanup_candidate_refusal_payload(entry, policy)
+                if refusal is not None:
+                    return refusal
+                remove_cleanup_candidate(entry)
+                removed.append(entry)
+        return {
+            "candidates": candidates,
+            "dry_run": dry_run,
+            "reclaimable_bytes": reclaimable_bytes,
+            "refused": False,
+            "removed": removed,
+            "target_dir": str(target),
+        }
+
+
 def refusal_payload(*, code: str, reason: str, dry_run: bool, target: str | None = None) -> dict[str, Any]:
     return {
         "candidates": [],
@@ -2481,8 +2765,61 @@ def cmd_cache_prune(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_cleanup(_args: argparse.Namespace) -> int:
-    print(json.dumps({"status": "ok", "removed": []}, sort_keys=True))
+def cmd_cache_reset(args: argparse.Namespace) -> int:
+    if not args.json:
+        print("--json is required for cache-reset", file=sys.stderr)
+        return 2
+    repo = repo_path(args.repo)
+    dry_run = not args.apply
+    try:
+        payload = cache_reset_payload(repo, dry_run=dry_run)
+        print(json.dumps(payload, sort_keys=True))
+    except FileNotFoundError as exc:
+        expected_policy = policy_path(repo)
+        missing = pathlib.Path(getattr(exc, "filename", "") or exc.args[0])
+        code = "missing_policy" if missing == expected_policy else "operation_failed"
+        payload = refusal_payload(code=code, reason=str(exc), dry_run=dry_run)
+        print(json.dumps(payload, sort_keys=True))
+        return 2
+    except PolicyError as exc:
+        payload = refusal_payload(code="invalid_policy", reason=str(exc), dry_run=dry_run)
+        print(json.dumps(payload, sort_keys=True))
+        return 2
+    except OSError as exc:
+        payload = refusal_payload(code="operation_failed", reason=str(exc), dry_run=dry_run)
+        print(json.dumps(payload, sort_keys=True))
+        return 2
+    if payload.get("refused"):
+        return 2
+    return 0
+
+
+def cmd_cleanup(args: argparse.Namespace) -> int:
+    if not args.json:
+        print("--json is required for cleanup", file=sys.stderr)
+        return 2
+    repo = repo_path(args.repo)
+    dry_run = not args.apply
+    try:
+        payload = cleanup_payload(repo, dry_run=dry_run)
+        print(json.dumps(payload, sort_keys=True))
+    except FileNotFoundError as exc:
+        expected_policy = policy_path(repo)
+        missing = pathlib.Path(getattr(exc, "filename", "") or exc.args[0])
+        code = "missing_policy" if missing == expected_policy else "operation_failed"
+        payload = refusal_payload(code=code, reason=str(exc), dry_run=dry_run)
+        print(json.dumps(payload, sort_keys=True))
+        return 2
+    except PolicyError as exc:
+        payload = refusal_payload(code="invalid_policy", reason=str(exc), dry_run=dry_run)
+        print(json.dumps(payload, sort_keys=True))
+        return 2
+    except OSError as exc:
+        payload = refusal_payload(code="operation_failed", reason=str(exc), dry_run=dry_run)
+        print(json.dumps(payload, sort_keys=True))
+        return 2
+    if payload.get("refused"):
+        return 2
     return 0
 
 
@@ -2542,7 +2879,20 @@ def build_parser() -> argparse.ArgumentParser:
     cache_prune.add_argument("--json", action="store_true", required=True, help="required; emit JSON output")
     cache_prune.set_defaults(func=cmd_cache_prune)
 
+    cache_reset = subparsers.add_parser("cache-reset")
+    cache_reset.add_argument("--repo", required=True)
+    cache_reset_mode = cache_reset.add_mutually_exclusive_group()
+    cache_reset_mode.add_argument("--dry-run", action="store_true")
+    cache_reset_mode.add_argument("--apply", action="store_true")
+    cache_reset.add_argument("--json", action="store_true", required=True, help="required; emit JSON output")
+    cache_reset.set_defaults(func=cmd_cache_reset)
+
     cleanup = subparsers.add_parser("cleanup")
+    cleanup.add_argument("--repo", required=True)
+    cleanup_mode = cleanup.add_mutually_exclusive_group()
+    cleanup_mode.add_argument("--dry-run", action="store_true")
+    cleanup_mode.add_argument("--apply", action="store_true")
+    cleanup.add_argument("--json", action="store_true", required=True, help="required; emit JSON output")
     cleanup.set_defaults(func=cmd_cleanup)
 
     return parser

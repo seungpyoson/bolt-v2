@@ -1375,6 +1375,34 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
             True,
         ),
         (
+            "github env printf repeated format assignments must all persist",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf '%s\\n' BENIGN=1 SRC=target >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env printf arguments must not decode escaped newlines",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'A=%s\\n' 'B=1\\nSRC=target' >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            False,
+        ),
+        (
             "github env echo e multiple assignments must all persist",
             """
             jobs:
@@ -1382,6 +1410,25 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
                 steps:
                   - run: |
                       echo -e "SRC=target\\nDEST=s3://bolt-v2-active-cache/cache" >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" "$DEST"
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env heredoc assignments must all persist",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cat >> "$GITHUB_ENV" <<'ENV'
+                      SRC<<EOF
+                      target
+                      EOF
+                      DEST=s3://bolt-v2-active-cache/cache
+                      ENV
                   - run: |
                       aws s3 sync "$SRC" "$DEST"
             """,
@@ -1401,6 +1448,48 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
             """,
             s3_expected,
             False,
+        ),
+        (
+            "quoted composite action using value must still isolate step cwd",
+            """
+            runs:
+              using: "composite"
+              steps:
+                - shell: bash
+                  run: cd target
+                - shell: bash
+                  run: aws s3 cp dist/app s3://bolt-v2-release/app
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "indentless composite action run step cwd must not leak into later S3 step",
+            """
+            runs:
+              using: composite
+              steps:
+              - shell: bash
+                run: cd target
+              - shell: bash
+                run: aws s3 cp dist/app s3://bolt-v2-release/app
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "indentless github env target must persist into later S3 step",
+            """
+            jobs:
+              test:
+                steps:
+                - run: |
+                    echo TARGET=target >> $GITHUB_ENV
+                - run: |
+                    aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+            """,
+            s3_expected,
+            True,
         ),
     ]
     failures: list[str] = []

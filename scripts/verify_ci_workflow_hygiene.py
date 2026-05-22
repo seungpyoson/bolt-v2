@@ -574,11 +574,14 @@ def step_blocks(job_lines: list[str]) -> list[list[str]]:
                 current.append(line)
             continue
         indent = len(clean) - len(stripped)
-        if steps_indent is not None and indent <= steps_indent:
+        is_step_item = YAML_STEP_ITEM_RE.match(stripped) is not None
+        if steps_indent is not None and indent <= steps_indent and not (
+            indent == steps_indent and is_step_item
+        ):
             break
-        if step_indent is None and YAML_STEP_ITEM_RE.match(stripped):
+        if step_indent is None and is_step_item:
             step_indent = indent
-        if step_indent is not None and indent == step_indent and YAML_STEP_ITEM_RE.match(stripped):
+        if step_indent is not None and indent == step_indent and is_step_item:
             if current is not None:
                 blocks.append(current)
             current = [line]
@@ -4631,13 +4634,34 @@ def github_env_payload_assignments(payload: str, *, decode_newlines: bool = Fals
     if decode_newlines:
         payload = payload.replace("\\n", "\n")
     assignments: list[str] = []
-    for line in payload.splitlines() or [payload]:
+    payload_lines = payload.splitlines() or [payload]
+    index = 0
+    while index < len(payload_lines):
+        line = payload_lines[index]
         clean = line.strip()
+        heredoc = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)<<(.+)", clean)
+        if heredoc:
+            name = heredoc.group(1)
+            delimiter = storage_strip_quotes(heredoc.group(2).strip())
+            body: list[str] = []
+            index += 1
+            while index < len(payload_lines):
+                candidate = payload_lines[index]
+                if candidate.strip() == delimiter:
+                    break
+                body.append(candidate.strip())
+                index += 1
+            assignments.append(f"{name}={shlex.quote(storage_strip_quotes(chr(10).join(body)))}")
+            if index < len(payload_lines):
+                index += 1
+            continue
         if "=" not in clean:
+            index += 1
             continue
         name, value = clean.split("=", 1)
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
             assignments.append(f"{name}={shlex.quote(storage_strip_quotes(value))}")
+        index += 1
     return assignments
 
 
@@ -4685,14 +4709,26 @@ def github_env_assignments_from_printf_tokens(tokens: list[str]) -> list[str]:
             payload_tokens = payload_tokens[1:]
         if not payload_tokens:
             return []
-        payload = storage_strip_quotes(payload_tokens[0])
-        for value in payload_tokens[1:]:
-            if "%s" not in payload:
-                break
-            payload = payload.replace("%s", storage_strip_quotes(value), 1)
-        if "%s" in payload:
+        format_payload = storage_strip_quotes(payload_tokens[0]).replace("\\n", "\n")
+        argument_tokens = [storage_strip_quotes(value) for value in payload_tokens[1:]]
+        if argument_tokens and "%s" not in format_payload:
             return []
-        return github_env_payload_assignments(payload, decode_newlines=True)
+        payload = format_payload
+        if argument_tokens:
+            chunks: list[str] = []
+            argument_index = 0
+            while argument_index < len(argument_tokens):
+                chunk = format_payload
+                replaced = False
+                while "%s" in chunk and argument_index < len(argument_tokens):
+                    chunk = chunk.replace("%s", argument_tokens[argument_index], 1)
+                    argument_index += 1
+                    replaced = True
+                if "%s" in chunk or not replaced:
+                    return []
+                chunks.append(chunk)
+            payload = "".join(chunks)
+        return github_env_payload_assignments(payload)
     return []
 
 
@@ -4711,6 +4747,50 @@ def github_env_assignments_from_line(line: str) -> list[str]:
     return assignments
 
 
+def github_env_cat_heredoc_delimiter(tokens: list[str]) -> str | None:
+    if len(tokens) < 5 or pathlib.Path(tokens[0]).name != "cat":
+        return None
+    writes_github_env = any(
+        token == ">>"
+        and index + 1 < len(tokens)
+        and storage_strip_quotes(tokens[index + 1]) in {"$GITHUB_ENV", "${GITHUB_ENV}"}
+        for index, token in enumerate(tokens)
+    )
+    if not writes_github_env:
+        return None
+    for index, token in enumerate(tokens):
+        if token in {"<<", "<<-"} and index + 1 < len(tokens):
+            return storage_strip_quotes(tokens[index + 1])
+    return None
+
+
+def github_env_assignments_from_cat_heredocs(text: str) -> list[str]:
+    assignments: list[str] = []
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        clean = strip_comment(lines[index]).strip()
+        delimiter: str | None = None
+        for segment in shell_command_segments_from_tokens(command_tokens(clean)):
+            delimiter = github_env_cat_heredoc_delimiter(segment)
+            if delimiter is not None:
+                break
+        if delimiter is None:
+            index += 1
+            continue
+        payload: list[str] = []
+        index += 1
+        while index < len(lines):
+            if lines[index].strip() == delimiter:
+                break
+            payload.append(lines[index].strip())
+            index += 1
+        assignments.extend(github_env_payload_assignments("\n".join(payload)))
+        if index < len(lines):
+            index += 1
+    return assignments
+
+
 def github_env_assignment_line(line: str) -> str | None:
     assignments = github_env_assignments_from_line(line)
     return assignments[0] if assignments else None
@@ -4718,6 +4798,7 @@ def github_env_assignment_line(line: str) -> str | None:
 
 def github_env_assignment_lines(text: str) -> list[str]:
     lines: list[str] = []
+    lines.extend(github_env_assignments_from_cat_heredocs(text))
     for line in shell_logical_lines(text):
         lines.extend(github_env_assignments_from_line(line))
     return lines
@@ -4727,7 +4808,11 @@ def workflow_run_shell_texts(workflow_text: str) -> list[str]:
     texts: list[str] = []
     step_scopes = list(parse_jobs(workflow_text).values())
     runs_block = top_level_block(workflow_text, "runs")
-    if any(re.match(r"^\s*using:\s*composite\s*$", strip_comment(line)) for line in runs_block):
+    if any(
+        (match := re.match(r"^\s*using:\s*(.*?)\s*$", strip_comment(line)))
+        and unquote_yaml_scalar(match.group(1).strip()) == "composite"
+        for line in runs_block
+    ):
         step_scopes.append(runs_block)
     for job_lines in step_scopes:
         persisted_env: list[str] = []

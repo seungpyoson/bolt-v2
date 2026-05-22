@@ -26,12 +26,10 @@ use std::path::Path;
 const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
 const PHASE8_TEST_APPROVAL_ENVELOPE_SHA256: &str =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-fn phase8_required_operator_artifact_terms() -> [&'static str; 26] {
+fn phase8_required_operator_artifact_terms() -> [&'static str; 24] {
     [
         "BOLT_V3_PHASE8_HEAD_SHA",
         "BOLT_V3_PHASE8_ROOT_TOML_PATH",
-        "BOLT_V3_PHASE8_ROOT_TOML_SHA256",
-        "BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256",
         "BOLT_V3_PHASE8_SSM_MANIFEST_PATH",
         "BOLT_V3_PHASE8_SSM_MANIFEST_SHA256",
         "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH",
@@ -80,6 +78,8 @@ fn tiny_canary_quickstart_names_required_operator_artifacts() {
     }
     assert!(!quickstart.contains("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH"));
     assert!(!quickstart.contains("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH"));
+    assert!(!quickstart.contains("BOLT_V3_PHASE8_ROOT_TOML_SHA256"));
+    assert!(!quickstart.contains("BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256"));
 }
 
 #[test]
@@ -94,6 +94,37 @@ fn tiny_canary_schema_doc_names_required_operator_artifacts() {
     }
     assert!(!schema_doc.contains("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH"));
     assert!(!schema_doc.contains("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH"));
+    assert!(!schema_doc.contains("BOLT_V3_PHASE8_ROOT_TOML_SHA256"));
+    assert!(!schema_doc.contains("BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256"));
+}
+
+#[test]
+fn operator_approval_env_does_not_require_circular_hash_env_vars() {
+    let source = support::repo_text("src/bolt_v3_tiny_canary_evidence.rs");
+    let from_env = source
+        .split("pub fn from_env() -> Result<Self>")
+        .nth(1)
+        .and_then(|tail| tail.split("pub fn validate_against").next())
+        .expect("Phase8OperatorApprovalEnvelope::from_env source should be present");
+
+    assert!(
+        !from_env.contains("BOLT_V3_PHASE8_ROOT_TOML_SHA256"),
+        "from_env must compute root_toml_sha256 from BOLT_V3_PHASE8_ROOT_TOML_PATH"
+    );
+    assert!(
+        !from_env.contains("BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256"),
+        "from_env must read approval_envelope_sha256 from loaded TOML"
+    );
+    assert!(
+        from_env.contains("root_toml_sha256: Self::sha256_file(&root_toml_path)?"),
+        "from_env must compute the root TOML hash internally"
+    );
+    assert!(
+        from_env.contains(
+            "approval_envelope_sha256: operator_evidence.approval_envelope_sha256.clone()"
+        ),
+        "from_env must source approval_envelope_sha256 from `[live_canary].operator_evidence`"
+    );
 }
 
 #[test]

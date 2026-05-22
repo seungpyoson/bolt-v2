@@ -437,6 +437,153 @@ async fn live_canary_gate_rejects_approval_envelope_hash_mismatch() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_approval_envelope_circular_fields() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let config_bundle_checksum = load_bolt_v3_config(&root_path)
+        .expect("fixture v3 config should load")
+        .config_bundle_checksum;
+    let circular_fields = [
+        (
+            "approval_envelope_sha256",
+            serde_json::json!(valid_operator_evidence().approval_envelope_sha256),
+        ),
+        (
+            "root_toml_sha256",
+            serde_json::json!(root_toml_sha256_for_test()),
+        ),
+        (
+            "config_bundle_checksum",
+            serde_json::json!(config_bundle_checksum),
+        ),
+    ];
+
+    for (field, value) in circular_fields {
+        let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let report_path = tempdir.path().join("no-submit-readiness.json");
+        write_no_submit_report(&report_path, &[]);
+        let mut operator_evidence = valid_operator_evidence();
+        let mut envelope = valid_approval_envelope_value(&operator_evidence);
+        envelope
+            .as_object_mut()
+            .expect("approval envelope should be an object")
+            .insert(field.to_string(), value);
+        bind_approval_envelope_value(&mut operator_evidence, envelope);
+        let loaded = loaded_with_live_canary(
+            loaded,
+            LiveCanaryBlock {
+                approval_id: "operator-approved-canary-001".to_string(),
+                no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+                max_live_order_count: 1,
+                max_notional_per_order: "1.00".to_string(),
+                max_no_submit_readiness_report_bytes: 4096,
+                readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+                reference_quote_max_age_seconds: 10,
+                reference_quote_wait_timeout_seconds: 10,
+                reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+                reference_quote_probe_log_events: true,
+                reference_quote_probe_log_commands: true,
+                operator_evidence: Some(operator_evidence),
+            },
+        );
+
+        let error = match check_bolt_v3_live_canary_gate(&loaded).await {
+            Ok(report) => {
+                panic!("approval envelope field `{field}` must fail closed, got {report:?}")
+            }
+            Err(error) => error,
+        };
+        let rendered = error.to_string();
+
+        assert!(
+            rendered.contains("approval envelope") && rendered.contains(field),
+            "expected approval envelope schema rejection naming {field}, got {rendered}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_approval_envelope_toml_drift_after_hash_match() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    let mut envelope = valid_approval_envelope_value(&operator_evidence);
+    envelope
+        .as_object_mut()
+        .expect("approval envelope should be an object")
+        .insert(
+            "ssm_manifest_sha256".to_string(),
+            serde_json::json!(sha256_hex(b"wrong-ssm-manifest")),
+        );
+    bind_approval_envelope_value(&mut operator_evidence, envelope);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("approval envelope TOML drift must fail closed after hash match");
+    let rendered = error.to_string();
+
+    assert!(
+        rendered.contains("approval envelope") && rendered.contains("ssm_manifest_sha256"),
+        "expected approval envelope value-equality rejection naming ssm_manifest_sha256, got {rendered}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_accepts_non_circular_approval_envelope_schema() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    let envelope = valid_approval_envelope_value(&operator_evidence);
+    bind_approval_envelope_value(&mut operator_evidence, envelope);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let report = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("non-circular approval envelope should pass");
+
+    assert_eq!(report.approval_id(), "operator-approved-canary-001");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_approval_consumption_hash_mismatch() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -879,7 +1026,15 @@ async fn live_canary_gate_rejects_oversized_operator_evidence_file_before_hashin
 #[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_oversized_approval_consumption_before_reading_to_eof() {
     let mut operator_evidence = valid_operator_evidence();
-    operator_evidence.max_operator_evidence_file_bytes = 256;
+    let approval_envelope_len = std::fs::metadata(&operator_evidence.approval_envelope_path)
+        .expect("approval envelope should exist")
+        .len();
+    operator_evidence.max_operator_evidence_file_bytes = approval_envelope_len + 1;
+    std::fs::write(
+        &operator_evidence.approval_consumption_path,
+        vec![b' '; operator_evidence.max_operator_evidence_file_bytes as usize + 1],
+    )
+    .expect("oversized approval consumption proof should write");
 
     let error =
         check_operator_evidence_rejection(operator_evidence, "approval_consumption_path").await;
@@ -2605,7 +2760,8 @@ fn valid_operator_evidence_for_window(
     let mut evidence = valid_operator_evidence();
     evidence.approval_not_before_unix_seconds = approval_not_before_unix_seconds;
     evidence.approval_not_after_unix_seconds = approval_not_after_unix_seconds;
-    write_valid_approval_consumption_proof(&evidence);
+    let envelope = valid_approval_envelope_value(&evidence);
+    bind_approval_envelope_value(&mut evidence, envelope);
     evidence
 }
 
@@ -2750,6 +2906,45 @@ fn write_valid_approval_consumption_proof(evidence: &LiveCanaryOperatorEvidenceB
         std::path::Path::new(&evidence.approval_consumption_path),
         approval_consumption_proof(evidence),
     );
+}
+
+fn bind_approval_envelope_value(
+    evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    value: serde_json::Value,
+) {
+    let bytes = serde_json::to_vec_pretty(&value).expect("approval envelope should serialize");
+    std::fs::write(&evidence.approval_envelope_path, &bytes)
+        .expect("approval envelope should be written");
+    evidence.approval_envelope_sha256 = sha256_hex(&bytes);
+    write_valid_approval_consumption_proof(evidence);
+}
+
+fn valid_approval_envelope_value(evidence: &LiveCanaryOperatorEvidenceBlock) -> serde_json::Value {
+    let mut envelope = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "phase8_operator_approval_envelope",
+        "head_sha": evidence.head_sha,
+        "ssm_manifest_sha256": evidence.ssm_manifest_sha256,
+        "strategy_input_evidence_sha256": evidence.strategy_input_evidence_sha256,
+        "financial_envelope_sha256": evidence.financial_envelope_sha256,
+        "pre_run_state_sha256": evidence.pre_run_state_sha256,
+        "abort_plan_sha256": evidence.abort_plan_sha256,
+        "approval_id_hash": sha256_hex("operator-approved-canary-001".as_bytes()),
+        "approval_nonce_sha256": evidence.approval_nonce_sha256,
+        "approval_not_before_unix_secs": evidence.approval_not_before_unix_seconds,
+        "approval_not_after_unix_secs": evidence.approval_not_after_unix_seconds,
+        "canary_evidence_path_hash": sha256_hex(evidence.canary_evidence_path.as_bytes()),
+    });
+    if let Some(strategy_cancel_path) = &evidence.strategy_cancel_path {
+        envelope
+            .as_object_mut()
+            .expect("approval envelope should be an object")
+            .insert(
+                "strategy_cancel_path_hash".to_string(),
+                serde_json::json!(sha256_hex(strategy_cancel_path.as_bytes())),
+            );
+    }
+    envelope
 }
 
 fn approval_consumption_proof(evidence: &LiveCanaryOperatorEvidenceBlock) -> serde_json::Value {

@@ -179,11 +179,6 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
     let now = current_unix_seconds() as i64;
     let approval_not_before_unix_seconds = now - 60;
     let approval_not_after_unix_seconds = now + 3600;
-    let approval_envelope_path = write_dummy_json(
-        &case_dir,
-        "approval-envelope.json",
-        serde_json::json!({"record_kind": "test_approval_envelope"}),
-    );
     let ssm_manifest_path = write_dummy_json(
         &case_dir,
         "ssm-manifest.json",
@@ -228,13 +223,33 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         .to_string_lossy()
         .to_string();
     let root_toml_sha256 = sha256_file(&repo_path("tests/fixtures/bolt_v3/root.toml"));
-    let approval_envelope_sha256 = sha256_file(&approval_envelope_path);
     let head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA").unwrap_or_else(|| {
         panic!(
             "BOLT_V3_BUILD_HEAD_SHA is not compiled in; \
              run tests from a git repository so build.rs can emit the SHA"
         )
     });
+    let approval_envelope_path = write_dummy_json(
+        &case_dir,
+        "approval-envelope.json",
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "phase8_operator_approval_envelope",
+            "head_sha": head_sha,
+            "ssm_manifest_sha256": ssm_manifest_sha256,
+            "strategy_input_evidence_sha256": strategy_input_evidence_sha256,
+            "financial_envelope_sha256": financial_envelope_sha256,
+            "pre_run_state_sha256": pre_run_state_sha256,
+            "abort_plan_sha256": abort_plan_sha256,
+            "approval_id_hash": sha256_hex("operator-approved-canary-001".as_bytes()),
+            "approval_nonce_sha256": approval_nonce_sha256,
+            "approval_not_before_unix_secs": approval_not_before_unix_seconds,
+            "approval_not_after_unix_secs": approval_not_after_unix_seconds,
+            "canary_evidence_path_hash": sha256_hex(canary_evidence_path.as_bytes()),
+            "strategy_cancel_path_hash": sha256_hex(strategy_cancel_path.as_bytes()),
+        }),
+    );
+    let approval_envelope_sha256 = sha256_file(&approval_envelope_path);
     let approval_consumption_proof = serde_json::json!({
         "schema_version": APPROVAL_CONSUMPTION_SCHEMA_VERSION,
         "record_kind": APPROVAL_CONSUMPTION_RECORD_KIND,

@@ -18,6 +18,7 @@ use std::{
 
 use nautilus_model::identifiers::ActorId;
 use rust_decimal::Decimal;
+use serde::Deserialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -33,6 +34,9 @@ use crate::{
         STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
     },
 };
+
+const APPROVAL_ENVELOPE_SCHEMA_VERSION: i64 = 1;
+const APPROVAL_ENVELOPE_RECORD_KIND: &str = "phase8_operator_approval_envelope";
 
 /// Successful live canary gate evaluation.
 ///
@@ -163,6 +167,18 @@ pub enum BoltV3LiveCanaryGateError {
     OperatorEvidenceHashMismatch {
         field: &'static str,
         path: PathBuf,
+    },
+    OperatorApprovalEnvelopeRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    OperatorApprovalEnvelopeParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    OperatorApprovalEnvelopeMismatch {
+        path: PathBuf,
+        field: &'static str,
     },
     OperatorApprovalConsumptionRead {
         path: PathBuf,
@@ -347,6 +363,21 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                 "bolt-v3 live canary `[live_canary].operator_evidence.{field}` does not match {}",
                 path.display()
             ),
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeRead { path, source } => write!(
+                f,
+                "failed to read bolt-v3 live canary approval envelope {}: {source}",
+                path.display()
+            ),
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeParse { path, source } => write!(
+                f,
+                "failed to parse bolt-v3 live canary approval envelope {}: {source}",
+                path.display()
+            ),
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch { path, field } => write!(
+                f,
+                "bolt-v3 live canary approval envelope {} field `{field}` does not match configured operator evidence",
+                path.display()
+            ),
             BoltV3LiveCanaryGateError::OperatorApprovalConsumptionRead { path, source } => write!(
                 f,
                 "failed to read bolt-v3 live canary approval consumption proof {}: {source}",
@@ -484,6 +515,8 @@ impl std::error::Error for BoltV3LiveCanaryGateError {
             BoltV3LiveCanaryGateError::ReadinessReportRead { source, .. } => Some(source),
             BoltV3LiveCanaryGateError::ReadinessReportParse { source, .. } => Some(source),
             BoltV3LiveCanaryGateError::OperatorEvidenceRead { source, .. } => Some(source),
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeRead { source, .. } => Some(source),
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeParse { source, .. } => Some(source),
             BoltV3LiveCanaryGateError::OperatorApprovalConsumptionRead { source, .. } => {
                 Some(source)
             }
@@ -839,6 +872,7 @@ async fn validate_operator_evidence(
     }
 
     validate_operator_evidence_file_hashes(root_path, evidence).await?;
+    validate_operator_approval_envelope(root_path, evidence, approval_id).await?;
     validate_operator_approval_consumption(
         root_path,
         evidence,
@@ -873,6 +907,26 @@ fn validate_operator_evidence_head_sha(
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Phase8OperatorApprovalEnvelopeFile {
+    schema_version: i64,
+    record_kind: String,
+    head_sha: String,
+    ssm_manifest_sha256: String,
+    strategy_input_evidence_sha256: String,
+    financial_envelope_sha256: String,
+    pre_run_state_sha256: String,
+    abort_plan_sha256: String,
+    approval_id_hash: String,
+    approval_nonce_sha256: String,
+    approval_not_before_unix_secs: i64,
+    approval_not_after_unix_secs: i64,
+    canary_evidence_path_hash: String,
+    #[serde(default)]
+    strategy_cancel_path_hash: Option<String>,
+}
+
 async fn validate_operator_evidence_file_hashes(
     root_path: &Path,
     evidence: &LiveCanaryOperatorEvidenceBlock,
@@ -891,6 +945,169 @@ async fn validate_operator_evidence_file_hashes(
                 path,
             });
         }
+    }
+    Ok(())
+}
+
+async fn validate_operator_approval_envelope(
+    root_path: &Path,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    approval_id: &str,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let path = resolve_configured_path(
+        root_path,
+        "approval_envelope_path",
+        &evidence.approval_envelope_path,
+    )?;
+    let bytes = read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes)
+        .await
+        .map_err(
+            |source| BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeRead {
+                path: path.clone(),
+                source,
+            },
+        )?;
+    let envelope: Phase8OperatorApprovalEnvelopeFile =
+        serde_json::from_slice(&bytes).map_err(|source| {
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeParse {
+                path: path.clone(),
+                source,
+            }
+        })?;
+
+    validate_approval_envelope_i64_field(
+        &path,
+        "schema_version",
+        envelope.schema_version,
+        APPROVAL_ENVELOPE_SCHEMA_VERSION,
+    )?;
+    validate_approval_envelope_string_field(
+        &path,
+        "record_kind",
+        &envelope.record_kind,
+        APPROVAL_ENVELOPE_RECORD_KIND,
+    )?;
+    validate_approval_envelope_string_field(
+        &path,
+        "head_sha",
+        &envelope.head_sha,
+        &evidence.head_sha,
+    )?;
+    validate_approval_envelope_string_field(
+        &path,
+        "ssm_manifest_sha256",
+        &envelope.ssm_manifest_sha256,
+        &evidence.ssm_manifest_sha256,
+    )?;
+    validate_approval_envelope_string_field(
+        &path,
+        "strategy_input_evidence_sha256",
+        &envelope.strategy_input_evidence_sha256,
+        &evidence.strategy_input_evidence_sha256,
+    )?;
+    validate_approval_envelope_string_field(
+        &path,
+        "financial_envelope_sha256",
+        &envelope.financial_envelope_sha256,
+        &evidence.financial_envelope_sha256,
+    )?;
+    validate_approval_envelope_string_field(
+        &path,
+        "pre_run_state_sha256",
+        &envelope.pre_run_state_sha256,
+        &evidence.pre_run_state_sha256,
+    )?;
+    validate_approval_envelope_string_field(
+        &path,
+        "abort_plan_sha256",
+        &envelope.abort_plan_sha256,
+        &evidence.abort_plan_sha256,
+    )?;
+    validate_approval_envelope_string_field(
+        &path,
+        "approval_id_hash",
+        &envelope.approval_id_hash,
+        &sha256_hex(approval_id.as_bytes()),
+    )?;
+    validate_approval_envelope_string_field(
+        &path,
+        "approval_nonce_sha256",
+        &envelope.approval_nonce_sha256,
+        &evidence.approval_nonce_sha256,
+    )?;
+    validate_approval_envelope_string_field(
+        &path,
+        "canary_evidence_path_hash",
+        &envelope.canary_evidence_path_hash,
+        &sha256_hex(evidence.canary_evidence_path.as_bytes()),
+    )?;
+    validate_approval_envelope_i64_field(
+        &path,
+        "approval_not_before_unix_secs",
+        envelope.approval_not_before_unix_secs,
+        evidence.approval_not_before_unix_seconds,
+    )?;
+    validate_approval_envelope_i64_field(
+        &path,
+        "approval_not_after_unix_secs",
+        envelope.approval_not_after_unix_secs,
+        evidence.approval_not_after_unix_seconds,
+    )?;
+
+    match (
+        &evidence.strategy_cancel_path,
+        &envelope.strategy_cancel_path_hash,
+    ) {
+        (Some(strategy_cancel_path), Some(actual)) => validate_approval_envelope_string_field(
+            &path,
+            "strategy_cancel_path_hash",
+            actual,
+            &sha256_hex(strategy_cancel_path.as_bytes()),
+        )?,
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(
+                BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch {
+                    path,
+                    field: "strategy_cancel_path_hash",
+                },
+            );
+        }
+        (None, None) => {}
+    }
+
+    Ok(())
+}
+
+fn validate_approval_envelope_string_field(
+    path: &Path,
+    field: &'static str,
+    actual: &str,
+    expected: &str,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    if actual != expected {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch {
+                path: path.to_path_buf(),
+                field,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn validate_approval_envelope_i64_field(
+    path: &Path,
+    field: &'static str,
+    actual: i64,
+    expected: i64,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    if actual != expected {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch {
+                path: path.to_path_buf(),
+                field,
+            },
+        );
     }
     Ok(())
 }
@@ -1651,9 +1868,10 @@ mod tests {
         },
         bolt_v3_live_canary_gate::{
             APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
-            APPROVAL_ID_HASH_KEY, ApprovalConsumptionExpectation, BoltV3LiveCanaryGateError,
-            CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE,
-            EXECUTABLE_IDENTITY_KEY, GENERATED_AT_UNIX_SECONDS_KEY, LIVE_NODE_BUILD_STAGE,
+            APPROVAL_ENVELOPE_RECORD_KIND, APPROVAL_ENVELOPE_SCHEMA_VERSION, APPROVAL_ID_HASH_KEY,
+            ApprovalConsumptionExpectation, BoltV3LiveCanaryGateError, CONFIG_BUNDLE_CHECKSUM_KEY,
+            CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY,
+            GENERATED_AT_UNIX_SECONDS_KEY, LIVE_NODE_BUILD_STAGE,
             NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
             REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
             STATUS_KEY, STATUS_SATISFIED, check_bolt_v3_live_canary_gate_with_clock,
@@ -1943,8 +2161,10 @@ mod tests {
         consumed_unix_secs: i64,
         approval_consumption_max_age_seconds: u64,
     ) -> LiveCanaryOperatorEvidenceBlock {
-        let (approval_envelope_path, approval_envelope_sha256) =
-            write_json_file_with_sha256(dir, "approval-envelope.json", "approval_envelope");
+        let approval_envelope_path = dir
+            .join("approval-envelope.json")
+            .to_string_lossy()
+            .to_string();
         let (ssm_manifest_path, ssm_manifest_sha256) =
             write_json_file_with_sha256(dir, "ssm-manifest.json", "ssm_manifest");
         let (strategy_input_evidence_path, strategy_input_evidence_sha256) =
@@ -1962,14 +2182,14 @@ mod tests {
             .join("canary-evidence.json")
             .to_string_lossy()
             .to_string();
-        let evidence = LiveCanaryOperatorEvidenceBlock {
+        let mut evidence = LiveCanaryOperatorEvidenceBlock {
             head_sha: current_build_head_sha()
                 .expect("build head sha should be compiled for gate tests")
                 .to_string(),
             max_operator_evidence_file_bytes: 4096,
             approval_consumption_max_age_seconds,
             approval_envelope_path,
-            approval_envelope_sha256,
+            approval_envelope_sha256: String::new(),
             ssm_manifest_path,
             ssm_manifest_sha256,
             strategy_input_evidence_path,
@@ -2008,6 +2228,12 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
         };
+        let approval_envelope = approval_envelope_value_for_test(&evidence, approval_id);
+        let approval_envelope_bytes =
+            serde_json::to_vec(&approval_envelope).expect("approval envelope should serialize");
+        fs::write(&evidence.approval_envelope_path, &approval_envelope_bytes)
+            .expect("approval envelope should be written");
+        evidence.approval_envelope_sha256 = sha256_hex(&approval_envelope_bytes);
         let root_toml_bytes = fs::read(root_path).expect("fixture root TOML should be readable");
         write_json_value(
             &approval_consumption_path,
@@ -2031,6 +2257,37 @@ mod tests {
             }),
         );
         evidence
+    }
+
+    fn approval_envelope_value_for_test(
+        evidence: &LiveCanaryOperatorEvidenceBlock,
+        approval_id: &str,
+    ) -> serde_json::Value {
+        let mut envelope = serde_json::json!({
+            "schema_version": APPROVAL_ENVELOPE_SCHEMA_VERSION,
+            "record_kind": APPROVAL_ENVELOPE_RECORD_KIND,
+            "head_sha": evidence.head_sha,
+            "ssm_manifest_sha256": evidence.ssm_manifest_sha256,
+            "strategy_input_evidence_sha256": evidence.strategy_input_evidence_sha256,
+            "financial_envelope_sha256": evidence.financial_envelope_sha256,
+            "pre_run_state_sha256": evidence.pre_run_state_sha256,
+            "abort_plan_sha256": evidence.abort_plan_sha256,
+            "approval_id_hash": sha256_hex(approval_id.as_bytes()),
+            "approval_nonce_sha256": evidence.approval_nonce_sha256,
+            "approval_not_before_unix_secs": evidence.approval_not_before_unix_seconds,
+            "approval_not_after_unix_secs": evidence.approval_not_after_unix_seconds,
+            "canary_evidence_path_hash": sha256_hex(evidence.canary_evidence_path.as_bytes()),
+        });
+        if let Some(strategy_cancel_path) = &evidence.strategy_cancel_path {
+            envelope
+                .as_object_mut()
+                .expect("approval envelope should be an object")
+                .insert(
+                    "strategy_cancel_path_hash".to_string(),
+                    serde_json::json!(sha256_hex(strategy_cancel_path.as_bytes())),
+                );
+        }
+        envelope
     }
 
     fn write_json_file_with_sha256(

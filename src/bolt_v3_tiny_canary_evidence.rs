@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_canary_gate::{
         BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_pre_consumption_gate,
     },
@@ -1279,13 +1279,23 @@ pub struct Phase8OperatorApprovalEnvelope {
 
 impl Phase8OperatorApprovalEnvelope {
     pub fn from_env() -> Result<Self> {
+        let root_toml_path = required_path_env("BOLT_V3_PHASE8_ROOT_TOML_PATH")?;
+        let loaded = load_bolt_v3_config(Path::new(&root_toml_path))?;
+        let operator_evidence = loaded
+            .root
+            .live_canary
+            .as_ref()
+            .and_then(|block| block.operator_evidence.as_ref())
+            .ok_or_else(|| {
+                anyhow!(
+                    "phase8 operator approval requires `[live_canary].operator_evidence` in root TOML"
+                )
+            })?;
         Ok(Self {
             head_sha: required_env("BOLT_V3_PHASE8_HEAD_SHA")?,
-            root_toml_path: required_path_env("BOLT_V3_PHASE8_ROOT_TOML_PATH")?,
-            root_toml_sha256: required_env("BOLT_V3_PHASE8_ROOT_TOML_SHA256")?,
-            approval_envelope_sha256: required_sha256_env(
-                "BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256",
-            )?,
+            root_toml_sha256: Self::sha256_file(&root_toml_path)?,
+            approval_envelope_sha256: operator_evidence.approval_envelope_sha256.clone(),
+            root_toml_path,
             ssm_manifest_path: required_path_env("BOLT_V3_PHASE8_SSM_MANIFEST_PATH")?,
             ssm_manifest_sha256: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_SHA256")?,
             strategy_input_evidence_path: required_path_env(
@@ -2268,11 +2278,6 @@ fn required_i64_env(name: &str) -> Result<i64> {
         .map_err(|source| anyhow!("failed to parse phase8 env `{name}` as i64: {source}"))
 }
 
-fn required_sha256_env(name: &str) -> Result<String> {
-    let value = required_env(name)?;
-    validate_phase8_sha256_env_value(name, value)
-}
-
 fn required_path_env(name: &str) -> Result<String> {
     let value = required_env(name)?;
     validate_phase8_env_path_value(name, &value)?;
@@ -2288,6 +2293,7 @@ fn optional_path_env(name: &str) -> Result<Option<String>> {
         .transpose()
 }
 
+#[cfg(test)]
 fn validate_phase8_sha256_env_value(name: &str, value: String) -> Result<String> {
     if phase8_is_sha256_hex(&value) {
         Ok(value)

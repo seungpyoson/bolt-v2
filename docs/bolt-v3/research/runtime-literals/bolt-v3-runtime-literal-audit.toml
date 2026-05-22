@@ -4371,8 +4371,24 @@ reason = "This names the assembler output packet path while validating path shap
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
+literal = '''1'''
+context = '''.take(max_bytes.saturating_add(1))'''
+classification = "bounded_read_oversize_probe"
+reason = "This reads one extra byte beyond the config-owned operator evidence file cap to detect oversize artifacts; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"'''
+context = '''"operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"'''
+classification = "operator_artifact_error_template"
+reason = "This is a fail-closed diagnostic template for bounded operator-artifact reads using the config-owned cap, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
 literal = '''64'''
-context = '''if value.len() == 64'''
+context = '''value.len() == 64'''
 classification = "sha256_hex_width"
 reason = "This is the structural length of a SHA-256 hex digest used to validate operator evidence hashes, not an operator runtime value."
 

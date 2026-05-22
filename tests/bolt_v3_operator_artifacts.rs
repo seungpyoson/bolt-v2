@@ -750,6 +750,12 @@ fn approval_packet_assembly_writes_non_circular_envelope_from_existing_refs() {
     let mut loaded = load_fixture_with_live_canary();
     let temp = tempfile::tempdir().expect("tempdir should create");
     let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    operator_evidence.strategy_cancel_path = Some(
+        temp.path()
+            .join("strategy-cancel.json")
+            .to_string_lossy()
+            .to_string(),
+    );
     let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
     loaded
         .root
@@ -818,6 +824,15 @@ fn approval_packet_assembly_writes_non_circular_envelope_from_existing_refs() {
     assert_eq!(
         envelope["canary_evidence_path_hash"],
         sha256_text(&operator_evidence.canary_evidence_path)
+    );
+    assert_eq!(
+        envelope["strategy_cancel_path_hash"],
+        sha256_text(
+            operator_evidence
+                .strategy_cancel_path
+                .as_deref()
+                .expect("strategy cancel path should exist")
+        )
     );
 
     for forbidden in [
@@ -964,6 +979,167 @@ fn approval_packet_assembly_redacts_invalid_hash_values_from_errors() {
     assert!(
         !operator_packet_path.exists(),
         "invalid hash shape must not leave operator packet"
+    );
+}
+
+#[test]
+fn approval_packet_assembly_redacts_invalid_static_manifest_hash_values_from_errors() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let mut refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence);
+    let secret_like_value = "/bolt/not-a-real-secret-path";
+    refs.iter_mut()
+        .find(|artifact| artifact["name"] == "approval-nonce")
+        .expect("approval nonce ref should exist")["sha256"] = serde_json::json!(secret_like_value);
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs,
+        Vec::new(),
+    );
+    let operator_packet_path = temp.path().join("operator-evidence-packet.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+        &loaded,
+        &manifest_path,
+        &operator_packet_path,
+    )
+    .expect_err("invalid static manifest hash shape should fail closed");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("static manifest"),
+        "static manifest hash error should name manifest scope: {message}"
+    );
+    assert!(
+        !message.contains("[live_canary.operator_evidence]"),
+        "static manifest hash error must not use operator-evidence prefix: {message}"
+    );
+    assert!(
+        !message.contains(secret_like_value),
+        "static manifest hash error must not echo invalid value: {message}"
+    );
+    assert!(
+        !operator_packet_path.exists(),
+        "invalid static manifest hash must not leave operator packet"
+    );
+}
+
+#[test]
+fn approval_packet_assembly_rejects_oversized_static_manifest_before_writes() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let approval_envelope_path = operator_evidence.approval_envelope_path.clone();
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence);
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("operator evidence should exist")
+        .max_operator_evidence_file_bytes = 8;
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    std::fs::write(&manifest_path, vec![b'{'; 9]).expect("oversized manifest should write");
+    let operator_packet_path = temp.path().join("operator-evidence-packet.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+        &loaded,
+        &manifest_path,
+        &operator_packet_path,
+    )
+    .expect_err("oversized static manifest should fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("max_operator_evidence_file_bytes"),
+        "oversized manifest error should cite configured cap: {error}"
+    );
+    assert!(
+        !std::path::Path::new(&approval_envelope_path).exists(),
+        "oversized manifest must not leave approval envelope"
+    );
+    assert!(
+        !operator_packet_path.exists(),
+        "oversized manifest must not leave operator packet"
+    );
+}
+
+#[test]
+fn approval_packet_assembly_rejects_oversized_static_artifact_before_writes() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let mut refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs.clone(),
+        Vec::new(),
+    );
+    let manifest_len = std::fs::metadata(&manifest_path)
+        .expect("manifest metadata should read")
+        .len();
+    let max_bytes = manifest_len + 1;
+    let oversized_bytes = vec![b'x'; max_bytes as usize + 1];
+    std::fs::write(&operator_evidence.financial_envelope_path, &oversized_bytes)
+        .expect("oversized artifact should write");
+    let oversized_sha = sha256_bytes(&oversized_bytes);
+    operator_evidence.financial_envelope_sha256 = oversized_sha.clone();
+    refs.iter_mut()
+        .find(|artifact| artifact["name"] == "financial-envelope")
+        .expect("financial envelope ref should exist")["sha256"] = serde_json::json!(oversized_sha);
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs,
+        Vec::new(),
+    );
+    operator_evidence.max_operator_evidence_file_bytes = max_bytes;
+    let approval_envelope_path = operator_evidence.approval_envelope_path.clone();
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence);
+    let operator_packet_path = temp.path().join("operator-evidence-packet.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+        &loaded,
+        &manifest_path,
+        &operator_packet_path,
+    )
+    .expect_err("oversized static artifact should fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("max_operator_evidence_file_bytes"),
+        "oversized artifact error should cite configured cap: {error}"
+    );
+    assert!(
+        !std::path::Path::new(&approval_envelope_path).exists(),
+        "oversized artifact must not leave approval envelope"
+    );
+    assert!(
+        !operator_packet_path.exists(),
+        "oversized artifact must not leave operator packet"
     );
 }
 

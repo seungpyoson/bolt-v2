@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     fmt, fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -208,6 +208,9 @@ pub enum BoltV3OperatorArtifactError {
     StaticManifestArtifactHashMismatch {
         name: &'static str,
     },
+    StaticManifestArtifactHashShape {
+        field: &'static str,
+    },
     StaticManifestArtifactFileRead {
         name: &'static str,
         path: PathBuf,
@@ -308,6 +311,10 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::StaticManifestArtifactHashMismatch { name } => write!(
                 f,
                 "static manifest artifact `{name}` sha256 does not match configured operator evidence"
+            ),
+            Self::StaticManifestArtifactHashShape { field } => write!(
+                f,
+                "static manifest field `{field}` must be a lowercase sha256 hex string"
             ),
             Self::StaticManifestArtifactFileRead { name, path, source } => write!(
                 f,
@@ -721,7 +728,10 @@ pub fn assemble_operator_packet_from_static_manifest(
         .operator_evidence
         .as_ref()
         .ok_or(BoltV3OperatorArtifactError::MissingOperatorEvidence)?;
-    let parsed_static_manifest = read_static_manifest(static_manifest_path)?;
+    let parsed_static_manifest = read_static_manifest(
+        static_manifest_path,
+        operator_evidence.max_operator_evidence_file_bytes,
+    )?;
     let static_manifest = &parsed_static_manifest.manifest;
 
     validate_static_manifest_header(loaded, static_manifest)?;
@@ -738,6 +748,7 @@ pub fn assemble_operator_packet_from_static_manifest(
         &operator_evidence.ssm_manifest_path,
         &operator_evidence.ssm_manifest_sha256,
         "ssm_manifest_sha256",
+        operator_evidence.max_operator_evidence_file_bytes,
     )?;
     validate_required_static_manifest_artifact(
         loaded,
@@ -746,6 +757,7 @@ pub fn assemble_operator_packet_from_static_manifest(
         &operator_evidence.strategy_input_evidence_path,
         &operator_evidence.strategy_input_evidence_sha256,
         "strategy_input_evidence_sha256",
+        operator_evidence.max_operator_evidence_file_bytes,
     )?;
     validate_required_static_manifest_artifact(
         loaded,
@@ -754,6 +766,7 @@ pub fn assemble_operator_packet_from_static_manifest(
         &operator_evidence.financial_envelope_path,
         &operator_evidence.financial_envelope_sha256,
         "financial_envelope_sha256",
+        operator_evidence.max_operator_evidence_file_bytes,
     )?;
     validate_required_static_manifest_artifact(
         loaded,
@@ -762,6 +775,7 @@ pub fn assemble_operator_packet_from_static_manifest(
         &operator_evidence.pre_run_state_path,
         &operator_evidence.pre_run_state_sha256,
         "pre_run_state_sha256",
+        operator_evidence.max_operator_evidence_file_bytes,
     )?;
     validate_required_static_manifest_artifact(
         loaded,
@@ -770,6 +784,7 @@ pub fn assemble_operator_packet_from_static_manifest(
         &operator_evidence.abort_plan_path,
         &operator_evidence.abort_plan_sha256,
         "abort_plan_sha256",
+        operator_evidence.max_operator_evidence_file_bytes,
     )?;
     validate_required_static_manifest_artifact(
         loaded,
@@ -778,6 +793,7 @@ pub fn assemble_operator_packet_from_static_manifest(
         &operator_evidence.approval_nonce_path,
         &operator_evidence.approval_nonce_sha256,
         "approval_nonce_sha256",
+        operator_evidence.max_operator_evidence_file_bytes,
     )?;
 
     let approval_envelope = approval_envelope_from_operator_evidence(
@@ -824,12 +840,16 @@ pub fn assemble_operator_packet_from_static_manifest(
     })
 }
 
-fn read_static_manifest(path: &Path) -> Result<ParsedStaticManifest, BoltV3OperatorArtifactError> {
-    let bytes =
-        fs::read(path).map_err(|source| BoltV3OperatorArtifactError::StaticManifestRead {
+fn read_static_manifest(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<ParsedStaticManifest, BoltV3OperatorArtifactError> {
+    let bytes = read_file_bounded(path, max_bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::StaticManifestRead {
             path: path.to_path_buf(),
             source,
-        })?;
+        }
+    })?;
     let sha256 = hex::encode(Sha256::digest(&bytes));
     let manifest = serde_json::from_slice(&bytes).map_err(|source| {
         BoltV3OperatorArtifactError::StaticManifestParse {
@@ -867,6 +887,7 @@ fn validate_required_static_manifest_artifact(
     configured_path: &str,
     configured_sha256: &str,
     configured_sha256_field: &'static str,
+    max_bytes: u64,
 ) -> Result<(), BoltV3OperatorArtifactError> {
     validate_operator_evidence_sha256(configured_sha256_field, configured_sha256)?;
     let artifact = static_manifest_artifact_by_name(manifest, name)?;
@@ -877,7 +898,7 @@ fn validate_required_static_manifest_artifact(
         return Err(BoltV3OperatorArtifactError::StaticManifestArtifactHashMismatch { name });
     }
     let resolved_path = resolve_loaded_config_path(loaded, configured_path);
-    let actual = sha256_file_for_static_manifest(name, &resolved_path)?;
+    let actual = sha256_file_for_static_manifest(name, &resolved_path, max_bytes)?;
     if actual != configured_sha256 {
         return Err(
             BoltV3OperatorArtifactError::StaticManifestArtifactFileHashMismatch {
@@ -910,6 +931,11 @@ fn static_manifest_artifact_by_name<'a>(
     validate_operator_evidence_sha256(
         "static_manifest.generated_artifacts.sha256",
         &artifact.sha256,
+    )
+    .map_err(
+        |_| BoltV3OperatorArtifactError::StaticManifestArtifactHashShape {
+            field: "static_manifest.generated_artifacts.sha256",
+        },
     )?;
     Ok(artifact)
 }
@@ -1043,8 +1069,9 @@ fn json_artifact_sha256<T: Serialize>(value: &T) -> Result<String, BoltV3Operato
 fn sha256_file_for_static_manifest(
     name: &'static str,
     path: &Path,
+    max_bytes: u64,
 ) -> Result<String, BoltV3OperatorArtifactError> {
-    let bytes = fs::read(path).map_err(|source| {
+    let bytes = read_file_bounded(path, max_bytes).map_err(|source| {
         BoltV3OperatorArtifactError::StaticManifestArtifactFileRead {
             name,
             path: path.to_path_buf(),
@@ -1054,19 +1081,47 @@ fn sha256_file_for_static_manifest(
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
+fn read_file_bounded(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+    let mut file = fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "operator artifact path is not a regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    let length = bytes.len() as u64;
+    if length > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"
+            ),
+        ));
+    }
+    Ok(bytes)
+}
+
 fn validate_operator_evidence_sha256(
     field: &'static str,
     value: &str,
 ) -> Result<(), BoltV3OperatorArtifactError> {
-    if value.len() == 64
-        && value
-            .chars()
-            .all(|char| matches!(char, '0'..='9' | 'a'..='f'))
-    {
+    if is_lowercase_sha256(value) {
         Ok(())
     } else {
         Err(BoltV3OperatorArtifactError::InvalidOperatorEvidenceHash { field })
     }
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .chars()
+            .all(|char| matches!(char, '0'..='9' | 'a'..='f'))
 }
 
 fn validate_output_path_shape(

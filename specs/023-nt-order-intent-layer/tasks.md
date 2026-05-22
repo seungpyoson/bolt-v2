@@ -533,7 +533,7 @@
 
 - [x] T241 [US3] RED: Add schema-current verifier regression proving wrong `AGENTS.md` and `.specify/feature.json` active Speckit pointers are not caught
 - [x] T242 [US3] GREEN: Update the verifier and active Speckit context pointers so future `$speckit-plan` and `$speckit-tasks` commands target `specs/023-nt-order-intent-layer/`
-- [x] T243 [US3] Verify schema-current tests, active verifier, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+- [x] T243 [US3] Verify schema-current tests, active verifier, formatting/diff checks, branch cleanliness, and record the post-push exact-head PR/reviewer/no-mistakes refresh boundary
 
 ## Phase 56: TDD Slice 52 - Active Speckit Context Malformed JSON Regression
 

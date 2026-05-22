@@ -1165,6 +1165,7 @@ Nautilus strategy identity mapping for live trading:
 - maps directly to NautilusTrader `StrategyConfig.oms_type`
 
 The current source-level tests prove `netting`, `hedging`, and `unspecified` parse and validate.
+Phase 8 approval-envelope validation canonicalizes this field through NautilusTrader `OmsType` before comparing it with loaded TOML.
 This is source/config validation proof only; it does not prove live venue behavior for every OMS mode.
 
 #### Other Nautilus `StrategyConfig` fields

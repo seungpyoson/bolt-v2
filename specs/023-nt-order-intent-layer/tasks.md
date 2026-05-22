@@ -591,6 +591,16 @@
 - [x] T268 [US2] GREEN: Add direct `check_nt_order_template_config(...)` regression for unsupported pinned NT single-order factory-gap variants
 - [ ] T269 [US2] Verify focused Phase 8/order-intent tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
+## Phase 62: TDD Slice 58 - Phase 8 OMS Canonicalization
+
+**Goal**: Resolve current-head Kimi review evidence that Phase 8 approval-envelope `oms_type` comparison used raw string equality instead of NT enum canonicalization. The fix must keep the operator envelope NT-backed and must not add a Bolt-only OMS allowlist or venue, market, strategy, maker-only, or taker-only policy.
+
+- [x] T270 [P] [US2] Record Kimi exact-diff review state and disposition for the OMS canonicalization, validation-split, and source-fence concerns in `specs/023-nt-order-intent-layer/research.md`
+- [x] T271 [US2] RED: Add approval-envelope regression proving an NT-equivalent `oms_type` spelling should validate against the loaded TOML-derived OMS enum
+- [x] T272 [US2] GREEN: Canonicalize approved financial-envelope `oms_type` through NautilusTrader `OmsType` parsing before comparison
+- [x] T273 [US2] Document the Phase 8 approval-envelope OMS canonicalization and confirm the fail-closed diagnostic remains verifier-ignored diagnostic text
+- [ ] T274 [US2] Verify focused Phase 8 test, schema/runtime verifiers, formatting/diff checks, full relevant suites, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -652,6 +662,7 @@
 - Phase 59 is closed by T259 verification at 2026-05-22 16:10:00 KST: direct-validator RED/GREEN, shared-module source-fence RED/GREEN, direct trigger/trailing and factory-gap coverage, focused config tests, schema/runtime verifiers, `just source-fence`, `just clippy`, and `cargo test --locked --quiet` passed locally. Exact-head PR checks, reviewer state, and no-mistakes state must be refreshed after committing and pushing this follow-up head.
 - Phase 60 blocks completion because exact-head Claude/Kimi review found the direct shared validator still accepts unsupported pinned NT single-order factory-gap variants and the builder retained a hardcoded supported-type diagnostic list plus a duplicate TrailingStopMarket post-only guard.
 - Phase 61 blocks completion because no-mistakes review commit `4688ccb4` found Phase 8 financial-envelope approval was not bound to loaded NT `oms_type`, and Kimi custom review identified missing direct coverage for the config-checker unsupported factory-gap path.
+- Phase 62 blocks completion because current-head Kimi review found Phase 8 approval-envelope `oms_type` comparison still used raw string equality rather than NT enum canonicalization.
 
 ## Parallel Opportunities
 

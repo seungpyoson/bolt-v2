@@ -2330,8 +2330,8 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     );
 
     let mut mismatched_oms_loaded = loaded.clone();
-    let approved_oms_type = mismatched_oms_loaded.strategies[0].config.oms_type;
-    mismatched_oms_loaded.strategies[0].config.oms_type = alternate_oms_type(approved_oms_type);
+    let approved_oms_variant = mismatched_oms_loaded.strategies[0].config.oms_type;
+    mismatched_oms_loaded.strategies[0].config.oms_type = alternate_oms_type(approved_oms_variant);
     let mismatched_oms_error = envelope
         .validate_and_consume_against(
             "expected-head",
@@ -2867,6 +2867,55 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "entry side/position drift must not create consumption evidence"
         );
     }
+
+    let uppercase_oms_financial_envelope_path = temp
+        .path()
+        .join("phase8-financial-envelope-uppercase-oms.json");
+    let mut uppercase_oms_financial_envelope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&financial_envelope_path).expect("financial envelope should read"),
+    )
+    .expect("financial envelope should parse");
+    uppercase_oms_financial_envelope
+        .as_object_mut()
+        .expect("financial envelope should be an object")
+        .insert(
+            "oms_type".to_string(),
+            serde_json::Value::String(approved_oms_type.to_ascii_uppercase()),
+        );
+    std::fs::write(
+        &uppercase_oms_financial_envelope_path,
+        serde_json::to_vec(&uppercase_oms_financial_envelope)
+            .expect("uppercase OMS financial envelope should serialize"),
+    )
+    .expect("uppercase OMS financial envelope should write");
+    let uppercase_oms_financial_envelope_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&uppercase_oms_financial_envelope_path)
+            .expect("uppercase OMS financial envelope hash should compute");
+    let uppercase_oms_consumption_path = temp
+        .path()
+        .join("phase8-approval-consumed-uppercase-oms.json");
+    let mut uppercase_oms_envelope = envelope.clone();
+    uppercase_oms_envelope.financial_envelope_path = uppercase_oms_financial_envelope_path
+        .to_string_lossy()
+        .to_string();
+    uppercase_oms_envelope.financial_envelope_sha256 = uppercase_oms_financial_envelope_hash;
+    uppercase_oms_envelope.approval_consumption_path =
+        uppercase_oms_consumption_path.to_string_lossy().to_string();
+    uppercase_oms_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            1_500,
+        )
+        .expect("financial envelope should canonicalize OMS through NT parsing");
+    assert!(
+        uppercase_oms_consumption_path.exists(),
+        "NT-equivalent OMS spelling should create consumption evidence"
+    );
+    std::fs::remove_file(&uppercase_oms_consumption_path)
+        .expect("uppercase OMS consumption evidence should remove");
 
     let mut multi_strategy_loaded = loaded.clone();
     let mut secondary_strategy = multi_strategy_loaded.strategies[0].clone();

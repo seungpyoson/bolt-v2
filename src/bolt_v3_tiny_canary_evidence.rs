@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
+use nautilus_model::enums::OmsType;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -1892,7 +1893,7 @@ impl Phase8FinancialEnvelopeEvidenceFile {
                 strategy_instance_id
             )));
         }
-        if self.oms_type != loaded.oms_type {
+        if canonical_approved_oms_type(&self.oms_type)? != loaded.oms_type {
             return Err(financial_envelope_mismatch(stringify!(oms_type)));
         }
         if self.execution_client_id != loaded.execution_client_id {
@@ -2135,6 +2136,13 @@ impl Phase8FinancialEnvelopeEvidenceFile {
 
 fn financial_envelope_mismatch(field: &'static str) -> anyhow::Error {
     anyhow!("phase8 financial envelope `{field}` does not match loaded TOML")
+}
+
+fn canonical_approved_oms_type(value: &str) -> Result<String> {
+    let oms_type = value.parse::<OmsType>().map_err(|_| {
+        anyhow!("phase8 financial envelope `oms_type` must be a NautilusTrader OmsType")
+    })?;
+    Ok(nt_enum_variant_lowercase(oms_type))
 }
 
 fn nt_enum_variant_lowercase(value: impl Display) -> String {

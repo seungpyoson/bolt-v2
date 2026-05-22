@@ -579,7 +579,7 @@
 - [x] T261 [US2] RED: Add direct `validate_nt_order_template(...)` regression coverage for unsupported pinned NT single-order factory-gap variants
 - [x] T262 [US2] RED: Add source/error coverage proving TrailingStopMarket post-only rejection is not duplicated outside direct validation and unsupported builder diagnostics do not hardcode a supported-type list
 - [x] T263 [US2] GREEN: Move unsupported factory-gap rejection into `validate_nt_order_template(...)`, make the builder catch-all use the same pinned-NT boundary message, and remove the duplicate TrailingStopMarket post-only builder guard
-- [ ] T264 [US2] Verify focused shared-builder tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+- [x] T264 [US2] Verify focused shared-builder tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
 ## Phase 61: TDD Slice 57 - Phase 8 OMS Approval Binding
 
@@ -589,7 +589,7 @@
 - [x] T266 [US2] RED: Add Phase 8 financial-envelope regression proving a loaded NT `oms_type` mismatch must fail closed before approval consumption
 - [x] T267 [US2] GREEN: Bind `oms_type` in Phase 8 financial-envelope evidence and compare it against the loaded TOML-derived NT OMS enum value
 - [x] T268 [US2] GREEN: Add direct `check_nt_order_template_config(...)` regression for unsupported pinned NT single-order factory-gap variants
-- [ ] T269 [US2] Verify focused Phase 8/order-intent tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+- [x] T269 [US2] Verify focused Phase 8/order-intent tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
 ## Phase 62: TDD Slice 58 - Phase 8 OMS Canonicalization
 
@@ -599,7 +599,7 @@
 - [x] T271 [US2] RED: Add approval-envelope regression proving an NT-equivalent `oms_type` spelling should validate against the loaded TOML-derived OMS enum
 - [x] T272 [US2] GREEN: Canonicalize approved financial-envelope `oms_type` through NautilusTrader `OmsType` parsing before comparison
 - [x] T273 [US2] Document the Phase 8 approval-envelope OMS canonicalization and confirm the fail-closed diagnostic remains verifier-ignored diagnostic text
-- [ ] T274 [US2] Verify focused Phase 8 test, schema/runtime verifiers, formatting/diff checks, full relevant suites, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+- [x] T274 [US2] Verify focused Phase 8 test, schema/runtime verifiers, formatting/diff checks, full relevant suites, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
 ## Phase 63: Review Slice 59 - Phase 8 OMS Coverage Closure
 
@@ -608,7 +608,7 @@
 - [x] T275 [P] [US2] Record Kimi exact-diff review state and separate real coverage work from disproven helper concern in `specs/023-nt-order-intent-layer/research.md`
 - [x] T276 [US2] Add direct regression coverage proving invalid financial-envelope `oms_type` strings fail closed before approval consumption
 - [x] T277 [US2] Add direct disproof coverage proving the OMS alternate helper covers every current NT `OmsType` variant used by the test
-- [ ] T278 [US2] Verify focused Phase 8 tests, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+- [x] T278 [US2] Verify focused Phase 8 tests, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
 ## Dependencies & Execution Order
 
@@ -669,10 +669,10 @@
 - Phase 58 is closed by T253 verification at 2026-05-22 15:37:40 KST: focused OMS regressions, full config parsing, schema-current verifier, `cargo fmt -- --check`, `git diff --check`, `just source-fence` after cache-lock escalation, and `cargo test --locked --quiet` passed locally. Exact-head PR/reviewer/no-mistakes state must be refreshed after committing and pushing this docs-only disposition head.
 - Phase 59 blocked completion because exact-head GLM custom review found a direct-validator completeness gap for market-like post-only rejection after Phase 58.
 - Phase 59 is closed by T259 verification at 2026-05-22 16:10:00 KST: direct-validator RED/GREEN, shared-module source-fence RED/GREEN, direct trigger/trailing and factory-gap coverage, focused config tests, schema/runtime verifiers, `just source-fence`, `just clippy`, and `cargo test --locked --quiet` passed locally. Exact-head PR checks, reviewer state, and no-mistakes state must be refreshed after committing and pushing this follow-up head.
-- Phase 60 blocks completion because exact-head Claude/Kimi review found the direct shared validator still accepts unsupported pinned NT single-order factory-gap variants and the builder retained a hardcoded supported-type diagnostic list plus a duplicate TrailingStopMarket post-only guard.
-- Phase 61 blocks completion because no-mistakes review commit `4688ccb4` found Phase 8 financial-envelope approval was not bound to loaded NT `oms_type`, and Kimi custom review identified missing direct coverage for the config-checker unsupported factory-gap path.
-- Phase 62 blocks completion because current-head Kimi review found Phase 8 approval-envelope `oms_type` comparison still used raw string equality rather than NT enum canonicalization.
-- Phase 63 blocks completion because Kimi exact-head review found missing invalid-OMS coverage and raised an OMS helper concern that required direct disproof coverage.
+- Phase 60 is closed by T264 verification: focused shared-builder tests, schema/runtime verifiers, source fences, full relevant local checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state were refreshed by the final exact-head evidence recorded in `research.md`.
+- Phase 61 is closed by T269 verification: Phase 8/order-intent tests, schema/runtime verifiers, source fences, full relevant local checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state were refreshed by the final exact-head evidence recorded in `research.md`.
+- Phase 62 is closed by T274 verification: Phase 8 OMS canonicalization tests, schema/runtime verifiers, full relevant local checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state were refreshed by the final exact-head evidence recorded in `research.md`.
+- Phase 63 is closed by T278 verification: invalid-OMS fail-closed coverage, helper disproof coverage, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state were refreshed by the final exact-head evidence recorded in `research.md`.
 
 ## Parallel Opportunities
 

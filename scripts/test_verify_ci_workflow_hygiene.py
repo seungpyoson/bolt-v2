@@ -1670,7 +1670,19 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --target-dir raw target override must be classified",
         ),
         (
+            "docker run --unknown-opt=rust mycargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "podman run --unknown-opt=rust myrustc --out-dir /tmp/raw-out",
+            "rustc --out-dir raw output override must be classified",
+        ),
+        (
             "env >output.log /tmp/c build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "env 1=2 cargo build --target-dir /tmp/raw-target",
             "cargo --target-dir raw target override must be classified",
         ),
         (
@@ -1726,6 +1738,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "BOLT_MANAGED_JUST private just recipe bypass must be classified",
         ),
         (
+            "VAR=BOLT_MANAGED_JUST; export $VAR=1; just managed-build",
+            "BOLT_MANAGED_JUST private just recipe bypass must be classified",
+        ),
+        (
             "echo \"BOLT_MANAGED_JUST<<EOF\" >> \"$GITHUB_ENV\"",
             "BOLT_MANAGED_JUST private just recipe bypass must be classified",
         ),
@@ -1759,6 +1775,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             'export E=CARGO_TARGET_DIR; env FOO=bar bash -c "$E=/tmp/raw cargo check"',
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "E=CARGO_TARGET_DIR; declare -x $E=/tmp/raw; cargo check",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
@@ -1953,6 +1973,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "aws s3api get-object --bucket bolt-v2-active-cache --key cache target/debug/lib.rmeta",
             "S3 active mutable target cache must be rejected",
         ),
+        (
+            "cat target/debug/lib.rmeta | base64 | aws s3 cp - s3://bolt-v2-active-cache/target.rmeta.b64",
+            "S3 active mutable target cache must be rejected",
+        ),
     ]
     verifier = load_verifier()
     misses: list[str] = []
@@ -2066,6 +2090,7 @@ commands:
   envcheck: env CARGO_TARGET_DIR=target cargo test
   envsplit: env -S 'cargo test'
   envsplitunquoted: env -S timeout 30 cargo test
+  envinvalidassignment: env 1=2 cargo build
   envblocksignal: env --block-signal cargo test
   anchored: &raw "cargo build --target-dir /tmp/raw"
   anchoralias: *raw
@@ -2126,6 +2151,10 @@ commands:
   pyinline: python -c 'import os; os.system("cargo test")'
   timeout: timeout 30 cargo test
   managedjustenv: BOLT_MANAGED_JUST=1 just managed-build
+  managedjustdynamic: VAR=BOLT_MANAGED_JUST; export $VAR=1; just managed-build
+  declaretarget: E=CARGO_TARGET_DIR; declare -x $E=/tmp/raw; cargo check
+  dockeruncertainrenamed: docker run --unknown-opt=rust mycargo build
+  podmanuncertainrenamedrustc: podman run --unknown-opt=rust myrustc --out-dir /tmp/raw
   chained: python3 scripts/rust_verification.py cargo --repo . -- test && cargo test
   compact_and: python3 scripts/rust_verification.py cargo --repo . -- test&&cargo test
   compact_semicolon: python3 scripts/rust_verification.py cargo --repo . -- test;cargo test
@@ -2166,6 +2195,7 @@ commands: { test: "cargo test" }
         "envcheck",
         "envsplit",
         "envsplitunquoted",
+        "envinvalidassignment",
         "envblocksignal",
         "anchored",
         "anchoralias",
@@ -2224,6 +2254,10 @@ commands: { test: "cargo test" }
         "pyinline",
         "timeout",
         "managedjustenv",
+        "managedjustdynamic",
+        "declaretarget",
+        "dockeruncertainrenamed",
+        "podmanuncertainrenamedrustc",
         "chained",
         "compact_and",
         "compact_semicolon",

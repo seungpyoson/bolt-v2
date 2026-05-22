@@ -1725,6 +1725,8 @@ def container_rust_payload_from_tokens(tokens: list[str], start: int) -> list[st
             raw_rust_tool_token(executable)
             or path_executable_looks_like_cargo(token)
             or path_executable_looks_like_rustc(token)
+            or path_name_looks_like_renamed_cargo(executable)
+            or path_name_looks_like_renamed_rustc(executable)
         ):
             return tokens[index:]
     return None
@@ -2126,6 +2128,10 @@ def env_short_split_tokens(tokens: list[str], index: int) -> list[str] | None:
     return []
 
 
+def env_assignment_argument(token: str) -> bool:
+    return "=" in token and not token.startswith("-")
+
+
 def env_command_prefix_index(tokens: list[str], index: int) -> int | None:
     while index < len(tokens):
         token = tokens[index]
@@ -2159,7 +2165,7 @@ def env_command_prefix_index(tokens: list[str], index: int) -> int | None:
             if parsed_index is not None:
                 index = parsed_index
                 continue
-        if shell_assignment_word(token):
+        if env_assignment_argument(token):
             index += 1
             continue
         return index
@@ -2212,7 +2218,7 @@ def env_inner_tokens(tokens: list[str]) -> list[str] | None:
             if parsed_index is not None:
                 index = parsed_index
                 continue
-        if shell_assignment_word(token):
+        if env_assignment_argument(token):
             index += 1
             continue
         return tokens[index:]
@@ -2399,11 +2405,35 @@ def export_assignment_values_from_tokens(tokens: list[str]) -> tuple[dict[str, s
     return assignments, cursor
 
 
+def shell_declaration_assignment_values_from_tokens(tokens: list[str]) -> tuple[dict[str, str], int]:
+    if not tokens or pathlib.Path(tokens[0]).name not in {"declare", "local", "typeset"}:
+        return {}, 0
+    assignments: dict[str, str] = {}
+    cursor = 1
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if token == "--":
+            cursor += 1
+            continue
+        if token.startswith("-") or token.startswith("+"):
+            cursor += 1
+            continue
+        assignment = shell_assignment_from_tokens(tokens, cursor)
+        if assignment is None:
+            break
+        name, value, cursor = assignment
+        assignments[name] = storage_strip_quotes(value)
+    return assignments, cursor
+
+
 def persistent_shell_assignment_values(tokens: list[str]) -> tuple[dict[str, str], bool]:
     assignments, assignment_index = shell_assignment_values_from_tokens(tokens)
     if assignments and assignment_index == len(tokens):
         return assignments, True
     assignments, assignment_index = export_assignment_values_from_tokens(tokens)
+    if assignments and assignment_index == len(tokens):
+        return assignments, True
+    assignments, assignment_index = shell_declaration_assignment_values_from_tokens(tokens)
     if assignments and assignment_index == len(tokens):
         return assignments, True
     return {}, False
@@ -3126,7 +3156,10 @@ def verify_no_mistakes_config(config_text: str, config_name: str = ".no-mistakes
     errors: list[str] = no_mistakes_command_section_errors(config_text, config_name)
     for command_name, command in no_mistakes_commands(config_text).items():
         command_segments = [command, *command.splitlines()]
-        if any(command_has_raw_cargo(segment) for segment in command_segments if segment.strip()):
+        storage_errors = raw_rust_storage_errors(command)
+        if any(command_has_raw_cargo(segment) for segment in command_segments if segment.strip()) or any(
+            "BOLT_MANAGED_JUST private just recipe bypass" in error for error in storage_errors
+        ):
             errors.append(f"{config_name} commands.{command_name} raw Cargo drift must be classified")
     return errors
 
@@ -3650,6 +3683,8 @@ def storage_transfer_policy_errors(text: str) -> list[str]:
                 cwd_is_active_target=cwd_is_active_target,
                 command_name=name,
             )
+        elif pipe_stdin_is_active_target and name != "aws":
+            pipe_stdout_is_active_target = True
         if name == "aws" and aws_s3_transfer_touches_active_target(
             tokens,
             cursor,
@@ -3771,6 +3806,19 @@ def dynamic_env_segment_messages(
                 name, value = argument.split("=", 1)
                 local_assignments[name] = shell_assignment_tracking_value(value, target_keys)
         return messages
+    if command in {"declare", "local", "typeset"}:
+        for argument in expanded[cursor + 1 :]:
+            if argument in SHELL_COMMAND_BOUNDARIES:
+                break
+            if argument == "--" or argument.startswith(("-", "+")):
+                continue
+            message = dynamic_env_assignment_message(argument, local_assignments, target_keys)
+            if message is not None:
+                messages.add(message)
+            if shell_assignment_word(argument):
+                name, value = argument.split("=", 1)
+                local_assignments[name] = shell_assignment_tracking_value(value, target_keys)
+        return messages
     if command == "env":
         index = cursor + 1
         while index < len(expanded):
@@ -3839,9 +3887,10 @@ def dynamic_env_segment_messages(
                     index = parsed_index
                     continue
             message = dynamic_env_assignment_message(argument, local_assignments, target_keys)
-            if message is None:
+            if message is None and not env_assignment_argument(argument):
                 break
-            messages.add(message)
+            if message is not None:
+                messages.add(message)
             if shell_assignment_word(argument):
                 name, value = argument.split("=", 1)
                 local_assignments[name] = shell_assignment_tracking_value(value, target_keys)
@@ -3942,6 +3991,7 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
         "CARGO_TARGET_DIR": "CARGO_TARGET_DIR raw target override must be classified",
         "CARGO_BUILD_TARGET_DIR": "CARGO_BUILD_TARGET_DIR raw target override must be classified",
         "CARGO_TARGET_TMPDIR": "CARGO_TARGET_TMPDIR raw target override must be classified",
+        "BOLT_MANAGED_JUST": "BOLT_MANAGED_JUST private just recipe bypass must be classified",
     }
     assignments: dict[str, str] = {}
     for line in shell_logical_lines(text):

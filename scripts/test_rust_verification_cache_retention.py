@@ -14,6 +14,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import types
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -1744,6 +1745,8 @@ def assert_v6_red_active_process_parser_gaps() -> None:
         "docker exec bolt-dev cargo build /tmp/repo",
         "docker run -v /tmp/repo:/repo rust cargo build",
         "docker run --label my-label rust /tmp/c build",
+        "docker run --unknown-opt=rust mycargo build",
+        "podman run --unknown-opt=rust myrustc --out-dir {target}/debug/deps",
         "env >output.log /tmp/c build",
         "runuser -u user /tmp/c build",
         "npm run cargo-build",
@@ -1862,6 +1865,7 @@ def assert_v6_red_wrapped_renamed_cargo_launches_are_classified() -> None:
         "runuser -u user /tmp/c build",
         "mycargo build",
         "docker run --label my-label rust /tmp/c build",
+        "docker run --unknown-opt=rust mycargo build",
         "python -c \"import os; os.system('/tmp/c build')\"",
         "python -c \"import subprocess; subprocess.run(['/tmp/c', 'build'])\"",
         "python -c \"import subprocess; subprocess.run(args=['/tmp/c', 'build'])\"",
@@ -2470,6 +2474,54 @@ exit 0
         raise AssertionError("managed heavy Rust commands must run disk preflight before execution: " + "; ".join(failures))
 
 
+def assert_v6_red_nextest_archive_extraction_uses_exclusive_cache_lock() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+        owner = load_owner_module()
+        lock_modes: list[bool] = []
+
+        class FakeLock:
+            def __enter__(self) -> None:
+                return None
+
+            def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
+                return None
+
+        def fake_cache_lock(_policy: dict[str, object], *, exclusive: bool) -> FakeLock:
+            lock_modes.append(exclusive)
+            return FakeLock()
+
+        owner.cache_lock = fake_cache_lock
+        owner.disk_preflight_refusal_payload = lambda _repo, _policy: None
+        owner.run_process = lambda _argv, repo, env: 0
+
+        archive_args = types.SimpleNamespace(
+            repo=str(repo),
+            args=[
+                "nextest",
+                "run",
+                "--archive-file",
+                ".nextest-archive/nextest-archive.tar.zst",
+                "--extract-to",
+                str(tmp_path / "managed-target-parent"),
+                "--extract-overwrite",
+                "--partition",
+                "count:1/4",
+            ],
+        )
+        archive_result = owner.cmd_cargo(archive_args)
+        normal_args = types.SimpleNamespace(repo=str(repo), args=["nextest", "run", "--locked"])
+        normal_result = owner.cmd_cargo(normal_args)
+        if archive_result != 0 or normal_result != 0 or lock_modes != [True, False]:
+            raise AssertionError(
+                "nextest archive extraction must serialize on the managed cache lock while ordinary nextest remains shared: "
+                f"archive_result={archive_result} normal_result={normal_result} lock_modes={lock_modes!r}"
+            )
+
+
 def assert_managed_cargo_clean_keeps_disk_pressure_escape_hatch() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -2893,6 +2945,7 @@ def assert_v6_red_policy_gaps() -> None:
         assert_v6_red_active_process_parser_does_not_treat_trustd_as_rust,
         assert_v6_red_managed_cargo_clean_refuses_active_process,
         assert_v6_red_disk_preflight_before_managed_cargo_and_run,
+        assert_v6_red_nextest_archive_extraction_uses_exclusive_cache_lock,
         assert_managed_cargo_clean_keeps_disk_pressure_escape_hatch,
         assert_managed_cargo_rejects_alias_subcommands,
         assert_v6_red_managed_cargo_rejects_target_routing_overrides,

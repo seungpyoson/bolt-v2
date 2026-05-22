@@ -1160,6 +1160,8 @@ def container_rust_payload_from_tokens(tokens: list[str], start: int) -> list[st
             executable_is_rust_tool(executable)
             or path_executable_looks_like_cargo(token)
             or path_executable_looks_like_rustc(token)
+            or path_name_looks_like_renamed_cargo(executable)
+            or path_name_looks_like_renamed_rustc(executable)
         ):
             return tokens[index:]
     return None
@@ -2119,6 +2121,22 @@ def cargo_args_need_disk_preflight(cargo_args: list[str]) -> bool:
     return cargo_subcommand(cargo_args) in CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 
 
+def cargo_args_need_exclusive_cache_lock(cargo_args: list[str]) -> bool:
+    subcommand = cargo_subcommand_with_index(cargo_args)
+    if subcommand is None:
+        return False
+    index, command = subcommand
+    if command != "nextest" or index + 1 >= len(cargo_args) or cargo_args[index + 1] != "run":
+        return False
+    tail = cargo_args[index + 2 :]
+    has_archive_file = any(token == "--archive-file" or token.startswith("--archive-file=") for token in tail)
+    has_extract = any(
+        token in {"--extract-to", "--extract-overwrite"} or token.startswith("--extract-to=")
+        for token in tail
+    )
+    return has_archive_file and has_extract
+
+
 def repo_cargo_aliases(repo: pathlib.Path) -> set[str]:
     aliases: set[str] = set()
     config_paths = [(repo / relative_path, relative_path) for relative_path in CARGO_CONFIG_RELATIVE_PATHS]
@@ -2350,7 +2368,7 @@ def cmd_cargo(args: argparse.Namespace) -> int:
         refusal = disk_preflight_refusal_payload(repo, policy)
         if refusal is not None:
             return print_refusal(refusal)
-    with cache_lock(policy, exclusive=False):
+    with cache_lock(policy, exclusive=cargo_args_need_exclusive_cache_lock(cargo_args)):
         return run_process([cargo, *cargo_args], repo=repo, env=managed_env(repo, policy))
 
 

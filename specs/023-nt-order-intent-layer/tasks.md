@@ -489,7 +489,7 @@
 - [x] T221 [US3] RED: Add regression proving post-only entry book-impact cap derives depth from the passive book side
 - [x] T222 [US3] RED: Add regression proving Managed external position close cancels a resting pending entry before flattening
 - [x] T223 [US3] GREEN: Fix strategy-owned sizing and lifecycle paths without changing shared NT order construction
-- [ ] T224 [US3] Verify focused strategy tests, source fences, formatting, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+- [x] T224 [US3] Verify focused strategy tests, source fences, formatting, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
 
 ## Phase 51: TDD Slice 47 - TrailingStopMarket Schema Default Drift
 
@@ -498,7 +498,7 @@
 - [x] T225 [P] [US2] Record current-head multi-agent and pinned NT evidence for optional `TrailingStopMarket` default fields
 - [x] T226 [US2] RED: Add schema-current verifier regression proving stale required default-field wording is not caught
 - [x] T227 [US2] GREEN: Update the verifier and active schema docs to describe NT default pass-through for omitted `trigger_type` and `trailing_offset_type`
-- [ ] T228 [US2] Verify schema-current tests, active schema verifier, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+- [x] T228 [US2] Verify schema-current tests, active schema verifier, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
 - [x] T229 [US2] RED: Add schema-current verifier regression for equivalent required/default-field wording that does not reuse the exact stale line
 - [x] T230 [US2] GREEN: Generalize the verifier to reject equivalent TrailingStopMarket default-field requirement wording without flagging optional/default-pass-through wording
 
@@ -507,8 +507,8 @@
 **Goal**: Resolve current-head Speckit drift where dependency notes still describe completed Phase 47, Phase 48, and Phase 50 findings as active completion blockers and omit the Phase 51 dependency note. The fix is docs/verifier-only and must not change runtime order construction or reset source/unit support boundaries.
 
 - [x] T231 [US3] RED: Add schema-current verifier regressions proving stale completed-phase dependency wording and missing Phase 51 tracking are not caught in `tasks.md`
-- [x] T232 [US3] GREEN: Update the verifier and Speckit dependency notes so completed Phase 47/48/50/51 slices are recorded as closed or pending only terminal evidence
-- [ ] T233 [US3] Verify schema-current tests, active verifier, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+- [x] T232 [US3] GREEN: Update the verifier and Speckit dependency notes so completed Phase 47/48/50/51 slices are not recorded as active blockers
+- [x] T233 [US3] Verify schema-current tests, active verifier, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
 
 ## Phase 53: TDD Slice 49 - Speckit Phase 34 Dependency Closure
 
@@ -516,7 +516,7 @@
 
 - [x] T234 [US3] RED: Add schema-current verifier regression proving stale completed-Phase-34 dependency wording is not caught in `tasks.md`
 - [x] T235 [US3] GREEN: Update the verifier and Speckit dependency note so Phase 34 is recorded as closed rather than an active blocker
-- [ ] T236 [US3] Verify schema-current tests, active verifier, formatting/diff checks, source fences, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+- [x] T236 [US3] Verify schema-current tests, active verifier, formatting/diff checks, source fences, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
 
 ## Phase 54: TDD Slice 50 - Forced-Exit Approval Envelope Binding
 
@@ -525,7 +525,7 @@
 - [x] T237 [P] [US3] Record exact-head no-mistakes evidence for the forced-exit approval-envelope gap and the live/canary boundary decision
 - [x] T238 [US3] RED: Add an approval-envelope regression proving `forced_exit_order` drift can consume approval
 - [x] T239 [US3] GREEN: Bind required and optional `forced_exit_order` order-shape fields in `Phase8FinancialEnvelopeEvidenceFile`
-- [ ] T240 [US3] Verify focused tiny-canary tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+- [x] T240 [US3] Verify focused tiny-canary tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
 
 ## Dependencies & Execution Order
 
@@ -575,11 +575,11 @@
 - Phase 47 closes the forced-exit order-template synthesis finding by routing forced-flat order semantics through TOML-owned `forced_exit_order` and the shared NT builder path.
 - Phase 48 closes the removed market-exit schema drift and `manage_stop=true` non-market forced-exit gap with active schema/verifier coverage and fail-closed config validation.
 - Phase 49 blocks broad "all NT order model surface" claims until pinned NT builder-vs-factory evidence and a TDD slice resolve or explicitly scope the remaining model-surface and runtime-price findings.
-- Phase 50 closes the current-head maker lifecycle/sizing review findings; only terminal reviewer/no-mistakes state remains open in T224.
-- Phase 51 closes the TrailingStopMarket schema-default drift and equivalent-wording verifier gap; only terminal reviewer/no-mistakes state remains open in T228.
-- Phase 52 remains open until T233 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.
-- Phase 53 remains open until T236 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.
-- Phase 54 remains open until T240 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.
+- Phase 50 is closed by T224 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.
+- Phase 51 is closed by T228 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.
+- Phase 52 is closed by T233 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.
+- Phase 53 is closed by T236 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.
+- Phase 54 is closed by T240 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.
 
 ## Parallel Opportunities
 

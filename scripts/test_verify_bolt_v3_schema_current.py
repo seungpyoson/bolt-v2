@@ -339,6 +339,32 @@ def test_validate_docs_requires_phase51_dependency_note_when_tasks_are_checked()
         raise AssertionError(f"expected missing Phase 51 dependency finding, got {findings!r}")
 
 
+def test_validate_docs_rejects_terminal_only_final_dependency_notes_after_wait_cap() -> None:
+    stale_tasks = """
+## Dependencies & Execution Order
+
+- Phase 50 closes the current-head maker lifecycle/sizing review findings; only terminal reviewer/no-mistakes state remains open in T224.
+- Phase 51 closes the TrailingStopMarket schema-default drift and equivalent-wording verifier gap; only terminal reviewer/no-mistakes state remains open in T228.
+- Phase 52 remains open until T233 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.
+- Phase 53 remains open until T236 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.
+- Phase 54 remains open until T240 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.
+"""
+
+    findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP, tasks=stale_tasks)
+    expected_fragments = [
+        "Phase 50",
+        "Phase 51",
+        "Phase 52",
+        "Phase 53",
+        "Phase 54",
+    ]
+    for fragment in expected_fragments:
+        if not any(fragment in finding for finding in findings):
+            raise AssertionError(
+                f"expected stale terminal dependency fragment {fragment!r}, got {findings!r}"
+            )
+
+
 def test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA,
@@ -474,6 +500,7 @@ def main() -> int:
         test_validate_docs_rejects_completed_phase47_and_phase48_blocker_wording,
         test_validate_docs_rejects_completed_phase34_default_blocker_wording,
         test_validate_docs_requires_phase51_dependency_note_when_tasks_are_checked,
+        test_validate_docs_rejects_terminal_only_final_dependency_notes_after_wait_cap,
         test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere,
         test_validate_docs_rejects_gtd_broad_support_and_live_canary_overclaims,
         test_validate_docs_rejects_equivalent_live_canary_and_broad_venue_overclaims,

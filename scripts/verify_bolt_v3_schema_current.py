@@ -77,9 +77,18 @@ STALE_TASKS_PHRASES = (
     "Phase 48 blocks completion because latest-head multi-agent review found active schema docs still describe removed market-exit fields and `manage_stop=true` can silently route non-market `forced_exit_order` configs through NT's built-in market close path.",
     "Phase 50 blocks completion because current-head PR-body/Greptile evidence and source inspection found maker entry sizing still uses taker-side book depth and external Managed close still drops a resting pending entry without NT cancel.",
     "Phase 34 blocks completion because multi-agent pinned-NT review found TrailingStopMarket validation still requires optional fields that NT defaults.",
+    "Phase 50 closes the current-head maker lifecycle/sizing review findings; only terminal reviewer/no-mistakes state remains open in T224.",
+    "Phase 51 closes the TrailingStopMarket schema-default drift and equivalent-wording verifier gap; only terminal reviewer/no-mistakes state remains open in T228.",
+    "Phase 52 remains open until T233 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.",
+    "Phase 53 remains open until T236 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.",
+    "Phase 54 remains open until T240 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.",
 )
 REQUIRED_TASKS_PHRASES = (
-    "Phase 51 closes the TrailingStopMarket schema-default drift and equivalent-wording verifier gap; only terminal reviewer/no-mistakes state remains open in T228.",
+    "Phase 50 is closed by T224 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.",
+    "Phase 51 is closed by T228 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.",
+    "Phase 52 is closed by T233 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.",
+    "Phase 53 is closed by T236 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.",
+    "Phase 54 is closed by T240 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.",
 )
 STALE_CONTRACT_PHRASES = (
     "Long and short position contracts are coherent.",

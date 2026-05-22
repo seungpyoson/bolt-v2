@@ -550,6 +550,16 @@
 - [x] T247 [US3] REFACTOR: Centralize strategy-local configured NT template field mapping while leaving shared `build_nt_order(...)` strategy/venue/market agnostic
 - [x] T248 [US3] Verify focused maker/forced-exit/order-intent tests, schema/source fences, formatting/diff checks, branch cleanliness, and record the post-push exact-head PR/reviewer/no-mistakes refresh boundary
 
+## Phase 58: Review Slice 54 - OMS Finding Disposition
+
+**Goal**: Resolve exact-head no-mistakes OMS evidence without adding a Bolt-only OMS allowlist. The disposition must be source-backed against pinned NT and current Bolt paths, and must keep OMS support venue/market/strategy agnostic unless a real runtime/accounting failure is proven.
+
+- [x] T249 [P] [US3] Record exact-head no-mistakes OMS evidence in `specs/023-nt-order-intent-layer/research.md`
+- [x] T250 [P] [US3] Record pinned NT OMS source evidence for enum support, position-id validation, fill position-id determination, and adapter OMS choices
+- [x] T251 [US3] Confirm existing public/runtime regressions keep Bolt from narrowing NT `oms_type`
+- [x] T252 [US3] Record Gemini/Claude focused OMS review disposition and boundary decision not to add a Netting-only guard
+- [x] T253 [US3] Verify focused OMS/config tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR state, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -606,6 +616,7 @@
 - Phase 55 is closed by T243 verification at 2026-05-22 14:03:07 KST: schema-current self-tests and active verifier passed after RED coverage for stale active pointers, outside-block historical pointers, same-block false negatives, empty context files, and non-object feature JSON; `git diff --check`, `cargo fmt -- --check`, and `just source-fence` passed; Franklin and Kant reported no findings after Ampere and Beauvoir findings were fixed. Exact-head PR/reviewer/no-mistakes state must be refreshed after committing and pushing this docs/verifier-only follow-up head.
 - Phase 56 is closed by T245 verification at 2026-05-22 14:39:09 KST: schema-current self-tests and active verifier passed with malformed `.specify/feature.json` regression coverage. Exact-head PR/reviewer/no-mistakes state remains a post-push evidence surface, not a pre-push local verification claim.
 - Phase 57 is closed by T248 verification at 2026-05-22 14:39:09 KST: focused maker entry/exit, forced-exit template, shared order-intent source fence, schema/runtime verifiers, `cargo fmt -- --check`, `git diff --check`, `just source-fence` after cache-lock escalation, `cargo test --locked --quiet`, and `just clippy` passed locally. Exact-head PR/reviewer/no-mistakes state must be refreshed after committing and pushing this follow-up head.
+- Phase 58 is closed by T253 verification at 2026-05-22 15:37:40 KST: focused OMS regressions, full config parsing, schema-current verifier, `cargo fmt -- --check`, `git diff --check`, `just source-fence` after cache-lock escalation, and `cargo test --locked --quiet` passed locally. Exact-head PR/reviewer/no-mistakes state must be refreshed after committing and pushing this docs-only disposition head.
 
 ## Parallel Opportunities
 

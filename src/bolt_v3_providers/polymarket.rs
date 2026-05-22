@@ -54,8 +54,8 @@ use crate::{
     },
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
-        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedClientSecrets,
-        SsmSecretResolver,
+        ProviderSecretRequirement, ProviderSecretResolveContext, ProviderSsmPathReference,
+        ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     strategies::registry::FeeProvider,
@@ -385,26 +385,7 @@ pub fn resolve_secrets(
     context: ProviderSecretResolveContext<'_>,
     resolver: &mut dyn SsmSecretResolver,
 ) -> Result<ResolvedClientSecrets, BoltV3SecretError> {
-    let secrets_value = context
-        .client
-        .secrets
-        .as_ref()
-        .ok_or_else(|| BoltV3SecretError {
-            client_key: context.client_key.to_string(),
-            field: "secrets".to_string(),
-            ssm_path: String::new(),
-            source: "missing [secrets] block".to_string(),
-        })?;
-    let secrets: PolymarketSecretsConfig =
-        secrets_value
-            .clone()
-            .try_into()
-            .map_err(|error: toml::de::Error| BoltV3SecretError {
-                client_key: context.client_key.to_string(),
-                field: KEY.to_string(),
-                ssm_path: String::new(),
-                source: format!("invalid polymarket secrets schema: {error}"),
-            })?;
+    let secrets = parse_secrets_config(&context)?;
     let private_key = resolve_field(
         context.client_key,
         "private_key_ssm_path",
@@ -450,6 +431,54 @@ pub fn resolve_secrets(
         api_secret,
         passphrase,
     }))
+}
+
+pub fn configured_secret_paths(
+    context: ProviderSecretResolveContext<'_>,
+) -> Result<Vec<ProviderSsmPathReference>, BoltV3SecretError> {
+    let secrets = parse_secrets_config(&context)?;
+    Ok(vec![
+        ProviderSsmPathReference {
+            field_name: "private_key_ssm_path",
+            ssm_path: secrets.private_key_ssm_path,
+        },
+        ProviderSsmPathReference {
+            field_name: "api_key_ssm_path",
+            ssm_path: secrets.api_key_ssm_path,
+        },
+        ProviderSsmPathReference {
+            field_name: "api_secret_ssm_path",
+            ssm_path: secrets.api_secret_ssm_path,
+        },
+        ProviderSsmPathReference {
+            field_name: "passphrase_ssm_path",
+            ssm_path: secrets.passphrase_ssm_path,
+        },
+    ])
+}
+
+fn parse_secrets_config(
+    context: &ProviderSecretResolveContext<'_>,
+) -> Result<PolymarketSecretsConfig, BoltV3SecretError> {
+    let secrets_value = context
+        .client
+        .secrets
+        .as_ref()
+        .ok_or_else(|| BoltV3SecretError {
+            client_key: context.client_key.to_string(),
+            field: "secrets".to_string(),
+            ssm_path: String::new(),
+            source: "missing [secrets] block".to_string(),
+        })?;
+    secrets_value
+        .clone()
+        .try_into()
+        .map_err(|error: toml::de::Error| BoltV3SecretError {
+            client_key: context.client_key.to_string(),
+            field: KEY.to_string(),
+            ssm_path: String::new(),
+            source: format!("invalid polymarket secrets schema: {error}"),
+        })
 }
 
 fn validate_private_key_shape(private_key: &str) -> Result<(), String> {

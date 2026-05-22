@@ -58,6 +58,73 @@ fn bolt_v3_cli_exposes_no_submit_readiness_operator_command() {
 }
 
 #[test]
+fn bolt_v3_cli_exposes_static_operator_artifacts_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args(["operator-artifacts", "generate-static", "--help"])
+        .output()
+        .expect("bolt-v3 static operator artifacts help should run");
+
+    assert!(
+        output.status.success(),
+        "expected operator-artifacts generate-static help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--output-dir"));
+    assert!(stdout.contains("--strategy-instance-id"));
+}
+
+#[test]
+fn bolt_v3_static_operator_artifacts_command_fails_closed_on_abort_blocker() {
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!(
+            "{root}\n{}",
+            r#"
+[live_canary]
+approval_id = "test-operator-approval"
+no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+max_no_submit_readiness_report_bytes = 1000000
+readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 30
+reference_quote_wait_timeout_seconds = 5
+reference_quote_probe_actor_id = "test-reference-probe"
+reference_quote_probe_log_events = false
+reference_quote_probe_log_commands = false
+max_live_order_count = 1
+max_notional_per_order = "10.00"
+"#
+        )
+    });
+    let output_dir = tempdir().expect("tempdir should create").keep();
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-static",
+            "--config",
+            config_path.to_str().expect("fixture path should be utf-8"),
+            "--output-dir",
+            output_dir.to_str().expect("output path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+        ])
+        .output()
+        .expect("bolt-v3 static operator artifacts command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("panic gate and service policy"),
+        "expected real abort blocker, got: {stderr}"
+    );
+    assert!(
+        !output_dir.join("abort-plan.json").exists(),
+        "fail-closed command must not write successful abort plan"
+    );
+}
+
+#[test]
 fn bolt_v3_secrets_check_rejects_missing_provider_secret_field() {
     let config_path = write_bolt_v3_fixture_root(|root| {
         root.replace(

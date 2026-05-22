@@ -3999,3 +3999,67 @@ literal = '''"warn_optional_absent"'''
 context = '''Self::WarnOptionalAbsent => "warn_optional_absent",'''
 classification = "completeness_report_schema_value"
 reason = "This is the stable serialized completeness report status for an optional stream absent from spool data, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const REDACTED_SSM_MANIFEST_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the redacted SSM manifest artifact schema version emitted by the static operator-artifact helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.redacted_ssm_manifest.v1"'''
+context = '''const REDACTED_SSM_MANIFEST_RECORD_KIND: &str = "bolt_v3.redacted_ssm_manifest.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for the redacted SSM manifest artifact, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const APPROVAL_NONCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the approval nonce artifact schema version emitted by the static operator-artifact helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.operator_approval_nonce.v1"'''
+context = '''const APPROVAL_NONCE_RECORD_KIND: &str = "bolt_v3.operator_approval_nonce.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for the approval nonce artifact, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''32'''
+context = '''const APPROVAL_NONCE_BYTES: usize = 32;'''
+classification = "operator_artifact_nonce_entropy_width"
+reason = "This fixes the helper-owned CSPRNG nonce entropy width for one-shot approval evidence and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"panic gate and service policy"'''
+context = '''prerequisite: "panic gate and service policy",'''
+classification = "operator_artifact_blocker_label"
+reason = "This names the documented missing abort-plan prerequisite used in fail-closed diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''0_u8'''
+context = '''let mut nonce = [0_u8; APPROVAL_NONCE_BYTES];'''
+classification = "operator_artifact_nonce_buffer_initialization"
+reason = "This initializes a nonce byte buffer before OS CSPRNG fill and does not configure trading behavior."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"abort-plan.json"'''
+context = '''let abort_plan_path = output_dir.join("abort-plan.json");'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name for abort-plan evidence under the operator-selected output directory, not an operator runtime value."

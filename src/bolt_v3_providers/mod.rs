@@ -57,6 +57,12 @@ pub struct ProviderSecretResolveContext<'a> {
     pub client: &'a ClientBlock,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderSsmPathReference {
+    pub field_name: &'static str,
+    pub ssm_path: String,
+}
+
 pub struct ProviderAdapterMapContext<'a> {
     pub root: &'a BoltV3RootConfig,
     pub client_key: &'a str,
@@ -106,6 +112,10 @@ pub struct ProviderBinding {
         ProviderSecretResolveContext<'a>,
         &mut dyn SsmSecretResolver,
     ) -> Result<ResolvedClientSecrets, BoltV3SecretError>,
+    pub configured_secret_paths:
+        for<'a> fn(
+            ProviderSecretResolveContext<'a>,
+        ) -> Result<Vec<ProviderSsmPathReference>, BoltV3SecretError>,
     pub map_adapters: for<'a> fn(
         ProviderAdapterMapContext<'a>,
     )
@@ -122,6 +132,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         credential_log_modules: polymarket::CREDENTIAL_LOG_MODULES,
         forbidden_env_vars: polymarket::FORBIDDEN_ENV_VARS,
         resolve_secrets: polymarket::resolve_secrets,
+        configured_secret_paths: polymarket::configured_secret_paths,
         map_adapters: polymarket::map_adapters,
     },
     ProviderBinding {
@@ -133,6 +144,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         credential_log_modules: binance::CREDENTIAL_LOG_MODULES,
         forbidden_env_vars: binance::FORBIDDEN_ENV_VARS,
         resolve_secrets: binance::resolve_secrets,
+        configured_secret_paths: binance::configured_secret_paths,
         map_adapters: binance::map_adapters,
     },
 ];

@@ -1715,9 +1715,9 @@ impl Phase8OperatorApprovalEnvelope {
     }
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct Phase8FinancialEnvelopeEvidenceFile {
+pub struct Phase8FinancialEnvelopeEvidenceFile {
     max_live_order_count: u32,
     max_notional_per_order: String,
     strategy_instance_id: String,
@@ -1748,7 +1748,7 @@ struct Phase8FinancialEnvelopeEvidenceFile {
 }
 
 impl Phase8FinancialEnvelopeEvidenceFile {
-    fn from_loaded_for_strategy(
+    pub fn from_loaded_for_strategy(
         loaded: &LoadedBoltV3Config,
         strategy_instance_id: &str,
     ) -> Result<Self> {

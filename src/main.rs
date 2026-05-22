@@ -5,6 +5,7 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
+    bolt_v3_operator_artifacts::write_abort_plan_artifact,
     bolt_v3_providers::binding_for_provider_key,
     bolt_v3_secrets::{check_no_forbidden_credential_env_vars, resolve_bolt_v3_secrets},
     secrets::SsmResolverSession,
@@ -31,6 +32,10 @@ enum Command {
         #[command(subcommand)]
         command: SecretsCommand,
     },
+    OperatorArtifacts {
+        #[command(subcommand)]
+        command: OperatorArtifactsCommand,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -45,11 +50,24 @@ enum SecretsCommand {
     },
 }
 
+#[derive(clap::Subcommand)]
+enum OperatorArtifactsCommand {
+    GenerateStatic {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+    },
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
         Command::Secrets { command } => run_secrets_command(command),
+        Command::OperatorArtifacts { command } => run_operator_artifacts_command(command),
         Command::NoSubmitReadiness { config } => {
             let loaded = load_bolt_v3_config(&config)?;
             let report = run_bolt_v3_no_submit_readiness(&loaded)?;
@@ -69,6 +87,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(())
             };
             runtime.block_on(local.run_until(app))
+        }
+    }
+}
+
+fn run_operator_artifacts_command(
+    command: OperatorArtifactsCommand,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        OperatorArtifactsCommand::GenerateStatic {
+            config,
+            output_dir,
+            strategy_instance_id,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let abort_plan_path = output_dir.join("abort-plan.json");
+            write_abort_plan_artifact(&loaded, &strategy_instance_id, &abort_plan_path)?;
+            Ok(())
         }
     }
 }

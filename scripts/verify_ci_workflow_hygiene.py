@@ -2564,7 +2564,13 @@ def no_mistakes_inner_tokens(tokens: list[str]) -> list[str] | None:
     return None
 
 
+def rust_tool_name_has_script_extension(name: str) -> bool:
+    return pathlib.Path(name).suffix in {".bash", ".fish", ".ksh", ".ps1", ".py", ".rb", ".sh", ".zsh"}
+
+
 def raw_rust_tool_token(name: str) -> bool:
+    if rust_tool_name_has_script_extension(name):
+        return False
     return name in {"cargo", "clippy", "nextest", "rustc", "rustdoc"} or name.startswith(
         ("cargo-", "clippy-", "rust-")
     )
@@ -3024,7 +3030,7 @@ def tokens_have_raw_cargo(
             return True
         if name in {"clippy", "nextest", "rustc", "rustdoc"} and command_prefix_allows_cargo(tokens[:index]):
             return True
-        if name.startswith("cargo-") and command_prefix_allows_cargo(tokens[:index]):
+        if name != "cargo" and raw_rust_tool_token(name) and command_prefix_allows_cargo(tokens[:index]):
             return True
     return False
 
@@ -3399,6 +3405,13 @@ def record_no_mistakes_anchor_from_scalar(value: str, anchors: dict[str, str]) -
         anchors[anchor] = value
 
 
+def no_mistakes_anchor_candidate(value: str) -> tuple[str | None, str]:
+    value = value.strip()
+    if value.startswith("-"):
+        value = value[1:].strip()
+    return strip_yaml_anchor(value)
+
+
 def no_mistakes_commands(config_text: str) -> dict[str, str]:
     commands: dict[str, str] = {}
     anchors: dict[str, str] = {}
@@ -3424,7 +3437,25 @@ def no_mistakes_commands(config_text: str) -> dict[str, str]:
             continue
         if not in_commands:
             _, separator, value = stripped.partition(":")
-            record_no_mistakes_anchor_from_scalar(value if separator else stripped, anchors)
+            candidate_value = value if separator else stripped
+            anchor, stripped_value = no_mistakes_anchor_candidate(candidate_value)
+            if anchor is not None and (stripped_value in ("|", ">") or stripped_value.startswith(("|", ">"))):
+                block_lines: list[str] = []
+                index += 1
+                while index < len(lines):
+                    candidate = lines[index].rstrip()
+                    candidate_stripped = candidate.strip()
+                    if not candidate_stripped or candidate_stripped.startswith("#"):
+                        index += 1
+                        continue
+                    candidate_indent = len(candidate) - len(candidate.lstrip(" "))
+                    if candidate_indent <= indent:
+                        break
+                    block_lines.append(candidate_stripped)
+                    index += 1
+                anchors[anchor] = "\n".join(block_lines).strip()
+                continue
+            record_no_mistakes_anchor_from_scalar(candidate_value, anchors)
             index += 1
             continue
         if indent <= 2 and ":" in stripped:
@@ -4111,11 +4142,11 @@ def shell_directory_change_target(tokens: list[str], cursor: int) -> tuple[str |
         return None, cursor + 1
     name = executable_name(tokens[cursor])
     index = cursor + 1
-    if index < len(tokens) and tokens[index] == "--":
-        index += 1
     while name == "cd" and index < len(tokens) and tokens[index] in {"-L", "-P", "-e"}:
         index += 1
     while name == "pushd" and index < len(tokens) and tokens[index] == "-n":
+        index += 1
+    if index < len(tokens) and tokens[index] == "--":
         index += 1
     if index >= len(tokens):
         return None, index

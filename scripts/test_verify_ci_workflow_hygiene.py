@@ -1178,6 +1178,9 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         "active target cwd hidden behind cd separator": """
             cd -- target && aws s3 sync debug s3://bolt-v2-active-cache/target/debug
         """,
+        "active target cwd hidden behind cd option and separator": """
+            cd -L -- target && aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
         "active target streamed through s3 stdin": """
             tar -czf - target | aws s3 cp - s3://bolt-v2-active-cache/target.tar.gz
         """,
@@ -2620,6 +2623,8 @@ def assert_v6_red_no_mistakes_raw_cargo_is_reported() -> None:
     raw_fixture = """
 aliases:
   - &raw_top "cargo build --target-dir /tmp/raw"
+  - &raw_top_block |
+      cargo build --target-dir /tmp/raw
 commands:
   test: cargo test
   lint: >
@@ -2638,6 +2643,7 @@ commands:
   anchored: &raw "cargo build --target-dir /tmp/raw"
   anchoralias: *raw
   topanchoralias: *raw_top
+  topblockanchoralias: *raw_top_block
   shellcheck: bash -lc 'cargo test --all'
   evalraw: eval "cargo test"
   evaldashdash: eval -- cargo test
@@ -2753,6 +2759,7 @@ commands: { test: "cargo test" }
         "anchored",
         "anchoralias",
         "topanchoralias",
+        "topblockanchoralias",
         "shellcheck",
         "evalraw",
         "evaldashdash",
@@ -2957,6 +2964,8 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "scripts/copy-cargo.sh": "cp $(which cargo) /tmp/mycargo\n/tmp/mycargo build\n",
             "scripts/non-rust-make.sh": "/usr/bin/make test\n",
             "scripts/non-rust-gradle.sh": "./gradlew build\n",
+            "scripts/non-rust-cargo-build-script.sh": "/tmp/cargo-build.sh test\n",
+            "scripts/non-rust-cargo-tests-py.sh": "tests/cargo-tests.py build\n",
             "justfile.setup": "setup:\n    cargo install cargo-nextest --version 0.9.132 --locked\n",
             "justfile.setup.absolute": "setup:\n    /usr/bin/cargo install cargo-nextest --version 0.9.132 --locked\n",
             "justfile.setup.timeout": "setup:\n    timeout 30 cargo install cargo-deny --version 0.18.2\n",

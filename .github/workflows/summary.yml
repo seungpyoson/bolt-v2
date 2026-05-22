@@ -117,10 +117,26 @@ jobs:
             # `bash -eo pipefail`, so an unguarded assignment whose command
             # fails (curl transport error / timeout) would abort the whole
             # step instead of falling through to the next model.
-            response=$(curl -s --max-time 60 --retry 3 https://models.github.ai/inference/chat/completions \
+            # === TEMPORARY DIAGNOSTIC LOGGING (model availability verification) ===
+            echo ">>> [DIAG] Trying model: $model"
+
+            raw_response=$(curl -s --max-time 60 --retry 3 -w "\n__HTTP_STATUS__:%{http_code}" \
+              https://models.github.ai/inference/chat/completions \
               -H "Content-Type: application/json" \
               -H "Authorization: Bearer $GH_MODELS_TOKEN" \
-              -d "$REQUEST_BODY") || response=""
+              -d "$REQUEST_BODY") || raw_response=""
+
+            http_status=$(echo "$raw_response" | grep -o '__HTTP_STATUS__:[0-9]*' | cut -d: -f2 || echo "unknown")
+            body=$(echo "$raw_response" | sed 's/__HTTP_STATUS__:[0-9]*$//')
+
+            echo ">>> [DIAG] Model: $model | HTTP Status: ${http_status}"
+            echo ">>> [DIAG] Raw response (first 1500 chars):"
+            echo "$body" | head -c 1500
+            echo ""
+            echo ">>> [DIAG] End of $model response"
+            # === END DIAGNOSTIC LOGGING ===
+
+            response="$body"
 
             # Extract content with jq (preinstalled). `select(type == "string")`
             # yields the text only when content is a real string (drops null,
@@ -135,7 +151,7 @@ jobs:
               SUCCESS=true
               break
             fi
-            echo "Failed with $model."
+            echo ">>> [DIAG] Model $model produced no valid summary."
           done
 
           # Final cross-provider backstop. Only fires if every GitHub Models

@@ -645,10 +645,15 @@ fn write_phase8_operator_abort_plan(path: &Path) {
         "execution_client_id": "polymarket_main",
         "configured_target_id": "btc_updown_5m",
         "cancel_if_open_defined": true,
+        "cancel_if_open_evidence_hash": phase8_sha256_text("cancel-if-open-proof"),
         "nt_accepted_venue_pending_abort_defined": true,
+        "nt_accepted_venue_pending_abort_evidence_hash": phase8_sha256_text("nt-accepted-venue-pending-proof"),
         "partial_fill_abort_defined": true,
+        "partial_fill_abort_evidence_hash": phase8_sha256_text("partial-fill-proof"),
         "network_partition_during_submit_abort_defined": true,
-        "panic_gate_trip_abort_defined": true
+        "network_partition_during_submit_abort_evidence_hash": phase8_sha256_text("network-partition-proof"),
+        "panic_gate_trip_abort_defined": true,
+        "panic_gate_trip_abort_evidence_hash": phase8_sha256_text("panic-gate-service-policy-proof")
     });
     std::fs::write(
         path,

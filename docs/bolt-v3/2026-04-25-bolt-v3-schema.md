@@ -840,6 +840,7 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 
 - `execution_client_id`, `configured_target_id`: strings matching the financial envelope
 - `cancel_if_open_defined`, `nt_accepted_venue_pending_abort_defined`, `partial_fill_abort_defined`, `network_partition_during_submit_abort_defined`, `panic_gate_trip_abort_defined`: booleans, all must be `true`
+- `cancel_if_open_evidence_hash`, `nt_accepted_venue_pending_abort_evidence_hash`, `partial_fill_abort_evidence_hash`, `network_partition_during_submit_abort_evidence_hash`, `panic_gate_trip_abort_evidence_hash`: sha256 bindings to operator-held evidence proving each abort path
 
 Live-result proof JSON files:
 

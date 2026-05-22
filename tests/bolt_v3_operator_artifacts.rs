@@ -4,7 +4,9 @@ use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, load_bolt_v3_config},
     bolt_v3_market_families::updown::updown_market_slug,
     bolt_v3_operator_artifacts::build_redacted_ssm_manifest,
-    bolt_v3_tiny_canary_evidence::{Phase8OperatorApprovalEnvelope, Phase8PreRunStateSourceProofs},
+    bolt_v3_tiny_canary_evidence::{
+        Phase8AbortPlanSourceProofs, Phase8OperatorApprovalEnvelope, Phase8PreRunStateSourceProofs,
+    },
 };
 use nautilus_core::Params;
 use nautilus_model::{
@@ -244,6 +246,120 @@ fn abort_plan_writer_fails_closed_when_static_prerequisites_are_unproven() {
     assert!(
         !abort_plan_path.exists(),
         "failed abort plan generation must not leave a success artifact"
+    );
+}
+
+#[test]
+fn abort_plan_writer_emits_config_bound_artifact_from_source_proofs() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let abort_plan_path = temp.path().join("abort-plan.json");
+    let proof_hashes = TestAbortPlanProofHashes::new();
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_abort_plan_artifact_from_source_proofs(
+            &loaded,
+            strategy_instance_id,
+            proof_hashes.as_source_proofs(),
+            &abort_plan_path,
+        )
+        .expect("source-proven abort paths should write artifact");
+
+    let artifact_bytes = std::fs::read(&abort_plan_path).expect("abort plan artifact should exist");
+    assert_eq!(written.sha256, hex::encode(Sha256::digest(&artifact_bytes)));
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&artifact_bytes).expect("abort plan should be JSON");
+    assert_eq!(
+        json["execution_client_id"],
+        loaded.strategies[0].config.execution_client_id.to_string()
+    );
+    assert_eq!(
+        json["configured_target_id"],
+        loaded.strategies[0]
+            .config
+            .target
+            .get("configured_target_id")
+            .and_then(|value| value.as_str())
+            .expect("fixture target should have configured_target_id")
+    );
+    assert_eq!(json["cancel_if_open_defined"], true);
+    assert_eq!(json["nt_accepted_venue_pending_abort_defined"], true);
+    assert_eq!(json["partial_fill_abort_defined"], true);
+    assert_eq!(json["network_partition_during_submit_abort_defined"], true);
+    assert_eq!(json["panic_gate_trip_abort_defined"], true);
+    assert_eq!(json["cancel_if_open_evidence_hash"], proof_hashes.cancel);
+    assert_eq!(
+        json["nt_accepted_venue_pending_abort_evidence_hash"],
+        proof_hashes.venue_pending
+    );
+    assert_eq!(
+        json["partial_fill_abort_evidence_hash"],
+        proof_hashes.partial_fill
+    );
+    assert_eq!(
+        json["network_partition_during_submit_abort_evidence_hash"],
+        proof_hashes.network_partition
+    );
+    assert_eq!(
+        json["panic_gate_trip_abort_evidence_hash"],
+        proof_hashes.panic_gate
+    );
+}
+
+#[test]
+fn abort_plan_writer_rejects_each_undefined_source_path_without_artifact() {
+    assert_rejects_undefined_abort_plan_source_path("cancel_if_open_defined", |proofs| {
+        proofs.cancel_if_open_defined = false;
+    });
+    assert_rejects_undefined_abort_plan_source_path("cancel_if_open_evidence_hash", |proofs| {
+        proofs.cancel_if_open_evidence_hash = "invalid";
+    });
+    assert_rejects_undefined_abort_plan_source_path(
+        "nt_accepted_venue_pending_abort_defined",
+        |proofs| {
+            proofs.nt_accepted_venue_pending_abort_defined = false;
+        },
+    );
+    assert_rejects_undefined_abort_plan_source_path(
+        "nt_accepted_venue_pending_abort_evidence_hash",
+        |proofs| {
+            proofs.nt_accepted_venue_pending_abort_evidence_hash = "invalid";
+        },
+    );
+    assert_rejects_undefined_abort_plan_source_path("partial_fill_abort_defined", |proofs| {
+        proofs.partial_fill_abort_defined = false;
+    });
+    assert_rejects_undefined_abort_plan_source_path("partial_fill_abort_evidence_hash", |proofs| {
+        proofs.partial_fill_abort_evidence_hash = "invalid";
+    });
+    assert_rejects_undefined_abort_plan_source_path(
+        "network_partition_during_submit_abort_defined",
+        |proofs| {
+            proofs.network_partition_during_submit_abort_defined = false;
+        },
+    );
+    assert_rejects_undefined_abort_plan_source_path(
+        "network_partition_during_submit_abort_evidence_hash",
+        |proofs| {
+            proofs.network_partition_during_submit_abort_evidence_hash = "invalid";
+        },
+    );
+    assert_rejects_undefined_abort_plan_source_path("panic_gate_trip_abort_defined", |proofs| {
+        proofs.panic_gate_trip_abort_defined = false;
+    });
+    assert_rejects_undefined_abort_plan_source_path(
+        "panic_gate_trip_abort_evidence_hash",
+        |proofs| {
+            proofs.panic_gate_trip_abort_evidence_hash = "invalid";
+        },
     );
 }
 
@@ -710,6 +826,77 @@ impl TestPreRunStateProofHashes {
             release_manifest_evidence_hash: &self.release_manifest,
         }
     }
+}
+
+struct TestAbortPlanProofHashes {
+    cancel: String,
+    venue_pending: String,
+    partial_fill: String,
+    network_partition: String,
+    panic_gate: String,
+}
+
+impl TestAbortPlanProofHashes {
+    fn new() -> Self {
+        Self {
+            cancel: sha256_text("cancel-if-open-proof"),
+            venue_pending: sha256_text("nt-accepted-venue-pending-proof"),
+            partial_fill: sha256_text("partial-fill-proof"),
+            network_partition: sha256_text("network-partition-proof"),
+            panic_gate: sha256_text("panic-gate-service-policy-proof"),
+        }
+    }
+
+    fn as_source_proofs(&self) -> Phase8AbortPlanSourceProofs<'_> {
+        Phase8AbortPlanSourceProofs {
+            cancel_if_open_defined: true,
+            cancel_if_open_evidence_hash: &self.cancel,
+            nt_accepted_venue_pending_abort_defined: true,
+            nt_accepted_venue_pending_abort_evidence_hash: &self.venue_pending,
+            partial_fill_abort_defined: true,
+            partial_fill_abort_evidence_hash: &self.partial_fill,
+            network_partition_during_submit_abort_defined: true,
+            network_partition_during_submit_abort_evidence_hash: &self.network_partition,
+            panic_gate_trip_abort_defined: true,
+            panic_gate_trip_abort_evidence_hash: &self.panic_gate,
+        }
+    }
+}
+
+fn assert_rejects_undefined_abort_plan_source_path<F>(expected_field: &str, mutate: F)
+where
+    F: FnOnce(&mut Phase8AbortPlanSourceProofs),
+{
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let abort_plan_path = temp.path().join(format!("{expected_field}.json"));
+    let proof_hashes = TestAbortPlanProofHashes::new();
+    let mut source_proofs = proof_hashes.as_source_proofs();
+    mutate(&mut source_proofs);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_abort_plan_artifact_from_source_proofs(
+        &loaded,
+        strategy_instance_id,
+        source_proofs,
+        &abort_plan_path,
+    )
+    .expect_err("undefined abort source path should fail closed");
+
+    assert!(
+        error.to_string().contains(expected_field),
+        "abort plan blocker should cite {expected_field}: {error}"
+    );
+    assert!(
+        !abort_plan_path.exists(),
+        "failed abort-plan source generation must not leave artifact for {expected_field}"
+    );
 }
 
 fn assert_rejects_unsatisfied_pre_run_source_proof<F>(expected_field: &str, mutate: F)

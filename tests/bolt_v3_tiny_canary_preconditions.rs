@@ -3276,6 +3276,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+fn sha256_text_for_test(value: &str) -> String {
+    sha256_hex(value.as_bytes())
+}
+
 fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_order: &str) {
     let json = serde_json::json!({
         "max_live_order_count": 1,
@@ -3362,10 +3366,15 @@ fn write_phase8_abort_plan(path: &std::path::Path, panic_policy_missing: bool) {
         "execution_client_id": "polymarket_main",
         "configured_target_id": "btc_updown_5m",
         "cancel_if_open_defined": true,
+        "cancel_if_open_evidence_hash": sha256_text_for_test("cancel-if-open-proof"),
         "nt_accepted_venue_pending_abort_defined": true,
+        "nt_accepted_venue_pending_abort_evidence_hash": sha256_text_for_test("nt-accepted-venue-pending-proof"),
         "partial_fill_abort_defined": true,
+        "partial_fill_abort_evidence_hash": sha256_text_for_test("partial-fill-proof"),
         "network_partition_during_submit_abort_defined": true,
-        "panic_gate_trip_abort_defined": !panic_policy_missing
+        "network_partition_during_submit_abort_evidence_hash": sha256_text_for_test("network-partition-proof"),
+        "panic_gate_trip_abort_defined": !panic_policy_missing,
+        "panic_gate_trip_abort_evidence_hash": sha256_text_for_test("panic-gate-service-policy-proof")
     });
     std::fs::write(
         path,

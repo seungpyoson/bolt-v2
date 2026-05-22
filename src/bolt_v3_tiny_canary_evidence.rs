@@ -2264,19 +2264,67 @@ fn pre_run_state_blocked(field: &'static str) -> anyhow::Error {
     anyhow!("phase8 pre-run state `{field}` is not satisfied")
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Phase8AbortPlanSourceProofs<'a> {
+    pub cancel_if_open_defined: bool,
+    pub cancel_if_open_evidence_hash: &'a str,
+    pub nt_accepted_venue_pending_abort_defined: bool,
+    pub nt_accepted_venue_pending_abort_evidence_hash: &'a str,
+    pub partial_fill_abort_defined: bool,
+    pub partial_fill_abort_evidence_hash: &'a str,
+    pub network_partition_during_submit_abort_defined: bool,
+    pub network_partition_during_submit_abort_evidence_hash: &'a str,
+    pub panic_gate_trip_abort_defined: bool,
+    pub panic_gate_trip_abort_evidence_hash: &'a str,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct Phase8AbortPlanEvidenceFile {
+pub struct Phase8AbortPlanEvidenceFile {
     execution_client_id: String,
     configured_target_id: String,
     cancel_if_open_defined: bool,
+    cancel_if_open_evidence_hash: String,
     nt_accepted_venue_pending_abort_defined: bool,
+    nt_accepted_venue_pending_abort_evidence_hash: String,
     partial_fill_abort_defined: bool,
+    partial_fill_abort_evidence_hash: String,
     network_partition_during_submit_abort_defined: bool,
+    network_partition_during_submit_abort_evidence_hash: String,
     panic_gate_trip_abort_defined: bool,
+    panic_gate_trip_abort_evidence_hash: String,
 }
 
 impl Phase8AbortPlanEvidenceFile {
+    pub fn from_financial_envelope_and_source_proofs(
+        loaded: &Phase8FinancialEnvelopeEvidenceFile,
+        proofs: Phase8AbortPlanSourceProofs<'_>,
+    ) -> Result<Self> {
+        let artifact = Self {
+            execution_client_id: loaded.execution_client_id.clone(),
+            configured_target_id: loaded.configured_target_id.clone(),
+            cancel_if_open_defined: proofs.cancel_if_open_defined,
+            cancel_if_open_evidence_hash: proofs.cancel_if_open_evidence_hash.to_string(),
+            nt_accepted_venue_pending_abort_defined: proofs.nt_accepted_venue_pending_abort_defined,
+            nt_accepted_venue_pending_abort_evidence_hash: proofs
+                .nt_accepted_venue_pending_abort_evidence_hash
+                .to_string(),
+            partial_fill_abort_defined: proofs.partial_fill_abort_defined,
+            partial_fill_abort_evidence_hash: proofs.partial_fill_abort_evidence_hash.to_string(),
+            network_partition_during_submit_abort_defined: proofs
+                .network_partition_during_submit_abort_defined,
+            network_partition_during_submit_abort_evidence_hash: proofs
+                .network_partition_during_submit_abort_evidence_hash
+                .to_string(),
+            panic_gate_trip_abort_defined: proofs.panic_gate_trip_abort_defined,
+            panic_gate_trip_abort_evidence_hash: proofs
+                .panic_gate_trip_abort_evidence_hash
+                .to_string(),
+        };
+        artifact.validate_matches_loaded(loaded)?;
+        Ok(artifact)
+    }
+
     fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
         if self.execution_client_id != loaded.execution_client_id {
             return Err(abort_plan_mismatch(stringify!(execution_client_id)));
@@ -2288,27 +2336,55 @@ impl Phase8AbortPlanEvidenceFile {
             stringify!(cancel_if_open_defined),
             self.cancel_if_open_defined,
         )?;
+        require_abort_plan_sha256(
+            stringify!(cancel_if_open_evidence_hash),
+            &self.cancel_if_open_evidence_hash,
+        )?;
         require_abort_plan_path(
             stringify!(nt_accepted_venue_pending_abort_defined),
             self.nt_accepted_venue_pending_abort_defined,
+        )?;
+        require_abort_plan_sha256(
+            stringify!(nt_accepted_venue_pending_abort_evidence_hash),
+            &self.nt_accepted_venue_pending_abort_evidence_hash,
         )?;
         require_abort_plan_path(
             stringify!(partial_fill_abort_defined),
             self.partial_fill_abort_defined,
         )?;
+        require_abort_plan_sha256(
+            stringify!(partial_fill_abort_evidence_hash),
+            &self.partial_fill_abort_evidence_hash,
+        )?;
         require_abort_plan_path(
             stringify!(network_partition_during_submit_abort_defined),
             self.network_partition_during_submit_abort_defined,
         )?;
+        require_abort_plan_sha256(
+            stringify!(network_partition_during_submit_abort_evidence_hash),
+            &self.network_partition_during_submit_abort_evidence_hash,
+        )?;
         require_abort_plan_path(
             stringify!(panic_gate_trip_abort_defined),
             self.panic_gate_trip_abort_defined,
+        )?;
+        require_abort_plan_sha256(
+            stringify!(panic_gate_trip_abort_evidence_hash),
+            &self.panic_gate_trip_abort_evidence_hash,
         )
     }
 }
 
 fn require_abort_plan_path(field: &'static str, defined: bool) -> Result<()> {
     if defined {
+        Ok(())
+    } else {
+        Err(abort_plan_blocked(field))
+    }
+}
+
+fn require_abort_plan_sha256(field: &'static str, value: &str) -> Result<()> {
+    if phase8_is_sha256_hex(value) {
         Ok(())
     } else {
         Err(abort_plan_blocked(field))

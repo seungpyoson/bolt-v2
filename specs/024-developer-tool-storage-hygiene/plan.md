@@ -18,7 +18,7 @@
 **Target Platform**: macOS operator workstation for measured path shapes; repo CI remains Linux for source checks.
 **Project Type**: Developer-ops hygiene policy and verifier, not product runtime.
 **Performance Goals**: Policy classification should complete over synthetic fixtures quickly enough for targeted tests; real preflight should be lightweight and read-only before heavy verification.
-**Constraints**: No secret display; no mutation of real home data in tests; dry-run before apply; protect active/default/project-pinned rustup toolchains; rustup removal only by exact configured installed toolchain names after protection; report-only for Codex sqlite db/WAL until safe native cleanup is proven; no new shell parser or wrapper-family semantics; no #454 work.
+**Constraints**: No secret display; no mutation of real home data in tests; dry-run before apply; protect active/default/repository-root project-pinned rustup toolchains; rustup removal only by exact configured installed toolchain names after protection; no symlink target deletion or outside-root candidate mutation; report-only for Codex sqlite db/WAL until safe native cleanup is proven; no new shell parser or wrapper-family semantics; no #454 work.
 **Scale/Scope**: One #375 PR covering enumeration, policy contract, tests, and bounded implementation. If direct cleanup requires a new operator-facing command surface, implementation pauses for explicit operator approval.
 
 ## Constitution Check

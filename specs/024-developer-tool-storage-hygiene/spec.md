@@ -82,7 +82,8 @@ As a reviewer, I can validate #375 cleanup and preflight behavior against scratc
 - Codex `history.jsonl` is large but has documented native history settings: report the file and native-config guidance, but do not delete it under #375 cleanup policy.
 - Codex archived sessions are present: measure and report them, but do not delete archived transcripts without a separate proven session-archive contract.
 - Factory executable is absent but the log path exists: keep the path in the inventory and apply file-policy only if configured explicitly.
-- Codex sessions newer than TTL, missing mtimes, unreadable files, or symlinks appear: preserve them unless deterministic policy proves they are safe candidates.
+- Codex sessions newer than TTL, missing mtimes, unreadable files, or symlinks appear: preserve them unless deterministic policy proves they are safe candidates; symlink targets are never followed for deletion.
+- A candidate path normalizes outside its configured path-family root: preserve it and report the path-handling refusal.
 - A mutable Codex or Factory surface has a configured active writer process: refuse apply rather than mutating a live writer.
 - A rustup toolchain is both explicitly removable and active/default/pinned/retained: protected status wins.
 - General machine caches such as npm, Homebrew, Xcode, browser profiles, and IDE caches are large: report adjacency without deleting them under #375.
@@ -97,7 +98,7 @@ As a reviewer, I can validate #375 cleanup and preflight behavior against scratc
 - **FR-003**: The implementation MUST keep #375 separate from #286 managed Rust cache retention, #374 verifier/wrapper cleanup/preflight, #376 runtime/local CI/cargo registry inventory, and out-of-repo machine caches.
 - **FR-004**: Cleanup policy MUST be deterministic and config-driven; no cleanup candidate may be selected by substring-only heuristics.
 - **FR-005**: Cleanup policy MUST support dry-run output before apply behavior.
-- **FR-006**: Cleanup policy MUST protect active, default, and project-pinned rustup toolchains under every mode.
+- **FR-006**: Cleanup policy MUST protect active, default, and repository-root project-pinned rustup toolchains under every mode.
 - **FR-006A**: Rustup cleanup MUST select removal candidates only by exact configured installed toolchain names. Age, mtime, wildcard, substring, or pattern matching MUST NOT make a rustup toolchain removable.
 - **FR-007**: Cleanup policy MUST treat Codex SQLite db/WAL files, Codex `history.jsonl`, and Codex archived sessions as report-only unless a safe native cleanup contract is proven.
 - **FR-008**: Preflight MUST report per-family sizes, ownership, cleanup eligibility, protected items, report-only items, and out-of-scope adjacent storage.
@@ -108,6 +109,7 @@ As a reviewer, I can validate #375 cleanup and preflight behavior against scratc
 - **FR-013**: The final PR MUST record targeted tests, relevant Rust verification, source-fence/schema/runtime-literal checks if touched, ai-slop cleanup, no-mistakes exact-head result, GitHub exact-head CI, and external review outcomes.
 - **FR-014**: Apply behavior, if approved, MUST revalidate policy, re-scan the filesystem immediately before mutation, and refuse mutable Codex and Factory actions when configured active writer processes are detected.
 - **FR-015**: Active-writer detection MUST use configured exact process names and process snapshots; it MUST NOT add shell parser cases, wrapper-family semantics, or command prediction.
+- **FR-016**: Candidate enumeration MUST expand configured path families under the evaluated root, keep normalized candidates inside configured roots, and never follow symlink targets for deletion.
 
 ### Key Entities
 
@@ -134,4 +136,4 @@ As a reviewer, I can validate #375 cleanup and preflight behavior against scratc
 - The target operator environment is macOS, matching the measured paths and issue body.
 - The repo may provide policy, verification, and installable native configuration artifacts, but should not mutate the operator's real home directory during tests.
 - OpenAI Codex config support for `history.max_bytes`, `history.persistence`, and `tui.log_dir` covers history storage guidance and log directory placement, but it does not by itself provide `codex-tui.log` rotation or `sessions/**/*.jsonl` TTL.
-- The active project Rust pin is `1.95.0` until `rust-toolchain.toml` changes.
+- The active project Rust pin is `1.95.0` until the repository-root `rust-toolchain.toml` changes.

@@ -34,7 +34,7 @@ RED tests should prove:
 - Codex history is report-only and mapped to native config guidance.
 - Codex archived sessions are report-only.
 - Dry-run output includes the fields required by the contract.
-- Active, default, and project-pinned rustup toolchains are protected.
+- Active, default, and repository-root project-pinned rustup toolchains are protected.
 - Stale unprotected toolchains are surfaced as candidates.
 - Preflight fails closed when configured thresholds are breached.
 - Apply revalidates policy immediately before mutation and fails closed if the policy changed.

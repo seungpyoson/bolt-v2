@@ -20,6 +20,7 @@ Validation:
 - `owner=this_issue` requires `cleanup_mode` other than `none`.
 - `owner=report_only` forbids destructive apply actions.
 - `path_family` must be selected from config, not inferred from arbitrary substrings.
+- Enumerated candidates must remain under configured path-family roots after normalization and must not follow symlinks.
 
 ## CleanupPolicy
 
@@ -73,6 +74,7 @@ Validation:
 - Any true protection flag prevents removal.
 - Candidate status requires an exact `remove_exact_names` match, not pinned, not active, not default, and not explicitly retained.
 - File age and mtime may appear in reports but must never create a rustup removal candidate.
+- `is_project_pinned` is derived from the repository-root `rust-toolchain.toml` for this #375 slice.
 
 ## ProcessSnapshot
 

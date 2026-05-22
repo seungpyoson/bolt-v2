@@ -78,6 +78,14 @@ persistence = "save-all"
 
 Values above are example policy shape for review; implementation must use the committed TOML source as authority.
 
+## Path Handling Contract
+
+Candidate enumeration must:
+- Expand `~` only against the evaluated home root or scratch root.
+- Stay inside configured `path_family` roots after normalization.
+- Treat symlinks as protected/report-only entries and never follow symlink targets for deletion.
+- Detect the project-pinned Rust toolchain from the repository-root `rust-toolchain.toml`; nested Rust toolchain files are out of scope unless explicitly added to policy.
+
 ## Dry-Run Contract
 
 Dry-run output must include:
@@ -111,7 +119,7 @@ Apply behavior is allowed only after explicit operator approval for any new oper
 - Refuse mutable Codex and Factory actions when configured active writer processes are detected.
 - Refuse protected and report-only targets.
 - Always refuse report-only Codex SQLite db/WAL, Codex history, and Codex archived-session targets.
-- Preserve active, default, and project-pinned rustup toolchains even if their exact names appear in removal config.
+- Preserve active, default, and repository-root project-pinned rustup toolchains even if their exact names appear in removal config.
 - Remove rustup toolchains only when their exact installed toolchain name appears in `remove_exact_names`; age, mtime, wildcard, or pattern matching must never create a rustup removal candidate.
 - Emit a post-apply summary.
 

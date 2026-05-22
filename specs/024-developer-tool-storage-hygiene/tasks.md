@@ -67,9 +67,9 @@
 - [ ] T020 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex sqlite db/WAL files are report-only.
 - [ ] T021 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex `history.jsonl` is report-only and mapped to native config guidance.
 - [ ] T022 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex archived sessions are report-only.
-- [ ] T023 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for exact-name rustup removal classification plus active, default, project-pinned, and exact-retained protection, proving age/mtime alone does not create rustup candidates.
+- [ ] T023 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for exact-name rustup removal classification plus active, default, repository-root project-pinned, and exact-retained protection, proving age/mtime alone does not create rustup candidates.
 - [ ] T024 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for malformed, incomplete, or missing-required-key policy fail-closed validation.
-- [ ] T025 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving dry-run output includes policy path, evaluated root, per-surface bytes/eligibility, candidate actions/reasons/estimated bytes, Codex history native-config status, report-only archived sessions, protected rustup toolchains, exact-name rustup removal candidates, report-only large surfaces, out-of-scope adjacent surfaces, and leaves the scratch filesystem unchanged.
+- [ ] T025 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving dry-run output includes policy path, evaluated root, per-surface bytes/eligibility, candidate actions/reasons/estimated bytes, Codex history native-config status, report-only archived sessions, protected rustup toolchains, exact-name rustup removal candidates, path-handling refusals for symlink or outside-root entries, report-only large surfaces, out-of-scope adjacent surfaces, and leaves the scratch filesystem unchanged.
 
 ### Implementation for User Story 2
 

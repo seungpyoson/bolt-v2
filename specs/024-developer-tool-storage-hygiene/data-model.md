@@ -28,9 +28,11 @@ Represents configured #375 retention behavior.
 Fields:
 - `codex_log.max_bytes`
 - `codex_log.retained_rotations`
+- `codex_log.active_writer_processes`
 - `codex_sessions.ttl_days`
 - `factory_log.max_bytes`
 - `factory_log.retained_rotations`
+- `factory_log.active_writer_processes`
 - `native_guidance.codex_history.max_bytes`
 - `native_guidance.codex_history.persistence`
 - `rustup_toolchains.retain_recent`

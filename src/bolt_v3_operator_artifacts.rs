@@ -194,7 +194,6 @@ pub struct WrittenOperatorArtifact {
     pub sha256: String,
 }
 
-#[derive(Debug)]
 pub enum BoltV3OperatorArtifactError {
     UnsupportedProvider {
         client_key: String,
@@ -360,16 +359,12 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "`[live_canary.operator_evidence].head_sha` does not match build head_sha"
             ),
-            Self::StaticManifestRead { path, source } => write!(
-                f,
-                "failed to read static manifest `{}`: {source}",
-                path.display()
-            ),
-            Self::StaticManifestParse { path, source } => write!(
-                f,
-                "failed to parse static manifest `{}`: {source}",
-                path.display()
-            ),
+            Self::StaticManifestRead { source, .. } => {
+                write!(f, "failed to read static manifest: {source}")
+            }
+            Self::StaticManifestParse { source, .. } => {
+                write!(f, "failed to parse static manifest: {source}")
+            }
             Self::StaticManifestSchema { field } => {
                 write!(f, "static manifest field `{field}` is invalid")
             }
@@ -422,16 +417,12 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "operator packet output path must differ from approval_envelope_path"
             ),
-            Self::OperatorPacketRead { path, source } => write!(
-                f,
-                "failed to read operator packet `{}`: {source}",
-                path.display()
-            ),
-            Self::OperatorPacketParse { path, source } => write!(
-                f,
-                "failed to parse operator packet `{}`: {source}",
-                path.display()
-            ),
+            Self::OperatorPacketRead { source, .. } => {
+                write!(f, "failed to read operator packet: {source}")
+            }
+            Self::OperatorPacketParse { source, .. } => {
+                write!(f, "failed to parse operator packet: {source}")
+            }
             Self::OperatorPacketSchema { field } => {
                 write!(f, "operator packet field `{field}` is invalid")
             }
@@ -453,16 +444,12 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                     "operator packet field `{field}` must be a lowercase sha256 hex string"
                 )
             }
-            Self::ApprovalEnvelopeRead { path, source } => write!(
-                f,
-                "failed to read approval envelope `{}`: {source}",
-                path.display()
-            ),
-            Self::ApprovalEnvelopeParse { path, source } => write!(
-                f,
-                "failed to parse approval envelope `{}`: {source}",
-                path.display()
-            ),
+            Self::ApprovalEnvelopeRead { source, .. } => {
+                write!(f, "failed to read approval envelope: {source}")
+            }
+            Self::ApprovalEnvelopeParse { source, .. } => {
+                write!(f, "failed to parse approval envelope: {source}")
+            }
             Self::ApprovalEnvelopeSchema { field } => {
                 write!(f, "approval envelope field `{field}` is invalid")
             }
@@ -478,22 +465,23 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             }
             Self::Random(error) => write!(f, "failed to generate approval nonce bytes: {error}"),
             Self::Serialize(error) => write!(f, "failed to serialize operator artifact: {error}"),
-            Self::Write { path, source } => {
+            Self::Write { source, .. } => {
                 if source.kind() == std::io::ErrorKind::AlreadyExists {
                     write!(
                         f,
-                        "refusing to overwrite existing operator artifact `{}`: already exists",
-                        path.display()
+                        "refusing to overwrite existing operator artifact: already exists"
                     )
                 } else {
-                    write!(
-                        f,
-                        "failed to write operator artifact `{}`: {source}",
-                        path.display()
-                    )
+                    write!(f, "failed to write operator artifact: {source}")
                 }
             }
         }
+    }
+}
+
+impl fmt::Debug for BoltV3OperatorArtifactError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 

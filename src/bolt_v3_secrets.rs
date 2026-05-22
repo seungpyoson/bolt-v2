@@ -13,7 +13,7 @@
 //! using `[aws].region` as the resolver region. Resolved values are held
 //! behind provider-owned handles whose Debug output redacts every secret field; the
 //! resolved error type carries client key, secret-config field, and SSM
-//! path context, but never the resolved secret value itself.
+//! field context, but never the resolved secret value or raw SSM path itself.
 
 use std::collections::BTreeMap;
 
@@ -145,7 +145,6 @@ impl std::fmt::Debug for ResolvedBoltV3Secrets {
     }
 }
 
-#[derive(Debug)]
 pub struct BoltV3SecretError {
     pub client_key: String,
     pub field: String,
@@ -155,24 +154,23 @@ pub struct BoltV3SecretError {
 
 impl std::fmt::Display for BoltV3SecretError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.ssm_path.is_empty() {
-            write!(
-                f,
-                "clients.{client_key}.secrets.{field}: {source}",
-                client_key = self.client_key,
-                field = self.field,
-                source = self.source,
-            )
-        } else {
-            write!(
-                f,
-                "clients.{client_key}.secrets.{field} (path={path}): {source}",
-                client_key = self.client_key,
-                field = self.field,
-                path = self.ssm_path,
-                source = self.source,
-            )
-        }
+        write!(
+            f,
+            "clients.{client_key}.secrets.{field}: {source}",
+            client_key = self.client_key,
+            field = self.field,
+            source = self.source,
+        )
+    }
+}
+
+impl std::fmt::Debug for BoltV3SecretError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoltV3SecretError")
+            .field("client_key", &self.client_key)
+            .field("field", &self.field)
+            .field("source", &self.source)
+            .finish()
     }
 }
 
@@ -629,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn ssm_failure_reports_bolt_v3_client_field_and_path() {
+    fn ssm_failure_reports_bolt_v3_client_field_without_path() {
         let loaded = fixture_loaded_config();
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
@@ -640,6 +638,7 @@ mod tests {
             }
         })
         .expect_err("SSM failure should abort resolution");
+        let raw_path = error.ssm_path.clone();
         let message = error.to_string();
 
         assert!(
@@ -647,12 +646,18 @@ mod tests {
             "expected field context in error: {message}"
         );
         assert!(
-            message.contains("/bolt/binance_reference/api_secret"),
-            "expected SSM path in error: {message}"
+            !message.contains(&raw_path),
+            "SSM failure message must not expose raw path: {message}"
         );
         assert!(
             message.contains("simulated ssm failure"),
             "expected resolver error in message: {message}"
+        );
+
+        let debug = format!("{error:?}");
+        assert!(
+            !debug.contains(&raw_path),
+            "SSM failure Debug output must not expose raw path: {debug}"
         );
     }
 

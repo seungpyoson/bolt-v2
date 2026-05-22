@@ -1645,6 +1645,16 @@ fn final_packet_verifier_rejects_missing_operator_packet_file() {
         error.to_string().contains("operator packet"),
         "missing packet error should name operator packet: {error}"
     );
+    assert!(
+        !error
+            .to_string()
+            .contains(&fixture.operator_packet_path.to_string_lossy().to_string()),
+        "missing packet error must not echo raw artifact path: {error}"
+    );
+    assert!(
+        !format!("{error:?}").contains(&fixture.operator_packet_path.to_string_lossy().to_string()),
+        "missing packet Debug output must not echo raw artifact path: {error:?}"
+    );
 }
 
 #[test]
@@ -1661,6 +1671,12 @@ fn final_packet_verifier_rejects_missing_static_manifest_file() {
     assert!(
         error.to_string().contains("static manifest"),
         "missing manifest error should name static manifest: {error}"
+    );
+    assert!(
+        !error
+            .to_string()
+            .contains(&fixture.static_manifest_path.to_string_lossy().to_string()),
+        "missing manifest error must not echo raw artifact path: {error}"
     );
 }
 
@@ -1680,6 +1696,10 @@ fn final_packet_verifier_rejects_missing_approval_envelope_file() {
     assert!(
         error.to_string().contains("approval envelope"),
         "missing approval envelope error should name approval envelope: {error}"
+    );
+    assert!(
+        !error.to_string().contains(&evidence.approval_envelope_path),
+        "missing approval envelope error must not echo raw artifact path: {error}"
     );
 }
 

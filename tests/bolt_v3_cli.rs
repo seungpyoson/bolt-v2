@@ -337,8 +337,8 @@ fn bolt_v3_secrets_resolve_surfaces_ssm_failure() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("/bolt/binance_reference/api_secret"),
-        "expected failing Binance SSM path in stderr, got: {stderr}"
+        !stderr.contains("/bolt/binance_reference/api_secret"),
+        "stderr must not expose failing SSM path, got: {stderr}"
     );
     assert!(
         stderr.contains("AWS SSM GetParameter failed"),

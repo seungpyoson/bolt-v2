@@ -6692,6 +6692,14 @@ mod tests {
             "market_id".to_string(),
             serde_json::Value::String(market_id.to_string()),
         );
+        info.insert(
+            "condition_id".to_string(),
+            serde_json::Value::String(format!("condition-{market_id}")),
+        );
+        info.insert(
+            "question_id".to_string(),
+            serde_json::Value::String(format!("question-{market_id}")),
+        );
         InstrumentAny::BinaryOption(BinaryOption::new(
             InstrumentId::from(instrument_id),
             Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),

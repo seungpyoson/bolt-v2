@@ -69,7 +69,7 @@
 - [ ] T022 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex archived sessions are report-only.
 - [ ] T023 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for active, default, and project-pinned rustup toolchain protection.
 - [ ] T024 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for malformed, incomplete, or missing-required-key policy fail-closed validation.
-- [ ] T025 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving dry-run output includes every contract-required field.
+- [ ] T025 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving dry-run output includes every contract-required field and leaves the scratch filesystem unchanged.
 
 ### Implementation for User Story 2
 
@@ -93,7 +93,7 @@
 
 ### Tests for User Story 3
 
-- [ ] T033 [US3] Add RED preflight free-disk and owned-storage warning/error threshold tests in `scripts/test_developer_tool_storage_hygiene.py`.
+- [ ] T033 [US3] Add RED preflight free-disk and owned-storage warning/error threshold tests in `scripts/test_developer_tool_storage_hygiene.py`, including a no-mutation assertion over scratch fixtures.
 - [ ] T034 [US3] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving out-of-repo browser and package-manager caches are reported but not owned.
 
 ### Implementation for User Story 3
@@ -120,11 +120,11 @@
 - [ ] T041 [US4] Add RED scratch apply test proving report-only Codex sqlite, Codex history, and Codex archived-session files remain untouched in `scripts/test_developer_tool_storage_hygiene.py`.
 - [ ] T042 [US4] Add RED scratch apply test proving apply revalidates policy immediately before mutation and fails closed if policy becomes malformed or incomplete.
 - [ ] T043 [US4] Add RED scratch apply test proving apply re-scans immediately before mutation and fails closed if candidate state changed after dry-run.
-- [ ] T044 [US4] Add RED scratch apply test proving configured active writer processes refuse mutable Codex and Factory log actions before mutation.
+- [ ] T044 [US4] Add RED scratch apply test proving configured active writer processes from synthetic process snapshots refuse mutable Codex and Factory log actions before mutation.
 
 ### Implementation for User Story 4
 
-- [ ] T045 [US4] Implement apply behavior over scratch/configured roots with immediate policy revalidation, filesystem re-scan, and active-writer refusal in `scripts/developer_tool_storage_hygiene.py` only if T012 approval permits the command surface.
+- [ ] T045 [US4] Implement apply behavior over scratch/configured roots with immediate policy revalidation, filesystem re-scan, and process-snapshot active-writer refusal in `scripts/developer_tool_storage_hygiene.py` only if T012 approval permits the command surface.
 - [ ] T046 [US4] Update `docs/ops/developer-tool-storage-hygiene.md` with dry-run/apply safety contract and native macOS config guidance.
 - [ ] T047 [US4] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` and record final green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
 

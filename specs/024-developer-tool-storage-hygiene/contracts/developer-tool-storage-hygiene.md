@@ -91,6 +91,14 @@ Dry-run output must include:
 
 Dry-run must not modify files.
 
+## Active Writer Contract
+
+Active-writer detection must:
+- Use exact process names configured in TOML for mutable log surfaces.
+- Consume a process snapshot input rather than parsing shell command strings.
+- Use synthetic process snapshots in tests.
+- Treat host process-table collection for any operator-facing apply command as part of the T012 approval gate.
+
 ## Apply Contract
 
 Apply behavior is allowed only after explicit operator approval for any new operator-facing command surface. If approved, apply must:

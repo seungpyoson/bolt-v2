@@ -68,6 +68,17 @@ Validation:
 - Any true protection flag prevents removal.
 - Candidate status requires stale age, not pinned, not active, not default, and outside retained recent set.
 
+## ProcessSnapshot
+
+Represents process names used for active-writer refusal.
+
+Fields:
+- `process_names`: observed process names supplied by a host collector or synthetic test fixture.
+
+Validation:
+- Matching uses exact configured process names from TOML.
+- Shell command strings and wrapper/parser semantics are not interpreted.
+
 ## CleanupCandidate
 
 Represents one dry-run or apply action.

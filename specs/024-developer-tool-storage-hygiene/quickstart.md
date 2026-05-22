@@ -39,7 +39,7 @@ RED tests should prove:
 - Preflight fails closed when configured thresholds are breached.
 - Apply revalidates policy immediately before mutation and fails closed if the policy changed.
 - Apply re-scans immediately before mutation and fails closed if candidate state changed.
-- Apply refuses mutable log actions when configured active writer processes are detected.
+- Apply refuses mutable log actions when configured active writer processes are detected from synthetic process snapshots.
 
 ## Verification Commands
 

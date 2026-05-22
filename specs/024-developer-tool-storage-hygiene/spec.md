@@ -105,11 +105,13 @@ As a reviewer, I can validate #375 cleanup and preflight behavior against scratc
 - **FR-012**: If satisfying #375 requires a new operator-facing command or changed command semantics, implementation MUST pause until the operator explicitly approves that command surface.
 - **FR-013**: The final PR MUST record targeted tests, relevant Rust verification, source-fence/schema/runtime-literal checks if touched, ai-slop cleanup, no-mistakes exact-head result, GitHub exact-head CI, and external review outcomes.
 - **FR-014**: Apply behavior, if approved, MUST revalidate policy, re-scan the filesystem immediately before mutation, and refuse mutable log actions when configured active writer processes are detected.
+- **FR-015**: Active-writer detection MUST use configured exact process names and process snapshots; it MUST NOT add shell parser cases, wrapper-family semantics, or command prediction.
 
 ### Key Entities
 
 - **StorageSurface**: A measured path family with category, exact path, growth shape, owner, native policy, current size, and cleanup eligibility.
 - **CleanupPolicy**: Configured limits and retention rules for #375-owned surfaces.
+- **ProcessSnapshot**: A read-only list of observed process names used to decide active-writer refusal.
 - **ProtectedItem**: A path or toolchain that cleanup must never remove in the current mode.
 - **CleanupCandidate**: A deterministic dry-run/apply action selected from scratch or real measurements.
 - **ActiveWriterRefusal**: A pre-apply refusal caused by a configured active process match for a mutable log surface.

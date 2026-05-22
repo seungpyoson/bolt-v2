@@ -43,8 +43,10 @@ stale_after_days = 14
 retain_recent = 1
 
 [preflight]
-warning_bytes = 10737418240
-error_bytes = 5368709120
+free_disk_warning_bytes = 10737418240
+free_disk_error_bytes = 5368709120
+owned_storage_warning_bytes = 10737418240
+owned_storage_error_bytes = 21474836480
 ```
 
 Required native-guidance sections are report-only. They document native configuration values to surface in dry-run/preflight output and must never create cleanup candidates:

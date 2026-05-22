@@ -37,13 +37,17 @@ Fields:
 - `native_guidance.codex_history.persistence`
 - `rustup_toolchains.retain_recent`
 - `rustup_toolchains.stale_after_days`
-- `preflight.warning_bytes`
-- `preflight.error_bytes`
+- `preflight.free_disk_warning_bytes`
+- `preflight.free_disk_error_bytes`
+- `preflight.owned_storage_warning_bytes`
+- `preflight.owned_storage_error_bytes`
 - `report_only_surfaces`
 
 Validation:
 - Size and day values must be non-negative integers.
 - `retained_rotations` and `retain_recent` must be bounded integers.
+- Free-disk error threshold must be less than or equal to free-disk warning threshold.
+- Owned-storage error threshold must be greater than or equal to owned-storage warning threshold.
 - Report-only surfaces and native-guidance values cannot have apply actions.
 
 ## ToolchainState

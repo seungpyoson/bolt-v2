@@ -93,7 +93,7 @@
 
 ### Tests for User Story 3
 
-- [ ] T033 [US3] Add RED preflight warning/error threshold test in `scripts/test_developer_tool_storage_hygiene.py`.
+- [ ] T033 [US3] Add RED preflight free-disk and owned-storage warning/error threshold tests in `scripts/test_developer_tool_storage_hygiene.py`.
 - [ ] T034 [US3] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving out-of-repo browser and package-manager caches are reported but not owned.
 
 ### Implementation for User Story 3

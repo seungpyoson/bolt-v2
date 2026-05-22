@@ -28,6 +28,8 @@ SPECKIT_BLOCK_PATTERN = re.compile(
 )
 BACKTICKED_PLAN_PATTERN = re.compile(r"`(?P<path>specs/[^`]+/plan\.md)`")
 RUST_STRUCT_FIELD_PATTERN = re.compile(r"^\s*(?P<field>[a-z][a-z0-9_]*):\s*[^,]+,\s*$")
+SCHEMA_FIELD_LINE_PATTERN = re.compile(r"^\s*-\s*(?P<fields>[^:]+):")
+BACKTICKED_FIELD_PATTERN = re.compile(r"`(?P<field>[a-z][a-z0-9_]*)`")
 
 ENABLED_ORDER_TYPES = (
     "limit",
@@ -173,6 +175,22 @@ def extract_labeled_section(text: str, marker: str) -> str:
     if next_start == -1:
         return text[start:]
     return text[start:next_start]
+
+
+def extract_labeled_schema_fields(text: str, marker: str) -> list[str]:
+    section = extract_labeled_section(text, marker)
+    fields: list[str] = []
+    seen: set[str] = set()
+    for line in section.splitlines():
+        match = SCHEMA_FIELD_LINE_PATTERN.match(line)
+        if match is None:
+            continue
+        for field in BACKTICKED_FIELD_PATTERN.findall(match.group("fields")):
+            if field in seen:
+                continue
+            seen.add(field)
+            fields.append(field)
+    return fields
 
 
 def extract_phase8_financial_envelope_fields(rust_source: str) -> list[str]:
@@ -348,9 +366,17 @@ def validate_docs(
         if not financial_envelope_section:
             findings.append("schema missing `financial_envelope` fields section")
         else:
+            documented_financial_envelope_fields = extract_labeled_schema_fields(
+                schema, "`financial_envelope` fields:"
+            )
+            documented_financial_envelope_field_set = set(documented_financial_envelope_fields)
             for field in financial_envelope_fields:
-                if f"`{field}`" not in financial_envelope_section:
+                if field not in documented_financial_envelope_field_set:
                     findings.append(f"schema financial_envelope section missing `{field}`")
+            financial_envelope_source_fields = set(financial_envelope_fields)
+            for field in documented_financial_envelope_fields:
+                if field not in financial_envelope_source_fields:
+                    findings.append(f"schema financial_envelope section has unknown `{field}`")
 
     for phrase in STALE_STATUS_MAP_PHRASES:
         if phrase in status_map:

@@ -637,6 +637,15 @@
 - [x] T289 [US2] GREEN: Derive required financial-envelope schema fields from the Rust source struct and update docs to match current Phase 8 financial-envelope source
 - [ ] T290 [US2] Verify schema tests/verifier, focused admission tests, schema/runtime verifiers, source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
+## Phase 67: TDD Slice 63 - Exact Financial Envelope Schema Field Set
+
+**Goal**: Resolve exact-head Kimi review evidence that the Phase 66 schema guard was one-directional. The active verifier must reject both missing source fields and stale doc-only financial-envelope fields.
+
+- [x] T291 [P] [US2] Record Kimi exact-head review finding for one-directional `financial_envelope` schema validation in `specs/023-nt-order-intent-layer/research.md`
+- [x] T292 [US2] RED: Add a verifier regression proving stale doc-only `financial_envelope` fields are rejected
+- [x] T293 [US2] GREEN: Parse documented `financial_envelope` field names and compare them against the Rust source-derived field set in both directions
+- [ ] T294 [US2] Verify schema tests/verifier, focused admission tests, schema/runtime verifiers, source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -703,6 +712,7 @@
 - Phase 64 blocks final Phase 8 approval-envelope completion until focused tests, verifiers, source fences, exact-head PR checks, external reviewer state, and no-mistakes state are refreshed for the order-enum canonicalization head.
 - Phase 65 blocks final branch completion because no-mistakes produced activation-price admission evidence on top of the Phase 64 head.
 - Phase 66 blocks final branch completion because no-mistakes produced financial-envelope schema-field drift evidence on top of the Phase 65 head.
+- Phase 67 blocks final branch completion because exact-head Kimi review found the Phase 66 financial-envelope schema guard still allowed stale doc-only fields.
 
 ## Parallel Opportunities
 

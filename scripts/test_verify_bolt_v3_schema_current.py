@@ -678,6 +678,50 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         raise AssertionError(f"expected missing source-derived field finding, got {missing_findings!r}")
 
 
+def test_validate_docs_rejects_financial_envelope_schema_extra_doc_field() -> None:
+    rust_source = """
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct Phase8FinancialEnvelopeEvidenceFile {
+    max_live_order_count: u32,
+    entry_side: String,
+}
+
+impl Phase8FinancialEnvelopeEvidenceFile {
+"""
+    complete_schema = (
+        CURRENT_SCHEMA
+        + """
+`financial_envelope` fields:
+
+- `max_live_order_count`: integer
+- `entry_side`: string
+
+`pre_run_state` fields:
+"""
+    )
+    extra_schema = complete_schema.replace(
+        "- `entry_side`: string\n",
+        "- `entry_side`: string\n- `stale_doc_field`: string\n",
+    )
+
+    complete_findings = VERIFIER.validate_docs(
+        complete_schema,
+        CURRENT_STATUS_MAP,
+        financial_envelope_source=rust_source,
+    )
+    if complete_findings:
+        raise AssertionError(f"expected complete synthetic schema to pass, got {complete_findings!r}")
+
+    extra_findings = VERIFIER.validate_docs(
+        extra_schema,
+        CURRENT_STATUS_MAP,
+        financial_envelope_source=rust_source,
+    )
+    if not any("financial_envelope" in finding and "`stale_doc_field`" in finding for finding in extra_findings):
+        raise AssertionError(f"expected extra doc field finding, got {extra_findings!r}")
+
+
 def main() -> int:
     tests = [
         test_extract_section_stops_at_next_matching_heading,
@@ -710,6 +754,7 @@ def main() -> int:
         test_validate_docs_requires_all_enabled_and_factory_gap_order_types,
         test_extracts_phase8_financial_envelope_fields_from_source_struct,
         test_validate_docs_rejects_financial_envelope_schema_missing_source_field,
+        test_validate_docs_rejects_financial_envelope_schema_extra_doc_field,
     ]
     for test in tests:
         test()

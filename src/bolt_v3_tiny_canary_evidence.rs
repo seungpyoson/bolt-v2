@@ -2,6 +2,7 @@ use std::{
     env, fs,
     io::{BufReader, Read, Write},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{Result, anyhow};
@@ -13,6 +14,9 @@ use crate::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_canary_gate::{
         BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_pre_consumption_gate,
+    },
+    bolt_v3_market_families::{
+        MarketSelectionCandidateWindow, MarketSelectionOutcome, SelectedBinaryOptionMarket,
     },
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
@@ -27,10 +31,10 @@ const BLOCKED_BEFORE_LIVE_ORDER_REASON: &str = "blocked_before_live_order";
 const BLOCKED_BEFORE_SUBMIT_REASON: &str = "blocked_before_submit";
 const PHASE8_REQUIRED_LIVE_ORDER_CAP: u32 = 1;
 const PHASE8_SHA256_BUFFER_BYTES: usize = 8 * 1024;
-const PHASE8_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
-const PHASE8_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
-const PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND: &str = "market_selection_result";
-const PHASE8_MARKET_SELECTION_SOURCE: &str = "nt_runtime_selection_snapshot";
+pub const PHASE8_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
+pub const PHASE8_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
+pub const PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND: &str = "market_selection_result";
+pub const PHASE8_MARKET_SELECTION_SOURCE: &str = "nt_runtime_selection_snapshot";
 pub const PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID: &str = "phase8-blocked-before-live-runner";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -445,9 +449,9 @@ struct Phase8StrategyInputEvidenceFile {
     polymarket_market_end_timestamp_ms: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Phase8MarketSelectionSourceEvidenceFile {
+pub struct Phase8MarketSelectionSourceEvidenceFile {
     record_kind: String,
     source: String,
     market_selection_timestamp_ms: u64,
@@ -461,6 +465,59 @@ struct Phase8MarketSelectionSourceEvidenceFile {
     selected_market_observed_timestamp_ms: u64,
     polymarket_market_start_timestamp_ms: u64,
     polymarket_market_end_timestamp_ms: u64,
+}
+
+impl Phase8MarketSelectionSourceEvidenceFile {
+    pub fn from_market_family_selection(
+        market_selection_timestamp_ms: u64,
+        candidate_windows: &[MarketSelectionCandidateWindow],
+        selected: &SelectedBinaryOptionMarket,
+    ) -> Result<Self> {
+        let selected_window = candidate_windows
+            .iter()
+            .find(|window| {
+                window.start_timestamp_milliseconds == selected.start_timestamp_milliseconds
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "selected market start timestamp does not match configured candidate window"
+                )
+            })?;
+        if selected.source_identity.market_slug != selected_window.market_slug {
+            return Err(anyhow!(
+                "selected market identity does not match configured candidate window"
+            ));
+        }
+        let market_selection_outcome = match selected_window.outcome {
+            MarketSelectionOutcome::Current => PHASE8_MARKET_SELECTION_OUTCOME_CURRENT,
+            MarketSelectionOutcome::Next => PHASE8_MARKET_SELECTION_OUTCOME_NEXT,
+        };
+        let remaining_milliseconds =
+            u64::try_from(Duration::from_secs(selected.seconds_to_end).as_millis())
+                .map_err(|_| anyhow!("selected market end timestamp overflows u64 milliseconds"))?;
+        let market_end_ms = market_selection_timestamp_ms
+            .checked_add(remaining_milliseconds)
+            .ok_or_else(|| anyhow!("selected market end timestamp overflows u64 milliseconds"))?;
+
+        Ok(Self {
+            record_kind: PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND.to_string(),
+            source: PHASE8_MARKET_SELECTION_SOURCE.to_string(),
+            market_selection_timestamp_ms,
+            candidate_market_start_timestamps_ms: candidate_windows
+                .iter()
+                .map(|window| window.start_timestamp_milliseconds)
+                .collect(),
+            market_selection_outcome: market_selection_outcome.to_string(),
+            polymarket_condition_id: selected.source_identity.condition_id.clone(),
+            polymarket_market_slug: selected.source_identity.market_slug.clone(),
+            polymarket_question_id: selected.source_identity.question_id.clone(),
+            up_instrument_id: selected.up_instrument_id.to_string(),
+            down_instrument_id: selected.down_instrument_id.to_string(),
+            selected_market_observed_timestamp_ms: market_selection_timestamp_ms,
+            polymarket_market_start_timestamp_ms: selected.start_timestamp_milliseconds,
+            polymarket_market_end_timestamp_ms: market_end_ms,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

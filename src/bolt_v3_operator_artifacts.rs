@@ -5,14 +5,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::anyhow;
+use nautilus_model::instruments::InstrumentAny;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_market_families::{self, MarketSelectionTarget},
     bolt_v3_providers::{ProviderSecretResolveContext, binding_for_provider_key},
     bolt_v3_secrets::BoltV3SecretError,
-    bolt_v3_tiny_canary_evidence::Phase8FinancialEnvelopeEvidenceFile,
+    bolt_v3_tiny_canary_evidence::{
+        Phase8FinancialEnvelopeEvidenceFile, Phase8MarketSelectionSourceEvidenceFile,
+    },
 };
 
 const REDACTED_SSM_MANIFEST_SCHEMA_VERSION: u32 = 1;
@@ -35,6 +40,7 @@ const PRE_RUN_STATE_FILE_NAME: &str = "pre-run-state.json";
 const ABORT_PLAN_FILE_NAME: &str = "abort-plan.json";
 const APPROVAL_NONCE_FILE_NAME: &str = "approval-nonce.json";
 const STATIC_ARTIFACTS_MANIFEST_FILE_NAME: &str = "static-artifacts-manifest.json";
+const MARKET_SELECTION_SOURCE_BLOCKER: &str = "market-selection remains blocked: T046 missing source-bound price-to-beat strategy decision input";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3RedactedSsmManifest {
@@ -108,6 +114,10 @@ pub enum BoltV3OperatorArtifactError {
     },
     SecretInventory(BoltV3SecretError),
     FinancialEnvelope(anyhow::Error),
+    MarketSelection(anyhow::Error),
+    MarketSelectionPrerequisiteUnproven {
+        prerequisite: &'static str,
+    },
     StrategyInputPrerequisiteUnproven {
         prerequisite: &'static str,
     },
@@ -137,6 +147,16 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             ),
             Self::SecretInventory(error) => write!(f, "{error}"),
             Self::FinancialEnvelope(error) => write!(f, "{error}"),
+            Self::MarketSelection(error) => {
+                write!(
+                    f,
+                    "failed to build market selection source evidence: {error}"
+                )
+            }
+            Self::MarketSelectionPrerequisiteUnproven { prerequisite } => write!(
+                f,
+                "refusing to write market selection source evidence because {prerequisite}"
+            ),
             Self::StrategyInputPrerequisiteUnproven { prerequisite } => write!(
                 f,
                 "refusing to write successful strategy-input evidence because {prerequisite}"
@@ -175,6 +195,7 @@ impl Error for BoltV3OperatorArtifactError {
         match self {
             Self::SecretInventory(error) => Some(error),
             Self::FinancialEnvelope(error) => Some(error.as_ref()),
+            Self::MarketSelection(error) => Some(error.as_ref()),
             Self::Random(error) => Some(error),
             Self::Serialize(error) => Some(error),
             Self::Write { source, .. } => Some(source),
@@ -254,6 +275,69 @@ pub fn write_approval_nonce_artifact(
     write_json_artifact_create_new(path, &artifact)
 }
 
+pub fn build_market_selection_source_artifact(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    instruments: &[InstrumentAny],
+    now_milliseconds: u64,
+) -> Result<Phase8MarketSelectionSourceEvidenceFile, BoltV3OperatorArtifactError> {
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .ok_or_else(|| {
+            BoltV3OperatorArtifactError::MarketSelection(anyhow!(
+                "strategy instance `{strategy_instance_id}` is not loaded"
+            ))
+        })?;
+    let target =
+        bolt_v3_market_families::target_runtime_fields_from_target(&strategy.config.target)
+            .map_err(|error| BoltV3OperatorArtifactError::MarketSelection(anyhow!(error)))?;
+    let selection_target = MarketSelectionTarget {
+        family_key: &target.rotating_market_family,
+        underlying_asset: &target.underlying_asset,
+        cadence_seconds: target.cadence_seconds,
+        cadence_slug_token: &target.cadence_slug_token,
+    };
+    let candidate_windows =
+        bolt_v3_market_families::market_selection_candidate_windows_from_target(
+            selection_target,
+            now_milliseconds,
+        )
+        .map_err(|error| BoltV3OperatorArtifactError::MarketSelection(anyhow!(error)))?;
+    let selected = bolt_v3_market_families::select_binary_option_market_from_target(
+        selection_target,
+        instruments,
+        now_milliseconds,
+    )
+    .ok_or(
+        BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
+            prerequisite: "missing source-bound market selection from NT instrument facts",
+        },
+    )?;
+
+    Phase8MarketSelectionSourceEvidenceFile::from_market_family_selection(
+        now_milliseconds,
+        &candidate_windows,
+        &selected,
+    )
+    .map_err(BoltV3OperatorArtifactError::MarketSelection)
+}
+
+pub fn write_market_selection_source_artifact(
+    _loaded: &LoadedBoltV3Config,
+    _strategy_instance_id: &str,
+    _instruments: &[InstrumentAny],
+    _now_milliseconds: u64,
+    _path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    Err(
+        BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
+            prerequisite: MARKET_SELECTION_SOURCE_BLOCKER,
+        },
+    )
+}
+
 pub fn write_abort_plan_artifact(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
@@ -330,6 +414,8 @@ pub fn write_static_operator_artifacts(
         APPROVAL_NONCE_ARTIFACT_NAME,
         approval_nonce_written,
     ));
+
+    blockers.push(MARKET_SELECTION_SOURCE_BLOCKER);
 
     match write_strategy_input_evidence_artifact(
         loaded,

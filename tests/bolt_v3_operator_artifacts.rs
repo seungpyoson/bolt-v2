@@ -2,12 +2,38 @@ use sha2::{Digest, Sha256};
 
 use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, load_bolt_v3_config},
+    bolt_v3_market_families::updown::updown_market_slug,
     bolt_v3_operator_artifacts::build_redacted_ssm_manifest,
     bolt_v3_tiny_canary_evidence::Phase8OperatorApprovalEnvelope,
+};
+use nautilus_core::Params;
+use nautilus_model::{
+    enums::AssetClass,
+    identifiers::{InstrumentId, Symbol},
+    instruments::{BinaryOption, InstrumentAny},
+    types::{Currency, Price, Quantity},
 };
 
 mod support;
 use support::repo_path;
+
+// Test-only updown fixture values mirror tests/fixtures/bolt_v3/strategies/binary_oracle.toml.
+const TEST_MARKET_SELECTION_UNDERLYING_ASSET: &str = "BTC";
+const TEST_MARKET_SELECTION_CADENCE_SLUG: &str = "5m";
+const TEST_MARKET_SELECTION_CURRENT_START_SECONDS: i64 = 600;
+const TEST_MARKET_SELECTION_NOW_MS: u64 = 600_000;
+const TEST_MARKET_SELECTION_START_MS: u64 = 600_000;
+const TEST_MARKET_SELECTION_END_MS: u64 = 900_000;
+const TEST_MARKET_SELECTION_SOURCE_FILE: &str = "market-selection-source.json";
+const TEST_UP_INSTRUMENT_ID: &str = "condition-current-up.POLYMARKET";
+const TEST_DOWN_INSTRUMENT_ID: &str = "condition-current-down.POLYMARKET";
+const TEST_MARKET_ID: &str = "market-current";
+const TEST_CONDITION_ID: &str = "condition-current";
+const TEST_QUESTION_ID: &str = "question-current";
+const TEST_UP_OUTCOME: &str = "Up";
+const TEST_DOWN_OUTCOME: &str = "Down";
+const TEST_BINARY_OPTION_PRICE_INCREMENT: &str = "0.001";
+const TEST_BINARY_OPTION_SIZE_INCREMENT: &str = "0.01";
 
 #[test]
 fn redacted_ssm_manifest_hashes_configured_ssm_paths_without_values() {
@@ -255,6 +281,153 @@ fn pre_run_state_writer_fails_closed_when_source_evidence_is_unproven() {
     );
 }
 
+#[test]
+fn static_operator_artifacts_report_market_selection_blocker_until_runtime_proof_exists() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+
+    let outcome = bolt_v2::bolt_v3_operator_artifacts::write_static_operator_artifacts(
+        &loaded,
+        strategy_instance_id,
+        temp.path(),
+    )
+    .expect("static artifacts should write redacted partial packet");
+
+    assert!(
+        outcome
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("market-selection")),
+        "static packet should report market-selection blocker: {:?}",
+        outcome.blockers
+    );
+    assert!(
+        !temp.path().join(TEST_MARKET_SELECTION_SOURCE_FILE).exists(),
+        "static packet must not write market-selection source without runtime proof"
+    );
+}
+
+#[test]
+fn market_selection_source_builder_binds_configured_target_to_nt_instruments() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let now_ms = TEST_MARKET_SELECTION_NOW_MS;
+    let market_start_ms = TEST_MARKET_SELECTION_START_MS;
+    let market_end_ms = TEST_MARKET_SELECTION_END_MS;
+    let market_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let up_instrument_id = TEST_UP_INSTRUMENT_ID;
+    let down_instrument_id = TEST_DOWN_INSTRUMENT_ID;
+    let instruments = vec![
+        updown_binary_option(
+            up_instrument_id,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            market_start_ms,
+            market_end_ms,
+        ),
+        updown_binary_option(
+            down_instrument_id,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            market_start_ms,
+            market_end_ms,
+        ),
+    ];
+    let artifact = bolt_v2::bolt_v3_operator_artifacts::build_market_selection_source_artifact(
+        &loaded,
+        strategy_instance_id,
+        &instruments,
+        now_ms,
+    )
+    .expect("market selection source should build from config and NT instruments");
+    let json = serde_json::to_value(&artifact).expect("market selection source should serialize");
+    assert_eq!(json["record_kind"], "market_selection_result");
+    assert_eq!(json["source"], "nt_runtime_selection_snapshot");
+    assert_eq!(json["market_selection_timestamp_ms"], now_ms);
+    assert_eq!(json["market_selection_outcome"], "current");
+    assert_eq!(json["polymarket_condition_id"], TEST_CONDITION_ID);
+    assert_eq!(json["polymarket_market_slug"], market_slug);
+    assert_eq!(json["polymarket_question_id"], TEST_QUESTION_ID);
+    assert_eq!(json["up_instrument_id"], up_instrument_id);
+    assert_eq!(json["down_instrument_id"], down_instrument_id);
+    assert_eq!(json["selected_market_observed_timestamp_ms"], now_ms);
+    assert_eq!(
+        json["polymarket_market_start_timestamp_ms"],
+        market_start_ms
+    );
+    assert_eq!(json["polymarket_market_end_timestamp_ms"], market_end_ms);
+}
+
+#[test]
+fn market_selection_source_writer_fails_closed_until_strategy_decision_inputs_exist() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let source_path = temp.path().join(TEST_MARKET_SELECTION_SOURCE_FILE);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_market_selection_source_artifact(
+        &loaded,
+        strategy_instance_id,
+        &[],
+        TEST_MARKET_SELECTION_NOW_MS,
+        &source_path,
+    )
+    .expect_err("market selection source writer should fail closed until decision inputs exist");
+
+    assert!(
+        error.to_string().contains("price-to-beat"),
+        "market selection blocker should cite price-to-beat gap: {error}"
+    );
+    assert!(
+        error.to_string().contains("strategy decision input"),
+        "market selection blocker should cite strategy decision gap: {error}"
+    );
+    assert!(
+        !source_path.exists(),
+        "failed market selection generation must not leave a success artifact"
+    );
+}
+
+#[test]
+fn market_selection_source_writer_uses_family_dispatch_not_updown_directly() {
+    let source = std::fs::read_to_string(repo_path("src/bolt_v3_operator_artifacts.rs"))
+        .expect("operator artifacts source should read");
+
+    assert!(
+        !source.contains("updown::"),
+        "operator artifacts must use market-family dispatch instead of direct updown calls"
+    );
+}
+
 fn load_fixture_with_live_canary() -> bolt_v2::bolt_v3_config::LoadedBoltV3Config {
     let mut loaded = load_bolt_v3_config(&repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture config should load");
@@ -273,6 +446,62 @@ fn load_fixture_with_live_canary() -> bolt_v2::bolt_v3_config::LoadedBoltV3Confi
         operator_evidence: None,
     });
     loaded
+}
+
+fn updown_binary_option(
+    instrument_id: &str,
+    market_slug: &str,
+    market_id: &str,
+    condition_id: &str,
+    question_id: &str,
+    outcome: &str,
+    activation_ms: u64,
+    expiration_ms: u64,
+) -> InstrumentAny {
+    let mut info = Params::new();
+    info.insert(
+        "market_slug".to_string(),
+        serde_json::Value::String(market_slug.to_string()),
+    );
+    info.insert(
+        "market_id".to_string(),
+        serde_json::Value::String(market_id.to_string()),
+    );
+    info.insert(
+        "condition_id".to_string(),
+        serde_json::Value::String(condition_id.to_string()),
+    );
+    info.insert(
+        "question_id".to_string(),
+        serde_json::Value::String(question_id.to_string()),
+    );
+    InstrumentAny::BinaryOption(BinaryOption::new(
+        InstrumentId::from(instrument_id),
+        Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),
+        AssetClass::Alternative,
+        Currency::USDC(),
+        (activation_ms.saturating_mul(1_000_000)).into(),
+        (expiration_ms.saturating_mul(1_000_000)).into(),
+        3,
+        2,
+        Price::from(TEST_BINARY_OPTION_PRICE_INCREMENT),
+        Quantity::from(TEST_BINARY_OPTION_SIZE_INCREMENT),
+        Some(ustr::Ustr::from(outcome)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(info),
+        1.into(),
+        1.into(),
+    ))
 }
 
 fn assert_manifest_entry(

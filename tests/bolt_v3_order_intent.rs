@@ -610,9 +610,41 @@ fn shared_nt_order_template_rejects_unsupported_factory_gap_variants() {
             &mut factory,
             &base_template(order_type),
             OrderSide::Buy,
-            "supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, `limit_if_touched`, or `trailing_stop_market`",
+            "is not exposed by the pinned NT single-order OrderFactory",
         );
     }
+}
+
+#[test]
+fn direct_nt_order_template_validation_rejects_unsupported_factory_gap_variants() {
+    for order_type in [OrderType::MarketToLimit, OrderType::TrailingStopLimit] {
+        assert_validate_error_contains(
+            &base_template(order_type),
+            OrderSide::Buy,
+            "is not exposed by the pinned NT single-order OrderFactory",
+        );
+    }
+}
+
+#[test]
+fn shared_nt_order_template_directly_rejects_trailing_stop_market_post_only_once() {
+    let mut template = valid_template_for_direct_validation(OrderType::TrailingStopMarket);
+    template.is_post_only = true;
+    assert_validate_error_contains(
+        &template,
+        OrderSide::Buy,
+        "is_post_only must be false for TrailingStopMarket orders",
+    );
+
+    let source = std::fs::read_to_string("src/bolt_v3_order_intent.rs")
+        .expect("shared order-intent module should exist");
+    assert_eq!(
+        source
+            .matches("is_post_only must be false for TrailingStopMarket orders")
+            .count(),
+        1,
+        "TrailingStopMarket post-only rejection should live in direct validation only"
+    );
 }
 
 fn source_contains_forbidden_pattern(source: &str, forbidden: &str) -> bool {

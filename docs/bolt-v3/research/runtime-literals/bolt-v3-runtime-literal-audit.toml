@@ -3102,14 +3102,6 @@ classification = "strategy_config_field_name"
 reason = "This labels the NT trailing-stop activation-price field in shared price validation; the price value is TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_order_intent.rs"
-kind = "string"
-literal = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, `limit_if_touched`, or `trailing_stop_market`, got `{:?}`"'''
-context = '''"{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, `limit_if_touched`, or `trailing_stop_market`, got `{:?}`",'''
-classification = "nt_order_model_invariant"
-reason = "This is a stable validation diagnostic naming the pinned NT single-order factory variants enabled by this slice, not an operator runtime value."
-
-[[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"open_position_missing"'''

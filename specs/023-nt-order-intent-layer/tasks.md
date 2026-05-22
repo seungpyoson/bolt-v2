@@ -571,6 +571,16 @@
 - [x] T258 [US2] GREEN: Let archetype callers pass the full config field path into the shared validator and add direct unsupported-variant coverage for the shared builder
 - [x] T259 [US2] Verify focused shared-builder tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
+## Phase 60: TDD Slice 56 - Direct Validator Factory-Gap Closure
+
+**Goal**: Resolve exact-head Claude/Kimi review evidence that unsupported NT factory-gap variants still validate successfully through the direct shared validator, and remove duplicate/shared-maintenance builder diagnostics without adding venue, market, strategy, maker-only, or taker-only policy.
+
+- [x] T260 [P] [US2] Record exact-head Gemini/Claude/Kimi/no-mistakes review state and the direct-validator factory-gap finding in `specs/023-nt-order-intent-layer/research.md`
+- [x] T261 [US2] RED: Add direct `validate_nt_order_template(...)` regression coverage for unsupported pinned NT single-order factory-gap variants
+- [x] T262 [US2] RED: Add source/error coverage proving TrailingStopMarket post-only rejection is not duplicated outside direct validation and unsupported builder diagnostics do not hardcode a supported-type list
+- [x] T263 [US2] GREEN: Move unsupported factory-gap rejection into `validate_nt_order_template(...)`, make the builder catch-all use the same pinned-NT boundary message, and remove the duplicate TrailingStopMarket post-only builder guard
+- [ ] T264 [US2] Verify focused shared-builder tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -630,6 +640,7 @@
 - Phase 58 is closed by T253 verification at 2026-05-22 15:37:40 KST: focused OMS regressions, full config parsing, schema-current verifier, `cargo fmt -- --check`, `git diff --check`, `just source-fence` after cache-lock escalation, and `cargo test --locked --quiet` passed locally. Exact-head PR/reviewer/no-mistakes state must be refreshed after committing and pushing this docs-only disposition head.
 - Phase 59 blocked completion because exact-head GLM custom review found a direct-validator completeness gap for market-like post-only rejection after Phase 58.
 - Phase 59 is closed by T259 verification at 2026-05-22 16:10:00 KST: direct-validator RED/GREEN, shared-module source-fence RED/GREEN, direct trigger/trailing and factory-gap coverage, focused config tests, schema/runtime verifiers, `just source-fence`, `just clippy`, and `cargo test --locked --quiet` passed locally. Exact-head PR checks, reviewer state, and no-mistakes state must be refreshed after committing and pushing this follow-up head.
+- Phase 60 blocks completion because exact-head Claude/Kimi review found the direct shared validator still accepts unsupported pinned NT single-order factory-gap variants and the builder retained a hardcoded supported-type diagnostic list plus a duplicate TrailingStopMarket post-only guard.
 
 ## Parallel Opportunities
 

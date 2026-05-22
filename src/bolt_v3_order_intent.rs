@@ -279,6 +279,13 @@ pub fn validate_nt_order_template(
     template: &NtOrderTemplate,
     inputs: &NtOrderBuildInputs,
 ) -> Result<()> {
+    if matches!(
+        template.order_type,
+        OrderType::MarketToLimit | OrderType::TrailingStopLimit
+    ) {
+        return Err(unsupported_nt_order_type_error(prefix, template.order_type));
+    }
+
     match (
         template.order_type,
         template.time_in_force,
@@ -435,6 +442,13 @@ pub fn validate_nt_order_template(
     Ok(())
 }
 
+fn unsupported_nt_order_type_error(prefix: &str, order_type: OrderType) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{prefix}_order_type `{}` is not exposed by the pinned NT single-order OrderFactory",
+        order_type
+    )
+}
+
 fn required_limit_price(
     prefix: &str,
     order_type: OrderType,
@@ -565,40 +579,29 @@ pub fn build_nt_order(
             None,
             Some(inputs.client_order_id),
         )),
-        OrderType::TrailingStopMarket => {
-            anyhow::ensure!(
-                !template.is_post_only,
-                "{prefix}_is_post_only must be false for TrailingStopMarket orders"
-            );
-            Ok(order_factory.trailing_stop_market(
-                inputs.instrument_id,
-                inputs.order_side,
-                inputs.quantity,
-                template
-                    .trailing_offset
-                    .expect("validated TrailingStopMarket trailing offset"),
-                template.trailing_offset_type,
-                template.activation_price,
-                template.trigger_price,
-                template.trigger_type,
-                Some(template.time_in_force),
-                template.expire_time,
-                Some(template.is_reduce_only),
-                Some(template.is_quote_quantity),
-                None,
-                None,
-                template.trigger_instrument_id,
-                None,
-                None,
-                None,
-                Some(inputs.client_order_id),
-            ))
-        }
-        _ => {
-            anyhow::bail!(
-                "{prefix}_order_type supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, `limit_if_touched`, or `trailing_stop_market`, got `{:?}`",
-                template.order_type
-            )
-        }
+        OrderType::TrailingStopMarket => Ok(order_factory.trailing_stop_market(
+            inputs.instrument_id,
+            inputs.order_side,
+            inputs.quantity,
+            template
+                .trailing_offset
+                .expect("validated TrailingStopMarket trailing offset"),
+            template.trailing_offset_type,
+            template.activation_price,
+            template.trigger_price,
+            template.trigger_type,
+            Some(template.time_in_force),
+            template.expire_time,
+            Some(template.is_reduce_only),
+            Some(template.is_quote_quantity),
+            None,
+            None,
+            template.trigger_instrument_id,
+            None,
+            None,
+            None,
+            Some(inputs.client_order_id),
+        )),
+        _ => Err(unsupported_nt_order_type_error(prefix, template.order_type)),
     }
 }

@@ -73,7 +73,7 @@ As a reviewer, I can validate #375 cleanup and preflight behavior against scratc
 3. **Given** a policy file is malformed or incomplete, **When** tests run, **Then** behavior fails closed with a specific validation error.
 4. **Given** a policy validates during dry-run but becomes malformed or incomplete before apply, **When** apply begins, **Then** apply revalidates policy, aborts before mutation, and reports the validation error.
 5. **Given** a cleanup candidate changes or disappears after dry-run, **When** apply begins, **Then** apply re-scans immediately before mutation and aborts rather than applying stale candidate data.
-6. **Given** a configured active writer process is detected for a mutable Codex or Factory log surface, **When** apply begins, **Then** apply refuses before mutation and reports the active-writer reason.
+6. **Given** a configured active writer process is detected for a mutable Codex or Factory surface, **When** apply begins, **Then** apply refuses before mutation and reports the active-writer reason.
 
 ## Edge Cases
 
@@ -82,7 +82,7 @@ As a reviewer, I can validate #375 cleanup and preflight behavior against scratc
 - Codex archived sessions are present: measure and report them, but do not delete archived transcripts without a separate proven session-archive contract.
 - Factory executable is absent but the log path exists: keep the path in the inventory and apply file-policy only if configured explicitly.
 - Codex sessions newer than TTL, missing mtimes, unreadable files, or symlinks appear: preserve them unless deterministic policy proves they are safe candidates.
-- A mutable log surface has a configured active writer process: refuse apply rather than rotating a live writer.
+- A mutable Codex or Factory surface has a configured active writer process: refuse apply rather than mutating a live writer.
 - A rustup toolchain is both stale and active/default/pinned: protected status wins.
 - General machine caches such as npm, Homebrew, Xcode, browser profiles, and IDE caches are large: report adjacency without deleting them under #375.
 - Any new operator-facing cleanup command or command semantics are needed: stop and obtain explicit operator approval before implementation.
@@ -104,7 +104,7 @@ As a reviewer, I can validate #375 cleanup and preflight behavior against scratc
 - **FR-011**: The PR MUST NOT add new shell parser cases, wrapper families, command prediction, or raw Cargo command semantics.
 - **FR-012**: If satisfying #375 requires a new operator-facing command or changed command semantics, implementation MUST pause until the operator explicitly approves that command surface.
 - **FR-013**: The final PR MUST record targeted tests, relevant Rust verification, source-fence/schema/runtime-literal checks if touched, ai-slop cleanup, no-mistakes exact-head result, GitHub exact-head CI, and external review outcomes.
-- **FR-014**: Apply behavior, if approved, MUST revalidate policy, re-scan the filesystem immediately before mutation, and refuse mutable log actions when configured active writer processes are detected.
+- **FR-014**: Apply behavior, if approved, MUST revalidate policy, re-scan the filesystem immediately before mutation, and refuse mutable Codex and Factory actions when configured active writer processes are detected.
 - **FR-015**: Active-writer detection MUST use configured exact process names and process snapshots; it MUST NOT add shell parser cases, wrapper-family semantics, or command prediction.
 
 ### Key Entities
@@ -114,7 +114,7 @@ As a reviewer, I can validate #375 cleanup and preflight behavior against scratc
 - **ProcessSnapshot**: A read-only list of observed process names used to decide active-writer refusal.
 - **ProtectedItem**: A path or toolchain that cleanup must never remove in the current mode.
 - **CleanupCandidate**: A deterministic dry-run/apply action selected from scratch or real measurements.
-- **ActiveWriterRefusal**: A pre-apply refusal caused by a configured active process match for a mutable log surface.
+- **ActiveWriterRefusal**: A pre-apply refusal caused by a configured active process match for a mutable Codex or Factory surface.
 - **PreflightReport**: A read-only status payload that summarizes disk pressure and recommended next action.
 
 ## Success Criteria

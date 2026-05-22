@@ -14,7 +14,7 @@ Fields:
 - `native_guidance`: optional native configuration key family for report-only surfaces such as Codex history.
 - `cleanup_mode`: `rotate`, `ttl_prune`, `toolchain_retention`, `preflight_only`, or `none`.
 - `protected`: boolean derived from policy and current state.
-- `active_writer_processes`: explicit configured process names that block apply for mutable log surfaces.
+- `active_writer_processes`: explicit configured process names that block apply for mutable Codex and Factory surfaces.
 
 Validation:
 - `owner=this_issue` requires `cleanup_mode` other than `none`.
@@ -95,7 +95,7 @@ Fields:
 Validation:
 - `apply` requires immediate policy validation and filesystem re-scan before mutation and must not target report-only or protected items.
 - Candidate path must resolve under its configured path family.
-- Mutable log candidates must be refused when configured active writer processes are detected.
+- Mutable Codex and Factory candidates must be refused when configured active writer processes are detected.
 
 ## PreflightReport
 

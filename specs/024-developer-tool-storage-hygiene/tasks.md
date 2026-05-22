@@ -45,7 +45,7 @@
 
 ### Implementation for User Story 1
 
-- [ ] T014 [US1] Add `ci/developer-tool-storage-hygiene.toml` with explicit surface IDs for Codex logs, Codex sessions, Codex history native guidance, Codex sqlite and archived-session report-only files, Factory log, rustup toolchains, adjacent report-only classes, and active-writer process lists for mutable log surfaces.
+- [ ] T014 [US1] Add `ci/developer-tool-storage-hygiene.toml` with explicit surface IDs for Codex logs, Codex sessions, Codex history native guidance, Codex sqlite and archived-session report-only files, Factory log, rustup toolchains, adjacent report-only classes, and active-writer process lists for mutable Codex and Factory surfaces.
 - [ ] T015 [US1] Add the minimal policy loader and surface model in `scripts/developer_tool_storage_hygiene.py` to satisfy T013.
 - [ ] T016 [US1] Update `docs/ops/developer-tool-storage-hygiene.md` with the #375 ownership map and native Codex/rustup capability evidence.
 - [ ] T017 [US1] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` and record the green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
@@ -120,7 +120,7 @@
 - [ ] T041 [US4] Add RED scratch apply test proving report-only Codex sqlite, Codex history, and Codex archived-session files remain untouched in `scripts/test_developer_tool_storage_hygiene.py`.
 - [ ] T042 [US4] Add RED scratch apply test proving apply revalidates policy immediately before mutation and fails closed if policy becomes malformed or incomplete.
 - [ ] T043 [US4] Add RED scratch apply test proving apply re-scans immediately before mutation and fails closed if candidate state changed after dry-run.
-- [ ] T044 [US4] Add RED scratch apply test proving configured active writer processes from synthetic process snapshots refuse mutable Codex and Factory log actions before mutation.
+- [ ] T044 [US4] Add RED scratch apply test proving configured active writer processes from synthetic process snapshots refuse mutable Codex and Factory actions before mutation.
 
 ### Implementation for User Story 4
 

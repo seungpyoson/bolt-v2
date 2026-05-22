@@ -34,6 +34,7 @@ active_writer_processes = ["codex", "codex-tui"]
 [codex.sessions]
 path_family = "~/.codex/sessions/**/*.jsonl"
 ttl_days = 14
+active_writer_processes = ["codex", "codex-tui"]
 
 [factory.log]
 path_family = "~/.factory/logs/droid-log-single.log"
@@ -94,7 +95,7 @@ Dry-run must not modify files.
 ## Active Writer Contract
 
 Active-writer detection must:
-- Use exact process names configured in TOML for mutable log surfaces.
+- Use exact process names configured in TOML for mutable Codex and Factory surfaces.
 - Consume a process snapshot input rather than parsing shell command strings.
 - Use synthetic process snapshots in tests.
 - Treat host process-table collection for any operator-facing apply command as part of the T012 approval gate.
@@ -105,7 +106,7 @@ Apply behavior is allowed only after explicit operator approval for any new oper
 - Re-validate policy immediately before mutation.
 - Re-scan immediately before mutation.
 - Abort if the immediate re-scan no longer matches the candidate state being applied.
-- Refuse mutable log actions when configured active writer processes are detected.
+- Refuse mutable Codex and Factory actions when configured active writer processes are detected.
 - Refuse protected and report-only targets.
 - Always refuse report-only Codex SQLite db/WAL, Codex history, and Codex archived-session targets.
 - Preserve active, default, and project-pinned rustup toolchains.

@@ -1,6 +1,8 @@
 use std::{cell::RefCell, rc::Rc};
 
-use bolt_v2::bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order};
+use bolt_v2::bolt_v3_order_intent::{
+    NtOrderBuildInputs, NtOrderTemplate, build_nt_order, validate_nt_order_template,
+};
 use nautilus_common::{
     clock::{Clock, TestClock},
     factories::OrderFactory,
@@ -128,6 +130,16 @@ fn assert_build_error_contains(
 ) {
     let error = build_nt_order(factory, "generic_order", template, base_inputs(order_side))
         .expect_err("invalid generic template should fail before NT factory construction");
+    assert!(error.to_string().contains(expected), "{error}");
+}
+
+fn assert_validate_error_contains(
+    template: &NtOrderTemplate,
+    order_side: OrderSide,
+    expected: &str,
+) {
+    let error = validate_nt_order_template("generic_order", template, &base_inputs(order_side))
+        .expect_err("invalid generic template should fail direct validation");
     assert!(error.to_string().contains(expected), "{error}");
 }
 
@@ -529,6 +541,80 @@ fn shared_nt_order_template_rejects_order_arm_post_only_invariants_before_nt_fac
     }
 }
 
+#[test]
+fn shared_nt_order_template_preserves_configured_trigger_and_trailing_types() {
+    let mut factory = generic_order_factory();
+
+    for order_type in [
+        OrderType::StopMarket,
+        OrderType::StopLimit,
+        OrderType::MarketIfTouched,
+        OrderType::LimitIfTouched,
+        OrderType::TrailingStopMarket,
+    ] {
+        let mut template = valid_template_for_direct_validation(order_type);
+        template.trigger_type = Some(TriggerType::LastPrice);
+        let order = build_nt_order(
+            &mut factory,
+            "generic_order",
+            &template,
+            base_inputs(OrderSide::Buy),
+        )
+        .expect("configured trigger type should build through NT factory");
+        assert_eq!(order.trigger_type(), Some(TriggerType::LastPrice));
+    }
+
+    let mut trailing_template = valid_template_for_direct_validation(OrderType::TrailingStopMarket);
+    trailing_template.trailing_offset_type = Some(TrailingOffsetType::Price);
+    let trailing_order = build_nt_order(
+        &mut factory,
+        "generic_order",
+        &trailing_template,
+        base_inputs(OrderSide::Buy),
+    )
+    .expect("configured trailing offset type should build through NT factory");
+    assert_eq!(
+        trailing_order.trailing_offset_type(),
+        Some(TrailingOffsetType::Price)
+    );
+}
+
+#[test]
+fn direct_nt_order_template_validation_rejects_market_like_post_only_orders() {
+    for (order_type, expected) in [
+        (
+            OrderType::Market,
+            "is_post_only must be false for market orders",
+        ),
+        (
+            OrderType::StopMarket,
+            "is_post_only must be false for StopMarket orders",
+        ),
+        (
+            OrderType::MarketIfTouched,
+            "is_post_only must be false for MarketIfTouched orders",
+        ),
+    ] {
+        let mut template = valid_template_for_direct_validation(order_type);
+        template.is_post_only = true;
+        assert_validate_error_contains(&template, OrderSide::Buy, expected);
+    }
+}
+
+#[test]
+fn shared_nt_order_template_rejects_unsupported_factory_gap_variants() {
+    let mut factory = generic_order_factory();
+
+    for order_type in [OrderType::MarketToLimit, OrderType::TrailingStopLimit] {
+        assert_build_error_contains(
+            &mut factory,
+            &base_template(order_type),
+            OrderSide::Buy,
+            "supports `limit`, `market`, `stop_market`, `stop_limit`, `market_if_touched`, `limit_if_touched`, or `trailing_stop_market`",
+        );
+    }
+}
+
 fn source_contains_forbidden_pattern(source: &str, forbidden: &str) -> bool {
     if matches!(forbidden, "Entry" | "Exit") {
         return source
@@ -554,6 +640,7 @@ fn shared_nt_order_template_source_has_no_strategy_venue_market_or_submit_coupli
         "submit_order",
         "submit_admission",
         "BoltV3OrderIntentEvidence",
+        "parameters.",
         "Entry",
         "Exit",
     ] {

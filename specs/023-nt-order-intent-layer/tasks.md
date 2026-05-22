@@ -560,6 +560,17 @@
 - [x] T252 [US3] Record Gemini/Claude focused OMS review disposition and boundary decision not to add a Netting-only guard
 - [x] T253 [US3] Verify focused OMS/config tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR state, reviewer state, and no-mistakes state
 
+## Phase 59: TDD Slice 55 - Direct Validator Post-Only Completeness
+
+**Goal**: Resolve current-head GLM review evidence that direct callers of `validate_nt_order_template(...)` do not receive the same market-like post-only rejection as `build_nt_order(...)`. The fix must stay inside the shared NT model-invariant validator and must not add venue, market, strategy, maker-only, or taker-only policy.
+
+- [x] T254 [P] [US2] Record exact-head GLM/Claude/no-mistakes review state and the validator-completeness finding in `specs/023-nt-order-intent-layer/research.md`
+- [x] T255 [US2] RED: Add direct `validate_nt_order_template(...)` regression coverage for post-only `Market`, `StopMarket`, and `MarketIfTouched`
+- [x] T256 [US2] GREEN: Move those post-only rejections into `validate_nt_order_template(...)` while preserving existing `OrderFactory` construction behavior
+- [x] T257 [US2] RED: Add source-fence coverage proving the shared order-intent module does not hardcode archetype TOML `parameters.*` diagnostics
+- [x] T258 [US2] GREEN: Let archetype callers pass the full config field path into the shared validator and add direct unsupported-variant coverage for the shared builder
+- [x] T259 [US2] Verify focused shared-builder tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -617,6 +628,8 @@
 - Phase 56 is closed by T245 verification at 2026-05-22 14:39:09 KST: schema-current self-tests and active verifier passed with malformed `.specify/feature.json` regression coverage. Exact-head PR/reviewer/no-mistakes state remains a post-push evidence surface, not a pre-push local verification claim.
 - Phase 57 is closed by T248 verification at 2026-05-22 14:39:09 KST: focused maker entry/exit, forced-exit template, shared order-intent source fence, schema/runtime verifiers, `cargo fmt -- --check`, `git diff --check`, `just source-fence` after cache-lock escalation, `cargo test --locked --quiet`, and `just clippy` passed locally. Exact-head PR/reviewer/no-mistakes state must be refreshed after committing and pushing this follow-up head.
 - Phase 58 is closed by T253 verification at 2026-05-22 15:37:40 KST: focused OMS regressions, full config parsing, schema-current verifier, `cargo fmt -- --check`, `git diff --check`, `just source-fence` after cache-lock escalation, and `cargo test --locked --quiet` passed locally. Exact-head PR/reviewer/no-mistakes state must be refreshed after committing and pushing this docs-only disposition head.
+- Phase 59 blocked completion because exact-head GLM custom review found a direct-validator completeness gap for market-like post-only rejection after Phase 58.
+- Phase 59 is closed by T259 verification at 2026-05-22 16:10:00 KST: direct-validator RED/GREEN, shared-module source-fence RED/GREEN, direct trigger/trailing and factory-gap coverage, focused config tests, schema/runtime verifiers, `just source-fence`, `just clippy`, and `cargo test --locked --quiet` passed locally. Exact-head PR checks, reviewer state, and no-mistakes state must be refreshed after committing and pushing this follow-up head.
 
 ## Parallel Opportunities
 

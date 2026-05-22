@@ -954,7 +954,8 @@ fn check_forced_exit_order_combination(
 }
 
 fn check_enabled_order_template(context: &str, field: &str, order: &OrderParams) -> Vec<String> {
-    check_nt_order_template_config(context, field, &order.nt_order_template_config())
+    let field_path = format!("parameters.{field}");
+    check_nt_order_template_config(context, &field_path, &order.nt_order_template_config())
 }
 
 fn check_strategy_position_contract(

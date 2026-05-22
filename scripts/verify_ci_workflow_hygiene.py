@@ -4627,9 +4627,23 @@ def yaml_run_shell_texts(yaml_text: str) -> list[str]:
     return texts
 
 
-def github_env_assignment_from_echo_tokens(tokens: list[str]) -> str | None:
+def github_env_payload_assignments(payload: str, *, decode_newlines: bool = False) -> list[str]:
+    if decode_newlines:
+        payload = payload.replace("\\n", "\n")
+    assignments: list[str] = []
+    for line in payload.splitlines() or [payload]:
+        clean = line.strip()
+        if "=" not in clean:
+            continue
+        name, value = clean.split("=", 1)
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            assignments.append(f"{name}={shlex.quote(storage_strip_quotes(value))}")
+    return assignments
+
+
+def github_env_assignments_from_echo_tokens(tokens: list[str]) -> list[str]:
     if len(tokens) < 4 or pathlib.Path(tokens[0]).name != "echo":
-        return None
+        return []
     for redirect_index, token in enumerate(tokens):
         if token != ">>":
             continue
@@ -4637,21 +4651,27 @@ def github_env_assignment_from_echo_tokens(tokens: list[str]) -> str | None:
         if target not in {"$GITHUB_ENV", "${GITHUB_ENV}"}:
             continue
         payload_start = 1
+        decode_newlines = False
         while payload_start < redirect_index and re.fullmatch(r"-[neE]+", tokens[payload_start]):
+            for option in tokens[payload_start][1:]:
+                if option == "e":
+                    decode_newlines = True
+                elif option == "E":
+                    decode_newlines = False
             payload_start += 1
         payload = " ".join(tokens[payload_start:redirect_index])
-        if "=" not in payload:
-            return None
-        name, value = payload.split("=", 1)
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-            return f"{name}={shlex.quote(storage_strip_quotes(value))}"
-        return None
-    return None
+        return github_env_payload_assignments(payload, decode_newlines=decode_newlines)
+    return []
 
 
-def github_env_assignment_from_printf_tokens(tokens: list[str]) -> str | None:
+def github_env_assignment_from_echo_tokens(tokens: list[str]) -> str | None:
+    assignments = github_env_assignments_from_echo_tokens(tokens)
+    return assignments[0] if assignments else None
+
+
+def github_env_assignments_from_printf_tokens(tokens: list[str]) -> list[str]:
     if len(tokens) < 4 or pathlib.Path(tokens[0]).name != "printf":
-        return None
+        return []
     for redirect_index, token in enumerate(tokens):
         if token != ">>":
             continue
@@ -4660,51 +4680,56 @@ def github_env_assignment_from_printf_tokens(tokens: list[str]) -> str | None:
             continue
         payload_tokens = tokens[1:redirect_index]
         if not payload_tokens:
-            return None
+            return []
         if payload_tokens[0] == "--":
             payload_tokens = payload_tokens[1:]
         if not payload_tokens:
-            return None
+            return []
         payload = storage_strip_quotes(payload_tokens[0])
         for value in payload_tokens[1:]:
             if "%s" not in payload:
                 break
             payload = payload.replace("%s", storage_strip_quotes(value), 1)
         if "%s" in payload:
-            return None
-        payload = payload.replace("\\n", "\n").splitlines()[0].strip()
-        if "=" not in payload:
-            return None
-        name, value = payload.split("=", 1)
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-            return f"{name}={shlex.quote(storage_strip_quotes(value))}"
-        return None
-    return None
+            return []
+        return github_env_payload_assignments(payload, decode_newlines=True)
+    return []
+
+
+def github_env_assignment_from_printf_tokens(tokens: list[str]) -> str | None:
+    assignments = github_env_assignments_from_printf_tokens(tokens)
+    return assignments[0] if assignments else None
+
+
+def github_env_assignments_from_line(line: str) -> list[str]:
+    clean = strip_comment(line).strip()
+    tokens = command_tokens(clean)
+    assignments: list[str] = []
+    for segment in shell_command_segments_from_tokens(tokens):
+        for extractor in (github_env_assignments_from_echo_tokens, github_env_assignments_from_printf_tokens):
+            assignments.extend(extractor(segment))
+    return assignments
 
 
 def github_env_assignment_line(line: str) -> str | None:
-    clean = strip_comment(line).strip()
-    tokens = command_tokens(clean)
-    for segment in shell_command_segments_from_tokens(tokens):
-        for extractor in (github_env_assignment_from_echo_tokens, github_env_assignment_from_printf_tokens):
-            assignment = extractor(segment)
-            if assignment is not None:
-                return assignment
-    return None
+    assignments = github_env_assignments_from_line(line)
+    return assignments[0] if assignments else None
 
 
 def github_env_assignment_lines(text: str) -> list[str]:
     lines: list[str] = []
-    for line in text.splitlines():
-        assignment = github_env_assignment_line(line)
-        if assignment is not None:
-            lines.append(assignment)
+    for line in shell_logical_lines(text):
+        lines.extend(github_env_assignments_from_line(line))
     return lines
 
 
 def workflow_run_shell_texts(workflow_text: str) -> list[str]:
     texts: list[str] = []
-    for job_lines in parse_jobs(workflow_text).values():
+    step_scopes = list(parse_jobs(workflow_text).values())
+    runs_block = top_level_block(workflow_text, "runs")
+    if any(re.match(r"^\s*using:\s*composite\s*$", strip_comment(line)) for line in runs_block):
+        step_scopes.append(runs_block)
+    for job_lines in step_scopes:
         persisted_env: list[str] = []
         for block in step_blocks(job_lines):
             command = step_run_command(block)

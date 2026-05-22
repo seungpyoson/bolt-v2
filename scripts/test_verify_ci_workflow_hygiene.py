@@ -1288,6 +1288,21 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
             True,
         ),
         (
+            "github env continued active target must persist into later step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo "TARGET=target" \\
+                        >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+            """,
+            s3_expected,
+            True,
+        ),
+        (
             "github env target must not persist across jobs",
             """
             jobs:
@@ -1344,6 +1359,48 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
             """,
             target_expected,
             True,
+        ),
+        (
+            "github env printf multiple assignments must all persist",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'SRC=target\\nDEST=s3://bolt-v2-active-cache/cache\\n' >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" "$DEST"
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env echo e multiple assignments must all persist",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo -e "SRC=target\\nDEST=s3://bolt-v2-active-cache/cache" >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" "$DEST"
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "separate composite action run step cwd must not leak into later S3 step",
+            """
+            runs:
+              using: composite
+              steps:
+                - shell: bash
+                  run: cd target
+                - shell: bash
+                  run: aws s3 cp dist/app s3://bolt-v2-release/app
+            """,
+            s3_expected,
+            False,
         ),
     ]
     failures: list[str] = []

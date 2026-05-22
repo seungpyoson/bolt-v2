@@ -2917,6 +2917,59 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     std::fs::remove_file(&uppercase_oms_consumption_path)
         .expect("uppercase OMS consumption evidence should remove");
 
+    let invalid_oms_financial_envelope_path = temp
+        .path()
+        .join("phase8-financial-envelope-invalid-oms.json");
+    let mut invalid_oms_financial_envelope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&financial_envelope_path).expect("financial envelope should read"),
+    )
+    .expect("financial envelope should parse");
+    invalid_oms_financial_envelope
+        .as_object_mut()
+        .expect("financial envelope should be an object")
+        .insert(
+            "oms_type".to_string(),
+            serde_json::Value::String(format!("{approved_oms_type}_invalid")),
+        );
+    std::fs::write(
+        &invalid_oms_financial_envelope_path,
+        serde_json::to_vec(&invalid_oms_financial_envelope)
+            .expect("invalid OMS financial envelope should serialize"),
+    )
+    .expect("invalid OMS financial envelope should write");
+    let invalid_oms_financial_envelope_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&invalid_oms_financial_envelope_path)
+            .expect("invalid OMS financial envelope hash should compute");
+    let invalid_oms_consumption_path = temp
+        .path()
+        .join("phase8-approval-consumed-invalid-oms.json");
+    let mut invalid_oms_envelope = envelope.clone();
+    invalid_oms_envelope.financial_envelope_path = invalid_oms_financial_envelope_path
+        .to_string_lossy()
+        .to_string();
+    invalid_oms_envelope.financial_envelope_sha256 = invalid_oms_financial_envelope_hash;
+    invalid_oms_envelope.approval_consumption_path =
+        invalid_oms_consumption_path.to_string_lossy().to_string();
+    let invalid_oms_error = invalid_oms_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            1_500,
+        )
+        .expect_err("unparseable financial envelope OMS should fail closed");
+    assert!(
+        invalid_oms_error
+            .to_string()
+            .contains("phase8 financial envelope `oms_type` must be a NautilusTrader OmsType"),
+        "error should mention invalid OMS parsing: {invalid_oms_error}"
+    );
+    assert!(
+        !invalid_oms_consumption_path.exists(),
+        "invalid OMS must not create consumption evidence"
+    );
+
     let mut multi_strategy_loaded = loaded.clone();
     let mut secondary_strategy = multi_strategy_loaded.strategies[0].clone();
     secondary_strategy.config.strategy_instance_id = "bitcoin_updown_secondary".to_string();
@@ -3367,6 +3420,13 @@ fn alternate_oms_type(approved: OmsType) -> OmsType {
         .into_iter()
         .find(|candidate| *candidate != approved)
         .expect("NT OMS type alternatives should include a non-approved variant")
+}
+
+#[test]
+fn phase8_oms_alternate_helper_covers_nt_oms_variants() {
+    for approved in [OmsType::Netting, OmsType::Hedging, OmsType::Unspecified] {
+        assert_ne!(alternate_oms_type(approved), approved);
+    }
 }
 
 fn oms_type_value(oms_type: OmsType) -> String {

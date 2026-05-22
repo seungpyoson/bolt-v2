@@ -601,6 +601,15 @@
 - [x] T273 [US2] Document the Phase 8 approval-envelope OMS canonicalization and confirm the fail-closed diagnostic remains verifier-ignored diagnostic text
 - [ ] T274 [US2] Verify focused Phase 8 test, schema/runtime verifiers, formatting/diff checks, full relevant suites, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
+## Phase 63: Review Slice 59 - Phase 8 OMS Coverage Closure
+
+**Goal**: Resolve or disprove Kimi's exact-head OMS coverage concerns without changing runtime behavior or adding Bolt-only OMS policy.
+
+- [x] T275 [P] [US2] Record Kimi exact-diff review state and separate real coverage work from disproven helper concern in `specs/023-nt-order-intent-layer/research.md`
+- [x] T276 [US2] Add direct regression coverage proving invalid financial-envelope `oms_type` strings fail closed before approval consumption
+- [x] T277 [US2] Add direct disproof coverage proving the OMS alternate helper covers every current NT `OmsType` variant used by the test
+- [ ] T278 [US2] Verify focused Phase 8 tests, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -663,6 +672,7 @@
 - Phase 60 blocks completion because exact-head Claude/Kimi review found the direct shared validator still accepts unsupported pinned NT single-order factory-gap variants and the builder retained a hardcoded supported-type diagnostic list plus a duplicate TrailingStopMarket post-only guard.
 - Phase 61 blocks completion because no-mistakes review commit `4688ccb4` found Phase 8 financial-envelope approval was not bound to loaded NT `oms_type`, and Kimi custom review identified missing direct coverage for the config-checker unsupported factory-gap path.
 - Phase 62 blocks completion because current-head Kimi review found Phase 8 approval-envelope `oms_type` comparison still used raw string equality rather than NT enum canonicalization.
+- Phase 63 blocks completion because Kimi exact-head review found missing invalid-OMS coverage and raised an OMS helper concern that required direct disproof coverage.
 
 ## Parallel Opportunities
 

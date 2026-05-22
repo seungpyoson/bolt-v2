@@ -2250,6 +2250,27 @@ def assert_v6_red_active_process_parser_does_not_treat_trustd_as_rust() -> None:
         )
 
 
+def assert_v6_red_active_process_parser_does_not_treat_rust_named_scripts_as_rust() -> None:
+    failures: list[str] = []
+    for command in (
+        "/tmp/cargo-build.sh test",
+        "tests/cargo-tests.py build",
+        "./rust-tests.sh check",
+        "tools/clippy.bash --dry-run",
+    ):
+        result, debug_file_exists = cache_prune_for_visible_command(command, expose_cwd=False)
+        if result.returncode != 0 or debug_file_exists:
+            failures.append(
+                f"{command!r}: returncode={result.returncode} target_removed={not debug_file_exists} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+    if failures:
+        raise AssertionError(
+            "active-process parser must not classify Rust-named helper scripts as Rust work: "
+            + "; ".join(failures)
+        )
+
+
 def assert_v6_regression_cargo_process_names_stay_visible() -> None:
     owner = load_owner_module()
     commands = [
@@ -3043,6 +3064,7 @@ def assert_v6_red_policy_gaps() -> None:
         assert_active_process_parser_uses_single_cwd_snapshot_per_pid,
         assert_v6_red_active_process_parser_ignores_unscoped_opaque_build_without_cwd,
         assert_v6_red_active_process_parser_does_not_treat_trustd_as_rust,
+        assert_v6_red_active_process_parser_does_not_treat_rust_named_scripts_as_rust,
         assert_v6_red_managed_cargo_clean_refuses_active_process,
         assert_v6_red_disk_preflight_before_managed_cargo_and_run,
         assert_v6_red_nextest_archive_extraction_uses_exclusive_cache_lock,

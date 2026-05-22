@@ -1231,6 +1231,34 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
             True,
         ),
         (
+            "same run step cd without target must clear active-target cwd",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cd target
+                      cd
+                      aws s3 cp dist/app s3://bolt-v2-release/app
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "same run step cd separator without target must clear active-target cwd",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cd target
+                      cd --
+                      aws s3 cp dist/app s3://bolt-v2-release/app
+            """,
+            s3_expected,
+            False,
+        ),
+        (
             "separate run step cwd must not leak into later S3 step",
             """
             jobs:
@@ -2583,6 +2611,24 @@ jobs:
         raise AssertionError(f"anchored workflow step raw-storage drift was silent: {errors!r}")
 
 
+def assert_v6_red_yaml_steps_aliases_are_rejected() -> None:
+    verifier = load_verifier()
+    workflow = """
+name: Probe
+on: [push]
+.shared_steps: &shared_steps
+  - run: echo ok
+jobs:
+  hidden:
+    runs-on: ubuntu-latest
+    steps: *shared_steps
+"""
+    expected = "workflow steps must be explicit; YAML steps aliases are unsupported"
+    errors = verifier.verify_workflow(textwrap.dedent(workflow))
+    if expected not in errors:
+        raise AssertionError(f"workflow steps alias was not rejected: {errors!r}")
+
+
 def assert_v6_red_local_composite_actions_are_scanned() -> None:
     extra_action = """
 name: Evade
@@ -3082,6 +3128,7 @@ def main() -> int:
     assert_v6_red_raw_storage_checks_all_ci_automation()
     assert_v6_red_yaml_anchor_jobs_do_not_hide_raw_storage()
     assert_v6_red_yaml_anchor_steps_do_not_hide_raw_storage()
+    assert_v6_red_yaml_steps_aliases_are_rejected()
     assert_v6_red_local_composite_actions_are_scanned()
     assert_v6_red_additional_workflows_are_scanned()
     assert_shell_logical_lines_handles_crlf_continuations()

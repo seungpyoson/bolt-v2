@@ -1610,7 +1610,13 @@ def command_process_names(command: str) -> set[str]:
     return process_names_from_tokens(tokens)
 
 
+def rust_tool_name_has_script_extension(name: str) -> bool:
+    return pathlib.Path(name).suffix in {".bash", ".fish", ".ksh", ".ps1", ".py", ".rb", ".sh", ".zsh"}
+
+
 def executable_is_rust_tool(executable: str) -> bool:
+    if rust_tool_name_has_script_extension(executable):
+        return False
     return (
         executable in {"cargo", "clippy", "nextest", "rustc", "rustdoc", "rustup"}
         or executable.startswith(("cargo-", "clippy-", "rust-"))

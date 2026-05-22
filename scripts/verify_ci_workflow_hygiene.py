@@ -517,6 +517,14 @@ def job_header_indent_errors(workflow_text: str) -> list[str]:
     return errors
 
 
+def workflow_steps_alias_errors(workflow_text: str) -> list[str]:
+    for line in workflow_text.splitlines():
+        clean = strip_comment(line)
+        if re.match(r"^\s*steps:\s*\*[A-Za-z0-9_.-]+\s*$", clean):
+            return ["workflow steps must be explicit; YAML steps aliases are unsupported"]
+    return []
+
+
 def parse_inline_needs(value: str) -> set[str]:
     value = value.strip()
     if not value:
@@ -4148,7 +4156,7 @@ def shell_directory_change_target(tokens: list[str], cursor: int) -> tuple[str |
         index += 1
     if index < len(tokens) and tokens[index] == "--":
         index += 1
-    if index >= len(tokens):
+    if index >= len(tokens) or tokens[index] in SHELL_COMMAND_BOUNDARIES:
         return None, index
     return tokens[index], index + 1
 
@@ -4234,6 +4242,8 @@ def storage_transfer_policy_errors_from_tokens(
         if name in {"cd", "pushd"}:
             directory_target, next_cursor = shell_directory_change_target(tokens, cursor)
             if directory_target is None:
+                if name == "cd":
+                    cwd_is_active_target = False
                 cursor = next_cursor
                 continue
             target_roles = storage_value_roles(
@@ -5605,6 +5615,7 @@ def extract_action_output_block(action_text: str, output_name: str) -> list[str]
 
 def verify_workflow(workflow_text: str) -> list[str]:
     errors: list[str] = job_header_indent_errors(workflow_text)
+    errors.extend(workflow_steps_alias_errors(workflow_text))
     jobs = parse_jobs(workflow_text)
     errors.extend(raw_rust_storage_errors(workflow_text))
     errors.extend(exact_head_governance_cache_errors(workflow_text))

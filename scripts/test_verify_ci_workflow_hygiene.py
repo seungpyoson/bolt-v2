@@ -1175,6 +1175,9 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         "active target cwd hidden behind sudo chdir wrapper": """
             sudo --chdir target aws s3 sync debug s3://bolt-v2-active-cache/target/debug
         """,
+        "active target cwd hidden behind cd separator": """
+            cd -- target && aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
         "active target streamed through s3 stdin": """
             tar -czf - target | aws s3 cp - s3://bolt-v2-active-cache/target.tar.gz
         """,
@@ -2615,6 +2618,8 @@ jobs:
 
 def assert_v6_red_no_mistakes_raw_cargo_is_reported() -> None:
     raw_fixture = """
+aliases:
+  - &raw_top "cargo build --target-dir /tmp/raw"
 commands:
   test: cargo test
   lint: >
@@ -2632,6 +2637,7 @@ commands:
   tasksetdashdash: taskset -- 0 cargo build
   anchored: &raw "cargo build --target-dir /tmp/raw"
   anchoralias: *raw
+  topanchoralias: *raw_top
   shellcheck: bash -lc 'cargo test --all'
   evalraw: eval "cargo test"
   evaldashdash: eval -- cargo test
@@ -2746,6 +2752,7 @@ commands: { test: "cargo test" }
         "tasksetdashdash",
         "anchored",
         "anchoralias",
+        "topanchoralias",
         "shellcheck",
         "evalraw",
         "evaldashdash",
@@ -2948,6 +2955,8 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "scripts/raw-redirection.sh": "#!/usr/bin/env bash\n> /dev/null cargo build\n",
             "scripts/symlink-cargo.sh": "ln -s $(which cargo) /tmp/mycargo\n/tmp/mycargo build --target-dir /tmp/raw\n",
             "scripts/copy-cargo.sh": "cp $(which cargo) /tmp/mycargo\n/tmp/mycargo build\n",
+            "scripts/non-rust-make.sh": "/usr/bin/make test\n",
+            "scripts/non-rust-gradle.sh": "./gradlew build\n",
             "justfile.setup": "setup:\n    cargo install cargo-nextest --version 0.9.132 --locked\n",
             "justfile.setup.absolute": "setup:\n    /usr/bin/cargo install cargo-nextest --version 0.9.132 --locked\n",
             "justfile.setup.timeout": "setup:\n    timeout 30 cargo install cargo-deny --version 0.18.2\n",
@@ -3007,6 +3016,9 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"symlinked cargo raw-storage drift was silent: {repo_errors!r}")
     if not any("scripts/copy-cargo.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"copied cargo raw-cargo drift was silent: {repo_errors!r}")
+    false_repo_raw = [error for error in repo_errors if "scripts/non-rust-" in error]
+    if false_repo_raw:
+        raise AssertionError(f"non-Rust path commands must stay allowed: {false_repo_raw!r}")
     expected = "repo automation must not compile cargo-nextest from source"
     if not any("justfile.setup" in error and expected in error for error in repo_errors):
         raise AssertionError(f"justfile cargo-install drift was silent: {repo_errors!r}")

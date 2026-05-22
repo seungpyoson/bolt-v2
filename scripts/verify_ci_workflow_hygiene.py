@@ -1632,7 +1632,7 @@ def cargo_install_source_build_tools_from_tokens(
         command_index = consume_cargo_global_options(tokens, 1)
         if command_index < len(tokens) and tokens[command_index] == "install":
             tools.update(cargo_install_source_build_tools(tokens, command_index, source_path_tools, cwd_source_tool))
-    elif path_invocation_has_cargo_subcommand(tokens):
+    elif path_invocation_may_have_cargo_subcommand(tokens):
         command_index = consume_cargo_global_options(tokens, 1)
         if command_index < len(tokens) and tokens[command_index] == "install":
             tools.update(cargo_install_source_build_tools(tokens, command_index, source_path_tools, cwd_source_tool))
@@ -1821,7 +1821,7 @@ def target_routing_cargo_args(tokens: list[str]) -> list[str] | None:
     if not tokens:
         return None
     executable = pathlib.Path(tokens[0]).name
-    if executable == "cargo" or path_invocation_has_cargo_subcommand(tokens):
+    if executable == "cargo" or path_invocation_may_have_cargo_subcommand(tokens):
         return tokens[1:]
     return None
 
@@ -2608,6 +2608,19 @@ def path_invocation_has_cargo_subcommand(tokens: list[str]) -> bool:
     if not tokens:
         return False
     executable = pathlib.Path(tokens[0]).name
+    if "/" in tokens[0]:
+        if not path_executable_looks_like_cargo(tokens[0]):
+            return False
+    elif not path_name_looks_like_renamed_cargo(executable):
+        return False
+    command_index = consume_cargo_global_options(tokens, 1)
+    return command_index < len(tokens) and tokens[command_index] in CARGO_PROCESS_SUBCOMMANDS
+
+
+def path_invocation_may_have_cargo_subcommand(tokens: list[str]) -> bool:
+    if not tokens:
+        return False
+    executable = pathlib.Path(tokens[0]).name
     if "/" not in tokens[0] and not path_name_looks_like_renamed_cargo(executable):
         return False
     command_index = consume_cargo_global_options(tokens, 1)
@@ -3327,7 +3340,7 @@ def raw_cargo_storage_override_messages_from_tokens(
                 )
             )
         return messages
-    if not tokens_have_raw_cargo_launch(expanded):
+    if not tokens_have_raw_cargo_launch(expanded) and not tokens_have_target_routing_override(expanded):
         return messages
     messages.update(direct_raw_cargo_storage_override_messages(expanded))
     return messages
@@ -3377,6 +3390,15 @@ def resolve_no_mistakes_scalar(value: str, anchors: dict[str, str]) -> tuple[str
     return value, anchor
 
 
+def record_no_mistakes_anchor_from_scalar(value: str, anchors: dict[str, str]) -> None:
+    value = value.strip()
+    if value.startswith("-"):
+        value = value[1:].strip()
+    value, anchor = resolve_no_mistakes_scalar(value, anchors)
+    if anchor is not None:
+        anchors[anchor] = value
+
+
 def no_mistakes_commands(config_text: str) -> dict[str, str]:
     commands: dict[str, str] = {}
     anchors: dict[str, str] = {}
@@ -3396,9 +3418,13 @@ def no_mistakes_commands(config_text: str) -> dict[str, str]:
             in_commands = bool(separator) and name.strip() == "commands" and (
                 not value.strip() or value.strip().startswith("#")
             )
+            if separator:
+                record_no_mistakes_anchor_from_scalar(value, anchors)
             index += 1
             continue
         if not in_commands:
+            _, separator, value = stripped.partition(":")
+            record_no_mistakes_anchor_from_scalar(value if separator else stripped, anchors)
             index += 1
             continue
         if indent <= 2 and ":" in stripped:
@@ -4080,6 +4106,22 @@ def directory_wrapper_chdir_value(tokens: list[str]) -> str | None:
     return None
 
 
+def shell_directory_change_target(tokens: list[str], cursor: int) -> tuple[str | None, int]:
+    if cursor >= len(tokens):
+        return None, cursor + 1
+    name = executable_name(tokens[cursor])
+    index = cursor + 1
+    if index < len(tokens) and tokens[index] == "--":
+        index += 1
+    while name == "cd" and index < len(tokens) and tokens[index] in {"-L", "-P", "-e"}:
+        index += 1
+    while name == "pushd" and index < len(tokens) and tokens[index] == "-n":
+        index += 1
+    if index >= len(tokens):
+        return None, index
+    return tokens[index], index + 1
+
+
 def storage_transfer_policy_errors_from_tokens(
     tokens: list[str],
     variable_roles: dict[str, set[str]],
@@ -4158,15 +4200,19 @@ def storage_transfer_policy_errors_from_tokens(
                 )
                 if nested_errors:
                     return nested_errors
-        if name in {"cd", "pushd"} and cursor + 1 < len(tokens):
+        if name in {"cd", "pushd"}:
+            directory_target, next_cursor = shell_directory_change_target(tokens, cursor)
+            if directory_target is None:
+                cursor = next_cursor
+                continue
             target_roles = storage_value_roles(
-                tokens[cursor + 1],
+                directory_target,
                 variable_roles,
                 cwd_is_active_target=cwd_is_active_target,
                 active_paths=active_paths,
             )
             cwd_is_active_target = STORAGE_ROLE_ACTIVE_TARGET in target_roles
-            cursor += 2
+            cursor = next_cursor
             continue
         if name in {"cp", "rsync"}:
             record_active_copy_paths(

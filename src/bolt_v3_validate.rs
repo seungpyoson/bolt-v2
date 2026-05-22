@@ -79,7 +79,7 @@ impl std::fmt::Display for BoltV3ValidationError {
 impl std::error::Error for BoltV3ValidationError {}
 
 pub const SUPPORTED_ROOT_SCHEMA_VERSION: u32 = 1;
-pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 1;
+pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;
 
 pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();

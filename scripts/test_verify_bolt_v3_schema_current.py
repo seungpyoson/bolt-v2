@@ -656,6 +656,18 @@ def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> 
             raise AssertionError(f"expected {fragment!r} in findings, got {findings!r}")
 
 
+def test_validate_docs_rejects_stale_strategy_schema_version_examples() -> None:
+    stale_schema = CURRENT_SCHEMA.replace("schema_version = 2", "schema_version = 1")
+    findings = VERIFIER.validate_docs(
+        stale_schema,
+        CURRENT_STATUS_MAP,
+        validate_source="pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;",
+    )
+
+    if not any("strategy schema_version example" in finding for finding in findings):
+        raise AssertionError(f"expected stale strategy schema version finding, got {findings!r}")
+
+
 def test_extracts_phase8_financial_envelope_fields_from_source_struct() -> None:
     rust_source = """
 #[derive(Debug, Deserialize, PartialEq)]
@@ -796,6 +808,7 @@ def main() -> int:
         test_validate_docs_allows_spec_architecture_risk_context,
         test_validate_docs_requires_all_enabled_and_factory_gap_order_types,
         test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift,
+        test_validate_docs_rejects_stale_strategy_schema_version_examples,
         test_extracts_phase8_financial_envelope_fields_from_source_struct,
         test_validate_docs_rejects_financial_envelope_schema_missing_source_field,
         test_validate_docs_rejects_financial_envelope_schema_extra_doc_field,

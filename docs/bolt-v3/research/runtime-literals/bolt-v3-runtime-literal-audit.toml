@@ -1976,8 +1976,8 @@ reason = "The schema version is a structural compatibility gate, not an operator
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "number"
-literal = "1"
-context = "pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 1;"
+literal = "2"
+context = "pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;"
 classification = "schema_version_gate"
 reason = "The strategy schema version is a structural compatibility gate, not an operator runtime value."
 

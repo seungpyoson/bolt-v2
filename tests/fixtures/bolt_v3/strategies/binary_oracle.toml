@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"

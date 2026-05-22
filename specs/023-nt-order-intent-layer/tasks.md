@@ -655,6 +655,15 @@
 - [x] T297 [US2] GREEN: Extend the active verifier and update only the affected schema/runtime/status/spec docs
 - [ ] T298 [US2] Verify schema tests/verifier, runtime-literal verifier, formatting/diff checks, source fences as needed, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
+## Phase 69: TDD Slice 65 - Strategy Schema Version Boundary
+
+**Goal**: Resolve exact-head no-mistakes review evidence that the strategy file still advertises schema version `1` after the forced-exit order-template schema change. The fix must version the strategy file shape only, must not change the root schema, and must not add venue, market, strategy, maker-only, or taker-only policy.
+
+- [x] T299 [P] [US2] Record no-mistakes review findings for OMS widening and strategy schema versioning in `specs/023-nt-order-intent-layer/research.md`
+- [x] T300 [US2] RED: Add a config validation regression proving previous strategy schema version `1` is rejected after the forced-exit schema update
+- [x] T301 [US2] GREEN: Bump the supported strategy schema version and current strategy schema docs/fixtures without changing root schema version
+- [ ] T302 [US2] Verify focused config tests, schema/runtime verifiers, source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -723,6 +732,7 @@
 - Phase 66 blocks final branch completion because no-mistakes produced financial-envelope schema-field drift evidence on top of the Phase 65 head.
 - Phase 67 blocks final branch completion because exact-head Kimi review found the Phase 66 financial-envelope schema guard still allowed stale doc-only fields.
 - Phase 68 blocks final branch completion because exact-head no-mistakes document review found active docs/specs still omitted decision-evidence JSONL v4/order-template fields and retained stale Phase 022 forced-exit/GTD text.
+- Phase 69 blocks final branch completion because exact-head no-mistakes found the strategy schema version still advertised the previous forced-exit schema shape.
 
 ## Parallel Opportunities
 

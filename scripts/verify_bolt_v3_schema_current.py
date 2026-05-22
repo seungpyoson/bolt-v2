@@ -25,6 +25,7 @@ MAKER_SCOPE_DATA_MODEL_DOC = REPO_ROOT / "specs/022-nt-maker-order-scope/data-mo
 AGENTS_DOC = REPO_ROOT / "AGENTS.md"
 FEATURE_JSON = REPO_ROOT / ".specify/feature.json"
 TINY_CANARY_EVIDENCE = REPO_ROOT / "src/bolt_v3_tiny_canary_evidence.rs"
+VALIDATE_SOURCE = REPO_ROOT / "src/bolt_v3_validate.rs"
 ORDER_INTENT_FEATURE_DIR = "specs/023-nt-order-intent-layer"
 ORDER_INTENT_PLAN = f"{ORDER_INTENT_FEATURE_DIR}/plan.md"
 SPECKIT_BLOCK_PATTERN = re.compile(
@@ -35,6 +36,13 @@ BACKTICKED_PLAN_PATTERN = re.compile(r"`(?P<path>specs/[^`]+/plan\.md)`")
 RUST_STRUCT_FIELD_PATTERN = re.compile(r"^\s*(?P<field>[a-z][a-z0-9_]*):\s*[^,]+,\s*$")
 SCHEMA_FIELD_LINE_PATTERN = re.compile(r"^\s*-\s*(?P<fields>[^:]+):")
 BACKTICKED_FIELD_PATTERN = re.compile(r"`(?P<field>[a-z][a-z0-9_]*)`")
+SUPPORTED_STRATEGY_SCHEMA_VERSION_PATTERN = re.compile(
+    r"pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = (?P<version>\d+);"
+)
+STRATEGY_SCHEMA_EXAMPLE_PATTERN = re.compile(
+    r"schema_version = (?P<version>\d+)\nstrategy_instance_id = ",
+    re.MULTILINE,
+)
 
 ENABLED_ORDER_TYPES = (
     "limit",
@@ -232,6 +240,13 @@ def extract_phase8_financial_envelope_fields(rust_source: str) -> list[str]:
     return fields
 
 
+def extract_supported_strategy_schema_version(validate_source: str) -> int | None:
+    match = SUPPORTED_STRATEGY_SCHEMA_VERSION_PATTERN.search(validate_source)
+    if match is None:
+        return None
+    return int(match.group("version"))
+
+
 def unsupported_scope_overclaims(label: str, text: str) -> list[str]:
     findings: list[str] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
@@ -319,6 +334,7 @@ def validate_docs(
     agents_doc: str | None = None,
     feature_json: str | None = None,
     financial_envelope_source: str = "",
+    validate_source: str = "",
 ) -> list[str]:
     findings: list[str] = []
 
@@ -411,6 +427,26 @@ def validate_docs(
                 if field not in financial_envelope_source_fields:
                     findings.append(f"schema financial_envelope section has unknown `{field}`")
 
+    if validate_source:
+        supported_strategy_schema_version = extract_supported_strategy_schema_version(
+            validate_source
+        )
+        if supported_strategy_schema_version is None:
+            findings.append("source missing SUPPORTED_STRATEGY_SCHEMA_VERSION")
+        else:
+            strategy_schema_example_versions = [
+                int(match.group("version"))
+                for match in STRATEGY_SCHEMA_EXAMPLE_PATTERN.finditer(schema)
+            ]
+            if not strategy_schema_example_versions:
+                findings.append("schema missing strategy schema_version example")
+            for version in strategy_schema_example_versions:
+                if version != supported_strategy_schema_version:
+                    findings.append(
+                        "schema strategy schema_version example "
+                        f"{version} does not match source {supported_strategy_schema_version}"
+                    )
+
     for phrase in STALE_STATUS_MAP_PHRASES:
         if phrase in status_map:
             findings.append(f"status map still contains stale phrase: {phrase}")
@@ -482,6 +518,7 @@ def main() -> int:
         agents_doc=AGENTS_DOC.read_text(encoding="utf-8"),
         feature_json=FEATURE_JSON.read_text(encoding="utf-8"),
         financial_envelope_source=TINY_CANARY_EVIDENCE.read_text(encoding="utf-8"),
+        validate_source=VALIDATE_SOURCE.read_text(encoding="utf-8"),
     )
     if findings:
         for finding in findings:

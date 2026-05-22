@@ -3232,7 +3232,7 @@ fn rejects_unsupported_root_and_strategy_schema_versions() {
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable")
-    .replace("schema_version = 1", "schema_version = 7");
+    .replace("schema_version = 2", "schema_version = 7");
     let strategy: BoltV3StrategyConfig =
         toml::from_str(&mutated_strategy).expect("mutated strategy should parse with raw u32");
     let loaded = vec![LoadedStrategy {
@@ -3246,6 +3246,42 @@ fn rejects_unsupported_root_and_strategy_schema_versions() {
             .iter()
             .any(|m| m.contains("schema_version=7 is unsupported")),
         "expected unsupported strategy schema version, got: {strategy_messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_previous_strategy_schema_version_after_forced_exit_order_schema_update() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture should be readable"),
+    )
+    .expect("stable root should parse");
+
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    strategy.schema_version = 1;
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let strategy_messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        strategy_messages
+            .iter()
+            .any(|m| m.contains("schema_version=1 is unsupported")),
+        "expected previous strategy schema version to be rejected, got: {strategy_messages:#?}"
     );
 }
 

@@ -1062,7 +1062,7 @@ For current Binance reference-data use:
 ## 6. Strategy File: Candidate Schema
 
 ```toml
-schema_version = 1
+schema_version = 2
 strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
@@ -1155,6 +1155,7 @@ lead_jitter_max_ms = 250
 - type: integer
 - required: yes
 - versions the strategy-file schema only
+- current supported value: `2`
 
 #### `strategy_instance_id`
 
@@ -1775,7 +1776,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 ### Strategy
 
 ```toml
-schema_version = 1
+schema_version = 2
 strategy_instance_id = "bitcoin_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"

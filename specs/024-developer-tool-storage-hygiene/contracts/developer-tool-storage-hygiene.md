@@ -28,6 +28,7 @@ Required cleanup sections:
 [codex.log]
 max_bytes = 209715200
 retained_rotations = 2
+active_writer_processes = ["codex", "codex-tui"]
 
 [codex.sessions]
 ttl_days = 14
@@ -35,6 +36,7 @@ ttl_days = 14
 [factory.log]
 max_bytes = 209715200
 retained_rotations = 2
+active_writer_processes = ["factory", "droid"]
 
 [rustup.toolchains]
 stale_after_days = 14

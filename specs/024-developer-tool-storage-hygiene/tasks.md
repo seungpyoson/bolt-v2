@@ -45,7 +45,7 @@
 
 ### Implementation for User Story 1
 
-- [ ] T014 [US1] Add `ci/developer-tool-storage-hygiene.toml` with explicit surface IDs for Codex logs, Codex sessions, Codex history native guidance, Codex sqlite and archived-session report-only files, Factory log, rustup toolchains, and adjacent report-only classes.
+- [ ] T014 [US1] Add `ci/developer-tool-storage-hygiene.toml` with explicit surface IDs for Codex logs, Codex sessions, Codex history native guidance, Codex sqlite and archived-session report-only files, Factory log, rustup toolchains, adjacent report-only classes, and active-writer process lists for mutable log surfaces.
 - [ ] T015 [US1] Add the minimal policy loader and surface model in `scripts/developer_tool_storage_hygiene.py` to satisfy T013.
 - [ ] T016 [US1] Update `docs/ops/developer-tool-storage-hygiene.md` with the #375 ownership map and native Codex/rustup capability evidence.
 - [ ] T017 [US1] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` and record the green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.

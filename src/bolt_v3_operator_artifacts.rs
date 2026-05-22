@@ -146,7 +146,7 @@ pub struct BoltV3OperatorPacketAssemblyOutcome {
     pub static_manifest: WrittenOperatorArtifact,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BoltV3FinalOperatorPacketVerification {
     pub approval_envelope: WrittenOperatorArtifact,
     pub operator_packet: WrittenOperatorArtifact,
@@ -171,6 +171,12 @@ impl BoltV3FinalOperatorPacketVerification {
     }
 }
 
+impl fmt::Debug for BoltV3FinalOperatorPacketVerification {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.redacted_summary().fmt(f)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3FinalOperatorPacketVerificationSummary {
     pub verified_artifacts: Vec<BoltV3FinalOperatorPacketVerificationArtifactSummary>,
@@ -188,10 +194,19 @@ pub struct BoltV3StaticArtifactsWriteOutcome {
     pub blockers: Vec<&'static str>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WrittenOperatorArtifact {
     pub path: PathBuf,
     pub sha256: String,
+}
+
+impl fmt::Debug for WrittenOperatorArtifact {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WrittenOperatorArtifact")
+            .field("path", &"[redacted-operator-artifact-path]")
+            .field("sha256", &self.sha256)
+            .finish()
+    }
 }
 
 pub enum BoltV3OperatorArtifactError {

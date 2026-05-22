@@ -1513,6 +1513,39 @@ fn final_packet_verifier_redacted_summary_omits_artifact_paths() {
 }
 
 #[test]
+fn final_packet_verifier_debug_omits_artifact_paths() {
+    let fixture = assembled_final_packet_fixture();
+    let outcome = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect("final packet verifier should accept current config-bound packet");
+
+    let debug = format!("{outcome:?}");
+
+    for forbidden_path in [
+        fixture.operator_packet_path.to_string_lossy().to_string(),
+        fixture.static_manifest_path.to_string_lossy().to_string(),
+        fixture.operator_evidence().approval_envelope_path.clone(),
+    ] {
+        assert!(
+            !debug.contains(&forbidden_path),
+            "final packet verification Debug output must not expose artifact path {forbidden_path}: {debug}"
+        );
+    }
+    assert!(
+        debug.contains("verified_artifacts"),
+        "debug output should still report redacted verification content: {debug}"
+    );
+
+    let nested_debug = format!("{:?}", outcome.operator_packet);
+    assert!(
+        !nested_debug.contains(&fixture.operator_packet_path.to_string_lossy().to_string()),
+        "nested operator artifact Debug output must not expose artifact path: {nested_debug}"
+    );
+}
+
+#[test]
 fn final_packet_verifier_rejects_missing_operator_evidence() {
     let mut fixture = assembled_final_packet_fixture();
     fixture
@@ -1891,6 +1924,80 @@ fn final_packet_verifier_rejects_symlinked_operator_packet_before_parsing() {
     assert!(
         error.to_string().contains("regular file"),
         "symlinked packet should cite regular-file policy: {error}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn final_packet_verifier_rejects_symlinked_static_manifest_before_parsing() {
+    let fixture = assembled_final_packet_fixture();
+    let symlink_path = fixture
+        .temp
+        .path()
+        .join("static-artifacts-manifest-link.json");
+    std::os::unix::fs::symlink(&fixture.static_manifest_path, &symlink_path)
+        .expect("static manifest symlink should create");
+    mutate_packet_json(&fixture.operator_packet_path, |packet| {
+        packet["static_manifest_path"] = serde_json::json!(symlink_path.to_string_lossy());
+    });
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("symlinked static manifest should fail closed");
+
+    assert!(
+        error.to_string().contains("regular file"),
+        "symlinked static manifest should cite regular-file policy: {error}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn final_packet_verifier_rejects_symlinked_approval_envelope_before_parsing() {
+    let fixture = assembled_final_packet_fixture();
+    let approval_envelope_path =
+        std::path::PathBuf::from(&fixture.operator_evidence().approval_envelope_path);
+    let real_path = fixture.temp.path().join("approval-envelope-real.json");
+    std::fs::rename(&approval_envelope_path, &real_path)
+        .expect("approval envelope should move behind symlink");
+    std::os::unix::fs::symlink(&real_path, &approval_envelope_path)
+        .expect("approval envelope symlink should create");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("symlinked approval envelope should fail closed");
+
+    assert!(
+        error.to_string().contains("regular file"),
+        "symlinked approval envelope should cite regular-file policy: {error}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn final_packet_verifier_rejects_symlinked_required_artifact_before_hashing() {
+    let fixture = assembled_final_packet_fixture();
+    let strategy_input_path =
+        std::path::PathBuf::from(&fixture.operator_evidence().strategy_input_evidence_path);
+    let real_path = fixture.temp.path().join("strategy-input-real.json");
+    std::fs::rename(&strategy_input_path, &real_path)
+        .expect("strategy input artifact should move behind symlink");
+    std::os::unix::fs::symlink(&real_path, &strategy_input_path)
+        .expect("strategy input symlink should create");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("symlinked required artifact should fail closed");
+
+    assert!(
+        error.to_string().contains("regular file"),
+        "symlinked required artifact should cite regular-file policy: {error}"
     );
 }
 

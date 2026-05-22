@@ -1641,6 +1641,206 @@ def assert_cache_prune_rejects_conflicting_modes() -> None:
             raise AssertionError((result.returncode, result.stdout, result.stderr))
 
 
+def assert_cache_reset_dry_run_reports_managed_target_children_without_deleting() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo)
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        debug_file = target / "debug" / "artifact.bin"
+        release_file = target / "release" / "artifact.bin"
+        outside_file = root_base / "bolt-v2" / "outside.bin"
+        debug_file.parent.mkdir(parents=True)
+        release_file.parent.mkdir(parents=True)
+        outside_file.parent.mkdir(parents=True, exist_ok=True)
+        debug_file.write_bytes(b"debug")
+        release_file.write_bytes(b"release")
+        outside_file.write_bytes(b"outside")
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        result = run_owner(["cache-reset", "--repo", str(repo), "--dry-run", "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError(
+                f"cache-reset dry-run should succeed: returncode={result.returncode} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        payload = json.loads(result.stdout)
+        candidate_paths = {pathlib.Path(str(entry.get("path"))).resolve() for entry in payload.get("candidates", [])}
+        if (
+            payload.get("dry_run") is not True
+            or (target / "debug").resolve() not in candidate_paths
+            or (target / "release").resolve() not in candidate_paths
+            or outside_file.resolve() in candidate_paths
+            or not debug_file.exists()
+            or not release_file.exists()
+        ):
+            raise AssertionError(f"cache-reset dry-run did not report managed target children safely: {payload!r}")
+
+
+def assert_cache_reset_apply_refuses_active_related_process() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, active_process_patterns=["cargo", "rustc", "rust_verification.py"])
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        protected_file = target / "debug" / "protected.bin"
+        protected_file.parent.mkdir(parents=True)
+        protected_file.write_bytes(b"active")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            f"""#!/usr/bin/env bash
+printf '123 1 cargo build --manifest-path {repo / "Cargo.toml"}\\n'
+""",
+        )
+        proc_dir = tmp_path / "proc" / "123"
+        proc_dir.mkdir(parents=True)
+        (proc_dir / "cwd").symlink_to(repo)
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "proc")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cache-reset", "--repo", str(repo), "--apply", "--json"], env=env)
+        combined = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0 or not protected_file.exists() or "active_process" not in combined:
+            raise AssertionError(
+                "cache-reset apply must refuse before deletion when related Rust processes are active: "
+                f"returncode={result.returncode} protected_exists={protected_file.exists()} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
+def assert_cache_reset_apply_removes_only_managed_target_children() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo)
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        debug_file = target / "debug" / "artifact.bin"
+        release_file = target / "release" / "artifact.bin"
+        outside_file = root_base / "bolt-v2" / "outside.bin"
+        debug_file.parent.mkdir(parents=True)
+        release_file.parent.mkdir(parents=True)
+        outside_file.parent.mkdir(parents=True, exist_ok=True)
+        debug_file.write_bytes(b"debug")
+        release_file.write_bytes(b"release")
+        outside_file.write_bytes(b"outside")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+exit 0
+""",
+        )
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cache-reset", "--repo", str(repo), "--apply", "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError(
+                f"cache-reset apply should succeed: returncode={result.returncode} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        payload = json.loads(result.stdout)
+        removed_paths = {pathlib.Path(str(entry.get("path"))).resolve() for entry in payload.get("removed", [])}
+        if (
+            debug_file.exists()
+            or release_file.exists()
+            or not target.exists()
+            or not outside_file.exists()
+            or (target / "debug").resolve() not in removed_paths
+            or (target / "release").resolve() not in removed_paths
+        ):
+            raise AssertionError(f"cache-reset apply did not remove only managed target children: {payload!r}")
+
+
+def assert_cache_reset_apply_refuses_symlinked_target() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo)
+        root_base = tmp_path / "rust-root"
+        namespace = root_base / "bolt-v2"
+        namespace.mkdir(parents=True)
+        outside = tmp_path / "outside-target"
+        outside_debug = outside / "debug" / "outside.bin"
+        outside_debug.parent.mkdir(parents=True)
+        outside_debug.write_bytes(b"outside")
+        (namespace / "target").symlink_to(outside, target_is_directory=True)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+exit 0
+""",
+        )
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cache-reset", "--repo", str(repo), "--apply", "--json"], env=env)
+        combined = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0 or not outside_debug.exists() or "symlink" not in combined.lower():
+            raise AssertionError(
+                "cache-reset apply must refuse a symlinked managed target before deleting outside paths: "
+                f"returncode={result.returncode} outside_exists={outside_debug.exists()} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
+def assert_cache_prune_apply_refuses_symlinked_target() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=10**15)
+        root_base = tmp_path / "rust-root"
+        namespace = root_base / "bolt-v2"
+        namespace.mkdir(parents=True)
+        outside = tmp_path / "outside-target"
+        outside_debug = outside / "debug" / "old.bin"
+        outside_debug.parent.mkdir(parents=True)
+        outside_debug.write_bytes(b"outside")
+        old_time = time.time() - (15 * 24 * 60 * 60)
+        os.utime(outside_debug, (old_time, old_time))
+        os.utime(outside_debug.parent, (old_time, old_time))
+        (namespace / "target").symlink_to(outside, target_is_directory=True)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+exit 0
+""",
+        )
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cache-prune", "--repo", str(repo), "--apply", "--json"], env=env)
+        combined = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0 or not outside_debug.exists() or "symlink" not in combined.lower():
+            raise AssertionError(
+                "cache-prune apply must refuse a symlinked managed target before deleting outside paths: "
+                f"returncode={result.returncode} outside_exists={outside_debug.exists()} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
 def assert_repo_policy_declares_cache_retention() -> None:
     text = (REPO_ROOT / "ci" / "rust-verification.toml").read_text(encoding="utf-8")
     required = (
@@ -2729,6 +2929,375 @@ exit 0
             )
 
 
+def assert_cleanup_dry_run_reports_stale_tmp_bundles_without_deleting() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        tmp_parent = tmp_path / "tmp"
+        tmp_parent.mkdir()
+        write_policy_with_cache(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    f"""\
+
+                    [cleanup.tmp_bundles]
+                    parent = "{tmp_parent}"
+                    prefix = "bolt-v2-"
+                    prune_after_days = 1
+                    """
+                )
+            )
+
+        old_bundle = tmp_parent / "bolt-v2-old-review"
+        old_bundle.mkdir()
+        (old_bundle / "payload.bin").write_bytes(b"old")
+        fresh_bundle = tmp_parent / "bolt-v2-fresh-review"
+        fresh_bundle.mkdir()
+        (fresh_bundle / "payload.bin").write_bytes(b"fresh")
+        unrelated = tmp_parent / "other-old-review"
+        unrelated.mkdir()
+        (unrelated / "payload.bin").write_bytes(b"other")
+        old_time = time.time() - (2 * 24 * 60 * 60)
+        os.utime(old_bundle, (old_time, old_time))
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
+        result = run_owner(["cleanup", "--repo", str(repo), "--dry-run", "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError(
+                f"cleanup dry-run should succeed: returncode={result.returncode} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        payload = json.loads(result.stdout)
+        candidates = payload.get("candidates", [])
+        candidate_paths = {entry.get("path") for entry in candidates}
+        if (
+            payload.get("dry_run") is not True
+            or payload.get("refused") is not False
+            or str(old_bundle) not in candidate_paths
+            or str(fresh_bundle) in candidate_paths
+            or str(unrelated) in candidate_paths
+            or not old_bundle.exists()
+        ):
+            raise AssertionError(f"cleanup dry-run did not report only stale configured tmp bundles: {payload!r}")
+
+
+def assert_cleanup_dry_run_reports_worktree_targets_without_deleting() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        write_policy_with_cache(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    """\
+
+                    [cleanup.worktree_targets]
+                    dirname = "target"
+                    """
+                )
+            )
+
+        target = repo / "target"
+        target.mkdir()
+        (target / "payload.bin").write_bytes(b"target")
+        unrelated = repo / "not-target"
+        unrelated.mkdir()
+        (unrelated / "payload.bin").write_bytes(b"other")
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
+        result = run_owner(["cleanup", "--repo", str(repo), "--dry-run", "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError(
+                f"cleanup dry-run should succeed: returncode={result.returncode} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        payload = json.loads(result.stdout)
+        candidates = payload.get("candidates", [])
+        candidate_paths = {pathlib.Path(str(entry.get("path"))).resolve() for entry in candidates}
+        if (
+            payload.get("dry_run") is not True
+            or target.resolve() not in candidate_paths
+            or unrelated.resolve() in candidate_paths
+            or not target.exists()
+        ):
+            raise AssertionError(f"cleanup dry-run did not report configured worktree target: {payload!r}")
+
+
+def assert_cleanup_apply_removes_stale_tmp_bundles_only() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        tmp_parent = tmp_path / "tmp"
+        tmp_parent.mkdir()
+        write_policy_with_cache(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    f"""\
+
+                    [cleanup.tmp_bundles]
+                    parent = "{tmp_parent}"
+                    prefix = "bolt-v2-"
+                    prune_after_days = 1
+                    """
+                )
+            )
+
+        old_bundle = tmp_parent / "bolt-v2-old-review"
+        old_bundle.mkdir()
+        (old_bundle / "payload.bin").write_bytes(b"old")
+        fresh_bundle = tmp_parent / "bolt-v2-fresh-review"
+        fresh_bundle.mkdir()
+        (fresh_bundle / "payload.bin").write_bytes(b"fresh")
+        old_time = time.time() - (2 * 24 * 60 * 60)
+        os.utime(old_bundle, (old_time, old_time))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+exit 0
+""",
+        )
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cleanup", "--repo", str(repo), "--apply", "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError(
+                f"cleanup apply should succeed: returncode={result.returncode} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        payload = json.loads(result.stdout)
+        removed_paths = {pathlib.Path(str(entry.get("path"))).resolve() for entry in payload.get("removed", [])}
+        if (
+            old_bundle.exists()
+            or not fresh_bundle.exists()
+            or old_bundle.resolve() not in removed_paths
+            or payload.get("dry_run") is not False
+        ):
+            raise AssertionError(f"cleanup apply did not remove only stale configured tmp bundles: {payload!r}")
+
+
+def assert_cleanup_apply_refuses_active_worktree_target_process() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "--allow-empty", "-m", "init"],
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        worktree = tmp_path / "bolt-v2-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "cleanup-test", str(worktree)],
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        write_policy_with_cache(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    """\
+
+                    [cleanup.worktree_targets]
+                    dirname = "target"
+                    """
+                )
+            )
+
+        target = worktree / "target"
+        target.mkdir()
+        protected = target / "protected.bin"
+        protected.write_bytes(b"active")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+printf '123 1 cargo build\n'
+""",
+        )
+        proc_dir = tmp_path / "proc" / "123"
+        proc_dir.mkdir(parents=True)
+        (proc_dir / "cwd").symlink_to(worktree)
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
+        env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "proc")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cleanup", "--repo", str(repo), "--apply", "--json"], env=env)
+        combined = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0 or not protected.exists() or "active_process" not in combined:
+            raise AssertionError(
+                "cleanup apply must refuse when a related process is active in a candidate worktree target: "
+                f"returncode={result.returncode} protected_exists={protected.exists()} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
+def assert_cleanup_fails_closed_when_worktree_inventory_unavailable() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        tmp_parent = tmp_path / "tmp"
+        tmp_parent.mkdir()
+        write_policy_with_cache(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    f"""\
+
+                    [cleanup.tmp_bundles]
+                    parent = "{tmp_parent}"
+                    prefix = "bolt-v2-"
+                    prune_after_days = 1
+                    """
+                )
+            )
+        old_bundle = tmp_parent / "bolt-v2-old-review"
+        old_bundle.mkdir()
+        (old_bundle / "payload.bin").write_bytes(b"old")
+        old_time = time.time() - (2 * 24 * 60 * 60)
+        os.utime(old_bundle, (old_time, old_time))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "git",
+            """#!/usr/bin/env bash
+exit 1
+""",
+        )
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cleanup", "--repo", str(repo), "--dry-run", "--json"], env=env)
+        combined = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0 or not old_bundle.exists() or "worktree" not in combined.lower():
+            raise AssertionError(
+                "cleanup must fail closed when registered worktree inventory is unavailable: "
+                f"returncode={result.returncode} bundle_exists={old_bundle.exists()} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
+def assert_cleanup_candidate_removal_validates_namespace() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "payload.bin").write_bytes(b"unsafe")
+        owner = load_owner_module()
+        try:
+            owner.remove_cleanup_candidate({"class": "tmp_bundle", "path": str(outside), "parent": str(tmp_path / "tmp")})
+        except owner.PolicyError:
+            pass
+        else:
+            raise AssertionError("cleanup candidate removal accepted a tmp bundle outside its configured parent")
+        if not outside.exists():
+            raise AssertionError("cleanup candidate namespace validation ran after deletion")
+
+
+def assert_cleanup_apply_rechecks_candidate_before_deletion() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        bundle_one = tmp_path / "tmp" / "bolt-v2-one"
+        bundle_two = tmp_path / "tmp" / "bolt-v2-two"
+        bundle_one.mkdir(parents=True)
+        bundle_two.mkdir(parents=True)
+        owner = load_owner_module()
+        candidates = [
+            {
+                "bytes": 1,
+                "class": "tmp_bundle",
+                "path": str(bundle_one),
+                "parent": str(bundle_one.parent),
+                "reason": "test",
+            },
+            {
+                "bytes": 1,
+                "class": "tmp_bundle",
+                "path": str(bundle_two),
+                "parent": str(bundle_two.parent),
+                "reason": "test",
+            },
+        ]
+        removed: list[str] = []
+        candidate_checks: list[str] = []
+        originals = {
+            "load_policy": owner.load_policy,
+            "root_base": owner.root_base,
+            "registered_worktree_paths": owner.registered_worktree_paths,
+            "cleanup_tmp_bundle_candidates": owner.cleanup_tmp_bundle_candidates,
+            "cleanup_worktree_target_candidates": owner.cleanup_worktree_target_candidates,
+            "active_process_refusal_payload": owner.active_process_refusal_payload,
+            "cleanup_candidate_refusal_payload": owner.cleanup_candidate_refusal_payload,
+            "remove_cleanup_candidate": owner.remove_cleanup_candidate,
+            "cache_lock": owner.cache_lock,
+        }
+        lock_modes: list[bool] = []
+        try:
+            owner.load_policy = lambda _repo: {"target_namespace": "bolt-v2"}
+            owner.root_base = lambda: tmp_path / "rust-root"
+            owner.registered_worktree_paths = lambda _repo: set()
+            owner.cleanup_tmp_bundle_candidates = lambda _repo, _policy, *, now, registered: candidates
+            owner.cleanup_worktree_target_candidates = lambda _repo, _policy, *, registered: []
+            owner.active_process_refusal_payload = lambda _repo, _target, _policy: None
+            owner.cache_lock = lambda _policy, *, exclusive: contextlib.nullcontext(lock_modes.append(exclusive))
+
+            def fake_candidate_refusal(entry: dict[str, object], _policy: dict[str, object]) -> dict[str, object] | None:
+                candidate_checks.append(str(entry["path"]))
+                if len(candidate_checks) <= len(candidates):
+                    return None
+                return {
+                    "candidates": [],
+                    "dry_run": False,
+                    "reclaimable_bytes": 0,
+                    "refusal_code": "active_process",
+                    "refusal_reason": "candidate became active before deletion",
+                    "refused": True,
+                    "target_dir": str(entry["path"]),
+                }
+
+            owner.cleanup_candidate_refusal_payload = fake_candidate_refusal
+            owner.remove_cleanup_candidate = lambda entry: removed.append(str(entry["path"]))
+            payload = owner.cleanup_payload(repo, dry_run=False)
+        finally:
+            for name, value in originals.items():
+                setattr(owner, name, value)
+        if (
+            payload.get("refusal_code") != "active_process"
+            or removed
+            or len(candidate_checks) <= len(candidates)
+            or lock_modes != [True]
+        ):
+            raise AssertionError(
+                "cleanup apply must re-check each candidate immediately before deletion: "
+                f"payload={payload!r} removed={removed!r} candidate_checks={candidate_checks!r} "
+                f"lock_modes={lock_modes!r}"
+            )
+
+
 def assert_managed_cargo_rejects_alias_subcommands() -> None:
     failures: list[str] = []
     cases: list[tuple[str, str | None]] = [(alias, None) for alias in ["b", "c", "d", "r", "t"]]
@@ -3109,6 +3678,13 @@ def assert_v6_red_policy_gaps() -> None:
         assert_v6_red_disk_preflight_before_managed_cargo_and_run,
         assert_v6_red_nextest_archive_extraction_uses_exclusive_cache_lock,
         assert_managed_cargo_clean_keeps_disk_pressure_escape_hatch,
+        assert_cleanup_dry_run_reports_stale_tmp_bundles_without_deleting,
+        assert_cleanup_dry_run_reports_worktree_targets_without_deleting,
+        assert_cleanup_apply_removes_stale_tmp_bundles_only,
+        assert_cleanup_apply_refuses_active_worktree_target_process,
+        assert_cleanup_fails_closed_when_worktree_inventory_unavailable,
+        assert_cleanup_candidate_removal_validates_namespace,
+        assert_cleanup_apply_rechecks_candidate_before_deletion,
         assert_managed_cargo_rejects_alias_subcommands,
         assert_v6_red_managed_cargo_rejects_target_routing_overrides,
         assert_managed_cargo_rejects_config_file_target_routing_override,
@@ -3168,6 +3744,11 @@ def main() -> int:
     assert_cache_prune_apply_removes_only_candidates()
     assert_cache_prune_apply_preserves_subtree_when_scan_incomplete()
     assert_cache_prune_rejects_conflicting_modes()
+    assert_cache_reset_dry_run_reports_managed_target_children_without_deleting()
+    assert_cache_reset_apply_refuses_active_related_process()
+    assert_cache_reset_apply_removes_only_managed_target_children()
+    assert_cache_reset_apply_refuses_symlinked_target()
+    assert_cache_prune_apply_refuses_symlinked_target()
     assert_repo_policy_declares_cache_retention()
     assert_v6_regression_cargo_process_names_stay_visible()
     assert_managed_env_scrubs_build_target_dir_and_routes_target_dir()

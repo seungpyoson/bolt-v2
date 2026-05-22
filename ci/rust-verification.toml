@@ -39,3 +39,11 @@ prunable = true
 
 [cache.retention.other]
 prunable = false
+
+[cleanup.tmp_bundles]
+parent = "/private/tmp"
+prefix = "bolt-v2-"
+prune_after_days = 7
+
+[cleanup.worktree_targets]
+dirname = "target"

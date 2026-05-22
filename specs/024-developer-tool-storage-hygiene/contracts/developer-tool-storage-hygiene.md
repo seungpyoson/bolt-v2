@@ -7,6 +7,7 @@ This contract applies only to #375.
 Included:
 - Codex TUI log rotation policy.
 - Codex session JSONL TTL policy.
+- Codex history file native-configuration guidance as report-only #375 evidence.
 - Factory droid log rotation policy or bounded-evidence report.
 - Rustup toolchain retention policy.
 - Report-only measurement for adjacent developer-tool storage discovered during Phase 1.
@@ -31,6 +32,10 @@ retained_rotations = 2
 [codex.sessions]
 ttl_days = 14
 
+[codex.history]
+max_bytes = 104857600
+persistence = "save-all"
+
 [factory.log]
 max_bytes = 209715200
 retained_rotations = 2
@@ -53,6 +58,7 @@ Dry-run output must include:
 - Evaluated home root or scratch root.
 - Per-surface bytes and cleanup eligibility.
 - Candidate actions with reason and estimated bytes.
+- Codex history native-config status and reason.
 - Protected rustup toolchains and reason.
 - Report-only large surfaces and reason.
 - Out-of-scope adjacent surfaces.
@@ -62,7 +68,7 @@ Dry-run must not modify files.
 ## Apply Contract
 
 Apply behavior is allowed only after explicit operator approval for any new operator-facing command surface. If approved, apply must:
-- Re-validate policy.
+- Re-validate policy immediately before mutation.
 - Re-scan immediately before mutation.
 - Refuse protected and report-only targets.
 - Preserve active, default, and project-pinned rustup toolchains.

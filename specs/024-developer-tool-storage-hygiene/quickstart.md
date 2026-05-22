@@ -16,6 +16,7 @@ Use scratch directories only:
 scratch-home/
 |-- .codex/
 |   |-- log/codex-tui.log
+|   |-- history.jsonl
 |   |-- sessions/2026/05/*.jsonl
 |   `-- logs_2.sqlite-wal
 |-- .factory/logs/droid-log-single.log
@@ -29,9 +30,11 @@ RED tests should prove:
 - Oversized Codex/Factory logs are rotation candidates.
 - Stale Codex sessions are TTL prune candidates.
 - Codex sqlite db/WAL files are report-only.
+- Codex history is report-only and mapped to native config guidance.
 - Active, default, and project-pinned rustup toolchains are protected.
 - Stale unprotected toolchains are surfaced as candidates.
 - Preflight fails closed when configured thresholds are breached.
+- Apply revalidates policy immediately before mutation and fails closed if the policy changed.
 
 ## Verification Commands
 

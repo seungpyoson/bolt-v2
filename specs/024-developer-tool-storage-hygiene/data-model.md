@@ -29,6 +29,8 @@ Fields:
 - `codex_sessions.ttl_days`
 - `factory_log.max_bytes`
 - `factory_log.retained_rotations`
+- `codex_history.max_bytes`
+- `codex_history.persistence`
 - `rustup_toolchains.retain_recent`
 - `rustup_toolchains.stale_after_days`
 - `preflight.warning_bytes`
@@ -38,7 +40,7 @@ Fields:
 Validation:
 - Size and day values must be non-negative integers.
 - `retained_rotations` and `retain_recent` must be bounded integers.
-- Report-only surfaces cannot have apply actions.
+- Report-only and native-config surfaces cannot have apply actions.
 
 ## ToolchainState
 
@@ -71,7 +73,7 @@ Fields:
 - `mode`: `dry_run` or `apply`
 
 Validation:
-- `apply` requires prior policy validation and must not target report-only or protected items.
+- `apply` requires immediate policy validation before mutation and must not target report-only or protected items.
 - Candidate path must resolve under its configured path family.
 
 ## PreflightReport

@@ -2051,7 +2051,7 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
             if token.startswith("-"):
                 index += 1
                 continue
-            index += 1
+            return tokens[index:]
         return None
     starters = {
         "bash",
@@ -2129,6 +2129,10 @@ def env_short_split_tokens(tokens: list[str], index: int) -> list[str] | None:
 def env_command_prefix_index(tokens: list[str], index: int) -> int | None:
     while index < len(tokens):
         token = tokens[index]
+        redirection_index = shell_redirection_next_index(tokens, index)
+        if redirection_index is not None:
+            index = redirection_index
+            continue
         if token == "--":
             return index + 1
         if token in ENV_OPTIONS_WITHOUT_ARGUMENT:
@@ -2162,10 +2166,23 @@ def env_command_prefix_index(tokens: list[str], index: int) -> int | None:
     return index
 
 
+def shell_redirection_next_index(tokens: list[str], index: int) -> int | None:
+    token = tokens[index]
+    if token in {">", ">>", "<", "<<", "<>", ">|"}:
+        return min(index + 2, len(tokens))
+    if re.match(r"^\d?(?:>>?|<<?|<>|>\|).+", token):
+        return index + 1
+    return None
+
+
 def env_inner_tokens(tokens: list[str]) -> list[str] | None:
     index = 1
     while index < len(tokens):
         token = tokens[index]
+        redirection_index = shell_redirection_next_index(tokens, index)
+        if redirection_index is not None:
+            index = redirection_index
+            continue
         if token == "--":
             return tokens[index + 1 :]
         if token in ENV_OPTIONS_WITHOUT_ARGUMENT:
@@ -2313,7 +2330,7 @@ def raw_rust_tool_token(name: str) -> bool:
 
 
 def path_name_looks_like_renamed_cargo(name: str) -> bool:
-    return name == "c" or name.endswith("cargo") or raw_rust_tool_token(name)
+    return name == "c" or raw_rust_tool_token(name) or (name.endswith("cargo") and "_" not in name)
 
 
 def path_executable_looks_like_cargo(token: str) -> bool:
@@ -2330,7 +2347,7 @@ def path_executable_looks_like_cargo(token: str) -> bool:
 
 
 def path_name_looks_like_renamed_rustc(name: str) -> bool:
-    return name == "r" or name.endswith("rustc") or name == "rustc"
+    return name == "r" or name == "rustc" or (name.endswith("rustc") and "_" not in name)
 
 
 def path_executable_looks_like_rustc(token: str) -> bool:
@@ -2347,7 +2364,10 @@ def path_executable_looks_like_rustc(token: str) -> bool:
 
 
 def path_invocation_has_cargo_subcommand(tokens: list[str]) -> bool:
-    if not tokens or "/" not in tokens[0]:
+    if not tokens:
+        return False
+    executable = pathlib.Path(tokens[0]).name
+    if "/" not in tokens[0] and not path_name_looks_like_renamed_cargo(executable):
         return False
     command_index = consume_cargo_global_options(tokens, 1)
     return command_index < len(tokens) and tokens[command_index] in CARGO_PROCESS_SUBCOMMANDS
@@ -2618,6 +2638,12 @@ def tokens_have_raw_cargo(
         for token in tokens[1:]
     ):
         return True
+    if path_name_looks_like_renamed_rustc(executable) and any(
+        token in {"--crate-name", "--emit", "--out-dir", "--artifact-dir"}
+        or token.startswith(("--emit=", "--out-dir=", "--artifact-dir="))
+        for token in tokens[1:]
+    ):
+        return True
     if executable in ("bash", "dash", "fish", "sh", "zsh"):
         nested = shell_command(tokens)
         return nested is not None and tokens_have_raw_cargo(
@@ -2831,7 +2857,11 @@ def direct_raw_cargo_storage_override_messages(tokens: list[str]) -> set[str]:
     messages: set[str] = set()
     if any(token == "--target-dir" or token.startswith("--target-dir=") for token in tokens):
         messages.add("cargo --target-dir raw target override must be classified")
-    if tokens and (pathlib.Path(tokens[0]).name == "rustc" or path_executable_looks_like_rustc(tokens[0])):
+    if tokens and (
+        pathlib.Path(tokens[0]).name == "rustc"
+        or path_executable_looks_like_rustc(tokens[0])
+        or path_name_looks_like_renamed_rustc(pathlib.Path(tokens[0]).name)
+    ):
         if any(token == "--out-dir" or token.startswith("--out-dir=") for token in tokens):
             messages.add("rustc --out-dir raw output override must be classified")
         if any(token == "--artifact-dir" or token.startswith("--artifact-dir=") for token in tokens):
@@ -3747,6 +3777,10 @@ def dynamic_env_segment_messages(
             argument = expanded[index]
             if argument in SHELL_COMMAND_BOUNDARIES:
                 break
+            redirection_index = shell_redirection_next_index(expanded, index)
+            if redirection_index is not None:
+                index = redirection_index
+                continue
             if argument == "--":
                 index += 1
                 continue

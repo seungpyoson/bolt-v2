@@ -1618,6 +1618,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "rustc --out-dir raw output override must be classified",
         ),
         (
+            "myrustc --out-dir /tmp/raw-out",
+            "rustc --out-dir raw output override must be classified",
+        ),
+        (
             "cargo rustc -- --artifact-dir /tmp/raw-artifacts",
             "cargo rustc --artifact-dir raw output override must be classified",
         ),
@@ -1642,6 +1646,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --target-dir raw target override must be classified",
         ),
         (
+            "mycargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
             "/tmp/builder build --target-dir /tmp/raw-target",
             "cargo --target-dir raw target override must be classified",
         ),
@@ -1659,6 +1667,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "docker run --label my-label rust cargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "env >output.log /tmp/c build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "runuser -u user /tmp/c build --target-dir /tmp/raw-target",
             "cargo --target-dir raw target override must be classified",
         ),
         (

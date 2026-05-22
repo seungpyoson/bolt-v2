@@ -764,6 +764,10 @@ def env_command_index(tokens: list[str]) -> int:
     index = 1
     while index < len(tokens):
         token = tokens[index]
+        redirection_index = shell_redirection_next_index(tokens, index)
+        if redirection_index is not None:
+            index = redirection_index
+            continue
         if token == "--":
             return index + 1
         if token in ("-i", "--ignore-environment", "-0", "--null", "-v", "--debug"):
@@ -800,6 +804,15 @@ def env_command_index(tokens: list[str]) -> int:
             continue
         return index
     return index
+
+
+def shell_redirection_next_index(tokens: list[str], index: int) -> int | None:
+    token = tokens[index]
+    if token in {">", ">>", "<", "<<", "<>", ">|"}:
+        return min(index + 2, len(tokens))
+    if re.match(r"^\d?(?:>>?|<<?|<>|>\|).+", token):
+        return index + 1
+    return None
 
 
 def env_short_cluster_next_index(tokens: list[str], index: int, cluster: str) -> int | None:
@@ -1398,6 +1411,7 @@ def su_wrapped_tokens(tokens: list[str]) -> list[str] | None:
             if token.startswith("-"):
                 index += 1
                 continue
+            return tokens[index:]
         index += 1
     return None
 
@@ -1528,7 +1542,9 @@ def executable_is_rust_tool(executable: str) -> bool:
 
 
 def path_name_looks_like_renamed_cargo(executable: str) -> bool:
-    return executable == "c" or executable.endswith("cargo") or executable_is_rust_tool(executable)
+    return executable == "c" or executable_is_rust_tool(executable) or (
+        executable.endswith("cargo") and "_" not in executable
+    )
 
 
 def path_executable_looks_like_cargo(token: str) -> bool:
@@ -1545,7 +1561,7 @@ def path_executable_looks_like_cargo(token: str) -> bool:
 
 
 def path_name_looks_like_renamed_rustc(executable: str) -> bool:
-    return executable == "r" or executable.endswith("rustc") or executable == "rustc"
+    return executable == "r" or executable == "rustc" or (executable.endswith("rustc") and "_" not in executable)
 
 
 def path_executable_looks_like_rustc(token: str) -> bool:
@@ -1584,7 +1600,10 @@ def tokens_may_be_renamed_rustc(tokens: list[str], *, depth: int = 0) -> bool:
     segments = shell_command_segments(tokens)
     if segments:
         return any(tokens_may_be_renamed_rustc(segment, depth=depth + 1) for segment in segments)
-    if path_executable_looks_like_rustc(tokens[0]) and tokens_have_rustc_specific_flags(tokens[1:]):
+    if (
+        (path_executable_looks_like_rustc(tokens[0]) or path_name_looks_like_renamed_rustc(basename_token(tokens[0])))
+        and tokens_have_rustc_specific_flags(tokens[1:])
+    ):
         return True
     wrapped_tokens = process_wrapper_tokens(tokens)
     if wrapped_tokens is not None:
@@ -1652,7 +1671,10 @@ def tokens_may_be_renamed_cargo(tokens: list[str], *, depth: int = 0) -> bool:
     segments = shell_command_segments(tokens)
     if segments:
         return any(tokens_may_be_renamed_cargo(segment, depth=depth + 1) for segment in segments)
-    if path_executable_looks_like_cargo(tokens[0]) and cargo_subcommand(tokens[1:]) in CARGO_PROCESS_SUBCOMMANDS:
+    if (
+        (path_executable_looks_like_cargo(tokens[0]) or path_name_looks_like_renamed_cargo(basename_token(tokens[0])))
+        and cargo_subcommand(tokens[1:]) in CARGO_PROCESS_SUBCOMMANDS
+    ):
         return True
     wrapped_tokens = process_wrapper_tokens(tokens)
     if wrapped_tokens is None:

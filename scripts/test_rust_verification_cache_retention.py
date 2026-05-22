@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import importlib.util
 import os
@@ -12,6 +14,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import types
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -690,9 +693,9 @@ def assert_cache_prune_active_process_scan_uses_portable_ps_columns() -> None:
         write_executable(
             bin_dir / "ps",
             """#!/usr/bin/env bash
-actual="$1|$2|$3|$4|$5"
+actual="$1|$2|$3|$4|$5|$6|$7|$8"
 printf '%s' "$actual" > "$ARG_FILE"
-test "$actual" = '-ax|-o|pid=|-o|command='
+test "$actual" = '-ww|-ax|-o|pid=|-o|ppid=|-o|command='
 """,
         )
 
@@ -709,6 +712,20 @@ test "$actual" = '-ax|-o|pid=|-o|command='
 
 
 def assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd() -> None:
+    failures: list[AssertionError] = []
+    for _ in range(3):
+        try:
+            assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd_once()
+            return
+        except AssertionError as exc:
+            failures.append(exc)
+            if "insufficient_process_visibility" not in str(exc):
+                raise
+            time.sleep(0.05)
+    raise failures[-1]
+
+
+def assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd_once() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         repo = tmp_path / "repo"
@@ -760,6 +777,53 @@ printf 'p123\\nn{unrelated}\\n'
             raise AssertionError(payload)
         if debug_file.parent.exists():
             raise AssertionError("lsof-visible unrelated cargo process blocked candidate deletion")
+
+
+def assert_cache_prune_skips_unrelated_process_before_cwd_lookup() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=10**15)
+
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        debug_file = target / "debug" / "old.bin"
+        debug_file.parent.mkdir(parents=True)
+        debug_file.write_bytes(b"abc")
+        old_time = time.time() - (15 * 24 * 60 * 60)
+        os.utime(debug_file, (old_time, old_time))
+        os.utime(debug_file.parent, (old_time, old_time))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        lsof_marker = tmp_path / "lsof-called"
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+printf '123 unrelated-daemon --idle\\n'
+""",
+        )
+        write_executable(
+            bin_dir / "lsof",
+            f"""#!/usr/bin/env bash
+touch {lsof_marker}
+exit 1
+""",
+        )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "missing-proc")
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+        result = run_owner(["cache-prune", "--repo", str(repo), "--apply", "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        if lsof_marker.exists():
+            raise AssertionError("unrelated non-Rust process triggered cwd/lsof lookup")
+        if debug_file.parent.exists():
+            raise AssertionError("unrelated process prevented stale cache deletion")
 
 
 def assert_cache_prune_apply_ignores_visible_unrelated_process_by_cwd() -> None:
@@ -869,6 +933,12 @@ def assert_cache_prune_refuses_wrapped_active_processes_by_cwd() -> None:
         "nice -- cargo build",
         # Legitimate stack of supported wrappers that exhausts the depth cap.
         "sudo nice env -i bash -c 'rustup run stable cargo test'",
+        # Standard shell redirections can appear before or inside a simple
+        # command without changing the executable that owns the active target.
+        "> /dev/null cargo build",
+        "< /dev/null cargo build",
+        "cargo>out build",
+        "< /dev/null no-mistakes run -- cargo build",
         # Review-regression cases: supported wrapper flags must still expose
         # the wrapped cargo process so apply-prune refuses an active cache.
         "sudo --user root cargo build",
@@ -986,7 +1056,7 @@ def assert_cache_prune_apply_waits_for_managed_cargo_lock() -> None:
         tmp_path = pathlib.Path(tmp)
         repo = tmp_path / "repo"
         repo.mkdir()
-        write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=10**15)
+        write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=1, soft_limit_bytes=10**12)
 
         root_base = tmp_path / "rust-root"
         target = root_base / "bolt-v2" / "target"
@@ -1002,7 +1072,7 @@ def assert_cache_prune_apply_waits_for_managed_cargo_lock() -> None:
         bin_dir.mkdir()
         marker = tmp_path / "started"
         write_executable(
-            bin_dir / "fake-runner",
+            bin_dir / "cargo",
             """#!/usr/bin/env bash
 printf started > "$MARKER"
 sleep 1
@@ -1019,7 +1089,6 @@ exit 0
         env = os.environ.copy()
         env["DEBUG_PARENT"] = str(debug_dir)
         env["MARKER"] = str(marker)
-        env["RUST_VERIFICATION_REAL_CARGO"] = str(bin_dir / "fake-runner")
         env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
         env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
 
@@ -1040,6 +1109,8 @@ exit 0
             if not marker.exists():
                 raise AssertionError("fake managed cargo did not start")
 
+            policy_file = repo / "ci" / "rust-verification.toml"
+            policy_file.write_text(policy_file.read_text().replace("soft_limit_bytes = 1000000000000", "soft_limit_bytes = 1"))
             result = run_owner(["cache-prune", "--repo", str(repo), "--apply", "--json"], env=env)
             stdout, stderr = cargo_proc.communicate(timeout=5)
         finally:
@@ -1062,7 +1133,7 @@ def assert_cache_prune_apply_waits_for_managed_run_lock() -> None:
         tmp_path = pathlib.Path(tmp)
         repo = tmp_path / "repo"
         repo.mkdir()
-        write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=10**15)
+        write_policy_with_cache(repo, active_process_patterns=["cargo"], min_free_bytes=1, soft_limit_bytes=10**12)
         (repo / "justfile").write_text("", encoding="utf-8")
 
         root_base = tmp_path / "rust-root"
@@ -1116,6 +1187,8 @@ exit 0
             if not marker.exists():
                 raise AssertionError("fake managed run did not start")
 
+            policy_file = repo / "ci" / "rust-verification.toml"
+            policy_file.write_text(policy_file.read_text().replace("soft_limit_bytes = 1000000000000", "soft_limit_bytes = 1"))
             result = run_owner(["cache-prune", "--repo", str(repo), "--apply", "--json"], env=env)
             stdout, stderr = run_proc.communicate(timeout=5)
         finally:
@@ -1587,6 +1660,1470 @@ def assert_repo_policy_declares_cache_retention() -> None:
         raise AssertionError(f"missing cache policy fields: {missing}")
 
 
+def cache_prune_for_visible_command(command: str, *, expose_cwd: bool = True) -> tuple[subprocess.CompletedProcess[str], bool]:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, active_process_patterns=["cargo", "rustc", "rust_verification.py"])
+
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        debug_file = target / "debug" / "old.bin"
+        debug_file.parent.mkdir(parents=True)
+        debug_file.write_bytes(b"abc")
+        old_time = time.time() - (15 * 24 * 60 * 60)
+        os.utime(debug_file, (old_time, old_time))
+        os.utime(debug_file.parent, (old_time, old_time))
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        command = command.replace("{repo}", str(repo)).replace("{target}", str(target))
+        escaped_command = command.replace("'", "'\\''")
+        write_executable(
+            bin_dir / "ps",
+            f"""#!/usr/bin/env bash
+printf '123 {escaped_command}\\n'
+""",
+        )
+        if expose_cwd:
+            proc_dir = tmp_path / "proc" / "123"
+            proc_dir.mkdir(parents=True)
+            (proc_dir / "cwd").symlink_to(repo)
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "proc")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+        result = run_owner(["cache-prune", "--repo", str(repo), "--apply", "--json"], env=env)
+        return result, debug_file.exists()
+
+
+def assert_v6_red_active_process_parser_gaps() -> None:
+    commands = [
+        "env -iuLD_PRELOAD cargo build",
+        "env -iu LD_PRELOAD cargo build",
+        "rustup run stable -- -- cargo build",
+        "stdbuf -oL cargo build",
+        "catchsegv cargo test",
+        "command cargo build",
+        "exec cargo build",
+        "nohup cargo build",
+        "time cargo build",
+        "timeout 30 cargo build",
+        "flock /tmp/bolt.lock cargo build",
+        "flock -o /tmp/bolt.lock cargo build",
+        "flock -c 'cargo build' /tmp/bolt.lock",
+        "xargs cargo build",
+        "setsid cargo build",
+        "taskset -c 0 cargo build",
+        "ionice -c2 cargo build",
+        "chrt -r 10 cargo build",
+        "make build",
+        "python -c 'import os; os.system(\"cargo build\")'",
+        "bash -c 'alias c=cargo; c build'",
+        "bash -c 'cargo() { command cargo \"$@\"; }; cargo build'",
+        "bash -c 'builtin command cargo build'",
+        "bash -c 'VAR=val cargo build'",
+        "bash -c 'eval cargo build'",
+        "bash -c 'x=$(cargo build)'",
+        "bash -c 'x=\"$(cargo build)\"'",
+        "bash -c 'x=`cargo build`'",
+        "> /dev/null cargo build",
+        "< /dev/null cargo build",
+        "cargo>out build",
+        "< /dev/null no-mistakes run -- cargo build",
+        "find . -name Cargo.toml -exec cargo build \\;",
+        "su user -c 'cargo build'",
+        "runuser -u user -- cargo build",
+        "sg staff -c 'cargo build'",
+        "sudo -EHu root cargo build",
+        "/tmp/c clean",
+        "/tmp/c test",
+        "/tmp/c build",
+        "/tmp/c clean --manifest-path {repo}/Cargo.toml",
+        "/tmp/c test --manifest-path {repo}/Cargo.toml",
+        "/tmp/c run --manifest-path {repo}/Cargo.toml",
+        "mycargo build --manifest-path {repo}/Cargo.toml",
+        "/tmp/rust-test --manifest-path {repo}/Cargo.toml",
+        "/tmp/r --crate-name bolt_v2 --out-dir {target}/debug/deps --emit=dep-info,link",
+        "/tmp/myrustc --out-dir {target}/debug/deps",
+        "myrustc --out-dir {target}/debug/deps",
+        "bash -c '/tmp/myrustc --out-dir {target}/debug/deps'",
+        "eval /tmp/myrustc --out-dir {target}/debug/deps",
+        "/tmp/rust-build build",
+        "/tmp/repo/scripts/cargo-build-script",
+        "docker exec bolt-dev cargo build /tmp/repo",
+        "docker run -v /tmp/repo:/repo rust cargo build",
+        "docker run --label my-label rust /tmp/c build",
+        "docker run --unknown-opt=rust mycargo build",
+        "podman run --unknown-opt=rust myrustc --out-dir {target}/debug/deps",
+        "env >output.log /tmp/c build",
+        "runuser -u user /tmp/c build",
+        "npm run cargo-build",
+        "python scripts/build.py",
+        "sudo sudo sudo sudo sudo sudo sudo cargo test",
+        "bash -c 'bash -c \"bash -c \\'bash -c \\\\\\'bash -c \\\\\\\\\\\\\\'bash -c \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\'cargo build\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\'\\\\\\\\\\\\\\'\\'\"'",
+    ]
+    misses: list[str] = []
+    for command in commands:
+        result, debug_file_exists = cache_prune_for_visible_command(command)
+        refused = False
+        refusal_code = ""
+        if result.stdout:
+            try:
+                payload = json.loads(result.stdout)
+                refused = payload.get("refused") is True
+                refusal_code = str(payload.get("refusal_code", ""))
+            except json.JSONDecodeError:
+                pass
+        if result.returncode == 0 or not refused or refusal_code not in {
+            "active_process",
+            "process_parse_depth_exceeded",
+            "unsupported_process_wrapper",
+            "unclassified_process",
+            "containerized_process",
+            "script_launched_cargo",
+        } or not debug_file_exists:
+            misses.append(
+                f"{command!r}: returncode={result.returncode} refusal_code={refusal_code!r} "
+                f"target_preserved={debug_file_exists}"
+            )
+    if misses:
+        raise AssertionError("active-process parser silently missed v6 cargo launch forms: " + "; ".join(misses))
+
+
+def assert_v6_red_active_process_wrapper_options_expose_cargo_pattern() -> None:
+    owner = load_owner_module()
+    cases = [
+        "sudo -R /tmp cargo build",
+        "sudo -c staff cargo build",
+        "sudo -a pam cargo build",
+        "env --split-string 'cargo build'",
+        "env --split-string='cargo build'",
+        "env -S'cargo build'",
+        "env -Scargo build",
+        "env -iS timeout 30 cargo build",
+        "env -S timeout 30 cargo build",
+        "env -iuLD_PRELOAD cargo build",
+        "env -iu LD_PRELOAD cargo build",
+        "env --block-signal cargo build",
+        "env --block-signal=PIPE cargo build",
+        "nice --adjustment 10 cargo build",
+        "nice --adjustment=10 cargo build",
+        "timeout -- 30 cargo build",
+        "stdbuf -oL cargo build",
+        "taskset -- 0 cargo build",
+        "catchsegv cargo test",
+        "podman run --rm rust:latest cargo build",
+        "chroot /mnt cargo build",
+        "bash -c 'VAR=val cargo build'",
+        "bash -c 'eval cargo build'",
+        "bash -c 'x=$(cargo build)'",
+        "bash -c 'x=\"$(cargo build)\"'",
+        "bash -c 'x=`cargo build`'",
+        "find . -name Cargo.toml -exec cargo build \\;",
+        "su user -c 'cargo build'",
+        "runuser -u user -- cargo build",
+        "sg staff -c 'cargo build'",
+        "sudo -EHu root cargo build",
+        "flock --timeout 5 /tmp/bolt.lock cargo build",
+        "flock --timeout=5 /tmp/bolt.lock cargo build",
+        "flock -- -lockfile cargo build",
+        "flock /tmp/bolt.lock -c 'cargo build'",
+        "flock -xc 'cargo build' /tmp/bolt.lock",
+    ]
+    misses: list[str] = []
+    for command in cases:
+        names = owner.command_process_names(command)
+        matched = owner.matching_process_pattern(command, ["cargo"])
+        if "cargo" not in names or matched != "cargo":
+            misses.append(f"{command!r}: names={sorted(names)!r} matched={matched!r}")
+    if misses:
+        raise AssertionError("wrapper option parsing must expose wrapped cargo process names: " + "; ".join(misses))
+
+
+def assert_v6_red_wrapper_end_of_options_does_not_overconsume_command_words() -> None:
+    owner = load_owner_module()
+    command = "nice -- -5 cargo build"
+    names = owner.command_process_names(command)
+    matched = owner.matching_process_pattern(command, ["cargo"])
+    if "cargo" in names or matched == "cargo":
+        raise AssertionError(f"{command!r} treated post-separator command argument as nice adjustment: names={sorted(names)!r} matched={matched!r}")
+
+
+def assert_v6_red_wrapped_renamed_cargo_launches_are_classified() -> None:
+    owner = load_owner_module()
+    commands = [
+        "/tmp/mycargo build",
+        "time /tmp/c build",
+        "time -apv /tmp/c test",
+        "command /tmp/c test",
+        "exec /tmp/c clean",
+        "exec -lc /tmp/c clean",
+        "exec -cla name /tmp/c clean",
+        "nohup /tmp/c build",
+        "docker exec container /tmp/c build",
+        "podman run --rm rust:latest /tmp/c build",
+        "chroot /mnt /tmp/c build",
+        "setsid /tmp/c build",
+        "setsid -fw /tmp/c build",
+        "taskset -c 0 /tmp/c build",
+        "taskset -- 0 /tmp/c build",
+        "ionice -c2 /tmp/c build",
+        "ionice -tc2 /tmp/c build",
+        "chrt -r 10 /tmp/c build",
+        "xargs /tmp/c build",
+        "env >output.log /tmp/c build",
+        "runuser -u user /tmp/c build",
+        "mycargo build",
+        "docker run --label my-label rust /tmp/c build",
+        "docker run --unknown-opt=rust mycargo build",
+        "python -c \"import os; os.system('/tmp/c build')\"",
+        "python -c \"import subprocess; subprocess.run(['/tmp/c', 'build'])\"",
+        "python -c \"import subprocess; subprocess.run(args=['/tmp/c', 'build'])\"",
+        "bash -c 'sleep 10 && /tmp/c test'",
+        "bash -c 'echo ok ; /tmp/c build'",
+    ]
+    misses: list[str] = []
+    for command in commands:
+        if not owner.command_may_be_renamed_cargo(command) or not owner.command_may_launch_rust(command):
+            misses.append(
+                f"{command!r}: renamed={owner.command_may_be_renamed_cargo(command)!r} "
+                f"may_launch={owner.command_may_launch_rust(command)!r} "
+                f"names={sorted(owner.command_process_names(command))!r}"
+            )
+    with tempfile.TemporaryDirectory() as tmp:
+        cargo_target = pathlib.Path(tmp) / "cargo"
+        cargo_target.write_text("#!/bin/sh\n", encoding="utf-8")
+        renamed = pathlib.Path(tmp) / "mycargo"
+        renamed.symlink_to(cargo_target)
+        command = f"{renamed} test"
+        if not owner.command_may_be_renamed_cargo(command) or not owner.command_may_launch_rust(command):
+            misses.append(
+                f"{command!r}: renamed={owner.command_may_be_renamed_cargo(command)!r} "
+                f"may_launch={owner.command_may_launch_rust(command)!r} "
+                f"names={sorted(owner.command_process_names(command))!r}"
+            )
+    if misses:
+        raise AssertionError("wrapped renamed cargo launches must be classified: " + "; ".join(misses))
+
+
+def assert_v6_red_active_process_parser_resolves_relative_manifest_scope() -> None:
+    owner = load_owner_module()
+    original_run = owner.subprocess.run
+    original_process_cwd = owner.process_cwd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        repo = root / "bolt-v2"
+        sibling = root / "runner"
+        target = repo / "target"
+        repo.mkdir()
+        sibling.mkdir()
+        target.mkdir()
+
+        def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout=(
+                    "424242 cargo build --manifest-path ../bolt-v2/Cargo.toml\n"
+                    f"424243 cargo test --manifest-path $(echo ; echo {repo}/Cargo.toml)\n"
+                ),
+                stderr="",
+            )
+
+        owner.subprocess.run = fake_run
+        owner.process_cwd = lambda pid: sibling
+        try:
+            related = owner.active_related_processes(
+                repo,
+                target,
+                {"cache": {"active_process_patterns": ["cargo", "rustc", "rust_verification.py"]}},
+            )
+        finally:
+            owner.subprocess.run = original_run
+            owner.process_cwd = original_process_cwd
+
+    if len(related) < 2:
+        raise AssertionError(f"relative/substituted --manifest-path cargo processes outside repo cwd were ignored: {related!r}")
+
+
+def assert_v6_red_active_process_scan_ignores_current_process_ancestor() -> None:
+    owner = load_owner_module()
+    original_run = owner.subprocess.run
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "bolt-v2"
+        target = repo / "target"
+        repo.mkdir()
+        target.mkdir()
+        ancestor_pid = os.getppid()
+        external_pid = ancestor_pid + 100000
+
+        def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout=(
+                    f"{ancestor_pid} bash -c 'python3 scripts/rust_verification.py cargo --repo {repo} -- cargo clean'\n"
+                    f"{external_pid} cargo test --manifest-path {repo / 'Cargo.toml'}\n"
+                ),
+                stderr="",
+            )
+
+        owner.subprocess.run = fake_run
+        try:
+            related = owner.active_related_processes(
+                repo,
+                target,
+                {"cache": {"active_process_patterns": ["cargo", "rustc", "rust_verification.py"]}},
+            )
+        finally:
+            owner.subprocess.run = original_run
+
+    ancestor_entries = [entry for entry in related if entry.get("pid") == ancestor_pid]
+    if ancestor_entries:
+        raise AssertionError(f"current process ancestor was reported as active related process: {ancestor_entries!r}")
+    if not any(entry.get("pid") == external_pid for entry in related):
+        raise AssertionError(f"external cargo process was not reported: {related!r}")
+
+
+def assert_managed_cargo_preflight_errors_are_structured() -> None:
+    owner = load_owner_module()
+    original_cache_status_payload = owner.cache_status_payload
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp)
+        write_policy_with_cache(repo)
+
+        def failing_cache_status(_repo: pathlib.Path) -> dict[str, object]:
+            raise OSError("disk preflight unavailable")
+
+        args = type("Args", (), {"repo": str(repo), "args": ["build"]})()
+        stderr = io.StringIO()
+        owner.cache_status_payload = failing_cache_status
+        try:
+            with contextlib.redirect_stderr(stderr):
+                result = owner.cmd_cargo(args)
+        except OSError as exc:
+            raise AssertionError(f"managed cargo preflight leaked exception: {exc}") from exc
+        finally:
+            owner.cache_status_payload = original_cache_status_payload
+
+    if result != 2:
+        raise AssertionError(f"preflight error should refuse with exit 2, got {result}")
+    try:
+        payload = json.loads(stderr.getvalue())
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"preflight error did not emit structured JSON: {stderr.getvalue()!r}") from exc
+    if payload.get("refusal_code") != "preflight_error" or payload.get("refused") is not True:
+        raise AssertionError(f"unexpected preflight refusal payload: {payload!r}")
+
+
+def assert_managed_cargo_clean_target_errors_are_structured() -> None:
+    owner = load_owner_module()
+    original_target_dir = owner.target_dir
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp)
+        write_policy_with_cache(repo)
+
+        def failing_target_dir(_repo: pathlib.Path, _policy: dict[str, object] | None = None) -> pathlib.Path:
+            raise OSError("managed target unavailable")
+
+        args = type("Args", (), {"repo": str(repo), "args": ["clean"]})()
+        stderr = io.StringIO()
+        owner.target_dir = failing_target_dir
+        try:
+            with contextlib.redirect_stderr(stderr):
+                result = owner.cmd_cargo(args)
+        except OSError as exc:
+            raise AssertionError(f"managed cargo clean leaked target-dir exception: {exc}") from exc
+        finally:
+            owner.target_dir = original_target_dir
+
+    if result != 2:
+        raise AssertionError(f"clean target error should refuse with exit 2, got {result}")
+    try:
+        payload = json.loads(stderr.getvalue())
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"clean target error did not emit structured JSON: {stderr.getvalue()!r}") from exc
+    if payload.get("refusal_code") != "preflight_error" or payload.get("refused") is not True:
+        raise AssertionError(f"unexpected clean target refusal payload: {payload!r}")
+
+
+def assert_v6_red_active_process_parser_resolves_config_target_scope() -> None:
+    owner = load_owner_module()
+    original_run = owner.subprocess.run
+    original_process_cwd = owner.process_cwd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        repo = root / "bolt-v2"
+        sibling = root / "runner"
+        target = repo / "target"
+        repo.mkdir()
+        sibling.mkdir()
+        target.mkdir()
+
+        def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="424242 cargo build --config build.target-dir=../bolt-v2/target\n",
+                stderr="",
+            )
+
+        owner.subprocess.run = fake_run
+        owner.process_cwd = lambda pid: sibling
+        try:
+            related = owner.active_related_processes(
+                repo,
+                target,
+                {"cache": {"active_process_patterns": ["cargo", "rustc", "rust_verification.py"]}},
+            )
+        finally:
+            owner.subprocess.run = original_run
+            owner.process_cwd = original_process_cwd
+
+    if not related:
+        raise AssertionError("relative --config build.target-dir cargo process outside repo cwd was ignored")
+
+
+def assert_v6_red_active_process_parser_resolves_nested_shell_manifest_scope() -> None:
+    owner = load_owner_module()
+    original_run = owner.subprocess.run
+    original_process_cwd = owner.process_cwd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        repo = root / "bolt-v2"
+        sibling = root / "runner"
+        target = repo / "target"
+        repo.mkdir()
+        sibling.mkdir()
+        target.mkdir()
+
+        def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="424242 bash -c 'cargo build --manifest-path ../bolt-v2/Cargo.toml'\n",
+                stderr="",
+            )
+
+        owner.subprocess.run = fake_run
+        owner.process_cwd = lambda pid: sibling
+        try:
+            related = owner.active_related_processes(
+                repo,
+                target,
+                {"cache": {"active_process_patterns": ["cargo", "rustc", "rust_verification.py"]}},
+            )
+        finally:
+            owner.subprocess.run = original_run
+            owner.process_cwd = original_process_cwd
+
+    if not related:
+        raise AssertionError("nested shell relative --manifest-path cargo process outside repo cwd was ignored")
+
+
+def assert_v6_red_active_process_parser_uses_command_scope_without_cwd() -> None:
+    result, debug_file_exists = cache_prune_for_visible_command(
+        "timeout 30 cargo build --manifest-path {repo}/Cargo.toml",
+        expose_cwd=False,
+    )
+    refused = False
+    refusal_code = ""
+    if result.stdout:
+        try:
+            payload = json.loads(result.stdout)
+            refused = payload.get("refused") is True
+            refusal_code = str(payload.get("refusal_code", ""))
+        except json.JSONDecodeError:
+            pass
+    if result.returncode == 0 or not refused or refusal_code not in {"active_process", "unclassified_process"} or not debug_file_exists:
+        raise AssertionError(
+            "active-process parser must refuse scoped Rust wrapper commands even when cwd is unavailable: "
+            f"returncode={result.returncode} refusal_code={refusal_code!r} target_preserved={debug_file_exists} "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+
+
+def assert_v6_red_active_process_parser_fails_closed_for_unscoped_wrapped_rust_without_cwd() -> None:
+    result, debug_file_exists = cache_prune_for_visible_command(
+        "timeout 30 cargo build",
+        expose_cwd=False,
+    )
+    refused = False
+    refusal_code = ""
+    if result.stdout:
+        try:
+            payload = json.loads(result.stdout)
+            refused = payload.get("refused") is True
+            refusal_code = str(payload.get("refusal_code", ""))
+        except json.JSONDecodeError:
+            pass
+    if result.returncode == 0 or not refused or refusal_code != "insufficient_process_visibility" or not debug_file_exists:
+        raise AssertionError(
+            "active-process parser must fail closed for wrapper-launched Rust when cwd and command scope are unavailable: "
+            f"returncode={result.returncode} refusal_code={refusal_code!r} target_preserved={debug_file_exists} "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+
+
+def assert_v6_red_active_process_fails_closed_for_attached_semicolon_shell_chains() -> None:
+    owner = load_owner_module()
+    original_run = owner.subprocess.run
+    original_process_cwd = owner.process_cwd
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="424242 bash -c 'if true; then /tmp/c build; fi'\n",
+            stderr="",
+        )
+
+    owner.subprocess.run = fake_run
+    owner.process_cwd = lambda pid: None
+    try:
+        try:
+            owner.active_related_processes(
+                pathlib.Path("/tmp/repo"),
+                pathlib.Path("/tmp/repo/target"),
+                {"cache": {"active_process_patterns": ["cargo", "rustc", "rust_verification.py"]}},
+            )
+        except owner.ProcessVisibilityError:
+            return
+        raise AssertionError("attached-semicolon renamed Cargo shell chain returned clean process visibility")
+    finally:
+        owner.subprocess.run = original_run
+        owner.process_cwd = original_process_cwd
+
+
+def assert_active_process_parser_uses_single_cwd_snapshot_per_pid() -> None:
+    owner = load_owner_module()
+    original_run = owner.subprocess.run
+    original_getpid = owner.os.getpid
+    original_process_cwd = owner.process_cwd
+    calls: list[int] = []
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="424242 cargo build\n",
+            stderr="",
+        )
+
+    def fake_process_cwd(pid: int) -> pathlib.Path | None:
+        calls.append(pid)
+        return None
+
+    owner.subprocess.run = fake_run
+    owner.os.getpid = lambda: 999999
+    owner.process_cwd = fake_process_cwd
+    try:
+        try:
+            owner.active_related_processes(
+                pathlib.Path("/tmp/repo"),
+                pathlib.Path("/tmp/repo/target"),
+                {"cache": {"active_process_patterns": ["cargo", "rustc", "rust_verification.py"]}},
+            )
+        except owner.ProcessVisibilityError:
+            pass
+        else:
+            raise AssertionError("unscoped cargo without cwd must fail closed")
+    finally:
+        owner.subprocess.run = original_run
+        owner.os.getpid = original_getpid
+        owner.process_cwd = original_process_cwd
+    if calls != [424242]:
+        raise AssertionError(f"process_cwd must be sampled once per pid, got {calls!r}")
+
+
+def assert_v6_red_active_process_parser_ignores_unscoped_opaque_build_without_cwd() -> None:
+    failures: list[str] = []
+    for command in (
+        "make build",
+        "python -m build",
+        "/usr/bin/make build",
+        "/tmp/build-tool test",
+        "timeout 30 ./my-script.sh --out-dir /tmp/output",
+    ):
+        result, debug_file_exists = cache_prune_for_visible_command(command, expose_cwd=False)
+        if result.returncode != 0 or debug_file_exists:
+            failures.append(
+                f"{command!r}: returncode={result.returncode} target_removed={not debug_file_exists} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+    if failures:
+        raise AssertionError(
+            "active-process parser must not fail closed for unscoped generic build commands without cwd: "
+            + "; ".join(failures)
+        )
+
+
+def assert_v6_red_active_process_parser_does_not_treat_trustd_as_rust() -> None:
+    failures: list[str] = []
+    for command in ("trustd", "bash -c 'echo trust'", "python trust_report.py", "grep build Cargo.toml"):
+        result, debug_file_exists = cache_prune_for_visible_command(command, expose_cwd=False)
+        if result.returncode != 0 or debug_file_exists:
+            failures.append(
+                f"{command!r}: returncode={result.returncode} target_removed={not debug_file_exists} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+    if failures:
+        raise AssertionError(
+            "active-process parser must not classify unrelated executable names containing 'rust' as Rust work: "
+            + "; ".join(failures)
+        )
+
+
+def assert_v6_red_active_process_parser_does_not_treat_rust_named_scripts_as_rust() -> None:
+    failures: list[str] = []
+    for command in (
+        "/tmp/cargo-build.sh test",
+        "/tmp/cargo-build.PY test",
+        "tests/cargo-tests.py build",
+        "./rust-tests.sh check",
+        "tools/clippy.bash --dry-run",
+    ):
+        result, debug_file_exists = cache_prune_for_visible_command(command, expose_cwd=False)
+        if result.returncode != 0 or debug_file_exists:
+            failures.append(
+                f"{command!r}: returncode={result.returncode} target_removed={not debug_file_exists} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+    if failures:
+        raise AssertionError(
+            "active-process parser must not classify Rust-named helper scripts as Rust work: "
+            + "; ".join(failures)
+        )
+
+
+def assert_v6_regression_cargo_process_names_stay_visible() -> None:
+    owner = load_owner_module()
+    commands = [
+        "cargo +stable build",
+        "cargo install cargo-nextest --locked",
+        "cargo-clippy --workspace",
+        "cargo-fmt --all",
+        "cargo-nextest run",
+        "nextest run",
+        "rustc --version",
+    ]
+    missing = [
+        (command, sorted(owner.command_process_names(command)))
+        for command in commands
+        if pathlib.Path(command.split()[0]).name not in owner.command_process_names(command)
+    ]
+    if missing:
+        raise AssertionError(f"direct Rust tool process names must stay visible: {missing!r}")
+
+
+def assert_managed_env_scrubs_build_target_dir_and_routes_target_dir() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        root_base = tmp_path / "rust-root"
+        leaky_env = {
+            "BOLT_MANAGED_JUST": "1",
+            "CARGO_BUILD_TARGET_DIR": str(tmp_path / "leaked-build-target"),
+            "CARGO_BUILD_RUSTFLAGS": "--out-dir /tmp/raw-out",
+            "CARGO_ENCODED_RUSTFLAGS": "--out-dir\x1f/tmp/raw-out",
+            "CARGO_HOME": str(tmp_path / "leaked-cargo-home"),
+            "CARGO_INCREMENTAL": "1",
+            "CARGO_INSTALL_ROOT": str(tmp_path / "leaked-install-root"),
+            "CARGO_TARGET_DIR": str(tmp_path / "leaked-target"),
+            "CARGO_TARGET_TMPDIR": str(tmp_path / "leaked-target-tmp"),
+            "RUSTC_WORKSPACE_WRAPPER": str(tmp_path / "leaked-workspace-wrapper"),
+            "RUSTC_WRAPPER": str(tmp_path / "leaked-wrapper"),
+            "RUSTFLAGS": "--out-dir /tmp/raw-out",
+            "RUSTUP_HOME": str(tmp_path / "leaked-rustup-home"),
+        }
+        old_values = {key: os.environ.get(key) for key in [*leaky_env, "RUST_VERIFICATION_ROOT_BASE"]}
+        try:
+            os.environ.update(leaky_env)
+            os.environ["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            env = owner.managed_env(repo)
+        finally:
+            for key, value in old_values.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        expected_target = str(root_base / "bolt-v2" / "target")
+        leaked = sorted(key for key in leaky_env if key in env and key != "CARGO_TARGET_DIR")
+        if leaked:
+            raise AssertionError(f"managed_env must scrub env-based routing/output overrides: {leaked!r}")
+        if env.get("CARGO_TARGET_DIR") != expected_target:
+            raise AssertionError((env.get("CARGO_TARGET_DIR"), expected_target))
+
+
+def assert_managed_cargo_ignores_real_cargo_env_override() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+        root_base = tmp_path / "rust-root"
+        (root_base / "bolt-v2" / "target").mkdir(parents=True)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        path_marker = tmp_path / "path-cargo-started"
+        override_marker = tmp_path / "override-started"
+        write_executable(
+            bin_dir / "cargo",
+            f"""#!/usr/bin/env bash
+touch {path_marker}
+printf '%s\\n' "$@"
+exit 0
+""",
+        )
+        write_executable(
+            bin_dir / "override-cargo",
+            f"""#!/usr/bin/env bash
+touch {override_marker}
+printf 'override used\\n'
+exit 0
+""",
+        )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["RUST_VERIFICATION_REAL_CARGO"] = str(bin_dir / "override-cargo")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cargo", "--repo", str(repo), "--", "test"], env=env)
+        if result.returncode != 0 or not path_marker.exists() or override_marker.exists():
+            raise AssertionError(
+                "managed cargo must ignore caller-provided RUST_VERIFICATION_REAL_CARGO: "
+                f"returncode={result.returncode} path_started={path_marker.exists()} "
+                f"override_started={override_marker.exists()} stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
+def assert_v6_red_managed_cargo_clean_refuses_active_process() -> None:
+    cases = [
+        ["clean"],
+        ["+stable", "clean"],
+        ["--config", "net.offline=true", "clean"],
+        ["--manifest-path", "Cargo.toml", "clean"],
+        ["--target", "aarch64-unknown-linux-gnu", "clean"],
+    ]
+    failures: list[str] = []
+    for cargo_args in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            write_policy_with_cache(repo, active_process_patterns=["cargo", "rustc", "rust_verification.py"])
+            root_base = tmp_path / "rust-root"
+            target = root_base / "bolt-v2" / "target"
+            protected_file = target / "debug" / "protected.bin"
+            protected_file.parent.mkdir(parents=True)
+            protected_file.write_bytes(b"abc")
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            write_executable(
+                bin_dir / "cargo",
+                """#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ "$arg" == "clean" ]]; then
+    rm -rf "$CARGO_TARGET_DIR/debug"
+  fi
+done
+exit 0
+""",
+            )
+            escaped_command = f"cargo build --manifest-path {repo / 'Cargo.toml'}"
+            write_executable(
+                bin_dir / "ps",
+                f"""#!/usr/bin/env bash
+printf '123 {escaped_command}\\n'
+""",
+            )
+            proc_dir = tmp_path / "proc" / "123"
+            proc_dir.mkdir(parents=True)
+            (proc_dir / "cwd").symlink_to(repo)
+
+            env = os.environ.copy()
+            env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "proc")
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            result = run_owner(["cargo", "--repo", str(repo), "--", *cargo_args], env=env)
+            if result.returncode == 0 or not protected_file.exists():
+                failures.append(
+                    f"{cargo_args!r}: returncode={result.returncode} protected_exists={protected_file.exists()} "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+    if failures:
+        raise AssertionError("managed cargo clean must refuse before deletion when related Rust processes are active: " + "; ".join(failures))
+
+def assert_v6_red_disk_preflight_before_managed_cargo_and_run() -> None:
+    failures: list[str] = []
+    cases = [
+        ("cargo", ["cargo", "{repo}", "--", "build"]),
+        ("cargo", ["cargo", "{repo}", "--", "+stable", "build"]),
+        ("cargo", ["cargo", "{repo}", "--", "--config", "net.offline=true", "build"]),
+        ("cargo", ["cargo", "{repo}", "--", "bench", "--locked"]),
+        ("cargo", ["cargo", "{repo}", "--", "doc", "--locked"]),
+        ("cargo", ["cargo", "{repo}", "--", "fetch", "--locked"]),
+        ("cargo", ["cargo", "{repo}", "--", "install", "--path", "."]),
+        ("cargo", ["cargo", "{repo}", "--", "nextest", "archive", "--locked"]),
+        ("cargo", ["cargo", "{repo}", "--", "nextest", "run", "--locked"]),
+        ("cargo", ["cargo", "{repo}", "--", "run", "--release", "--bin", "bolt-v2", "--", "secrets", "check"]),
+        ("run", ["run", "{repo}", "build"]),
+        ("run", ["run", "{repo}", "clippy"]),
+        ("run", ["run", "{repo}", "test"]),
+    ]
+    for command_name, args_template in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            write_policy_with_cache(repo, min_free_bytes=10**18, soft_limit_bytes=1)
+            root_base = tmp_path / "rust-root"
+            target = root_base / "bolt-v2" / "target"
+            cache_file = target / "debug" / "large.bin"
+            cache_file.parent.mkdir(parents=True)
+            cache_file.write_bytes(b"abc")
+            legacy_root = repo / "target"
+            legacy_root.mkdir()
+            (legacy_root / "legacy.bin").write_bytes(b"legacy")
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            marker = tmp_path / "started"
+            write_executable(
+                bin_dir / "cargo",
+                f"""#!/usr/bin/env bash
+touch {marker}
+exit 0
+""",
+            )
+            write_executable(
+                bin_dir / "just",
+                f"""#!/usr/bin/env bash
+touch {marker}
+exit 0
+""",
+            )
+
+            env = os.environ.copy()
+            env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            args = [
+                str(repo) if token == "{repo}" else token
+                for token in args_template
+            ]
+            if command_name in ("cargo", "run"):
+                args.insert(1, "--repo")
+            result = run_owner(args, env=env)
+            combined = f"{result.stdout}\n{result.stderr}".lower()
+            if (
+                result.returncode == 0
+                or marker.exists()
+                or "free" not in combined
+                or "managed" not in combined
+                or "legacy" not in combined
+            ):
+                failures.append(
+                    f"{args!r}: returncode={result.returncode} runner_started={marker.exists()} "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+    if failures:
+        raise AssertionError("managed heavy Rust commands must run disk preflight before execution: " + "; ".join(failures))
+
+
+def assert_v6_red_nextest_archive_extraction_uses_exclusive_cache_lock() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+        owner = load_owner_module()
+        lock_modes: list[bool] = []
+
+        class FakeLock:
+            def __enter__(self) -> None:
+                return None
+
+            def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
+                return None
+
+        def fake_cache_lock(_policy: dict[str, object], *, exclusive: bool) -> FakeLock:
+            lock_modes.append(exclusive)
+            return FakeLock()
+
+        owner.cache_lock = fake_cache_lock
+        owner.disk_preflight_refusal_payload = lambda _repo, _policy: None
+        owner.run_process = lambda _argv, repo, env: 0
+
+        archive_args = types.SimpleNamespace(
+            repo=str(repo),
+            args=[
+                "nextest",
+                "run",
+                "--archive-file",
+                ".nextest-archive/nextest-archive.tar.zst",
+                "--extract-to",
+                str(tmp_path / "managed-target-parent"),
+                "--extract-overwrite",
+                "--partition",
+                "count:1/4",
+            ],
+        )
+        archive_result = owner.cmd_cargo(archive_args)
+        normal_args = types.SimpleNamespace(repo=str(repo), args=["nextest", "run", "--locked"])
+        normal_result = owner.cmd_cargo(normal_args)
+        configured_archive_args = types.SimpleNamespace(
+            repo=str(repo),
+            args=[
+                "nextest",
+                "--config-file",
+                ".config/nextest.toml",
+                "run",
+                "--archive-file",
+                ".nextest-archive/nextest-archive.tar.zst",
+                "--extract-to",
+                str(tmp_path / "configured-managed-target-parent"),
+            ],
+        )
+        configured_archive_result = owner.cmd_cargo(configured_archive_args)
+        manifest_archive_args = types.SimpleNamespace(
+            repo=str(repo),
+            args=[
+                "nextest",
+                "--manifest-path",
+                "Cargo.toml",
+                "run",
+                "--archive-file",
+                ".nextest-archive/nextest-archive.tar.zst",
+                "--extract-to",
+                str(tmp_path / "manifest-managed-target-parent"),
+            ],
+        )
+        manifest_archive_result = owner.cmd_cargo(manifest_archive_args)
+        separator_args = types.SimpleNamespace(
+            repo=str(repo),
+            args=[
+                "nextest",
+                "run",
+                "--",
+                "--archive-file",
+                ".nextest-archive/nextest-archive.tar.zst",
+                "--extract-to",
+                str(tmp_path / "test-binary-output"),
+            ],
+        )
+        separator_result = owner.cmd_cargo(separator_args)
+        managed_run_archive_args = types.SimpleNamespace(
+            repo=str(repo),
+            command="test",
+            args=[
+                "--archive-file",
+                ".nextest-archive/nextest-archive.tar.zst",
+                "--extract-to",
+                str(tmp_path / "managed-target-parent"),
+                "--extract-overwrite",
+                "--partition",
+                "count:1/4",
+            ],
+            args_separator=False,
+        )
+        managed_run_archive_result = owner.cmd_run(managed_run_archive_args)
+        managed_run_separator_args = types.SimpleNamespace(
+            repo=str(repo),
+            command="test",
+            args=[
+                "--archive-file",
+                ".nextest-archive/nextest-archive.tar.zst",
+                "--extract-to",
+                str(tmp_path / "test-binary-output"),
+            ],
+            args_separator=True,
+        )
+        managed_run_separator_result = owner.cmd_run(managed_run_separator_args)
+        if (
+            archive_result != 0
+            or normal_result != 0
+            or configured_archive_result != 0
+            or manifest_archive_result != 0
+            or separator_result != 0
+            or managed_run_archive_result != 0
+            or managed_run_separator_result != 0
+            or lock_modes != [True, False, True, True, False, True, False]
+        ):
+            raise AssertionError(
+                "nextest archive extraction must serialize on the managed cache lock while ordinary nextest "
+                "and post-separator test args remain shared: "
+                f"archive_result={archive_result} normal_result={normal_result} "
+                f"configured_archive_result={configured_archive_result} "
+                f"manifest_archive_result={manifest_archive_result} "
+                f"separator_result={separator_result} "
+                f"managed_run_archive_result={managed_run_archive_result} "
+                f"managed_run_separator_result={managed_run_separator_result} "
+                f"lock_modes={lock_modes!r}"
+            )
+
+
+def assert_managed_cargo_clean_keeps_disk_pressure_escape_hatch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(
+            repo,
+            active_process_patterns=["cache-prune-sentinel-never-present"],
+            min_free_bytes=10**18,
+            soft_limit_bytes=1,
+        )
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        (target / "debug").mkdir(parents=True)
+        (target / "debug" / "large.bin").write_bytes(b"abc")
+        legacy_root = repo / "target"
+        legacy_root.mkdir()
+        (legacy_root / "legacy.bin").write_bytes(b"legacy")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker = tmp_path / "started-clean"
+        write_executable(
+            bin_dir / "cargo",
+            f"""#!/usr/bin/env bash
+touch {marker}
+exit 0
+""",
+        )
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+exit 0
+""",
+        )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cargo", "--repo", str(repo), "--", "clean"], env=env)
+        if result.returncode != 0 or not marker.exists():
+            raise AssertionError(
+                "managed cargo clean must remain available under disk/cache pressure when no related process is active: "
+                f"returncode={result.returncode} started={marker.exists()} stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
+def assert_managed_cargo_rejects_alias_subcommands() -> None:
+    failures: list[str] = []
+    cases: list[tuple[str, str | None]] = [(alias, None) for alias in ["b", "c", "d", "r", "t"]]
+    cases.append(("wipe", 'wipe = "clean"\n'))
+    cases.append(("global-wipe", None))
+    for alias, cargo_config_aliases in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+            if cargo_config_aliases is not None:
+                (repo / ".cargo").mkdir()
+                (repo / ".cargo" / "config.toml").write_text(
+                    f"[alias]\n{cargo_config_aliases}",
+                    encoding="utf-8",
+                )
+            cargo_home = tmp_path / "cargo-home"
+            if alias == "global-wipe":
+                cargo_home.mkdir()
+                (cargo_home / "config.toml").write_text('[alias]\nglobal-wipe = "clean"\n', encoding="utf-8")
+            root_base = tmp_path / "rust-root"
+            (root_base / "bolt-v2" / "target").mkdir(parents=True)
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            marker = tmp_path / "started"
+            write_executable(
+                bin_dir / "cargo",
+                f"""#!/usr/bin/env bash
+touch {marker}
+exit 0
+""",
+            )
+
+            env = os.environ.copy()
+            env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            if alias == "global-wipe":
+                env["CARGO_HOME"] = str(cargo_home)
+            result = run_owner(["cargo", "--repo", str(repo), "--", alias], env=env)
+            combined = f"{result.stdout}\n{result.stderr}".lower()
+            if result.returncode == 0 or marker.exists() or "alias" not in combined or "managed" not in combined:
+                failures.append(
+                    f"{alias!r}: returncode={result.returncode} cargo_started={marker.exists()} "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+    if failures:
+        raise AssertionError("managed cargo must reject alias subcommands before invoking Cargo: " + "; ".join(failures))
+
+
+def assert_v6_red_managed_cargo_rejects_target_routing_overrides() -> None:
+    failures: list[str] = []
+    cases = [
+        ["test", "--target-dir", "/tmp/raw-target"],
+        ["test", "--target-dir=/tmp/raw-target"],
+        ["test", "--config", "build.target-dir=/tmp/raw-target"],
+        ["test", "--config=build.target-dir=/tmp/raw-target"],
+        ["test", "--config", 'build = { target-dir = "/tmp/raw-target" }'],
+        ["test", "--config", 'build = { "target\\u002Ddir" = "/tmp/raw-target" }'],
+        ["test", "--config", '[build]\ntarget-dir = "/tmp/raw-target"'],
+        ["test", "--config", 'build.rustflags = ["--out-dir", "/tmp/raw-out"]'],
+        ["test", "--config", 'build = { rustflags = ["--artifact-dir", "/tmp/raw-artifacts"] }'],
+        ["rustc", "--", "--out-dir", "/tmp/raw-out"],
+        ["rustc", "--", "--artifact-dir", "/tmp/raw-artifacts"],
+        ["install", "ripgrep", "--root", "/tmp/install-root"],
+        ["install", "ripgrep", "--root=/tmp/install-root"],
+    ]
+    for cargo_args in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+            root_base = tmp_path / "rust-root"
+            target = root_base / "bolt-v2" / "target"
+            target.mkdir(parents=True)
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            marker = tmp_path / "started"
+            captured = tmp_path / "captured-args"
+            write_executable(
+                bin_dir / "cargo",
+                f"""#!/usr/bin/env bash
+touch {marker}
+printf '%s\\n' "$@" > {captured}
+exit 0
+""",
+            )
+
+            env = os.environ.copy()
+            env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            result = run_owner(["cargo", "--repo", str(repo), "--", *cargo_args], env=env)
+            combined = f"{result.stdout}\n{result.stderr}".lower()
+            if result.returncode == 0 or marker.exists() or "target" not in combined or "routing" not in combined:
+                failures.append(
+                    f"{cargo_args!r}: returncode={result.returncode} runner_started={marker.exists()} "
+                    f"captured={captured.read_text() if captured.exists() else ''!r} "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+    if failures:
+        raise AssertionError("managed cargo must reject target/output routing overrides before invoking Cargo: " + "; ".join(failures))
+
+
+def assert_managed_cargo_rejects_config_file_target_routing_override() -> None:
+    failures: list[str] = []
+    cases = [
+        ["test", "--config", "{config_file}"],
+        ["test", "--config={config_file}"],
+    ]
+    for cargo_args_template in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+            root_base = tmp_path / "rust-root"
+            (root_base / "bolt-v2" / "target").mkdir(parents=True)
+            config_file = tmp_path / "cargo-config.toml"
+            config_file.write_text('[build]\ntarget-dir = "/tmp/raw-target"\n', encoding="utf-8")
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            marker = tmp_path / "started"
+            write_executable(
+                bin_dir / "cargo",
+                f"""#!/usr/bin/env bash
+touch {marker}
+exit 0
+""",
+            )
+
+            env = os.environ.copy()
+            env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            cargo_args = [
+                str(config_file) if token == "{config_file}" else token.replace("{config_file}", str(config_file))
+                for token in cargo_args_template
+            ]
+            result = run_owner(["cargo", "--repo", str(repo), "--", *cargo_args], env=env)
+            combined = f"{result.stdout}\n{result.stderr}".lower()
+            if result.returncode == 0 or marker.exists() or "config" not in combined or "routing" not in combined:
+                failures.append(
+                    f"{cargo_args!r}: returncode={result.returncode} runner_started={marker.exists()} "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+    if failures:
+        raise AssertionError("managed cargo must reject path-style cargo --config before invoking Cargo: " + "; ".join(failures))
+
+
+def assert_v6_red_managed_run_rejects_target_routing_overrides() -> None:
+    failures: list[str] = []
+    cases = [
+        ["test", "--target-dir", "/tmp/raw-target"],
+        ["test", "--target-dir=/tmp/raw-target"],
+        ["test", "--config", "build.target-dir=/tmp/raw-target"],
+        ["test", "--config", 'build = { target-dir = "/tmp/raw-target" }'],
+        ["test", "--config", '[build]\ntarget-dir = "/tmp/raw-target"'],
+        ["test", "--config", 'build.rustflags = ["--out-dir", "/tmp/raw-out"]'],
+    ]
+    for run_args in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+            root_base = tmp_path / "rust-root"
+            (root_base / "bolt-v2" / "target").mkdir(parents=True)
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            marker = tmp_path / "started"
+            write_executable(
+                bin_dir / "just",
+                f"""#!/usr/bin/env bash
+touch {marker}
+exit 0
+""",
+            )
+
+            env = os.environ.copy()
+            env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            result = run_owner(["run", "--repo", str(repo), *run_args], env=env)
+            combined = f"{result.stdout}\n{result.stderr}".lower()
+            if result.returncode == 0 or marker.exists() or "target" not in combined or "routing" not in combined:
+                failures.append(
+                    f"{run_args!r}: returncode={result.returncode} just_started={marker.exists()} "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+    if failures:
+        raise AssertionError("managed run must reject target/output routing overrides before invoking just: " + "; ".join(failures))
+
+
+def assert_managed_run_authorizes_private_just_recipes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+        root_base = tmp_path / "rust-root"
+        (root_base / "bolt-v2" / "target").mkdir(parents=True)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker = tmp_path / "managed-just-env"
+        write_executable(
+            bin_dir / "just",
+            f"""#!/usr/bin/env bash
+printf '%s\\n' "${{BOLT_MANAGED_JUST:-}}" > {marker}
+exit 0
+""",
+        )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["run", "--repo", str(repo), "clippy"], env=env)
+        if result.returncode != 0 or marker.read_text(encoding="utf-8").strip() != "1":
+            raise AssertionError(
+                "managed run must mark private just recipes as wrapper-authorized: "
+                f"returncode={result.returncode} env={marker.read_text(encoding='utf-8') if marker.exists() else '<missing>'!r} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
+def assert_direct_private_managed_just_recipes_require_wrapper_env() -> None:
+    failures: list[str] = []
+    recipes = ["managed-clippy", "managed-test", "managed-build"]
+    for recipe in recipes:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            marker = tmp_path / "cargo-started"
+            write_executable(
+                bin_dir / "cargo",
+                f"""#!/usr/bin/env bash
+touch {marker}
+exit 0
+""",
+            )
+            env = os.environ.copy()
+            env.pop("BOLT_MANAGED_JUST", None)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            result = subprocess.run(
+                [
+                    "just",
+                    "-f",
+                    str(REPO_ROOT / "justfile"),
+                    "--working-directory",
+                    str(REPO_ROOT),
+                    recipe,
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            combined = f"{result.stdout}\n{result.stderr}".lower()
+            if result.returncode == 0 or marker.exists() or "managed" not in combined or "rust_verification.py" not in combined:
+                failures.append(
+                    f"{recipe}: returncode={result.returncode} cargo_started={marker.exists()} "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+    if failures:
+        raise AssertionError("direct private managed just recipes must refuse outside the wrapper: " + "; ".join(failures))
+
+
+def assert_v6_red_managed_cargo_allows_post_separator_binary_args() -> None:
+    allowed_cases = [
+        ["run", "--release", "--bin", "bolt-v2", "--", "--root", "/tmp/binary-arg"],
+        ["test", "--locked", "--", "--out-dir", "/tmp/test-arg"],
+        ["nextest", "run", "--", "--target-dir", "/tmp/test-arg"],
+        ["--manifest-path", "Cargo.toml", "test", "--", "--target-dir", "/tmp/test-arg"],
+        ["--profile", "dev", "test", "--", "--target-dir", "/tmp/test-arg"],
+        ["bench", "--locked", "--", "--artifact-dir", "/tmp/bench-arg"],
+    ]
+    failures: list[str] = []
+    for cargo_args in allowed_cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+            root_base = tmp_path / "rust-root"
+            (root_base / "bolt-v2" / "target").mkdir(parents=True)
+
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            marker = tmp_path / "started"
+            captured = tmp_path / "captured-args"
+            write_executable(
+                bin_dir / "cargo",
+                f"""#!/usr/bin/env bash
+touch {marker}
+printf '%s\\n' "$@" > {captured}
+exit 0
+""",
+            )
+
+            env = os.environ.copy()
+            env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+            result = run_owner(["cargo", "--repo", str(repo), "--", *cargo_args], env=env)
+            if result.returncode != 0 or not marker.exists():
+                failures.append(
+                    f"{cargo_args!r}: returncode={result.returncode} runner_started={marker.exists()} "
+                    f"captured={captured.read_text() if captured.exists() else ''!r} "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+    if failures:
+        raise AssertionError("managed cargo must not reject binary/test args after Cargo separator: " + "; ".join(failures))
+
+
+def assert_v6_red_managed_run_allows_post_separator_binary_args() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo, min_free_bytes=10, soft_limit_bytes=10**18)
+        root_base = tmp_path / "rust-root"
+        (root_base / "bolt-v2" / "target").mkdir(parents=True)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker = tmp_path / "just-started"
+        captured = tmp_path / "just-args"
+        write_executable(
+            bin_dir / "just",
+            f"""#!/usr/bin/env bash
+touch {marker}
+printf '%s\\n' "$@" > {captured}
+exit 0
+""",
+        )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(
+            ["run", "--repo", str(repo), "test", "--", "--target-dir", "/tmp/valid-test-binary-arg"],
+            env=env,
+        )
+        captured_args = captured.read_text().splitlines() if captured.exists() else []
+        expected_tail = ["managed-test", "--", "--target-dir", "/tmp/valid-test-binary-arg"]
+        if result.returncode != 0 or not marker.exists() or captured_args[-4:] != expected_tail:
+            raise AssertionError(
+                "managed run test must preserve Cargo separator semantics for test-binary args: "
+                f"returncode={result.returncode} just_started={marker.exists()} "
+                f"captured={captured_args!r} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
+def assert_v6_red_policy_gaps() -> None:
+    checks = [
+        assert_v6_red_active_process_parser_gaps,
+        assert_v6_red_active_process_wrapper_options_expose_cargo_pattern,
+        assert_v6_red_wrapper_end_of_options_does_not_overconsume_command_words,
+        assert_v6_red_wrapped_renamed_cargo_launches_are_classified,
+        assert_v6_red_active_process_parser_resolves_relative_manifest_scope,
+        assert_v6_red_active_process_scan_ignores_current_process_ancestor,
+        assert_v6_red_active_process_parser_resolves_config_target_scope,
+        assert_v6_red_active_process_parser_resolves_nested_shell_manifest_scope,
+        assert_v6_red_active_process_parser_uses_command_scope_without_cwd,
+        assert_v6_red_active_process_parser_fails_closed_for_unscoped_wrapped_rust_without_cwd,
+        assert_v6_red_active_process_fails_closed_for_attached_semicolon_shell_chains,
+        assert_active_process_parser_uses_single_cwd_snapshot_per_pid,
+        assert_v6_red_active_process_parser_ignores_unscoped_opaque_build_without_cwd,
+        assert_v6_red_active_process_parser_does_not_treat_trustd_as_rust,
+        assert_v6_red_active_process_parser_does_not_treat_rust_named_scripts_as_rust,
+        assert_v6_red_managed_cargo_clean_refuses_active_process,
+        assert_v6_red_disk_preflight_before_managed_cargo_and_run,
+        assert_v6_red_nextest_archive_extraction_uses_exclusive_cache_lock,
+        assert_managed_cargo_clean_keeps_disk_pressure_escape_hatch,
+        assert_managed_cargo_rejects_alias_subcommands,
+        assert_v6_red_managed_cargo_rejects_target_routing_overrides,
+        assert_managed_cargo_rejects_config_file_target_routing_override,
+        assert_v6_red_managed_run_rejects_target_routing_overrides,
+        assert_managed_run_authorizes_private_just_recipes,
+        assert_direct_private_managed_just_recipes_require_wrapper_env,
+        assert_v6_red_managed_cargo_allows_post_separator_binary_args,
+        assert_v6_red_managed_run_allows_post_separator_binary_args,
+        assert_managed_cargo_ignores_real_cargo_env_override,
+    ]
+    failures: list[str] = []
+    for check in checks:
+        try:
+            check()
+        except AssertionError as exc:
+            failures.append(f"{check.__name__}: {exc}")
+    if failures:
+        raise AssertionError("v6 RED policy coverage failures: " + " | ".join(failures))
+
+
 def main() -> int:
     assert_cache_status_reports_managed_target_tree()
     assert_cache_commands_require_json_flag()
@@ -1605,7 +3142,10 @@ def main() -> int:
     assert_cache_prune_apply_refuses_active_related_process()
     assert_cache_prune_apply_refuses_active_related_process_by_cwd()
     assert_cache_prune_active_process_scan_uses_portable_ps_columns()
+    assert_managed_cargo_preflight_errors_are_structured()
+    assert_managed_cargo_clean_target_errors_are_structured()
     assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd()
+    assert_cache_prune_skips_unrelated_process_before_cwd_lookup()
     assert_cache_prune_apply_ignores_visible_unrelated_process_by_cwd()
     assert_cache_prune_ignores_pattern_mentions_in_arguments()
     assert_cache_prune_refuses_wrapped_active_processes_by_cwd()
@@ -1624,6 +3164,9 @@ def main() -> int:
     assert_cache_prune_apply_preserves_subtree_when_scan_incomplete()
     assert_cache_prune_rejects_conflicting_modes()
     assert_repo_policy_declares_cache_retention()
+    assert_v6_regression_cargo_process_names_stay_visible()
+    assert_managed_env_scrubs_build_target_dir_and_routes_target_dir()
+    assert_v6_red_policy_gaps()
     print("OK: Rust verification cache retention self-tests passed.")
     return 0
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import fcntl
 import json
@@ -31,14 +32,64 @@ POLICY_RELATIVE_PATH = pathlib.Path("ci/rust-verification.toml")
 MAX_POLICY_BYTES = 1024 * 1024
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SCRUB_ENV_KEYS = (
+    "BOLT_MANAGED_JUST",
     "BOLT_RUST_VERIFICATION_ROOT",
+    "CARGO_BUILD_RUSTFLAGS",
     "CARGO_BUILD_TARGET",
     "CARGO_BUILD_TARGET_DIR",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "CARGO_HOME",
+    "CARGO_INCREMENTAL",
+    "CARGO_INSTALL_ROOT",
     "CARGO_TARGET_DIR",
+    "CARGO_TARGET_TMPDIR",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "RUSTC_WRAPPER",
+    "RUSTFLAGS",
+    "RUSTUP_HOME",
     "RUST_VERIFICATION_PRESERVE_ROUTING_ENV",
     "RUST_VERIFICATION_REAL_CARGO",
     "RUST_VERIFICATION_ROOT_BASE",
 )
+OPAQUE_RUST_LAUNCHERS = {
+    "bash",
+    "catchsegv",
+    "chrt",
+    "chroot",
+    "command",
+    "dash",
+    "docker",
+    "env",
+    "exec",
+    "fish",
+    "flock",
+    "find",
+    "ionice",
+    "make",
+    "nohup",
+    "npm",
+    "python",
+    "python2",
+    "python3",
+    "podman",
+    "rustup",
+    "setsid",
+    "sh",
+    "sg",
+    "stdbuf",
+    "su",
+    "taskset",
+    "time",
+    "timeout",
+    "runuser",
+    "xargs",
+    "zsh",
+}
+PROCESS_PARSE_DEPTH_LIMIT = 6
+PROCESS_PARSE_DEPTH_EXCEEDED = "__process_parse_depth_exceeded__"
+SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")"}
+SHELL_BOUNDARY_TOKEN_RE = re.compile(r"([;&|(){}!<>]+)")
+SHELL_REDIRECTION_OPERATORS = {">", ">>", "<", "<<", "<>", ">|", ">&", "<&", "&>", "&>>", "<<<"}
 
 
 class PolicyError(RuntimeError):
@@ -464,6 +515,195 @@ def basename_token(token: str) -> str:
     return pathlib.Path(token).name
 
 
+def shell_normalized_tokens(tokens: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for raw_token in tokens:
+        if re.search(r"\s", raw_token):
+            normalized.append(raw_token)
+            continue
+        normalized.extend(part for part in SHELL_BOUNDARY_TOKEN_RE.split(raw_token) if part)
+    return normalized
+
+
+def strip_shell_redirections(tokens: list[str]) -> list[str]:
+    stripped: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        operator_index = index
+        if (
+            token.isdigit()
+            and index + 1 < len(tokens)
+            and tokens[index + 1] in SHELL_REDIRECTION_OPERATORS
+        ):
+            operator_index = index + 1
+        if tokens[operator_index] in SHELL_REDIRECTION_OPERATORS:
+            index = operator_index + 1
+            if index < len(tokens) and tokens[index] not in SHELL_COMMAND_BOUNDARIES:
+                index += 1
+            continue
+        stripped.append(token)
+        index += 1
+    return stripped
+
+
+def backtick_command_payloads(tokens: list[str]) -> list[list[str]]:
+    payloads: list[list[str]] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        start = token.find("`")
+        if start < 0:
+            index += 1
+            continue
+        payload_parts: list[str] = []
+        remainder = token[start + 1 :]
+        end = remainder.find("`")
+        if end >= 0:
+            payload = remainder[:end].strip()
+            if payload:
+                payloads.append(command_tokens(payload))
+            index += 1
+            continue
+        if remainder:
+            payload_parts.append(remainder)
+        cursor = index + 1
+        while cursor < len(tokens):
+            part = tokens[cursor]
+            end = part.find("`")
+            if end >= 0:
+                if end:
+                    payload_parts.append(part[:end])
+                break
+            payload_parts.append(part)
+            cursor += 1
+        if cursor < len(tokens):
+            payload = " ".join(payload_parts).strip()
+            if payload:
+                payloads.append(command_tokens(payload))
+            index = cursor + 1
+            continue
+        index += 1
+    return payloads
+
+
+def inline_command_substitution_payloads(token: str) -> list[list[str]]:
+    payloads: list[list[str]] = []
+    index = 0
+    while index + 1 < len(token):
+        if token[index : index + 2] not in {"$(", "<("}:
+            index += 1
+            continue
+        cursor = index + 2
+        depth = 1
+        payload_chars: list[str] = []
+        while cursor < len(token) and depth:
+            char = token[cursor]
+            if char == "(":
+                depth += 1
+                payload_chars.append(char)
+            elif char == ")":
+                depth -= 1
+                if depth:
+                    payload_chars.append(char)
+            else:
+                payload_chars.append(char)
+            cursor += 1
+        if depth == 0:
+            payload = "".join(payload_chars).strip()
+            if payload:
+                payloads.append(command_tokens(payload))
+            index = cursor
+            continue
+        index += 1
+    return payloads
+
+
+def shell_command_substitution_payloads(tokens: list[str]) -> list[list[str]]:
+    normalized = shell_normalized_tokens(tokens)
+    payloads = backtick_command_payloads(normalized)
+    for token in normalized:
+        payloads.extend(inline_command_substitution_payloads(token))
+    index = 0
+    while index + 1 < len(normalized):
+        token = normalized[index]
+        if (token == "$" or token.endswith("$") or token == "<") and normalized[index + 1] == "(":
+            cursor = index + 2
+            depth = 1
+            payload: list[str] = []
+            while cursor < len(normalized) and depth:
+                current = normalized[cursor]
+                if current == "(":
+                    depth += 1
+                    payload.append(current)
+                elif current == ")":
+                    depth -= 1
+                    if depth:
+                        payload.append(current)
+                else:
+                    payload.append(current)
+                cursor += 1
+            if depth == 0:
+                if payload:
+                    payloads.append(payload)
+                index = cursor
+                continue
+        index += 1
+    return payloads
+
+
+def shell_command_substitution_at(tokens: list[str], index: int) -> tuple[list[str], int] | None:
+    normalized = shell_normalized_tokens(tokens)
+    if index + 1 >= len(normalized) or normalized[index] != "$" or normalized[index + 1] != "(":
+        return None
+    cursor = index + 2
+    depth = 1
+    payload: list[str] = []
+    while cursor < len(normalized) and depth:
+        token = normalized[cursor]
+        if token == "(":
+            depth += 1
+            payload.append(token)
+        elif token == ")":
+            depth -= 1
+            if depth:
+                payload.append(token)
+        else:
+            payload.append(token)
+        cursor += 1
+    return (payload, cursor) if depth == 0 else None
+
+
+def shell_command_segments(tokens: list[str]) -> list[list[str]]:
+    segments: list[list[str]] = []
+    segment: list[str] = []
+    normalized = shell_normalized_tokens(tokens)
+    index = 0
+    substitution_depth = 0
+    while index < len(normalized):
+        token = normalized[index]
+        if token == "$" and index + 1 < len(normalized) and normalized[index + 1] == "(":
+            segment.extend([token, normalized[index + 1]])
+            substitution_depth += 1
+            index += 2
+            continue
+        if token == "(" and substitution_depth:
+            substitution_depth += 1
+        elif token == ")" and substitution_depth:
+            substitution_depth -= 1
+        elif token in SHELL_COMMAND_BOUNDARIES and not substitution_depth:
+            if segment:
+                segments.append(segment)
+                segment = []
+            index += 1
+            continue
+        segment.append(token)
+        index += 1
+    if segment:
+        segments.append(segment)
+    return segments if len(segments) > 1 else []
+
+
 def python_script_name(tokens: list[str], start: int) -> str | None:
     for token in tokens[start:]:
         if token in ("-c", "-m"):
@@ -497,13 +737,110 @@ def shell_command(tokens: list[str]) -> str | None:
     return None
 
 
+def python_constant_string(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = python_constant_string(node.left)
+        right = python_constant_string(node.right)
+        if left is not None and right is not None:
+            return left + right
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            else:
+                return None
+        return "".join(parts)
+    return None
+
+
+def python_command_string(node: ast.AST) -> str | None:
+    scalar = python_constant_string(node)
+    if scalar is not None:
+        return scalar
+    if isinstance(node, (ast.List, ast.Tuple)):
+        parts: list[str] = []
+        for element in node.elts:
+            part = python_constant_string(element)
+            if part is None:
+                return None
+            parts.append(part)
+        return shlex.join(parts)
+    return None
+
+
+def python_call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = python_call_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    return ""
+
+
+def python_call_command_argument(node: ast.Call) -> ast.AST | None:
+    if node.args:
+        return node.args[0]
+    for keyword in node.keywords:
+        if keyword.arg in {"args", "command"}:
+            return keyword.value
+    return None
+
+
+def python_inline_command_payloads(tokens: list[str]) -> list[str]:
+    payloads: list[str] = []
+    for index, token in enumerate(tokens):
+        if token != "-c" or index + 1 >= len(tokens):
+            continue
+        try:
+            tree = ast.parse(tokens[index + 1])
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if python_call_name(node.func) not in {
+                "os.system",
+                "subprocess.call",
+                "subprocess.check_call",
+                "subprocess.check_output",
+                "subprocess.Popen",
+                "subprocess.run",
+            }:
+                continue
+            command_argument = python_call_command_argument(node)
+            if command_argument is None:
+                continue
+            payload = python_command_string(command_argument)
+            if payload is not None:
+                payloads.append(payload)
+    return payloads
+
+
 def env_command_index(tokens: list[str]) -> int:
+    signal_options = ("--block-signal", "--default-signal", "--ignore-signal")
     index = 1
     while index < len(tokens):
         token = tokens[index]
+        redirection_index = shell_redirection_next_index(tokens, index)
+        if redirection_index is not None:
+            index = redirection_index
+            continue
         if token == "--":
             return index + 1
         if token in ("-i", "--ignore-environment", "-0", "--null", "-v", "--debug"):
+            index += 1
+            continue
+        if token == "--split-string" and index + 1 < len(tokens):
+            return index
+        if token.startswith("--split-string="):
+            return index
+        if token in signal_options:
+            index += 1
+            continue
+        if token.startswith(tuple(f"{option}=" for option in signal_options)):
             index += 1
             continue
         if token in ("-u", "--unset", "-C", "--chdir") and index + 1 < len(tokens):
@@ -516,13 +853,11 @@ def env_command_index(tokens: list[str]) -> int:
             continue
         if token.startswith("-") and not token.startswith("--"):
             cluster = token[1:]
-            if "S" in cluster and index + 1 < len(tokens):
+            if "S" in cluster and (cluster.split("S", 1)[1] or index + 1 < len(tokens)):
                 return index
-            if cluster.startswith(("u", "C")) and len(cluster) > 1:
-                index += 1
-                continue
-            if all(char in "i0v" for char in cluster):
-                index += 1
+            parsed_index = env_short_cluster_next_index(tokens, index, cluster)
+            if parsed_index is not None:
+                index = parsed_index
                 continue
         if "=" in token and not token.startswith("-"):
             index += 1
@@ -531,15 +866,72 @@ def env_command_index(tokens: list[str]) -> int:
     return index
 
 
+def shell_redirection_next_index(tokens: list[str], index: int) -> int | None:
+    token = tokens[index]
+    if token in {">", ">>", "<", "<<", "<>", ">|"}:
+        return min(index + 2, len(tokens))
+    if re.match(r"^\d?(?:>>?|<<?|<>|>\|).+", token):
+        return index + 1
+    return None
+
+
+def env_short_cluster_next_index(tokens: list[str], index: int, cluster: str) -> int | None:
+    offset = 0
+    while offset < len(cluster):
+        option = cluster[offset]
+        if option in "i0v":
+            offset += 1
+            continue
+        if option in "uC":
+            if offset + 1 < len(cluster):
+                return index + 1
+            if index + 1 < len(tokens):
+                return index + 2
+            return index + 1
+        return None
+    return index + 1
+
+
+def env_short_split_command(token: str, rest: list[str]) -> str | None:
+    if not token.startswith("-") or token.startswith("--"):
+        return None
+    cluster = token[1:]
+    if "S" not in cluster:
+        return None
+    suffix = cluster.split("S", 1)[1]
+    if suffix:
+        return " ".join([suffix, *rest]).strip()
+    if rest:
+        return " ".join(rest).strip()
+    return None
+
+
 def env_wrapped_tokens(tokens: list[str]) -> list[str]:
     index = env_command_index(tokens)
-    if index < len(tokens) and index + 1 < len(tokens):
+    if index < len(tokens):
         token = tokens[index]
-        if token == "-S" or (token.startswith("-") and not token.startswith("--") and "S" in token[1:]):
-            split_tokens = command_tokens(tokens[index + 1])
+        split_command: str | None = None
+        if (token == "-S" or token == "--split-string") and index + 1 < len(tokens):
+            split_command = " ".join(tokens[index + 1 :])
+        elif token.startswith("--split-string="):
+            split_command = " ".join([token.split("=", 1)[1], *tokens[index + 1 :]]).strip()
+        elif token.startswith("-") and not token.startswith("--"):
+            split_command = env_short_split_command(token, tokens[index + 1 :])
+        if split_command is not None:
+            split_tokens = command_tokens(split_command)
             split_index = env_command_index(["env", *split_tokens]) - 1
             return split_tokens[max(split_index, 0) :]
     return tokens[index:]
+
+
+def shell_assignment_word(token: str) -> bool:
+    return re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", token) is not None
+
+
+def consume_assignment_words(tokens: list[str], index: int) -> int:
+    while index < len(tokens) and shell_assignment_word(tokens[index]):
+        index += 1
+    return index
 
 
 def sudo_command_index(tokens: list[str]) -> int:
@@ -564,14 +956,87 @@ def sudo_command_index(tokens: list[str]) -> int:
         "--other-user",
         "-D",
         "--chdir",
+        "-R",
+        "--chroot",
+        "-a",
+        "--auth-type",
+        "-c",
+        "--login-class",
     }
+    no_argument_options = {
+        "-A",
+        "-b",
+        "-E",
+        "-e",
+        "-H",
+        "-i",
+        "-K",
+        "-k",
+        "-l",
+        "-n",
+        "-P",
+        "-S",
+        "-s",
+        "-V",
+        "-v",
+        "--askpass",
+        "--background",
+        "--bell",
+        "--edit",
+        "--help",
+        "--ignore-ticket",
+        "--list",
+        "--login",
+        "--non-interactive",
+        "--remove-timestamp",
+        "--reset-timestamp",
+        "--stdin",
+        "--validate",
+        "--version",
+    }
+    optional_argument_options = {"--preserve-env"}
+    short_argument_options = {option for option in argument_options if re.fullmatch(r"-[A-Za-z0-9]", option)}
+    short_no_argument_options = {option for option in no_argument_options if re.fullmatch(r"-[A-Za-z0-9]", option)}
     index = 1
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
-            return index + 1
+            index += 1
+            continue
         if token in argument_options and index + 1 < len(tokens):
             index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in argument_options if option.startswith("--")):
+            index += 1
+            continue
+        if any(token.startswith(f"{option}=") for option in optional_argument_options):
+            index += 1
+            continue
+        if token in optional_argument_options:
+            index += 1
+            continue
+        if token in no_argument_options:
+            index += 1
+            continue
+        if len(token) > 2 and token.startswith("-") and not token.startswith("--"):
+            offset = 1
+            while offset < len(token):
+                option = f"-{token[offset]}"
+                if option in short_no_argument_options:
+                    offset += 1
+                    continue
+                if option in short_argument_options:
+                    if offset + 1 < len(token):
+                        index += 1
+                    elif index + 1 < len(tokens):
+                        index += 2
+                    else:
+                        index += 1
+                    break
+                index += 1
+                break
+            else:
+                index += 1
             continue
         if "=" in token and not token.startswith("-"):
             index += 1
@@ -588,10 +1053,15 @@ def nice_command_index(tokens: list[str]) -> int:
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
-            index += 1
-            continue
+            return index + 1
         if token == "-n" and index + 1 < len(tokens):
             index += 2
+            continue
+        if token == "--adjustment" and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith("--adjustment="):
+            index += 1
             continue
         if re.fullmatch(r"-n-?\d+", token):
             index += 1
@@ -603,6 +1073,53 @@ def nice_command_index(tokens: list[str]) -> int:
     return index
 
 
+def flock_wrapped_tokens(tokens: list[str]) -> list[str]:
+    command_option_tokens = flock_command_option_tokens(tokens)
+    if command_option_tokens is not None:
+        return command_option_tokens
+    index = 1
+    separator_seen = False
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            separator_seen = True
+            break
+        if token in ("-c", "--command") and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        if token.startswith("--command="):
+            return command_tokens(token.split("=", 1)[1])
+        if token in ("-E", "--conflict-exit-code", "-w", "--wait", "--timeout") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--conflict-exit-code=", "--wait=", "--timeout=")):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return tokens[index + 1 :]
+    if separator_seen and index < len(tokens):
+        return tokens[index + 1 :]
+    return tokens[index:]
+
+
+def flock_command_option_tokens(tokens: list[str]) -> list[str] | None:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return None
+        if token in ("-c", "--command") and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        if token.startswith("--command="):
+            return command_tokens(token.split("=", 1)[1])
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:] and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        index += 1
+    return None
+
+
 def rustup_run_tokens(tokens: list[str]) -> list[str]:
     index = 2
     while index < len(tokens) and tokens[index].startswith("-"):
@@ -610,36 +1127,481 @@ def rustup_run_tokens(tokens: list[str]) -> list[str]:
     if index >= len(tokens):
         return []
     index += 1
-    if index < len(tokens) and tokens[index] == "--":
+    while index < len(tokens) and tokens[index] == "--":
         index += 1
     return tokens[index:]
+
+
+def timeout_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            if index < len(tokens):
+                index += 1
+            break
+        if token in ("-k", "--kill-after", "-s", "--signal") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--kill-after=", "--signal=")):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        index += 1
+        break
+    return index
+
+
+def stdbuf_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in ("-i", "-o", "-e", "--input", "--output", "--error") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--input=", "--output=", "--error=")):
+            index += 1
+            continue
+        if re.fullmatch(r"-[ioe].+", token):
+            index += 1
+            continue
+        return index
+    return index
+
+
+def command_builtin_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token == "-p":
+            index += 1
+            continue
+        if token in ("-v", "-V"):
+            return len(tokens)
+        return index
+    return index
+
+
+def exec_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token == "-a" and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token in ("-c", "-l"):
+            index += 1
+            continue
+        if token.startswith("-") and not token.startswith("--"):
+            cluster = token[1:]
+            if set(cluster) <= {"c", "l"}:
+                index += 1
+                continue
+            if cluster.endswith("a") and set(cluster[:-1]) <= {"c", "l"} and index + 1 < len(tokens):
+                index += 2
+                continue
+        return index
+    return index
+
+
+def container_rust_payload_from_tokens(tokens: list[str], start: int) -> list[str] | None:
+    for index in range(start, len(tokens)):
+        token = tokens[index]
+        executable = basename_token(token)
+        if (
+            executable_is_rust_tool(executable)
+            or path_executable_looks_like_cargo(token)
+            or path_executable_looks_like_rustc(token)
+            or path_name_looks_like_renamed_cargo(executable)
+            or path_name_looks_like_renamed_rustc(executable)
+        ):
+            return tokens[index:]
+    return None
+
+
+def container_wrapped_tokens(tokens: list[str]) -> list[str] | None:
+    if len(tokens) < 3:
+        return None
+    executable = basename_token(tokens[0])
+    if executable not in {"docker", "podman"}:
+        return None
+    command = tokens[1]
+    options_with_argument = {
+        "--add-host",
+        "--cpus",
+        "--entrypoint",
+        "--env",
+        "--env-file",
+        "--hostname",
+        "--mount",
+        "--name",
+        "--network",
+        "--platform",
+        "--user",
+        "--volume",
+        "--workdir",
+        "-e",
+        "-h",
+        "-m",
+        "-u",
+        "-v",
+        "-w",
+    }
+    index = 2
+    entrypoint: str | None = None
+    uncertain_options = False
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in options_with_argument and index + 1 < len(tokens):
+            if token == "--entrypoint":
+                entrypoint = tokens[index + 1]
+            index += 2
+            continue
+        if token.startswith("--entrypoint="):
+            entrypoint = token.split("=", 1)[1]
+            index += 1
+            continue
+        if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
+            index += 1
+            continue
+        if token.startswith("-"):
+            uncertain_options = True
+            index += 1
+            continue
+        break
+    if command in {"run", "exec"}:
+        if index >= len(tokens):
+            return []
+        tail = tokens[index + 1 :]
+        if entrypoint is not None:
+            return [entrypoint, *tail]
+        if uncertain_options:
+            fallback = container_rust_payload_from_tokens(tokens, 2)
+            if fallback is not None:
+                return fallback
+        return tail
+    return None
+
+
+def chroot_wrapped_tokens(tokens: list[str]) -> list[str]:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token.startswith("--userspec=") or token.startswith("--groups="):
+            index += 1
+            continue
+        if token in {"--userspec", "--groups"} and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    return tokens[index + 1 :] if index < len(tokens) else []
+
+
+def setsid_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in ("-c", "--ctty", "-f", "--fork", "-w", "--wait"):
+            index += 1
+            continue
+        if token.startswith("-") and not token.startswith("--") and set(token[1:]) <= {"c", "f", "w"}:
+            index += 1
+            continue
+        return index
+    return index
+
+
+def time_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in ("-f", "--format", "-o", "--output") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--format=", "--output=")) or re.fullmatch(r"-[fo].+", token):
+            index += 1
+            continue
+        if token in ("-a", "--append", "-p", "--portability", "-v", "--verbose"):
+            index += 1
+            continue
+        if token.startswith("-") and not token.startswith("--") and set(token[1:]) <= {"a", "p", "v"}:
+            index += 1
+            continue
+        return index
+    return index
+
+
+def taskset_command_index(tokens: list[str]) -> int:
+    index = 1
+    cpu_list_mode = False
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            continue
+        if token in ("-c", "--cpu-list") and index + 1 < len(tokens):
+            index += 2
+            cpu_list_mode = True
+            continue
+        if token.startswith("--cpu-list=") or re.fullmatch(r"-c.+", token):
+            index += 1
+            cpu_list_mode = True
+            continue
+        if token in ("-a", "--all-tasks"):
+            index += 1
+            continue
+        if token in ("-p", "--pid"):
+            return len(tokens)
+        if token.startswith("-"):
+            index += 1
+            continue
+        if not cpu_list_mode:
+            index += 1
+        return index
+    return index
+
+
+def ionice_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in ("-c", "--class", "-n", "--classdata") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--class=", "--classdata=")) or re.fullmatch(r"-[cn].+", token):
+            index += 1
+            continue
+        if token in ("-p", "--pid"):
+            return len(tokens)
+        if token in ("-t", "--ignore"):
+            index += 1
+            continue
+        if token.startswith("-") and not token.startswith("--"):
+            cluster = token[1:]
+            if cluster and (set(cluster) <= {"t"} or re.fullmatch(r"t*[cn].+", cluster)):
+                index += 1
+                continue
+        return index
+    return index
+
+
+def chrt_command_index(tokens: list[str]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in ("-p", "--pid"):
+            return len(tokens)
+        if token in ("-T", "--sched-runtime", "-P", "--sched-period", "-D", "--sched-deadline") and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("--sched-runtime=", "--sched-period=", "--sched-deadline=")):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    if index < len(tokens):
+        index += 1
+    return index
+
+
+def xargs_command_index(tokens: list[str]) -> int:
+    options_with_argument = {"-a", "--arg-file", "-d", "--delimiter", "-E", "-I", "-L", "-n", "--max-args", "-P", "--max-procs", "-s", "--max-chars"}
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if token in options_with_argument and index + 1 < len(tokens):
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in options_with_argument if option.startswith("--")):
+            index += 1
+            continue
+        if re.fullmatch(r"-(?:a|d|E|I|L|n|P|s).+", token):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return index
+    return index
+
+
+def su_wrapped_tokens(tokens: list[str]) -> list[str] | None:
+    executable = basename_token(tokens[0]) if tokens else ""
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-c", "--command"} and index + 1 < len(tokens):
+            return command_tokens(tokens[index + 1])
+        if executable == "runuser":
+            if token == "--":
+                return tokens[index + 1 :]
+            if token in {"-u", "--user", "-g", "--group", "-G", "--supp-group", "-s", "--shell"} and index + 1 < len(tokens):
+                index += 2
+                continue
+            if token.startswith(("--user=", "--group=", "--supp-group=", "--shell=")):
+                index += 1
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            return tokens[index:]
+        index += 1
+    return None
+
+
+def find_exec_payloads(tokens: list[str]) -> list[list[str]]:
+    payloads: list[list[str]] = []
+    index = 1
+    while index < len(tokens):
+        if tokens[index] not in {"-exec", "-execdir"}:
+            index += 1
+            continue
+        index += 1
+        payload: list[str] = []
+        while index < len(tokens) and tokens[index] not in {";", "+"}:
+            payload.append(tokens[index])
+            index += 1
+        if payload:
+            payloads.append(payload)
+    return payloads
+
+
+def no_mistakes_wrapped_tokens(tokens: list[str]) -> list[str] | None:
+    for index, token in enumerate(tokens):
+        if token == "--":
+            return tokens[index + 1 :]
+    return None
+
+
+def process_wrapper_tokens(tokens: list[str]) -> list[str] | None:
+    if not tokens:
+        return None
+    executable = basename_token(tokens[0])
+    if executable == "env":
+        return env_wrapped_tokens(tokens)
+    if executable in ("sudo", "doas"):
+        return tokens[sudo_command_index(tokens) :]
+    if executable == "nice":
+        return tokens[nice_command_index(tokens) :]
+    if executable == "flock":
+        return flock_wrapped_tokens(tokens)
+    if executable == "rustup" and len(tokens) >= 4 and tokens[1] == "run":
+        return rustup_run_tokens(tokens)
+    if executable == "timeout":
+        return tokens[timeout_command_index(tokens) :]
+    if executable == "stdbuf":
+        return tokens[stdbuf_command_index(tokens) :]
+    if executable == "catchsegv":
+        return tokens[1:]
+    if executable in {"docker", "podman"}:
+        return container_wrapped_tokens(tokens)
+    if executable == "chroot":
+        return chroot_wrapped_tokens(tokens)
+    if executable == "command":
+        return tokens[command_builtin_index(tokens) :]
+    if executable == "exec":
+        return tokens[exec_command_index(tokens) :]
+    if executable == "nohup":
+        return tokens[1:]
+    if executable == "setsid":
+        return tokens[setsid_command_index(tokens) :]
+    if executable == "time":
+        return tokens[time_command_index(tokens) :]
+    if executable == "taskset":
+        return tokens[taskset_command_index(tokens) :]
+    if executable == "ionice":
+        return tokens[ionice_command_index(tokens) :]
+    if executable == "chrt":
+        return tokens[chrt_command_index(tokens) :]
+    if executable == "xargs":
+        return tokens[xargs_command_index(tokens) :]
+    if executable in {"runuser", "sg", "su"}:
+        return su_wrapped_tokens(tokens)
+    if executable == "no-mistakes":
+        return no_mistakes_wrapped_tokens(tokens)
+    return None
 
 
 def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
     # Depth cap guards against pathological re-tokenisation loops while
     # leaving headroom for realistic legitimate wrapper stacks. A supported
     # chain like `sudo nice env -i bash -c 'rustup run stable cargo test'`
-    # reaches `cargo` at depth 5; cap 6 keeps one slot of safety margin.
-    if not tokens or depth > 6:
+    # reaches `cargo` at depth 5; the cap keeps one slot of safety margin.
+    if not tokens:
         return set()
+    if depth > PROCESS_PARSE_DEPTH_LIMIT:
+        return {PROCESS_PARSE_DEPTH_EXCEEDED}
+    substitution_names: set[str] = set()
+    for payload in shell_command_substitution_payloads(tokens):
+        substitution_names.update(process_names_from_tokens(payload, depth=depth + 1))
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index >= len(tokens):
+        return substitution_names
+    if assignment_index:
+        tokens = tokens[assignment_index:]
+    segments = shell_command_segments(tokens)
+    if segments:
+        names = set(substitution_names)
+        for segment in segments:
+            names.update(process_names_from_tokens(segment, depth=depth + 1))
+        return names
+    tokens = strip_shell_redirections(shell_normalized_tokens(tokens))
+    if not tokens:
+        return substitution_names
     executable = basename_token(tokens[0])
-    names = {executable}
-    if executable == "env":
-        names.update(process_names_from_tokens(env_wrapped_tokens(tokens), depth=depth + 1))
-    elif executable in ("sudo", "doas"):
-        names.update(process_names_from_tokens(tokens[sudo_command_index(tokens) :], depth=depth + 1))
-    elif executable == "nice":
-        names.update(process_names_from_tokens(tokens[nice_command_index(tokens) :], depth=depth + 1))
-    elif executable == "rustup" and len(tokens) >= 4 and tokens[1] == "run":
-        names.update(process_names_from_tokens(rustup_run_tokens(tokens), depth=depth + 1))
+    names = {executable, *substitution_names}
+    wrapped_tokens = process_wrapper_tokens(tokens)
+    if wrapped_tokens is not None:
+        names.update(process_names_from_tokens(wrapped_tokens, depth=depth + 1))
+    elif executable == "eval":
+        eval_index = 1
+        if eval_index < len(tokens) and tokens[eval_index] == "--":
+            eval_index += 1
+        names.update(process_names_from_tokens(command_tokens(" ".join(tokens[eval_index:])), depth=depth + 1))
     elif executable in ("bash", "dash", "fish", "sh", "zsh"):
         command = shell_command(tokens)
         if command is not None:
             names.update(process_names_from_tokens(command_tokens(command), depth=depth + 1))
     elif executable.startswith("python"):
+        for payload in python_inline_command_payloads(tokens):
+            names.update(process_names_from_tokens(command_tokens(payload), depth=depth + 1))
         script_name = python_script_name(tokens, 1)
         if script_name is not None:
             names.add(script_name)
+    elif executable == "find":
+        for payload in find_exec_payloads(tokens):
+            names.update(process_names_from_tokens(payload, depth=depth + 1))
     return names
 
 
@@ -648,9 +1610,316 @@ def command_process_names(command: str) -> set[str]:
     return process_names_from_tokens(tokens)
 
 
+def rust_tool_name_has_script_extension(name: str) -> bool:
+    return pathlib.Path(name).suffix.lower() in {".bash", ".fish", ".ksh", ".ps1", ".py", ".rb", ".sh", ".zsh"}
+
+
+def executable_is_rust_tool(executable: str) -> bool:
+    if rust_tool_name_has_script_extension(executable):
+        return False
+    return (
+        executable in {"cargo", "clippy", "nextest", "rustc", "rustdoc", "rustup"}
+        or executable.startswith(("cargo-", "clippy-", "rust-"))
+    )
+
+
+def path_name_looks_like_renamed_cargo(executable: str) -> bool:
+    return executable == "c" or executable_is_rust_tool(executable) or (
+        executable.endswith("cargo") and "_" not in executable
+    )
+
+
+def path_executable_looks_like_cargo(token: str) -> bool:
+    if "/" not in token:
+        return False
+    executable = basename_token(token)
+    if path_name_looks_like_renamed_cargo(executable):
+        return True
+    try:
+        resolved = pathlib.Path(token).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return path_name_looks_like_renamed_cargo(resolved.name)
+
+
+def path_name_looks_like_renamed_rustc(executable: str) -> bool:
+    return executable == "r" or executable == "rustc" or (executable.endswith("rustc") and "_" not in executable)
+
+
+def path_executable_looks_like_rustc(token: str) -> bool:
+    if "/" not in token:
+        return False
+    executable = basename_token(token)
+    if path_name_looks_like_renamed_rustc(executable):
+        return True
+    try:
+        resolved = pathlib.Path(token).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return path_name_looks_like_renamed_rustc(resolved.name)
+
+
+RUSTC_SPECIFIC_TOKENS = {"--crate-name", "--emit", "--out-dir"}
+
+
+def tokens_have_rustc_specific_flags(tokens: list[str]) -> bool:
+    return any(
+        token in RUSTC_SPECIFIC_TOKENS or token.startswith("--emit=") or token.startswith("--out-dir=")
+        for token in tokens
+    )
+
+
+def tokens_may_be_renamed_rustc(tokens: list[str], *, depth: int = 0) -> bool:
+    if not tokens:
+        return False
+    if depth > PROCESS_PARSE_DEPTH_LIMIT:
+        return True
+    tokens = strip_shell_redirections(shell_normalized_tokens(tokens))
+    if not tokens:
+        return False
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index >= len(tokens):
+        return False
+    if assignment_index:
+        return tokens_may_be_renamed_rustc(tokens[assignment_index:], depth=depth + 1)
+    segments = shell_command_segments(tokens)
+    if segments:
+        return any(tokens_may_be_renamed_rustc(segment, depth=depth + 1) for segment in segments)
+    if (
+        (path_executable_looks_like_rustc(tokens[0]) or path_name_looks_like_renamed_rustc(basename_token(tokens[0])))
+        and tokens_have_rustc_specific_flags(tokens[1:])
+    ):
+        return True
+    wrapped_tokens = process_wrapper_tokens(tokens)
+    if wrapped_tokens is None:
+        executable = basename_token(tokens[0])
+        if executable == "eval":
+            eval_index = 1
+            if eval_index < len(tokens) and tokens[eval_index] == "--":
+                eval_index += 1
+            wrapped_tokens = command_tokens(" ".join(tokens[eval_index:]))
+        elif executable in ("bash", "dash", "fish", "sh", "zsh"):
+            command = shell_command(tokens)
+            wrapped_tokens = command_tokens(command) if command is not None else None
+        elif executable.startswith("python"):
+            return any(
+                tokens_may_be_renamed_rustc(command_tokens(payload), depth=depth + 1)
+                for payload in python_inline_command_payloads(tokens)
+            )
+    return wrapped_tokens is not None and tokens_may_be_renamed_rustc(wrapped_tokens, depth=depth + 1)
+
+
+def command_may_launch_rust(command: str) -> bool:
+    tokens = command_tokens(command)
+    if not tokens:
+        return False
+    if command_may_be_renamed_cargo(command):
+        return True
+    if tokens_may_be_renamed_rustc(tokens):
+        return True
+    tokens = strip_shell_redirections(shell_normalized_tokens(tokens))
+    if not tokens:
+        return False
+    executable = basename_token(tokens[0])
+    if executable_is_rust_tool(executable):
+        return True
+    names = process_names_from_tokens(tokens)
+    if PROCESS_PARSE_DEPTH_EXCEEDED in names:
+        return True
+    if any(executable_is_rust_tool(name) or name == "nextest" for name in names):
+        return True
+    cargo_specific_tokens = {"--manifest-path", "--workspace", "--all-targets", "--all-features"}
+    if any(token in cargo_specific_tokens for token in tokens):
+        if any(token in CARGO_PROCESS_SUBCOMMANDS for token in tokens):
+            return True
+    if executable not in OPAQUE_RUST_LAUNCHERS:
+        return False
+    return any(
+        re.search(r"(^|[^A-Za-z0-9_-])(?:cargo|rustc|rustdoc|rustup|clippy|nextest)(?:[^A-Za-z0-9_-]|$)", token)
+        for token in tokens
+    )
+
+
+def command_may_launch_build(command: str) -> bool:
+    tokens = command_tokens(command)
+    if not tokens:
+        return False
+    executable = basename_token(tokens[0])
+    return executable in OPAQUE_RUST_LAUNCHERS and "build" in command.lower()
+
+
+def command_may_be_renamed_cargo(command: str) -> bool:
+    tokens = command_tokens(command)
+    return tokens_may_be_renamed_cargo(tokens)
+
+
+def tokens_may_be_renamed_cargo(tokens: list[str], *, depth: int = 0) -> bool:
+    if not tokens:
+        return False
+    if depth > PROCESS_PARSE_DEPTH_LIMIT:
+        return True
+    tokens = strip_shell_redirections(shell_normalized_tokens(tokens))
+    if not tokens:
+        return False
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index >= len(tokens):
+        return False
+    if assignment_index:
+        return tokens_may_be_renamed_cargo(tokens[assignment_index:], depth=depth + 1)
+    segments = shell_command_segments(tokens)
+    if segments:
+        return any(tokens_may_be_renamed_cargo(segment, depth=depth + 1) for segment in segments)
+    if (
+        (path_executable_looks_like_cargo(tokens[0]) or path_name_looks_like_renamed_cargo(basename_token(tokens[0])))
+        and cargo_subcommand(tokens[1:]) in CARGO_PROCESS_SUBCOMMANDS
+    ):
+        return True
+    wrapped_tokens = process_wrapper_tokens(tokens)
+    if wrapped_tokens is None:
+        executable = basename_token(tokens[0])
+        if executable == "eval":
+            eval_index = 1
+            if eval_index < len(tokens) and tokens[eval_index] == "--":
+                eval_index += 1
+            wrapped_tokens = command_tokens(" ".join(tokens[eval_index:]))
+        elif executable in ("bash", "dash", "fish", "sh", "zsh"):
+            command = shell_command(tokens)
+            wrapped_tokens = command_tokens(command) if command is not None else None
+        elif executable.startswith("python"):
+            return any(
+                tokens_may_be_renamed_cargo(command_tokens(payload), depth=depth + 1)
+                for payload in python_inline_command_payloads(tokens)
+            )
+    return wrapped_tokens is not None and tokens_may_be_renamed_cargo(wrapped_tokens, depth=depth + 1)
+
+
 def matching_process_pattern(command: str, patterns: list[str]) -> str | None:
     names = command_process_names(command)
     return next((pattern for pattern in patterns if basename_token(pattern) in names), None)
+
+
+def cargo_config_scope_path_values(config: str) -> list[str]:
+    stripped = decode_toml_unicode_escapes(config).strip().strip("\"'")
+    if not stripped:
+        return []
+    if cargo_config_looks_like_path(stripped):
+        return [stripped]
+    values: list[str] = []
+    for pattern in (
+        r"(?:^|[\s,{])build\.target-dir\s*=\s*[\"']?([^\"'\s,}\]]+)",
+        r"(?:^|[\s,{])target-dir\s*=\s*[\"']?([^\"'\s,}\]]+)",
+    ):
+        for match in re.finditer(pattern, stripped):
+            values.append(match.group(1))
+    return values
+
+
+def command_scope_path_values(tokens: list[str], *, depth: int = 0) -> list[str]:
+    if not tokens:
+        return []
+    if depth > PROCESS_PARSE_DEPTH_LIMIT:
+        return []
+    tokens = strip_shell_redirections(shell_normalized_tokens(tokens))
+    if not tokens:
+        return []
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index >= len(tokens):
+        return []
+    if assignment_index:
+        return command_scope_path_values(tokens[assignment_index:], depth=depth + 1)
+    segments = shell_command_segments(tokens)
+    if segments:
+        values: list[str] = []
+        for segment in segments:
+            values.extend(command_scope_path_values(segment, depth=depth + 1))
+        return values
+    values: list[str] = []
+    for index, token in enumerate(tokens):
+        if token in {"--manifest-path", "--target-dir"} and index + 1 < len(tokens):
+            substitution = shell_command_substitution_at(tokens, index + 1)
+            if substitution is not None:
+                values.extend(command_substitution_path_values(substitution[0]))
+            else:
+                values.append(tokens[index + 1])
+        elif token.startswith("--manifest-path=") or token.startswith("--target-dir="):
+            values.append(token.split("=", 1)[1])
+        elif token == "--config" and index + 1 < len(tokens):
+            values.extend(cargo_config_scope_path_values(tokens[index + 1]))
+        elif token.startswith("--config="):
+            values.extend(cargo_config_scope_path_values(token.split("=", 1)[1]))
+    executable = basename_token(tokens[0])
+    wrapped_tokens = process_wrapper_tokens(tokens)
+    if wrapped_tokens is not None:
+        values.extend(command_scope_path_values(wrapped_tokens, depth=depth + 1))
+    elif executable == "eval":
+        eval_index = 1
+        if eval_index < len(tokens) and tokens[eval_index] == "--":
+            eval_index += 1
+        values.extend(command_scope_path_values(command_tokens(" ".join(tokens[eval_index:])), depth=depth + 1))
+    elif executable in ("bash", "dash", "fish", "sh", "zsh"):
+        command = shell_command(tokens)
+        if command is not None:
+            values.extend(command_scope_path_values(command_tokens(command), depth=depth + 1))
+    elif executable.startswith("python"):
+        for payload in python_inline_command_payloads(tokens):
+            values.extend(command_scope_path_values(command_tokens(payload), depth=depth + 1))
+    return values
+
+
+def command_substitution_path_values(tokens: list[str]) -> list[str]:
+    values: list[str] = []
+    for token in tokens:
+        if token in SHELL_COMMAND_BOUNDARIES or token in {"echo", "printf"}:
+            continue
+        if "/" in token or token.endswith((".toml", ".json")):
+            values.append(token)
+    return values
+
+
+def command_references_scope_path(command: str, cwd: pathlib.Path | None, scopes: tuple[pathlib.Path, ...]) -> bool:
+    if cwd is None:
+        return False
+    for value in command_scope_path_values(command_tokens(command)):
+        path = pathlib.Path(value)
+        if not path.is_absolute():
+            path = cwd / path
+        try:
+            resolved = path.resolve()
+        except (OSError, RuntimeError):
+            resolved = path
+        if any(path_is_or_inside(resolved, scope) for scope in scopes):
+            return True
+    return False
+
+
+def ps_process_entry(line: str) -> tuple[int, int | None, str] | None:
+    stripped = line.strip()
+    pid_text, _, rest = stripped.partition(" ")
+    if not pid_text.isdigit():
+        return None
+    rest = rest.lstrip()
+    ppid_text, _, command = rest.partition(" ")
+    if ppid_text.isdigit() and command:
+        return int(pid_text), int(ppid_text), command
+    return int(pid_text), None, rest
+
+
+def current_process_family_pids(entries: list[tuple[int, int | None, str]], current_pid: int) -> set[int]:
+    ignored = {current_pid}
+    parent = os.getppid()
+    if parent > 0:
+        ignored.add(parent)
+    parent_by_pid = {pid: ppid for pid, ppid, _command in entries if ppid is not None}
+    cursor = parent
+    for _ in range(64):
+        if cursor <= 0:
+            break
+        next_parent = parent_by_pid.get(cursor)
+        if next_parent is None or next_parent in ignored:
+            break
+        ignored.add(next_parent)
+        cursor = next_parent
+    return ignored
 
 
 def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: dict[str, Any]) -> list[dict[str, Any]]:
@@ -658,7 +1927,7 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
     if not patterns:
         return []
     result = subprocess.run(
-        ["ps", "-ax", "-o", "pid=", "-o", "command="],
+        ["ps", "-ww", "-ax", "-o", "pid=", "-o", "ppid=", "-o", "command="],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -667,25 +1936,71 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
     if result.returncode != 0:
         raise ProcessVisibilityError("unable to inspect active processes")
     current_pid = os.getpid()
+    entries = [entry for line in result.stdout.splitlines() if (entry := ps_process_entry(line)) is not None]
+    ignored_pids = current_process_family_pids(entries, current_pid)
     related: list[dict[str, Any]] = []
     repo_scope = repo.resolve()
     target_scope = target.resolve()
+    path_scopes = (repo_scope, target_scope)
     scope_texts = {str(repo), str(target), str(repo_scope), str(target_scope)}
     unscoped_match = False
-    for line in result.stdout.splitlines():
-        stripped = line.strip()
-        pid_text, _, command = stripped.partition(" ")
-        if not pid_text.isdigit() or int(pid_text) == current_pid:
+    for pid, _ppid, command in entries:
+        if pid in ignored_pids:
             continue
-        matched_pattern = matching_process_pattern(command, patterns)
-        if matched_pattern is None:
-            continue
-        pid = int(pid_text)
-        cwd = process_cwd(pid)
         command_matches_scope = any(scope_text in command for scope_text in scope_texts)
+        matched_pattern = matching_process_pattern(command, patterns)
+        may_launch_renamed_cargo = matched_pattern is None and command_may_be_renamed_cargo(command)
+        may_launch_rust = matched_pattern is None and (command_may_launch_rust(command) or may_launch_renamed_cargo)
+        may_launch_build = matched_pattern is None and not may_launch_rust and command_may_launch_build(command)
+        cwd: pathlib.Path | None = None
+        cwd_sampled = False
+        if not command_matches_scope and (matched_pattern is not None or may_launch_rust or may_launch_build):
+            cwd = process_cwd(pid)
+            cwd_sampled = True
+            command_matches_scope = command_references_scope_path(command, cwd, path_scopes)
+        if matched_pattern is None and not may_launch_rust and not may_launch_build and not command_matches_scope:
+            continue
+        if command_matches_scope:
+            if matched_pattern is None:
+                if may_launch_rust:
+                    matched_pattern = (
+                        "renamed Cargo launch command"
+                        if may_launch_renamed_cargo
+                        else "unclassified Rust launch command"
+                    )
+                elif may_launch_build:
+                    matched_pattern = "unclassified build launch command"
+                else:
+                    continue
+            entry = {
+                "command": command,
+                "pid": pid,
+                "reason": f"matched {matched_pattern} and referenced repo or target",
+            }
+            if cwd is not None:
+                entry["cwd"] = str(cwd)
+            related.append(entry)
+            continue
+        if not cwd_sampled:
+            cwd = process_cwd(pid)
+            cwd_sampled = True
         cwd_matches_scope = cwd is not None and (
             path_is_or_inside(cwd, repo_scope) or path_is_or_inside(cwd, target_scope)
         )
+        if matched_pattern is None:
+            if cwd_matches_scope and may_launch_rust:
+                matched_pattern = (
+                    "renamed Cargo launch command"
+                    if may_launch_renamed_cargo
+                    else "unclassified Rust launch command"
+                )
+            elif cwd_matches_scope and may_launch_build:
+                matched_pattern = "unclassified build launch command"
+            elif may_launch_rust and cwd is None:
+                unscoped_match = True
+                continue
+            else:
+                continue
         if not command_matches_scope and not cwd_matches_scope:
             if cwd is not None:
                 continue
@@ -811,6 +2126,313 @@ def refusal_payload(*, code: str, reason: str, dry_run: bool, target: str | None
     }
 
 
+def disk_preflight_refusal_payload(repo: pathlib.Path, policy: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        status = cache_status_payload(repo)
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        try:
+            target = str(target_dir(repo, policy))
+        except (KeyError, OSError, PolicyError):
+            target = None
+        return refusal_payload(
+            code="preflight_error",
+            reason=f"unable to inspect disk preflight: {exc}",
+            dry_run=False,
+            target=target,
+        )
+    if not status.get("pressure"):
+        return None
+    target = str(status["target_dir"])
+    return {
+        "candidates": [],
+        "dry_run": False,
+        "filesystem": status["filesystem"],
+        "legacy_target_dir": str(repo / "target"),
+        "managed_target_dir": target,
+        "pressure_reasons": status["pressure_reasons"],
+        "reclaimable_bytes": 0,
+        "refusal_code": "disk_pressure",
+        "refusal_reason": "managed Rust command refused before execution because free disk/cache pressure failed preflight",
+        "refused": True,
+        "target_dir": target,
+        "thresholds": status["thresholds"],
+    }
+
+
+def clean_preflight_refusal_payload(
+    repo: pathlib.Path,
+    policy: dict[str, Any],
+    target: pathlib.Path | None = None,
+) -> tuple[pathlib.Path | None, dict[str, Any] | None]:
+    try:
+        inspected_target = target if target is not None else target_dir(repo, policy)
+        refusal = active_process_refusal_payload(repo, inspected_target, policy)
+    except (KeyError, OSError, PolicyError, FileNotFoundError) as exc:
+        return target, refusal_payload(
+            code="preflight_error",
+            reason=f"unable to inspect managed cargo clean preflight: {exc}",
+            dry_run=False,
+            target=str(target) if target is not None else None,
+        )
+    return inspected_target, refusal
+
+
+def print_refusal(payload: dict[str, Any]) -> int:
+    print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+    return 2
+
+
+CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {
+    "--config",
+    "--color",
+    "--jobs",
+    "--manifest-path",
+    "--profile",
+    "--target",
+    "--target-dir",
+    "-C",
+    "-Z",
+}
+CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {
+    "--help",
+    "--list",
+    "--frozen",
+    "--locked",
+    "--offline",
+    "--quiet",
+    "--verbose",
+    "--version",
+    "-q",
+    "-v",
+    "-V",
+}
+CARGO_DISK_PREFLIGHT_SUBCOMMANDS = frozenset(
+    {"bench", "build", "check", "clippy", "doc", "fetch", "install", "nextest", "run", "rustc", "test"}
+)
+CARGO_PROCESS_SUBCOMMANDS = CARGO_DISK_PREFLIGHT_SUBCOMMANDS | {"clean", "fmt"}
+CARGO_ALIAS_SUBCOMMANDS = {"b", "c", "d", "r", "t"}
+CARGO_CONFIG_RELATIVE_PATHS = (pathlib.Path(".cargo/config.toml"), pathlib.Path(".cargo/config"))
+CARGO_HOME_CONFIG_NAMES = ("config.toml", "config")
+NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT = {"--config-file", "--manifest-path", "--profile", "--workspace-remap"}
+
+
+def cargo_subcommand_with_index(cargo_args: list[str]) -> tuple[int, str] | None:
+    index = 0
+    while index < len(cargo_args):
+        token = cargo_args[index]
+        if token.startswith("+"):
+            index += 1
+            continue
+        if token == "--":
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return index, token
+    return None
+
+
+def cargo_subcommand(cargo_args: list[str]) -> str | None:
+    subcommand = cargo_subcommand_with_index(cargo_args)
+    if subcommand is None:
+        return None
+    return subcommand[1]
+
+
+def cargo_args_need_disk_preflight(cargo_args: list[str]) -> bool:
+    return cargo_subcommand(cargo_args) in CARGO_DISK_PREFLIGHT_SUBCOMMANDS
+
+
+def nextest_subcommand_with_index(nextest_args: list[str]) -> tuple[int, str] | None:
+    index = 0
+    while index < len(nextest_args):
+        token = nextest_args[index]
+        if token == "--":
+            return None
+        if token in NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return index, token
+    return None
+
+
+def cargo_args_need_exclusive_cache_lock(cargo_args: list[str]) -> bool:
+    subcommand = cargo_subcommand_with_index(cargo_args)
+    if subcommand is None:
+        return False
+    index, command = subcommand
+    if command != "nextest":
+        return False
+    nextest_subcommand = nextest_subcommand_with_index(cargo_args[index + 1 :])
+    if nextest_subcommand is None or nextest_subcommand[1] != "run":
+        return False
+    nextest_index = index + 1 + nextest_subcommand[0]
+    tail = cargo_args[nextest_index + 1 :]
+    if "--" in tail:
+        tail = tail[: tail.index("--")]
+    has_archive_file = any(token == "--archive-file" or token.startswith("--archive-file=") for token in tail)
+    has_extract = any(
+        token in {"--extract-to", "--extract-overwrite"} or token.startswith("--extract-to=")
+        for token in tail
+    )
+    return has_archive_file and has_extract
+
+
+def run_args_need_exclusive_cache_lock(command: str, command_args: list[str], *, test_separator: bool) -> bool:
+    if command != "test" or test_separator:
+        return False
+    return cargo_args_need_exclusive_cache_lock(["nextest", "run", "--locked", *command_args])
+
+
+def repo_cargo_aliases(repo: pathlib.Path) -> set[str]:
+    aliases: set[str] = set()
+    config_paths = [(repo / relative_path, relative_path) for relative_path in CARGO_CONFIG_RELATIVE_PATHS]
+    cargo_home = os.environ.get("CARGO_HOME")
+    cargo_home_path = pathlib.Path(cargo_home).expanduser() if cargo_home else pathlib.Path.home() / ".cargo"
+    config_paths.extend((cargo_home_path / name, pathlib.Path(f"$CARGO_HOME/{name}")) for name in CARGO_HOME_CONFIG_NAMES)
+    for path, display_path in config_paths:
+        if not path.exists():
+            continue
+        try:
+            if _toml is None:
+                config = parse_minimal_toml(path)
+            else:
+                with path.open("rb") as handle:
+                    config = _toml.load(handle)
+        except (OSError, PolicyError, _toml.TOMLDecodeError if _toml is not None else ValueError) as exc:
+            raise PolicyError(f"unable to inspect Cargo alias config {display_path}: {exc}") from exc
+        alias_table = config.get("alias")
+        if isinstance(alias_table, dict):
+            aliases.update(str(name) for name in alias_table)
+    return aliases
+
+
+def cargo_alias_subcommand(cargo_args: list[str], repo: pathlib.Path | None = None) -> str | None:
+    subcommand = cargo_subcommand(cargo_args)
+    if subcommand in CARGO_ALIAS_SUBCOMMANDS:
+        return subcommand
+    if repo is not None and subcommand is not None and subcommand in repo_cargo_aliases(repo):
+        return subcommand
+    return None
+
+
+def cargo_args_for_target_routing_scan(cargo_args: list[str]) -> list[str]:
+    subcommand = cargo_subcommand_with_index(cargo_args)
+    if subcommand is None:
+        return cargo_args
+    subcommand_index, subcommand_name = subcommand
+    if subcommand_name == "nextest":
+        nextest_subcommand = nextest_subcommand_with_index(cargo_args[subcommand_index + 1 :])
+        if nextest_subcommand is None or nextest_subcommand[1] != "run":
+            return cargo_args
+        nextest_run_index = subcommand_index + 1 + nextest_subcommand[0]
+        for index, token in enumerate(cargo_args):
+            if index > nextest_run_index and token == "--":
+                return cargo_args[:index]
+        return cargo_args
+    if subcommand_name not in {"bench", "run", "test"}:
+        return cargo_args
+    for index, token in enumerate(cargo_args):
+        if index > subcommand_index and token == "--":
+            return cargo_args[:index]
+    return cargo_args
+
+
+def cargo_target_routing_override(cargo_args: list[str]) -> str | None:
+    value_options = {"--artifact-dir", "--out-dir", "--root", "--target-dir"}
+    scan_args = cargo_args_for_target_routing_scan(cargo_args)
+    for index, token in enumerate(scan_args):
+        if token in value_options:
+            return token
+        for option in value_options:
+            if token.startswith(f"{option}="):
+                return option
+        if token == "--config" and index + 1 < len(scan_args):
+            override = cargo_config_storage_override(scan_args[index + 1])
+            if override is not None:
+                return f"--config {override}"
+        if token.startswith("--config="):
+            override = cargo_config_storage_override(token.split("=", 1)[1])
+            if override is not None:
+                return f"--config={override}"
+    return None
+
+
+def decode_toml_unicode_escapes(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        digits = match.group(1) or match.group(2)
+        return chr(int(digits, 16))
+
+    return re.sub(r"\\u([0-9A-Fa-f]{4})|\\U([0-9A-Fa-f]{8})", lambda match: replace(match), value)
+
+
+def cargo_config_looks_like_path(config: str) -> bool:
+    stripped = config.strip()
+    if not stripped:
+        return False
+    if stripped.startswith(("[", "{")):
+        return False
+    if "=" not in stripped:
+        return True
+    key_prefix = stripped.split("=", 1)[0]
+    return "/" in key_prefix or "\\" in key_prefix or key_prefix.endswith(".toml")
+
+
+def cargo_config_storage_override(config: str) -> str | None:
+    if cargo_config_looks_like_path(config):
+        return "config-file"
+    scan_config = decode_toml_unicode_escapes(config)
+    if "target-dir" in scan_config and ("build" in scan_config or "[build]" in scan_config):
+        return "build.target-dir"
+    if "rustflags" in scan_config and ("--out-dir" in scan_config or "--artifact-dir" in scan_config):
+        return "build.rustflags"
+    return None
+
+
+def target_routing_refusal_payload(repo: pathlib.Path, policy: dict[str, Any], option: str) -> dict[str, Any]:
+    target = str(target_dir(repo, policy))
+    return {
+        "candidates": [],
+        "dry_run": False,
+        "managed_target_dir": target,
+        "reclaimable_bytes": 0,
+        "refusal_code": "target_routing_override",
+        "refusal_reason": f"managed Cargo refused target/output routing override: {option}",
+        "refused": True,
+        "target_dir": target,
+    }
+
+
+def cargo_alias_refusal_payload(repo: pathlib.Path, policy: dict[str, Any], alias: str) -> dict[str, Any]:
+    target = str(target_dir(repo, policy))
+    return {
+        "candidates": [],
+        "dry_run": False,
+        "managed_target_dir": target,
+        "reclaimable_bytes": 0,
+        "refusal_code": "cargo_alias_subcommand",
+        "refusal_reason": f"managed Cargo refused alias subcommand: {alias}",
+        "refused": True,
+        "target_dir": target,
+    }
+
+
 def command_args(args: list[str]) -> list[str]:
     if args and args[0] == "--":
         return args[1:]
@@ -893,9 +2515,40 @@ def cmd_cargo(args: argparse.Namespace) -> int:
     except (OSError, PolicyError, FileNotFoundError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    cargo = os.environ.get("RUST_VERIFICATION_REAL_CARGO", "cargo")
-    with cache_lock(policy, exclusive=False):
-        return run_process([cargo, *command_args(args.args)], repo=repo, env=managed_env(repo, policy))
+    cargo = "cargo"
+    cargo_args = command_args(args.args)
+    try:
+        alias = cargo_alias_subcommand(cargo_args, repo)
+    except PolicyError as exc:
+        return print_refusal(refusal_payload(code="cargo_alias_config", reason=str(exc), dry_run=False))
+    if alias is not None:
+        return print_refusal(cargo_alias_refusal_payload(repo, policy, alias))
+    override = cargo_target_routing_override(cargo_args)
+    if override is not None:
+        return print_refusal(target_routing_refusal_payload(repo, policy, override))
+    if cargo_subcommand(cargo_args) == "clean":
+        target, refusal = clean_preflight_refusal_payload(repo, policy)
+        if refusal is not None:
+            return print_refusal(refusal)
+        if target is None:
+            return print_refusal(
+                refusal_payload(
+                    code="preflight_error",
+                    reason="unable to inspect managed cargo clean preflight: target dir unavailable",
+                    dry_run=False,
+                )
+            )
+        with cache_lock(policy, exclusive=True):
+            target, refusal = clean_preflight_refusal_payload(repo, policy, target)
+            if refusal is not None:
+                return print_refusal(refusal)
+            return run_process([cargo, *cargo_args], repo=repo, env=managed_env(repo, policy))
+    if cargo_args_need_disk_preflight(cargo_args):
+        refusal = disk_preflight_refusal_payload(repo, policy)
+        if refusal is not None:
+            return print_refusal(refusal)
+    with cache_lock(policy, exclusive=cargo_args_need_exclusive_cache_lock(cargo_args)):
+        return run_process([cargo, *cargo_args], repo=repo, env=managed_env(repo, policy))
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -909,10 +2562,27 @@ def cmd_run(args: argparse.Namespace) -> int:
     except (OSError, PolicyError, FileNotFoundError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    test_separator = args.command == "test" and bool(getattr(args, "args_separator", False))
+    command_tail = ["--", *args.args] if test_separator else args.args
     justfile = repo / "justfile"
-    argv = ["just", "-f", str(justfile), "--working-directory", str(repo), "--", command["recipe"], *args.args]
-    with cache_lock(policy, exclusive=False):
-        return run_process(argv, repo=repo, env=managed_env(repo, policy))
+    argv = ["just", "-f", str(justfile), "--working-directory", str(repo), "--", command["recipe"], *command_tail]
+    override_args = [args.command, *command_tail] if args.command == "test" else args.args
+    override = cargo_target_routing_override(override_args)
+    if override is not None:
+        return print_refusal(target_routing_refusal_payload(repo, policy, override))
+    if args.command in {"build", "clippy", "test"}:
+        refusal = disk_preflight_refusal_payload(repo, policy)
+        if refusal is not None:
+            return print_refusal(refusal)
+    run_exclusive = run_args_need_exclusive_cache_lock(
+        args.command,
+        args.args,
+        test_separator=test_separator,
+    )
+    with cache_lock(policy, exclusive=run_exclusive):
+        env = managed_env(repo, policy)
+        env["BOLT_MANAGED_JUST"] = "1"
+        return run_process(argv, repo=repo, env=env)
 
 
 def cmd_scrub_env_keys(_args: argparse.Namespace) -> int:
@@ -1042,8 +2712,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def run_args_had_separator(argv: list[str], args: argparse.Namespace) -> bool:
+    if getattr(args, "command_name", None) != "run":
+        return False
+    for index, token in enumerate(argv):
+        if token != args.command:
+            continue
+        tail = argv[index + 1 :]
+        had_separator = bool(tail) and tail[0] == "--"
+        normalized_tail = tail[1:] if had_separator else tail
+        if normalized_tail == args.args:
+            return had_separator
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = build_parser().parse_args(raw_argv)
+    if getattr(args, "command_name", None) == "run":
+        args.args_separator = run_args_had_separator(raw_argv, args)
     return args.func(args)
 
 

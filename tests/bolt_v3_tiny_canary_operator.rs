@@ -5,10 +5,10 @@ use bolt_v2::{
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_tiny_canary_evidence::{
         PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
-        Phase8EvidenceRef, Phase8LiveCanaryResultRefs, Phase8LiveOrderRef,
-        Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef, Phase8StrategyInputSafetyAudit,
-        Phase8StrategyInputSafetyInputs, evaluate_phase8_canary_preflight, phase8_required_env,
-        phase8_sha256_text,
+        Phase8EvidenceRef, Phase8FinancialEnvelopeEvidenceFile, Phase8LiveCanaryResultRefs,
+        Phase8LiveOrderRef, Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef,
+        Phase8StrategyInputSafetyAudit, Phase8StrategyInputSafetyInputs,
+        evaluate_phase8_canary_preflight, phase8_required_env, phase8_sha256_text,
     },
     nt_runtime_capture::spool_root_for_instance,
 };
@@ -285,6 +285,27 @@ fn phase8_operator_envelope_rejects_approval_consumption_path_drift() {
     fixture.assert_not_consumed();
 }
 
+#[test]
+fn phase8_operator_envelope_rejects_canary_evidence_path_drift() {
+    let fixture = Phase8OperatorEnvelopeFixture::new();
+    fixture.assert_valid_baseline();
+
+    let mut envelope = fixture.envelope.clone();
+    envelope.canary_evidence_path = fixture
+        ._temp
+        .path()
+        .join("phase8-drifted-canary-evidence.json")
+        .to_string_lossy()
+        .to_string();
+
+    let error = fixture
+        .validate(&envelope, PHASE8_VALIDATION_UNIX_SECS)
+        .expect_err("canary evidence env/TOML path drift must fail closed");
+
+    assert_error_contains(&error, "canary_evidence_path");
+    fixture.assert_not_consumed();
+}
+
 fn assert_invalid_phase8_operator_envelope(
     mutate: impl FnOnce(&mut Phase8OperatorApprovalEnvelope),
     expected_error: &str,
@@ -332,8 +353,22 @@ impl Phase8OperatorEnvelopeFixture {
         let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
             .expect("strategy input evidence hash should compute");
 
+        let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+        let canary_evidence_path = temp.path().join("phase8-canary-evidence.json");
+        let root_toml_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+        let mut loaded = phase8_loaded_with_operator_canary("reports/no-submit-readiness.json");
+        let operator_evidence = loaded
+            .root
+            .live_canary
+            .as_mut()
+            .and_then(|block| block.operator_evidence.as_mut())
+            .expect("fixture should include operator evidence");
+        operator_evidence.approval_consumption_path =
+            approval_consumption_path.to_string_lossy().to_string();
+        operator_evidence.canary_evidence_path = canary_evidence_path.to_string_lossy().to_string();
+
         let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
-        write_phase8_operator_financial_envelope(&financial_envelope_path);
+        write_phase8_operator_financial_envelope(&financial_envelope_path, &loaded);
         let financial_envelope_hash =
             Phase8OperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
                 .expect("financial envelope hash should compute");
@@ -356,16 +391,6 @@ impl Phase8OperatorEnvelopeFixture {
         .expect("approval nonce should write");
         let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
             .expect("approval nonce hash should compute");
-        let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
-        let root_toml_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-        let mut loaded = phase8_loaded_with_operator_canary("reports/no-submit-readiness.json");
-        loaded
-            .root
-            .live_canary
-            .as_mut()
-            .and_then(|block| block.operator_evidence.as_mut())
-            .expect("fixture should include operator evidence")
-            .approval_consumption_path = approval_consumption_path.to_string_lossy().to_string();
 
         Self {
             envelope: Phase8OperatorApprovalEnvelope {
@@ -389,11 +414,7 @@ impl Phase8OperatorEnvelopeFixture {
                 approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
                 approval_nonce_sha256: approval_nonce_hash,
                 approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-                canary_evidence_path: temp
-                    .path()
-                    .join("phase8-canary-evidence.json")
-                    .to_string_lossy()
-                    .to_string(),
+                canary_evidence_path: canary_evidence_path.to_string_lossy().to_string(),
                 strategy_cancel_path: phase8_live_canary_strategy_cancel_path(&loaded),
             },
             loaded,
@@ -567,36 +588,11 @@ fn write_phase8_operator_strategy_input(path: &Path) {
     .expect("strategy input evidence should write");
 }
 
-fn write_phase8_operator_financial_envelope(path: &Path) {
-    let json = serde_json::json!({
-        "max_live_order_count": 1,
-        "max_notional_per_order": "0.25",
-        "strategy_instance_id": "bitcoin_updown_main",
-        "execution_client_id": "polymarket_main",
-        "configured_target_id": "btc_updown_5m",
-        "target_kind": "rotating_market",
-        "rotating_market_family": "updown",
-        "underlying_asset": "BTC",
-        "cadence_secs": 300,
-        "market_selection_rule": "active_or_next",
-        "retry_interval_secs": 5,
-        "blocked_after_secs": 60,
-        "price_to_beat_source": PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
-        "edge_threshold_basis_points": 100,
-        "order_notional_target": "5.00",
-        "maximum_position_notional": "10.00",
-        "book_impact_cap_bps": 50,
-        "entry_order_type": "limit",
-        "entry_time_in_force": "fok",
-        "entry_is_post_only": false,
-        "entry_is_reduce_only": false,
-        "entry_is_quote_quantity": false,
-        "exit_order_type": "market",
-        "exit_time_in_force": "ioc",
-        "exit_is_post_only": false,
-        "exit_is_reduce_only": false,
-        "exit_is_quote_quantity": false
-    });
+fn write_phase8_operator_financial_envelope(path: &Path, loaded: &LoadedBoltV3Config) {
+    let strategy_instance_id = loaded.strategies[0].config.strategy_instance_id.as_str();
+    let json =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .expect("financial envelope fixture should derive from loaded config");
     std::fs::write(
         path,
         serde_json::to_vec(&json).expect("financial envelope should serialize"),

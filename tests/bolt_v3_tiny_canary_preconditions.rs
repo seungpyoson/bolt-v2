@@ -18,6 +18,7 @@ use bolt_v2::{
         evaluate_phase8_canary_preflight,
     },
 };
+use nautilus_model::enums::OmsType;
 use rust_decimal::Decimal;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -1894,7 +1895,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        canary_evidence_path: live_canary_canary_evidence_path(&loaded),
         strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
     };
 
@@ -2353,6 +2354,14 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should exist")
+        .max_notional_per_order = "5.00".to_string();
+    let approved_oms_type = oms_type_value(loaded.strategies[0].config.oms_type);
     let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
     std::fs::write(
         &financial_envelope_path,
@@ -2360,6 +2369,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "max_live_order_count": 1,
             "max_notional_per_order": "5.00",
             "strategy_instance_id": "bitcoin_updown_main",
+            "oms_type": approved_oms_type,
             "execution_client_id": "polymarket_main",
             "configured_target_id": "btc_updown_5m",
             "target_kind": "rotating_market",
@@ -2374,16 +2384,27 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "order_notional_target": "5.00",
             "maximum_position_notional": "10.00",
             "book_impact_cap_bps": 50,
+            "entry_side": "buy",
+            "entry_position_side": "long",
             "entry_order_type": "limit",
             "entry_time_in_force": "fok",
             "entry_is_post_only": false,
             "entry_is_reduce_only": false,
             "entry_is_quote_quantity": false,
+            "exit_side": "sell",
+            "exit_position_side": "long",
             "exit_order_type": "market",
             "exit_time_in_force": "ioc",
             "exit_is_post_only": false,
             "exit_is_reduce_only": false,
-            "exit_is_quote_quantity": false
+            "exit_is_quote_quantity": false,
+            "forced_exit_side": "sell",
+            "forced_exit_position_side": "long",
+            "forced_exit_order_type": "market",
+            "forced_exit_time_in_force": "gtc",
+            "forced_exit_is_post_only": false,
+            "forced_exit_is_reduce_only": true,
+            "forced_exit_is_quote_quantity": false
         }))
         .expect("financial envelope should serialize"),
     )
@@ -2437,7 +2458,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        canary_evidence_path: live_canary_canary_evidence_path(&loaded),
         strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
     };
 
@@ -2538,6 +2559,29 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     assert!(
         !approval_consumption_path.exists(),
         "financial mismatch must not create consumption evidence"
+    );
+
+    let mut mismatched_oms_loaded = loaded.clone();
+    let approved_oms_variant = mismatched_oms_loaded.strategies[0].config.oms_type;
+    mismatched_oms_loaded.strategies[0].config.oms_type = alternate_oms_type(approved_oms_variant);
+    let mismatched_oms_error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &mismatched_oms_loaded,
+            1_500,
+        )
+        .expect_err("strategy OMS type mismatch against loaded TOML should fail closed");
+    assert!(
+        mismatched_oms_error
+            .to_string()
+            .contains("phase8 financial envelope `oms_type` does not match loaded TOML"),
+        "error should mention mismatched OMS type: {mismatched_oms_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "OMS type mismatch must not create consumption evidence"
     );
 
     let mut mismatched_impact_loaded = loaded.clone();
@@ -2746,6 +2790,707 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         "exit order mismatch must not create consumption evidence"
     );
 
+    let mut mismatched_forced_exit_order_loaded = loaded.clone();
+    let exit_time_in_force = mismatched_forced_exit_order_loaded.strategies[0]
+        .config
+        .parameters
+        .as_table()
+        .and_then(|parameters| parameters.get("exit_order"))
+        .and_then(toml::Value::as_table)
+        .and_then(|exit_order| exit_order.get("time_in_force"))
+        .cloned()
+        .expect("strategy exit order time_in_force should exist");
+    let forced_exit_order = mismatched_forced_exit_order_loaded.strategies[0]
+        .config
+        .parameters
+        .as_table_mut()
+        .and_then(|parameters| parameters.get_mut("forced_exit_order"))
+        .and_then(toml::Value::as_table_mut)
+        .expect("strategy forced exit order parameters should be a TOML table");
+    forced_exit_order.insert("time_in_force".to_string(), exit_time_in_force);
+    let forced_exit_consumption_path = temp
+        .path()
+        .join("phase8-approval-consumed-forced-exit-order.json");
+    let mut mismatched_forced_exit_order_envelope = envelope.clone();
+    mismatched_forced_exit_order_envelope.approval_consumption_path =
+        forced_exit_consumption_path.to_string_lossy().to_string();
+    bind_loaded_approval_consumption_path(
+        &mut mismatched_forced_exit_order_loaded,
+        &forced_exit_consumption_path,
+    );
+    let mismatched_forced_exit_order_error = mismatched_forced_exit_order_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &mismatched_forced_exit_order_loaded,
+            1_500,
+        )
+        .expect_err("forced exit order drift against loaded TOML should fail closed");
+    assert!(
+        mismatched_forced_exit_order_error.to_string().contains(
+            "phase8 financial envelope `forced_exit_time_in_force` does not match loaded TOML"
+        ),
+        "error should mention mismatched forced exit order field: {mismatched_forced_exit_order_error}"
+    );
+    assert!(
+        !forced_exit_consumption_path.exists(),
+        "forced exit order drift must not create consumption evidence"
+    );
+
+    for (field_key, envelope_field, value) in [
+        (
+            "order_type",
+            "forced_exit_order_type",
+            toml::Value::String("limit".to_string()),
+        ),
+        (
+            "is_reduce_only",
+            "forced_exit_is_reduce_only",
+            toml::Value::Boolean(false),
+        ),
+    ] {
+        let mut mismatched_forced_exit_required_loaded = loaded.clone();
+        let forced_exit_order = mismatched_forced_exit_required_loaded.strategies[0]
+            .config
+            .parameters
+            .as_table_mut()
+            .and_then(|parameters| parameters.get_mut("forced_exit_order"))
+            .and_then(toml::Value::as_table_mut)
+            .expect("strategy forced exit order parameters should be a TOML table");
+        forced_exit_order.insert(field_key.to_string(), value);
+        let consumption_path = temp.path().join(format!(
+            "phase8-approval-consumed-forced-exit-order-{field_key}.json"
+        ));
+        let mut mismatched_forced_exit_required_envelope = envelope.clone();
+        mismatched_forced_exit_required_envelope.approval_consumption_path =
+            consumption_path.to_string_lossy().to_string();
+        bind_loaded_approval_consumption_path(
+            &mut mismatched_forced_exit_required_loaded,
+            &consumption_path,
+        );
+        let mismatched_forced_exit_required_error = mismatched_forced_exit_required_envelope
+            .validate_and_consume_against(
+                "expected-head",
+                "expected-config-hash",
+                "operator-approved-canary-001",
+                &mismatched_forced_exit_required_loaded,
+                1_500,
+            )
+            .expect_err("forced exit required order-shape drift should fail closed");
+        assert!(
+            mismatched_forced_exit_required_error
+                .to_string()
+                .contains(&format!(
+                    "phase8 financial envelope `{envelope_field}` does not match loaded TOML"
+                )),
+            "error should mention mismatched forced exit required field: {mismatched_forced_exit_required_error}"
+        );
+        assert!(
+            !consumption_path.exists(),
+            "forced exit required order-shape drift must not create consumption evidence"
+        );
+    }
+
+    for (order_key, field_key, envelope_field, value) in [
+        (
+            "entry_order",
+            "expire_time_unix_nanos",
+            "entry_expire_time_unix_nanos",
+            toml::Value::Integer(4_102_444_800_000_000_000),
+        ),
+        (
+            "entry_order",
+            "trigger_price",
+            "entry_trigger_price",
+            toml::Value::Float(0.52),
+        ),
+        (
+            "entry_order",
+            "activation_price",
+            "entry_activation_price",
+            toml::Value::Float(0.51),
+        ),
+        (
+            "entry_order",
+            "trigger_type",
+            "entry_trigger_type",
+            toml::Value::String("default".to_string()),
+        ),
+        (
+            "entry_order",
+            "trigger_instrument_id",
+            "entry_trigger_instrument_id",
+            toml::Value::String("ETHUSDT.BINANCE".to_string()),
+        ),
+        (
+            "entry_order",
+            "trailing_offset",
+            "entry_trailing_offset",
+            toml::Value::Float(2.5),
+        ),
+        (
+            "entry_order",
+            "trailing_offset_type",
+            "entry_trailing_offset_type",
+            toml::Value::String("basis_points".to_string()),
+        ),
+        (
+            "exit_order",
+            "expire_time_unix_nanos",
+            "exit_expire_time_unix_nanos",
+            toml::Value::Integer(4_102_444_800_000_000_000),
+        ),
+        (
+            "exit_order",
+            "trigger_price",
+            "exit_trigger_price",
+            toml::Value::Float(0.48),
+        ),
+        (
+            "exit_order",
+            "activation_price",
+            "exit_activation_price",
+            toml::Value::Float(0.47),
+        ),
+        (
+            "exit_order",
+            "trigger_type",
+            "exit_trigger_type",
+            toml::Value::String("default".to_string()),
+        ),
+        (
+            "exit_order",
+            "trigger_instrument_id",
+            "exit_trigger_instrument_id",
+            toml::Value::String("ETHUSDT.BINANCE".to_string()),
+        ),
+        (
+            "exit_order",
+            "trailing_offset",
+            "exit_trailing_offset",
+            toml::Value::Float(3.0),
+        ),
+        (
+            "exit_order",
+            "trailing_offset_type",
+            "exit_trailing_offset_type",
+            toml::Value::String("ticks".to_string()),
+        ),
+        (
+            "forced_exit_order",
+            "expire_time_unix_nanos",
+            "forced_exit_expire_time_unix_nanos",
+            toml::Value::Integer(4_102_444_800_000_000_000),
+        ),
+        (
+            "forced_exit_order",
+            "trigger_price",
+            "forced_exit_trigger_price",
+            toml::Value::Float(0.48),
+        ),
+        (
+            "forced_exit_order",
+            "activation_price",
+            "forced_exit_activation_price",
+            toml::Value::Float(0.47),
+        ),
+        (
+            "forced_exit_order",
+            "trigger_type",
+            "forced_exit_trigger_type",
+            toml::Value::String("default".to_string()),
+        ),
+        (
+            "forced_exit_order",
+            "trigger_instrument_id",
+            "forced_exit_trigger_instrument_id",
+            toml::Value::String("ETHUSDT.BINANCE".to_string()),
+        ),
+        (
+            "forced_exit_order",
+            "trailing_offset",
+            "forced_exit_trailing_offset",
+            toml::Value::Float(3.0),
+        ),
+        (
+            "forced_exit_order",
+            "trailing_offset_type",
+            "forced_exit_trailing_offset_type",
+            toml::Value::String("ticks".to_string()),
+        ),
+    ] {
+        let mut mismatched_optional_order_field_loaded = loaded.clone();
+        let order = mismatched_optional_order_field_loaded.strategies[0]
+            .config
+            .parameters
+            .as_table_mut()
+            .and_then(|parameters| parameters.get_mut(order_key))
+            .and_then(toml::Value::as_table_mut)
+            .expect("strategy order parameters should be a TOML table");
+        order.insert(field_key.to_string(), value);
+        let consumption_path = temp.path().join(format!(
+            "phase8-approval-consumed-{order_key}-{field_key}.json"
+        ));
+        let mut mismatched_optional_order_field_envelope = envelope.clone();
+        mismatched_optional_order_field_envelope.approval_consumption_path =
+            consumption_path.to_string_lossy().to_string();
+        bind_loaded_approval_consumption_path(
+            &mut mismatched_optional_order_field_loaded,
+            &consumption_path,
+        );
+        let mismatched_optional_order_field_error = mismatched_optional_order_field_envelope
+            .validate_and_consume_against(
+                "expected-head",
+                "expected-config-hash",
+                "operator-approved-canary-001",
+                &mismatched_optional_order_field_loaded,
+                1_500,
+            )
+            .expect_err("optional order-shape drift against loaded TOML should fail closed");
+        assert!(
+            mismatched_optional_order_field_error
+                .to_string()
+                .contains(&format!(
+                    "phase8 financial envelope `{envelope_field}` does not match loaded TOML"
+                )),
+            "error should mention mismatched optional order-shape field: {mismatched_optional_order_field_error}"
+        );
+        assert!(
+            !consumption_path.exists(),
+            "optional order-shape drift must not create consumption evidence"
+        );
+    }
+
+    for (field_key, envelope_field, value) in [
+        (
+            "side",
+            "entry_side",
+            toml::Value::String("sell".to_string()),
+        ),
+        (
+            "position_side",
+            "entry_position_side",
+            toml::Value::String("short".to_string()),
+        ),
+    ] {
+        let mut mismatched_required_order_field_loaded = loaded.clone();
+        let entry_order = mismatched_required_order_field_loaded.strategies[0]
+            .config
+            .parameters
+            .as_table_mut()
+            .and_then(|parameters| parameters.get_mut("entry_order"))
+            .and_then(toml::Value::as_table_mut)
+            .expect("strategy entry order parameters should be a TOML table");
+        entry_order.insert(field_key.to_string(), value);
+        let consumption_path = temp.path().join(format!(
+            "phase8-approval-consumed-entry-order-{field_key}.json"
+        ));
+        let mut mismatched_required_order_field_envelope = envelope.clone();
+        mismatched_required_order_field_envelope.approval_consumption_path =
+            consumption_path.to_string_lossy().to_string();
+        bind_loaded_approval_consumption_path(
+            &mut mismatched_required_order_field_loaded,
+            &consumption_path,
+        );
+        let mismatched_required_order_field_error = mismatched_required_order_field_envelope
+            .validate_and_consume_against(
+                "expected-head",
+                "expected-config-hash",
+                "operator-approved-canary-001",
+                &mismatched_required_order_field_loaded,
+                1_500,
+            )
+            .expect_err("entry side/position drift against loaded TOML should fail closed");
+        assert!(
+            mismatched_required_order_field_error
+                .to_string()
+                .contains(&format!(
+                    "phase8 financial envelope `{envelope_field}` does not match loaded TOML"
+                )),
+            "error should mention mismatched entry side/position field: {mismatched_required_order_field_error}"
+        );
+        assert!(
+            !consumption_path.exists(),
+            "entry side/position drift must not create consumption evidence"
+        );
+    }
+
+    let uppercase_oms_financial_envelope_path = temp
+        .path()
+        .join("phase8-financial-envelope-uppercase-oms.json");
+    let mut uppercase_oms_financial_envelope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&financial_envelope_path).expect("financial envelope should read"),
+    )
+    .expect("financial envelope should parse");
+    uppercase_oms_financial_envelope
+        .as_object_mut()
+        .expect("financial envelope should be an object")
+        .insert(
+            "oms_type".to_string(),
+            serde_json::Value::String(approved_oms_type.to_ascii_uppercase()),
+        );
+    std::fs::write(
+        &uppercase_oms_financial_envelope_path,
+        serde_json::to_vec(&uppercase_oms_financial_envelope)
+            .expect("uppercase OMS financial envelope should serialize"),
+    )
+    .expect("uppercase OMS financial envelope should write");
+    let uppercase_oms_financial_envelope_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&uppercase_oms_financial_envelope_path)
+            .expect("uppercase OMS financial envelope hash should compute");
+    let uppercase_oms_consumption_path = temp
+        .path()
+        .join("phase8-approval-consumed-uppercase-oms.json");
+    let mut uppercase_oms_envelope = envelope.clone();
+    uppercase_oms_envelope.financial_envelope_path = uppercase_oms_financial_envelope_path
+        .to_string_lossy()
+        .to_string();
+    uppercase_oms_envelope.financial_envelope_sha256 = uppercase_oms_financial_envelope_hash;
+    uppercase_oms_envelope.approval_consumption_path =
+        uppercase_oms_consumption_path.to_string_lossy().to_string();
+    let mut uppercase_oms_loaded = loaded.clone();
+    bind_loaded_approval_consumption_path(
+        &mut uppercase_oms_loaded,
+        &uppercase_oms_consumption_path,
+    );
+    uppercase_oms_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &uppercase_oms_loaded,
+            1_500,
+        )
+        .expect("financial envelope should canonicalize OMS through NT parsing");
+    assert!(
+        uppercase_oms_consumption_path.exists(),
+        "NT-equivalent OMS spelling should create consumption evidence"
+    );
+    std::fs::remove_file(&uppercase_oms_consumption_path)
+        .expect("uppercase OMS consumption evidence should remove");
+
+    let financial_envelope_order_enum_fields = [
+        "entry_side",
+        "entry_position_side",
+        "entry_order_type",
+        "entry_time_in_force",
+        "entry_trigger_type",
+        "entry_trailing_offset_type",
+        "exit_side",
+        "exit_position_side",
+        "exit_order_type",
+        "exit_time_in_force",
+        "exit_trigger_type",
+        "exit_trailing_offset_type",
+        "forced_exit_side",
+        "forced_exit_position_side",
+        "forced_exit_order_type",
+        "forced_exit_time_in_force",
+        "forced_exit_trigger_type",
+        "forced_exit_trailing_offset_type",
+    ];
+    let uppercase_order_enums_financial_envelope_path = temp
+        .path()
+        .join("phase8-financial-envelope-uppercase-order-enums.json");
+    let mut uppercase_order_enums_financial_envelope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&financial_envelope_path).expect("financial envelope should read"),
+    )
+    .expect("financial envelope should parse");
+    let uppercase_order_enums = uppercase_order_enums_financial_envelope
+        .as_object_mut()
+        .expect("financial envelope should be an object");
+    let mut changed_order_enum_fields = 0usize;
+    for field in financial_envelope_order_enum_fields {
+        if let Some(value) = uppercase_order_enums
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_ascii_uppercase)
+        {
+            if uppercase_order_enums
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                != Some(value.as_str())
+            {
+                changed_order_enum_fields += 1;
+            }
+            uppercase_order_enums.insert(field.to_string(), serde_json::Value::String(value));
+        }
+    }
+    assert!(
+        changed_order_enum_fields > 0,
+        "order enum regression should transform at least one approved envelope spelling"
+    );
+    let loaded_entry_side = loaded.strategies[0]
+        .config
+        .parameters
+        .as_table()
+        .and_then(|parameters| parameters.get("entry_order"))
+        .and_then(toml::Value::as_table)
+        .and_then(|entry_order| entry_order.get("side"))
+        .and_then(toml::Value::as_str)
+        .expect("loaded entry order side should exist");
+    let approved_entry_side = uppercase_order_enums_financial_envelope
+        .get("entry_side")
+        .and_then(serde_json::Value::as_str)
+        .expect("approved financial envelope entry side should exist");
+    assert_ne!(
+        approved_entry_side, loaded_entry_side,
+        "regression must prove comparison accepts NT-equivalent non-identical order enum text"
+    );
+    std::fs::write(
+        &uppercase_order_enums_financial_envelope_path,
+        serde_json::to_vec(&uppercase_order_enums_financial_envelope)
+            .expect("uppercase order-enum financial envelope should serialize"),
+    )
+    .expect("uppercase order-enum financial envelope should write");
+    let uppercase_order_enums_financial_envelope_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&uppercase_order_enums_financial_envelope_path)
+            .expect("uppercase order-enum financial envelope hash should compute");
+    let uppercase_order_enums_consumption_path = temp
+        .path()
+        .join("phase8-approval-consumed-uppercase-order-enums.json");
+    let mut uppercase_order_enums_envelope = envelope.clone();
+    uppercase_order_enums_envelope.financial_envelope_path =
+        uppercase_order_enums_financial_envelope_path
+            .to_string_lossy()
+            .to_string();
+    uppercase_order_enums_envelope.financial_envelope_sha256 =
+        uppercase_order_enums_financial_envelope_hash;
+    uppercase_order_enums_envelope.approval_consumption_path =
+        uppercase_order_enums_consumption_path
+            .to_string_lossy()
+            .to_string();
+    let mut uppercase_order_enums_loaded = loaded.clone();
+    bind_loaded_approval_consumption_path(
+        &mut uppercase_order_enums_loaded,
+        &uppercase_order_enums_consumption_path,
+    );
+    uppercase_order_enums_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &uppercase_order_enums_loaded,
+            1_500,
+        )
+        .expect("financial envelope should canonicalize NT order enum spellings");
+    assert!(
+        uppercase_order_enums_consumption_path.exists(),
+        "NT-equivalent order enum spellings should create consumption evidence"
+    );
+    std::fs::remove_file(&uppercase_order_enums_consumption_path)
+        .expect("uppercase order-enum consumption evidence should remove");
+
+    let mut uppercase_order_enums_loaded = loaded.clone();
+    let uppercase_order_parameters = uppercase_order_enums_loaded.strategies[0]
+        .config
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a TOML table");
+    for (order_key, order_fields) in [
+        (
+            "entry_order",
+            [
+                "side",
+                "position_side",
+                "order_type",
+                "time_in_force",
+                "trigger_type",
+                "trailing_offset_type",
+            ],
+        ),
+        (
+            "exit_order",
+            [
+                "side",
+                "position_side",
+                "order_type",
+                "time_in_force",
+                "trigger_type",
+                "trailing_offset_type",
+            ],
+        ),
+        (
+            "forced_exit_order",
+            [
+                "side",
+                "position_side",
+                "order_type",
+                "time_in_force",
+                "trigger_type",
+                "trailing_offset_type",
+            ],
+        ),
+    ] {
+        let order = uppercase_order_parameters
+            .get_mut(order_key)
+            .and_then(toml::Value::as_table_mut)
+            .expect("strategy order parameters should be a TOML table");
+        for field in order_fields {
+            if let Some(value) = order
+                .get(field)
+                .and_then(toml::Value::as_str)
+                .map(str::to_ascii_uppercase)
+            {
+                order.insert(field.to_string(), toml::Value::String(value));
+            }
+        }
+    }
+    let uppercase_loaded_order_enums_consumption_path = temp
+        .path()
+        .join("phase8-approval-consumed-uppercase-loaded-order-enums.json");
+    let mut uppercase_loaded_order_enums_envelope = envelope.clone();
+    uppercase_loaded_order_enums_envelope.approval_consumption_path =
+        uppercase_loaded_order_enums_consumption_path
+            .to_string_lossy()
+            .to_string();
+    bind_loaded_approval_consumption_path(
+        &mut uppercase_order_enums_loaded,
+        &uppercase_loaded_order_enums_consumption_path,
+    );
+    uppercase_loaded_order_enums_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &uppercase_order_enums_loaded,
+            1_500,
+        )
+        .expect("loaded TOML order enum spellings should canonicalize before comparison");
+    assert!(
+        uppercase_loaded_order_enums_consumption_path.exists(),
+        "NT-equivalent loaded TOML order enum spellings should create consumption evidence"
+    );
+    std::fs::remove_file(&uppercase_loaded_order_enums_consumption_path)
+        .expect("uppercase loaded order-enum consumption evidence should remove");
+
+    let invalid_order_enum_financial_envelope_path = temp
+        .path()
+        .join("phase8-financial-envelope-invalid-order-enum.json");
+    let mut invalid_order_enum_financial_envelope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&financial_envelope_path).expect("financial envelope should read"),
+    )
+    .expect("financial envelope should parse");
+    let invalid_order_enum_field = financial_envelope_order_enum_fields
+        .iter()
+        .find_map(|field| {
+            invalid_order_enum_financial_envelope
+                .get(*field)
+                .and_then(serde_json::Value::as_str)
+                .map(|value| (*field, format!("{value}_invalid")))
+        })
+        .expect("financial envelope should contain at least one order enum field");
+    invalid_order_enum_financial_envelope
+        .as_object_mut()
+        .expect("financial envelope should be an object")
+        .insert(
+            invalid_order_enum_field.0.to_string(),
+            serde_json::Value::String(invalid_order_enum_field.1),
+        );
+    std::fs::write(
+        &invalid_order_enum_financial_envelope_path,
+        serde_json::to_vec(&invalid_order_enum_financial_envelope)
+            .expect("invalid order-enum financial envelope should serialize"),
+    )
+    .expect("invalid order-enum financial envelope should write");
+    let invalid_order_enum_financial_envelope_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&invalid_order_enum_financial_envelope_path)
+            .expect("invalid order-enum financial envelope hash should compute");
+    let invalid_order_enum_consumption_path = temp
+        .path()
+        .join("phase8-approval-consumed-invalid-order-enum.json");
+    let mut invalid_order_enum_envelope = envelope.clone();
+    invalid_order_enum_envelope.financial_envelope_path =
+        invalid_order_enum_financial_envelope_path
+            .to_string_lossy()
+            .to_string();
+    invalid_order_enum_envelope.financial_envelope_sha256 =
+        invalid_order_enum_financial_envelope_hash;
+    invalid_order_enum_envelope.approval_consumption_path = invalid_order_enum_consumption_path
+        .to_string_lossy()
+        .to_string();
+    let mut invalid_order_enum_loaded = loaded.clone();
+    bind_loaded_approval_consumption_path(
+        &mut invalid_order_enum_loaded,
+        &invalid_order_enum_consumption_path,
+    );
+    let invalid_order_enum_error = invalid_order_enum_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &invalid_order_enum_loaded,
+            1_500,
+        )
+        .expect_err("unparseable financial envelope order enum should fail closed");
+    assert!(
+        invalid_order_enum_error.to_string().contains(&format!(
+            "phase8 financial envelope `{}` must be a NautilusTrader",
+            invalid_order_enum_field.0
+        )),
+        "error should mention invalid order enum parsing: {invalid_order_enum_error}"
+    );
+    assert!(
+        !invalid_order_enum_consumption_path.exists(),
+        "invalid order enum must not create consumption evidence"
+    );
+
+    let invalid_oms_financial_envelope_path = temp
+        .path()
+        .join("phase8-financial-envelope-invalid-oms.json");
+    let mut invalid_oms_financial_envelope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&financial_envelope_path).expect("financial envelope should read"),
+    )
+    .expect("financial envelope should parse");
+    invalid_oms_financial_envelope
+        .as_object_mut()
+        .expect("financial envelope should be an object")
+        .insert(
+            "oms_type".to_string(),
+            serde_json::Value::String(format!("{approved_oms_type}_invalid")),
+        );
+    std::fs::write(
+        &invalid_oms_financial_envelope_path,
+        serde_json::to_vec(&invalid_oms_financial_envelope)
+            .expect("invalid OMS financial envelope should serialize"),
+    )
+    .expect("invalid OMS financial envelope should write");
+    let invalid_oms_financial_envelope_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&invalid_oms_financial_envelope_path)
+            .expect("invalid OMS financial envelope hash should compute");
+    let invalid_oms_consumption_path = temp
+        .path()
+        .join("phase8-approval-consumed-invalid-oms.json");
+    let mut invalid_oms_envelope = envelope.clone();
+    invalid_oms_envelope.financial_envelope_path = invalid_oms_financial_envelope_path
+        .to_string_lossy()
+        .to_string();
+    invalid_oms_envelope.financial_envelope_sha256 = invalid_oms_financial_envelope_hash;
+    invalid_oms_envelope.approval_consumption_path =
+        invalid_oms_consumption_path.to_string_lossy().to_string();
+    let mut invalid_oms_loaded = loaded.clone();
+    bind_loaded_approval_consumption_path(&mut invalid_oms_loaded, &invalid_oms_consumption_path);
+    let invalid_oms_error = invalid_oms_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &invalid_oms_loaded,
+            1_500,
+        )
+        .expect_err("unparseable financial envelope OMS should fail closed");
+    assert!(
+        invalid_oms_error
+            .to_string()
+            .contains("phase8 financial envelope `oms_type` must be a NautilusTrader OmsType"),
+        "error should mention invalid OMS parsing: {invalid_oms_error}"
+    );
+    assert!(
+        !invalid_oms_consumption_path.exists(),
+        "invalid OMS must not create consumption evidence"
+    );
+
     let mut multi_strategy_loaded = loaded.clone();
     let mut secondary_strategy = multi_strategy_loaded.strategies[0].clone();
     secondary_strategy.config.strategy_instance_id = "bitcoin_updown_secondary".to_string();
@@ -2858,7 +3603,7 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        canary_evidence_path: live_canary_canary_evidence_path(&loaded),
         strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
     };
 
@@ -3037,7 +3782,7 @@ fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        canary_evidence_path: live_canary_canary_evidence_path(&loaded),
         strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
     };
 
@@ -3124,7 +3869,7 @@ fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        canary_evidence_path: live_canary_canary_evidence_path(&loaded),
         strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
     };
 
@@ -3232,6 +3977,34 @@ fn live_canary_strategy_cancel_path(loaded: &LoadedBoltV3Config) -> Option<Strin
         .and_then(|operator_evidence| operator_evidence.strategy_cancel_path.clone())
 }
 
+fn live_canary_canary_evidence_path(loaded: &LoadedBoltV3Config) -> String {
+    loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+        .map(|operator_evidence| operator_evidence.canary_evidence_path.clone())
+        .expect("live canary operator evidence should configure canary_evidence_path")
+}
+
+fn alternate_oms_type(approved: OmsType) -> OmsType {
+    [OmsType::Netting, OmsType::Hedging]
+        .into_iter()
+        .find(|candidate| *candidate != approved)
+        .expect("NT OMS type alternatives should include a non-approved variant")
+}
+
+#[test]
+fn phase8_oms_alternate_helper_covers_nt_oms_variants() {
+    for approved in [OmsType::Netting, OmsType::Hedging, OmsType::Unspecified] {
+        assert_ne!(alternate_oms_type(approved), approved);
+    }
+}
+
+fn oms_type_value(oms_type: OmsType) -> String {
+    oms_type.to_string().to_ascii_lowercase()
+}
+
 fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -3281,10 +4054,13 @@ fn sha256_text_for_test(value: &str) -> String {
 }
 
 fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_order: &str) {
+    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    let approved_oms_type = oms_type_value(loaded.strategies[0].config.oms_type);
     let json = serde_json::json!({
         "max_live_order_count": 1,
         "max_notional_per_order": max_notional_per_order,
         "strategy_instance_id": "bitcoin_updown_main",
+        "oms_type": approved_oms_type,
         "execution_client_id": "polymarket_main",
         "configured_target_id": "btc_updown_5m",
         "target_kind": "rotating_market",
@@ -3299,16 +4075,27 @@ fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_orde
         "order_notional_target": "5.00",
         "maximum_position_notional": "10.00",
         "book_impact_cap_bps": 50,
+        "entry_side": "buy",
+        "entry_position_side": "long",
         "entry_order_type": "limit",
         "entry_time_in_force": "fok",
         "entry_is_post_only": false,
         "entry_is_reduce_only": false,
         "entry_is_quote_quantity": false,
+        "exit_side": "sell",
+        "exit_position_side": "long",
         "exit_order_type": "market",
         "exit_time_in_force": "ioc",
         "exit_is_post_only": false,
         "exit_is_reduce_only": false,
-        "exit_is_quote_quantity": false
+        "exit_is_quote_quantity": false,
+        "forced_exit_side": "sell",
+        "forced_exit_position_side": "long",
+        "forced_exit_order_type": "market",
+        "forced_exit_time_in_force": "gtc",
+        "forced_exit_is_post_only": false,
+        "forced_exit_is_reduce_only": true,
+        "forced_exit_is_quote_quantity": false
     });
     std::fs::write(
         path,

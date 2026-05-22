@@ -1,3 +1,16 @@
+<!--
+Sync Impact Report
+Version change: 1.0.0 -> 1.1.0
+Modified principles: added VII. Research And Analytics Stay NT-First
+Added sections: Research/backtest config constraint; v1.1.0 migration note
+Removed sections: none
+Templates reviewed: .specify/templates/plan-template.md - no update needed;
+.specify/templates/spec-template.md - no update needed;
+.specify/templates/tasks-template.md - no update needed;
+.specify/templates/commands - absent in this repo
+Follow-up items: none
+-->
+
 # Bolt-v3 Constitution
 
 ## Core Principles
@@ -38,11 +51,22 @@ One branch or PR covers one named slice. Slices must be independently reviewable
 
 Backtesting and research analytics are valuable but outside the tiny-capital live-canary MVP unless they are required to prove the canary safety gate. They belong in a separate spec when the running production-shaped spine exists.
 
+### VII. Research And Analytics Stay NT-First
+
+Backtesting, research analytics, data analytics, and dashboards MUST use NautilusTrader vocabulary and surfaces before adding Bolt-owned machinery. NT owns backtest engines, catalog types, order/fill/account/portfolio state, reports, snapshots, and venue adapter semantics. Bolt may orchestrate TOML-driven runs, SSM-backed credentials, provider capture, deterministic catalog projection, lineage, read-only read models, and dashboards.
+
+Research notebooks are allowed only as research surfaces. They MUST NOT become a production trading runtime, hidden submit path, or second strategy authority. Any productionized strategy behavior must graduate into the production runtime contract with typed config and verification.
+
+Dashboards and analytics MUST be read-only. They MUST NOT submit orders, cancel orders, transfer funds, mutate credentials, or define independent PnL/position truth. Live PnL, positions, orders, fills, exposure, and account state must come from NT reports, events, snapshots, or explicitly marked exploratory derived data.
+
+External data providers are allowed when they avoid rebuilding commodity data infrastructure. Provider choice MUST pass a cost and fidelity gate. Spending more to buy reliable data is acceptable, but total recurring provider plus AWS plus dashboard cost must remain under the approved monthly cap unless the user explicitly waives it.
+
 ## Additional Constraints
 
 - Language/runtime: pure Rust binary using NautilusTrader Rust APIs directly.
 - Secret source: AWS SSM through Rust AWS SDK only.
 - Runtime config: TOML only.
+- Research/backtest config: TOML or NT-native run config only, with direct field mapping and lineage.
 - Current repo source of truth: `main` after merge.
 - Current live proof boundary: real SSM and real venue artifacts, not mock-only tests.
 - Old Bolt v1 repository is forbidden as a source.
@@ -61,4 +85,15 @@ Backtesting and research analytics are valuable but outside the tiny-capital liv
 
 This constitution supersedes convenience, local habit, and stale branch artifacts. Any PR that violates a MUST rule requires redesign, not waiver-by-documentation. Amendments require an explicit user-approved diff, a migration note for affected specs/plans, and a version bump.
 
-**Version**: 1.0.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-05-12
+Migration note for v1.1.0: affected planning artifacts are
+`specs/023-nt-research-analytics-platform/spec.md`,
+`specs/023-nt-research-analytics-platform/plan.md`,
+`specs/023-nt-research-analytics-platform/archive/research.md`,
+`specs/023-nt-research-analytics-platform/reference/evidence.md`,
+`specs/023-nt-research-analytics-platform/reference/data-model.md`,
+`specs/023-nt-research-analytics-platform/reference/contracts.md`,
+and `specs/023-nt-research-analytics-platform/tasks.md`. Runtime code is not
+changed by this amendment; implementation remains gated by feature-branch
+SpecKit checks and exact-head verification.
+
+**Version**: 1.1.0 | **Ratified**: 2026-05-12 | **Last Amended**: 2026-05-20

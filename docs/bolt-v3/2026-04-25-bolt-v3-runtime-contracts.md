@@ -1018,6 +1018,8 @@ Required additional fields:
 - `is_reduce_only`
 
 This event records the exact NautilusTrader-native order semantics for a submit attempt.
+Order-submission and pre-submit rejection events map compiled NT order-template fields through `order_fields`: `expire_time_unix_nanos`, `trigger_price`, `activation_price`, `trigger_type`, `trigger_instrument_id`, `trailing_offset`, and `trailing_offset_type`.
+When local rejection happens before a NautilusTrader order object is constructed, these compiled fields must not be synthesized.
 
 This event must also contain:
 

@@ -6,11 +6,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
+use nautilus_model::orders::{Order, OrderAny};
 use serde::Serialize;
 
 use crate::bolt_v3_config::LoadedBoltV3Config;
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 3;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 5;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
@@ -51,6 +52,95 @@ pub struct BoltV3OrderIntentEvidence {
     pub order_side: String,
     pub price: String,
     pub quantity: String,
+    pub order_fields: BoltV3OrderIntentOrderFields,
+}
+
+pub(crate) fn compiled_order_price_source(fallback_price: String, order: &OrderAny) -> String {
+    selected_compiled_order_price_source(
+        order.price().map(|price| price.to_string()),
+        order.trigger_price().map(|price| price.to_string()),
+        order.activation_price().map(|price| price.to_string()),
+        fallback_price,
+    )
+}
+
+fn selected_compiled_order_price_source(
+    price: Option<String>,
+    trigger_price: Option<String>,
+    activation_price: Option<String>,
+    fallback_price: String,
+) -> String {
+    price
+        .or(trigger_price)
+        .or(activation_price)
+        .unwrap_or(fallback_price)
+}
+
+impl BoltV3OrderIntentEvidence {
+    pub fn from_compiled_order(
+        strategy_id: String,
+        intent_kind: BoltV3OrderIntentKind,
+        fallback_price: String,
+        order: &OrderAny,
+    ) -> Self {
+        Self {
+            strategy_id,
+            intent_kind,
+            instrument_id: order.instrument_id().to_string(),
+            client_order_id: order.client_order_id().to_string(),
+            order_side: order.order_side().to_string(),
+            price: compiled_order_price_source(fallback_price, order),
+            quantity: order.quantity().to_string(),
+            order_fields: BoltV3OrderIntentOrderFields::from_order(order),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3OrderIntentOrderFields {
+    pub order_type: String,
+    pub time_in_force: String,
+    pub price: Option<String>,
+    pub trigger_price: Option<String>,
+    pub activation_price: Option<String>,
+    pub trigger_type: Option<String>,
+    pub trigger_instrument_id: Option<String>,
+    pub trailing_offset: Option<String>,
+    pub trailing_offset_type: Option<String>,
+    pub expire_time_unix_nanos: Option<String>,
+    pub is_post_only: bool,
+    pub is_reduce_only: bool,
+    pub is_quote_quantity: bool,
+}
+
+impl BoltV3OrderIntentOrderFields {
+    pub fn from_order(order: &OrderAny) -> Self {
+        Self {
+            order_type: order.order_type().to_string(),
+            time_in_force: order.time_in_force().to_string(),
+            price: order.price().map(|price| price.to_string()),
+            trigger_price: order.trigger_price().map(|price| price.to_string()),
+            activation_price: order.activation_price().map(|price| price.to_string()),
+            trigger_type: order
+                .trigger_type()
+                .map(|trigger_type| trigger_type.to_string()),
+            trigger_instrument_id: order
+                .trigger_instrument_id()
+                .map(|trigger_instrument_id| trigger_instrument_id.to_string()),
+            trailing_offset: order
+                .trailing_offset()
+                .map(|trailing_offset| trailing_offset.to_string()),
+            trailing_offset_type: order
+                .trailing_offset_type()
+                .map(|trailing_offset_type| trailing_offset_type.to_string()),
+            expire_time_unix_nanos: order
+                .expire_time()
+                .map(|expire_time| expire_time.as_u64().to_string()),
+            is_post_only: order.is_post_only(),
+            is_reduce_only: order.is_reduce_only(),
+            is_quote_quantity: order.is_quote_quantity(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -280,6 +370,14 @@ fn encode_admission_decision_line(decision: &BoltV3AdmissionDecisionEvidence) ->
 mod tests {
     use super::*;
 
+    use nautilus_core::{UUID4, UnixNanos};
+    use nautilus_model::{
+        enums::{OrderSide, OrderType, TimeInForce, TriggerType},
+        identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId},
+        orders::StopMarketOrder,
+        types::{Price, Quantity},
+    };
+
     fn parse_line(line: &[u8]) -> serde_json::Value {
         assert!(line.ends_with(b"\n"), "line must end with newline");
         let json = std::str::from_utf8(&line[..line.len() - 1]).expect("line is utf8");
@@ -293,9 +391,24 @@ mod tests {
             intent_kind: BoltV3OrderIntentKind::Entry,
             instrument_id: "instrument-one".to_string(),
             client_order_id: "client-order-one".to_string(),
-            order_side: "Buy".to_string(),
+            order_side: OrderSide::Buy.to_string(),
             price: "0.42".to_string(),
             quantity: "1".to_string(),
+            order_fields: BoltV3OrderIntentOrderFields {
+                order_type: OrderType::Limit.to_string(),
+                time_in_force: TimeInForce::Gtc.to_string(),
+                price: Some("0.42".to_string()),
+                trigger_price: None,
+                activation_price: None,
+                trigger_type: None,
+                trigger_instrument_id: None,
+                trailing_offset: None,
+                trailing_offset_type: None,
+                expire_time_unix_nanos: None,
+                is_post_only: true,
+                is_reduce_only: false,
+                is_quote_quantity: false,
+            },
         };
 
         let line = encode_order_intent_line(&intent).expect("intent should encode");
@@ -322,7 +435,113 @@ mod tests {
         let intent = &decoded["intent"];
         assert_eq!(intent["strategy_id"], "strategy-one");
         assert_eq!(intent["intent_kind"], "entry");
-        assert_eq!(intent["order_side"], "Buy");
+        assert_eq!(intent["order_side"], OrderSide::Buy.to_string());
+        assert_eq!(
+            intent["order_fields"]["order_type"],
+            OrderType::Limit.to_string()
+        );
+        assert_eq!(
+            intent["order_fields"]["time_in_force"],
+            TimeInForce::Gtc.to_string()
+        );
+        assert_eq!(intent["order_fields"]["price"], "0.42");
+        assert_eq!(
+            intent["order_fields"]["trigger_price"],
+            serde_json::Value::Null
+        );
+        assert_eq!(intent["order_fields"]["is_post_only"], true);
+        assert_eq!(intent["order_fields"]["is_reduce_only"], false);
+        assert_eq!(intent["order_fields"]["is_quote_quantity"], false);
+    }
+
+    #[test]
+    fn order_intent_from_compiled_order_binds_selected_nt_order_fields() {
+        let quantity = Quantity::new(2.0, 2);
+        let trigger_price = Price::new(0.52, 2);
+        let trigger_instrument_id = InstrumentId::from("trigger-instrument.SIM");
+        let order = OrderAny::StopMarket(
+            StopMarketOrder::new_checked(
+                TraderId::from("TRADER-001"),
+                StrategyId::from("strategy-one"),
+                InstrumentId::from("instrument-one.SIM"),
+                ClientOrderId::from("client-order-one"),
+                OrderSide::Buy,
+                quantity,
+                trigger_price,
+                TriggerType::LastPrice,
+                TimeInForce::Gtc,
+                None,
+                false,
+                false,
+                None,
+                None,
+                Some(trigger_instrument_id),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                UUID4::new(),
+                UnixNanos::from(1_u64),
+            )
+            .expect("stop-market order should be valid"),
+        );
+
+        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+            "strategy-one".to_string(),
+            BoltV3OrderIntentKind::Entry,
+            "0.42".to_string(),
+            &order,
+        );
+
+        assert_eq!(intent.instrument_id, order.instrument_id().to_string());
+        assert_eq!(intent.client_order_id, order.client_order_id().to_string());
+        assert_eq!(intent.order_side, order.order_side().to_string());
+        assert_eq!(intent.price, trigger_price.to_string());
+        assert_eq!(intent.quantity, quantity.to_string());
+        assert_eq!(
+            intent.order_fields.order_type,
+            OrderType::StopMarket.to_string()
+        );
+        assert_eq!(
+            intent.order_fields.time_in_force,
+            TimeInForce::Gtc.to_string()
+        );
+        assert_eq!(intent.order_fields.price, None);
+        assert_eq!(
+            intent.order_fields.trigger_price,
+            Some(trigger_price.to_string())
+        );
+        assert_eq!(
+            intent.order_fields.trigger_type,
+            Some(TriggerType::LastPrice.to_string())
+        );
+        assert_eq!(
+            intent.order_fields.trigger_instrument_id,
+            Some(trigger_instrument_id.to_string())
+        );
+        assert!(!intent.order_fields.is_post_only);
+        assert!(!intent.order_fields.is_reduce_only);
+        assert!(!intent.order_fields.is_quote_quantity);
+    }
+
+    #[test]
+    fn compiled_order_price_source_prefers_activation_price_before_fallback() {
+        let activation_price = Price::new(0.48, 2).to_string();
+        let fallback_price = Price::new(0.40, 2).to_string();
+
+        assert_eq!(
+            selected_compiled_order_price_source(
+                None,
+                None,
+                Some(activation_price.clone()),
+                fallback_price,
+            ),
+            activation_price
+        );
     }
 
     #[test]

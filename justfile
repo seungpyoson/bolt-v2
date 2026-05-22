@@ -58,6 +58,10 @@ verify-bolt-v3-status-map-current: check-workspace
     python3 scripts/test_verify_bolt_v3_status_map_current.py
     python3 scripts/verify_bolt_v3_status_map_current.py
 
+verify-bolt-v3-schema-current: check-workspace
+    python3 scripts/test_verify_bolt_v3_schema_current.py
+    python3 scripts/verify_bolt_v3_schema_current.py
+
 verify-bolt-v3-core-boundary: check-workspace
     python3 scripts/test_verify_bolt_v3_core_boundary.py
     python3 scripts/verify_bolt_v3_core_boundary.py
@@ -98,14 +102,17 @@ deny-advisories: check-workspace require-rust-verification-owner
 
 [private]
 managed-clippy: check-workspace
+    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-clippy must run through scripts/rust_verification.py run"; exit 2; fi
     cargo clippy --locked -- -D warnings
 
 [private]
 managed-test *args: check-workspace
+    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-test must run through scripts/rust_verification.py run"; exit 2; fi
     cargo nextest run --locked {{args}}
 
 [private]
 managed-build: check-workspace
+    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-build must run through scripts/rust_verification.py run"; exit 2; fi
     cargo zigbuild --release --target {{target}} --locked
 
 clippy: check-workspace require-rust-verification-owner
@@ -137,6 +144,8 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_naming.py
     python3 scripts/test_verify_bolt_v3_status_map_current.py
     python3 scripts/verify_bolt_v3_status_map_current.py
+    python3 scripts/test_verify_bolt_v3_schema_current.py
+    python3 scripts/verify_bolt_v3_schema_current.py
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/test_verify_bolt_v3_legacy_default_fence.py
@@ -192,7 +201,7 @@ ci-lint-workflow:
     fi
 
     failed=0
-    pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(fmt|clippy|test|nextest|zigbuild|deny|audit|build|check)([^[:alnum:]_]|$)'
+    pattern='(^|[^[:alnum:]_])cargo[[:space:]]+(audit|bench|build|check|clean|clippy|deny|doc|fetch|fmt|install|nextest|run|rustc|test|version|zigbuild)([^[:alnum:]_]|$)'
     bypass_pattern='(^|[^[:alnum:]_./-])(command[[:space:]]+cargo|~\/\.cargo\/bin\/cargo|\/[^[:space:]]*\/\.cargo\/bin\/cargo)([^[:alnum:]_./-]|$)'
     just_target='{{target}}'
     managed_build_profile='release'
@@ -212,6 +221,9 @@ ci-lint-workflow:
         failed=1
     fi
     if ! python3 scripts/test_rust_verification_decoupling.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_rust_verification_cache_retention.py; then
         failed=1
     fi
     if ! python3 scripts/verify_ci_path_filters.py; then
@@ -294,22 +306,22 @@ setup:
     if command -v cargo-nextest >/dev/null 2>&1 && cargo-nextest --version | grep -Eq "^cargo-nextest {{nextest_version}}([[:space:]]|$)"; then
         echo "cargo-nextest {{nextest_version}} already installed"
     else
-        echo "Installing cargo-nextest {{nextest_version}}..."
-        cargo install cargo-nextest --version {{nextest_version}} --locked
+        echo "ERROR: cargo-nextest {{nextest_version}} is required as a prebuilt tool"
+        exit 2
     fi
 
     if command -v cargo-deny >/dev/null 2>&1 && cargo-deny --version | grep -Eq "^cargo-deny {{deny_version}}([[:space:]]|$)"; then
         echo "cargo-deny {{deny_version}} already installed"
     else
-        echo "Installing cargo-deny {{deny_version}}..."
-        cargo install cargo-deny --version {{deny_version}} --locked
+        echo "ERROR: cargo-deny {{deny_version}} is required as a prebuilt tool"
+        exit 2
     fi
 
     if command -v cargo-zigbuild >/dev/null 2>&1 && cargo-zigbuild --version | grep -Eq "^cargo-zigbuild {{zigbuild_version}}([[:space:]]|$)"; then
         echo "cargo-zigbuild {{zigbuild_version}} already installed"
     else
-        echo "Installing cargo-zigbuild {{zigbuild_version}}..."
-        cargo install cargo-zigbuild --version {{zigbuild_version}} --locked
+        echo "ERROR: cargo-zigbuild {{zigbuild_version}} is required as a prebuilt tool"
+        exit 2
     fi
 
     if ! command -v zig >/dev/null 2>&1; then

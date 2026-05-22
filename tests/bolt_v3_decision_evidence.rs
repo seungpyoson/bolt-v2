@@ -7,12 +7,14 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot, decision_evidence_path,
+        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot,
+        decision_evidence_path,
     },
     strategies::registry::FeeProvider,
     strategies::registry::StrategyBuildContext,
 };
 use futures_util::future::{BoxFuture, FutureExt};
+use nautilus_model::enums::{OrderSide, OrderType, TimeInForce};
 use nautilus_model::identifiers::InstrumentId;
 use rust_decimal::Decimal;
 
@@ -96,8 +98,10 @@ fn binary_oracle_edge_taker_records_evidence_then_admission_before_only_direct_s
         .find(".submit_admission().admit(&request)")
         .expect("strategy wrapper must submit through admission");
     let submit_index = source
-        .find("self.submit_order(order, None, Some(client_id), None)")
-        .expect("strategy wrapper must own the only direct NT submit call");
+        .find(
+            "self.submit_order(\n            order,\n            submit_context.position_id,\n            submit_context.client_id,\n            submit_context.params,\n        )",
+        )
+        .expect("strategy wrapper must thread submit context into the only direct NT submit call");
 
     assert!(
         evidence_index < admission_index && admission_index < submit_index,
@@ -107,7 +111,7 @@ fn binary_oracle_edge_taker_records_evidence_then_admission_before_only_direct_s
         .find(".record_strategy_input_snapshot(&strategy_input_snapshot)")
         .expect("entry strategy input snapshot must be recorded");
     let evidence_wrapper_call_after_strategy_input = source[strategy_input_index..]
-        .find(".submit_order_with_decision_evidence(intent, order, client_id)")
+        .find("self.submit_order_with_decision_evidence(\n                    intent,\n                    order,\n                    SubmitContext::with_client_id(client_id),\n                )")
         .expect("entry path must submit through evidence wrapper");
     assert!(
         evidence_wrapper_call_after_strategy_input > 0,
@@ -119,6 +123,18 @@ fn binary_oracle_edge_taker_records_evidence_then_admission_before_only_direct_s
         source.matches("self.submit_order(").count(),
         1,
         "direct NT submit calls must stay inside evidence wrapper only"
+    );
+}
+
+#[test]
+fn binary_oracle_edge_taker_exit_submit_threads_managed_position_id_to_nt() {
+    let source = include_str!("../src/strategies/binary_oracle_edge_taker.rs");
+
+    assert!(
+        source.contains(
+            "SubmitContext::with_client_id_and_position_id(\n                client_id,\n                managed_position.position.position_id,\n            )"
+        ),
+        "exit submits must pass the managed PositionId into NT submit_order"
     );
 }
 
@@ -142,9 +158,24 @@ fn strategy_build_context_requires_decision_evidence_value() {
                 intent_kind: BoltV3OrderIntentKind::Entry,
                 instrument_id: "instrument-a".to_string(),
                 client_order_id: "order-a".to_string(),
-                order_side: "buy".to_string(),
+                order_side: OrderSide::Buy.to_string(),
                 price: "0.50".to_string(),
                 quantity: "1".to_string(),
+                order_fields: BoltV3OrderIntentOrderFields {
+                    order_type: OrderType::Limit.to_string(),
+                    time_in_force: TimeInForce::Gtc.to_string(),
+                    price: Some("0.50".to_string()),
+                    trigger_price: None,
+                    activation_price: None,
+                    trigger_type: None,
+                    trigger_instrument_id: None,
+                    trailing_offset: None,
+                    trailing_offset_type: None,
+                    expire_time_unix_nanos: None,
+                    is_post_only: false,
+                    is_reduce_only: false,
+                    is_quote_quantity: false,
+                },
             })
             .is_ok()
     );

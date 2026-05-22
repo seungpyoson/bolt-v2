@@ -80,7 +80,7 @@ impl std::fmt::Display for BoltV3ValidationError {
 impl std::error::Error for BoltV3ValidationError {}
 
 pub const SUPPORTED_ROOT_SCHEMA_VERSION: u32 = 1;
-pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 1;
+pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;
 
 pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();
@@ -497,16 +497,6 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
                     ));
                 }
             }
-        }
-
-        // FINDING-1: NT's OmsType has Unspecified/Netting/Hedging. Bolt's
-        // position and risk accounting is only valid for Netting; reject
-        // other variants explicitly so support can be added deliberately.
-        if strategy.oms_type != nautilus_model::enums::OmsType::Netting {
-            errors.push(format!(
-                "{context}: oms_type `{:?}` is not supported by bolt-v3 (only Netting is implemented)",
-                strategy.oms_type
-            ));
         }
 
         let (target_metadata, target_errors) =

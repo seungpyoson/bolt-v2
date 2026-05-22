@@ -277,8 +277,6 @@ pub struct BoltV3StrategyConfig {
     pub manage_stop: bool,
     pub market_exit_interval_ms: u64,
     pub market_exit_max_attempts: u64,
-    pub market_exit_time_in_force: String,
-    pub market_exit_reduce_only: bool,
     pub log_events: bool,
     pub log_commands: bool,
     pub log_rejected_due_post_only_as_warning: bool,

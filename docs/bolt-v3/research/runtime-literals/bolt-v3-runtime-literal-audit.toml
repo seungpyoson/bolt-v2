@@ -96,9 +96,9 @@ reason = "This is an existing taker strategy config schema field name; the value
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"entry_order"'''
-context = '''insert_order_config(&mut table, "entry_order", &parameters.entry_order);'''
+context = '''"entry_order",'''
 classification = "strategy_runtime_schema_field"
-reason = "This is the nested existing taker strategy config table name, populated from bolt-v3 TOML [parameters.entry_order]."
+reason = "This is the nested strategy runtime config table name, populated from bolt-v3 TOML [parameters.entry_order]."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -112,9 +112,89 @@ reason = "This is an existing taker strategy config schema field name; the value
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"exit_order"'''
-context = '''insert_order_config(&mut table, "exit_order", &parameters.exit_order);'''
+context = '''"exit_order",'''
 classification = "strategy_runtime_schema_field"
-reason = "This is the nested existing taker strategy config table name, populated from bolt-v3 TOML [parameters.exit_order]."
+reason = "This is the nested strategy runtime config table name, populated from bolt-v3 TOML [parameters.exit_order]."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"expire_time_unix_nanos"'''
+context = '''"expire_time_unix_nanos",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT order expiry timestamp field projected from TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trigger_price"'''
+context = '''insert_float(&mut order_table, "trigger_price", trigger_price);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT stop-order trigger price field projected from TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"activation_price"'''
+context = '''insert_float(&mut order_table, "activation_price", activation_price);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT trailing-stop activation price field projected from TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"entry_order"'''
+context = '''let mut errors = check_enabled_order_template(context, "entry_order", entry);'''
+classification = "strategy_runtime_validation_field"
+reason = "This labels the existing nested entry order table in enabled NT order-template validation diagnostics; the table values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_order"'''
+context = '''let mut errors = check_enabled_order_template(context, "exit_order", exit);'''
+classification = "strategy_runtime_validation_field"
+reason = "This labels the existing nested exit order table in enabled NT order-template validation diagnostics; the table values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trigger_type"'''
+context = '''"trigger_type",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT triggered-order trigger type field projected from TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trigger_instrument_id"'''
+context = '''"trigger_instrument_id",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT triggered-order trigger instrument field projected from TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trailing_offset"'''
+context = '''insert_float(&mut order_table, "trailing_offset", trailing_offset);'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT trailing-stop offset field projected from TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trailing_offset_type"'''
+context = '''"trailing_offset_type",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the NT trailing-stop offset type field projected from TOML into the runtime strategy config."
+
+[[allowed]]
+path = "src/bolt_v3_order_intent.rs"
+kind = "number"
+literal = '''0'''
+context = '''&& order.expire_time_unix_nanos.is_none_or(|value| value == 0)'''
+classification = "nt_order_model_invariant"
+reason = "This enforces positive GTD expiry nanos for enabled NT order templates before calling the NT order factory; the expiry value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -247,18 +327,18 @@ reason = "This field-name literal labels the configured market-exit runtime valu
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"market_exit_reduce_only"'''
-context = '''"market_exit_reduce_only",'''
+literal = '''"forced_exit_order"'''
+context = '''"forced_exit_order",'''
 classification = "strategy_runtime_schema_field"
-reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+reason = "This is the configured forced-exit NT order-template table projected from bolt-v3 TOML into the runtime strategy config."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"market_exit_time_in_force"'''
-context = '''"market_exit_time_in_force",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TOML into the runtime strategy config."
+literal = '''"forced_exit_order"'''
+context = '''let mut errors = check_enabled_order_template(context, "forced_exit_order", forced_exit);'''
+classification = "strategy_runtime_validation_field"
+reason = "This field-name literal labels the TOML-owned forced-exit NT order-template during generic order-template validation."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -277,18 +357,10 @@ classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = '''src/bolt_v3_archetypes/binary_oracle_edge_taker.rs'''
-kind = '''string'''
-literal = '''"netting"'''
-context = '''nautilus_model::enums::OmsType::Netting => "netting",'''
-classification = '''strategy_runtime_schema_enum_value'''
-reason = '''This is the NT OmsType::Netting enum variant rendered into the existing taker StrategyConfig table; the accepted OMS mode still comes from bolt-v3 TOML validation.'''
-
-[[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"oms_type"'''
-context = '''insert_string(&mut table, "oms_type", oms_type_value(strategy).to_string());'''
+context = '''insert_string(&mut table, "oms_type", oms_type_value(strategy));'''
 classification = "strategy_runtime_schema_field"
 reason = "This is an existing taker strategy config schema field name, populated from bolt-v3 TOML oms_type."
 
@@ -575,10 +647,10 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''3'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 3;'''
+literal = '''5'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 5;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v3 adds the submit intent kind to admission decision evidence. It is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v5 combines compiled NT order-field evidence with strategy-input snapshot evidence; it is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -2715,6 +2787,22 @@ reason = "This labels the operator envelope approval-consumption path in fail-cl
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
+literal = '''"`[live_canary].operator_evidence.canary_evidence_path`"'''
+context = '''"`[live_canary].operator_evidence.canary_evidence_path`",'''
+classification = "phase8_canary_operator_envelope_diagnostic"
+reason = "This labels the TOML canary-evidence path in fail-closed drift diagnostics; the path value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"operator approval canary_evidence_path"'''
+context = '''"operator approval canary_evidence_path",'''
+classification = "phase8_canary_operator_envelope_diagnostic"
+reason = "This labels the operator envelope canary-evidence path in fail-closed drift diagnostics; the path value remains evidence-owned and is compared against TOML."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
 literal = '''"phase8 market selection source evidence"'''
 context = '''"phase8 market selection source evidence",'''
 classification = "phase8_approval_bound_artifact_label"
@@ -2771,8 +2859,8 @@ reason = "The schema version is a structural compatibility gate, not an operator
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "number"
-literal = "1"
-context = "pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 1;"
+literal = "2"
+context = "pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;"
 classification = "schema_version_gate"
 reason = "The strategy schema version is a structural compatibility gate, not an operator runtime value."
 
@@ -3707,10 +3795,34 @@ reason = "This is a stable decision-evidence reason code, not an operator runtim
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"entry_order_still_working"'''
+context = '''const EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING: &str = "entry_order_still_working";'''
+classification = "strategy_exit_block_reason_code"
+reason = "This is a stable decision-evidence reason code for suppressing exits while a resting entry can still fill."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"exit_decision_unavailable"'''
 context = '''const EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE: &str = "exit_decision_unavailable";'''
 classification = "strategy_exit_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_order_config_invalid"'''
+context = '''const EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID: &str = "exit_order_config_invalid";'''
+classification = "strategy_exit_block_reason_code"
+reason = "This is a stable decision-evidence reason code for invalid TOML-owned exit order configuration."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"exit_quote_quantity_unsupported"'''
+context = '''const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quantity_unsupported";'''
+classification = "strategy_exit_block_reason_code"
+reason = "This is a stable decision-evidence reason code for rejecting exit quote quantity until exit sizing owns quote-to-base conversion."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
@@ -3795,10 +3907,18 @@ reason = "This is a stable evidence reason code stating that TOML-owned lead-qua
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"market_exit_time_in_force"'''
-context = '''const CONFIG_FIELD_MARKET_EXIT_TIME_IN_FORCE: &str = "market_exit_time_in_force";'''
+literal = '''"forced_exit_order_side"'''
+context = '''const CONFIG_FIELD_FORCED_EXIT_ORDER_SIDE: &str = "forced_exit_order_side";'''
 classification = "strategy_config_field_name"
-reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
+reason = "This is the stable forced-exit order side field label used in validation diagnostics; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"forced_exit_order_position_side"'''
+context = '''const CONFIG_FIELD_FORCED_EXIT_ORDER_POSITION_SIDE: &str = "forced_exit_order_position_side";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable forced-exit position side field label used in validation diagnostics; the runtime value remains TOML-owned."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
@@ -3839,6 +3959,78 @@ literal = '''"oms_type"'''
 context = '''const CONFIG_FIELD_OMS_TYPE: &str = "oms_type";'''
 classification = "strategy_config_field_name"
 reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"expire_time_unix_nanos"'''
+context = '''const ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD: &str = "expire_time_unix_nanos";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT order expiry field label used in validation diagnostics; the timestamp value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trigger_price"'''
+context = '''const ORDER_TRIGGER_PRICE_FIELD: &str = "trigger_price";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT stop-order trigger price field label used in validation diagnostics; the price value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"activation_price"'''
+context = '''const ORDER_ACTIVATION_PRICE_FIELD: &str = "activation_price";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT trailing-stop activation price field label used in validation diagnostics; the price value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trigger_type"'''
+context = '''const ORDER_TRIGGER_TYPE_FIELD: &str = "trigger_type";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT triggered-order trigger type field label used in validation diagnostics; the trigger type value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trigger_instrument_id"'''
+context = '''const ORDER_TRIGGER_INSTRUMENT_ID_FIELD: &str = "trigger_instrument_id";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT triggered-order trigger instrument field label used in validation diagnostics; the instrument id value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trailing_offset"'''
+context = '''const ORDER_TRAILING_OFFSET_FIELD: &str = "trailing_offset";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT trailing-stop offset field label used in validation diagnostics; the offset value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trailing_offset_type"'''
+context = '''const ORDER_TRAILING_OFFSET_TYPE_FIELD: &str = "trailing_offset_type";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable NT trailing-stop offset type field label used in validation diagnostics; the offset type value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trigger_price"'''
+context = '''price_from_config(prefix, "trigger_price", trigger_price, price_precision)'''
+classification = "strategy_config_field_name"
+reason = "This labels the NT trigger-price field in shared price validation; the price value is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"activation_price"'''
+context = '''"activation_price",'''
+classification = "strategy_config_field_name"
+reason = "This labels the NT trailing-stop activation-price field in shared price validation; the price value is TOML-owned."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"

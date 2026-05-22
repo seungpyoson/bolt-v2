@@ -1,0 +1,352 @@
+diff --git a/src/strategies/binary_oracle_edge_taker.rs b/src/strategies/binary_oracle_edge_taker.rs
+index 3c59156b..db5ff668 100644
+--- a/src/strategies/binary_oracle_edge_taker.rs
++++ b/src/strategies/binary_oracle_edge_taker.rs
+@@ -410,40 +410,49 @@ impl OutcomeBookState {
+             .map(|(price, _)| price.as_f64());
+         self.best_ask = self
+             .ask_levels
+             .first_key_value()
+             .map(|(price, _)| price.as_f64());
+         self.liquidity_available = Some(
+             self.bid_levels.values().copied().sum::<f64>()
+                 + self.ask_levels.values().copied().sum::<f64>(),
+         );
+     }
+
+     fn executable_price_for_order_side(&self, order_side: OrderSide) -> Option<f64> {
+         match order_side {
+             OrderSide::Buy => self.best_ask,
+             OrderSide::Sell => self.best_bid,
+             _ => None,
+         }
+         .filter(|value| is_positive_finite(*value))
+     }
+
++    fn passive_price_for_order_side(&self, order_side: OrderSide) -> Option<f64> {
++        match order_side {
++            OrderSide::Buy => self.best_bid,
++            OrderSide::Sell => self.best_ask,
++            _ => None,
++        }
++        .filter(|value| is_positive_finite(*value))
++    }
++
+     fn max_execution_within_vwap_slippage_bps(
+         &self,
+         order_side: OrderSide,
+         slippage_bps: u64,
+     ) -> Option<ImpactCappedExecution> {
+         let slippage = slippage_bps as f64 / BPS_DENOMINATOR;
+         match order_side {
+             OrderSide::Buy => {
+                 let best_ask = self.executable_price_for_order_side(OrderSide::Buy)?;
+                 let allowed_vwap = best_ask * (UNIT_F64 + slippage);
+                 max_execution_within_vwap_limit(
+                     self.ask_levels
+                         .iter()
+                         .map(|(price, size)| (price.as_f64(), *size))
+                         .collect(),
+                     allowed_vwap,
+                     true,
+                 )
+             }
+             OrderSide::Sell => {
+@@ -1067,83 +1076,93 @@ fn supports_strategy_position_contract(contract: ConfiguredPositionContract) ->
+ fn expected_position_side_for_entry_order(order_side: OrderSide) -> Option<PositionSide> {
+     match order_side {
+         OrderSide::Buy => Some(PositionSide::Long),
+         OrderSide::Sell => Some(PositionSide::Short),
+         _ => None,
+     }
+ }
+
+ fn expected_exit_order_side_for_position(position_side: PositionSide) -> Option<OrderSide> {
+     match position_side {
+         PositionSide::Long => Some(OrderSide::Sell),
+         PositionSide::Short => Some(OrderSide::Buy),
+         _ => None,
+     }
+ }
+
+ fn is_observed_open_side(side: PositionSide) -> bool {
+     matches!(side, PositionSide::Long | PositionSide::Short)
+ }
+
+-fn order_price_for_side(book: &OutcomeBookState, order_side: OrderSide) -> Option<f64> {
+-    book.executable_price_for_order_side(order_side)
++fn order_price_for_side(
++    book: &OutcomeBookState,
++    order_side: OrderSide,
++    is_post_only: bool,
++) -> Option<f64> {
++    if is_post_only {
++        book.passive_price_for_order_side(order_side)
++    } else {
++        book.executable_price_for_order_side(order_side)
++    }
+ }
+
+ fn infer_strategy_position_side_from_entry_fill(
+     entry_order_side: OrderSide,
+     configured_entry_order_side: OrderSide,
+     configured_position_side: PositionSide,
+ ) -> Option<PositionSide> {
+     (entry_order_side == configured_entry_order_side).then_some(configured_position_side)
+ }
+
+ fn managed_position_effective_entry_cost(
+     position: &OpenPositionState,
+     configured_entry_order_side: OrderSide,
+     configured_position_side: PositionSide,
+ ) -> Option<f64> {
+     (position.entry_order_side == configured_entry_order_side
+         && position.side == configured_position_side)
+         .then_some(position.avg_px_open)
+         .filter(|effective_cost| is_positive_finite(*effective_cost))
+ }
+
+ fn managed_position_exit_order(
+     position: &OpenPositionState,
+     configured_order_side: OrderSide,
+     configured_position_side: PositionSide,
++    is_post_only: bool,
+ ) -> Option<(OrderSide, f64)> {
+     (position.side == configured_position_side)
+         .then_some((
+             configured_order_side,
+-            order_price_for_side(&position.book, configured_order_side)?,
++            order_price_for_side(&position.book, configured_order_side, is_post_only)?,
+         ))
+         .filter(|(_, price)| is_positive_finite(*price))
+ }
+
+ fn managed_position_exit_value(
+     position: &OpenPositionState,
+     configured_order_side: OrderSide,
+     configured_position_side: PositionSide,
++    is_post_only: bool,
+ ) -> Option<f64> {
+     let value = (position.side == configured_position_side)
+-        .then(|| order_price_for_side(&position.book, configured_order_side))
++        .then(|| order_price_for_side(&position.book, configured_order_side, is_post_only))
+         .flatten()?;
+     Some(value).filter(|value| is_positive_finite(*value))
+ }
+
+ impl PricingState {
+     fn from_config(config: &BinaryOracleEdgeTakerConfig) -> Self {
+         Self {
+             last_reference_fair_value: None,
+             fast_spot: None,
+             realized_vol: RealizedVolEstimator::from_config(config),
+             realized_vol_source_venue: None,
+             realized_vol_by_venue: BTreeMap::new(),
+             venue_timing: BTreeMap::new(),
+             last_lead_gap_probability: None,
+             last_jitter_penalty_probability: None,
+             last_lead_agreement_corr: None,
+             last_fast_venue_age_ms: None,
+             last_fast_venue_jitter_ms: None,
+             fast_venue_incoherent: false,
+             lead_quality_policy_applied: false,
+@@ -2631,42 +2650,46 @@ impl BinaryOracleEdgeTaker {
+         let instrument_id = match side {
+             OutcomeSide::Up => self.active.outcome_fees.up_instrument_id,
+             OutcomeSide::Down => self.active.outcome_fees.down_instrument_id,
+         }?;
+         self.context.fee_provider().fee_bps(instrument_id)?.to_f64()
+     }
+
+     fn active_book_for_outcome(&self, side: OutcomeSide) -> &OutcomeBookState {
+         match side {
+             OutcomeSide::Up => &self.active.books.up,
+             OutcomeSide::Down => &self.active.books.down,
+         }
+     }
+
+     fn configured_entry_order_side(&self) -> Result<OrderSide> {
+         parse_configured_order_side(CONFIG_FIELD_ENTRY_ORDER_SIDE, &self.config.entry_order.side)
+     }
+
+     fn executable_entry_cost(&self, side: OutcomeSide) -> Option<f64> {
+         let order_side = self.configured_entry_order_side().ok()?;
+-        self.active_book_for_outcome(side)
+-            .executable_price_for_order_side(order_side)
++        let book = self.active_book_for_outcome(side);
++        if self.config.entry_order.is_post_only {
++            book.passive_price_for_order_side(order_side)
++        } else {
++            book.executable_price_for_order_side(order_side)
++        }
+     }
+
+     fn submission_entry_price(&self, side: OutcomeSide) -> Option<f64> {
+         self.executable_entry_cost(side)
+     }
+
+     fn visible_book_notional_cap(&self, side: OutcomeSide) -> Option<f64> {
+         let order_side = self.configured_entry_order_side().ok()?;
+         let capped_execution = self
+             .active_book_for_outcome(side)
+             .max_execution_within_vwap_slippage_bps(order_side, self.config.book_impact_cap_bps)
+             .filter(|execution| is_positive_finite(execution.quantity))?;
+         Some(match side {
+             OutcomeSide::Up => capped_execution.quantity * capped_execution.vwap_price,
+             OutcomeSide::Down => capped_execution.quantity * capped_execution.vwap_price,
+         })
+     }
+
+     fn instrument_id_for_side(&self, side: OutcomeSide) -> Option<InstrumentId> {
+         match side {
+@@ -2986,50 +3009,52 @@ impl BinaryOracleEdgeTaker {
+         })
+     }
+
+     fn open_position_effective_entry_cost(&self) -> Option<f64> {
+         let open_position = &self.managed_position()?.position;
+         let contract = self.configured_position_contract().ok()?;
+         managed_position_effective_entry_cost(
+             open_position,
+             contract.entry_order_side,
+             contract.entry_position_side,
+         )
+     }
+
+     fn current_exit_order_for_open_position(&self) -> Option<(OrderSide, f64)> {
+         let open_position = &self.managed_position()?.position;
+         let contract = self.configured_position_contract().ok()?;
+         managed_position_exit_order(
+             open_position,
+             contract.exit_order_side,
+             contract.exit_position_side,
++            self.config.exit_order.is_post_only,
+         )
+     }
+
+     fn current_exit_value_for_open_position(&self) -> Option<f64> {
+         let open_position = &self.managed_position()?.position;
+         let contract = self.configured_position_contract().ok()?;
+         managed_position_exit_value(
+             open_position,
+             contract.exit_order_side,
+             contract.exit_position_side,
++            self.config.exit_order.is_post_only,
+         )
+     }
+
+     fn current_position_market_id(&self) -> Option<String> {
+         self.exposure.current_position_market_id()
+     }
+
+     fn current_position_seconds_to_expiry_at(&self, now_ms: u64) -> Option<u64> {
+         let open_position = &self.managed_position()?.position;
+         Self::seconds_to_expiry_from_selection(
+             open_position.selection_published_at_ms,
+             open_position.seconds_to_expiry_at_selection,
+             now_ms,
+         )
+     }
+
+     fn current_position_fair_probability_up_at(&self, now_ms: u64) -> Option<f64> {
+         let open_position = &self.managed_position()?.position;
+         let spot_price = self.current_position_spot_price()?;
+         let strike_price = open_position
+@@ -8413,40 +8438,97 @@ mod tests {
+         assert_eq!(
+             strategy.executable_entry_cost(OutcomeSide::Down),
+             Some(0.41)
+         );
+
+         strategy.config.entry_order.side = "sell".to_string();
+         strategy.config.entry_order.position_side = "short".to_string();
+         strategy.config.exit_order.side = "buy".to_string();
+         strategy.config.exit_order.position_side = "short".to_string();
+
+         assert_eq!(
+             strategy.submission_entry_price(OutcomeSide::Down),
+             Some(0.40)
+         );
+         assert_eq!(
+             strategy.executable_entry_cost(OutcomeSide::Down),
+             Some(0.40)
+         );
+     }
+
++    #[test]
++    fn post_only_entry_submission_price_uses_passive_book_price() {
++        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
++        strategy.config.entry_order.time_in_force = "gtc".to_string();
++        strategy.config.entry_order.is_post_only = true;
++        strategy.active.books.down.best_bid = Some(0.40);
++        strategy.active.books.down.best_ask = Some(0.41);
++
++        assert_eq!(
++            strategy.submission_entry_price(OutcomeSide::Down),
++            Some(0.40)
++        );
++        assert_eq!(
++            strategy.executable_entry_cost(OutcomeSide::Down),
++            Some(0.40)
++        );
++    }
++
++    #[test]
++    fn post_only_exit_submission_price_uses_passive_book_price() {
++        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
++        strategy.active.phase = SelectionPhase::Freeze;
++        strategy.config.exit_order.order_type = "limit".to_string();
++        strategy.config.exit_order.time_in_force = "gtc".to_string();
++        strategy.config.exit_order.is_post_only = true;
++        strategy.active.books.up.best_bid = Some(0.44);
++        strategy.active.books.up.best_ask = Some(0.45);
++        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
++        let open_position = OpenPositionState {
++            market_id: Some("MKT-1".to_string()),
++            instrument_id,
++            position_id: PositionId::from("P-UP-001"),
++            outcome_side: Some(OutcomeSide::Up),
++            outcome_fees: strategy.active.outcome_fees.clone(),
++            historical_entry_fee_bps: Some(0.0),
++            entry_order_side: OrderSide::Buy,
++            side: PositionSide::Long,
++            quantity: Quantity::new(10.0, 2),
++            avg_px_open: 0.450,
++            interval_open: Some(3_100.0),
++            selection_published_at_ms: Some(1_000),
++            seconds_to_expiry_at_selection: Some(300),
++            book: strategy.active.books.up.clone(),
++        };
++        let expected_passive_price = open_position.book.best_ask;
++        set_managed_position(
++            &mut strategy,
++            open_position,
++            ManagedPositionOrigin::StrategyEntry,
++        );
++
++        let decision = strategy.exit_submission_decision_at(1_200);
++
++        assert_eq!(decision.order_side, Some(OrderSide::Sell));
++        assert_eq!(decision.price, expected_passive_price);
++    }
++
+     #[test]
+     fn entry_book_impact_cap_uses_configured_sell_side_book() {
+         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+         strategy.config.entry_order.side = "sell".to_string();
+         strategy.config.entry_order.position_side = "short".to_string();
+         strategy.config.exit_order.side = "buy".to_string();
+         strategy.config.exit_order.position_side = "short".to_string();
+         strategy.config.book_impact_cap_bps = 0;
+         strategy.active.books.down.bid_levels.clear();
+         strategy.active.books.down.ask_levels.clear();
+         strategy
+             .active
+             .books
+             .down
+             .bid_levels
+             .insert(Price::new(0.44, 2), 7.0);
+         strategy
+             .active
+             .books
+             .down

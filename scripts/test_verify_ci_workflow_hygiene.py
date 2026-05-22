@@ -3,19 +3,31 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import importlib.util
 import pathlib
+import re
 import sys
+import tempfile
+import textwrap
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]"
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
+EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
+    "'.github/workflows/ci.yml'",
+    "'.github/actions/setup-environment/action.yml'",
+    "'.no-mistakes.yaml'",
+)
 
 
-def load_verifier():
-    spec = importlib.util.spec_from_file_location("verify_ci_workflow_hygiene", VERIFIER_PATH)
+def load_verifier(
+    path: pathlib.Path = VERIFIER_PATH, module_name: str = "verify_ci_workflow_hygiene"
+):
+    spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise AssertionError("could not load verify_ci_workflow_hygiene.py")
     module = importlib.util.module_from_spec(spec)
@@ -123,7 +135,7 @@ jobs:
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-
       - run: just clippy
@@ -162,7 +174,7 @@ jobs:
         if: needs.detector.outputs.build_required != 'true'
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-
       - if: needs.detector.outputs.build_required != 'true'
@@ -188,7 +200,7 @@ jobs:
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-
       - run: just source-fence
@@ -218,7 +230,7 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
       - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
@@ -235,7 +247,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}
+          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -313,7 +325,7 @@ jobs:
       - uses: actions/cache@example
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-
       - name: Install zig
@@ -341,7 +353,7 @@ jobs:
           mkdir -p "$HOME/.cargo/bin"
           mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
           chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          cargo-zigbuild --version
+          test -x "$HOME/.cargo/bin/cargo-zigbuild"
       - run: just build
       - name: Stage managed build artifact
         id: managed_artifact
@@ -864,6 +876,26 @@ def assert_pin_consistency_rejects_mutable_tag() -> None:
         )
 
 
+def assert_pin_consistency_ignores_non_uses_mentions() -> None:
+    """Mentioning the action outside a `uses:` key must not be treated as a pin."""
+    verifier = load_verifier()
+    workflow = f"""
+name: mention probe
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: documents taiki-e/install-action@v2 without invoking it
+        run: echo ok
+      - uses: taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}
+"""
+    errors = verifier.verify_install_action_pin_consistency({"ci.yml": workflow})
+    if errors:
+        raise AssertionError(
+            f"non-uses mentions must not produce install-action pin errors, got: {errors!r}"
+        )
+
+
 def assert_pin_consistency_accepts_uppercase_sha() -> None:
     """Finding 3: uppercase hex SHAs must be detected AND normalized to lowercase."""
     verifier = load_verifier()
@@ -1065,12 +1097,2074 @@ def assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action() -> N
         )
 
 
+def workflow_with_detector_probe(script: str) -> str:
+    return replace_once(
+        BASE_WORKFLOW,
+        "      - run: echo detector",
+        "      - name: V6 raw Rust storage policy probe\n        run: |\n"
+        + textwrap.indent(script.strip(), "          "),
+    )
+
+
+def assert_v6_deploy_artifact_s3_stays_allowed() -> None:
+    verifier = load_verifier()
+    workflow = workflow_with_detector_probe(
+        """
+        mkdir -p dist
+        aws s3 cp dist/bolt-v2.tar.zst s3://bolt-v2-deploy-artifacts/bolt-v2.tar.zst
+        aws s3 cp "$PWD/dist/bolt-v2.sha256" s3://bolt-v2-deploy-artifacts/bolt-v2.sha256
+        """
+    )
+    s3_errors = [error for error in verifier.verify_text(workflow, BASE_ACTION, BASE_NEXTEST_CONFIG) if "s3" in error.lower()]
+    if s3_errors:
+        raise AssertionError(f"deploy artifact S3 publication must stay allowed, got: {s3_errors!r}")
+
+
+def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
+    verifier = load_verifier()
+    expected = "S3 active mutable target cache must be rejected"
+    workflows = {
+        "s3 destination hidden behind an env value": """
+            DEST=s3://bolt-v2-active-cache/workspace
+            aws s3 sync "$GITHUB_WORKSPACE" "$DEST"
+        """,
+        "workspace source hidden behind an env value": """
+            SRC=$PWD
+            aws s3 sync "$SRC" s3://bolt-v2-active-cache/workspace
+        """,
+        "managed target hidden behind command substitution": """
+            TARGET=`python3 scripts/rust_verification.py target-dir --repo .`
+            aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+        """,
+        "inline backtick target operand": """
+            aws s3 sync `echo target` s3://bolt-v2-active-cache/target
+        """,
+        "aws global option before active target endpoints": """
+            aws s3 sync --endpoint-url https://example.com target s3://bolt-v2-active-cache/target
+        """,
+        "workspace root dot path": """
+            aws s3 sync "$PWD/." s3://bolt-v2-active-cache/workspace
+        """,
+        "github workspace root dot path": """
+            aws s3 sync "$GITHUB_WORKSPACE/." s3://bolt-v2-active-cache/workspace
+        """,
+        "github env unquoted assignment": """
+            echo TARGET=target >> $GITHUB_ENV
+            aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+        """,
+        "github env quoted value assignment": """
+            echo 'TARGET="target"' >> "$GITHUB_ENV"
+            aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+        """,
+        "s3 destination hidden behind printf github env": """
+            printf 'DEST=%s\\n' "s3://bolt-v2-active-cache/target" >> "$GITHUB_ENV"
+            aws s3 sync target "$DEST"
+        """,
+        "active target hidden behind second printf github env assignment": """
+            printf 'BENIGN=dist\\nSRC=target\\n' >> "$GITHUB_ENV"
+            aws s3 sync "$SRC" s3://bolt-v2-active-cache/cache
+        """,
+        "active target copied through neutral staging path": """
+            mkdir /tmp/deploy
+            cp -r target/debug /tmp/deploy/
+            aws s3 sync /tmp/deploy s3://bolt-v2-active-cache/cache
+        """,
+        "active target cwd hidden behind env chdir wrapper": """
+            env -C target aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
+        "active target cwd hidden behind sudo chdir wrapper": """
+            sudo --chdir target aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
+        "active target cwd hidden behind cd separator": """
+            cd -- target && aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
+        "active target cwd hidden behind cd option and separator": """
+            cd -L -- target && aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
+        "active target cwd hidden behind combined cd options": """
+            cd -LP target && aws s3 sync debug s3://bolt-v2-active-cache/target/debug
+        """,
+        "active target streamed through s3 stdin": """
+            tar -czf - target | aws s3 cp - s3://bolt-v2-active-cache/target.tar.gz
+        """,
+        "active target streamed through cat to s3 stdin": """
+            cat target/debug/libbolt_v2.rmeta | aws s3 cp - s3://bolt-v2-active-cache/cache
+        """,
+        "active target streamed through clustered tar stdout flag": """
+            tar -czf- target | aws s3 cp - s3://bolt-v2-active-cache/target.tar.gz
+        """,
+        "active target streamed through traditional tar stdout flag": """
+            tar cf - target | aws s3 cp - s3://bolt-v2-active-cache/target.tar
+        """,
+        "active target streamed through tar long file stdout flag": """
+            tar -c --file=- target | aws s3 cp - s3://bolt-v2-active-cache/target.tar.gz
+        """,
+        "active target streamed through tar default stdout": """
+            tar c target | aws s3 cp - s3://bolt-v2-active-cache/target.tar
+        """,
+        "active target streamed through fused input redirection": """
+            cat <target/debug/libbolt_v2.rmeta | aws s3 cp - s3://bolt-v2-active-cache/cache
+        """,
+    }
+    misses: list[str] = []
+    for name, script in workflows.items():
+        errors = verifier.raw_rust_storage_errors(textwrap.dedent(script))
+        if expected not in errors:
+            misses.append(f"{name}: {errors!r}")
+    if misses:
+        raise AssertionError("storage-transfer policy did not classify semantic active-cache flows: " + "; ".join(misses))
+
+
+def assert_v6_workflow_run_steps_reset_shell_state() -> None:
+    verifier = load_verifier()
+    s3_expected = "S3 active mutable target cache must be rejected"
+    target_expected = "CARGO_TARGET_DIR raw target override must be classified"
+    cases = [
+        (
+            "same run step cwd must classify active-target S3",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cd target
+                      aws s3 cp s3://bolt-v2-cache/file artifact.bin
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "same run step cd without target must clear active-target cwd",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cd target
+                      cd
+                      aws s3 cp dist/app s3://bolt-v2-release/app
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "same run step cd separator without target must clear active-target cwd",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cd target
+                      cd --
+                      aws s3 cp dist/app s3://bolt-v2-release/app
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "separate run step cwd must not leak into later S3 step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cd target
+                  - run: |
+                      aws s3 cp s3://bolt-v2-cache/file artifact.bin
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "flexibly indented same run step cwd must classify active-target S3",
+            """
+            jobs:
+              test:
+                steps:
+                    - run: |
+                        cd target
+                        aws s3 cp s3://bolt-v2-cache/file artifact.bin
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "flexibly indented separate run step cwd must not leak into later S3 step",
+            """
+            jobs:
+              test:
+                steps:
+                    - run: |
+                        cd target
+                    - run: |
+                        aws s3 cp s3://bolt-v2-cache/file artifact.bin
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "same run step target env alias must classify raw target override",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      E=CARGO_TARGET_DIR
+                      env $E=/tmp/raw cargo check
+            """,
+            target_expected,
+            True,
+        ),
+        (
+            "separate run step target env alias must not leak into later cargo step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      E=CARGO_TARGET_DIR
+                  - run: |
+                      env $E=/tmp/raw cargo check
+            """,
+            target_expected,
+            False,
+        ),
+        (
+            "github env target must persist into later S3 step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo TARGET=target >> $GITHUB_ENV
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env target must persist after earlier command in same step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      mkdir -p out && echo TARGET=target >> $GITHUB_ENV
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env continued active target must persist into later step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo "TARGET=target" \\
+                        >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env target must not persist across jobs",
+            """
+            jobs:
+              producer:
+                steps:
+                  - run: |
+                      echo TARGET=target >> $GITHUB_ENV
+              consumer:
+                steps:
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "github env target key alias must persist into later cargo step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo E=CARGO_TARGET_DIR >> $GITHUB_ENV
+                  - run: |
+                      env $E=/tmp/raw cargo check
+            """,
+            target_expected,
+            True,
+        ),
+        (
+            "github env echo flags must persist target key alias into later cargo step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo -e "E=CARGO_TARGET_DIR" >> $GITHUB_ENV
+                  - run: |
+                      env $E=/tmp/raw cargo check
+            """,
+            target_expected,
+            True,
+        ),
+        (
+            "github env printf must persist target key alias into later cargo step",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'E=%s\\n' CARGO_TARGET_DIR >> "$GITHUB_ENV"
+                  - run: |
+                      env $E=/tmp/raw cargo check
+            """,
+            target_expected,
+            True,
+        ),
+        (
+            "github env printf multiple assignments must all persist",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'SRC=target\\nDEST=s3://bolt-v2-active-cache/cache\\n' >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" "$DEST"
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env printf repeated format assignments must all persist",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf '%s\\n' BENIGN=1 SRC=target >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env printf missing argument still persists prior assignment",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'TARGET=%s\\nEXTRA=%s\\n' target >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env printf missing argument clears stale assignment",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo "SRC=target" >> "$GITHUB_ENV"
+                  - run: |
+                      printf 'SRC=%s\\n' >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "github env printf literal format persists despite extra argument",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'TARGET=target\\n' benign >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env printf b conversion assignment must persist",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'TARGET=%b\\n' target >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env printf b conversion decodes argument newlines",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf '%b' 'SRC=target\\nDEST=s3://bolt-v2-active-cache/cache' >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" "$DEST"
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env printf escaped percent must not consume argument",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'A=%%s\\n' SRC=target >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "github env printf arguments must not decode escaped newlines",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'A=%s\\n' 'B=1\\nSRC=target' >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "github env echo e multiple assignments must all persist",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo -e "SRC=target\\nDEST=s3://bolt-v2-active-cache/cache" >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" "$DEST"
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env heredoc assignments must all persist",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cat >> "$GITHUB_ENV" <<'ENV'
+                      SRC<<EOF
+                      target
+                      EOF
+                      DEST=s3://bolt-v2-active-cache/cache
+                      ENV
+                  - run: |
+                      aws s3 sync "$SRC" "$DEST"
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env heredoc must overwrite earlier inline assignment",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo "SRC=benign" >> "$GITHUB_ENV"
+                      cat >> "$GITHUB_ENV" <<ENV
+                      SRC=target
+                      ENV
+                  - run: |
+                      aws s3 sync "$SRC" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env heredoc delimiter must be exact and preserve continuation",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cat >> "$GITHUB_ENV" <<ENV
+                      BENIGN=1
+                       ENV
+                      TARGET=targ\\
+                      et
+                      ENV
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "quoted shell heredoc delimiter must not fold escaped newline payload",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cat >> "$GITHUB_ENV" <<'ENV'
+                      TARGET=targ\\
+                      et
+                      ENV
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "separate composite action run step cwd must not leak into later S3 step",
+            """
+            runs:
+              using: composite
+              steps:
+                - shell: bash
+                  run: cd target
+                - shell: bash
+                  run: aws s3 cp dist/app s3://bolt-v2-release/app
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "quoted composite action using value must still isolate step cwd",
+            """
+            runs:
+              using: "composite"
+              steps:
+                - shell: bash
+                  run: cd target
+                - shell: bash
+                  run: aws s3 cp dist/app s3://bolt-v2-release/app
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "indentless composite action run step cwd must not leak into later S3 step",
+            """
+            runs:
+              using: composite
+              steps:
+              - shell: bash
+                run: cd target
+              - shell: bash
+                run: aws s3 cp dist/app s3://bolt-v2-release/app
+            """,
+            s3_expected,
+            False,
+        ),
+        (
+            "indentless github env target must persist into later S3 step",
+            """
+            jobs:
+              test:
+                steps:
+                - run: |
+                    echo TARGET=target >> $GITHUB_ENV
+                - run: |
+                    aws s3 sync "$TARGET" s3://bolt-v2-active-cache/target
+            """,
+            s3_expected,
+            True,
+        ),
+    ]
+    failures: list[str] = []
+    for name, workflow_text, expected, should_find in cases:
+        errors = verifier.raw_rust_storage_errors(textwrap.dedent(workflow_text))
+        found = expected in errors
+        if found != should_find:
+            failures.append(f"{name}: expected found={should_find}, got {errors!r}")
+    env_assignment = verifier.github_env_assignment_line('mkdir -p out && echo "TARGET=target dir" >> "$GITHUB_ENV"')
+    if env_assignment != "TARGET='target dir'":
+        failures.append(f"GITHUB_ENV assignment with spaces was not shell-safe: {env_assignment!r}")
+    if failures:
+        raise AssertionError("workflow run step shell state handling failed: " + "; ".join(failures))
+
+
+def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
+    cases = [
+        (
+            "CARGO_TARGET_DIR=/tmp/raw-target cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "E=CARGO_TARGET_DIR; env $E=/tmp/raw-target cargo test",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            'E=CARGO_TARGET_DIR; C=cargo; env -S "env $E=/tmp/raw-target $C check"',
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            'env -iS "CARGO_TARGET_DIR=/tmp/raw-target cargo test"',
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            'E=CARGO_TARGET_DIR; env -iS "$E=/tmp/raw-target cargo test"',
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "E=CARGO_TARGET_DIR\nexport $E=/tmp/raw-target\ncargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "E=CARGO_TARGET_DIR; eval \"export $E=/tmp/raw-target\"; cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "E=CARGO_TARGET_DIR; $E=/tmp/raw-target cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "E=CARGO; ${E}_TARGET_DIR=/tmp/raw-target cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "alias c='V=CARGO; eval \"${V}_TARGET_DIR=/tmp/raw cargo\"'; c build",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "V=CARGO; bash -c \"${V}_TARGET_DIR=/tmp/raw cargo test\"",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "V=CARGO; sudo ${V}_TARGET_DIR=/tmp/raw cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "V=CARGO; time ${V}_TARGET_DIR=/tmp/raw cargo test",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "V=CARGO; CMD=\"${V}_TARGET_DIR=/tmp/raw cargo check\"; eval \"$CMD\"",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "V=CARGO; export CMD=\"${V}_TARGET_DIR=/tmp/raw cargo check\"; bash -c \"$CMD\"",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "V=CARGO; alias c='${V}_TARGET_DIR=/tmp/raw cargo'; c build",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "CMD=\"cargo check --target-dir /tmp/raw\"; eval \"$CMD\"",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "cargo>out check --target-dir /tmp/raw",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "> /dev/null cargo check --target-dir /tmp/raw",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "ARGS=\"--target-dir /tmp/raw\"; cargo check $ARGS",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "echo 'benign'\nE=CARGO_TARGET_DIR\nenv $E=/tmp/raw-target cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "run: |\n  C=cargo\n  $C check --target-dir /tmp/raw",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            'VAR=CARGO; eval "${VAR}_TARGET_DIR=/tmp/raw cargo check"; VAR=BENIGN',
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "E=$(echo CARGO_TARGET_DIR); export $E=/tmp/raw-target; cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "export E VAR=CARGO_TARGET_DIR\n$VAR=/tmp/raw cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "declare -x E VAR=CARGO_TARGET_DIR\n$VAR=/tmp/raw cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "env:\n  CARGO_TARGET_DIR: /tmp/raw",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "env:\n  \"CARGO_TARGET_DIR\": /tmp/raw",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "CARGO_BUILD_TARGET_DIR=/tmp/raw-target cargo check",
+            "CARGO_BUILD_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "env:\n  CARGO_BUILD_TARGET_DIR: /tmp/raw",
+            "CARGO_BUILD_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "env:\n  \"CARGO_BUILD_TARGET_DIR\": /tmp/raw",
+            "CARGO_BUILD_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "mkdir -p .cargo && printf '[build]\\ntarget-dir = \"/tmp/raw-target\"\\n' > .cargo/config.toml && cargo check",
+            ".cargo/config.toml build.target-dir raw target override must be classified",
+        ),
+        (
+            "cargo --config build.target-dir=/tmp/raw-target check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "cargo --config 'build.target-dir=/tmp/raw-target' check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "cargo --config 'build = { target-dir = \"/tmp/raw-target\" }' check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "cargo --config 'build = { \"target\\u002Ddir\" = \"/tmp/raw-target\" }' check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "cargo --config 'build = { \"target\\U0000002Ddir\" = \"/tmp/raw-target\" }' check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "cargo --config 'build.rustflags = [\"--out-dir\", \"/tmp/raw-out\"]' check",
+            "cargo --config build.rustflags raw output override must be classified",
+        ),
+        (
+            "cargo --config 'build = { rustflags = [\"--artifact-dir\", \"/tmp/raw-artifacts\"] }' check",
+            "cargo --config build.rustflags raw output override must be classified",
+        ),
+        (
+            "run: |\n  cargo check \\\n    --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "run: >\n  cargo check\n  --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "cargo check --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "python -c \"import os; os.system('c' + 'argo build --target-dir /tmp/raw')\"",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            'python -c "import subprocess; subprocess.run([\'cargo\', \'build\', \'--target-dir\', \'/tmp/raw\'])"',
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            'python -c "import subprocess; subprocess.run(args=[\'cargo\', \'build\', \'--target-dir\', \'/tmp/raw\'])"',
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "echo 'cargo \"$@\"' | bash -s -- build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "CARGO_TARGET_TMPDIR=/tmp/raw-tmp cargo test",
+            "CARGO_TARGET_TMPDIR raw target override must be classified",
+        ),
+        (
+            "env:\n  CARGO_TARGET_TMPDIR: /tmp/raw-tmp",
+            "CARGO_TARGET_TMPDIR raw target override must be classified",
+        ),
+        (
+            "env:\n  \"CARGO_TARGET_TMPDIR\": /tmp/raw-tmp",
+            "CARGO_TARGET_TMPDIR raw target override must be classified",
+        ),
+        (
+            "CARGO_INCREMENTAL=1 cargo check",
+            "CARGO_INCREMENTAL raw cache override must be classified",
+        ),
+        (
+            "CARGO_ENCODED_RUSTFLAGS='--out-dir\\x1f/tmp/raw-out' cargo check",
+            "CARGO_ENCODED_RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "CARGO_BUILD_RUSTFLAGS='--out-dir /tmp/raw-out' cargo check",
+            "CARGO_BUILD_RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "env:\n  CARGO_BUILD_RUSTFLAGS: '--artifact-dir /tmp/raw-artifacts'",
+            "CARGO_BUILD_RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "env:\n  CARGO_ENCODED_RUSTFLAGS: '--out-dir\\x1f/tmp/raw-out'",
+            "CARGO_ENCODED_RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "env:\n  \"CARGO_ENCODED_RUSTFLAGS\": '--out-dir\\x1f/tmp/raw-out'",
+            "CARGO_ENCODED_RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "CARGO_INSTALL_ROOT=/tmp/cargo-install cargo install ripgrep --locked",
+            "CARGO_INSTALL_ROOT install output override must be classified",
+        ),
+        (
+            "env:\n  CARGO_INSTALL_ROOT: /tmp/cargo-install",
+            "CARGO_INSTALL_ROOT install output override must be classified",
+        ),
+        (
+            "env:\n  \"CARGO_INSTALL_ROOT\": /tmp/cargo-install",
+            "CARGO_INSTALL_ROOT install output override must be classified",
+        ),
+        (
+            "CARGO_HOME=/tmp/cargo-home cargo check",
+            "CARGO_HOME raw cache override must be classified",
+        ),
+        (
+            "RUSTUP_HOME=/tmp/rustup-home cargo check",
+            "RUSTUP_HOME raw toolchain override must be classified",
+        ),
+        (
+            "RUSTFLAGS='--out-dir /tmp/raw-out' cargo check",
+            "RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "RUSTFLAGS='--artifact-dir /tmp/raw-artifacts' cargo check",
+            "RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "env:\n  RUSTFLAGS: '--out-dir /tmp/raw-out'",
+            "RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "env:\n  \"RUSTFLAGS\": '--out-dir /tmp/raw-out'",
+            "RUSTFLAGS raw output override must be classified",
+        ),
+        (
+            "RUSTC_WRAPPER=/tmp/wrapper cargo check",
+            "RUSTC_WRAPPER raw compiler wrapper must be classified",
+        ),
+        (
+            "RUSTC_WORKSPACE_WRAPPER=/tmp/workspace-wrapper cargo check",
+            "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified",
+        ),
+        (
+            "cargo rustc -- --out-dir /tmp/raw-out",
+            "cargo rustc --out-dir raw output override must be classified",
+        ),
+        (
+            "/tmp/myrustc --out-dir /tmp/raw-out",
+            "rustc --out-dir raw output override must be classified",
+        ),
+        (
+            "myrustc --out-dir /tmp/raw-out",
+            "rustc --out-dir raw output override must be classified",
+        ),
+        (
+            "cargo rustc -- --artifact-dir /tmp/raw-artifacts",
+            "cargo rustc --artifact-dir raw output override must be classified",
+        ),
+        (
+            "cargo install ripgrep --target x86_64-unknown-linux-gnu --target-dir /tmp/install-build --root /tmp/install-root",
+            "cargo install build target and install root ownership must be classified separately",
+        ),
+        (
+            "cargo install ripgrep --root s3://bolt-v2-active-cache/install-root",
+            "cargo install S3 install root must be classified",
+        ),
+        (
+            "/tmp/c build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "timeout 30 /tmp/c build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "/tmp/mycargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "mycargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "/tmp/builder build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "exec -a name cargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "exec -cla name cargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "docker run --rm -v $PWD:/workspace -w /workspace rust:latest cargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "docker run --label my-label rust cargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "docker run --unknown-opt=rust mycargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "podman run --unknown-opt=rust myrustc --out-dir /tmp/raw-out",
+            "rustc --out-dir raw output override must be classified",
+        ),
+        (
+            "env >output.log /tmp/c build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "env 1=2 cargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "timeout -- 30 cargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "taskset -- 0 cargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "runuser -u user /tmp/c build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "sudo sudo sudo sudo sudo sudo sudo /tmp/c build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "/tmp/c install cargo-deny --root s3://bolt-v2-active-cache/install-root",
+            "cargo install S3 install root must be classified",
+        ),
+        (
+            "/tmp/c --config build.target-dir=/tmp/raw-target check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "alias c=cargo; c build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "alias c=cargo\nc build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "alias mybuild=cargo; alias c=mybuild; c build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "cargo --config=build.target-dir=/tmp/raw-target check",
+            "cargo --config build.target-dir raw target override must be classified",
+        ),
+        (
+            "cargo --config /tmp/cargo-config.toml check",
+            "cargo --config file raw target override must be classified",
+        ),
+        (
+            "cargo --config myconfig.txt check",
+            "cargo --config file raw target override must be classified",
+        ),
+        (
+            "cargo --config=myconfig.txt check",
+            "cargo --config file raw target override must be classified",
+        ),
+        (
+            "cargo install ripgrep --root /tmp/install-root --target-dir /tmp/install-build",
+            "cargo install build target and install root ownership must be classified separately",
+        ),
+        (
+            "BOLT_MANAGED_JUST=1 just managed-build",
+            "BOLT_MANAGED_JUST private just recipe bypass must be classified",
+        ),
+        (
+            "VAR=BOLT_MANAGED_JUST; export $VAR=1; just managed-build",
+            "BOLT_MANAGED_JUST private just recipe bypass must be classified",
+        ),
+        (
+            "echo \"BOLT_MANAGED_JUST<<EOF\" >> \"$GITHUB_ENV\"",
+            "BOLT_MANAGED_JUST private just recipe bypass must be classified",
+        ),
+        (
+            "no-mistakes run -- cargo check",
+            "no-mistakes raw Cargo drift must be classified",
+        ),
+        (
+            "run: >\n  no-mistakes run --\n  cargo check",
+            "no-mistakes raw Cargo drift must be classified",
+        ),
+        (
+            "no-mistakes run --worktree . -- cargo check --target-dir target",
+            "no-mistakes worktree-local target path evidence must be reported",
+        ),
+        (
+            "aws s3 sync target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync target s3://some-bucket/linux-cache",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync $(echo target) s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'bash -c "aws s3 sync target s3://bolt-v2-active-cache/target"',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 cp ./$(echo target)/debug/lib.a s3://bolt-v2-active-cache/",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 cp ./`echo target`/debug/lib.a s3://bolt-v2-active-cache/",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 cp `echo target`/debug/lib.a s3://bolt-v2-active-cache/",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 cp $(echo file) target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 cp `echo`target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'aws s3 sync "$(echo target)" s3://bolt-v2-active-cache/target',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'export E=CARGO_TARGET_DIR; env FOO=bar bash -c "$E=/tmp/raw cargo check"',
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "E=CARGO_TARGET_DIR; declare -x $E=/tmp/raw; cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "cargo check $(echo ; echo --target-dir /tmp/raw)",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            'SRC_DIR=target/debug\naws s3 sync "$SRC_DIR" s3://bolt-v2-active-cache/target/debug',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'env:\n  DEST: s3://bucket/cache\nsteps:\n  - run: aws s3 sync target "$DEST"',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'env:\n  DEST: s3://bucket/cache\nsteps:\n  - run: aws s3 sync target "${{ env.DEST }}"',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'echo "DEST=s3://bucket/cache" >> "$GITHUB_ENV"\naws s3 sync target "$DEST"',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'DEST="s3://bolt-v2-active-cache/target"\naws s3 sync target "$DEST"',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'SRC="s3://bolt-v2-active-cache/target"\naws s3 sync "$SRC" target',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "run: |\n  aws s3 sync \\\n    target \\\n    s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "run: >\n  aws s3 sync\n  target\n  s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync ./target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'aws s3 sync "$(pwd)/target" s3://bolt-v2-active-cache/target',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"$CARGO_TARGET_DIR\" s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${CARGO_TARGET_DIR}\" s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${CARGO_TARGET_DIR}/debug\" s3://bolt-v2-active-cache/target/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${CARGO_TARGET_DIR%/}/debug\" s3://bolt-v2-active-cache/target/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${{ steps.setup.outputs.managed_target_dir }}\" s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${{ steps.setup.outputs.managed_target_dir }}/debug\" s3://bolt-v2-active-cache/target/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${{ steps.setup.outputs.managed_target_dir_relative }}/debug\" s3://bolt-v2-active-cache/target/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'aws s3 sync "$(python3 scripts/rust_verification.py target-dir --repo .)" s3://bolt-v2-active-cache/target',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 cp --recursive target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 mv --recursive target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws --profile prod s3 sync target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws --region us-east-1 s3 cp --recursive target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"$GITHUB_WORKSPACE/target\" s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"$GITHUB_WORKSPACE\" s3://bolt-v2-active-cache/workspace",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync . s3://bolt-v2-active-cache/workspace",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"$GITHUB_WORKSPACE\"/target s3://some-bucket/linux-cache",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'TARGET_DIR="$GITHUB_WORKSPACE"/target\nDEST=s3://bucket/cache\naws s3 sync "$TARGET_DIR" "$DEST"',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'TARGET_DIR="$PWD"/target\nDEST=s3://bucket/cache\naws s3 sync "$TARGET_DIR" "$DEST"',
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync s3://bolt-v2-active-cache/target \"$GITHUB_WORKSPACE/./target\"",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 cp --recursive s3://bolt-v2-active-cache/target \"${PWD}/./target\"",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 mv --recursive s3://bolt-v2-active-cache/target \"$PWD/./target\"",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${{ github.workspace }}/target\" s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${{ github.workspace }}\" s3://bolt-v2-active-cache/workspace",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"${{ env.CARGO_TARGET_DIR }}/debug\" s3://bolt-v2-active-cache/target/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"$PWD/target\" s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync \"$PWD\"/target s3://some-bucket/linux-cache",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync $PWD/ s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync /home/runner/work/bolt-v2/bolt-v2/target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "cd target && aws s3 sync * s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "cd target/debug && aws s3 sync * s3://bolt-v2-active-cache/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "pushd target/debug\naws s3 sync * s3://bolt-v2-active-cache/target/debug",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "cd target ; aws s3 sync * s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "cd target || aws s3 sync * s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync s3://bolt-v2-active-cache/target \"$CARGO_TARGET_DIR\"",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 sync s3://bolt-v2-active-cache/target \"${{ steps.setup.outputs.managed_target_dir }}\"",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3api put-object --bucket bolt-v2-active-cache --key target/debug/lib.rmeta --body target/debug/lib.rmeta",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3api put-object --bucket bolt-v2-active-cache --key target/debug/lib.rmeta --body \"$CARGO_TARGET_DIR/debug/lib.rmeta\"",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3api get-object --bucket bolt-v2-active-cache --key cache target/debug/lib.rmeta",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "cat target/debug/lib.rmeta | base64 | aws s3 cp - s3://bolt-v2-active-cache/target.rmeta.b64",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "head -c 999 target/debug/lib.rmeta | aws s3 cp - s3://bolt-v2-active-cache/file",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "tar c target |\naws s3 cp - s3://bolt-v2-active-cache/target.tar",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 cp $(echo ;) target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+    ]
+    verifier = load_verifier()
+    misses: list[str] = []
+    for script, fragment in cases:
+        errors = verifier.verify_text(workflow_with_detector_probe(script), BASE_ACTION, BASE_NEXTEST_CONFIG)
+        if not any(fragment in error for error in errors):
+            misses.append(f"{fragment!r}: errors={errors!r}")
+    false_positive = "alias c=cargo; echo c build --target-dir /tmp/raw-target"
+    errors = verifier.raw_rust_storage_errors(false_positive)
+    if "cargo --target-dir raw target override must be classified" in errors:
+        misses.append(f"non-executed alias text was classified: errors={errors!r}")
+    false_positive = "aws s3 cp dist/app s3://bolt-v2-release/app\necho target"
+    errors = verifier.raw_rust_storage_errors(false_positive)
+    if "S3 active mutable target cache must be rejected" in errors:
+        misses.append(f"separate-line non-target S3 upload was classified: errors={errors!r}")
+    for false_positive in (
+        "cargo test -- --target-dir /tmp/test-binary-arg",
+        "cargo nextest run -- --target-dir /tmp/test-binary-arg",
+        "python3 scripts/rust_verification.py cargo --repo . -- test -- --target-dir /tmp/test-binary-arg",
+        "python3 scripts/rust_verification.py run --repo . test -- --target-dir /tmp/test-binary-arg",
+    ):
+        errors = verifier.raw_rust_storage_errors(false_positive)
+        if (
+            "cargo --target-dir raw target override must be classified" in errors
+            or "S3 active mutable target cache must be rejected" in errors
+        ):
+            misses.append(f"benign command was classified: {false_positive!r} errors={errors!r}")
+    for false_positive in ("/usr/bin/make build", "/tmp/build-tool test", "cargo -C /tmp/repo build"):
+        errors = verifier.raw_rust_storage_errors(false_positive)
+        if any("raw target override" in error or "raw Cargo drift" in error for error in errors):
+            misses.append(f"path command was classified as raw cargo: {false_positive!r} errors={errors!r}")
+    if misses:
+        raise AssertionError("raw/unmanaged Rust storage policy gaps were silent: " + "; ".join(misses))
+
+
+def assert_v6_red_renamed_path_cargo_source_builds_are_reported() -> None:
+    verifier = load_verifier()
+    cases = [
+        (
+            "/tmp/c install cargo-deny --root s3://bolt-v2-active-cache/install-root",
+            "repo automation must not compile cargo-deny from source",
+        ),
+        (
+            "timeout 30 /tmp/c install cargo-nextest --version 0.9.132 --locked",
+            "repo automation must not compile cargo-nextest from source",
+        ),
+        (
+            "git clone https://github.com/EmbarkStudios/cargo-deny /tmp/my-deny\ncargo install --path /tmp/my-deny",
+            "repo automation must not compile cargo-deny from source",
+        ),
+        (
+            "git clone https://github.com/EmbarkStudios/cargo-deny /tmp/my-deny\ncd /tmp/my-deny && cargo install --path .",
+            "repo automation must not compile cargo-deny from source",
+        ),
+        (
+            "git clone https://github.com/EmbarkStudios/cargo-deny.git\ncd cargo-deny && cargo install --path .",
+            "repo automation must not compile cargo-deny from source",
+        ),
+        (
+            "cargo install --git https://github.com/EmbarkStudios/Cargo-Deny --locked",
+            "repo automation must not compile cargo-deny from source",
+        ),
+        (
+            "cargo install --git https://github.com/nextest-rs/cargo-NeXtEsT --package cargo-nextest --locked",
+            "repo automation must not compile cargo-nextest from source",
+        ),
+        (
+            "cargo install $(echo ; echo cargo-deny) --locked",
+            "repo automation must not compile cargo-deny from source",
+        ),
+        (
+            "sudo sudo sudo sudo sudo sudo sudo cargo install cargo-deny --locked",
+            "repo automation must not compile cargo-deny from source",
+        ),
+    ]
+    for text, expected in cases:
+        errors = verifier.repo_automation_source_build_errors(text)
+        if expected not in errors:
+            raise AssertionError(f"{text!r}: expected {expected!r}, got {errors!r}")
+
+
+def workflow_with_exact_head_governance_cache_inputs(workflow: str) -> str:
+    if all(cache_input in workflow for cache_input in EXACT_HEAD_GOVERNANCE_CACHE_INPUTS):
+        return workflow
+    governance_inputs = ", " + ", ".join(EXACT_HEAD_GOVERNANCE_CACHE_INPUTS)
+    return workflow.replace("'justfile') }}", f"'justfile'{governance_inputs}) }}").replace(
+        "'specs/**/*.md') }}",
+        f"'specs/**/*.md'{governance_inputs}) }}",
+    )
+
+
+def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        verifier_path = tmp_path / "scripts" / "verify_ci_workflow_hygiene.py"
+        verifier_path.parent.mkdir(parents=True)
+        verifier_path.write_text(VERIFIER_PATH.read_text())
+
+        workflow_dir = tmp_path / ".github" / "workflows"
+        workflow_dir.mkdir(parents=True)
+        (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+
+        action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
+        action_path.parent.mkdir(parents=True)
+        action_path.write_text(BASE_ACTION)
+
+        nextest_path = tmp_path / ".config" / "nextest.toml"
+        nextest_path.parent.mkdir(parents=True)
+        nextest_path.write_text(BASE_NEXTEST_CONFIG)
+
+        (tmp_path / ".no-mistakes.yaml").write_text(no_mistakes_text)
+
+        temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = temp_verifier.main()
+        return result, stdout.getvalue() + stderr.getvalue()
+
+
+def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, str]:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        verifier_path = tmp_path / "scripts" / "verify_ci_workflow_hygiene.py"
+        verifier_path.parent.mkdir(parents=True)
+        verifier_path.write_text(VERIFIER_PATH.read_text())
+
+        workflow_dir = tmp_path / ".github" / "workflows"
+        workflow_dir.mkdir(parents=True)
+        (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+
+        action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
+        action_path.parent.mkdir(parents=True)
+        action_path.write_text(BASE_ACTION)
+
+        extra_action_path = tmp_path / ".github" / "actions" / "evade" / "action.yml"
+        extra_action_path.parent.mkdir(parents=True)
+        extra_action_path.write_text(extra_action_text)
+
+        nextest_path = tmp_path / ".config" / "nextest.toml"
+        nextest_path.parent.mkdir(parents=True)
+        nextest_path.write_text(BASE_NEXTEST_CONFIG)
+
+        temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_action_entrypoint")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = temp_verifier.main()
+        return result, stdout.getvalue() + stderr.getvalue()
+
+
+def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str) -> tuple[int, str]:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        verifier_path = tmp_path / "scripts" / "verify_ci_workflow_hygiene.py"
+        verifier_path.parent.mkdir(parents=True)
+        verifier_path.write_text(VERIFIER_PATH.read_text())
+
+        workflow_dir = tmp_path / ".github" / "workflows"
+        workflow_dir.mkdir(parents=True)
+        (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+        (workflow_dir / workflow_name).write_text(workflow_text)
+
+        action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
+        action_path.parent.mkdir(parents=True)
+        action_path.write_text(BASE_ACTION)
+
+        nextest_path = tmp_path / ".config" / "nextest.toml"
+        nextest_path.parent.mkdir(parents=True)
+        nextest_path.write_text(BASE_NEXTEST_CONFIG)
+
+        temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_workflow_entrypoint")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = temp_verifier.main()
+        return result, stdout.getvalue() + stderr.getvalue()
+
+
+def assert_v6_red_yaml_anchor_jobs_do_not_hide_raw_storage() -> None:
+    verifier = load_verifier()
+    workflow = """
+name: Probe
+on: [push]
+jobs:
+  hidden: &hidden
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo build --target-dir /tmp/raw
+"""
+    expected = "cargo --target-dir raw target override must be classified"
+    errors = verifier.raw_rust_storage_errors(textwrap.dedent(workflow))
+    if expected not in errors:
+        raise AssertionError(f"anchored workflow job raw-storage drift was silent: {errors!r}")
+    if "hidden" not in verifier.parse_jobs(textwrap.dedent(workflow)):
+        raise AssertionError("anchored workflow job was not parsed")
+
+
+def assert_v6_red_yaml_anchor_steps_do_not_hide_raw_storage() -> None:
+    verifier = load_verifier()
+    workflow = """
+name: Probe
+on: [push]
+jobs:
+  hidden:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+      - &raw run: cargo build --target-dir /tmp/raw
+      - &s3 run: aws s3 sync target s3://bolt-v2-active-cache/target
+"""
+    errors = verifier.raw_rust_storage_errors(textwrap.dedent(workflow))
+    expected_target = "cargo --target-dir raw target override must be classified"
+    expected_s3 = "S3 active mutable target cache must be rejected"
+    if expected_target not in errors or expected_s3 not in errors:
+        raise AssertionError(f"anchored workflow step raw-storage drift was silent: {errors!r}")
+
+
+def assert_v6_red_yaml_steps_aliases_are_rejected() -> None:
+    verifier = load_verifier()
+    workflow = """
+name: Probe
+on: [push]
+.shared_steps: &shared_steps
+  - run: echo ok
+jobs:
+  hidden:
+    runs-on: ubuntu-latest
+    steps: *shared_steps
+"""
+    expected = "workflow steps must be explicit; YAML steps aliases are unsupported"
+    errors = verifier.verify_workflow(textwrap.dedent(workflow))
+    if expected not in errors:
+        raise AssertionError(f"workflow steps alias was not rejected: {errors!r}")
+    workflow = """
+name: Probe
+on: [push]
+.raw_step: &raw_step
+  run: cargo build --target-dir /tmp/raw
+jobs:
+  hidden:
+    runs-on: ubuntu-latest
+    steps:
+      - *raw_step
+"""
+    errors = verifier.verify_workflow(textwrap.dedent(workflow))
+    if expected not in errors:
+        raise AssertionError(f"workflow step item alias was not rejected: {errors!r}")
+
+
+def assert_v6_red_static_path_classifier_ignores_host_filesystem_resolution() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        cargo_target = tmp_path / "cargo"
+        cargo_target.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        cargo_link = tmp_path / "builder"
+        cargo_link.symlink_to(cargo_target)
+        rustc_target = tmp_path / "rustc"
+        rustc_target.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        rustc_link = tmp_path / "compiler"
+        rustc_link.symlink_to(rustc_target)
+        if verifier.path_executable_looks_like_cargo(str(cargo_link)):
+            raise AssertionError("static cargo classifier must not inspect host filesystem symlink targets")
+        if verifier.path_executable_looks_like_rustc(str(rustc_link)):
+            raise AssertionError("static rustc classifier must not inspect host filesystem symlink targets")
+        if not verifier.path_executable_looks_like_cargo(str(tmp_path / "mycargo")):
+            raise AssertionError("static cargo classifier must still classify path names that look like cargo")
+
+
+def assert_v6_red_local_composite_actions_are_scanned() -> None:
+    extra_action = """
+name: Evade
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: cargo build
+    - shell: bash
+      run: aws s3 sync target s3://bolt-v2-active-cache/target
+"""
+    result, output = run_verifier_main_with_extra_action(textwrap.dedent(extra_action))
+    expected_raw_cargo = ".github/actions/evade/action.yml: repo automation raw Cargo must use managed rust_verification wrapper"
+    expected_s3 = ".github/actions/evade/action.yml: S3 active mutable target cache must be rejected"
+    if result == 0 or expected_raw_cargo not in output or expected_s3 not in output:
+        raise AssertionError(f"local composite action drift was silent: exit={result}, output={output!r}")
+
+
+def assert_v6_red_additional_workflows_are_scanned() -> None:
+    extra_workflow = """
+name: Release
+on: [workflow_dispatch]
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo build
+      - run: aws s3 sync target s3://bolt-v2-active-cache/target
+"""
+    result, output = run_verifier_main_with_extra_workflow("release.yml", textwrap.dedent(extra_workflow))
+    expected_raw_cargo = ".github/workflows/release.yml: repo automation raw Cargo must use managed rust_verification wrapper"
+    expected_s3 = ".github/workflows/release.yml: S3 active mutable target cache must be rejected"
+    if result == 0 or expected_raw_cargo not in output or expected_s3 not in output:
+        raise AssertionError(f"additional workflow drift was silent: exit={result}, output={output!r}")
+
+
+def assert_v6_red_no_mistakes_raw_cargo_is_reported() -> None:
+    raw_fixture = """
+aliases:
+  - &raw_top "cargo build --target-dir /tmp/raw"
+  - &raw_top_block |
+      cargo build --target-dir /tmp/raw
+commands:
+  test: cargo test
+  lint: >
+    cargo clippy --all-targets -- -D warnings
+  format: "cargo fmt --check"
+  review: 'cargo test --all-targets'
+  ci: |
+    cargo clippy --workspace
+  envcheck: env CARGO_TARGET_DIR=target cargo test
+  envsplit: env -S 'cargo test'
+  envsplitunquoted: env -S timeout 30 cargo test
+  envinvalidassignment: env 1=2 cargo build
+  envblocksignal: env --block-signal cargo test
+  timeoutdashdash: timeout -- 30 cargo build
+  tasksetdashdash: taskset -- 0 cargo build
+  anchored: &raw "cargo build --target-dir /tmp/raw"
+  anchoralias: *raw
+  topanchoralias: *raw_top
+  topanchoraliascomment: *raw_top # inline comment
+  topblockanchoralias: *raw_top_block
+  shellcheck: bash -lc 'cargo test --all'
+  evalraw: eval "cargo test"
+  evaldashdash: eval -- cargo test
+  evalprefix: A=B eval cargo test
+  evalprefixquoted: A=B eval "cargo test"
+  evalvar: 'CMD="cargo build --target-dir /tmp/raw"; eval "$CMD"'
+  evalexportvar: 'export CMD="cargo build"; eval "$CMD"'
+  evalparam: 'export CMD="cargo build"; eval "${CMD:-}"'
+  evaldynamicenv: 'VAR=CARGO_TARGET_DIR; $VAR=/tmp/raw cargo check'
+  evalcomposedenv: 'VAR=CARGO; ${VAR}_TARGET_DIR=/tmp/raw cargo check'
+  evalinlinecomposedenv: 'VAR=CARGO ${VAR}_TARGET_DIR=/tmp/raw cargo check'
+  evalinlinecomposedeval: 'VAR=CARGO eval "${VAR}_TARGET_DIR=/tmp/raw cargo check"'
+  shellccomposedenv: 'VAR=CARGO; bash -c "${VAR}_TARGET_DIR=/tmp/raw cargo test"'
+  aliaspayload: 'alias c='\''V=CARGO; eval "${V}_TARGET_DIR=/tmp/raw cargo"'\''; c build'
+  sudocomposedenv: 'VAR=CARGO; sudo ${VAR}_TARGET_DIR=/tmp/raw cargo check'
+  timecomposedenv: 'VAR=CARGO; time ${VAR}_TARGET_DIR=/tmp/raw cargo test'
+  evalcmdpayload: 'VAR=CARGO; CMD="${VAR}_TARGET_DIR=/tmp/raw cargo check"; eval "$CMD"'
+  shellcmdpayload: 'VAR=CARGO; export CMD="${VAR}_TARGET_DIR=/tmp/raw cargo check"; bash -c "$CMD"'
+  aliasouterpayload: 'VAR=CARGO; alias c='\''${VAR}_TARGET_DIR=/tmp/raw cargo'\''; c build'
+  redirectprefix: '> /dev/null cargo test'
+  redirectcompact: 'cargo>out test'
+  foldedplain: eval
+    cargo test
+  foldeddouble: "eval
+    cargo test"
+  shellprefix: A=B bash -c "cargo test"
+  shellevalraw: bash -lc 'eval "cargo test"'
+  shellalias: bash -lc 'alias c=cargo; c test'
+  shellaliasquoted: bash -lc 'alias c="command cargo"; c test'
+  shellaliasclippy: bash -lc 'alias c=clippy; c --all-targets'
+  shellaliasnextest: bash -lc 'alias c=nextest; c run'
+  shellaliasrustc: bash -lc 'alias c=rustc; c --crate-name bolt_v2'
+  shellaliastime: bash -lc 'alias c=cargo; time c test'
+  shellaliasnice: bash -lc 'alias c=clippy; nice c --all-targets'
+  renamedcargo: /tmp/c build
+  timerenamedcargo: time /tmp/c build
+  xargsrenamedcargo: xargs /tmp/c build
+  wrapped: command cargo fmt --check
+  stdbufwrap: stdbuf -oL cargo build
+  catchsegvwrap: catchsegv cargo test
+  nicewrap: nice cargo test
+  timeniceadjust: time nice --adjustment 10 cargo test
+  timeverbose: A=B time -v cargo test
+  timeoutput: A=B time -o /tmp/bolt-time cargo test
+  doaswrap: doas cargo test
+  flockwrap: flock "$TMPDIR/bolt.lock" cargo test
+  flockfilec: flock "$TMPDIR/bolt.lock" -c 'cargo test'
+  flockshortc: flock -xc 'cargo test' "$TMPDIR/bolt.lock"
+  timeflocktimeout: time flock --timeout 5 "$TMPDIR/bolt.lock" cargo test
+  flockclose: flock -o "$TMPDIR/bolt.lock" cargo test
+  sudoflock: sudo flock -o "$TMPDIR/bolt.lock" cargo test
+  sudousercommand: sudo -u bash cargo build
+  sudoshell: sudo bash -lc 'cargo test --all'
+  envshell: env -i bash -lc 'cargo test --all'
+  hyphenated: cargo-clippy --workspace
+  rustup: rustup run stable cargo test
+  pyinline: python -c 'import os; os.system("cargo test")'
+  timeout: timeout 30 cargo test
+  managedjustenv: BOLT_MANAGED_JUST=1 just managed-build
+  managedjustdynamic: VAR=BOLT_MANAGED_JUST; export $VAR=1; just managed-build
+  declaretarget: E=CARGO_TARGET_DIR; declare -x $E=/tmp/raw; cargo check
+  substitutiontarget: cargo check $(echo ; echo --target-dir /tmp/raw)
+  dockeruncertainrenamed: docker run --unknown-opt=rust mycargo build
+  podmanuncertainrenamedrustc: podman run --unknown-opt=rust myrustc --out-dir /tmp/raw
+  chained: python3 scripts/rust_verification.py cargo --repo . -- test && cargo test
+  compact_and: python3 scripts/rust_verification.py cargo --repo . -- test&&cargo test
+  compact_semicolon: python3 scripts/rust_verification.py cargo --repo . -- test;cargo test
+  compact_pipe: python3 scripts/rust_verification.py cargo --repo . -- test|cargo test
+  compact_or: python3 scripts/rust_verification.py cargo --repo . -- test||cargo test
+  blockmanagedhidden: |
+    python3 scripts/rust_verification.py cargo --repo . -- test
+    cargo test
+  managedtarget: python3 scripts/rust_verification.py cargo --repo . -- test --target-dir /tmp/raw
+  managedconfig: python3 scripts/rust_verification.py cargo --repo . -- --config=build.target-dir=/tmp/raw test
+  managedencodedrustflags: CARGO_ENCODED_RUSTFLAGS='--out-dir\\x1f/tmp/raw-out' python3 scripts/rust_verification.py cargo --repo . -- check
+  managedinstallroot: python3 scripts/rust_verification.py cargo --repo . -- install ripgrep --root /tmp/install-root
+  managedrustcwrapper: RUSTC_WRAPPER=/tmp/wrapper python3 scripts/rust_verification.py cargo --repo . -- test
+  no-mistakes-clippy-command: no-mistakes run -- clippy
+  no-mistakes-nextest-command: no-mistakes run -- nextest run
+  s3cache: aws s3 sync target s3://bolt-v2-active-cache/target
+  docs: just docs
+"""
+    allowed_fixture = """
+commands:
+  test: python3 scripts/rust_verification.py cargo --repo . -- test
+  lint: python3 scripts/rust_verification.py cargo --repo . -- clippy --all-targets -- -D warnings
+  format: python3 scripts/rust_verification.py cargo --repo . -- fmt --check
+  test-binary-arg: python3 scripts/rust_verification.py cargo --repo . -- test -- --target-dir /tmp/test-binary-arg
+  run-test-binary-arg: python3 scripts/rust_verification.py run --repo . test -- --target-dir /tmp/test-binary-arg
+  exact-head-ci: gh run view --repo seungpyoson/bolt-v2 --commit "$GITHUB_SHA" --json conclusion
+  sudouserarg: timeout 30 sudo -u cargo echo hello
+"""
+    commented_commands_fixture = """
+commands: # repo review commands
+  test: cargo test
+"""
+    inline_commands_fixture = """
+commands: { test: "cargo test" }
+"""
+    fixture_expected_raw_keys = [
+        "test",
+        "lint",
+        "format",
+        "review",
+        "ci",
+        "envcheck",
+        "envsplit",
+        "envsplitunquoted",
+        "envinvalidassignment",
+        "envblocksignal",
+        "timeoutdashdash",
+        "tasksetdashdash",
+        "anchored",
+        "anchoralias",
+        "topanchoralias",
+        "topanchoraliascomment",
+        "topblockanchoralias",
+        "shellcheck",
+        "evalraw",
+        "evaldashdash",
+        "evalprefix",
+        "evalprefixquoted",
+        "evalvar",
+        "evalexportvar",
+        "evalparam",
+        "evaldynamicenv",
+        "evalcomposedenv",
+        "evalinlinecomposedenv",
+        "evalinlinecomposedeval",
+        "shellccomposedenv",
+        "aliaspayload",
+        "sudocomposedenv",
+        "timecomposedenv",
+        "evalcmdpayload",
+        "shellcmdpayload",
+        "aliasouterpayload",
+        "redirectprefix",
+        "redirectcompact",
+        "foldedplain",
+        "foldeddouble",
+        "shellprefix",
+        "shellevalraw",
+        "shellalias",
+        "shellaliasquoted",
+        "shellaliasclippy",
+        "shellaliasnextest",
+        "shellaliasrustc",
+        "shellaliastime",
+        "shellaliasnice",
+        "renamedcargo",
+        "timerenamedcargo",
+        "xargsrenamedcargo",
+        "wrapped",
+        "stdbufwrap",
+        "catchsegvwrap",
+        "nicewrap",
+        "timeniceadjust",
+        "timeverbose",
+        "timeoutput",
+        "doaswrap",
+        "flockwrap",
+        "flockfilec",
+        "flockshortc",
+        "timeflocktimeout",
+        "flockclose",
+        "sudoflock",
+        "sudousercommand",
+        "sudoshell",
+        "envshell",
+        "hyphenated",
+        "rustup",
+        "pyinline",
+        "timeout",
+        "managedjustenv",
+        "managedjustdynamic",
+        "declaretarget",
+        "substitutiontarget",
+        "dockeruncertainrenamed",
+        "podmanuncertainrenamedrustc",
+        "chained",
+        "compact_and",
+        "compact_semicolon",
+        "compact_pipe",
+        "compact_or",
+        "blockmanagedhidden",
+        "managedtarget",
+        "managedconfig",
+        "managedencodedrustflags",
+        "managedinstallroot",
+        "no-mistakes-clippy-command",
+        "no-mistakes-nextest-command",
+    ]
+    expected = [
+        f".no-mistakes.yaml commands.{command_name} raw Cargo drift must be classified"
+        for command_name in fixture_expected_raw_keys
+    ]
+    expected_s3 = ".no-mistakes.yaml commands.s3cache S3 active mutable target cache must be rejected"
+    expected_storage = [
+        ".no-mistakes.yaml commands.managedrustcwrapper RUSTC_WRAPPER raw compiler wrapper must be classified",
+    ]
+    fixture_result, fixture_errors = run_verifier_main_with_no_mistakes(raw_fixture)
+    missing_fixture = [fragment for fragment in expected if fragment not in fixture_errors]
+    missing_storage = [fragment for fragment in expected_storage if fragment not in fixture_errors]
+    false_fixture = ".no-mistakes.yaml commands.docs raw Cargo drift must be classified" in fixture_errors
+    allowed_result, allowed_errors = run_verifier_main_with_no_mistakes(allowed_fixture)
+    false_allowed = [
+        error for error in allowed_errors.splitlines()
+        if ".no-mistakes.yaml" in error and "raw Cargo drift" in error
+    ]
+    commented_result, commented_errors = run_verifier_main_with_no_mistakes(commented_commands_fixture)
+    commented_expected = ".no-mistakes.yaml commands.test raw Cargo drift must be classified"
+    inline_result, inline_errors = run_verifier_main_with_no_mistakes(inline_commands_fixture)
+    inline_expected = ".no-mistakes.yaml commands section must use block mapping"
+
+    if (
+        fixture_result == 0
+        or missing_fixture
+        or missing_storage
+        or expected_s3 not in fixture_errors
+        or false_fixture
+        or allowed_result != 0
+        or false_allowed
+        or commented_result == 0
+        or commented_expected not in commented_errors
+        or inline_result == 0
+        or inline_expected not in inline_errors
+    ):
+        raise AssertionError(
+            "no-mistakes raw-Cargo drift must fail through verifier main() while managed-wrapper "
+            "and exact-head CI evidence commands stay allowed: "
+            f"fixture_result={fixture_result} missing_fixture={missing_fixture!r} "
+            f"missing_storage={missing_storage!r} "
+            f"expected_s3={expected_s3!r} false_fixture={false_fixture} fixture_errors={fixture_errors!r} "
+            f"fixture_expected_raw_keys={fixture_expected_raw_keys!r} "
+            f"allowed_result={allowed_result} false_allowed={false_allowed!r} "
+            f"allowed_errors={allowed_errors!r} "
+            f"commented_result={commented_result} commented_errors={commented_errors!r} "
+            f"inline_result={inline_result} inline_errors={inline_errors!r}"
+        )
+
+
+def assert_v6_red_exact_head_governance_inputs_are_cache_keyed() -> None:
+    governed_workflow = workflow_with_exact_head_governance_cache_inputs(BASE_WORKFLOW)
+    assert_clean(governed_workflow)
+    for cache_input in EXACT_HEAD_GOVERNANCE_CACHE_INPUTS:
+        assert_error(
+            "cache keys must include exact-head CI/no-mistakes governance inputs",
+            governed_workflow.replace(f", {cache_input}", ""),
+        )
+
+
+def assert_shell_logical_lines_handles_crlf_continuations() -> None:
+    verifier = load_verifier()
+    logical_lines = verifier.shell_logical_lines("cargo check \\\r\n  --target-dir /tmp/raw\r\n")
+    if logical_lines != ["cargo check    --target-dir /tmp/raw"]:
+        raise AssertionError(f"CRLF shell continuation was not folded: {logical_lines!r}")
+
+
+def assert_v6_red_workflow_policy_gaps() -> None:
+    checks = [
+        assert_v6_red_s3_storage_transfer_policy_is_semantic,
+        assert_v6_workflow_run_steps_reset_shell_state,
+        assert_v6_red_raw_rust_storage_overrides_are_reported,
+        assert_v6_red_renamed_path_cargo_source_builds_are_reported,
+        assert_v6_red_no_mistakes_raw_cargo_is_reported,
+        assert_v6_red_exact_head_governance_inputs_are_cache_keyed,
+    ]
+    failures: list[str] = []
+    for check in checks:
+        try:
+            check()
+        except AssertionError as exc:
+            failures.append(f"{check.__name__}: {exc}")
+    if failures:
+        raise AssertionError("v6 RED workflow policy coverage failures: " + " | ".join(failures))
+
+
+def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
+    verifier = load_verifier()
+    advisory = BASE_ADVISORY_WORKFLOW.replace(
+        "        run: just deny-advisories",
+        "        run: |\n          aws s3 sync target s3://some-bucket/linux-cache",
+    )
+    advisory_errors = verifier.verify_workflows(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": advisory},
+        BASE_ACTION,
+        BASE_NEXTEST_CONFIG,
+    )
+    action = BASE_ACTION.replace(
+        "      run: echo setup",
+        "      run: |\n        CARGO_TARGET_DIR=/tmp/raw cargo check",
+    )
+    action_errors = verifier.verify_workflows(
+        {"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW},
+        action,
+        BASE_NEXTEST_CONFIG,
+    )
+    repo_errors = verifier.verify_repo_automation_texts(
+        {
+            "justfile": "check:\n    CARGO_TARGET_DIR=/tmp/raw cargo check\n",
+            "justfile.raw": "test:\n    cargo test\n",
+            "justfile.spoof": 'bad:\n    echo "BOLT_MANAGED_JUST exit"\n    cargo build\n',
+            "justfile.managed-spoof": 'managed-build:\n    echo BOLT_MANAGED_JUST rust_verification.py run exit 2\n    cargo build\n',
+            "justfile.managed-exact-guard-raw": 'managed-build:\n    if [ "${BOLT_MANAGED_JUST:-}" != "1" ]; then echo "ERROR: managed-build must run through scripts/rust_verification.py run"; exit 2; fi\n    cargo build --release\n',
+            "scripts/raw.sh": "#!/usr/bin/env bash\ncargo build\n",
+            "scripts/raw-substitution-dollar.sh": "#!/usr/bin/env bash\nx=$(cargo build)\n",
+            "scripts/raw-substitution-quoted.sh": "#!/usr/bin/env bash\nx=\"$(cargo build)\"\n",
+            "scripts/raw-substitution-backtick.sh": "#!/usr/bin/env bash\nx=`cargo build`\n",
+            "scripts/raw-find-exec.sh": "#!/usr/bin/env bash\nfind . -name Cargo.toml -exec cargo build \\;\n",
+            "scripts/raw-su.sh": "#!/usr/bin/env bash\nsu user -c 'cargo build'\n",
+            "scripts/raw-runuser.sh": "#!/usr/bin/env bash\nrunuser -u user -- cargo build\n",
+            "scripts/multiline-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo build\"\nbash -c \"$CMD\"\n",
+            "scripts/multiline-quoted-eval.sh": "#!/usr/bin/env bash\nCMD=\"cargo\nbuild --target-dir /tmp/raw\"\nbash -c \"$CMD\"\n",
+            "scripts/comment-blind.sh": "# comment with unbalanced quote '\ncargo build\necho 'closing quote'\n",
+            "scripts/nested-var-eval.sh": "CMD=\"cargo build\"\nbash -c \"echo benign; eval $CMD\"\n",
+            "scripts/raw-guard-text.sh": '#!/usr/bin/env bash\necho "Missing BOLT_MANAGED_JUST, exit 1"\ncargo build\n',
+            "scripts/raw-redirection.sh": "#!/usr/bin/env bash\n> /dev/null cargo build\n",
+            "scripts/symlink-cargo.sh": "ln -s $(which cargo) /tmp/mycargo\n/tmp/mycargo build --target-dir /tmp/raw\n",
+            "scripts/copy-cargo.sh": "cp $(which cargo) /tmp/mycargo\n/tmp/mycargo build\n",
+            "scripts/non-rust-make.sh": "/usr/bin/make test\n",
+            "scripts/non-rust-gradle.sh": "./gradlew build\n",
+            "scripts/non-rust-cargo-build-script.sh": "/tmp/cargo-build.sh test\n",
+            "scripts/non-rust-cargo-build-uppercase-py.sh": "/tmp/cargo-build.PY test\n",
+            "scripts/non-rust-cargo-tests-py.sh": "tests/cargo-tests.py build\n",
+            "justfile.setup": "setup:\n    cargo install cargo-nextest --version 0.9.132 --locked\n",
+            "justfile.setup.absolute": "setup:\n    /usr/bin/cargo install cargo-nextest --version 0.9.132 --locked\n",
+            "justfile.setup.timeout": "setup:\n    timeout 30 cargo install cargo-deny --version 0.18.2\n",
+            "justfile.setup.xargs": "setup:\n    xargs cargo install cargo-nextest\n",
+            "scripts/local.sh": "aws s3 sync \"$PWD\"/target s3://some-bucket/linux-cache\n",
+            "scripts/workspace.sh": "aws s3 sync \"$GITHUB_WORKSPACE\" s3://some-bucket/workspace\n",
+            "scripts/nested-s3-shell.sh": 'bash -c "aws s3 sync target s3://bolt-v2-active-cache/target"\n',
+            "scripts/export-name-word.sh": "export E VAR=CARGO_TARGET_DIR\n$VAR=/tmp/raw cargo check\n",
+            "scripts/s3api.sh": "aws s3api put-object --bucket b --key target/debug/lib --body target/debug/lib\n",
+            "scripts/s3api-get.sh": "aws s3api get-object --bucket b --key cache target/debug/lib\n",
+        }
+    )
+    expected = "S3 active mutable target cache must be rejected"
+    if not any(expected in error for error in advisory_errors):
+        raise AssertionError(f"advisory workflow raw-storage drift was silent: {advisory_errors!r}")
+    expected = "CARGO_TARGET_DIR raw target override must be classified"
+    if not any(expected in error for error in action_errors):
+        raise AssertionError(f"setup action raw-storage drift was silent: {action_errors!r}")
+    if not any("justfile" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"justfile raw-storage drift was silent: {repo_errors!r}")
+    expected = "repo automation raw Cargo must use managed rust_verification wrapper"
+    if not any("justfile.raw" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"justfile raw-cargo drift was silent: {repo_errors!r}")
+    if not any("justfile.spoof" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"spoofed justfile managed-guard drift was silent: {repo_errors!r}")
+    if not any("justfile.managed-spoof" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"spoofed managed just recipe guard drift was silent: {repo_errors!r}")
+    if not any("justfile.managed-exact-guard-raw" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"exact-guard managed just recipe raw cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-substitution-dollar.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script command-substitution raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-substitution-quoted.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script quoted command-substitution raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-substitution-backtick.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script backtick raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-find-exec.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script find-exec raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-su.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script su raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-runuser.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script runuser raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/multiline-eval.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script multiline eval raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/multiline-quoted-eval.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script multiline quoted eval raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/comment-blind.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script comment-blinded raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/nested-var-eval.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script nested variable eval raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-guard-text.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script guard-text raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-redirection.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script redirected raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/symlink-cargo.sh" in error and "cargo --target-dir raw target override" in error for error in repo_errors):
+        raise AssertionError(f"symlinked cargo raw-storage drift was silent: {repo_errors!r}")
+    if not any("scripts/copy-cargo.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"copied cargo raw-cargo drift was silent: {repo_errors!r}")
+    false_repo_raw = [error for error in repo_errors if "scripts/non-rust-" in error]
+    if false_repo_raw:
+        raise AssertionError(f"non-Rust path commands must stay allowed: {false_repo_raw!r}")
+    expected = "repo automation must not compile cargo-nextest from source"
+    if not any("justfile.setup" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"justfile cargo-install drift was silent: {repo_errors!r}")
+    if not any("justfile.setup.absolute" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"absolute cargo-install drift was silent: {repo_errors!r}")
+    expected = "repo automation must not compile cargo-deny from source"
+    if not any("justfile.setup.timeout" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"wrapped cargo-deny install drift was silent: {repo_errors!r}")
+    expected = "repo automation must not compile cargo-nextest from source"
+    if not any("justfile.setup.xargs" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"wrapped cargo-nextest install drift was silent: {repo_errors!r}")
+    expected = "S3 active mutable target cache must be rejected"
+    if not any("scripts/local.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script raw-storage drift was silent: {repo_errors!r}")
+    if not any("scripts/workspace.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"workspace S3 sync drift was silent: {repo_errors!r}")
+    if not any("scripts/nested-s3-shell.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"nested shell S3 sync drift was silent: {repo_errors!r}")
+    expected = "CARGO_TARGET_DIR raw target override must be classified"
+    if not any("scripts/export-name-word.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"export name-word raw-storage drift was silent: {repo_errors!r}")
+    expected = "S3 active mutable target cache must be rejected"
+    if not any("scripts/s3api.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"s3api raw-storage drift was silent: {repo_errors!r}")
+    if not any("scripts/s3api-get.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"s3api get-object raw-storage drift was silent: {repo_errors!r}")
+
+
+def assert_ci_lint_runs_rust_verification_cache_retention_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_rust_verification_cache_retention.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run rust verification cache retention self-tests")
+
+
+def assert_cargo_zigbuild_probe_has_no_redundant_true() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    redundant = 'test -x "$HOME/.cargo/bin/cargo-zigbuild" && true'
+    if redundant in workflow:
+        raise AssertionError("cargo-zigbuild executable probe must not use redundant && true")
+
+
 def main() -> int:
+    assert_ci_lint_runs_rust_verification_cache_retention_tests()
+    assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
     assert_pin_consistency_cross_file_mismatch_errors()
     assert_pin_consistency_same_sha_no_error()
     assert_pin_consistency_rejects_mutable_tag()
+    assert_pin_consistency_ignores_non_uses_mentions()
     assert_pin_consistency_accepts_uppercase_sha()
     assert_pin_consistency_intra_file_mismatch_uses_pin_drift_wording()
     assert_pin_consistency_rejects_multi_line_mutable_tag()
@@ -1079,6 +3173,14 @@ def main() -> int:
     assert_pin_consistency_accepts_single_quoted_sha()
     assert_pin_consistency_rejects_mismatched_quotes()
     assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action()
+    assert_v6_red_raw_storage_checks_all_ci_automation()
+    assert_v6_red_yaml_anchor_jobs_do_not_hide_raw_storage()
+    assert_v6_red_yaml_anchor_steps_do_not_hide_raw_storage()
+    assert_v6_red_yaml_steps_aliases_are_rejected()
+    assert_v6_red_static_path_classifier_ignores_host_filesystem_resolution()
+    assert_v6_red_local_composite_actions_are_scanned()
+    assert_v6_red_additional_workflows_are_scanned()
+    assert_shell_logical_lines_handles_crlf_continuations()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(
         "concurrency group must key pull_request runs by PR number",
@@ -1291,8 +3393,8 @@ def main() -> int:
         "check-aarch64 must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
-            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
         ),
     )
     assert_error(
@@ -1331,7 +3433,7 @@ def main() -> int:
         "clippy must use isolated managed target cache",
         replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n",
+            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n",
             "",
         ),
     )
@@ -1492,8 +3594,8 @@ def main() -> int:
         "test-archive cache must not use restore-keys",
         replace_once(
             BASE_WORKFLOW,
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}\n      - name: Install cargo-nextest",
-            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - name: Install cargo-nextest",
+            "          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', 'specs/**/*.md', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: nextest-archive-v1-\n      - name: Install cargo-nextest",
         ),
     )
     # #400: every managed-target cache must declare a restore-keys prefix fallback.
@@ -1501,32 +3603,32 @@ def main() -> int:
         "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - run: just clippy",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: just clippy",
         ),
     )
     assert_error(
         "check-aarch64 managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-\n      - if: needs.detector.outputs.build_required != 'true'",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - if: needs.detector.outputs.build_required != 'true'",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-\n      - if: needs.detector.outputs.build_required != 'true'",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-check-aarch64-dev-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - if: needs.detector.outputs.build_required != 'true'",
         ),
     )
     assert_error(
         "source-fence managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: just source-fence",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - run: just source-fence",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: just source-fence",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: just source-fence",
         ),
     )
     assert_error(
         "build managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-\n      - name: Install zig",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n      - name: Install zig",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-\n      - name: Install zig",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-build-aarch64-release-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - name: Install zig",
         ),
     )
     # #400 parser tightness: the inline-scalar form of restore-keys is a valid
@@ -1591,8 +3693,8 @@ def main() -> int:
     assert_clean(
         workflow=replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
-            "      - uses: actions/cache@example\n        name: \"Cache with restore-keys: probe\"\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "      - uses: actions/cache@example\n        name: \"Cache with restore-keys: probe\"\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
         ),
     )
     assert_error(
@@ -1812,6 +3914,76 @@ def main() -> int:
         ),
     )
     assert_error(
+        "gate must check same-sha-main-evidence success",
+        replace_once(
+            BASE_WORKFLOW,
+            '          if [[ "$tag_ref" == "true" ]]; then\n',
+            '          if [[ "$tag_ref" == "true" ]]; then\n            exit 0\n',
+        ),
+    )
+    assert_error(
+        "gate must check same-sha-main-evidence skip on non-tag",
+        replace_once(
+            BASE_WORKFLOW,
+            '          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
+            '          exit 0\n          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
+        ),
+    )
+    assert_error(
+        "gate must require fmt-check skipped on tag reuse",
+        replace_once(
+            BASE_WORKFLOW,
+            '            if [[ "${{ needs.fmt-check.result }}" != "skipped" ]]; then\n              exit 1\n',
+            '            if [[ "${{ needs.fmt-check.result }}" != "skipped" ]]; then\n              true && exit 0\n              exit 1\n',
+        ),
+    )
+    assert_error(
+        "gate must require deny skipped on tag reuse",
+        replace_once(
+            BASE_WORKFLOW,
+            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              exit 1\n',
+            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              echo "deny failed" && exit 0\n              exit 1\n',
+        ),
+    )
+    assert_error(
+        "gate must require deny skipped on tag reuse",
+        replace_once(
+            BASE_WORKFLOW,
+            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              exit 1\n',
+            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              true || exit 1\n',
+        ),
+    )
+    assert_error(
+        "gate must require deny skipped on tag reuse",
+        replace_once(
+            BASE_WORKFLOW,
+            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              exit 1\n',
+            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              echo \\\n              exit 1\n',
+        ),
+    )
+    assert_error(
+        "gate must check same-sha-main-evidence skip on non-tag",
+        replace_once(
+            BASE_WORKFLOW,
+            '          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
+            '          true && exit 0\n          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
+        ),
+    )
+    check_aarch64_condition = '"${{ needs.check-aarch64.result }}" != "success"'
+    tag_check = BASE_WORKFLOW.find(check_aarch64_condition)
+    standard_check = BASE_WORKFLOW.find(check_aarch64_condition, tag_check + len(check_aarch64_condition))
+    if tag_check < 0 or standard_check < 0:
+        raise AssertionError("gate check-aarch64 fixture must include tag and standard topology checks")
+    assert_error(
+        "gate must check needs.check-aarch64.result",
+        BASE_WORKFLOW[:standard_check]
+        + BASE_WORKFLOW[standard_check:].replace(
+            check_aarch64_condition,
+            '"${{ omitted.check-aarch64.result }}" != "success"',
+            1,
+        ),
+    )
+    assert_error(
         "ci.yml build must resolve artifact through rust_verification_owner binary-path",
         replace_once(
             BASE_WORKFLOW,
@@ -1948,6 +4120,46 @@ def main() -> int:
             BASE_WORKFLOW,
             "      - run: just deny",
             """      - run: |
+          cargo --manifest-path Cargo.toml install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo --target x86_64-unknown-linux-gnu install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo --ignore-rust-version install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          cargo -Zunstable-options install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
           cargo +stable install cargo-deny --locked
           just deny""",
         ),
@@ -2019,6 +4231,36 @@ def main() -> int:
             BASE_WORKFLOW,
             "      - run: just deny",
             """      - run: |
+          rustup run stable cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          /tmp/builder install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          docker run --rm rust:latest cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
           RUSTFLAGS= cargo install cargo-deny --locked
           just deny""",
         ),
@@ -2080,6 +4322,66 @@ def main() -> int:
             "      - run: just deny",
             """      - run: |
           sudo --background cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          flock -o /tmp/bolt.lock cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          flock -c 'cargo install cargo-deny --locked' /tmp/bolt.lock
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          su user -c 'cargo install cargo-deny --locked'
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          runuser -u user -- cargo install cargo-deny --locked
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sg group -c 'cargo install cargo-deny --locked'
+          just deny""",
+        ),
+    )
+    assert_error(
+        "ci.yml deny must not compile cargo-deny from source",
+        replace_once(
+            BASE_WORKFLOW,
+            "      - run: just deny",
+            """      - run: |
+          sudo flock -o /tmp/bolt.lock cargo install cargo-deny --locked
           just deny""",
         ),
     )
@@ -2279,7 +4581,7 @@ def main() -> int:
           mkdir -p "$HOME/.cargo/bin"
           mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
           chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          cargo-zigbuild --version""",
+          test -x "$HOME/.cargo/bin/cargo-zigbuild\"""",
             '          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked',
         ),
     )
@@ -2405,7 +4707,7 @@ def main() -> int:
           mkdir -p "$HOME/.cargo/bin"
           mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
           chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          cargo-zigbuild --version
+          test -x "$HOME/.cargo/bin/cargo-zigbuild"
       - run: just build""",
             """      - run: just build
       - name: Install cargo-zigbuild
@@ -2430,7 +4732,7 @@ def main() -> int:
           mkdir -p "$HOME/.cargo/bin"
           mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
           chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          cargo-zigbuild --version""",
+          test -x "$HOME/.cargo/bin/cargo-zigbuild\"""",
         ),
     )
     assert_workflows_error(
@@ -2666,8 +4968,8 @@ def main() -> int:
         "clippy must use setup.outputs.managed_target_dir",
         replace_once(
             BASE_WORKFLOW,
-            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile') }}",
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}",
         ),
     )
     assert_error(
@@ -2790,6 +5092,8 @@ def main() -> int:
             "      # if: ${{ inputs.include-managed-target-dir == 'true' }}",
         ),
     )
+    assert_v6_deploy_artifact_s3_stays_allowed()
+    assert_v6_red_workflow_policy_gaps()
     print("OK: CI workflow hygiene verifier self-tests passed.")
     return 0
 

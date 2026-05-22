@@ -80,7 +80,7 @@ As the operator, I can prove every known disk-writing surface is inventoried and
 - **FR-001**: The repo MUST preserve a MECE child-issue map for #123 covering #48, #70, #124, #125, #286, #374, #375, #376, and #377.
 - **FR-002**: Each issue entry MUST state whether it is an investigation anchor, implementation owner, closed resolved-by-investigation track, or out-of-repo implementation dependency.
 - **FR-003**: The repo MUST define a 1:1 issue-to-PR plan for implementation owners; if a PR cannot map 1:1, the issue must be decomposed or the PR scope must be broadened explicitly before coding.
-- **FR-004**: #374 implementation MUST NOT start until a Phase 1 MECE enumeration covers cargo invocation launchers, env state, invocation forms, cwd classes, and targets with explicit gap/overlap review.
+- **FR-004**: #374 implementation MUST NOT start until a Phase 1 MECE enumeration covers cargo invocation launchers, env state, invocation forms, cwd classes, targets, and destructive cargo subcommands such as `cargo clean`, with explicit gap/overlap review.
 - **FR-005**: #375 implementation MUST NOT start until a Phase 1 MECE enumeration covers developer tools, exact written paths, growth shape, native rotation support, and ownership.
 - **FR-006**: #377 implementation MUST NOT start until a Phase 1 MECE enumeration covers known-owned classes, unbounded known classes, future-class dimensions, operator interface, and detection failure modes.
 - **FR-007**: #286 is complete via PR #404 and MUST remain the managed Rust cache status/pruning policy source for per-subtree size, recency, current free disk, active-process refusal, dry-run default, and explicit apply mode.
@@ -115,7 +115,7 @@ As the operator, I can prove every known disk-writing surface is inventoried and
 
 ## Assumptions
 
-- `origin/main` at `400dac8acc8ec04fc7b4aefc41bab10390d6404f` is the fetched source of truth for this planning slice as of 2026-05-20.
+- PR #404 merge commit `400dac8acc8ec04fc7b4aefc41bab10390d6404f` is the #286 completion evidence for this planning slice; current PR review evidence must use the live PR base/head.
 - Issue bodies and comments fetched on 2026-05-18 are authoritative for current #123 scope.
 - #286 is closed by PR #404; wrapper edge residuals found during #404 review are tracked by #374, not by re-opening #286.
 - Implementation that changes local Claude/Codex runtime belongs in `claude-config` unless a bolt-v2 repo artifact is explicitly required.

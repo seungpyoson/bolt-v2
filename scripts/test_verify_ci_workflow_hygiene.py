@@ -876,6 +876,26 @@ def assert_pin_consistency_rejects_mutable_tag() -> None:
         )
 
 
+def assert_pin_consistency_ignores_non_uses_mentions() -> None:
+    """Mentioning the action outside a `uses:` key must not be treated as a pin."""
+    verifier = load_verifier()
+    workflow = f"""
+name: mention probe
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: documents taiki-e/install-action@v2 without invoking it
+        run: echo ok
+      - uses: taiki-e/install-action@{PIN_CONSISTENCY_SHA_BASE}
+"""
+    errors = verifier.verify_install_action_pin_consistency({"ci.yml": workflow})
+    if errors:
+        raise AssertionError(
+            f"non-uses mentions must not produce install-action pin errors, got: {errors!r}"
+        )
+
+
 def assert_pin_consistency_accepts_uppercase_sha() -> None:
     """Finding 3: uppercase hex SHAs must be detected AND normalized to lowercase."""
     verifier = load_verifier()
@@ -1140,6 +1160,10 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
             printf 'DEST=%s\\n' "s3://bolt-v2-active-cache/target" >> "$GITHUB_ENV"
             aws s3 sync target "$DEST"
         """,
+        "active target hidden behind second printf github env assignment": """
+            printf 'BENIGN=dist\\nSRC=target\\n' >> "$GITHUB_ENV"
+            aws s3 sync "$SRC" s3://bolt-v2-active-cache/cache
+        """,
         "active target copied through neutral staging path": """
             mkdir /tmp/deploy
             cp -r target/debug /tmp/deploy/
@@ -1153,6 +1177,9 @@ def assert_v6_red_s3_storage_transfer_policy_is_semantic() -> None:
         """,
         "active target streamed through clustered tar stdout flag": """
             tar -czf- target | aws s3 cp - s3://bolt-v2-active-cache/target.tar.gz
+        """,
+        "active target streamed through traditional tar stdout flag": """
+            tar cf - target | aws s3 cp - s3://bolt-v2-active-cache/target.tar
         """,
         "active target streamed through tar long file stdout flag": """
             tar -c --file=- target | aws s3 cp - s3://bolt-v2-active-cache/target.tar.gz
@@ -3016,6 +3043,7 @@ def main() -> int:
     assert_pin_consistency_cross_file_mismatch_errors()
     assert_pin_consistency_same_sha_no_error()
     assert_pin_consistency_rejects_mutable_tag()
+    assert_pin_consistency_ignores_non_uses_mentions()
     assert_pin_consistency_accepts_uppercase_sha()
     assert_pin_consistency_intra_file_mismatch_uses_pin_drift_wording()
     assert_pin_consistency_rejects_multi_line_mutable_tag()

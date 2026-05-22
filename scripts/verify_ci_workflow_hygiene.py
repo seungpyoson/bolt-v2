@@ -293,18 +293,16 @@ BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner 
 #     check can normalize via .lower() rather than silently rejecting valid
 #     uppercase pins. The SHA is captured in group(2); group(1) is the
 #     (possibly empty) opening quote used by the backreference.
-#   * TAIKI_INSTALL_ACTION_MENTION_RE is a broad detector for any cleaned
-#     line that mentions `taiki-e/install-action@` at all — whether the
-#     `uses:` token sits on the same line (single-line form) or on a
-#     preceding line (YAML multi-line scalar form). The consistency check
-#     uses it to surface every reference, then requires the line to match
-#     the strict single-line pinned form; anything else (mutable tag,
-#     mismatched quotes, multi-line scalar) is reported with a precise
-#     file:line.
+#   * TAIKI_INSTALL_ACTION_MENTION_RE finds candidate action refs, while
+#     the uses-key regexes scope those candidates to real `uses:` values.
+#     This preserves mutable-tag and multi-line-scalar rejection without
+#     treating prose in `name:`/comments as an action invocation.
 TAIKI_INSTALL_ACTION_RE = re.compile(
     r"""^\s*(?:-\s*)?uses:\s*(['"]?)taiki-e/install-action@([0-9a-fA-F]{40})\1\s*$"""
 )
 TAIKI_INSTALL_ACTION_MENTION_RE = re.compile(r"\btaiki-e/install-action@")
+TAIKI_INSTALL_ACTION_USES_LINE_RE = re.compile(r"^\s*(?:-\s*)?uses\s*:")
+TAIKI_INSTALL_ACTION_BARE_USES_KEY_RE = re.compile(r"^\s*(?:-\s*)?uses\s*:\s*$")
 CI_INSTALL_ACTION_TOOLS = {
     "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
@@ -3749,6 +3747,19 @@ def record_active_copy_paths(
 def tar_writes_archive_to_stdout(tail: list[str]) -> bool:
     creates_archive = False
     for index, token in enumerate(tail):
+        if (
+            token
+            and not token.startswith("-")
+            and "c" in token
+            and all(char.isalnum() or char == "-" for char in token)
+        ):
+            creates_archive = True
+            if "f" in token:
+                suffix = token.split("f", 1)[1]
+                if suffix:
+                    return suffix == "-"
+                return index + 1 < len(tail) and tail[index + 1] == "-"
+            continue
         if token in {"c", "-c", "--create"}:
             creates_archive = True
             continue
@@ -3850,11 +3861,9 @@ def storage_assignment_values(text: str) -> list[tuple[str, str]]:
         match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$", clean)
         if match:
             assignments.append((match.group(1), match.group(2)))
-            continue
-        github_env_assignment = github_env_assignment_line(clean)
-        if github_env_assignment is not None:
-            name, value = github_env_assignment.split("=", 1)
-            assignments.append((name, value))
+    for github_env_assignment in github_env_assignment_lines(text):
+        name, value = github_env_assignment.split("=", 1)
+        assignments.append((name, value))
     return assignments
 
 
@@ -5925,9 +5934,16 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
     errors: list[str] = []
     sha_to_files: dict[str, list[str]] = {}
     for workflow_name, workflow_text in workflows.items():
+        previous_line_was_bare_uses_key = False
         for line_index, line in enumerate(workflow_text.splitlines(), start=1):
             clean = strip_comment(line)
-            if not TAIKI_INSTALL_ACTION_MENTION_RE.search(clean):
+            mentions_install_action = bool(TAIKI_INSTALL_ACTION_MENTION_RE.search(clean))
+            scoped_to_uses_value = (
+                bool(TAIKI_INSTALL_ACTION_USES_LINE_RE.match(clean))
+                or previous_line_was_bare_uses_key
+            )
+            previous_line_was_bare_uses_key = bool(TAIKI_INSTALL_ACTION_BARE_USES_KEY_RE.match(clean))
+            if not mentions_install_action or not scoped_to_uses_value:
                 continue
             match = TAIKI_INSTALL_ACTION_RE.match(clean)
             if match is None:

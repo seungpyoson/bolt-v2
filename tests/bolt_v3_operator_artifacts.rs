@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 
 use bolt_v2::{
-    bolt_v3_config::{LiveCanaryBlock, load_bolt_v3_config},
+    bolt_v3_config::{LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, load_bolt_v3_config},
     bolt_v3_market_families::updown::updown_market_slug,
     bolt_v3_operator_artifacts::build_redacted_ssm_manifest,
     bolt_v3_tiny_canary_evidence::{
@@ -581,6 +581,525 @@ fn static_operator_artifacts_report_market_selection_blocker_until_runtime_proof
 }
 
 #[test]
+fn approval_packet_assembly_refuses_static_manifest_with_blockers() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let approval_envelope_path = operator_evidence.approval_envelope_path.clone();
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence);
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        Vec::new(),
+        vec!["strategy-input remains blocked at /bolt/not-a-real-secret-path"],
+    );
+    let operator_packet_path = temp.path().join("operator-evidence-packet.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+        &loaded,
+        &manifest_path,
+        &operator_packet_path,
+    )
+    .expect_err("static manifest blockers should fail closed");
+
+    assert!(
+        error.to_string().contains("static manifest blockers"),
+        "error should name static manifest blockers: {error}"
+    );
+    assert!(
+        !error.to_string().contains("/bolt/not-a-real-secret-path"),
+        "blocker diagnostics must not echo supplied unsafe text: {error}"
+    );
+    assert!(
+        !std::path::Path::new(&approval_envelope_path).exists(),
+        "blocked assembly must not write approval envelope"
+    );
+    assert!(
+        !operator_packet_path.exists(),
+        "blocked assembly must not write operator packet"
+    );
+}
+
+#[test]
+fn approval_packet_assembly_rejects_static_manifest_integrity_gaps() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence.clone());
+
+    for (case_name, mutate) in [
+        (
+            "missing strategy-input",
+            Box::new(
+                |refs: &mut Vec<serde_json::Value>,
+                 _loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+                 _operator_evidence: &LiveCanaryOperatorEvidenceBlock| {
+                    refs.retain(|artifact| artifact["name"] != "strategy-input");
+                },
+            )
+                as Box<
+                    dyn FnOnce(
+                        &mut Vec<serde_json::Value>,
+                        &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+                        &LiveCanaryOperatorEvidenceBlock,
+                    ),
+                >,
+        ),
+        (
+            "path mismatch",
+            Box::new(
+                |refs: &mut Vec<serde_json::Value>,
+                 _loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+                 _operator_evidence: &LiveCanaryOperatorEvidenceBlock| {
+                    refs.iter_mut()
+                        .find(|artifact| artifact["name"] == "pre-run-state")
+                        .expect("pre-run-state artifact should exist")["path"] =
+                        serde_json::json!("/bolt/not-a-real-secret-path");
+                },
+            ),
+        ),
+        (
+            "sha mismatch",
+            Box::new(
+                |refs: &mut Vec<serde_json::Value>,
+                 _loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+                 _operator_evidence: &LiveCanaryOperatorEvidenceBlock| {
+                    refs.iter_mut()
+                        .find(|artifact| artifact["name"] == "abort-plan")
+                        .expect("abort artifact should exist")["sha256"] =
+                        serde_json::json!("0".repeat(64));
+                },
+            ),
+        ),
+        (
+            "file hash mismatch",
+            Box::new(
+                |_refs: &mut Vec<serde_json::Value>,
+                 _loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+                 operator_evidence: &LiveCanaryOperatorEvidenceBlock| {
+                    std::fs::write(
+                        &operator_evidence.financial_envelope_path,
+                        b"different-artifact-bytes",
+                    )
+                    .expect("test artifact should mutate");
+                },
+            ),
+        ),
+        (
+            "config drift",
+            Box::new(
+                |_refs: &mut Vec<serde_json::Value>,
+                 loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+                 _operator_evidence: &LiveCanaryOperatorEvidenceBlock| {
+                    loaded.config_bundle_checksum = sha256_text("different-config-bundle");
+                },
+            ),
+        ),
+    ] {
+        let case_dir = temp.path().join(case_name.replace(' ', "-"));
+        std::fs::create_dir_all(&case_dir).expect("case dir should create");
+        let manifest_path = case_dir.join("static-artifacts-manifest.json");
+        let mut case_refs = refs.clone();
+        let mut case_loaded = loaded.clone();
+        mutate(&mut case_refs, &mut case_loaded, &operator_evidence);
+        write_static_artifacts_manifest_for_test(
+            &manifest_path,
+            &loaded.config_bundle_checksum,
+            case_refs,
+            Vec::new(),
+        );
+        let operator_packet_path = case_dir.join("operator-evidence-packet.json");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+                &case_loaded,
+                &manifest_path,
+                &operator_packet_path,
+            )
+            .expect_err("manifest integrity gap should fail closed");
+
+        assert!(
+            error.to_string().contains("static manifest"),
+            "{case_name} error should cite static manifest: {error}"
+        );
+        assert!(
+            !error.to_string().contains("/bolt/not-a-real-secret-path"),
+            "{case_name} error must not echo supplied unsafe path: {error}"
+        );
+        assert!(
+            !operator_packet_path.exists(),
+            "{case_name} must not leave operator packet"
+        );
+    }
+}
+
+#[test]
+fn approval_packet_assembly_writes_non_circular_envelope_from_existing_refs() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence.clone());
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs,
+        Vec::new(),
+    );
+    let operator_packet_path = temp.path().join("operator-evidence-packet.json");
+
+    let outcome =
+        bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+            &loaded,
+            &manifest_path,
+            &operator_packet_path,
+        )
+        .expect("blocker-free manifest should assemble packet");
+
+    let envelope_text = std::fs::read_to_string(&operator_evidence.approval_envelope_path)
+        .expect("approval envelope should read");
+    let envelope: serde_json::Value =
+        serde_json::from_str(&envelope_text).expect("approval envelope should parse");
+    assert_eq!(envelope["record_kind"], "phase8_operator_approval_envelope");
+    assert_eq!(envelope["head_sha"], operator_evidence.head_sha);
+    assert_eq!(
+        envelope["ssm_manifest_sha256"],
+        operator_evidence.ssm_manifest_sha256
+    );
+    assert_eq!(
+        envelope["strategy_input_evidence_sha256"],
+        operator_evidence.strategy_input_evidence_sha256
+    );
+    assert_eq!(
+        envelope["financial_envelope_sha256"],
+        operator_evidence.financial_envelope_sha256
+    );
+    assert_eq!(
+        envelope["pre_run_state_sha256"],
+        operator_evidence.pre_run_state_sha256
+    );
+    assert_eq!(
+        envelope["abort_plan_sha256"],
+        operator_evidence.abort_plan_sha256
+    );
+    assert_eq!(
+        envelope["approval_nonce_sha256"],
+        operator_evidence.approval_nonce_sha256
+    );
+    assert_eq!(
+        envelope["approval_id_hash"],
+        sha256_text(
+            &loaded
+                .root
+                .live_canary
+                .as_ref()
+                .expect("live canary should exist")
+                .approval_id
+        )
+    );
+    assert_eq!(
+        envelope["canary_evidence_path_hash"],
+        sha256_text(&operator_evidence.canary_evidence_path)
+    );
+
+    for forbidden in [
+        "approval_envelope_sha256",
+        "root_toml_sha256",
+        "config_bundle_checksum",
+        "operator_approval_id",
+        "raw_nonce",
+        "nonce_material",
+    ] {
+        assert!(
+            envelope.get(forbidden).is_none(),
+            "approval envelope must not contain circular or raw field {forbidden}"
+        );
+        assert!(
+            !envelope_text.contains(forbidden),
+            "approval envelope text must not contain forbidden field {forbidden}"
+        );
+    }
+    assert!(
+        envelope.get("approval_id").is_none(),
+        "approval envelope must not contain raw approval_id field"
+    );
+    assert!(
+        !envelope_text.contains(
+            &loaded
+                .root
+                .live_canary
+                .as_ref()
+                .expect("live canary should exist")
+                .approval_id
+        ),
+        "approval envelope must hash, not print, operator approval id"
+    );
+    assert!(!envelope_text.contains("/bolt/"));
+
+    let operator_packet_text =
+        std::fs::read_to_string(&operator_packet_path).expect("operator packet should read");
+    let operator_packet: serde_json::Value =
+        serde_json::from_str(&operator_packet_text).expect("operator packet should parse");
+    assert_eq!(
+        operator_packet["record_kind"],
+        "bolt_v3.operator_evidence_packet.v1"
+    );
+    assert_eq!(
+        operator_packet["config_bundle_checksum"],
+        loaded.config_bundle_checksum
+    );
+    assert_eq!(
+        operator_packet["static_manifest_sha256"],
+        outcome.static_manifest.sha256
+    );
+    assert_eq!(
+        operator_packet["live_canary_operator_evidence"]["approval_envelope_sha256"],
+        outcome.approval_envelope.sha256
+    );
+    assert_eq!(
+        operator_packet["live_canary_operator_evidence"]["ssm_manifest_sha256"],
+        operator_evidence.ssm_manifest_sha256
+    );
+    for forbidden in [
+        "max_operator_evidence_file_bytes",
+        "approval_consumption_max_age_seconds",
+        "approval_not_before_unix_seconds",
+        "approval_not_after_unix_seconds",
+    ] {
+        assert!(
+            operator_packet["live_canary_operator_evidence"]
+                .get(forbidden)
+                .is_none(),
+            "operator packet must not carry runtime policy/window field {forbidden}"
+        );
+        assert!(
+            !operator_packet_text.contains(forbidden),
+            "operator packet text must not carry runtime policy/window field {forbidden}"
+        );
+    }
+    assert!(
+        !operator_packet_text.contains("/bolt/"),
+        "operator packet must not print raw SSM parameter paths"
+    );
+    assert!(
+        !operator_packet_text.contains("secret_sentinel"),
+        "operator packet must not copy artifact contents"
+    );
+    assert!(
+        !operator_packet_text.contains(
+            &loaded
+                .root
+                .live_canary
+                .as_ref()
+                .expect("live canary should exist")
+                .approval_id
+        ),
+        "operator packet must not print raw approval id"
+    );
+}
+
+#[test]
+fn approval_packet_assembly_redacts_invalid_hash_values_from_errors() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence);
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs,
+        Vec::new(),
+    );
+    let secret_like_value = "/bolt/not-a-real-secret-path";
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("operator evidence should exist")
+        .approval_nonce_sha256 = secret_like_value.to_string();
+    let operator_packet_path = temp.path().join("operator-evidence-packet.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+        &loaded,
+        &manifest_path,
+        &operator_packet_path,
+    )
+    .expect_err("invalid hash shape should fail closed");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("approval_nonce_sha256"),
+        "hash shape error should name field: {message}"
+    );
+    assert!(
+        !message.contains(secret_like_value),
+        "hash shape error must not echo invalid value: {message}"
+    );
+    assert!(
+        !operator_packet_path.exists(),
+        "invalid hash shape must not leave operator packet"
+    );
+}
+
+#[test]
+fn approval_packet_assembly_rejects_invalid_output_paths_before_writes() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    let approval_envelope_path = operator_evidence.approval_envelope_path.clone();
+    operator_evidence.approval_envelope_path = "../approval-envelope.json".to_string();
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence);
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs,
+        Vec::new(),
+    );
+    let operator_packet_path = temp.path().join("operator-evidence-packet.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+        &loaded,
+        &manifest_path,
+        &operator_packet_path,
+    )
+    .expect_err("parent-dir output path should fail closed");
+
+    assert!(
+        error.to_string().contains("approval_envelope_path"),
+        "path-shape error should name approval envelope path: {error}"
+    );
+    assert!(
+        !std::path::Path::new(&approval_envelope_path).exists(),
+        "invalid output path must not leave original approval envelope"
+    );
+    assert!(
+        !operator_packet_path.exists(),
+        "invalid output path must not leave operator packet"
+    );
+}
+
+#[test]
+fn approval_packet_assembly_rejects_output_path_collision_before_writes() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    let approval_envelope_path = operator_evidence.approval_envelope_path.clone();
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence);
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs,
+        Vec::new(),
+    );
+    let operator_packet_path = std::path::PathBuf::from(&approval_envelope_path);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+        &loaded,
+        &manifest_path,
+        &operator_packet_path,
+    )
+    .expect_err("colliding output paths should fail closed");
+
+    assert!(
+        error.to_string().contains("output path"),
+        "path-collision error should name output path issue: {error}"
+    );
+    assert!(
+        !std::path::Path::new(&approval_envelope_path).exists(),
+        "colliding outputs must not leave approval envelope"
+    );
+}
+
+#[test]
+fn approval_packet_assembly_rejects_equivalent_output_path_collision_before_writes() {
+    let mut loaded = load_fixture_with_live_canary();
+    let current_dir = std::env::current_dir().expect("current dir should resolve");
+    let temp = tempfile::Builder::new()
+        .prefix("t128-output-collision-")
+        .tempdir_in(&current_dir)
+        .expect("repo-local tempdir should create");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    let approval_envelope_path =
+        std::path::PathBuf::from(&operator_evidence.approval_envelope_path);
+    loaded.root_path = current_dir.join("root.toml");
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence);
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs,
+        Vec::new(),
+    );
+    let operator_packet_path = temp
+        .path()
+        .strip_prefix(&current_dir)
+        .expect("temp path should be cwd-relative")
+        .join("approval-envelope.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+        &loaded,
+        &manifest_path,
+        &operator_packet_path,
+    )
+    .expect_err("equivalent output paths should fail closed before writes");
+
+    assert!(
+        error.to_string().contains("output path"),
+        "equivalent path-collision error should name output path issue: {error}"
+    );
+    assert!(
+        !approval_envelope_path.exists(),
+        "equivalent colliding outputs must not leave approval envelope"
+    );
+}
+
+#[test]
 fn market_selection_source_builder_binds_configured_target_to_nt_instruments() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded
@@ -953,6 +1472,175 @@ fn assert_manifest_entry(
         })
         .expect("expected redacted SSM manifest entry");
     assert_eq!(entry.ssm_path_sha256, sha256_text(ssm_path));
+}
+
+fn test_operator_evidence_packet_bindings(
+    dir: &std::path::Path,
+) -> LiveCanaryOperatorEvidenceBlock {
+    LiveCanaryOperatorEvidenceBlock {
+        head_sha: "1234567890abcdef1234567890abcdef12345678".to_string(),
+        max_operator_evidence_file_bytes: 4096,
+        approval_consumption_max_age_seconds: 60,
+        approval_envelope_path: dir
+            .join("approval-envelope.json")
+            .to_string_lossy()
+            .to_string(),
+        approval_envelope_sha256: "0".repeat(64),
+        ssm_manifest_path: dir.join("ssm-manifest.json").to_string_lossy().to_string(),
+        ssm_manifest_sha256: String::new(),
+        strategy_input_evidence_path: dir
+            .join("strategy-input.json")
+            .to_string_lossy()
+            .to_string(),
+        strategy_input_evidence_sha256: String::new(),
+        financial_envelope_path: dir
+            .join("financial-envelope.json")
+            .to_string_lossy()
+            .to_string(),
+        financial_envelope_sha256: String::new(),
+        pre_run_state_path: dir.join("pre-run-state.json").to_string_lossy().to_string(),
+        pre_run_state_sha256: String::new(),
+        abort_plan_path: dir.join("abort-plan.json").to_string_lossy().to_string(),
+        abort_plan_sha256: String::new(),
+        canary_evidence_path: dir
+            .join("canary-evidence.json")
+            .to_string_lossy()
+            .to_string(),
+        approval_not_before_unix_seconds: 1_900_000_000,
+        approval_not_after_unix_seconds: 1_900_000_300,
+        approval_nonce_path: dir
+            .join("approval-nonce.json")
+            .to_string_lossy()
+            .to_string(),
+        approval_nonce_sha256: String::new(),
+        approval_consumption_path: dir
+            .join("approval-consumed.json")
+            .to_string_lossy()
+            .to_string(),
+        decision_evidence_path: dir
+            .join("decision-evidence.jsonl")
+            .to_string_lossy()
+            .to_string(),
+        nt_submit_event_path: dir
+            .join("nt-submit-event.json")
+            .to_string_lossy()
+            .to_string(),
+        venue_order_state_path: dir
+            .join("venue-order-state.json")
+            .to_string_lossy()
+            .to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: dir
+            .join("restart-reconciliation.json")
+            .to_string_lossy()
+            .to_string(),
+        post_run_hygiene_path: dir
+            .join("post-run-hygiene.json")
+            .to_string_lossy()
+            .to_string(),
+    }
+}
+
+fn write_required_static_artifacts_for_test(
+    dir: &std::path::Path,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+) -> Vec<serde_json::Value> {
+    let bindings = [
+        (
+            "ssm-manifest",
+            operator_evidence.ssm_manifest_path.as_str(),
+            "redacted-ssm-manifest",
+        ),
+        (
+            "strategy-input",
+            operator_evidence.strategy_input_evidence_path.as_str(),
+            "strategy-input-evidence",
+        ),
+        (
+            "financial-envelope",
+            operator_evidence.financial_envelope_path.as_str(),
+            "financial-envelope",
+        ),
+        (
+            "pre-run-state",
+            operator_evidence.pre_run_state_path.as_str(),
+            "pre-run-state",
+        ),
+        (
+            "abort-plan",
+            operator_evidence.abort_plan_path.as_str(),
+            "abort-plan",
+        ),
+        (
+            "approval-nonce",
+            operator_evidence.approval_nonce_path.as_str(),
+            "approval-nonce",
+        ),
+    ];
+    let refs: Vec<_> = bindings
+        .iter()
+        .map(|(name, path, marker)| {
+            let path = std::path::Path::new(path);
+            assert!(
+                path.starts_with(dir),
+                "test artifact path should stay under temp dir"
+            );
+            let bytes = serde_json::to_vec(&serde_json::json!({
+                "record_kind": marker,
+                "secret_sentinel": "not-present",
+            }))
+            .expect("artifact should serialize");
+            std::fs::write(path, &bytes).expect("artifact should write");
+            serde_json::json!({
+                "name": name,
+                "path": path.to_string_lossy(),
+                "sha256": sha256_bytes(&bytes),
+            })
+        })
+        .collect();
+    for artifact in &refs {
+        let sha256 = artifact["sha256"]
+            .as_str()
+            .expect("test artifact sha should be string")
+            .to_string();
+        match artifact["name"]
+            .as_str()
+            .expect("test artifact name should be string")
+        {
+            "ssm-manifest" => operator_evidence.ssm_manifest_sha256 = sha256,
+            "strategy-input" => operator_evidence.strategy_input_evidence_sha256 = sha256,
+            "financial-envelope" => operator_evidence.financial_envelope_sha256 = sha256,
+            "pre-run-state" => operator_evidence.pre_run_state_sha256 = sha256,
+            "abort-plan" => operator_evidence.abort_plan_sha256 = sha256,
+            "approval-nonce" => operator_evidence.approval_nonce_sha256 = sha256,
+            other => panic!("unexpected artifact ref {other}"),
+        }
+    }
+    refs
+}
+
+fn write_static_artifacts_manifest_for_test(
+    manifest_path: &std::path::Path,
+    config_bundle_checksum: &str,
+    generated_artifacts: Vec<serde_json::Value>,
+    blockers: Vec<&str>,
+) {
+    let manifest = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.static_operator_artifacts_manifest.v1",
+        "config_bundle_checksum": config_bundle_checksum,
+        "generated_artifacts": generated_artifacts,
+        "blockers": blockers,
+    });
+    std::fs::write(
+        manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("manifest should serialize"),
+    )
+    .expect("manifest should write");
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn sha256_text(value: &str) -> String {

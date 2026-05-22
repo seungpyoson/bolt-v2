@@ -1033,7 +1033,7 @@ reason = "This names an optional TOML-owned operator evidence path while validat
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "number"
 literal = "1"
-context = "const APPROVAL_ENVELOPE_SCHEMA_VERSION: i64 = 1;"
+context = "pub const APPROVAL_ENVELOPE_SCHEMA_VERSION: i64 = 1;"
 classification = "approval_envelope_schema_version"
 reason = "This is the structural JSON schema version required for the non-circular approval-envelope file, not an operator runtime value."
 
@@ -1041,7 +1041,7 @@ reason = "This is the structural JSON schema version required for the non-circul
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
 literal = '''"phase8_operator_approval_envelope"'''
-context = '''const APPROVAL_ENVELOPE_RECORD_KIND: &str = "phase8_operator_approval_envelope";'''
+context = '''pub const APPROVAL_ENVELOPE_RECORD_KIND: &str = "phase8_operator_approval_envelope";'''
 classification = "approval_envelope_record_kind"
 reason = "This is the structural approval-envelope record-kind discriminator, not an operator runtime value."
 
@@ -4226,6 +4226,22 @@ reason = "This is the helper-owned output file name for the redacted static-arti
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const OPERATOR_EVIDENCE_PACKET_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the operator-evidence packet schema version emitted by the packet assembler, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.operator_evidence_packet.v1"'''
+context = '''const OPERATOR_EVIDENCE_PACKET_RECORD_KIND: &str = "bolt_v3.operator_evidence_packet.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for the path/SHA-only operator evidence packet, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"panic gate and service policy"'''
 context = '''prerequisite: "panic gate and service policy",'''
@@ -4263,6 +4279,102 @@ literal = '''"refusing to write market selection source evidence because {prereq
 context = '''"refusing to write market selection source evidence because {prerequisite}"'''
 classification = "operator_artifact_error_template"
 reason = "This is a fail-closed diagnostic template for missing market-selection evidence prerequisites, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"refusing to assemble operator packet because static manifest blockers are present: {count}"'''
+context = '''"refusing to assemble operator packet because static manifest blockers are present: {count}"'''
+classification = "operator_artifact_error_template"
+reason = "This is a fail-closed redacted diagnostic template for refusing packet assembly when the static manifest records blockers; it prints only the blocker count, not blocker text, and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"static manifest artifact `{name}` file hash mismatch at `{}`"'''
+context = '''"static manifest artifact `{name}` file hash mismatch at `{}`",'''
+classification = "operator_artifact_error_template"
+reason = "This is a fail-closed diagnostic template for artifact-file SHA drift during packet assembly, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"ssm_manifest_sha256"'''
+context = '''"ssm_manifest_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned redacted SSM manifest SHA field while validating packet assembly; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_sha256"'''
+context = '''"strategy_input_evidence_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned strategy-input evidence SHA field while validating packet assembly; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"financial_envelope_sha256"'''
+context = '''"financial_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned financial-envelope SHA field while validating packet assembly; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"pre_run_state_sha256"'''
+context = '''"pre_run_state_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned pre-run-state SHA field while validating packet assembly; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"abort_plan_sha256"'''
+context = '''"abort_plan_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned abort-plan SHA field while validating packet assembly; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_nonce_sha256"'''
+context = '''"approval_nonce_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned approval-nonce SHA field while validating packet assembly; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"static_manifest.generated_artifacts.sha256"'''
+context = '''"static_manifest.generated_artifacts.sha256",'''
+classification = "operator_artifact_schema_field"
+reason = "This names the static manifest artifact-ref SHA field while validating lowercase sha256 shape, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_envelope_path"'''
+context = '''"approval_envelope_path",'''
+classification = "operator_artifact_output_path_field"
+reason = "This names the TOML-owned approval-envelope output path while validating path shape before packet assembly writes, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"operator_packet_path"'''
+context = '''validate_output_path_components("operator_packet_path", operator_packet_path)?;'''
+classification = "operator_artifact_output_path_field"
+reason = "This names the assembler output packet path while validating path shape before packet assembly writes, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''64'''
+context = '''if value.len() == 64'''
+classification = "sha256_hex_width"
+reason = "This is the structural length of a SHA-256 hex digest used to validate operator evidence hashes, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

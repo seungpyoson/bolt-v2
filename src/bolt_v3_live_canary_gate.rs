@@ -18,7 +18,7 @@ use std::{
 
 use nautilus_model::identifiers::ActorId;
 use rust_decimal::Decimal;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -35,8 +35,8 @@ use crate::{
     },
 };
 
-const APPROVAL_ENVELOPE_SCHEMA_VERSION: i64 = 1;
-const APPROVAL_ENVELOPE_RECORD_KIND: &str = "phase8_operator_approval_envelope";
+pub const APPROVAL_ENVELOPE_SCHEMA_VERSION: i64 = 1;
+pub const APPROVAL_ENVELOPE_RECORD_KIND: &str = "phase8_operator_approval_envelope";
 
 /// Successful live canary gate evaluation.
 ///
@@ -907,23 +907,23 @@ fn validate_operator_evidence_head_sha(
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct Phase8OperatorApprovalEnvelopeFile {
-    schema_version: i64,
-    record_kind: String,
-    head_sha: String,
-    ssm_manifest_sha256: String,
-    strategy_input_evidence_sha256: String,
-    financial_envelope_sha256: String,
-    pre_run_state_sha256: String,
-    abort_plan_sha256: String,
-    approval_id_hash: String,
-    approval_nonce_sha256: String,
-    approval_not_before_unix_secs: i64,
-    approval_not_after_unix_secs: i64,
-    canary_evidence_path_hash: String,
-    strategy_cancel_path_hash: Option<String>,
+pub struct Phase8OperatorApprovalEnvelopeFile {
+    pub schema_version: i64,
+    pub record_kind: String,
+    pub head_sha: String,
+    pub ssm_manifest_sha256: String,
+    pub strategy_input_evidence_sha256: String,
+    pub financial_envelope_sha256: String,
+    pub pre_run_state_sha256: String,
+    pub abort_plan_sha256: String,
+    pub approval_id_hash: String,
+    pub approval_nonce_sha256: String,
+    pub approval_not_before_unix_secs: i64,
+    pub approval_not_after_unix_secs: i64,
+    pub canary_evidence_path_hash: String,
+    pub strategy_cancel_path_hash: Option<String>,
 }
 
 async fn validate_operator_evidence_file_hashes(

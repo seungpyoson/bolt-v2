@@ -1,5 +1,7 @@
 use std::{
-    env, fs,
+    env,
+    fmt::Display,
+    fs,
     io::{BufReader, Read, Write},
     path::{Path, PathBuf},
 };
@@ -1612,6 +1614,7 @@ struct Phase8FinancialEnvelopeEvidenceFile {
     max_live_order_count: u32,
     max_notional_per_order: String,
     strategy_instance_id: String,
+    oms_type: String,
     execution_client_id: String,
     configured_target_id: String,
     target_kind: String,
@@ -1735,6 +1738,7 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             max_live_order_count: live_canary.max_live_order_count,
             max_notional_per_order: live_canary.max_notional_per_order.clone(),
             strategy_instance_id: strategy.strategy_instance_id.clone(),
+            oms_type: nt_enum_variant_lowercase(strategy.oms_type),
             execution_client_id: strategy.execution_client_id.to_string(),
             configured_target_id: required_toml_string(target, stringify!(configured_target_id))?,
             target_kind: required_toml_string(target, stringify!(kind))?,
@@ -1887,6 +1891,9 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             return Err(financial_envelope_mismatch(stringify!(
                 strategy_instance_id
             )));
+        }
+        if self.oms_type != loaded.oms_type {
+            return Err(financial_envelope_mismatch(stringify!(oms_type)));
         }
         if self.execution_client_id != loaded.execution_client_id {
             return Err(financial_envelope_mismatch(stringify!(execution_client_id)));
@@ -2128,6 +2135,10 @@ impl Phase8FinancialEnvelopeEvidenceFile {
 
 fn financial_envelope_mismatch(field: &'static str) -> anyhow::Error {
     anyhow!("phase8 financial envelope `{field}` does not match loaded TOML")
+}
+
+fn nt_enum_variant_lowercase(value: impl Display) -> String {
+    value.to_string().to_ascii_lowercase()
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]

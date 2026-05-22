@@ -732,7 +732,7 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 
 - `max_live_order_count`: integer, must equal `1`
 - `max_notional_per_order`: decimal string matching `[live_canary].max_notional_per_order`
-- `strategy_instance_id`, `execution_client_id`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`: strings matching the loaded strategy/TOML
+- `strategy_instance_id`, `oms_type`, `execution_client_id`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`: strings matching the loaded strategy/TOML
 - `cadence_secs`, `retry_interval_secs`, `blocked_after_secs`: integer seconds matching the loaded target runtime
 - `market_selection_rule`: string matching the loaded target runtime
 - `price_to_beat_source`: string matching `[parameters.runtime].price_to_beat_source`

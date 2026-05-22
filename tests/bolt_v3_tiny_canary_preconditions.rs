@@ -17,6 +17,7 @@ use bolt_v2::{
         evaluate_phase8_canary_preflight,
     },
 };
+use nautilus_model::enums::OmsType;
 use rust_decimal::Decimal;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -2131,6 +2132,14 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
         .expect("strategy input evidence hash should compute");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should exist")
+        .max_notional_per_order = "5.00".to_string();
+    let approved_oms_type = oms_type_value(loaded.strategies[0].config.oms_type);
     let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
     std::fs::write(
         &financial_envelope_path,
@@ -2138,6 +2147,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "max_live_order_count": 1,
             "max_notional_per_order": "5.00",
             "strategy_instance_id": "bitcoin_updown_main",
+            "oms_type": approved_oms_type,
             "execution_client_id": "polymarket_main",
             "configured_target_id": "btc_updown_5m",
             "target_kind": "rotating_market",
@@ -2197,13 +2207,6 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
     let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
-    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
-    loaded
-        .root
-        .live_canary
-        .as_mut()
-        .expect("live canary should exist")
-        .max_notional_per_order = "5.00".to_string();
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
@@ -2324,6 +2327,29 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     assert!(
         !approval_consumption_path.exists(),
         "financial mismatch must not create consumption evidence"
+    );
+
+    let mut mismatched_oms_loaded = loaded.clone();
+    let approved_oms_type = mismatched_oms_loaded.strategies[0].config.oms_type;
+    mismatched_oms_loaded.strategies[0].config.oms_type = alternate_oms_type(approved_oms_type);
+    let mismatched_oms_error = envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &mismatched_oms_loaded,
+            1_500,
+        )
+        .expect_err("strategy OMS type mismatch against loaded TOML should fail closed");
+    assert!(
+        mismatched_oms_error
+            .to_string()
+            .contains("phase8 financial envelope `oms_type` does not match loaded TOML"),
+        "error should mention mismatched OMS type: {mismatched_oms_error}"
+    );
+    assert!(
+        !approval_consumption_path.exists(),
+        "OMS type mismatch must not create consumption evidence"
     );
 
     let mut mismatched_impact_loaded = loaded.clone();
@@ -3287,6 +3313,17 @@ fn loaded_with_live_canary(report_path: &str) -> LoadedBoltV3Config {
     loaded
 }
 
+fn alternate_oms_type(approved: OmsType) -> OmsType {
+    [OmsType::Netting, OmsType::Hedging]
+        .into_iter()
+        .find(|candidate| *candidate != approved)
+        .expect("NT OMS type alternatives should include a non-approved variant")
+}
+
+fn oms_type_value(oms_type: OmsType) -> String {
+    oms_type.to_string().to_ascii_lowercase()
+}
+
 fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -3324,10 +3361,13 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_order: &str) {
+    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    let approved_oms_type = oms_type_value(loaded.strategies[0].config.oms_type);
     let json = serde_json::json!({
         "max_live_order_count": 1,
         "max_notional_per_order": max_notional_per_order,
         "strategy_instance_id": "bitcoin_updown_main",
+        "oms_type": approved_oms_type,
         "execution_client_id": "polymarket_main",
         "configured_target_id": "btc_updown_5m",
         "target_kind": "rotating_market",

@@ -1654,6 +1654,20 @@ struct Phase8FinancialEnvelopeEvidenceFile {
     exit_is_post_only: bool,
     exit_is_reduce_only: bool,
     exit_is_quote_quantity: bool,
+    forced_exit_side: String,
+    forced_exit_position_side: String,
+    forced_exit_order_type: String,
+    forced_exit_time_in_force: String,
+    forced_exit_expire_time_unix_nanos: Option<i64>,
+    forced_exit_trigger_price: Option<f64>,
+    forced_exit_activation_price: Option<f64>,
+    forced_exit_trigger_type: Option<String>,
+    forced_exit_trigger_instrument_id: Option<String>,
+    forced_exit_trailing_offset: Option<f64>,
+    forced_exit_trailing_offset_type: Option<String>,
+    forced_exit_is_post_only: bool,
+    forced_exit_is_reduce_only: bool,
+    forced_exit_is_quote_quantity: bool,
 }
 
 impl Phase8FinancialEnvelopeEvidenceFile {
@@ -1710,6 +1724,12 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             .and_then(toml::Value::as_table)
             .ok_or_else(|| {
                 anyhow!("phase8 financial envelope strategy exit order must be a TOML table")
+            })?;
+        let forced_exit_order = parameters
+            .get(stringify!(forced_exit_order))
+            .and_then(toml::Value::as_table)
+            .ok_or_else(|| {
+                anyhow!("phase8 financial envelope strategy forced exit order must be a TOML table")
             })?;
         Ok(Self {
             max_live_order_count: live_canary.max_live_order_count,
@@ -1796,6 +1816,59 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             exit_is_post_only: required_toml_bool(exit_order, stringify!(is_post_only))?,
             exit_is_reduce_only: required_toml_bool(exit_order, stringify!(is_reduce_only))?,
             exit_is_quote_quantity: required_toml_bool(exit_order, stringify!(is_quote_quantity))?,
+            forced_exit_side: required_toml_string(forced_exit_order, stringify!(side))?,
+            forced_exit_position_side: required_toml_string(
+                forced_exit_order,
+                stringify!(position_side),
+            )?,
+            forced_exit_order_type: required_toml_string(
+                forced_exit_order,
+                stringify!(order_type),
+            )?,
+            forced_exit_time_in_force: required_toml_string(
+                forced_exit_order,
+                stringify!(time_in_force),
+            )?,
+            forced_exit_expire_time_unix_nanos: optional_toml_integer(
+                forced_exit_order,
+                stringify!(expire_time_unix_nanos),
+            )?,
+            forced_exit_trigger_price: optional_toml_float(
+                forced_exit_order,
+                stringify!(trigger_price),
+            )?,
+            forced_exit_activation_price: optional_toml_float(
+                forced_exit_order,
+                stringify!(activation_price),
+            )?,
+            forced_exit_trigger_type: optional_toml_string(
+                forced_exit_order,
+                stringify!(trigger_type),
+            )?,
+            forced_exit_trigger_instrument_id: optional_toml_string(
+                forced_exit_order,
+                stringify!(trigger_instrument_id),
+            )?,
+            forced_exit_trailing_offset: optional_toml_float(
+                forced_exit_order,
+                stringify!(trailing_offset),
+            )?,
+            forced_exit_trailing_offset_type: optional_toml_string(
+                forced_exit_order,
+                stringify!(trailing_offset_type),
+            )?,
+            forced_exit_is_post_only: required_toml_bool(
+                forced_exit_order,
+                stringify!(is_post_only),
+            )?,
+            forced_exit_is_reduce_only: required_toml_bool(
+                forced_exit_order,
+                stringify!(is_reduce_only),
+            )?,
+            forced_exit_is_quote_quantity: required_toml_bool(
+                forced_exit_order,
+                stringify!(is_quote_quantity),
+            )?,
         })
     }
 
@@ -1979,6 +2052,74 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         if self.exit_is_quote_quantity != loaded.exit_is_quote_quantity {
             return Err(financial_envelope_mismatch(stringify!(
                 exit_is_quote_quantity
+            )));
+        }
+        if self.forced_exit_side != loaded.forced_exit_side {
+            return Err(financial_envelope_mismatch(stringify!(forced_exit_side)));
+        }
+        if self.forced_exit_position_side != loaded.forced_exit_position_side {
+            return Err(financial_envelope_mismatch(stringify!(
+                forced_exit_position_side
+            )));
+        }
+        if self.forced_exit_order_type != loaded.forced_exit_order_type {
+            return Err(financial_envelope_mismatch(stringify!(
+                forced_exit_order_type
+            )));
+        }
+        if self.forced_exit_time_in_force != loaded.forced_exit_time_in_force {
+            return Err(financial_envelope_mismatch(stringify!(
+                forced_exit_time_in_force
+            )));
+        }
+        if self.forced_exit_expire_time_unix_nanos != loaded.forced_exit_expire_time_unix_nanos {
+            return Err(financial_envelope_mismatch(stringify!(
+                forced_exit_expire_time_unix_nanos
+            )));
+        }
+        if self.forced_exit_trigger_price != loaded.forced_exit_trigger_price {
+            return Err(financial_envelope_mismatch(stringify!(
+                forced_exit_trigger_price
+            )));
+        }
+        if self.forced_exit_activation_price != loaded.forced_exit_activation_price {
+            return Err(financial_envelope_mismatch(stringify!(
+                forced_exit_activation_price
+            )));
+        }
+        if self.forced_exit_trigger_type != loaded.forced_exit_trigger_type {
+            return Err(financial_envelope_mismatch(stringify!(
+                forced_exit_trigger_type
+            )));
+        }
+        if self.forced_exit_trigger_instrument_id != loaded.forced_exit_trigger_instrument_id {
+            return Err(financial_envelope_mismatch(stringify!(
+                forced_exit_trigger_instrument_id
+            )));
+        }
+        if self.forced_exit_trailing_offset != loaded.forced_exit_trailing_offset {
+            return Err(financial_envelope_mismatch(stringify!(
+                forced_exit_trailing_offset
+            )));
+        }
+        if self.forced_exit_trailing_offset_type != loaded.forced_exit_trailing_offset_type {
+            return Err(financial_envelope_mismatch(stringify!(
+                forced_exit_trailing_offset_type
+            )));
+        }
+        if self.forced_exit_is_post_only != loaded.forced_exit_is_post_only {
+            return Err(financial_envelope_mismatch(stringify!(
+                forced_exit_is_post_only
+            )));
+        }
+        if self.forced_exit_is_reduce_only != loaded.forced_exit_is_reduce_only {
+            return Err(financial_envelope_mismatch(stringify!(
+                forced_exit_is_reduce_only
+            )));
+        }
+        if self.forced_exit_is_quote_quantity != loaded.forced_exit_is_quote_quantity {
+            return Err(financial_envelope_mismatch(stringify!(
+                forced_exit_is_quote_quantity
             )));
         }
         Ok(())

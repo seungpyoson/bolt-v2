@@ -518,6 +518,15 @@
 - [x] T235 [US3] GREEN: Update the verifier and Speckit dependency note so Phase 34 is recorded as closed rather than an active blocker
 - [ ] T236 [US3] Verify schema-current tests, active verifier, formatting/diff checks, source fences, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
 
+## Phase 54: TDD Slice 50 - Forced-Exit Approval Envelope Binding
+
+**Goal**: Resolve exact-head no-mistakes evidence that Phase 8 approval envelopes bind entry and normal-exit order-shape fields but not the TOML-owned `forced_exit_order` introduced by Phase 47. The fix is live/canary approval-envelope hardening only; it must not change runtime order construction, add venue policy, or touch the shared order-intent layer.
+
+- [x] T237 [P] [US3] Record exact-head no-mistakes evidence for the forced-exit approval-envelope gap and the live/canary boundary decision
+- [x] T238 [US3] RED: Add an approval-envelope regression proving `forced_exit_order` drift can consume approval
+- [x] T239 [US3] GREEN: Bind required and optional `forced_exit_order` order-shape fields in `Phase8FinancialEnvelopeEvidenceFile`
+- [ ] T240 [US3] Verify focused tiny-canary tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -570,6 +579,7 @@
 - Phase 51 closes the TrailingStopMarket schema-default drift and equivalent-wording verifier gap; only terminal reviewer/no-mistakes state remains open in T228.
 - Phase 52 remains open until T233 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.
 - Phase 53 remains open until T236 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.
+- Phase 54 remains open until T240 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.
 
 ## Parallel Opportunities
 

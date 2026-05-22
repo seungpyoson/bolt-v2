@@ -2165,7 +2165,14 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "exit_time_in_force": "ioc",
             "exit_is_post_only": false,
             "exit_is_reduce_only": false,
-            "exit_is_quote_quantity": false
+            "exit_is_quote_quantity": false,
+            "forced_exit_side": "sell",
+            "forced_exit_position_side": "long",
+            "forced_exit_order_type": "market",
+            "forced_exit_time_in_force": "gtc",
+            "forced_exit_is_post_only": false,
+            "forced_exit_is_reduce_only": true,
+            "forced_exit_is_quote_quantity": false
         }))
         .expect("financial envelope should serialize"),
     )
@@ -2525,6 +2532,100 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         "exit order mismatch must not create consumption evidence"
     );
 
+    let mut mismatched_forced_exit_order_loaded = loaded.clone();
+    let exit_time_in_force = mismatched_forced_exit_order_loaded.strategies[0]
+        .config
+        .parameters
+        .as_table()
+        .and_then(|parameters| parameters.get("exit_order"))
+        .and_then(toml::Value::as_table)
+        .and_then(|exit_order| exit_order.get("time_in_force"))
+        .cloned()
+        .expect("strategy exit order time_in_force should exist");
+    let forced_exit_order = mismatched_forced_exit_order_loaded.strategies[0]
+        .config
+        .parameters
+        .as_table_mut()
+        .and_then(|parameters| parameters.get_mut("forced_exit_order"))
+        .and_then(toml::Value::as_table_mut)
+        .expect("strategy forced exit order parameters should be a TOML table");
+    forced_exit_order.insert("time_in_force".to_string(), exit_time_in_force);
+    let forced_exit_consumption_path = temp
+        .path()
+        .join("phase8-approval-consumed-forced-exit-order.json");
+    let mut mismatched_forced_exit_order_envelope = envelope.clone();
+    mismatched_forced_exit_order_envelope.approval_consumption_path =
+        forced_exit_consumption_path.to_string_lossy().to_string();
+    let mismatched_forced_exit_order_error = mismatched_forced_exit_order_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &mismatched_forced_exit_order_loaded,
+            1_500,
+        )
+        .expect_err("forced exit order drift against loaded TOML should fail closed");
+    assert!(
+        mismatched_forced_exit_order_error.to_string().contains(
+            "phase8 financial envelope `forced_exit_time_in_force` does not match loaded TOML"
+        ),
+        "error should mention mismatched forced exit order field: {mismatched_forced_exit_order_error}"
+    );
+    assert!(
+        !forced_exit_consumption_path.exists(),
+        "forced exit order drift must not create consumption evidence"
+    );
+
+    for (field_key, envelope_field, value) in [
+        (
+            "order_type",
+            "forced_exit_order_type",
+            toml::Value::String("limit".to_string()),
+        ),
+        (
+            "is_reduce_only",
+            "forced_exit_is_reduce_only",
+            toml::Value::Boolean(false),
+        ),
+    ] {
+        let mut mismatched_forced_exit_required_loaded = loaded.clone();
+        let forced_exit_order = mismatched_forced_exit_required_loaded.strategies[0]
+            .config
+            .parameters
+            .as_table_mut()
+            .and_then(|parameters| parameters.get_mut("forced_exit_order"))
+            .and_then(toml::Value::as_table_mut)
+            .expect("strategy forced exit order parameters should be a TOML table");
+        forced_exit_order.insert(field_key.to_string(), value);
+        let consumption_path = temp.path().join(format!(
+            "phase8-approval-consumed-forced-exit-order-{field_key}.json"
+        ));
+        let mut mismatched_forced_exit_required_envelope = envelope.clone();
+        mismatched_forced_exit_required_envelope.approval_consumption_path =
+            consumption_path.to_string_lossy().to_string();
+        let mismatched_forced_exit_required_error = mismatched_forced_exit_required_envelope
+            .validate_and_consume_against(
+                "expected-head",
+                "expected-config-hash",
+                "operator-approved-canary-001",
+                &mismatched_forced_exit_required_loaded,
+                1_500,
+            )
+            .expect_err("forced exit required order-shape drift should fail closed");
+        assert!(
+            mismatched_forced_exit_required_error
+                .to_string()
+                .contains(&format!(
+                    "phase8 financial envelope `{envelope_field}` does not match loaded TOML"
+                )),
+            "error should mention mismatched forced exit required field: {mismatched_forced_exit_required_error}"
+        );
+        assert!(
+            !consumption_path.exists(),
+            "forced exit required order-shape drift must not create consumption evidence"
+        );
+    }
+
     for (order_key, field_key, envelope_field, value) in [
         (
             "entry_order",
@@ -2608,6 +2709,48 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "exit_order",
             "trailing_offset_type",
             "exit_trailing_offset_type",
+            toml::Value::String("ticks".to_string()),
+        ),
+        (
+            "forced_exit_order",
+            "expire_time_unix_nanos",
+            "forced_exit_expire_time_unix_nanos",
+            toml::Value::Integer(4_102_444_800_000_000_000),
+        ),
+        (
+            "forced_exit_order",
+            "trigger_price",
+            "forced_exit_trigger_price",
+            toml::Value::Float(0.48),
+        ),
+        (
+            "forced_exit_order",
+            "activation_price",
+            "forced_exit_activation_price",
+            toml::Value::Float(0.47),
+        ),
+        (
+            "forced_exit_order",
+            "trigger_type",
+            "forced_exit_trigger_type",
+            toml::Value::String("default".to_string()),
+        ),
+        (
+            "forced_exit_order",
+            "trigger_instrument_id",
+            "forced_exit_trigger_instrument_id",
+            toml::Value::String("ETHUSDT.BINANCE".to_string()),
+        ),
+        (
+            "forced_exit_order",
+            "trailing_offset",
+            "forced_exit_trailing_offset",
+            toml::Value::Float(3.0),
+        ),
+        (
+            "forced_exit_order",
+            "trailing_offset_type",
+            "forced_exit_trailing_offset_type",
             toml::Value::String("ticks".to_string()),
         ),
     ] {
@@ -3212,7 +3355,14 @@ fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_orde
         "exit_time_in_force": "ioc",
         "exit_is_post_only": false,
         "exit_is_reduce_only": false,
-        "exit_is_quote_quantity": false
+        "exit_is_quote_quantity": false,
+        "forced_exit_side": "sell",
+        "forced_exit_position_side": "long",
+        "forced_exit_order_type": "market",
+        "forced_exit_time_in_force": "gtc",
+        "forced_exit_is_post_only": false,
+        "forced_exit_is_reduce_only": true,
+        "forced_exit_is_quote_quantity": false
     });
     std::fs::write(
         path,

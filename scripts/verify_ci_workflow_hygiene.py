@@ -871,6 +871,10 @@ def shell_assignment_word(token: str) -> bool:
     return re.match(r"^[A-Za-z_][A-Za-z0-9_]*=[\s\S]*$", token) is not None
 
 
+def shell_name_word(token: str) -> bool:
+    return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", storage_strip_quotes(token)) is not None
+
+
 SUDO_OPTIONS_WITH_ARGUMENT = {
     "-a",
     "-C",
@@ -2555,8 +2559,15 @@ def export_assignment_values_from_tokens(tokens: list[str]) -> tuple[dict[str, s
     assignments: dict[str, str] = {}
     cursor = 1
     while cursor < len(tokens):
+        token = tokens[cursor]
+        if token == "--" or token.startswith("-"):
+            cursor += 1
+            continue
         assignment = shell_assignment_from_tokens(tokens, cursor)
         if assignment is None:
+            if shell_name_word(token):
+                cursor += 1
+                continue
             break
         name, value, cursor = assignment
         assignments[name] = storage_strip_quotes(value)
@@ -2578,6 +2589,9 @@ def shell_declaration_assignment_values_from_tokens(tokens: list[str]) -> tuple[
             continue
         assignment = shell_assignment_from_tokens(tokens, cursor)
         if assignment is None:
+            if shell_name_word(token):
+                cursor += 1
+                continue
             break
         name, value, cursor = assignment
         assignments[name] = storage_strip_quotes(value)
@@ -3925,9 +3939,21 @@ def aws_s3_transfer_touches_active_target(
     return any(STORAGE_ROLE_ACTIVE_TARGET in roles for roles in endpoint_roles)
 
 
-def storage_transfer_policy_errors(text: str) -> list[str]:
-    variable_roles = storage_variable_roles(text)
-    tokens = command_tokens(text)
+def command_prefix_before_token(tokens: list[str], index: int) -> list[str]:
+    cursor = index - 1
+    while cursor >= 0 and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
+        cursor -= 1
+    return tokens[cursor + 1 : index]
+
+
+def storage_transfer_policy_errors_from_tokens(
+    tokens: list[str],
+    variable_roles: dict[str, set[str]],
+    *,
+    depth: int = 0,
+) -> list[str]:
+    if depth > 6:
+        return []
     cursor = 0
     cwd_is_active_target = False
     active_paths: set[str] = set()
@@ -3948,6 +3974,30 @@ def storage_transfer_policy_errors(text: str) -> list[str]:
             cursor += 1
             continue
         name = executable_name(token)
+        if name in {"bash", "dash", "fish", "sh", "zsh"} and command_prefix_allows_cargo(
+            command_prefix_before_token(tokens, cursor)
+        ):
+            nested = shell_command(tokens[cursor:])
+            if nested is not None:
+                nested_errors = storage_transfer_policy_errors_from_tokens(
+                    command_tokens(nested),
+                    variable_roles,
+                    depth=depth + 1,
+                )
+                if nested_errors:
+                    return nested_errors
+        if name == "eval" and command_prefix_allows_cargo(command_prefix_before_token(tokens, cursor)):
+            inner = tokens[cursor + 1 :]
+            if inner and inner[0] == "--":
+                inner = inner[1:]
+            if inner:
+                nested_errors = storage_transfer_policy_errors_from_tokens(
+                    command_tokens(" ".join(inner)),
+                    variable_roles,
+                    depth=depth + 1,
+                )
+                if nested_errors:
+                    return nested_errors
         if name in {"cd", "pushd"} and cursor + 1 < len(tokens):
             target_roles = storage_value_roles(
                 tokens[cursor + 1],
@@ -3990,6 +4040,11 @@ def storage_transfer_policy_errors(text: str) -> list[str]:
             pipe_stdin_is_active_target = False
         cursor += 1
     return []
+
+
+def storage_transfer_policy_errors(text: str) -> list[str]:
+    variable_roles = storage_variable_roles(text)
+    return storage_transfer_policy_errors_from_tokens(command_tokens(text), variable_roles)
 
 
 def target_env_key_alias(value: str, target_keys: dict[str, str]) -> str | None:

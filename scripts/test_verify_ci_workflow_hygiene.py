@@ -1450,6 +1450,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
         (
+            "export E VAR=CARGO_TARGET_DIR\n$VAR=/tmp/raw cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "declare -x E VAR=CARGO_TARGET_DIR\n$VAR=/tmp/raw cargo check",
+            "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
             "env:\n  CARGO_TARGET_DIR: /tmp/raw",
             "CARGO_TARGET_DIR raw target override must be classified",
         ),
@@ -1775,6 +1783,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         ),
         (
             "aws s3 sync $(echo target) s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            'bash -c "aws s3 sync target s3://bolt-v2-active-cache/target"',
             "S3 active mutable target cache must be rejected",
         ),
         (
@@ -2459,6 +2471,8 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "justfile.setup.xargs": "setup:\n    xargs cargo install cargo-nextest\n",
             "scripts/local.sh": "aws s3 sync \"$PWD\"/target s3://some-bucket/linux-cache\n",
             "scripts/workspace.sh": "aws s3 sync \"$GITHUB_WORKSPACE\" s3://some-bucket/workspace\n",
+            "scripts/nested-s3-shell.sh": 'bash -c "aws s3 sync target s3://bolt-v2-active-cache/target"\n',
+            "scripts/export-name-word.sh": "export E VAR=CARGO_TARGET_DIR\n$VAR=/tmp/raw cargo check\n",
             "scripts/s3api.sh": "aws s3api put-object --bucket b --key target/debug/lib --body target/debug/lib\n",
             "scripts/s3api-get.sh": "aws s3api get-object --bucket b --key cache target/debug/lib\n",
         }
@@ -2524,6 +2538,12 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"script raw-storage drift was silent: {repo_errors!r}")
     if not any("scripts/workspace.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"workspace S3 sync drift was silent: {repo_errors!r}")
+    if not any("scripts/nested-s3-shell.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"nested shell S3 sync drift was silent: {repo_errors!r}")
+    expected = "CARGO_TARGET_DIR raw target override must be classified"
+    if not any("scripts/export-name-word.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"export name-word raw-storage drift was silent: {repo_errors!r}")
+    expected = "S3 active mutable target cache must be rejected"
     if not any("scripts/s3api.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"s3api raw-storage drift was silent: {repo_errors!r}")
     if not any("scripts/s3api-get.sh" in error and expected in error for error in repo_errors):

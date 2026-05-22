@@ -7,7 +7,7 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, decision_evidence_path,
+        BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot, decision_evidence_path,
     },
     strategies::registry::FeeProvider,
     strategies::registry::StrategyBuildContext,
@@ -32,6 +32,13 @@ impl FeeProvider for NoopFeeProvider {
 struct NoopDecisionEvidenceWriter;
 
 impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
         Ok(())
     }
@@ -95,6 +102,16 @@ fn binary_oracle_edge_taker_records_evidence_then_admission_before_only_direct_s
     assert!(
         evidence_index < admission_index && admission_index < submit_index,
         "decision evidence must be recorded before submit admission before NT submit"
+    );
+    let strategy_input_index = source
+        .find(".record_strategy_input_snapshot(&strategy_input_snapshot)")
+        .expect("entry strategy input snapshot must be recorded");
+    let evidence_wrapper_call_after_strategy_input = source[strategy_input_index..]
+        .find(".submit_order_with_decision_evidence(intent, order, client_id)")
+        .expect("entry path must submit through evidence wrapper");
+    assert!(
+        evidence_wrapper_call_after_strategy_input > 0,
+        "entry strategy input snapshot must be recorded before order-intent evidence wrapper"
     );
     // This intentionally scans the whole strategy source, including in-file
     // tests, because no code path should bypass the evidence wrapper.

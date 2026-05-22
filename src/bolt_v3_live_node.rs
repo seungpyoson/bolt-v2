@@ -76,7 +76,7 @@ use crate::{
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
-        JsonlBoltV3DecisionEvidenceWriter,
+        BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
     },
     bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
     bolt_v3_providers,
@@ -250,6 +250,13 @@ impl BoltV3NoSubmitReferenceCacheEvidence {
 struct NoStrategyDecisionEvidenceWriter;
 
 impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
         Ok(())
     }

@@ -3,7 +3,7 @@ mod support;
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
-    BoltV3OrderIntentEvidence,
+    BoltV3OrderIntentEvidence, BoltV3StrategyInputEvidenceSnapshot,
 };
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_submit_admission::{
@@ -264,6 +264,13 @@ fn submit_request_with_kind_and_policy(
 struct FailingDecisionEvidenceWriter;
 
 impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
         Ok(())
     }
@@ -325,6 +332,13 @@ impl BlockingFirstAdmissionDecisionWriter {
 }
 
 impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
         Ok(())
     }

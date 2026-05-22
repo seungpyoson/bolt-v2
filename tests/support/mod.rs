@@ -82,6 +82,13 @@ impl RecordingDecisionEvidenceWriter {
 impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     for RecordingDecisionEvidenceWriter
 {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &bolt_v2::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn record_order_intent(
         &self,
         intent: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,

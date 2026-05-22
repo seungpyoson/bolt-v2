@@ -23,7 +23,10 @@ use serde::Deserialize;
 use toml::Value;
 
 use crate::{
-    bolt_v3_decision_evidence::{BoltV3OrderIntentEvidence, BoltV3OrderIntentKind},
+    bolt_v3_decision_evidence::{
+        BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT, BoltV3OrderIntentEvidence,
+        BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot,
+    },
     bolt_v3_market_families::{self, MarketSelectionTarget},
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
@@ -3438,6 +3441,154 @@ impl BinaryOracleEdgeTaker {
         self.submit_order(order, None, Some(client_id), None)
     }
 
+    fn entry_strategy_input_evidence_snapshot_at(
+        &self,
+        now_ms: u64,
+        decision: &EntrySubmissionDecision,
+        client_order_id: ClientOrderId,
+        price: &Price,
+        quantity: &Quantity,
+    ) -> Result<BoltV3StrategyInputEvidenceSnapshot> {
+        let price_to_beat = self
+            .active
+            .price_to_beat
+            .filter(|value| is_positive_finite(*value))
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires source-bound price_to_beat")
+            })?;
+        let interval_open = self
+            .active
+            .interval_open
+            .filter(|value| is_positive_finite(*value))
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires positive interval_open")
+            })?;
+        if (interval_open - price_to_beat).abs() > f64::EPSILON {
+            anyhow::bail!(
+                "entry strategy input evidence requires interval_open to match source-bound price_to_beat"
+            );
+        }
+        let reference_quote_ts_event = self.active.last_reference_ts_ms.ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires reference quote timestamp")
+        })?;
+        let spot_price = self
+            .pricing
+            .spot_price()
+            .filter(|value| is_positive_finite(*value))
+            .ok_or_else(|| anyhow::anyhow!("entry strategy input evidence requires spot price"))?;
+        let realized_volatility = self
+            .current_realized_vol_at(now_ms)
+            .filter(|value| is_positive_finite(*value))
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires realized volatility")
+            })?;
+        let seconds_to_market_end = self.current_seconds_to_expiry_at(now_ms).ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires seconds to market end")
+        })?;
+        let selected_side = decision.evaluation.selected_side.ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires selected side")
+        })?;
+        let fee_rate_basis_points = self
+            .outcome_fee_bps(selected_side)
+            .filter(|value| is_non_negative_finite(*value))
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires selected outcome fee")
+            })?;
+        let theta_scaled_min_edge_bps = decision
+            .evaluation
+            .min_worst_case_ev_bps
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires theta-scaled minimum edge")
+            })?;
+        let fair_probability_up = decision
+            .evaluation
+            .fair_probability_up
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires fair probability")
+            })?;
+        let uncertainty_band_probability = decision
+            .evaluation
+            .uncertainty_band_probability
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires uncertainty band")
+            })?;
+        let expected_edge_basis_points = decision
+            .evaluation
+            .expected_ev_per_notional
+            .filter(|value| value.is_finite())
+            .map(|value| value * BPS_DENOMINATOR)
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires expected edge")
+            })?;
+        let worst_case_edge_basis_points = match selected_side {
+            OutcomeSide::Up => decision.evaluation.up_worst_case_ev_bps,
+            OutcomeSide::Down => decision.evaluation.down_worst_case_ev_bps,
+        }
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires selected worst-case edge")
+        })?;
+        let market_start_timestamp_ms = self.active.interval_start_ms;
+        let market_end_timestamp_ms = market_start_timestamp_ms.map(|start_ms| {
+            start_ms.saturating_add(seconds_to_market_end.saturating_mul(MILLIS_PER_SECOND_U64))
+        });
+        let instrument_id = decision.instrument_id.ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires submission instrument id")
+        })?;
+        let order_side = decision.order_side.ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires submission order side")
+        })?;
+
+        Ok(BoltV3StrategyInputEvidenceSnapshot {
+            strategy_id: self.config.strategy_id.clone(),
+            configured_target_id: self.config.configured_target_id.clone(),
+            market_selection_ruleset_id: self.config.configured_target_id.clone(),
+            market_selection_outcome: BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT
+                .to_string(),
+            market_id: self.active.market_id.clone(),
+            up_instrument_id: self
+                .active
+                .books
+                .up
+                .instrument_id
+                .map(|instrument_id| instrument_id.to_string()),
+            down_instrument_id: self
+                .active
+                .books
+                .down
+                .instrument_id
+                .map(|instrument_id| instrument_id.to_string()),
+            market_selection_timestamp_ms: self.active.selection_published_at_ms,
+            selected_market_observed_timestamp_ms: self.active.selection_published_at_ms,
+            polymarket_market_start_timestamp_ms: market_start_timestamp_ms,
+            polymarket_market_end_timestamp_ms: market_end_timestamp_ms,
+            price_to_beat_source: self.config.price_to_beat_source.clone(),
+            price_to_beat_value: evidence_number(price_to_beat),
+            reference_quote_ts_event,
+            spot_price: evidence_number(spot_price),
+            reference_fair_value: self.pricing.last_reference_fair_value.map(evidence_number),
+            realized_volatility: evidence_number(realized_volatility),
+            seconds_to_market_end,
+            pricing_kurtosis: evidence_number(self.config.pricing_kurtosis),
+            theta_decay_factor: evidence_number(self.config.theta_decay_factor),
+            theta_scaled_min_edge_bps: evidence_number(theta_scaled_min_edge_bps),
+            fair_probability_up: evidence_number(fair_probability_up),
+            uncertainty_band_probability: evidence_number(uncertainty_band_probability),
+            expected_edge_basis_points: evidence_number(expected_edge_basis_points),
+            worst_case_edge_basis_points: evidence_number(worst_case_edge_basis_points),
+            fee_rate_basis_points: evidence_number(fee_rate_basis_points),
+            selected_side: Some(outcome_side_evidence_label(selected_side).to_string()),
+            submission_instrument_id: instrument_id.to_string(),
+            submission_order_side: order_side.to_string(),
+            submission_price: price.to_string(),
+            submission_quantity: quantity.to_string(),
+            client_order_id: client_order_id.to_string(),
+        })
+    }
+
     fn submit_lifecycle_policy(&self) -> BoltV3SubmitLifecyclePolicy {
         BoltV3SubmitLifecyclePolicy::new(
             self.config.market_exit_reduce_only,
@@ -3728,6 +3879,13 @@ impl BinaryOracleEdgeTaker {
             price,
             client_order_id,
         )?;
+        let strategy_input_snapshot = self.entry_strategy_input_evidence_snapshot_at(
+            now_ms,
+            &decision,
+            client_order_id,
+            &price,
+            &quantity,
+        )?;
 
         let client_id = ClientId::from(self.config.client_id.as_str());
         self.exposure = ExposureState::PendingEntry(PendingEntryState {
@@ -3774,7 +3932,12 @@ impl BinaryOracleEdgeTaker {
             quantity: quantity.to_string(),
         };
 
-        if let Err(error) = self.submit_order_with_decision_evidence(intent, order, client_id) {
+        if let Err(error) = self
+            .context
+            .decision_evidence()
+            .record_strategy_input_snapshot(&strategy_input_snapshot)
+            .and_then(|()| self.submit_order_with_decision_evidence(intent, order, client_id))
+        {
             self.clear_pending_entry_state();
             return Err(error);
         }
@@ -4884,6 +5047,17 @@ enum OutcomeSide {
     Down,
 }
 
+fn outcome_side_evidence_label(side: OutcomeSide) -> &'static str {
+    match side {
+        OutcomeSide::Up => "up",
+        OutcomeSide::Down => "down",
+    }
+}
+
+fn evidence_number(value: f64) -> String {
+    value.to_string()
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 struct LeadVenueSignal {
@@ -5714,6 +5888,13 @@ mod tests {
     impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         for RecordingDecisionEvidenceWriter
     {
+        fn record_strategy_input_snapshot(
+            &self,
+            _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+        ) -> Result<()> {
+            Ok(())
+        }
+
         fn record_order_intent(
             &self,
             _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
@@ -5735,6 +5916,13 @@ mod tests {
     impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         for FailingDecisionEvidenceWriter
     {
+        fn record_strategy_input_snapshot(
+            &self,
+            _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+        ) -> Result<()> {
+            anyhow::bail!("strategy input snapshot write failed")
+        }
+
         fn record_order_intent(
             &self,
             _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
@@ -5747,6 +5935,68 @@ mod tests {
             _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
         ) -> Result<()> {
             anyhow::bail!("admission decision write failed")
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum RecordedDecisionEvidenceEvent {
+        StrategyInput(crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot),
+        OrderIntent(crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence),
+        AdmissionDecision(crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence),
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingSequencedDecisionEvidenceWriter {
+        events: Mutex<Vec<RecordedDecisionEvidenceEvent>>,
+    }
+
+    impl RecordingSequencedDecisionEvidenceWriter {
+        fn events(&self) -> Vec<RecordedDecisionEvidenceEvent> {
+            self.events
+                .lock()
+                .expect("recording evidence writer mutex poisoned")
+                .clone()
+        }
+    }
+
+    impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
+        for RecordingSequencedDecisionEvidenceWriter
+    {
+        fn record_strategy_input_snapshot(
+            &self,
+            snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+        ) -> Result<()> {
+            self.events
+                .lock()
+                .expect("recording evidence writer mutex poisoned")
+                .push(RecordedDecisionEvidenceEvent::StrategyInput(
+                    snapshot.clone(),
+                ));
+            Ok(())
+        }
+
+        fn record_order_intent(
+            &self,
+            intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
+        ) -> Result<()> {
+            self.events
+                .lock()
+                .expect("recording evidence writer mutex poisoned")
+                .push(RecordedDecisionEvidenceEvent::OrderIntent(intent.clone()));
+            Ok(())
+        }
+
+        fn record_admission_decision(
+            &self,
+            decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
+        ) -> Result<()> {
+            self.events
+                .lock()
+                .expect("recording evidence writer mutex poisoned")
+                .push(RecordedDecisionEvidenceEvent::AdmissionDecision(
+                    decision.clone(),
+                ));
+            Ok(())
         }
     }
 
@@ -6414,6 +6664,7 @@ mod tests {
         let mut strategy = test_strategy();
         strategy.config.warmup_tick_count = 2;
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+        strategy.active.price_to_beat = Some(3_100.0);
         strategy.active.interval_open = Some(3_100.0);
         strategy.active.warmup_count = 2;
         strategy.active.last_reference_ts_ms = Some(1_200);
@@ -6480,6 +6731,7 @@ mod tests {
         let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
         strategy.config.warmup_tick_count = 2;
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+        strategy.active.price_to_beat = Some(3_100.0);
         strategy.active.interval_open = Some(3_100.0);
         strategy.active.warmup_count = 2;
         strategy.active.last_reference_ts_ms = Some(1_200);
@@ -6525,6 +6777,19 @@ mod tests {
         strategy.pricing.last_lead_gap_probability = Some(0.0);
         strategy.pricing.last_jitter_penalty_probability = Some(0.0);
         (strategy, fee_provider)
+    }
+
+    fn ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+        submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
+    ) -> BinaryOracleEdgeTaker {
+        let (mut strategy, fee_provider) =
+            ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.context =
+            StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission);
+        strategy.config.edge_threshold_basis_points = 1;
+        strategy.active.price_to_beat = Some(3_100.0);
+        strategy
     }
 
     fn pending_entry_state(
@@ -10740,6 +11005,66 @@ mod tests {
         );
         assert!(fields.sized_notional.is_some_and(|value| value > 0.0));
         assert!(!fields.final_fee_amount_known);
+    }
+
+    #[test]
+    fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_intent() {
+        let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
+                evidence.clone(),
+            ),
+        );
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            evidence.clone(),
+            submit_admission,
+        );
+        register_test_strategy_with_active_instruments(&mut strategy);
+
+        let error = strategy
+            .try_submit_entry_order(1_200)
+            .expect_err("unarmed submit admission should reject after evidence capture");
+        assert!(
+            error.to_string().contains("submit admission is not armed"),
+            "{error:#}"
+        );
+
+        let events = evidence.events();
+        let [
+            RecordedDecisionEvidenceEvent::StrategyInput(snapshot),
+            RecordedDecisionEvidenceEvent::OrderIntent(intent),
+            RecordedDecisionEvidenceEvent::AdmissionDecision(admission),
+        ] = events.as_slice()
+        else {
+            panic!("expected strategy input, order intent, admission sequence; got {events:#?}");
+        };
+
+        assert_eq!(snapshot.strategy_id, strategy.config.strategy_id);
+        assert_eq!(
+            snapshot.price_to_beat_source,
+            strategy.config.price_to_beat_source
+        );
+        assert_eq!(snapshot.price_to_beat_value, "3100");
+        assert_eq!(snapshot.reference_quote_ts_event, 1_200);
+        assert_eq!(snapshot.spot_price, "3100.5");
+        assert_eq!(snapshot.realized_volatility, "1.5");
+        assert_eq!(snapshot.seconds_to_market_end, 300);
+        assert_eq!(snapshot.market_id.as_deref(), Some("MKT-1"));
+        assert_eq!(
+            snapshot.up_instrument_id.as_deref(),
+            Some("condition-MKT-1-MKT-1-UP.POLYMARKET")
+        );
+        assert_eq!(
+            snapshot.down_instrument_id.as_deref(),
+            Some("condition-MKT-1-MKT-1-DOWN.POLYMARKET")
+        );
+        assert_eq!(snapshot.selected_side.as_deref(), Some("up"));
+        assert_eq!(snapshot.submission_instrument_id, intent.instrument_id);
+        assert_eq!(snapshot.submission_order_side, intent.order_side);
+        assert_eq!(snapshot.submission_price, intent.price);
+        assert_eq!(snapshot.submission_quantity, intent.quantity);
+        assert_eq!(snapshot.client_order_id, intent.client_order_id);
+        assert_eq!(admission.client_order_id, intent.client_order_id);
     }
 
     #[test]

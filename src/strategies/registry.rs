@@ -235,6 +235,13 @@ mod tests {
     struct NoopDecisionEvidenceWriter;
 
     impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
+        fn record_strategy_input_snapshot(
+            &self,
+            _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+        ) -> Result<()> {
+            Ok(())
+        }
+
         fn record_order_intent(
             &self,
             _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,

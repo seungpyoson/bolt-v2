@@ -84,11 +84,11 @@ STALE_TASKS_PHRASES = (
     "Phase 54 remains open until T240 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.",
 )
 REQUIRED_TASKS_PHRASES = (
-    "Phase 50 is closed by T224 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.",
-    "Phase 51 is closed by T228 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.",
-    "Phase 52 is closed by T233 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.",
-    "Phase 53 is closed by T236 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.",
-    "Phase 54 is closed by T240 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.",
+    "Phase 50 is closed by T224 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
+    "Phase 51 is closed by T228 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
+    "Phase 52 is closed by T233 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
+    "Phase 53 is closed by T236 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
+    "Phase 54 is closed by T240 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
 )
 STALE_CONTRACT_PHRASES = (
     "Long and short position contracts are coherent.",

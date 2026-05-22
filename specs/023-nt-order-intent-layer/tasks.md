@@ -575,11 +575,11 @@
 - Phase 47 closes the forced-exit order-template synthesis finding by routing forced-flat order semantics through TOML-owned `forced_exit_order` and the shared NT builder path.
 - Phase 48 closes the removed market-exit schema drift and `manage_stop=true` non-market forced-exit gap with active schema/verifier coverage and fail-closed config validation.
 - Phase 49 blocks broad "all NT order model surface" claims until pinned NT builder-vs-factory evidence and a TDD slice resolve or explicitly scope the remaining model-surface and runtime-price findings.
-- Phase 50 is closed by T224 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.
-- Phase 51 is closed by T228 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.
-- Phase 52 is closed by T233 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.
-- Phase 53 is closed by T236 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.
-- Phase 54 is closed by T240 verification; exact-head no-mistakes exceeded the wait cap and is recorded as non-terminal reviewer state, not approval.
+- Phase 50 is closed by T224 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.
+- Phase 51 is closed by T228 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.
+- Phase 52 is closed by T233 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.
+- Phase 53 is closed by T236 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.
+- Phase 54 is closed by T240 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.
 
 ## Parallel Opportunities
 

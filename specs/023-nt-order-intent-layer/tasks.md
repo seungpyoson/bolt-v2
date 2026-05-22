@@ -682,6 +682,15 @@
 - [x] T309 [US2] GREEN: Apply mechanical test-only clippy fixes without changing order-intent runtime behavior
 - [ ] T310 [US2] Verify focused tests, all-targets clippy, formatting/diff checks, schema/runtime verifiers, source fences, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
+## Phase 72: TDD Slice 68 - Shared Position-Contract Helpers
+
+**Goal**: Resolve exact-head no-mistakes/Greptile evidence that `binary_oracle_edge_taker` archetype and strategy modules define identical position-contract helper functions, without changing runtime order construction, admission, venue policy, market policy, strategy policy, maker-only policy, or taker-only policy.
+
+- [x] T311 [P] [US2] Record exact-head no-mistakes/Greptile helper-duplication evidence and the separate P1 generic admission-wrapper follow-up issue in `specs/023-nt-order-intent-layer/research.md`
+- [x] T312 [US2] RED: Add a source-derived schema-current verifier guard proving duplicated position-contract helper definitions are rejected
+- [x] T313 [US2] GREEN: Move the shared position-contract helper definitions to one neutral Bolt module and import them from the archetype and strategy modules
+- [ ] T314 [US2] Verify schema-current tests/verifier, focused position-contract regressions, formatting/diff checks, source fences, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -753,6 +762,7 @@
 - Phase 69 blocks final branch completion because exact-head no-mistakes found the strategy schema version still advertised the previous forced-exit schema shape.
 - Phase 70 blocks final branch completion because exact-head no-mistakes found the shipped example strategy schema and decision-evidence envelope docs lagged current source.
 - Phase 71 blocks final branch completion because exact-head Gemini relay review found all-targets clippy failures in test-only helper/assertion code after Phase 70.
+- Phase 72 blocks final branch completion because exact-head no-mistakes/Greptile review found duplicated position-contract helper definitions across the archetype and strategy modules after Phase 71.
 
 ## Parallel Opportunities
 

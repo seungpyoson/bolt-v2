@@ -36,6 +36,10 @@ use crate::{
     },
     bolt_v3_market_families::{self, MarketSelectionTarget},
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
+    bolt_v3_position_contract::{
+        expected_exit_order_side_for_position, expected_position_side_for_entry_order,
+        is_observed_open_side,
+    },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest,
     strategies::registry::{
         BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
@@ -1239,26 +1243,6 @@ fn supports_strategy_position_contract(contract: ConfiguredPositionContract) -> 
             .is_some_and(|side| side == contract.exit_order_side)
         && contract.entry_position_side == contract.exit_position_side
         && is_observed_open_side(contract.entry_position_side)
-}
-
-fn expected_position_side_for_entry_order(order_side: OrderSide) -> Option<PositionSide> {
-    match order_side {
-        OrderSide::Buy => Some(PositionSide::Long),
-        OrderSide::Sell => Some(PositionSide::Short),
-        _ => None,
-    }
-}
-
-fn expected_exit_order_side_for_position(position_side: PositionSide) -> Option<OrderSide> {
-    match position_side {
-        PositionSide::Long => Some(OrderSide::Sell),
-        PositionSide::Short => Some(OrderSide::Buy),
-        _ => None,
-    }
-}
-
-fn is_observed_open_side(side: PositionSide) -> bool {
-    matches!(side, PositionSide::Long | PositionSide::Short)
 }
 
 fn order_price_for_side(

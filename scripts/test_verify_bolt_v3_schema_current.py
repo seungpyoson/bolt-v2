@@ -790,6 +790,49 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         raise AssertionError(f"expected extra doc field finding, got {extra_findings!r}")
 
 
+def test_validate_docs_rejects_duplicate_position_contract_helpers() -> None:
+    duplicate_source = """
+fn expected_position_side_for_entry_order(order_side: OrderSide) -> Option<PositionSide> {
+    todo!()
+}
+fn expected_exit_order_side_for_position(position_side: PositionSide) -> Option<OrderSide> {
+    todo!()
+}
+fn is_observed_open_side(side: PositionSide) -> bool {
+    todo!()
+}
+"""
+    shared_source = duplicate_source.replace("fn ", "pub fn ")
+
+    complete_findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        archetype_source="use crate::bolt_v3_position_contract::*;",
+        strategy_source="use crate::bolt_v3_position_contract::*;",
+        position_contract_source=shared_source,
+    )
+    if complete_findings:
+        raise AssertionError(f"expected shared helper source to pass, got {complete_findings!r}")
+
+    duplicate_findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        archetype_source=duplicate_source,
+        strategy_source=duplicate_source,
+        position_contract_source="",
+    )
+    expected_helpers = (
+        "expected_position_side_for_entry_order",
+        "expected_exit_order_side_for_position",
+        "is_observed_open_side",
+    )
+    for helper_name in expected_helpers:
+        if not any(helper_name in finding for finding in duplicate_findings):
+            raise AssertionError(
+                f"expected duplicate helper finding for {helper_name}, got {duplicate_findings!r}"
+            )
+
+
 def main() -> int:
     tests = [
         test_extract_section_stops_at_next_matching_heading,
@@ -826,6 +869,7 @@ def main() -> int:
         test_extracts_phase8_financial_envelope_fields_from_source_struct,
         test_validate_docs_rejects_financial_envelope_schema_missing_source_field,
         test_validate_docs_rejects_financial_envelope_schema_extra_doc_field,
+        test_validate_docs_rejects_duplicate_position_contract_helpers,
     ]
     for test in tests:
         test()

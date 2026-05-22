@@ -26,6 +26,11 @@ AGENTS_DOC = REPO_ROOT / "AGENTS.md"
 FEATURE_JSON = REPO_ROOT / ".specify/feature.json"
 TINY_CANARY_EVIDENCE = REPO_ROOT / "src/bolt_v3_tiny_canary_evidence.rs"
 VALIDATE_SOURCE = REPO_ROOT / "src/bolt_v3_validate.rs"
+ARCHETYPE_BINARY_ORACLE_SOURCE = (
+    REPO_ROOT / "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+)
+STRATEGY_BINARY_ORACLE_SOURCE = REPO_ROOT / "src/strategies/binary_oracle_edge_taker.rs"
+POSITION_CONTRACT_SOURCE = REPO_ROOT / "src/bolt_v3_position_contract.rs"
 ORDER_INTENT_FEATURE_DIR = "specs/023-nt-order-intent-layer"
 ORDER_INTENT_PLAN = f"{ORDER_INTENT_FEATURE_DIR}/plan.md"
 SPECKIT_BLOCK_PATTERN = re.compile(
@@ -42,6 +47,11 @@ SUPPORTED_STRATEGY_SCHEMA_VERSION_PATTERN = re.compile(
 STRATEGY_SCHEMA_EXAMPLE_PATTERN = re.compile(
     r"schema_version = (?P<version>\d+)\nstrategy_instance_id = ",
     re.MULTILINE,
+)
+POSITION_CONTRACT_HELPER_NAMES = (
+    "expected_position_side_for_entry_order",
+    "expected_exit_order_side_for_position",
+    "is_observed_open_side",
 )
 
 ENABLED_ORDER_TYPES = (
@@ -251,6 +261,32 @@ def extract_supported_strategy_schema_version(validate_source: str) -> int | Non
     return int(match.group("version"))
 
 
+def has_rust_function(source: str, name: str) -> bool:
+    return re.search(rf"(?m)^\s*(?:pub(?:\(crate\))?\s+)?fn\s+{re.escape(name)}\s*\(", source) is not None
+
+
+def validate_position_contract_helpers(
+    archetype_source: str,
+    strategy_source: str,
+    position_contract_source: str,
+) -> list[str]:
+    findings: list[str] = []
+    for helper_name in POSITION_CONTRACT_HELPER_NAMES:
+        if not has_rust_function(position_contract_source, helper_name):
+            findings.append(
+                f"position-contract helper `{helper_name}` must have one shared source definition"
+            )
+        if has_rust_function(archetype_source, helper_name):
+            findings.append(
+                f"archetype source must import shared position-contract helper `{helper_name}` instead of defining it"
+            )
+        if has_rust_function(strategy_source, helper_name):
+            findings.append(
+                f"strategy source must import shared position-contract helper `{helper_name}` instead of defining it"
+            )
+    return findings
+
+
 def unsupported_scope_overclaims(label: str, text: str) -> list[str]:
     findings: list[str] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
@@ -339,6 +375,9 @@ def validate_docs(
     feature_json: str | None = None,
     financial_envelope_source: str = "",
     validate_source: str = "",
+    archetype_source: str = "",
+    strategy_source: str = "",
+    position_contract_source: str = "",
 ) -> list[str]:
     findings: list[str] = []
 
@@ -451,6 +490,15 @@ def validate_docs(
                         f"{version} does not match source {supported_strategy_schema_version}"
                     )
 
+    if archetype_source or strategy_source or position_contract_source:
+        findings.extend(
+            validate_position_contract_helpers(
+                archetype_source,
+                strategy_source,
+                position_contract_source,
+            )
+        )
+
     for phrase in STALE_STATUS_MAP_PHRASES:
         if phrase in status_map:
             findings.append(f"status map still contains stale phrase: {phrase}")
@@ -523,6 +571,11 @@ def main() -> int:
         feature_json=FEATURE_JSON.read_text(encoding="utf-8"),
         financial_envelope_source=TINY_CANARY_EVIDENCE.read_text(encoding="utf-8"),
         validate_source=VALIDATE_SOURCE.read_text(encoding="utf-8"),
+        archetype_source=ARCHETYPE_BINARY_ORACLE_SOURCE.read_text(encoding="utf-8"),
+        strategy_source=STRATEGY_BINARY_ORACLE_SOURCE.read_text(encoding="utf-8"),
+        position_contract_source=POSITION_CONTRACT_SOURCE.read_text(encoding="utf-8")
+        if POSITION_CONTRACT_SOURCE.exists()
+        else "",
     )
     if findings:
         for finding in findings:

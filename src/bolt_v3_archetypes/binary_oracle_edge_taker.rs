@@ -46,6 +46,10 @@ use crate::{
     bolt_v3_archetypes::ArchetypeValidationBinding,
     bolt_v3_config::{BoltV3StrategyConfig, LoadedStrategy},
     bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config},
+    bolt_v3_position_contract::{
+        expected_exit_order_side_for_position, expected_position_side_for_entry_order,
+        is_observed_open_side,
+    },
     bolt_v3_providers::polymarket,
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
@@ -982,24 +986,4 @@ fn check_strategy_position_contract(
              long requires entry side=buy, exit side=sell, position_side=long"
         )]
     }
-}
-
-fn expected_position_side_for_entry_order(order_side: OrderSide) -> Option<PositionSide> {
-    match order_side {
-        OrderSide::Buy => Some(PositionSide::Long),
-        OrderSide::Sell => Some(PositionSide::Short),
-        _ => None,
-    }
-}
-
-fn expected_exit_order_side_for_position(position_side: PositionSide) -> Option<OrderSide> {
-    match position_side {
-        PositionSide::Long => Some(OrderSide::Sell),
-        PositionSide::Short => Some(OrderSide::Buy),
-        _ => None,
-    }
-}
-
-fn is_observed_open_side(side: PositionSide) -> bool {
-    matches!(side, PositionSide::Long | PositionSide::Short)
 }

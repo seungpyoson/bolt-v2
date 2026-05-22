@@ -1790,6 +1790,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "S3 active mutable target cache must be rejected",
         ),
         (
+            "aws s3 cp $(echo file) target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 cp `echo`target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
             'aws s3 sync "$(echo target)" s3://bolt-v2-active-cache/target',
             "S3 active mutable target cache must be rejected",
         ),
@@ -2022,9 +2030,9 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         misses.append(f"non-executed alias text was classified: errors={errors!r}")
     for false_positive in (
         "cargo test -- --target-dir /tmp/test-binary-arg",
+        "cargo nextest run -- --target-dir /tmp/test-binary-arg",
         "python3 scripts/rust_verification.py cargo --repo . -- test -- --target-dir /tmp/test-binary-arg",
         "python3 scripts/rust_verification.py run --repo . test -- --target-dir /tmp/test-binary-arg",
-        "aws s3 cp $(echo benign)target s3://bucket/",
     ):
         errors = verifier.raw_rust_storage_errors(false_positive)
         if (

@@ -993,6 +993,7 @@ CARGO_PROCESS_SUBCOMMANDS = {
     "rustc",
     "test",
 }
+NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT = {"--config-file", "--manifest-path", "--profile", "--workspace-remap"}
 
 
 def consume_assignment_words(tokens: list[str], index: int) -> int:
@@ -1695,11 +1696,39 @@ def cargo_subcommand(tokens: list[str]) -> str | None:
     return subcommand[1]
 
 
+def nextest_subcommand_with_index(nextest_args: list[str]) -> tuple[int, str] | None:
+    index = 0
+    while index < len(nextest_args):
+        token = nextest_args[index]
+        if token == "--":
+            return None
+        if token in NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return index, token
+    return None
+
+
 def cargo_args_for_target_routing_scan(tokens: list[str]) -> list[str]:
     subcommand = cargo_subcommand_with_index(tokens)
     if subcommand is None:
         return tokens
     subcommand_index, subcommand_name = subcommand
+    if subcommand_name == "nextest":
+        nextest_subcommand = nextest_subcommand_with_index(tokens[subcommand_index + 1 :])
+        if nextest_subcommand is None or nextest_subcommand[1] != "run":
+            return tokens
+        nextest_run_index = subcommand_index + 1 + nextest_subcommand[0]
+        for index, token in enumerate(tokens):
+            if index > nextest_run_index and token == "--":
+                return tokens[:index]
+        return tokens
     if subcommand_name not in {"bench", "run", "test"}:
         return tokens
     for index, token in enumerate(tokens):
@@ -3448,7 +3477,34 @@ def storage_command_substitution_has_target(value: str) -> bool:
     for payload in shell_command_substitution_payloads(command_tokens(compact)):
         if any(storage_value_has_target_component(token) for token in payload):
             return True
+    if ("`" in compact or "$" in compact) and storage_value_has_target_component(storage_value_without_substitutions(compact)):
+        return True
     return False
+
+
+def storage_value_without_substitutions(value: str) -> str:
+    compact = re.sub(r"`[^`]*`", "", value)
+    tokens = command_tokens(compact)
+    output: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if (token == "$" or token.endswith("$")) and index + 1 < len(tokens) and tokens[index + 1] == "(":
+            prefix = token[:-1] if token != "$" and token.endswith("$") else ""
+            if prefix:
+                output.append(prefix)
+            index += 2
+            depth = 1
+            while index < len(tokens) and depth:
+                if tokens[index] == "(":
+                    depth += 1
+                elif tokens[index] == ")":
+                    depth -= 1
+                index += 1
+            continue
+        output.append(token)
+        index += 1
+    return " ".join(output)
 
 
 def storage_value_has_target_component(value: str) -> bool:

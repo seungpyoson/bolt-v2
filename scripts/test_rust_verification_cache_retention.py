@@ -2534,6 +2534,20 @@ def assert_v6_red_nextest_archive_extraction_uses_exclusive_cache_lock() -> None
             ],
         )
         configured_archive_result = owner.cmd_cargo(configured_archive_args)
+        manifest_archive_args = types.SimpleNamespace(
+            repo=str(repo),
+            args=[
+                "nextest",
+                "--manifest-path",
+                "Cargo.toml",
+                "run",
+                "--archive-file",
+                ".nextest-archive/nextest-archive.tar.zst",
+                "--extract-to",
+                str(tmp_path / "manifest-managed-target-parent"),
+            ],
+        )
+        manifest_archive_result = owner.cmd_cargo(manifest_archive_args)
         separator_args = types.SimpleNamespace(
             repo=str(repo),
             args=[
@@ -2578,16 +2592,18 @@ def assert_v6_red_nextest_archive_extraction_uses_exclusive_cache_lock() -> None
             archive_result != 0
             or normal_result != 0
             or configured_archive_result != 0
+            or manifest_archive_result != 0
             or separator_result != 0
             or managed_run_archive_result != 0
             or managed_run_separator_result != 0
-            or lock_modes != [True, False, True, False, True, False]
+            or lock_modes != [True, False, True, True, False, True, False]
         ):
             raise AssertionError(
                 "nextest archive extraction must serialize on the managed cache lock while ordinary nextest "
                 "and post-separator test args remain shared: "
                 f"archive_result={archive_result} normal_result={normal_result} "
                 f"configured_archive_result={configured_archive_result} "
+                f"manifest_archive_result={manifest_archive_result} "
                 f"separator_result={separator_result} "
                 f"managed_run_archive_result={managed_run_archive_result} "
                 f"managed_run_separator_result={managed_run_separator_result} "
@@ -2919,6 +2935,7 @@ def assert_v6_red_managed_cargo_allows_post_separator_binary_args() -> None:
     allowed_cases = [
         ["run", "--release", "--bin", "bolt-v2", "--", "--root", "/tmp/binary-arg"],
         ["test", "--locked", "--", "--out-dir", "/tmp/test-arg"],
+        ["nextest", "run", "--", "--target-dir", "/tmp/test-arg"],
         ["--manifest-path", "Cargo.toml", "test", "--", "--target-dir", "/tmp/test-arg"],
         ["--profile", "dev", "test", "--", "--target-dir", "/tmp/test-arg"],
         ["bench", "--locked", "--", "--artifact-dir", "/tmp/bench-arg"],

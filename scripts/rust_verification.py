@@ -629,16 +629,53 @@ def shell_command_substitution_payloads(tokens: list[str]) -> list[list[str]]:
     return payloads
 
 
+def shell_command_substitution_at(tokens: list[str], index: int) -> tuple[list[str], int] | None:
+    normalized = shell_normalized_tokens(tokens)
+    if index + 1 >= len(normalized) or normalized[index] != "$" or normalized[index + 1] != "(":
+        return None
+    cursor = index + 2
+    depth = 1
+    payload: list[str] = []
+    while cursor < len(normalized) and depth:
+        token = normalized[cursor]
+        if token == "(":
+            depth += 1
+            payload.append(token)
+        elif token == ")":
+            depth -= 1
+            if depth:
+                payload.append(token)
+        else:
+            payload.append(token)
+        cursor += 1
+    return (payload, cursor) if depth == 0 else None
+
+
 def shell_command_segments(tokens: list[str]) -> list[list[str]]:
     segments: list[list[str]] = []
     segment: list[str] = []
-    for token in shell_normalized_tokens(tokens):
-        if token in SHELL_COMMAND_BOUNDARIES:
+    normalized = shell_normalized_tokens(tokens)
+    index = 0
+    substitution_depth = 0
+    while index < len(normalized):
+        token = normalized[index]
+        if token == "$" and index + 1 < len(normalized) and normalized[index + 1] == "(":
+            segment.extend([token, normalized[index + 1]])
+            substitution_depth += 1
+            index += 2
+            continue
+        if token == "(" and substitution_depth:
+            substitution_depth += 1
+        elif token == ")" and substitution_depth:
+            substitution_depth -= 1
+        elif token in SHELL_COMMAND_BOUNDARIES and not substitution_depth:
             if segment:
                 segments.append(segment)
                 segment = []
+            index += 1
             continue
         segment.append(token)
+        index += 1
     if segment:
         segments.append(segment)
     return segments if len(segments) > 1 else []
@@ -941,7 +978,8 @@ def sudo_command_index(tokens: list[str]) -> int:
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
-            return index + 1
+            index += 1
+            continue
         if token in argument_options and index + 1 < len(tokens):
             index += 2
             continue
@@ -1298,7 +1336,8 @@ def taskset_command_index(tokens: list[str]) -> int:
     while index < len(tokens):
         token = tokens[index]
         if token == "--":
-            return index + 1
+            index += 1
+            continue
         if token in ("-c", "--cpu-list") and index + 1 < len(tokens):
             index += 2
             cpu_list_mode = True
@@ -1737,7 +1776,11 @@ def command_scope_path_values(tokens: list[str], *, depth: int = 0) -> list[str]
     values: list[str] = []
     for index, token in enumerate(tokens):
         if token in {"--manifest-path", "--target-dir"} and index + 1 < len(tokens):
-            values.append(tokens[index + 1])
+            substitution = shell_command_substitution_at(tokens, index + 1)
+            if substitution is not None:
+                values.extend(command_substitution_path_values(substitution[0]))
+            else:
+                values.append(tokens[index + 1])
         elif token.startswith("--manifest-path=") or token.startswith("--target-dir="):
             values.append(token.split("=", 1)[1])
         elif token == "--config" and index + 1 < len(tokens):
@@ -1760,6 +1803,16 @@ def command_scope_path_values(tokens: list[str], *, depth: int = 0) -> list[str]
     elif executable.startswith("python"):
         for payload in python_inline_command_payloads(tokens):
             values.extend(command_scope_path_values(command_tokens(payload), depth=depth + 1))
+    return values
+
+
+def command_substitution_path_values(tokens: list[str]) -> list[str]:
+    values: list[str] = []
+    for token in tokens:
+        if token in SHELL_COMMAND_BOUNDARIES or token in {"echo", "printf"}:
+            continue
+        if "/" in token or token.endswith((".toml", ".json")):
+            values.append(token)
     return values
 
 

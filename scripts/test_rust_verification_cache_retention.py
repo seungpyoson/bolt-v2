@@ -1802,6 +1802,7 @@ def assert_v6_red_active_process_wrapper_options_expose_cargo_pattern() -> None:
         "nice --adjustment=10 cargo build",
         "timeout -- 30 cargo build",
         "stdbuf -oL cargo build",
+        "taskset -- 0 cargo build",
         "catchsegv cargo test",
         "podman run --rm rust:latest cargo build",
         "chroot /mnt cargo build",
@@ -1857,6 +1858,7 @@ def assert_v6_red_wrapped_renamed_cargo_launches_are_classified() -> None:
         "setsid /tmp/c build",
         "setsid -fw /tmp/c build",
         "taskset -c 0 /tmp/c build",
+        "taskset -- 0 /tmp/c build",
         "ionice -c2 /tmp/c build",
         "ionice -tc2 /tmp/c build",
         "chrt -r 10 /tmp/c build",
@@ -1914,7 +1916,10 @@ def assert_v6_red_active_process_parser_resolves_relative_manifest_scope() -> No
             return subprocess.CompletedProcess(
                 args=args,
                 returncode=0,
-                stdout="424242 cargo build --manifest-path ../bolt-v2/Cargo.toml\n",
+                stdout=(
+                    "424242 cargo build --manifest-path ../bolt-v2/Cargo.toml\n"
+                    f"424243 cargo test --manifest-path $(echo ; echo {repo}/Cargo.toml)\n"
+                ),
                 stderr="",
             )
 
@@ -1930,8 +1935,8 @@ def assert_v6_red_active_process_parser_resolves_relative_manifest_scope() -> No
             owner.subprocess.run = original_run
             owner.process_cwd = original_process_cwd
 
-    if not related:
-        raise AssertionError("relative --manifest-path cargo process outside repo cwd was ignored")
+    if len(related) < 2:
+        raise AssertionError(f"relative/substituted --manifest-path cargo processes outside repo cwd were ignored: {related!r}")
 
 
 def assert_v6_red_active_process_scan_ignores_current_process_ancestor() -> None:

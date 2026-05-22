@@ -1406,6 +1406,11 @@ def cargo_install_source_build_tools(
     cwd_source_tool: str | None = None,
 ) -> set[str]:
     tools: set[str] = set()
+    for payload in shell_command_substitution_payloads(tokens[command_index + 1 :]):
+        for token in payload:
+            tool = source_build_tool_for_path(token, source_path_tools, cwd_source_tool)
+            if tool is not None:
+                tools.add(tool)
     index = command_index + 1
     while index < len(tokens) and tokens[index] not in SHELL_COMMAND_BOUNDARIES:
         token = tokens[index]
@@ -1859,7 +1864,8 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
         while index < len(tokens):
             token = tokens[index]
             if token == "--":
-                return tokens[index + 1 :]
+                index += 1
+                continue
             if token in ("-k", "--kill-after", "-s", "--signal") and index + 1 < len(tokens):
                 index += 2
                 continue
@@ -1926,7 +1932,8 @@ def wrapper_inner_tokens(tokens: list[str]) -> list[str] | None:
         while index < len(tokens):
             token = tokens[index]
             if token == "--":
-                return tokens[index + 1 :]
+                index += 1
+                continue
             if token in ("-c", "--cpu-list") and index + 1 < len(tokens):
                 index += 2
                 cpu_list_mode = True
@@ -2094,6 +2101,27 @@ def find_exec_payloads(tokens: list[str]) -> list[list[str]]:
         if payload:
             payloads.append(payload)
     return payloads
+
+
+def shell_command_substitution_at(tokens: list[str], index: int) -> tuple[list[str], int] | None:
+    if index + 1 >= len(tokens) or tokens[index] != "$" or tokens[index + 1] != "(":
+        return None
+    cursor = index + 2
+    depth = 1
+    payload: list[str] = []
+    while cursor < len(tokens) and depth:
+        token = tokens[cursor]
+        if token == "(":
+            depth += 1
+            payload.append(token)
+        elif token == ")":
+            depth -= 1
+            if depth:
+                payload.append(token)
+        else:
+            payload.append(token)
+        cursor += 1
+    return (payload, cursor) if depth == 0 else None
 
 
 def env_short_cluster_next_index(tokens: list[str], index: int, cluster: str) -> int | None:
@@ -2930,16 +2958,29 @@ def raw_cargo_storage_override_messages_from_tokens(
             return direct_raw_cargo_storage_override_messages(expanded)
         return set()
     messages: set[str] = set()
-    if any(token in SHELL_COMMAND_BOUNDARIES for token in expanded):
+    if tokens_have_top_level_shell_boundary(expanded):
         segment: list[str] = []
         segment_aliases = set(aliases)
         segment_variables = dict(variables)
-        for token in expanded:
-            if token in SHELL_COMMAND_BOUNDARIES:
+        substitution_depth = 0
+        index = 0
+        while index < len(expanded):
+            token = expanded[index]
+            if token == "$" and index + 1 < len(expanded) and expanded[index + 1] == "(":
+                segment.extend([token, expanded[index + 1]])
+                substitution_depth += 1
+                index += 2
+                continue
+            if token == "(" and substitution_depth:
+                substitution_depth += 1
+            elif token == ")" and substitution_depth:
+                substitution_depth -= 1
+            elif token in SHELL_COMMAND_BOUNDARIES:
                 shell_assignments, is_persistent_assignment = persistent_shell_assignment_values(segment)
                 if is_persistent_assignment:
                     segment_variables.update(shell_assignments)
                     segment = []
+                    index += 1
                     continue
                 messages.update(
                     raw_cargo_storage_override_messages_from_tokens(
@@ -2952,8 +2993,10 @@ def raw_cargo_storage_override_messages_from_tokens(
                 if segment and segment[0] == "alias":
                     segment_aliases.update(simple_cargo_aliases(segment, segment_aliases))
                 segment = []
+                index += 1
                 continue
             segment.append(token)
+            index += 1
         messages.update(
             raw_cargo_storage_override_messages_from_tokens(
                 segment,
@@ -3199,6 +3242,22 @@ def text_has_path_style_cargo_config(text: str) -> bool:
 STORAGE_ROLE_S3 = "s3"
 STORAGE_ROLE_ACTIVE_TARGET = "active_target"
 AWS_S3_TRANSFER_COMMANDS = {"cp", "mv", "sync"}
+ACTIVE_TARGET_STDOUT_COMMANDS = {
+    "awk",
+    "base64",
+    "bzcat",
+    "cat",
+    "egrep",
+    "fgrep",
+    "grep",
+    "gzip",
+    "head",
+    "sed",
+    "tail",
+    "tar",
+    "xzcat",
+    "zcat",
+}
 AWS_S3_OPTIONS_WITH_ARGUMENT = {
     "--acl",
     "--cache-control",
@@ -3323,8 +3382,21 @@ def storage_path_is_inside_active_path(value: str, active_paths: set[str]) -> bo
 def command_tail_until_boundary(tokens: list[str], start: int) -> list[str]:
     tail: list[str] = []
     cursor = start
-    while cursor < len(tokens) and tokens[cursor] not in SHELL_COMMAND_BOUNDARIES:
-        tail.append(tokens[cursor])
+    substitution_depth = 0
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if token == "$" and cursor + 1 < len(tokens) and tokens[cursor + 1] == "(":
+            tail.extend([token, tokens[cursor + 1]])
+            substitution_depth += 1
+            cursor += 2
+            continue
+        if token == "(" and substitution_depth:
+            substitution_depth += 1
+        elif token == ")" and substitution_depth:
+            substitution_depth -= 1
+        elif token in SHELL_COMMAND_BOUNDARIES and not substitution_depth:
+            break
+        tail.append(token)
         cursor += 1
     return tail
 
@@ -3599,7 +3671,7 @@ def aws_s3_transfer_touches_active_target(
             command_substitution_depth += 1
         elif token == ")" and command_substitution_depth:
             command_substitution_depth -= 1
-        elif token in SHELL_COMMAND_BOUNDARIES:
+        elif token in SHELL_COMMAND_BOUNDARIES and not command_substitution_depth:
             break
         tail.append(token)
         cursor += 1
@@ -3674,8 +3746,8 @@ def storage_transfer_policy_errors(text: str) -> list[str]:
                 active_paths,
                 cwd_is_active_target=cwd_is_active_target,
             )
-        if name in {"cat", "tar"}:
-            pipe_stdout_is_active_target = command_streams_active_target_to_stdout(
+        if name in ACTIVE_TARGET_STDOUT_COMMANDS:
+            pipe_stdout_is_active_target = pipe_stdin_is_active_target or command_streams_active_target_to_stdout(
                 tokens,
                 cursor,
                 variable_roles,
@@ -3964,6 +4036,7 @@ def shell_command_segments_from_tokens(tokens: list[str]) -> list[list[str]]:
     segment: list[str] = []
     expanded = merge_split_shell_parameter_assignment_tokens(tokens)
     index = 0
+    substitution_depth = 0
     while index < len(expanded):
         assignment = shell_assignment_from_tokens(expanded, index)
         if assignment is not None:
@@ -3972,7 +4045,16 @@ def shell_command_segments_from_tokens(tokens: list[str]) -> list[list[str]]:
             index = next_index
             continue
         token = expanded[index]
-        if token in SHELL_COMMAND_BOUNDARIES:
+        if token == "$" and index + 1 < len(expanded) and expanded[index + 1] == "(":
+            segment.extend([token, expanded[index + 1]])
+            substitution_depth += 1
+            index += 2
+            continue
+        if token == "(" and substitution_depth:
+            substitution_depth += 1
+        elif token == ")" and substitution_depth:
+            substitution_depth -= 1
+        elif token in SHELL_COMMAND_BOUNDARIES and not substitution_depth:
             if segment:
                 segments.append(segment)
             segment = []
@@ -3983,6 +4065,25 @@ def shell_command_segments_from_tokens(tokens: list[str]) -> list[list[str]]:
     if segment:
         segments.append(segment)
     return segments
+
+
+def tokens_have_top_level_shell_boundary(tokens: list[str]) -> bool:
+    substitution_depth = 0
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "$" and index + 1 < len(tokens) and tokens[index + 1] == "(":
+            substitution_depth += 1
+            index += 2
+            continue
+        if token == "(" and substitution_depth:
+            substitution_depth += 1
+        elif token == ")" and substitution_depth:
+            substitution_depth -= 1
+        elif token in SHELL_COMMAND_BOUNDARIES and not substitution_depth:
+            return True
+        index += 1
+    return False
 
 
 def dynamic_env_target_override_messages(text: str) -> set[str]:

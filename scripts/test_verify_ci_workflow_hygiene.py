@@ -1686,6 +1686,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --target-dir raw target override must be classified",
         ),
         (
+            "timeout -- 30 cargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "taskset -- 0 cargo build --target-dir /tmp/raw-target",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
             "runuser -u user /tmp/c build --target-dir /tmp/raw-target",
             "cargo --target-dir raw target override must be classified",
         ),
@@ -1780,6 +1788,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
         (
             "E=CARGO_TARGET_DIR; declare -x $E=/tmp/raw; cargo check",
             "CARGO_TARGET_DIR raw target override must be classified",
+        ),
+        (
+            "cargo check $(echo ; echo --target-dir /tmp/raw)",
+            "cargo --target-dir raw target override must be classified",
         ),
         (
             'SRC_DIR=target/debug\naws s3 sync "$SRC_DIR" s3://bolt-v2-active-cache/target/debug',
@@ -1977,6 +1989,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cat target/debug/lib.rmeta | base64 | aws s3 cp - s3://bolt-v2-active-cache/target.rmeta.b64",
             "S3 active mutable target cache must be rejected",
         ),
+        (
+            "head -c 999 target/debug/lib.rmeta | aws s3 cp - s3://bolt-v2-active-cache/file",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
+            "aws s3 cp $(echo ;) target s3://bolt-v2-active-cache/target",
+            "S3 active mutable target cache must be rejected",
+        ),
     ]
     verifier = load_verifier()
     misses: list[str] = []
@@ -2026,6 +2046,10 @@ def assert_v6_red_renamed_path_cargo_source_builds_are_reported() -> None:
         (
             "cargo install --git https://github.com/nextest-rs/cargo-NeXtEsT --package cargo-nextest --locked",
             "repo automation must not compile cargo-nextest from source",
+        ),
+        (
+            "cargo install $(echo ; echo cargo-deny) --locked",
+            "repo automation must not compile cargo-deny from source",
         ),
         (
             "sudo sudo sudo sudo sudo sudo sudo cargo install cargo-deny --locked",
@@ -2092,6 +2116,8 @@ commands:
   envsplitunquoted: env -S timeout 30 cargo test
   envinvalidassignment: env 1=2 cargo build
   envblocksignal: env --block-signal cargo test
+  timeoutdashdash: timeout -- 30 cargo build
+  tasksetdashdash: taskset -- 0 cargo build
   anchored: &raw "cargo build --target-dir /tmp/raw"
   anchoralias: *raw
   shellcheck: bash -lc 'cargo test --all'
@@ -2153,6 +2179,7 @@ commands:
   managedjustenv: BOLT_MANAGED_JUST=1 just managed-build
   managedjustdynamic: VAR=BOLT_MANAGED_JUST; export $VAR=1; just managed-build
   declaretarget: E=CARGO_TARGET_DIR; declare -x $E=/tmp/raw; cargo check
+  substitutiontarget: cargo check $(echo ; echo --target-dir /tmp/raw)
   dockeruncertainrenamed: docker run --unknown-opt=rust mycargo build
   podmanuncertainrenamedrustc: podman run --unknown-opt=rust myrustc --out-dir /tmp/raw
   chained: python3 scripts/rust_verification.py cargo --repo . -- test && cargo test
@@ -2197,6 +2224,8 @@ commands: { test: "cargo test" }
         "envsplitunquoted",
         "envinvalidassignment",
         "envblocksignal",
+        "timeoutdashdash",
+        "tasksetdashdash",
         "anchored",
         "anchoralias",
         "shellcheck",
@@ -2256,6 +2285,7 @@ commands: { test: "cargo test" }
         "managedjustenv",
         "managedjustdynamic",
         "declaretarget",
+        "substitutiontarget",
         "dockeruncertainrenamed",
         "podmanuncertainrenamedrustc",
         "chained",

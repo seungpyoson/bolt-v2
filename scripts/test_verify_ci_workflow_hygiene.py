@@ -2437,6 +2437,7 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "justfile": "check:\n    CARGO_TARGET_DIR=/tmp/raw cargo check\n",
             "justfile.raw": "test:\n    cargo test\n",
             "justfile.spoof": 'bad:\n    echo "BOLT_MANAGED_JUST exit"\n    cargo build\n',
+            "justfile.managed-spoof": 'managed-build:\n    echo BOLT_MANAGED_JUST rust_verification.py run exit 2\n    cargo build\n',
             "scripts/raw.sh": "#!/usr/bin/env bash\ncargo build\n",
             "scripts/raw-substitution-dollar.sh": "#!/usr/bin/env bash\nx=$(cargo build)\n",
             "scripts/raw-substitution-quoted.sh": "#!/usr/bin/env bash\nx=\"$(cargo build)\"\n",
@@ -2474,6 +2475,8 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"justfile raw-cargo drift was silent: {repo_errors!r}")
     if not any("justfile.spoof" in error and expected in error for error in repo_errors):
         raise AssertionError(f"spoofed justfile managed-guard drift was silent: {repo_errors!r}")
+    if not any("justfile.managed-spoof" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"spoofed managed just recipe guard drift was silent: {repo_errors!r}")
     if not any("scripts/raw.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-substitution-dollar.sh" in error and expected in error for error in repo_errors):

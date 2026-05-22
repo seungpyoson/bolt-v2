@@ -2982,6 +2982,14 @@ def tokens_have_repo_automation_raw_cargo(
     return tokens_have_raw_cargo_launch(tokens, variables=variables)
 
 
+def is_managed_just_recipe_guard(recipe: str, stripped_line: str) -> bool:
+    expected = (
+        f'if [ "${{BOLT_MANAGED_JUST:-}}" != "1" ]; then echo "ERROR: {recipe} '
+        'must run through scripts/rust_verification.py run"; exit 2; fi'
+    )
+    return stripped_line == expected
+
+
 def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
     errors: list[str] = []
     managed_just_recipe = False
@@ -3002,9 +3010,7 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
         if (
             is_justfile
             and current_just_recipe in {"managed-build", "managed-clippy", "managed-test"}
-            and "BOLT_MANAGED_JUST" in stripped
-            and "rust_verification.py run" in stripped
-            and "exit 2" in stripped
+            and is_managed_just_recipe_guard(current_just_recipe, stripped)
         ):
             managed_just_recipe = True
             continue

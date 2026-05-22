@@ -42,8 +42,7 @@ fn emit_git_head_rerun_paths(manifest_dir: &Path) {
 }
 
 pub fn git_head_rerun_paths(manifest_dir: &Path) -> Vec<PathBuf> {
-    let dot_git = manifest_dir.join(".git");
-    let Some(git_dir) = git_dir_from_dot_git(manifest_dir, &dot_git) else {
+    let Some(git_dir) = git_dir_from_manifest(manifest_dir) else {
         return Vec::new();
     };
 
@@ -64,19 +63,21 @@ pub fn git_head_rerun_paths(manifest_dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn git_dir_from_dot_git(manifest_dir: &Path, dot_git: &Path) -> Option<PathBuf> {
+fn git_dir_from_manifest(manifest_dir: &Path) -> Option<PathBuf> {
+    let dot_git = manifest_dir.join(".git");
     if dot_git.is_dir() {
-        return Some(dot_git.to_path_buf());
+        return Some(canonicalize_existing(dot_git));
     }
 
-    let dot_git_content = fs::read_to_string(dot_git).ok()?;
+    let dot_git_content = fs::read_to_string(&dot_git).ok()?;
     let git_dir = dot_git_content.strip_prefix("gitdir:").map(str::trim)?;
     let git_dir = PathBuf::from(git_dir);
-    if git_dir.is_absolute() {
-        Some(git_dir)
+    let git_dir = if git_dir.is_absolute() {
+        git_dir
     } else {
-        Some(manifest_dir.join(git_dir))
-    }
+        manifest_dir.join(git_dir)
+    };
+    Some(canonicalize_existing(git_dir))
 }
 
 fn git_common_dir(git_dir: &Path) -> PathBuf {
@@ -89,7 +90,11 @@ fn git_common_dir(git_dir: &Path) -> PathBuf {
     } else {
         git_dir.join(common_dir)
     };
-    fs::canonicalize(&common_dir).unwrap_or(common_dir)
+    canonicalize_existing(common_dir)
+}
+
+fn canonicalize_existing(path: PathBuf) -> PathBuf {
+    fs::canonicalize(&path).unwrap_or(path)
 }
 
 fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {

@@ -5267,6 +5267,8 @@ fn apply_selection_snapshot_to_active(
     if same_market_transition(active, &next) {
         active.phase = next.phase;
         active.forced_flat = next.forced_flat;
+        active.market_selection_outcome = next.market_selection_outcome;
+        active.interval_end_ms = next.interval_end_ms;
         return;
     }
     *active = next;
@@ -5279,7 +5281,9 @@ fn same_market_transition(current: &ActiveMarketState, next: &ActiveMarketState)
     current.market_id.is_some()
         && current.market_id == next.market_id
         && current.instrument_id == next.instrument_id
+        && current.market_selection_outcome == next.market_selection_outcome
         && current.interval_start_ms == next.interval_start_ms
+        && current.interval_end_ms == next.interval_end_ms
 }
 
 fn same_market_interval_rollover(current: &ActiveMarketState, next: &ActiveMarketState) -> bool {
@@ -14031,6 +14035,7 @@ mod tests {
             submit_admission,
         );
         register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.active.interval_end_ms = Some(301_999);
 
         strategy
             .try_submit_entry_order(2_000)
@@ -14046,8 +14051,8 @@ mod tests {
         assert_eq!(snapshot.polymarket_market_start_timestamp_ms, Some(1_000));
         assert_eq!(
             snapshot.polymarket_market_end_timestamp_ms,
-            Some(301_000),
-            "market end must bind to selection timestamp plus expiry-at-selection"
+            Some(301_999),
+            "market end must bind to selected expiration without seconds rounding"
         );
     }
 
@@ -14076,6 +14081,35 @@ mod tests {
         };
 
         assert_eq!(snapshot.market_selection_outcome, "next");
+    }
+
+    #[test]
+    fn same_market_transition_replaces_changed_selection_metadata() {
+        let mut active =
+            ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+        assert_eq!(
+            active.market_selection_outcome,
+            MarketSelectionOutcome::Current
+        );
+        assert_eq!(active.interval_end_ms, Some(301_000));
+
+        let mut next_market = candidate_market("MKT-1", 1_000);
+        next_market.selection_outcome = MarketSelectionOutcome::Next;
+        next_market.expiration_ts_ms = 301_999;
+        let next = selection_snapshot(
+            1_000,
+            SelectionState::Active {
+                market: next_market,
+            },
+        );
+
+        apply_selection_snapshot_to_active(&mut active, &next, 0);
+
+        assert_eq!(
+            active.market_selection_outcome,
+            MarketSelectionOutcome::Next
+        );
+        assert_eq!(active.interval_end_ms, Some(301_999));
     }
 
     #[test]

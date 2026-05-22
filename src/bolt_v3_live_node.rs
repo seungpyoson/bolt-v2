@@ -662,6 +662,16 @@ impl std::error::Error for BoltV3LiveNodeError {
 pub fn build_bolt_v3_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
+    let resolved = resolve_bolt_v3_live_node_secrets(loaded)?;
+    let adapters =
+        map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
+    let (runtime, _summary) = build_live_node_with_clients(loaded, &resolved, adapters)?;
+    Ok(runtime)
+}
+
+fn resolve_bolt_v3_live_node_secrets(
+    loaded: &LoadedBoltV3Config,
+) -> Result<ResolvedBoltV3Secrets, BoltV3LiveNodeError> {
     check_no_forbidden_credential_env_vars(&loaded.root)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
     // Per #252 design review: own the resolver session at the bolt-v3
@@ -672,22 +682,13 @@ pub fn build_bolt_v3_live_node(
     // (#255-2) so operator-facing messages don't pretend a venue or SSM
     // path is involved before any path has been read.
     let session = SsmResolverSession::new().map_err(BoltV3LiveNodeError::SecretResolverSetup)?;
-    let resolved =
-        resolve_bolt_v3_secrets(&session, loaded).map_err(BoltV3LiveNodeError::SecretResolution)?;
-    let adapters =
-        map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    let (runtime, _summary) = build_live_node_with_clients(loaded, &resolved, adapters)?;
-    Ok(runtime)
+    resolve_bolt_v3_secrets(&session, loaded).map_err(BoltV3LiveNodeError::SecretResolution)
 }
 
 pub fn build_bolt_v3_no_submit_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
-    check_no_forbidden_credential_env_vars(&loaded.root)
-        .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
-    let session = SsmResolverSession::new().map_err(BoltV3LiveNodeError::SecretResolverSetup)?;
-    let resolved =
-        resolve_bolt_v3_secrets(&session, loaded).map_err(BoltV3LiveNodeError::SecretResolution)?;
+    let resolved = resolve_bolt_v3_live_node_secrets(loaded)?;
     let adapters = no_submit_transport_adapter_configs(loaded, &resolved)?;
     let no_submit_loaded = no_submit_transport_loaded_config(loaded);
     let (runtime, _summary) = build_live_node_with_clients(&no_submit_loaded, &resolved, adapters)?;

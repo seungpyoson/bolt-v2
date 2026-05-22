@@ -226,6 +226,9 @@ pub enum BoltV3OperatorArtifactError {
     InvalidOutputPath {
         field: &'static str,
     },
+    InvalidOutputPathParent {
+        field: &'static str,
+    },
     OutputPathCollision,
     Random(getrandom::Error),
     Serialize(serde_json::Error),
@@ -316,16 +319,13 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "static manifest field `{field}` must be a lowercase sha256 hex string"
             ),
-            Self::StaticManifestArtifactFileRead { name, path, source } => write!(
+            Self::StaticManifestArtifactFileRead { name, source, .. } => write!(
                 f,
-                "failed to read static manifest artifact `{name}` at `{}`: {source}",
-                path.display()
+                "failed to read static manifest artifact `{name}`: {source}"
             ),
-            Self::StaticManifestArtifactFileHashMismatch { name, path } => write!(
-                f,
-                "static manifest artifact `{name}` file hash mismatch at `{}`",
-                path.display()
-            ),
+            Self::StaticManifestArtifactFileHashMismatch { name, .. } => {
+                write!(f, "static manifest artifact `{name}` file hash mismatch")
+            }
             Self::InvalidOperatorEvidenceHash { field } => write!(
                 f,
                 "`[live_canary.operator_evidence].{field}` must be a lowercase sha256 hex string"
@@ -333,6 +333,10 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::InvalidOutputPath { field } => write!(
                 f,
                 "operator packet output path field `{field}` must not contain parent-directory components"
+            ),
+            Self::InvalidOutputPathParent { field } => write!(
+                f,
+                "operator packet output path field `{field}` parent must be a real directory or creatable descendant"
             ),
             Self::OutputPathCollision => write!(
                 f,
@@ -817,7 +821,9 @@ pub fn assemble_operator_packet_from_static_manifest(
     let approval_envelope_path =
         resolve_loaded_config_path(loaded, &operator_evidence.approval_envelope_path);
     let operator_packet_path = resolve_loaded_config_path_from_path(loaded, operator_packet_path);
-    if approval_envelope_path == operator_packet_path {
+    validate_output_parent("approval_envelope_path", &approval_envelope_path)?;
+    validate_output_parent("operator_packet_path", &operator_packet_path)?;
+    if output_paths_collide(&approval_envelope_path, &operator_packet_path) {
         return Err(BoltV3OperatorArtifactError::OutputPathCollision);
     }
     ensure_output_path_absent(&approval_envelope_path)?;
@@ -827,7 +833,13 @@ pub fn assemble_operator_packet_from_static_manifest(
         write_json_artifact_create_new(&approval_envelope_path, &approval_envelope)?;
     debug_assert_eq!(approval_envelope_written.sha256, approval_envelope_sha256);
     let operator_packet_written =
-        write_json_artifact_create_new(&operator_packet_path, &operator_packet)?;
+        match write_json_artifact_create_new(&operator_packet_path, &operator_packet) {
+            Ok(written) => written,
+            Err(error) => {
+                let _ = fs::remove_file(&approval_envelope_path);
+                return Err(error);
+            }
+        };
     let static_manifest_written = WrittenOperatorArtifact {
         path: static_manifest_path.to_path_buf(),
         sha256: parsed_static_manifest.sha256,
@@ -1037,11 +1049,13 @@ fn write_json_artifact_create_new<T: Serialize>(
             path: path.to_path_buf(),
             source,
         })?;
-    file.write_all(&bytes)
-        .map_err(|source| BoltV3OperatorArtifactError::Write {
+    if let Err(source) = file.write_all(&bytes) {
+        let _ = fs::remove_file(path);
+        return Err(BoltV3OperatorArtifactError::Write {
             path: path.to_path_buf(),
             source,
-        })?;
+        });
+    }
     Ok(WrittenOperatorArtifact {
         path: path.to_path_buf(),
         sha256: hex::encode(Sha256::digest(bytes)),
@@ -1059,6 +1073,55 @@ fn ensure_output_path_absent(path: &Path) -> Result<(), BoltV3OperatorArtifactEr
         });
     }
     Ok(())
+}
+
+fn validate_output_parent(
+    field: &'static str,
+    path: &Path,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return Ok(());
+    };
+    for ancestor in parent.ancestors() {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        match fs::metadata(ancestor) {
+            Ok(metadata) => {
+                return if metadata.is_dir() {
+                    Ok(())
+                } else {
+                    Err(BoltV3OperatorArtifactError::InvalidOutputPathParent { field })
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(BoltV3OperatorArtifactError::InvalidOutputPathParent { field }),
+        }
+    }
+    Ok(())
+}
+
+fn output_paths_collide(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (
+        canonical_existing_parent_path(left),
+        canonical_existing_parent_path(right),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn canonical_existing_parent_path(path: &Path) -> Option<PathBuf> {
+    let file_name = path.file_name()?;
+    let parent = path.parent()?;
+    let canonical_parent = fs::canonicalize(parent).ok()?;
+    Some(normalize_path_components(&canonical_parent.join(file_name)))
 }
 
 fn json_artifact_sha256<T: Serialize>(value: &T) -> Result<String, BoltV3OperatorArtifactError> {
@@ -1082,14 +1145,14 @@ fn sha256_file_for_static_manifest(
 }
 
 fn read_file_bounded(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
-    let mut file = fs::File::open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "operator artifact path is not a regular file",
         ));
     }
+    let mut file = fs::File::open(path)?;
     let mut bytes = Vec::new();
     Read::by_ref(&mut file)
         .take(max_bytes.saturating_add(1))

@@ -4291,14 +4291,6 @@ reason = "This is a fail-closed redacted diagnostic template for refusing packet
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"static manifest artifact `{name}` file hash mismatch at `{}`"'''
-context = '''"static manifest artifact `{name}` file hash mismatch at `{}`",'''
-classification = "operator_artifact_error_template"
-reason = "This is a fail-closed diagnostic template for artifact-file SHA drift during packet assembly, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
-kind = "string"
 literal = '''"ssm_manifest_sha256"'''
 context = '''"ssm_manifest_sha256",'''
 classification = "operator_evidence_schema_field"
@@ -4363,10 +4355,26 @@ reason = "This names the TOML-owned approval-envelope output path while validati
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"approval_envelope_path"'''
+context = '''validate_output_parent("approval_envelope_path", &approval_envelope_path)?;'''
+classification = "operator_artifact_output_path_field"
+reason = "This names the TOML-owned approval-envelope output path while validating output parent state before packet assembly writes, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"operator_packet_path"'''
 context = '''validate_output_path_components("operator_packet_path", operator_packet_path)?;'''
 classification = "operator_artifact_output_path_field"
 reason = "This names the assembler output packet path while validating path shape before packet assembly writes, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"operator_packet_path"'''
+context = '''validate_output_parent("operator_packet_path", &operator_packet_path)?;'''
+classification = "operator_artifact_output_path_field"
+reason = "This names the assembler output packet path while validating output parent state before packet assembly writes, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

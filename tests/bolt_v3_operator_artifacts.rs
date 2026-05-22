@@ -631,6 +631,8 @@ fn approval_packet_assembly_rejects_static_manifest_integrity_gaps() {
     let mut loaded = load_fixture_with_live_canary();
     let temp = tempfile::tempdir().expect("tempdir should create");
     let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let approval_envelope_path =
+        std::path::PathBuf::from(&operator_evidence.approval_envelope_path);
     let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
     loaded
         .root
@@ -729,14 +731,25 @@ fn approval_packet_assembly_rejects_static_manifest_integrity_gaps() {
                 &operator_packet_path,
             )
             .expect_err("manifest integrity gap should fail closed");
+        let message = error.to_string();
 
         assert!(
-            error.to_string().contains("static manifest"),
-            "{case_name} error should cite static manifest: {error}"
+            message.contains("static manifest"),
+            "{case_name} error should cite static manifest: {message}"
         );
         assert!(
-            !error.to_string().contains("/bolt/not-a-real-secret-path"),
-            "{case_name} error must not echo supplied unsafe path: {error}"
+            !message.contains("/bolt/not-a-real-secret-path"),
+            "{case_name} error must not echo supplied unsafe path: {message}"
+        );
+        if case_name == "file hash mismatch" {
+            assert!(
+                !message.contains(&operator_evidence.financial_envelope_path),
+                "{case_name} error must not echo configured artifact path: {message}"
+            );
+        }
+        assert!(
+            !approval_envelope_path.exists(),
+            "{case_name} must not leave approval envelope"
         );
         assert!(
             !operator_packet_path.exists(),
@@ -1272,6 +1285,166 @@ fn approval_packet_assembly_rejects_equivalent_output_path_collision_before_writ
     assert!(
         !approval_envelope_path.exists(),
         "equivalent colliding outputs must not leave approval envelope"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn approval_packet_assembly_rejects_symlinked_output_parent_collision_before_writes() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let real_dir = temp.path().join("real-output");
+    let alias_dir = temp.path().join("alias-output");
+    std::fs::create_dir_all(&real_dir).expect("real output dir should create");
+    std::os::unix::fs::symlink(&real_dir, &alias_dir).expect("output symlink should create");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    operator_evidence.approval_envelope_path = real_dir
+        .join("approval-envelope.json")
+        .to_string_lossy()
+        .to_string();
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence.clone());
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs,
+        Vec::new(),
+    );
+    let operator_packet_path = alias_dir.join("approval-envelope.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+        &loaded,
+        &manifest_path,
+        &operator_packet_path,
+    )
+    .expect_err("symlinked parent collision should fail closed before writes");
+
+    assert!(
+        error.to_string().contains("output path"),
+        "symlinked parent collision should name output path issue: {error}"
+    );
+    assert!(
+        !std::path::Path::new(&operator_evidence.approval_envelope_path).exists(),
+        "symlinked parent collision must not leave approval envelope"
+    );
+}
+
+#[test]
+fn approval_packet_assembly_rejects_invalid_output_parent_before_writes() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    let approval_envelope_path = operator_evidence.approval_envelope_path.clone();
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence);
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs,
+        Vec::new(),
+    );
+    let invalid_parent = temp.path().join("not-a-directory");
+    std::fs::write(&invalid_parent, b"not a directory").expect("invalid parent file should write");
+    let operator_packet_path = temp
+        .path()
+        .join("not-a-directory")
+        .join("operator-evidence-packet.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+        &loaded,
+        &manifest_path,
+        &operator_packet_path,
+    )
+    .expect_err("invalid output parent should fail before writes");
+
+    assert!(
+        error.to_string().contains("output path"),
+        "invalid output parent should name output path issue: {error}"
+    );
+    assert!(
+        !std::path::Path::new(&approval_envelope_path).exists(),
+        "invalid output parent must not leave approval envelope"
+    );
+    assert!(
+        !operator_packet_path.exists(),
+        "invalid output parent must not leave operator packet"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn approval_packet_assembly_rejects_symlinked_static_artifact_before_writes() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    let mut refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    let real_financial_path = std::path::PathBuf::from(&operator_evidence.financial_envelope_path);
+    let symlink_path = temp.path().join("financial-envelope-link.json");
+    std::fs::remove_file(&real_financial_path).expect("real financial artifact should remove");
+    std::fs::write(
+        &real_financial_path,
+        br#"{"record_kind":"financial-envelope"}"#,
+    )
+    .expect("real financial artifact should rewrite");
+    std::os::unix::fs::symlink(&real_financial_path, &symlink_path)
+        .expect("financial artifact symlink should create");
+    let bytes = std::fs::read(&real_financial_path).expect("real financial artifact should read");
+    operator_evidence.financial_envelope_path = symlink_path.to_string_lossy().to_string();
+    operator_evidence.financial_envelope_sha256 = sha256_bytes(&bytes);
+    refs.iter_mut()
+        .find(|artifact| artifact["name"] == "financial-envelope")
+        .expect("financial envelope ref should exist")["path"] =
+        serde_json::json!(operator_evidence.financial_envelope_path);
+    refs.iter_mut()
+        .find(|artifact| artifact["name"] == "financial-envelope")
+        .expect("financial envelope ref should exist")["sha256"] =
+        serde_json::json!(operator_evidence.financial_envelope_sha256);
+    let approval_envelope_path = operator_evidence.approval_envelope_path.clone();
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence);
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs,
+        Vec::new(),
+    );
+    let operator_packet_path = temp.path().join("operator-evidence-packet.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+        &loaded,
+        &manifest_path,
+        &operator_packet_path,
+    )
+    .expect_err("symlinked static artifact should fail closed");
+
+    assert!(
+        error.to_string().contains("regular file"),
+        "symlinked artifact error should cite regular-file policy: {error}"
+    );
+    assert!(
+        !std::path::Path::new(&approval_envelope_path).exists(),
+        "symlinked artifact must not leave approval envelope"
+    );
+    assert!(
+        !operator_packet_path.exists(),
+        "symlinked artifact must not leave operator packet"
     );
 }
 

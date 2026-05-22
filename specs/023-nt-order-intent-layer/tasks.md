@@ -610,6 +610,15 @@
 - [x] T277 [US2] Add direct disproof coverage proving the OMS alternate helper covers every current NT `OmsType` variant used by the test
 - [x] T278 [US2] Verify focused Phase 8 tests, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
+## Phase 64: TDD Slice 60 - Phase 8 Order Enum Canonicalization
+
+**Goal**: Resolve no-mistakes review evidence that Phase 8 financial-envelope order-shape enum comparisons canonicalized `oms_type` but still compared entry, exit, and forced-exit order enum fields as raw strings. The fix must parse through NautilusTrader enum types, must not add Bolt-owned enum value allowlists, and must not add venue, market, strategy, maker-only, or taker-only policy.
+
+- [x] T279 [P] [US2] Record no-mistakes review commit `386850dc` and reject its hardcoded test-value shape in `specs/023-nt-order-intent-layer/research.md`
+- [x] T280 [US2] RED: Add Phase 8 financial-envelope regression proving NT-equivalent order enum spellings validate and invalid approved order enum strings fail closed before approval consumption
+- [x] T281 [US2] GREEN: Canonicalize entry, exit, and forced-exit `OrderSide`, `PositionSide`, `OrderType`, `TimeInForce`, `TriggerType`, and `TrailingOffsetType` values through pinned NautilusTrader enum parsing before approval comparison
+- [ ] T282 [US2] Verify focused Phase 8 test, formatting/diff checks, schema/runtime verifiers, source fences, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -673,6 +682,7 @@
 - Phase 61 is closed by T269 verification: Phase 8/order-intent tests, schema/runtime verifiers, source fences, full relevant local checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state were refreshed by the final exact-head evidence recorded in `research.md`.
 - Phase 62 is closed by T274 verification: Phase 8 OMS canonicalization tests, schema/runtime verifiers, full relevant local checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state were refreshed by the final exact-head evidence recorded in `research.md`.
 - Phase 63 is closed by T278 verification: invalid-OMS fail-closed coverage, helper disproof coverage, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state were refreshed by the final exact-head evidence recorded in `research.md`.
+- Phase 64 blocks final Phase 8 approval-envelope completion until focused tests, verifiers, source fences, exact-head PR checks, external reviewer state, and no-mistakes state are refreshed for the order-enum canonicalization head.
 
 ## Parallel Opportunities
 

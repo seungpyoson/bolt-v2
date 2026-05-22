@@ -2917,6 +2917,258 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     std::fs::remove_file(&uppercase_oms_consumption_path)
         .expect("uppercase OMS consumption evidence should remove");
 
+    let financial_envelope_order_enum_fields = [
+        "entry_side",
+        "entry_position_side",
+        "entry_order_type",
+        "entry_time_in_force",
+        "entry_trigger_type",
+        "entry_trailing_offset_type",
+        "exit_side",
+        "exit_position_side",
+        "exit_order_type",
+        "exit_time_in_force",
+        "exit_trigger_type",
+        "exit_trailing_offset_type",
+        "forced_exit_side",
+        "forced_exit_position_side",
+        "forced_exit_order_type",
+        "forced_exit_time_in_force",
+        "forced_exit_trigger_type",
+        "forced_exit_trailing_offset_type",
+    ];
+    let uppercase_order_enums_financial_envelope_path = temp
+        .path()
+        .join("phase8-financial-envelope-uppercase-order-enums.json");
+    let mut uppercase_order_enums_financial_envelope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&financial_envelope_path).expect("financial envelope should read"),
+    )
+    .expect("financial envelope should parse");
+    let uppercase_order_enums = uppercase_order_enums_financial_envelope
+        .as_object_mut()
+        .expect("financial envelope should be an object");
+    let mut changed_order_enum_fields = 0usize;
+    for field in financial_envelope_order_enum_fields {
+        if let Some(value) = uppercase_order_enums
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_ascii_uppercase)
+        {
+            if uppercase_order_enums
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                != Some(value.as_str())
+            {
+                changed_order_enum_fields += 1;
+            }
+            uppercase_order_enums.insert(field.to_string(), serde_json::Value::String(value));
+        }
+    }
+    assert!(
+        changed_order_enum_fields > 0,
+        "order enum regression should transform at least one approved envelope spelling"
+    );
+    let loaded_entry_side = loaded.strategies[0]
+        .config
+        .parameters
+        .as_table()
+        .and_then(|parameters| parameters.get("entry_order"))
+        .and_then(toml::Value::as_table)
+        .and_then(|entry_order| entry_order.get("side"))
+        .and_then(toml::Value::as_str)
+        .expect("loaded entry order side should exist");
+    let approved_entry_side = uppercase_order_enums_financial_envelope
+        .get("entry_side")
+        .and_then(serde_json::Value::as_str)
+        .expect("approved financial envelope entry side should exist");
+    assert_ne!(
+        approved_entry_side, loaded_entry_side,
+        "regression must prove comparison accepts NT-equivalent non-identical order enum text"
+    );
+    std::fs::write(
+        &uppercase_order_enums_financial_envelope_path,
+        serde_json::to_vec(&uppercase_order_enums_financial_envelope)
+            .expect("uppercase order-enum financial envelope should serialize"),
+    )
+    .expect("uppercase order-enum financial envelope should write");
+    let uppercase_order_enums_financial_envelope_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&uppercase_order_enums_financial_envelope_path)
+            .expect("uppercase order-enum financial envelope hash should compute");
+    let uppercase_order_enums_consumption_path = temp
+        .path()
+        .join("phase8-approval-consumed-uppercase-order-enums.json");
+    let mut uppercase_order_enums_envelope = envelope.clone();
+    uppercase_order_enums_envelope.financial_envelope_path =
+        uppercase_order_enums_financial_envelope_path
+            .to_string_lossy()
+            .to_string();
+    uppercase_order_enums_envelope.financial_envelope_sha256 =
+        uppercase_order_enums_financial_envelope_hash;
+    uppercase_order_enums_envelope.approval_consumption_path =
+        uppercase_order_enums_consumption_path
+            .to_string_lossy()
+            .to_string();
+    uppercase_order_enums_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            1_500,
+        )
+        .expect("financial envelope should canonicalize NT order enum spellings");
+    assert!(
+        uppercase_order_enums_consumption_path.exists(),
+        "NT-equivalent order enum spellings should create consumption evidence"
+    );
+    std::fs::remove_file(&uppercase_order_enums_consumption_path)
+        .expect("uppercase order-enum consumption evidence should remove");
+
+    let mut uppercase_order_enums_loaded = loaded.clone();
+    let uppercase_order_parameters = uppercase_order_enums_loaded.strategies[0]
+        .config
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a TOML table");
+    for (order_key, order_fields) in [
+        (
+            "entry_order",
+            [
+                "side",
+                "position_side",
+                "order_type",
+                "time_in_force",
+                "trigger_type",
+                "trailing_offset_type",
+            ],
+        ),
+        (
+            "exit_order",
+            [
+                "side",
+                "position_side",
+                "order_type",
+                "time_in_force",
+                "trigger_type",
+                "trailing_offset_type",
+            ],
+        ),
+        (
+            "forced_exit_order",
+            [
+                "side",
+                "position_side",
+                "order_type",
+                "time_in_force",
+                "trigger_type",
+                "trailing_offset_type",
+            ],
+        ),
+    ] {
+        let order = uppercase_order_parameters
+            .get_mut(order_key)
+            .and_then(toml::Value::as_table_mut)
+            .expect("strategy order parameters should be a TOML table");
+        for field in order_fields {
+            if let Some(value) = order
+                .get(field)
+                .and_then(toml::Value::as_str)
+                .map(str::to_ascii_uppercase)
+            {
+                order.insert(field.to_string(), toml::Value::String(value));
+            }
+        }
+    }
+    let uppercase_loaded_order_enums_consumption_path = temp
+        .path()
+        .join("phase8-approval-consumed-uppercase-loaded-order-enums.json");
+    let mut uppercase_loaded_order_enums_envelope = envelope.clone();
+    uppercase_loaded_order_enums_envelope.approval_consumption_path =
+        uppercase_loaded_order_enums_consumption_path
+            .to_string_lossy()
+            .to_string();
+    uppercase_loaded_order_enums_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &uppercase_order_enums_loaded,
+            1_500,
+        )
+        .expect("loaded TOML order enum spellings should canonicalize before comparison");
+    assert!(
+        uppercase_loaded_order_enums_consumption_path.exists(),
+        "NT-equivalent loaded TOML order enum spellings should create consumption evidence"
+    );
+    std::fs::remove_file(&uppercase_loaded_order_enums_consumption_path)
+        .expect("uppercase loaded order-enum consumption evidence should remove");
+
+    let invalid_order_enum_financial_envelope_path = temp
+        .path()
+        .join("phase8-financial-envelope-invalid-order-enum.json");
+    let mut invalid_order_enum_financial_envelope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&financial_envelope_path).expect("financial envelope should read"),
+    )
+    .expect("financial envelope should parse");
+    let invalid_order_enum_field = financial_envelope_order_enum_fields
+        .iter()
+        .find_map(|field| {
+            invalid_order_enum_financial_envelope
+                .get(*field)
+                .and_then(serde_json::Value::as_str)
+                .map(|value| (*field, format!("{value}_invalid")))
+        })
+        .expect("financial envelope should contain at least one order enum field");
+    invalid_order_enum_financial_envelope
+        .as_object_mut()
+        .expect("financial envelope should be an object")
+        .insert(
+            invalid_order_enum_field.0.to_string(),
+            serde_json::Value::String(invalid_order_enum_field.1),
+        );
+    std::fs::write(
+        &invalid_order_enum_financial_envelope_path,
+        serde_json::to_vec(&invalid_order_enum_financial_envelope)
+            .expect("invalid order-enum financial envelope should serialize"),
+    )
+    .expect("invalid order-enum financial envelope should write");
+    let invalid_order_enum_financial_envelope_hash =
+        Phase8OperatorApprovalEnvelope::sha256_file(&invalid_order_enum_financial_envelope_path)
+            .expect("invalid order-enum financial envelope hash should compute");
+    let invalid_order_enum_consumption_path = temp
+        .path()
+        .join("phase8-approval-consumed-invalid-order-enum.json");
+    let mut invalid_order_enum_envelope = envelope.clone();
+    invalid_order_enum_envelope.financial_envelope_path =
+        invalid_order_enum_financial_envelope_path
+            .to_string_lossy()
+            .to_string();
+    invalid_order_enum_envelope.financial_envelope_sha256 =
+        invalid_order_enum_financial_envelope_hash;
+    invalid_order_enum_envelope.approval_consumption_path = invalid_order_enum_consumption_path
+        .to_string_lossy()
+        .to_string();
+    let invalid_order_enum_error = invalid_order_enum_envelope
+        .validate_and_consume_against(
+            "expected-head",
+            "expected-config-hash",
+            "operator-approved-canary-001",
+            &loaded,
+            1_500,
+        )
+        .expect_err("unparseable financial envelope order enum should fail closed");
+    assert!(
+        invalid_order_enum_error.to_string().contains(&format!(
+            "phase8 financial envelope `{}` must be a NautilusTrader",
+            invalid_order_enum_field.0
+        )),
+        "error should mention invalid order enum parsing: {invalid_order_enum_error}"
+    );
+    assert!(
+        !invalid_order_enum_consumption_path.exists(),
+        "invalid order enum must not create consumption evidence"
+    );
+
     let invalid_oms_financial_envelope_path = temp
         .path()
         .join("phase8-financial-envelope-invalid-oms.json");

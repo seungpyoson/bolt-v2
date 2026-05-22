@@ -34,7 +34,7 @@
 
 ## Decision: Protect Active, Default, Project-Pinned, And Exact-Retained Toolchains
 
-**Rationale**: The repository-root `rust-toolchain.toml` pins `1.95.0`, `Cargo.toml` requires Rust `1.95.0`, and local `rustup toolchain list` reports `1.95.0` active and `1.94.1` default. Removing active/default/pinned toolchains can break local work. Rustup age and directory mtime are not reliable cleanup predicates, so removal eligibility must come only from exact configured installed toolchain names after protection is applied.
+**Rationale**: The repository-root `rust-toolchain.toml` pins `1.95.0`, `Cargo.toml` requires Rust `1.95.0`, and local `rustup toolchain list` reports `1.95.0-aarch64-apple-darwin` active and `1.94.1-aarch64-apple-darwin` default. Removing active/default/pinned toolchains can break local work. Rustup age and directory mtime are not reliable cleanup predicates, so removal eligibility must come only from exact configured installed toolchain names after protection is applied.
 
 **Alternatives considered**:
 - Keep only the project pin: rejected because default/active may support adjacent current work.

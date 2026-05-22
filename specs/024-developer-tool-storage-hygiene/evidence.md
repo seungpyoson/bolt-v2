@@ -36,7 +36,7 @@ Commands measured directory sizes only. No secret file contents were printed.
 | `~/.rustup/toolchains` | 4.3 GiB | Three installed toolchains. |
 | `~/.rustup/toolchains/1.94.1-aarch64-apple-darwin` | 1.4 GiB, default | Protected unless no project and no active process uses it. |
 | `~/.rustup/toolchains/1.95.0-aarch64-apple-darwin` | 1.4 GiB, active | Protected; it matches `rust-toolchain.toml`. |
-| `~/.rustup/toolchains/stable-aarch64-apple-darwin` | 1.5 GiB | Candidate only if not default, not active, not pinned, and past retention. |
+| `~/.rustup/toolchains/stable-aarch64-apple-darwin` | 1.5 GiB | Candidate only if its exact installed toolchain name is configured in `remove_exact_names` after active/default/project-pin protections. |
 
 ## Bolt Source Trace
 
@@ -77,7 +77,7 @@ NT source is therefore N/A for the cleanup mechanics, except that Bolt must not 
 | Codex config | Local `~/.codex/config.toml` has a `[tui]` table but no matched `log_dir`, `history.max_bytes`, `history.persistence`, `retention`, `rotation`, or `ttl` keys from the non-secret pattern search. | Current install is not configured to cap Codex history or relocate logs. |
 | OpenAI Codex config reference | Documents `history.max_bytes`, `history.persistence`, and `log_dir`: https://developers.openai.com/codex/config-reference | Native support exists for history file size and log directory, but not for `codex-tui.log` rotation or `sessions/**/*.jsonl` TTL. |
 | Factory | `factory` executable was not found; `~/.factory/logs/droid-log-single.log` exists. | No native Factory cleanup capability proven. |
-| rustup | `rustup toolchain list` reports stable, `1.94.1` default, and `1.95.0` active. | rustup can list/remove toolchains, but #375 must protect active, default, and project-pinned toolchains. |
+| rustup | `rustup toolchain list` reports `stable-aarch64-apple-darwin`, `1.94.1-aarch64-apple-darwin` default, and `1.95.0-aarch64-apple-darwin` active. | rustup can list/remove toolchains, but #375 must protect active, default, and repository-root project-pinned toolchains. |
 
 ## Phase 1 Developer-Tool Enumeration
 
@@ -140,7 +140,7 @@ Future-reachable paths:
 Current behavior:
 
 - Codex log/session storage is multi-GiB and lacks local rotation/TTL configuration.
-- rustup has active/default/stable toolchains installed, with `1.95.0` active and project-pinned.
+- rustup has active/default/stable toolchains installed, with `1.95.0-aarch64-apple-darwin` active and the repository-root pin set to `1.95.0`.
 - Factory droid log is small now but has historical evidence of unbounded growth.
 
 Latent risk:

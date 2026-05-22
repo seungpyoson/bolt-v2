@@ -45,7 +45,7 @@ active_writer_processes = ["factory", "droid"]
 [rustup.toolchains]
 path_family = "~/.rustup/toolchains/*"
 protect_active_default_project_pins = true
-retain_exact_names = ["1.95.0"]
+retain_exact_names = ["1.95.0-aarch64-apple-darwin"]
 remove_exact_names = []
 
 [preflight]

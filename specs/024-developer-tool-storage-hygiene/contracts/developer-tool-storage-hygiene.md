@@ -44,7 +44,6 @@ active_writer_processes = ["factory", "droid"]
 
 [rustup.toolchains]
 path_family = "~/.rustup/toolchains/*"
-protect_active_default_project_pins = true
 retain_exact_names = ["1.95.0-aarch64-apple-darwin"]
 remove_exact_names = []
 
@@ -119,7 +118,7 @@ Apply behavior is allowed only after explicit operator approval for any new oper
 - Refuse mutable Codex and Factory actions when configured active writer processes are detected.
 - Refuse protected and report-only targets.
 - Always refuse report-only Codex SQLite db/WAL, Codex history, and Codex archived-session targets.
-- Preserve active, default, and repository-root project-pinned rustup toolchains even if their exact names appear in removal config.
+- Preserve active, default, and repository-root project-pinned rustup toolchains unconditionally, even if their exact names appear in removal config; TOML cannot disable these protections.
 - Remove rustup toolchains only when their exact installed toolchain name appears in `remove_exact_names`; age, mtime, wildcard, or pattern matching must never create a rustup removal candidate.
 - Emit a post-apply summary.
 

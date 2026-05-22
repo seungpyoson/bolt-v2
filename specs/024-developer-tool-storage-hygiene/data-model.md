@@ -39,7 +39,6 @@ Fields:
 - `factory_log.active_writer_processes`
 - `native_guidance.codex_history.max_bytes`
 - `native_guidance.codex_history.persistence`
-- `rustup_toolchains.protect_active_default_project_pins`
 - `rustup_toolchains.retain_exact_names`
 - `rustup_toolchains.remove_exact_names`
 - `preflight.free_disk_warning_bytes`
@@ -52,6 +51,7 @@ Validation:
 - Size and day values must be non-negative integers.
 - `retained_rotations` must be a bounded integer.
 - `retain_exact_names` and `remove_exact_names` must use exact installed toolchain names; no wildcard, substring, or pattern matching is allowed.
+- Active, default, and repository-root project-pinned rustup protections are unconditional and cannot be disabled by TOML.
 - Free-disk error threshold must be less than or equal to free-disk warning threshold.
 - Owned-storage error threshold must be greater than or equal to owned-storage warning threshold.
 - Report-only surfaces and native-guidance values cannot have apply actions.

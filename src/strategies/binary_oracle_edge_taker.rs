@@ -1608,7 +1608,10 @@ impl ActiveMarketState {
         let Some(interval_start_ms) = self.interval_start_ms else {
             return;
         };
-        let Some(anchor_price) = self.price_to_beat.or(Some(quote.price)) else {
+        let Some(anchor_price) = self
+            .price_to_beat
+            .filter(|value| is_positive_finite(*value))
+        else {
             return;
         };
         if quote.observed_ts_ms < interval_start_ms {
@@ -1638,8 +1641,7 @@ impl ActiveMarketState {
         };
         let Some(anchor_price) = self
             .price_to_beat
-            .or_else(|| best_healthy_oracle_price(snapshot))
-            .or(snapshot.fair_value)
+            .filter(|value| is_positive_finite(*value))
         else {
             return;
         };
@@ -9484,19 +9486,36 @@ mod tests {
     }
 
     #[test]
-    fn interval_open_captures_first_reference_tick_at_or_after_market_start() {
+    fn interval_open_captures_source_bound_price_to_beat_at_or_after_market_start() {
         let mut strategy = test_strategy();
-        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+        let mut snapshot = active_snapshot_with_start("MKT-1", 1_000);
+        let SelectionState::Active { market } = &mut snapshot.decision.state else {
+            panic!("expected active snapshot");
+        };
+        market.price_to_beat = Some(3_099.0);
+        strategy.apply_selection_snapshot(snapshot);
 
         strategy.observe_reference_snapshot(&reference_tick(900, 3_100.0));
         assert!(strategy.active.interval_open.is_none());
 
         strategy.observe_reference_snapshot(&reference_tick(1_000, 3_101.0));
-        assert_eq!(strategy.active.interval_open, Some(3_101.0));
+        assert_eq!(strategy.active.interval_open, Some(3_099.0));
     }
 
     #[test]
-    fn interval_open_uses_raw_reference_price_not_fused_reference_value() {
+    fn interval_open_requires_source_bound_price_to_beat_before_reference_quote_warms_market() {
+        let mut strategy = test_strategy();
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+
+        strategy.observe_reference_quote(&fast_spot("reference", 3_101.0, 1_000));
+
+        assert_eq!(strategy.active.interval_open, None);
+        assert_eq!(strategy.active.last_reference_ts_ms, None);
+        assert_eq!(strategy.active.warmup_count, INITIAL_COUNTER_U64);
+    }
+
+    #[test]
+    fn interval_open_does_not_use_reference_price_without_source_bound_price_to_beat() {
         let mut strategy = test_strategy();
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
 
@@ -9511,11 +9530,13 @@ mod tests {
             ],
         });
 
-        assert_eq!(strategy.active.interval_open, Some(3_100.0));
+        assert_eq!(strategy.active.interval_open, None);
+        assert_eq!(strategy.active.last_reference_ts_ms, None);
+        assert_eq!(strategy.active.warmup_count, INITIAL_COUNTER_U64);
     }
 
     #[test]
-    fn interval_open_prefers_polymarket_price_to_beat_over_reference() {
+    fn interval_open_uses_source_bound_price_to_beat_over_reference() {
         let mut strategy = test_strategy();
         let mut snapshot = active_snapshot_with_start("MKT-1", 1_000);
         let SelectionState::Active { market } = &mut snapshot.decision.state else {
@@ -9539,7 +9560,7 @@ mod tests {
     }
 
     #[test]
-    fn interval_open_falls_back_to_fused_reference_when_no_polymarket_or_oracle_anchor_exists() {
+    fn interval_open_does_not_use_fused_reference_without_source_bound_price_to_beat() {
         let mut strategy = test_strategy();
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
 
@@ -9551,7 +9572,9 @@ mod tests {
             venues: vec![],
         });
 
-        assert_eq!(strategy.active.interval_open, Some(3_107.0));
+        assert_eq!(strategy.active.interval_open, None);
+        assert_eq!(strategy.active.last_reference_ts_ms, None);
+        assert_eq!(strategy.active.warmup_count, INITIAL_COUNTER_U64);
     }
 
     #[test]
@@ -9708,7 +9731,12 @@ mod tests {
     fn freeze_continues_reference_preparation_without_opening_entries() {
         let mut strategy = test_strategy();
         strategy.config.warmup_tick_count = 2;
-        strategy.apply_selection_snapshot(freeze_snapshot_with_start("MKT-1", 1_000));
+        let mut snapshot = freeze_snapshot_with_start("MKT-1", 1_000);
+        let SelectionState::Freeze { market, .. } = &mut snapshot.decision.state else {
+            panic!("expected freeze snapshot");
+        };
+        market.price_to_beat = Some(3_100.0);
+        strategy.apply_selection_snapshot(snapshot);
 
         strategy.observe_reference_snapshot(&reference_tick(900, 3_099.0));
         assert!(strategy.active.interval_open.is_none());
@@ -9727,6 +9755,11 @@ mod tests {
         assert_eq!(strategy.active.warmup_count, 2);
         assert!(strategy.active.warmup_complete());
         assert!(strategy.active.forced_flat);
+        let gate = strategy.entry_gate_decision_at(1_100);
+        assert!(
+            gate.blocked_by
+                .contains(&EntryBlockReason::ForcedFlat(ForcedFlatReason::Freeze))
+        );
     }
 
     #[test]
@@ -9860,7 +9893,12 @@ mod tests {
     fn warmup_requires_consecutive_fresh_ticks() {
         let mut strategy = test_strategy();
         strategy.config.warmup_tick_count = 3;
-        strategy.apply_selection_snapshot(active_snapshot("MKT-1"));
+        let mut snapshot = active_snapshot("MKT-1");
+        let SelectionState::Active { market } = &mut snapshot.decision.state else {
+            panic!("expected active snapshot");
+        };
+        market.price_to_beat = Some(3_100.0);
+        strategy.apply_selection_snapshot(snapshot);
 
         strategy.observe_reference_snapshot(&reference_tick(1_000, 3_100.0));
         strategy.observe_reference_snapshot(&reference_tick(1_100, 3_101.0));

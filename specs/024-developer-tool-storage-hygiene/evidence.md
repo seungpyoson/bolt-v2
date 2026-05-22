@@ -94,6 +94,7 @@ Ownership values:
 | AI agents | `~/.codex/sessions/**/*.jsonl` | 3.5 GiB | Many transcript files | No TTL found | this issue |
 | AI agents | `~/.codex/logs_2.sqlite*` | 4.2 GiB | SQLite db plus WAL | No documented cleanup found | report-only in this issue |
 | AI agents | `~/.codex/archived_sessions` | 378 MiB | Tree of archived transcripts | No TTL found | report-only in this issue |
+| AI agents | `~/.codex/history.jsonl` | 27 MiB | Single history file | Native `history.max_bytes` and `history.persistence` documented | report-only native-config surface in this issue |
 | AI agents | `~/.factory/logs/droid-log-single.log` | 12 MiB current, 767 MiB historical | Single rolling file | No native policy proven | this issue |
 | AI agents | `~/.claude` | 3.0 GiB | Tool profile, logs, state, and outputs | Outside bolt-v2 proof here | tracked elsewhere by #125 / claude-config owner |
 | AI agents | `~/.gemini` | 667 MiB | Tool profile and state tree | Outside bolt-v2 proof here | report-only; no direct #375 cleanup |

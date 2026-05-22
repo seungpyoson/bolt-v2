@@ -97,10 +97,10 @@ Explicit #374 residuals from #286 / PR #404 review:
 - [x] T026 Open draft PR early enough for exact-head CI to run. Draft PR #436 is the exact-head CI surface for this slice.
 - [x] T027 Push branch and verify exact-head CI green. PR #436 exact-head CI is required before ready.
 - [x] T028 Record explicit no-mistakes skip/CI-evidence policy for this PR slice: do not use no-mistakes per operator instruction; T027 exact-head CI remains required before review/ready.
-- [ ] T029 Get Claude review and Claude adversarial review.
+- [x] T029 Get Claude review and Claude adversarial review. Exact-head job IDs are recorded in the PR body/final evidence ledger because committing source evidence changes the PR head.
 - [x] T030 Get Gemini review and Gemini adversarial review. Exact-head job IDs are recorded in the PR body/final evidence ledger because committing source evidence changes the PR head.
-- [ ] T031 Get DeepSeek, GLM, and Kimi review plus adversarial review for every implementation PR.
-- [ ] T032 Open/mark ready only after findings are resolved or explicitly waived.
+- [x] T031 Get DeepSeek, GLM, and Kimi review plus adversarial review for every implementation PR. Exact-head DeepSeek/GLM job IDs and the Kimi timeout/skip rationale are recorded in the PR body/final evidence ledger because committing source evidence changes the PR head.
+- [x] T032 Open/mark ready only after findings are resolved or explicitly waived. Final ready-state evidence is recorded in the PR body/final evidence ledger to avoid source-level exact-head churn.
 
 ## Dependencies & Execution Order
 

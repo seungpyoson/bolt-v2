@@ -46,8 +46,8 @@
 
 **Independent Test**: #374 cannot proceed until Phase 1 MECE cargo invocation enumeration is present and reviewed.
 
-- [ ] T011 [US2] Draft #374 Phase 1 cargo invocation enumeration in a follow-up #374 branch/PR.
-- [ ] T012 [US2] Include no-mistakes command/env behavior, worktree-local target proof, and #404 wrapper residuals in #374 enumeration.
+- [x] T011 [US2] Draft #374 Phase 1 cargo invocation enumeration in a follow-up #374 branch/PR.
+- [x] T012 [US2] Include no-mistakes command/env behavior, worktree-local target proof, #404 wrapper residuals, and live #374 body pin/link evidence in #374 enumeration.
 - [ ] T013 [US2] Add failing verifier/test for #374 selected implementation seam before changing wrapper behavior.
 - [ ] T014 [US2] Add verifier coverage that blocks no-mistakes raw-Cargo drift and rejects any S3 active-target-cache path.
 - [ ] T015 [US2] Implement #374 only after T011/T012/T013/T014 and review gate pass.
@@ -58,6 +58,7 @@ Explicit #374 residuals from #286 / PR #404 review:
 - `rustup run stable -- -- cargo build`
 - depth-cap observability for deeply wrapped process detection
 - wrapper inventory for `timeout`, `xargs`, `setsid`, `taskset`, `ionice`, `chrt`, `make`, `python -c` / `os.system(...)`, and symlink-renamed `cargo` or `rustc`
+- destructive managed cargo subcommands, especially `cargo clean`, and required exclusive cache-clean/cache-reset behavior
 
 ---
 

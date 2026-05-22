@@ -646,6 +646,15 @@
 - [x] T293 [US2] GREEN: Parse documented `financial_envelope` field names and compare them against the Rust source-derived field set in both directions
 - [ ] T294 [US2] Verify schema tests/verifier, focused admission tests, schema/runtime verifiers, source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
+## Phase 68: TDD Slice 64 - No-Mistakes Documentation Drift Closure
+
+**Goal**: Resolve exact-head no-mistakes documentation findings without changing runtime behavior or adding venue, market, strategy, maker-only, or taker-only policy. The active verifier must cover decision-evidence JSONL schema v4 fields, runtime order-template evidence fields, forced-exit builder status evidence, and stale Phase 022 maker-scope supersession text.
+
+- [x] T295 [P] [US2] Record no-mistakes document findings for JSONL schema v4, runtime order-template fields, forced-exit builder status, and stale Phase 022 forced-exit/GTD text in `specs/023-nt-order-intent-layer/research.md`
+- [x] T296 [US2] RED: Add a schema-current verifier regression proving those documentation drift cases are rejected
+- [x] T297 [US2] GREEN: Extend the active verifier and update only the affected schema/runtime/status/spec docs
+- [ ] T298 [US2] Verify schema tests/verifier, runtime-literal verifier, formatting/diff checks, source fences as needed, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -713,6 +722,7 @@
 - Phase 65 blocks final branch completion because no-mistakes produced activation-price admission evidence on top of the Phase 64 head.
 - Phase 66 blocks final branch completion because no-mistakes produced financial-envelope schema-field drift evidence on top of the Phase 65 head.
 - Phase 67 blocks final branch completion because exact-head Kimi review found the Phase 66 financial-envelope schema guard still allowed stale doc-only fields.
+- Phase 68 blocks final branch completion because exact-head no-mistakes document review found active docs/specs still omitted decision-evidence JSONL v4/order-template fields and retained stale Phase 022 forced-exit/GTD text.
 
 ## Parallel Opportunities
 

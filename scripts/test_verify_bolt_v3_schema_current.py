@@ -69,6 +69,7 @@ Entry `is_quote_quantity = true` is supported by sizing the entry quantity as qu
 Exit `is_quote_quantity = true` is rejected because exits are sized from held base position quantity.
 Forced-flat exits use the configured `forced_exit_order` template.
 When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders.
+Decision-evidence JSONL records use `schema_version = 4` for `order_intent` and `admission_decision` envelopes.
 
 ### `[parameters]`
 """
@@ -76,6 +77,13 @@ When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions`
 CURRENT_STATUS_MAP = """
 Strategy `oms_type` delegates to NT `OmsType` variants instead of a Bolt-only netting allowlist.
 Configured order-template validation follows the pinned NT single-order `OrderFactory` surface.
+Order construction uses the shared `src/bolt_v3_order_intent.rs` builder for entry, exit, and configured `[parameters.forced_exit_order]` templates.
+"""
+
+CURRENT_RUNTIME_CONTRACTS = """
+Order-submission and pre-submit rejection events map compiled NT order-template fields through
+`order_fields`: `expire_time_unix_nanos`, `trigger_price`, `activation_price`, `trigger_type`,
+`trigger_instrument_id`, `trailing_offset`, and `trailing_offset_type`.
 """
 
 
@@ -613,6 +621,41 @@ def test_validate_docs_requires_all_enabled_and_factory_gap_order_types() -> Non
         raise AssertionError(f"expected missing TrailingStopLimit finding, got {gap_findings!r}")
 
 
+def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> None:
+    stale_schema = CURRENT_SCHEMA.replace("schema_version = 4", "schema_version = 3")
+    stale_runtime_contracts = CURRENT_RUNTIME_CONTRACTS.replace("`activation_price`, ", "")
+    stale_status_map = CURRENT_STATUS_MAP.replace("forced_exit_order", "exit_order")
+    stale_maker_contract = (
+        "Forced-flat exits use the same configured maker exit shape until a separate "
+        "TOML-owned forced-exit override exists.\n"
+        "bolt-v3 must not enable `gtd` until this contract adds an explicit TOML-owned "
+        "expiry policy.\n"
+    )
+    stale_maker_data_model = (
+        "Rejected values:\n"
+        "- limit + post-only + `gtd` until a TOML-owned expiry policy is approved\n"
+    )
+
+    findings = VERIFIER.validate_docs(
+        stale_schema,
+        stale_status_map,
+        runtime_contracts=stale_runtime_contracts,
+        maker_scope_contract=stale_maker_contract,
+        maker_scope_data_model=stale_maker_data_model,
+    )
+
+    expected_fragments = [
+        "schema missing decision-evidence JSONL schema v4 contract",
+        "runtime contracts missing order-template evidence field",
+        "status map missing current phrase: Order construction uses",
+        "maker scope contract still contains stale phrase",
+        "maker scope data model still contains stale phrase",
+    ]
+    for fragment in expected_fragments:
+        if not any(fragment in finding for finding in findings):
+            raise AssertionError(f"expected {fragment!r} in findings, got {findings!r}")
+
+
 def test_extracts_phase8_financial_envelope_fields_from_source_struct() -> None:
     rust_source = """
 #[derive(Debug, Deserialize, PartialEq)]
@@ -752,6 +795,7 @@ def main() -> int:
         test_validate_docs_allows_live_trading_config_value_without_support_claim,
         test_validate_docs_allows_spec_architecture_risk_context,
         test_validate_docs_requires_all_enabled_and_factory_gap_order_types,
+        test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift,
         test_extracts_phase8_financial_envelope_fields_from_source_struct,
         test_validate_docs_rejects_financial_envelope_schema_missing_source_field,
         test_validate_docs_rejects_financial_envelope_schema_extra_doc_field,

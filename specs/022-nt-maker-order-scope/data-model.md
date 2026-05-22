@@ -2,7 +2,7 @@
 
 ## OrderParams
 
-Source: `[parameters.entry_order]` and `[parameters.exit_order]`.
+Source: `[parameters.entry_order]`, `[parameters.exit_order]`, and, for the active order-intent layer, `[parameters.forced_exit_order]`.
 
 Fields:
 
@@ -32,12 +32,13 @@ Rejected values:
 
 - market + post-only
 - limit + post-only + `fok`/`ioc`
-- limit + post-only + `gtd` until a TOML-owned expiry policy is approved
+- GTD templates without explicit TOML-owned `expire_time_unix_nanos`
 - quote quantity or reduce-only in this strategy slice
 
 ## GtdExpiryPolicy
 
-Maps TOML-owned timing into NT `expire_time`. This policy is not implemented and is outside the approved current scope.
+This historical policy sketch is superseded by `specs/023-nt-order-intent-layer/data-model.md` for the active order-intent layer.
+The active model carries absolute TOML-owned `expire_time_unix_nanos` into NT `expire_time` when the selected order template and NT factory path accept GTD.
 
 Input:
 

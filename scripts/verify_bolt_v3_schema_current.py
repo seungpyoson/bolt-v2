@@ -11,12 +11,17 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-schema.md"
+RUNTIME_CONTRACTS_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
 STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
 RESEARCH_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/research.md"
 TASKS_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/tasks.md"
 CONTRACT_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/contracts/order-intent-layer.md"
 SPEC_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/spec.md"
 DATA_MODEL_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/data-model.md"
+MAKER_SCOPE_CONTRACT_DOC = (
+    REPO_ROOT / "specs/022-nt-maker-order-scope/contracts/maker-order-config.md"
+)
+MAKER_SCOPE_DATA_MODEL_DOC = REPO_ROOT / "specs/022-nt-maker-order-scope/data-model.md"
 AGENTS_DOC = REPO_ROOT / "AGENTS.md"
 FEATURE_JSON = REPO_ROOT / ".specify/feature.json"
 TINY_CANARY_EVIDENCE = REPO_ROOT / "src/bolt_v3_tiny_canary_evidence.rs"
@@ -50,6 +55,14 @@ ORDER_TEMPLATE_FIELDS = (
     "trailing_offset",
     "trailing_offset_type",
 )
+DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE = (
+    "Decision-evidence JSONL records use `schema_version = 4` for `order_intent` "
+    "and `admission_decision` envelopes."
+)
+STATUS_MAP_FORCED_EXIT_BUILDER_PHRASE = (
+    "Order construction uses the shared `src/bolt_v3_order_intent.rs` builder for "
+    "entry, exit, and configured `[parameters.forced_exit_order]` templates"
+)
 STALE_SCHEMA_PHRASES = (
     "- current allowed value:\n  - `netting`",
     "- allowed values for the current archetype:\n  - `limit`\n  - `market`",
@@ -80,6 +93,7 @@ STALE_STATUS_MAP_PHRASES = (
 REQUIRED_STATUS_MAP_PHRASES = (
     "Strategy `oms_type` delegates to NT `OmsType` variants instead of a Bolt-only netting allowlist",
     "order-template validation follows the pinned NT single-order `OrderFactory` surface",
+    STATUS_MAP_FORCED_EXIT_BUILDER_PHRASE,
 )
 STALE_RESEARCH_PHRASES = (
     "current archetype accepts coherent short-side",
@@ -112,6 +126,14 @@ STALE_SPEC_PHRASES = (
 )
 STALE_DATA_MODEL_PHRASES = (
     "`expire_time_unix_nanos` only when GTD is enabled by a reviewed slice",
+)
+STALE_MAKER_SCOPE_CONTRACT_PHRASES = (
+    "until a separate TOML-owned forced-exit override exists",
+    "bolt-v3 must not enable `gtd` until",
+)
+STALE_MAKER_SCOPE_DATA_MODEL_PHRASES = (
+    "limit + post-only + `gtd` until a TOML-owned expiry policy is approved",
+    "Maps TOML-owned timing into NT `expire_time`. This policy is not implemented",
 )
 UNSUPPORTED_SCOPE_PATTERNS = (
     re.compile(
@@ -291,6 +313,9 @@ def validate_docs(
     contract: str = "",
     spec: str = "",
     data_model: str = "",
+    runtime_contracts: str = "",
+    maker_scope_contract: str = "",
+    maker_scope_data_model: str = "",
     agents_doc: str | None = None,
     feature_json: str | None = None,
     financial_envelope_source: str = "",
@@ -304,6 +329,14 @@ def validate_docs(
     for phrase in REQUIRED_SCHEMA_PHRASES:
         if phrase not in schema:
             findings.append(f"schema missing current phrase: {phrase}")
+
+    if DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE not in schema:
+        findings.append("schema missing decision-evidence JSONL schema v4 contract")
+
+    if runtime_contracts:
+        for field in ORDER_TEMPLATE_FIELDS:
+            if f"`{field}`" not in runtime_contracts:
+                findings.append(f"runtime contracts missing order-template evidence field `{field}`")
 
     trigger_type_section = extract_section(schema, "`trigger_type`")
     if section_requires_defaulted_trailing_stop_market_field(trigger_type_section):
@@ -411,13 +444,24 @@ def validate_docs(
         if phrase in data_model:
             findings.append(f"data model still contains stale phrase: {phrase}")
 
+    for phrase in STALE_MAKER_SCOPE_CONTRACT_PHRASES:
+        if phrase in maker_scope_contract:
+            findings.append(f"maker scope contract still contains stale phrase: {phrase}")
+
+    for phrase in STALE_MAKER_SCOPE_DATA_MODEL_PHRASES:
+        if phrase in maker_scope_data_model:
+            findings.append(f"maker scope data model still contains stale phrase: {phrase}")
+
     findings.extend(unsupported_scope_overclaims("schema", schema))
+    findings.extend(unsupported_scope_overclaims("runtime contracts", runtime_contracts))
     findings.extend(unsupported_scope_overclaims("status map", status_map))
     findings.extend(unsupported_scope_overclaims("research", research))
     findings.extend(unsupported_scope_overclaims("tasks", tasks))
     findings.extend(unsupported_scope_overclaims("contract", contract))
     findings.extend(unsupported_scope_overclaims("spec", spec))
     findings.extend(unsupported_scope_overclaims("data model", data_model))
+    findings.extend(unsupported_scope_overclaims("maker scope contract", maker_scope_contract))
+    findings.extend(unsupported_scope_overclaims("maker scope data model", maker_scope_data_model))
     findings.extend(validate_speckit_context(agents_doc, feature_json))
 
     return findings
@@ -427,14 +471,17 @@ def main() -> int:
     findings = validate_docs(
         SCHEMA_DOC.read_text(encoding="utf-8"),
         STATUS_MAP.read_text(encoding="utf-8"),
-        RESEARCH_DOC.read_text(encoding="utf-8"),
-        TASKS_DOC.read_text(encoding="utf-8"),
-        CONTRACT_DOC.read_text(encoding="utf-8"),
-        SPEC_DOC.read_text(encoding="utf-8"),
-        DATA_MODEL_DOC.read_text(encoding="utf-8"),
-        AGENTS_DOC.read_text(encoding="utf-8"),
-        FEATURE_JSON.read_text(encoding="utf-8"),
-        TINY_CANARY_EVIDENCE.read_text(encoding="utf-8"),
+        research=RESEARCH_DOC.read_text(encoding="utf-8"),
+        tasks=TASKS_DOC.read_text(encoding="utf-8"),
+        contract=CONTRACT_DOC.read_text(encoding="utf-8"),
+        spec=SPEC_DOC.read_text(encoding="utf-8"),
+        data_model=DATA_MODEL_DOC.read_text(encoding="utf-8"),
+        runtime_contracts=RUNTIME_CONTRACTS_DOC.read_text(encoding="utf-8"),
+        maker_scope_contract=MAKER_SCOPE_CONTRACT_DOC.read_text(encoding="utf-8"),
+        maker_scope_data_model=MAKER_SCOPE_DATA_MODEL_DOC.read_text(encoding="utf-8"),
+        agents_doc=AGENTS_DOC.read_text(encoding="utf-8"),
+        feature_json=FEATURE_JSON.read_text(encoding="utf-8"),
+        financial_envelope_source=TINY_CANARY_EVIDENCE.read_text(encoding="utf-8"),
     )
     if findings:
         for finding in findings:

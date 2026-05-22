@@ -47,11 +47,15 @@ Expected NT order:
 
 ## Forced-Flat Semantics
 
-If `[parameters.exit_order]` is configured as maker `limit`/`gtc`/`is_post_only=true`, freeze, stale-data, and thin-book exits use the same configured maker exit shape. The order may rest unfilled. Operators who require immediate flattening must configure the taker exit shape (`market`/`ioc`/`is_post_only=false`) until a separate TOML-owned forced-exit override exists.
+This section is superseded by `specs/023-nt-order-intent-layer/contracts/order-intent-layer.md` for the active order-intent layer.
+Freeze, stale-data, and thin-book exits now use the TOML-owned `[parameters.forced_exit_order]` template, separate from normal `[parameters.exit_order]`.
+Operators who require immediate flattening configure that forced-exit template as a taker shape such as `market`/`ioc`/`is_post_only=false`.
 
 ## GTD Extension Contract
 
-NT supports post-only `Gtd` limit orders, but bolt-v3 must not enable `gtd` until this contract adds an explicit TOML-owned expiry policy. Reusing `post_only_requote_interval_ms` is not accepted by current evidence.
+This section is superseded by `specs/023-nt-order-intent-layer/contracts/order-intent-layer.md` for the active order-intent layer.
+GTD order templates are valid only when the selected NT order type accepts GTD and the template supplies explicit TOML-owned `expire_time_unix_nanos`.
+Reusing `post_only_requote_interval_ms` is not accepted by current evidence.
 
 ## Existing Taker Orders
 

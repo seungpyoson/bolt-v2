@@ -572,6 +572,27 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - local decision-evidence JSONL path under `catalog_directory`
 - must remain relative so a root catalog move changes only one config location
 
+Decision-evidence JSONL records use `schema_version = 4` for `order_intent` and `admission_decision` envelopes.
+Each line is a single JSON object with `schema_version`, `gate_version`, `gate_id`, `record_type`, and a payload key matching the record type.
+`order_intent` payloads carry the configured strategy/order identity plus compiled NT order semantics under `order_fields`.
+`admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id`.
+
+`order_intent.order_fields` fields:
+
+- `order_type`: compiled NT order type
+- `time_in_force`: compiled NT time-in-force
+- `price`: optional compiled limit price
+- `trigger_price`: optional compiled trigger price
+- `activation_price`: optional compiled activation price
+- `trigger_type`: optional compiled trigger type
+- `trigger_instrument_id`: optional compiled trigger instrument id
+- `trailing_offset`: optional compiled trailing offset
+- `trailing_offset_type`: optional compiled trailing offset type
+- `expire_time_unix_nanos`: optional compiled NT expiry timestamp
+- `is_post_only`: compiled NT post-only flag
+- `is_reduce_only`: compiled NT reduce-only flag
+- `is_quote_quantity`: compiled NT quote-quantity flag
+
 There is no `state_directory` in the current bolt-v3 scope. NT's pinned `LiveNodeBuilder` does not expose a state-directory wiring (load/save state are booleans only), so a TOML key would not flow to NT. A future slice may reintroduce this once a supported path exists.
 
 ### `[persistence.streaming]`

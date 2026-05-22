@@ -98,7 +98,7 @@ Explicit #374 residuals from #286 / PR #404 review:
 - [x] T027 Push branch and verify exact-head CI green. PR #436 exact-head CI is required before ready.
 - [x] T028 Record explicit no-mistakes skip/CI-evidence policy for this PR slice: do not use no-mistakes per operator instruction; T027 exact-head CI remains required before review/ready.
 - [ ] T029 Get Claude review and Claude adversarial review.
-- [x] T030 Get Gemini review and Gemini adversarial review. Exact-head approvals for PR #436 head `e79b56bce3d46cb1b3521eb9a95f3b34f4340d63`: Gemini review job `d68616f9-2a43-4654-ade6-b8ef5643dcc6`, Gemini adversarial job `2b57b8c8-397c-4842-9b7c-731fc033dca3`.
+- [x] T030 Get Gemini review and Gemini adversarial review. Exact-head job IDs are recorded in the PR body/final evidence ledger because committing source evidence changes the PR head.
 - [ ] T031 Get DeepSeek, GLM, and Kimi review plus adversarial review for every implementation PR.
 - [ ] T032 Open/mark ready only after findings are resolved or explicitly waived.
 

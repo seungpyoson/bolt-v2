@@ -88,7 +88,8 @@ OPAQUE_RUST_LAUNCHERS = {
 PROCESS_PARSE_DEPTH_LIMIT = 6
 PROCESS_PARSE_DEPTH_EXCEEDED = "__process_parse_depth_exceeded__"
 SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")"}
-SHELL_BOUNDARY_TOKEN_RE = re.compile(r"([;&|(){}!]+)")
+SHELL_BOUNDARY_TOKEN_RE = re.compile(r"([;&|(){}!<>]+)")
+SHELL_REDIRECTION_OPERATORS = {">", ">>", "<", "<<", "<>", ">|", ">&", "<&", "&>", "&>>", "<<<"}
 
 
 class PolicyError(RuntimeError):
@@ -522,6 +523,28 @@ def shell_normalized_tokens(tokens: list[str]) -> list[str]:
             continue
         normalized.extend(part for part in SHELL_BOUNDARY_TOKEN_RE.split(raw_token) if part)
     return normalized
+
+
+def strip_shell_redirections(tokens: list[str]) -> list[str]:
+    stripped: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        operator_index = index
+        if (
+            token.isdigit()
+            and index + 1 < len(tokens)
+            and tokens[index + 1] in SHELL_REDIRECTION_OPERATORS
+        ):
+            operator_index = index + 1
+        if tokens[operator_index] in SHELL_REDIRECTION_OPERATORS:
+            index = operator_index + 1
+            if index < len(tokens) and tokens[index] not in SHELL_COMMAND_BOUNDARIES:
+                index += 1
+            continue
+        stripped.append(token)
+        index += 1
+    return stripped
 
 
 def backtick_command_payloads(tokens: list[str]) -> list[list[str]]:
@@ -1474,6 +1497,13 @@ def find_exec_payloads(tokens: list[str]) -> list[list[str]]:
     return payloads
 
 
+def no_mistakes_wrapped_tokens(tokens: list[str]) -> list[str] | None:
+    for index, token in enumerate(tokens):
+        if token == "--":
+            return tokens[index + 1 :]
+    return None
+
+
 def process_wrapper_tokens(tokens: list[str]) -> list[str] | None:
     if not tokens:
         return None
@@ -1518,6 +1548,8 @@ def process_wrapper_tokens(tokens: list[str]) -> list[str] | None:
         return tokens[xargs_command_index(tokens) :]
     if executable in {"runuser", "sg", "su"}:
         return su_wrapped_tokens(tokens)
+    if executable == "no-mistakes":
+        return no_mistakes_wrapped_tokens(tokens)
     return None
 
 
@@ -1544,6 +1576,9 @@ def process_names_from_tokens(tokens: list[str], *, depth: int = 0) -> set[str]:
         for segment in segments:
             names.update(process_names_from_tokens(segment, depth=depth + 1))
         return names
+    tokens = strip_shell_redirections(shell_normalized_tokens(tokens))
+    if not tokens:
+        return substitution_names
     executable = basename_token(tokens[0])
     names = {executable, *substitution_names}
     wrapped_tokens = process_wrapper_tokens(tokens)
@@ -1633,6 +1668,9 @@ def tokens_may_be_renamed_rustc(tokens: list[str], *, depth: int = 0) -> bool:
         return False
     if depth > PROCESS_PARSE_DEPTH_LIMIT:
         return True
+    tokens = strip_shell_redirections(shell_normalized_tokens(tokens))
+    if not tokens:
+        return False
     assignment_index = consume_assignment_words(tokens, 0)
     if assignment_index >= len(tokens):
         return False
@@ -1666,6 +1704,9 @@ def command_may_launch_rust(command: str) -> bool:
         return True
     if tokens_may_be_renamed_rustc(tokens):
         return True
+    tokens = strip_shell_redirections(shell_normalized_tokens(tokens))
+    if not tokens:
+        return False
     executable = basename_token(tokens[0])
     if executable_is_rust_tool(executable):
         return True
@@ -1704,6 +1745,9 @@ def tokens_may_be_renamed_cargo(tokens: list[str], *, depth: int = 0) -> bool:
         return False
     if depth > PROCESS_PARSE_DEPTH_LIMIT:
         return True
+    tokens = strip_shell_redirections(shell_normalized_tokens(tokens))
+    if not tokens:
+        return False
     assignment_index = consume_assignment_words(tokens, 0)
     if assignment_index >= len(tokens):
         return False
@@ -1761,6 +1805,9 @@ def command_scope_path_values(tokens: list[str], *, depth: int = 0) -> list[str]
     if not tokens:
         return []
     if depth > PROCESS_PARSE_DEPTH_LIMIT:
+        return []
+    tokens = strip_shell_redirections(shell_normalized_tokens(tokens))
+    if not tokens:
         return []
     assignment_index = consume_assignment_words(tokens, 0)
     if assignment_index >= len(tokens):

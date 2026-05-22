@@ -1430,6 +1430,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "cargo --target-dir raw target override must be classified",
         ),
         (
+            "cargo>out check --target-dir /tmp/raw",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
+            "> /dev/null cargo check --target-dir /tmp/raw",
+            "cargo --target-dir raw target override must be classified",
+        ),
+        (
             "ARGS=\"--target-dir /tmp/raw\"; cargo check $ARGS",
             "cargo --target-dir raw target override must be classified",
         ),
@@ -2183,6 +2191,8 @@ commands:
   evalcmdpayload: 'VAR=CARGO; CMD="${VAR}_TARGET_DIR=/tmp/raw cargo check"; eval "$CMD"'
   shellcmdpayload: 'VAR=CARGO; export CMD="${VAR}_TARGET_DIR=/tmp/raw cargo check"; bash -c "$CMD"'
   aliasouterpayload: 'VAR=CARGO; alias c='\''${VAR}_TARGET_DIR=/tmp/raw cargo'\''; c build'
+  redirectprefix: '> /dev/null cargo test'
+  redirectcompact: 'cargo>out test'
   foldedplain: eval
     cargo test
   foldeddouble: "eval
@@ -2293,6 +2303,8 @@ commands: { test: "cargo test" }
         "evalcmdpayload",
         "shellcmdpayload",
         "aliasouterpayload",
+        "redirectprefix",
+        "redirectcompact",
         "foldedplain",
         "foldeddouble",
         "shellprefix",
@@ -2463,6 +2475,7 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
             "scripts/comment-blind.sh": "# comment with unbalanced quote '\ncargo build\necho 'closing quote'\n",
             "scripts/nested-var-eval.sh": "CMD=\"cargo build\"\nbash -c \"echo benign; eval $CMD\"\n",
             "scripts/raw-guard-text.sh": '#!/usr/bin/env bash\necho "Missing BOLT_MANAGED_JUST, exit 1"\ncargo build\n',
+            "scripts/raw-redirection.sh": "#!/usr/bin/env bash\n> /dev/null cargo build\n",
             "scripts/symlink-cargo.sh": "ln -s $(which cargo) /tmp/mycargo\n/tmp/mycargo build --target-dir /tmp/raw\n",
             "scripts/copy-cargo.sh": "cp $(which cargo) /tmp/mycargo\n/tmp/mycargo build\n",
             "justfile.setup": "setup:\n    cargo install cargo-nextest --version 0.9.132 --locked\n",
@@ -2518,6 +2531,8 @@ def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:
         raise AssertionError(f"script nested variable eval raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/raw-guard-text.sh" in error and expected in error for error in repo_errors):
         raise AssertionError(f"script guard-text raw-cargo drift was silent: {repo_errors!r}")
+    if not any("scripts/raw-redirection.sh" in error and expected in error for error in repo_errors):
+        raise AssertionError(f"script redirected raw-cargo drift was silent: {repo_errors!r}")
     if not any("scripts/symlink-cargo.sh" in error and "cargo --target-dir raw target override" in error for error in repo_errors):
         raise AssertionError(f"symlinked cargo raw-storage drift was silent: {repo_errors!r}")
     if not any("scripts/copy-cargo.sh" in error and expected in error for error in repo_errors):

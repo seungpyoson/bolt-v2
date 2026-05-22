@@ -954,8 +954,23 @@ ENV_OPTIONS_WITHOUT_ARGUMENT = {
 }
 TIME_OPTIONS_WITH_ARGUMENT = {"-f", "-o", "--format", "--output"}
 TIME_OPTIONS_WITHOUT_ARGUMENT = {"-a", "-p", "-v", "--append", "--portability", "--verbose"}
-SHELL_PUNCTUATION_CHARS = ";&|(){}!"
+SHELL_PUNCTUATION_CHARS = ";&|(){}!<>"
 SHELL_COMMAND_BOUNDARIES = {";", "&", "&&", "||", "|", "if", "elif", "then", "else", "while", "until", "do", "!", "(", "{", ")", "}"}
+SHELL_REDIRECTION_OPERATORS = {">", ">>", "<", "<<", "<>", ">|", ">&", "<&", "&>", "&>>", "<<<"}
+SHELL_PUNCTUATION_OPERATORS = {
+    "&>>",
+    "&&",
+    "||",
+    ">>",
+    "<<",
+    "<>",
+    ">|",
+    ">&",
+    "<&",
+    "&>",
+    "<<<",
+}
+SHELL_PUNCTUATION_OPERATORS_BY_LENGTH = tuple(sorted(SHELL_PUNCTUATION_OPERATORS, key=len, reverse=True))
 RECURSIVE_WRAPPER_EXECUTABLES = {
     "catchsegv",
     "chrt",
@@ -1061,6 +1076,7 @@ def consume_option_prefix(
 
 
 def command_prefix_allows_cargo(prefix: list[str]) -> bool:
+    prefix = strip_shell_redirections(prefix)
     index = consume_assignment_words(prefix, 0)
     while index < len(prefix):
         token = prefix[index]
@@ -1121,13 +1137,39 @@ def split_shell_punctuation_tokens(tokens: list[str]) -> list[str]:
             continue
         cursor = 0
         while cursor < len(token):
-            if token[cursor : cursor + 2] in {"&&", "||"}:
-                split_tokens.append(token[cursor : cursor + 2])
-                cursor += 2
-            else:
-                split_tokens.append(token[cursor])
-                cursor += 1
+            operator = next(
+                (candidate for candidate in SHELL_PUNCTUATION_OPERATORS_BY_LENGTH if token.startswith(candidate, cursor)),
+                None,
+            )
+            if operator is not None:
+                split_tokens.append(operator)
+                cursor += len(operator)
+                continue
+            split_tokens.append(token[cursor])
+            cursor += 1
     return split_tokens
+
+
+def strip_shell_redirections(tokens: list[str]) -> list[str]:
+    stripped: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        operator_index = index
+        if (
+            token.isdigit()
+            and index + 1 < len(tokens)
+            and tokens[index + 1] in SHELL_REDIRECTION_OPERATORS
+        ):
+            operator_index = index + 1
+        if tokens[operator_index] in SHELL_REDIRECTION_OPERATORS:
+            index = operator_index + 1
+            if index < len(tokens) and tokens[index] not in SHELL_COMMAND_BOUNDARIES:
+                index += 1
+            continue
+        stripped.append(token)
+        index += 1
+    return stripped
 
 
 def command_tokens(command: str) -> list[str]:
@@ -1483,6 +1525,7 @@ def cargo_install_source_build_tools_from_tokens(
     source_path_tools: dict[str, str] | None = None,
     cwd_source_tool: str | None = None,
 ) -> set[str]:
+    tokens = strip_shell_redirections(tokens)
     if not tokens:
         return set()
     if depth > 6:
@@ -1742,6 +1785,7 @@ def cargo_args_for_target_routing_scan(tokens: list[str]) -> list[str]:
 
 
 def target_routing_cargo_args(tokens: list[str]) -> list[str] | None:
+    tokens = strip_shell_redirections(tokens)
     managed_args = managed_rust_verification_cargo_args(tokens)
     if managed_args is not None:
         return managed_args
@@ -2741,6 +2785,9 @@ def tokens_have_raw_cargo(
             variables=variables,
         ):
             return True
+    tokens = strip_shell_redirections(tokens)
+    if not tokens:
+        return False
     if any(token in SHELL_COMMAND_BOUNDARIES for token in tokens):
         segment: list[str] = []
         cargo_aliases: set[str] = set()

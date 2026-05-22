@@ -933,6 +933,12 @@ def assert_cache_prune_refuses_wrapped_active_processes_by_cwd() -> None:
         "nice -- cargo build",
         # Legitimate stack of supported wrappers that exhausts the depth cap.
         "sudo nice env -i bash -c 'rustup run stable cargo test'",
+        # Standard shell redirections can appear before or inside a simple
+        # command without changing the executable that owns the active target.
+        "> /dev/null cargo build",
+        "< /dev/null cargo build",
+        "cargo>out build",
+        "< /dev/null no-mistakes run -- cargo build",
         # Review-regression cases: supported wrapper flags must still expose
         # the wrapped cargo process so apply-prune refuses an active cache.
         "sudo --user root cargo build",
@@ -1724,6 +1730,10 @@ def assert_v6_red_active_process_parser_gaps() -> None:
         "bash -c 'x=$(cargo build)'",
         "bash -c 'x=\"$(cargo build)\"'",
         "bash -c 'x=`cargo build`'",
+        "> /dev/null cargo build",
+        "< /dev/null cargo build",
+        "cargo>out build",
+        "< /dev/null no-mistakes run -- cargo build",
         "find . -name Cargo.toml -exec cargo build \\;",
         "su user -c 'cargo build'",
         "runuser -u user -- cargo build",

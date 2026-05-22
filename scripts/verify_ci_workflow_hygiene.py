@@ -4567,7 +4567,7 @@ def step_run_command(block: list[str]) -> str | None:
             return unquote_yaml_scalar(value)
         folded = value[0] == ">"
         base_indent = len(match.group(1))
-        command_lines: list[str] = []
+        raw_command_lines: list[str] = []
         for nested in block[index + 1 :]:
             nested_clean = strip_comment(nested).rstrip()
             if not nested_clean.strip():
@@ -4575,9 +4575,17 @@ def step_run_command(block: list[str]) -> str | None:
             indent = len(nested_clean) - len(nested_clean.lstrip(" "))
             if indent <= base_indent:
                 break
-            command_lines.append(nested_clean.strip())
+            raw_command_lines.append(nested_clean)
+        command_indent = min(
+            (len(command) - len(command.lstrip(" ")) for command in raw_command_lines),
+            default=base_indent + 1,
+        )
+        command_lines = [
+            command[command_indent:] if command.startswith(" " * command_indent) else command.lstrip(" ")
+            for command in raw_command_lines
+        ]
         if folded:
-            return " ".join(command_lines)
+            return " ".join(command.strip() for command in command_lines)
         return "\n".join(command_lines)
     return None
 
@@ -4693,6 +4701,41 @@ def github_env_assignment_from_echo_tokens(tokens: list[str]) -> str | None:
     return assignments[0] if assignments else None
 
 
+def printf_rendered_payload(format_payload: str, argument_tokens: list[str]) -> str | None:
+    if not argument_tokens:
+        return format_payload.replace("%%", "%")
+    chunks: list[str] = []
+    argument_index = 0
+    while True:
+        chunk: list[str] = []
+        consumed_argument = False
+        index = 0
+        while index < len(format_payload):
+            if format_payload[index] != "%":
+                chunk.append(format_payload[index])
+                index += 1
+                continue
+            if index + 1 >= len(format_payload):
+                return None
+            conversion = format_payload[index + 1]
+            if conversion == "%":
+                chunk.append("%")
+                index += 2
+                continue
+            if conversion not in {"s", "b"}:
+                return None
+            value = argument_tokens[argument_index] if argument_index < len(argument_tokens) else ""
+            if argument_index < len(argument_tokens):
+                argument_index += 1
+            chunk.append(value.replace("\\n", "\n") if conversion == "b" else value)
+            consumed_argument = True
+            index += 2
+        chunks.append("".join(chunk))
+        if argument_index >= len(argument_tokens) or not consumed_argument:
+            break
+    return "".join(chunks)
+
+
 def github_env_assignments_from_printf_tokens(tokens: list[str]) -> list[str]:
     if len(tokens) < 4 or pathlib.Path(tokens[0]).name != "printf":
         return []
@@ -4711,23 +4754,9 @@ def github_env_assignments_from_printf_tokens(tokens: list[str]) -> list[str]:
             return []
         format_payload = storage_strip_quotes(payload_tokens[0]).replace("\\n", "\n")
         argument_tokens = [storage_strip_quotes(value) for value in payload_tokens[1:]]
-        if argument_tokens and "%s" not in format_payload:
+        payload = printf_rendered_payload(format_payload, argument_tokens)
+        if payload is None:
             return []
-        payload = format_payload
-        if argument_tokens:
-            chunks: list[str] = []
-            argument_index = 0
-            while argument_index < len(argument_tokens):
-                chunk = format_payload
-                replaced = False
-                while "%s" in chunk and argument_index < len(argument_tokens):
-                    chunk = chunk.replace("%s", argument_tokens[argument_index], 1)
-                    argument_index += 1
-                    replaced = True
-                if "%s" in chunk or not replaced:
-                    return []
-                chunks.append(chunk)
-            payload = "".join(chunks)
         return github_env_payload_assignments(payload)
     return []
 
@@ -4747,7 +4776,14 @@ def github_env_assignments_from_line(line: str) -> list[str]:
     return assignments
 
 
-def github_env_cat_heredoc_delimiter(tokens: list[str]) -> str | None:
+def shell_heredoc_quoted_delimiters(line: str) -> dict[str, bool]:
+    delimiters: dict[str, bool] = {}
+    for match in re.finditer(r"<<(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_-]*)\2", line):
+        delimiters[match.group(3)] = bool(match.group(2))
+    return delimiters
+
+
+def github_env_cat_heredoc_spec(tokens: list[str], line: str) -> tuple[str, bool, bool] | None:
     if len(tokens) < 5 or pathlib.Path(tokens[0]).name != "cat":
         return None
     writes_github_env = any(
@@ -4758,9 +4794,11 @@ def github_env_cat_heredoc_delimiter(tokens: list[str]) -> str | None:
     )
     if not writes_github_env:
         return None
+    quoted_delimiters = shell_heredoc_quoted_delimiters(line)
     for index, token in enumerate(tokens):
         if token in {"<<", "<<-"} and index + 1 < len(tokens):
-            return storage_strip_quotes(tokens[index + 1])
+            delimiter = storage_strip_quotes(tokens[index + 1])
+            return (delimiter, token == "<<-", quoted_delimiters.get(delimiter, False))
     return None
 
 
@@ -4770,22 +4808,28 @@ def github_env_assignments_from_cat_heredocs(text: str) -> list[str]:
     index = 0
     while index < len(lines):
         clean = strip_comment(lines[index]).strip()
-        delimiter: str | None = None
+        heredoc_spec: tuple[str, bool, bool] | None = None
         for segment in shell_command_segments_from_tokens(command_tokens(clean)):
-            delimiter = github_env_cat_heredoc_delimiter(segment)
-            if delimiter is not None:
+            heredoc_spec = github_env_cat_heredoc_spec(segment, clean)
+            if heredoc_spec is not None:
                 break
-        if delimiter is None:
+        if heredoc_spec is None:
             index += 1
             continue
+        delimiter, strip_tabs, quoted_delimiter = heredoc_spec
         payload: list[str] = []
         index += 1
         while index < len(lines):
-            if lines[index].strip() == delimiter:
+            candidate = lines[index]
+            comparable = candidate.lstrip("\t") if strip_tabs else candidate
+            if comparable == delimiter:
                 break
-            payload.append(lines[index].strip())
+            payload.append(candidate.lstrip("\t") if strip_tabs else candidate)
             index += 1
-        assignments.extend(github_env_payload_assignments("\n".join(payload)))
+        payload_text = "\n".join(payload)
+        if not quoted_delimiter:
+            payload_text = payload_text.replace("\\\n", "")
+        assignments.extend(github_env_payload_assignments(payload_text))
         if index < len(lines):
             index += 1
     return assignments

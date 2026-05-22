@@ -1389,6 +1389,62 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
             True,
         ),
         (
+            "github env printf missing argument still persists prior assignment",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'TARGET=%s\\nEXTRA=%s\\n' target >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env printf literal format persists despite extra argument",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'TARGET=target\\n' benign >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env printf b conversion assignment must persist",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'TARGET=%b\\n' target >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env printf escaped percent must not consume argument",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf 'A=%%s\\n' SRC=target >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            False,
+        ),
+        (
             "github env printf arguments must not decode escaped newlines",
             """
             jobs:
@@ -1434,6 +1490,42 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
             """,
             s3_expected,
             True,
+        ),
+        (
+            "github env heredoc delimiter must be exact and preserve continuation",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cat >> "$GITHUB_ENV" <<ENV
+                      BENIGN=1
+                       ENV
+                      TARGET=targ\\
+                      et
+                      ENV
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "quoted shell heredoc delimiter must not fold escaped newline payload",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      cat >> "$GITHUB_ENV" <<'ENV'
+                      TARGET=targ\\
+                      et
+                      ENV
+                  - run: |
+                      aws s3 sync "$TARGET" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            False,
         ),
         (
             "separate composite action run step cwd must not leak into later S3 step",

@@ -169,6 +169,10 @@ max_notional_per_order = "10.00"
         !output_dir.join("pre-run-state.json").exists(),
         "pre-run state artifact must not be written without source-bound pre-run evidence"
     );
+    assert!(
+        !output_dir.join("market-selection-source.json").exists(),
+        "market-selection artifact must not be written without source-bound price-to-beat strategy decision evidence"
+    );
     let manifest_path = output_dir.join("static-artifacts-manifest.json");
     let stdout_json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout summary should be JSON");
@@ -228,6 +232,12 @@ max_notional_per_order = "10.00"
             .iter()
             .any(|blocker| blocker == "panic gate and service policy"),
         "manifest should record abort blocker: {manifest_json}"
+    );
+    assert!(
+        blockers.iter().any(|blocker| blocker
+            .as_str()
+            .is_some_and(|blocker| blocker.contains("market-selection"))),
+        "manifest should record explicit market-selection blocker: {manifest_json}"
     );
     assert!(
         blockers.iter().any(|blocker| blocker

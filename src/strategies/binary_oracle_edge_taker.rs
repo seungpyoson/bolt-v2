@@ -122,6 +122,68 @@ struct BinaryOracleEdgeTakerOrderConfig {
     is_quote_quantity: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ConfiguredNtOrderTemplate {
+    order_type: OrderType,
+    time_in_force: TimeInForce,
+    expire_time_unix_nanos: Option<u64>,
+    trigger_price: Option<f64>,
+    activation_price: Option<f64>,
+    trigger_type: Option<TriggerType>,
+    trigger_instrument_id: Option<InstrumentId>,
+    trailing_offset: Option<f64>,
+    trailing_offset_type: Option<TrailingOffsetType>,
+    is_post_only: bool,
+    is_reduce_only: bool,
+    is_quote_quantity: bool,
+}
+
+impl ConfiguredNtOrderTemplate {
+    fn nt_order_template(
+        &self,
+        prefix: &'static str,
+        price_precision: u8,
+    ) -> Result<NtOrderTemplate> {
+        Ok(NtOrderTemplate {
+            order_type: self.order_type,
+            time_in_force: self.time_in_force,
+            expire_time: expire_time_from_config(self.expire_time_unix_nanos),
+            trigger_price: trigger_price_from_config(prefix, self.trigger_price, price_precision)?,
+            activation_price: activation_price_from_config(
+                prefix,
+                self.activation_price,
+                price_precision,
+            )?,
+            trigger_type: self.trigger_type,
+            trigger_instrument_id: self.trigger_instrument_id,
+            trailing_offset: trailing_offset_from_config(prefix, self.trailing_offset)?,
+            trailing_offset_type: self.trailing_offset_type,
+            is_post_only: self.is_post_only,
+            is_reduce_only: self.is_reduce_only,
+            is_quote_quantity: self.is_quote_quantity,
+        })
+    }
+}
+
+impl From<&BinaryOracleEdgeTakerOrderConfig> for ConfiguredNtOrderTemplate {
+    fn from(order: &BinaryOracleEdgeTakerOrderConfig) -> Self {
+        Self {
+            order_type: order.order_type,
+            time_in_force: order.time_in_force,
+            expire_time_unix_nanos: order.expire_time_unix_nanos,
+            trigger_price: order.trigger_price,
+            activation_price: order.activation_price,
+            trigger_type: order.trigger_type,
+            trigger_instrument_id: order.trigger_instrument_id,
+            trailing_offset: order.trailing_offset,
+            trailing_offset_type: order.trailing_offset_type,
+            is_post_only: order.is_post_only,
+            is_reduce_only: order.is_reduce_only,
+            is_quote_quantity: order.is_quote_quantity,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SubmitContext {
     client_id: Option<ClientId>,
@@ -157,24 +219,7 @@ impl BinaryOracleEdgeTakerOrderConfig {
         prefix: &'static str,
         price_precision: u8,
     ) -> Result<NtOrderTemplate> {
-        Ok(NtOrderTemplate {
-            order_type: self.order_type,
-            time_in_force: self.time_in_force,
-            expire_time: expire_time_from_config(self.expire_time_unix_nanos),
-            trigger_price: trigger_price_from_config(prefix, self.trigger_price, price_precision)?,
-            activation_price: activation_price_from_config(
-                prefix,
-                self.activation_price,
-                price_precision,
-            )?,
-            trigger_type: self.trigger_type,
-            trigger_instrument_id: self.trigger_instrument_id,
-            trailing_offset: trailing_offset_from_config(prefix, self.trailing_offset)?,
-            trailing_offset_type: self.trailing_offset_type,
-            is_post_only: self.is_post_only,
-            is_reduce_only: self.is_reduce_only,
-            is_quote_quantity: self.is_quote_quantity,
-        })
+        ConfiguredNtOrderTemplate::from(self).nt_order_template(prefix, price_precision)
     }
 }
 
@@ -3222,12 +3267,19 @@ impl BinaryOracleEdgeTaker {
         }
 
         let order_side = order_config.side;
-        let price = match order_config.order_type {
-            OrderType::StopMarket | OrderType::MarketIfTouched => order_config.trigger_price,
-            OrderType::TrailingStopMarket => {
-                order_config.trigger_price.or(order_config.activation_price)
+        let price = match order_config.order_template.order_type {
+            OrderType::StopMarket | OrderType::MarketIfTouched => {
+                order_config.order_template.trigger_price
             }
-            _ => order_price_for_side(&open_position.book, order_side, order_config.is_post_only),
+            OrderType::TrailingStopMarket => order_config
+                .order_template
+                .trigger_price
+                .or(order_config.order_template.activation_price),
+            _ => order_price_for_side(
+                &open_position.book,
+                order_side,
+                order_config.order_template.is_post_only,
+            ),
         }?;
 
         Some((order_side, price)).filter(|(_, price)| is_positive_finite(*price))
@@ -3481,7 +3533,7 @@ impl BinaryOracleEdgeTaker {
             decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID);
             return decision;
         };
-        if order_config.is_quote_quantity {
+        if order_config.order_template.is_quote_quantity {
             decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED);
             return decision;
         }
@@ -3497,22 +3549,22 @@ impl BinaryOracleEdgeTaker {
         }
 
         decision.instrument_id = Some(open_position.instrument_id);
-        decision.order_type = Some(order_config.order_type);
+        decision.order_type = Some(order_config.order_template.order_type);
         decision.order_side = Some(order_side);
         decision.position_side = Some(order_config.position_side);
-        decision.time_in_force = Some(order_config.time_in_force);
+        decision.time_in_force = Some(order_config.order_template.time_in_force);
         decision.price = Some(price);
         decision.quantity = Some(open_position.quantity);
-        decision.is_post_only = Some(order_config.is_post_only);
-        decision.is_reduce_only = Some(order_config.is_reduce_only);
-        decision.is_quote_quantity = Some(order_config.is_quote_quantity);
-        decision.expire_time_unix_nanos = order_config.expire_time_unix_nanos;
-        decision.trigger_price = order_config.trigger_price;
-        decision.activation_price = order_config.activation_price;
-        decision.trigger_type = order_config.trigger_type;
-        decision.trigger_instrument_id = order_config.trigger_instrument_id;
-        decision.trailing_offset = order_config.trailing_offset;
-        decision.trailing_offset_type = order_config.trailing_offset_type;
+        decision.is_post_only = Some(order_config.order_template.is_post_only);
+        decision.is_reduce_only = Some(order_config.order_template.is_reduce_only);
+        decision.is_quote_quantity = Some(order_config.order_template.is_quote_quantity);
+        decision.expire_time_unix_nanos = order_config.order_template.expire_time_unix_nanos;
+        decision.trigger_price = order_config.order_template.trigger_price;
+        decision.activation_price = order_config.order_template.activation_price;
+        decision.trigger_type = order_config.order_template.trigger_type;
+        decision.trigger_instrument_id = order_config.order_template.trigger_instrument_id;
+        decision.trailing_offset = order_config.order_template.trailing_offset;
+        decision.trailing_offset_type = order_config.order_template.trailing_offset_type;
         decision.blocked_reason = None;
         decision
     }
@@ -3882,18 +3934,7 @@ impl BinaryOracleEdgeTaker {
                 position_side_field,
                 &order.position_side,
             )?,
-            order_type: order.order_type,
-            time_in_force: order.time_in_force,
-            expire_time_unix_nanos: order.expire_time_unix_nanos,
-            trigger_price: order.trigger_price,
-            activation_price: order.activation_price,
-            trigger_type: order.trigger_type,
-            trigger_instrument_id: order.trigger_instrument_id,
-            trailing_offset: order.trailing_offset,
-            trailing_offset_type: order.trailing_offset_type,
-            is_post_only: order.is_post_only,
-            is_reduce_only: order.is_reduce_only,
-            is_quote_quantity: order.is_quote_quantity,
+            order_template: ConfiguredNtOrderTemplate::from(order),
         })
     }
 
@@ -3950,7 +3991,7 @@ impl BinaryOracleEdgeTaker {
         client_order_id: ClientOrderId,
     ) -> Result<nautilus_model::orders::OrderAny> {
         anyhow::ensure!(
-            !order_config.is_quote_quantity,
+            !order_config.order_template.is_quote_quantity,
             "exit_is_quote_quantity must be false because exits are sized from base position quantity"
         );
         let template =
@@ -5898,18 +5939,7 @@ struct ExitEvaluation {
 struct ExitOrderExecutionConfig {
     side: OrderSide,
     position_side: PositionSide,
-    order_type: OrderType,
-    time_in_force: TimeInForce,
-    expire_time_unix_nanos: Option<u64>,
-    trigger_price: Option<f64>,
-    activation_price: Option<f64>,
-    trigger_type: Option<TriggerType>,
-    trigger_instrument_id: Option<InstrumentId>,
-    trailing_offset: Option<f64>,
-    trailing_offset_type: Option<TrailingOffsetType>,
-    is_post_only: bool,
-    is_reduce_only: bool,
-    is_quote_quantity: bool,
+    order_template: ConfiguredNtOrderTemplate,
 }
 
 impl ExitOrderExecutionConfig {
@@ -5918,24 +5948,8 @@ impl ExitOrderExecutionConfig {
         prefix: &'static str,
         price_precision: u8,
     ) -> Result<NtOrderTemplate> {
-        Ok(NtOrderTemplate {
-            order_type: self.order_type,
-            time_in_force: self.time_in_force,
-            expire_time: expire_time_from_config(self.expire_time_unix_nanos),
-            trigger_price: trigger_price_from_config(prefix, self.trigger_price, price_precision)?,
-            activation_price: activation_price_from_config(
-                prefix,
-                self.activation_price,
-                price_precision,
-            )?,
-            trigger_type: self.trigger_type,
-            trigger_instrument_id: self.trigger_instrument_id,
-            trailing_offset: trailing_offset_from_config(prefix, self.trailing_offset)?,
-            trailing_offset_type: self.trailing_offset_type,
-            is_post_only: self.is_post_only,
-            is_reduce_only: self.is_reduce_only,
-            is_quote_quantity: self.is_quote_quantity,
-        })
+        self.order_template
+            .nt_order_template(prefix, price_precision)
     }
 }
 
@@ -5969,18 +5983,20 @@ impl ExitSubmissionDecision {
         Some(ExitOrderExecutionConfig {
             side: self.order_side?,
             position_side: self.position_side?,
-            order_type: self.order_type?,
-            time_in_force: self.time_in_force?,
-            expire_time_unix_nanos: self.expire_time_unix_nanos,
-            trigger_price: self.trigger_price,
-            activation_price: self.activation_price,
-            trigger_type: self.trigger_type,
-            trigger_instrument_id: self.trigger_instrument_id,
-            trailing_offset: self.trailing_offset,
-            trailing_offset_type: self.trailing_offset_type,
-            is_post_only: self.is_post_only?,
-            is_reduce_only: self.is_reduce_only?,
-            is_quote_quantity: self.is_quote_quantity?,
+            order_template: ConfiguredNtOrderTemplate {
+                order_type: self.order_type?,
+                time_in_force: self.time_in_force?,
+                expire_time_unix_nanos: self.expire_time_unix_nanos,
+                trigger_price: self.trigger_price,
+                activation_price: self.activation_price,
+                trigger_type: self.trigger_type,
+                trigger_instrument_id: self.trigger_instrument_id,
+                trailing_offset: self.trailing_offset,
+                trailing_offset_type: self.trailing_offset_type,
+                is_post_only: self.is_post_only?,
+                is_reduce_only: self.is_reduce_only?,
+                is_quote_quantity: self.is_quote_quantity?,
+            },
         })
     }
 }

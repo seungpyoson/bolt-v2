@@ -535,6 +535,21 @@
 - [x] T242 [US3] GREEN: Update the verifier and active Speckit context pointers so future `$speckit-plan` and `$speckit-tasks` commands target `specs/023-nt-order-intent-layer/`
 - [x] T243 [US3] Verify schema-current tests, active verifier, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
 
+## Phase 56: TDD Slice 52 - Active Speckit Context Malformed JSON Regression
+
+**Goal**: Close the external-review coverage gap for malformed `.specify/feature.json` without changing runtime order construction, NT order-template mapping, or venue/market/strategy behavior. The verifier already rejects malformed JSON; this slice makes that branch explicit regression coverage.
+
+- [x] T244 [US3] Add schema-current verifier regression proving malformed `.specify/feature.json` reports a finding without crashing
+- [x] T245 [US3] Verify schema-current tests, active verifier, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+
+## Phase 57: Refactor Slice 53 - Strategy-Local NT Template Mapping Dedupe
+
+**Goal**: Resolve exact-head no-mistakes evidence that entry and exit copied the same NT order-template field mapping in strategy code. The fix is a behavior-preserving refactor only: it must not add source-count tests, runtime hardcodes, venue policy, market policy, strategy admission policy, or any new shared order-intent responsibility.
+
+- [x] T246 [P] [US3] Record exact-head no-mistakes evidence and boundary decision for duplicated strategy-local NT template mapping
+- [x] T247 [US3] REFACTOR: Centralize strategy-local configured NT template field mapping while leaving shared `build_nt_order(...)` strategy/venue/market agnostic
+- [x] T248 [US3] Verify focused maker/forced-exit/order-intent tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -589,6 +604,8 @@
 - Phase 53 is closed by T236 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.
 - Phase 54 is closed by T240 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.
 - Phase 55 is closed by T243 verification at 2026-05-22 14:03:07 KST: schema-current self-tests and active verifier passed after RED coverage for stale active pointers, outside-block historical pointers, same-block false negatives, empty context files, and non-object feature JSON; `git diff --check`, `cargo fmt -- --check`, and `just source-fence` passed; Franklin and Kant reported no findings after Ampere and Beauvoir findings were fixed. Exact-head PR and no-mistakes state must be refreshed after committing and pushing this docs/verifier-only follow-up head.
+- Phase 56 is closed by T245 verification at 2026-05-22 14:39:09 KST: schema-current self-tests and active verifier passed with malformed `.specify/feature.json` regression coverage, and the exact-head gate state is refreshed by Phase 57 verification.
+- Phase 57 is closed by T248 verification at 2026-05-22 14:39:09 KST: focused maker entry/exit, forced-exit template, shared order-intent source fence, schema/runtime verifiers, `cargo fmt -- --check`, `git diff --check`, `just source-fence` after cache-lock escalation, `cargo test --locked --quiet`, and `just clippy` passed locally. Exact-head PR and no-mistakes state must be refreshed after committing and pushing this follow-up head.
 
 ## Parallel Opportunities
 

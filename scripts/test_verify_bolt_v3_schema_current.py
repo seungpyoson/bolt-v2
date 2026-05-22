@@ -212,6 +212,22 @@ def test_validate_docs_rejects_non_object_feature_json_without_crashing() -> Non
         raise AssertionError(f"expected non-object feature JSON finding, got {findings!r}")
 
 
+def test_validate_docs_rejects_malformed_feature_json_without_crashing() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        agents_doc=(
+            "<!-- SPECKIT START -->\n"
+            "`specs/023-nt-order-intent-layer/plan.md`\n"
+            "<!-- SPECKIT END -->\n"
+        ),
+        feature_json="{",
+    )
+
+    if not any(".specify/feature.json" in finding and "not valid JSON" in finding for finding in findings):
+        raise AssertionError(f"expected malformed feature JSON finding, got {findings!r}")
+
+
 def test_validate_docs_rejects_superseded_tuple_policy_and_netting_only_status() -> None:
     stale_schema = CURRENT_SCHEMA + """
 - current allowed value:
@@ -606,6 +622,7 @@ def main() -> int:
         test_validate_docs_rejects_same_block_wrong_active_plan_even_with_current_note,
         test_validate_docs_rejects_empty_speckit_context_files,
         test_validate_docs_rejects_non_object_feature_json_without_crashing,
+        test_validate_docs_rejects_malformed_feature_json_without_crashing,
         test_validate_docs_rejects_superseded_tuple_policy_and_netting_only_status,
         test_validate_docs_rejects_short_side_overclaims_in_scoped_docs,
         test_validate_docs_rejects_stale_contract_short_side_claim,

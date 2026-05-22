@@ -619,6 +619,15 @@
 - [x] T281 [US2] GREEN: Canonicalize entry, exit, and forced-exit `OrderSide`, `PositionSide`, `OrderType`, `TimeInForce`, `TriggerType`, and `TrailingOffsetType` values through pinned NautilusTrader enum parsing before approval comparison
 - [ ] T282 [US2] Verify focused Phase 8 test, formatting/diff checks, schema/runtime verifiers, source fences, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
+## Phase 65: TDD Slice 61 - Activation Price Admission Source
+
+**Goal**: Resolve no-mistakes review evidence for activation-price admission evidence without adding venue, market, strategy, maker-only, taker-only, or order-type policy. The fix must use NautilusTrader order fields generically and keep strategy admission on the same compiled-order evidence path.
+
+- [x] T283 [P] [US2] Record no-mistakes review commit `c4adfa05` and pinned NautilusTrader activation-price evidence in `specs/023-nt-order-intent-layer/research.md`
+- [x] T284 [US2] RED: Add a central compiled-order price-source regression proving activation price is selected before caller fallback when NT `price` and `trigger_price` are absent
+- [x] T285 [US2] GREEN: Centralize compiled-order price-source selection as `price -> trigger_price -> activation_price -> fallback` and reuse it for order-intent evidence plus submit-admission notional
+- [ ] T286 [US2] Verify focused admission tests, schema/runtime verifiers, source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -683,6 +692,7 @@
 - Phase 62 is closed by T274 verification: Phase 8 OMS canonicalization tests, schema/runtime verifiers, full relevant local checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state were refreshed by the final exact-head evidence recorded in `research.md`.
 - Phase 63 is closed by T278 verification: invalid-OMS fail-closed coverage, helper disproof coverage, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state were refreshed by the final exact-head evidence recorded in `research.md`.
 - Phase 64 blocks final Phase 8 approval-envelope completion until focused tests, verifiers, source fences, exact-head PR checks, external reviewer state, and no-mistakes state are refreshed for the order-enum canonicalization head.
+- Phase 65 blocks final branch completion because no-mistakes produced activation-price admission evidence on top of the Phase 64 head.
 
 ## Parallel Opportunities
 

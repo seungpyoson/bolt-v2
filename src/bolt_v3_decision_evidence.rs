@@ -40,6 +40,27 @@ pub struct BoltV3OrderIntentEvidence {
     pub order_fields: BoltV3OrderIntentOrderFields,
 }
 
+pub(crate) fn compiled_order_price_source(fallback_price: String, order: &OrderAny) -> String {
+    selected_compiled_order_price_source(
+        order.price().map(|price| price.to_string()),
+        order.trigger_price().map(|price| price.to_string()),
+        order.activation_price().map(|price| price.to_string()),
+        fallback_price,
+    )
+}
+
+fn selected_compiled_order_price_source(
+    price: Option<String>,
+    trigger_price: Option<String>,
+    activation_price: Option<String>,
+    fallback_price: String,
+) -> String {
+    price
+        .or(trigger_price)
+        .or(activation_price)
+        .unwrap_or(fallback_price)
+}
+
 impl BoltV3OrderIntentEvidence {
     pub fn from_compiled_order(
         strategy_id: String,
@@ -53,11 +74,7 @@ impl BoltV3OrderIntentEvidence {
             instrument_id: order.instrument_id().to_string(),
             client_order_id: order.client_order_id().to_string(),
             order_side: order.order_side().to_string(),
-            price: order
-                .price()
-                .or_else(|| order.trigger_price())
-                .map(|price| price.to_string())
-                .unwrap_or(fallback_price),
+            price: compiled_order_price_source(fallback_price, order),
             quantity: order.quantity().to_string(),
             order_fields: BoltV3OrderIntentOrderFields::from_order(order),
         }
@@ -421,6 +438,22 @@ mod tests {
         assert_eq!(intent.order_fields.is_post_only, false);
         assert_eq!(intent.order_fields.is_reduce_only, false);
         assert_eq!(intent.order_fields.is_quote_quantity, false);
+    }
+
+    #[test]
+    fn compiled_order_price_source_prefers_activation_price_before_fallback() {
+        let activation_price = Price::new(0.48, 2).to_string();
+        let fallback_price = Price::new(0.40, 2).to_string();
+
+        assert_eq!(
+            selected_compiled_order_price_source(
+                None,
+                None,
+                Some(activation_price.clone()),
+                fallback_price,
+            ),
+            activation_price
+        );
     }
 
     #[test]

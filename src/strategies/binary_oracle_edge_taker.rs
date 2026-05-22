@@ -31,7 +31,9 @@ use serde::Deserialize;
 use toml::Value;
 
 use crate::{
-    bolt_v3_decision_evidence::{BoltV3OrderIntentEvidence, BoltV3OrderIntentKind},
+    bolt_v3_decision_evidence::{
+        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, compiled_order_price_source,
+    },
     bolt_v3_market_families::{self, MarketSelectionTarget},
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest,
@@ -3788,11 +3790,7 @@ impl BinaryOracleEdgeTaker {
                 client_order_id
             )
         })?;
-        let price_source = order
-            .price()
-            .or_else(|| order.trigger_price())
-            .map(|price| price.to_string())
-            .unwrap_or_else(|| intent.price.clone());
+        let price_source = compiled_order_price_source(intent.price.clone(), order);
         let price = Decimal::from_str(price_source.trim()).with_context(|| {
             format!(
                 "bolt-v3 submit admission price is not a decimal for client_order_id={}",
@@ -6192,11 +6190,7 @@ fn submit_admission_request_from_order(
         !order.is_quote_quantity(),
         "test submit admission helper requires strategy cache context for quote-quantity orders"
     );
-    let price_source = order
-        .price()
-        .or_else(|| order.trigger_price())
-        .map(|price| price.to_string())
-        .unwrap_or_else(|| intent.price.clone());
+    let price_source = compiled_order_price_source(intent.price.clone(), order);
     let price = Decimal::from_str(price_source.trim()).with_context(|| {
         format!(
             "bolt-v3 submit admission price is not a decimal for client_order_id={}",
@@ -10639,15 +10633,27 @@ mod tests {
             Decimal::from_str("1.040").expect("expected decimal should parse")
         );
 
+        let exit_fallback_price = Price::new(0.45, 2);
         let exit_order = strategy
             .build_configured_exit_order(
                 instrument_id,
                 OrderSide::Sell,
                 quantity,
-                Price::new(0.45, 2),
+                exit_fallback_price,
                 ClientOrderId::from("O-19700101-000000-001-014-1"),
             )
             .expect("TrailingStopMarket exit order with explicit activation price should build");
+
+        let exit_admission = submit_admission_request_from_order(
+            &BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                BoltV3OrderIntentKind::Exit,
+                exit_fallback_price.to_string(),
+                &exit_order,
+            ),
+            &exit_order,
+        )
+        .expect("TrailingStopMarket activation-only exit admission should derive from compiled activation price");
 
         let OrderAny::TrailingStopMarket(exit_order) = exit_order else {
             panic!("TrailingStopMarket exit config should build an NT trailing-stop-market order");
@@ -10658,6 +10664,16 @@ mod tests {
         assert_eq!(exit_order.price(), None);
         assert_eq!(exit_order.trigger_price(), Some(Price::new(0.48, 2)));
         assert_eq!(exit_order.activation_price(), Some(Price::new(0.48, 2)));
+        let expected_exit_notional = Decimal::from_str(
+            exit_order
+                .activation_price()
+                .expect("activation-only trailing-stop exit should retain activation price")
+                .to_string()
+                .trim(),
+        )
+        .expect("activation price should parse")
+            * Decimal::from_str(quantity.to_string().trim()).expect("quantity should parse");
+        assert_eq!(exit_admission.notional, expected_exit_notional);
         assert_eq!(exit_order.trigger_type(), Some(TriggerType::MarkPrice));
         assert_eq!(exit_order.trailing_offset(), Some(Decimal::new(3, 0)));
         assert_eq!(

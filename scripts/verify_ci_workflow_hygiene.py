@@ -29,6 +29,12 @@ DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / ".github" / "actions", "*/action.yaml"),
 )
 S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
+YAML_ANCHOR_PATTERN = r"&[A-Za-z0-9_.-]+"
+YAML_STEP_ITEM_RE = re.compile(rf"^-\s+(?:{YAML_ANCHOR_PATTERN}(?:\s+|$))?")
+YAML_RUN_LINE_RE = re.compile(rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*(.*?)\s*$")
+YAML_FOLDED_RUN_LINE_RE = re.compile(
+    rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*>[+-]?\s*(?:#.*)?$"
+)
 
 REQUIRED_JOBS = (
     "detector",
@@ -572,9 +578,9 @@ def step_blocks(job_lines: list[str]) -> list[list[str]]:
         indent = len(clean) - len(stripped)
         if steps_indent is not None and indent <= steps_indent:
             break
-        if step_indent is None and stripped.startswith("- "):
+        if step_indent is None and YAML_STEP_ITEM_RE.match(stripped):
             step_indent = indent
-        if step_indent is not None and indent == step_indent and stripped.startswith("- "):
+        if step_indent is not None and indent == step_indent and YAML_STEP_ITEM_RE.match(stripped):
             if current is not None:
                 blocks.append(current)
             current = [line]
@@ -605,10 +611,10 @@ def github_cache_blocks(job_lines: list[str]) -> list[list[str]]:
 def block_runs_command(block: list[str], command: str) -> bool:
     for index, line in enumerate(block):
         clean = strip_comment(line)
-        inline = re.match(r"^\s*(?:-\s*)?run:\s*(.*?)\s*$", clean)
+        inline = YAML_RUN_LINE_RE.match(clean)
         if inline is None:
             continue
-        value = inline.group(1).strip().strip("'\"")
+        value = inline.group(2).strip().strip("'\"")
         if value == command:
             return True
         if value not in {"|", ">"}:
@@ -698,7 +704,14 @@ def has_line_matching(lines: list[str], pattern: re.Pattern[str]) -> bool:
 
 def has_run_command(lines: list[str], command: str) -> bool:
     expected = {f"run: {command}", f"- run: {command}"}
-    return any(strip_comment(line).strip() in expected for line in lines)
+    for line in lines:
+        clean = strip_comment(line)
+        if clean.strip() in expected:
+            return True
+        match = YAML_RUN_LINE_RE.match(clean)
+        if match is not None and unquote_yaml_scalar(match.group(2)) == command:
+            return True
+    return False
 
 
 def job_has_explicit_cache_key(job_lines: list[str]) -> bool:
@@ -4499,7 +4512,7 @@ def folded_yaml_run_commands(text: str) -> list[str]:
     index = 0
     while index < len(lines):
         line = lines[index]
-        match = re.match(r"^(\s*)(?:-\s*)?run:\s*>[+-]?\s*(?:#.*)?$", line)
+        match = YAML_FOLDED_RUN_LINE_RE.match(line)
         if match is None:
             index += 1
             continue
@@ -4524,7 +4537,7 @@ def folded_yaml_run_commands(text: str) -> list[str]:
 def step_run_command(block: list[str]) -> str | None:
     for index, line in enumerate(block):
         clean = strip_comment(line).rstrip()
-        match = re.match(r"^(\s*)(?:-\s*)?run:\s*(.*?)\s*$", clean)
+        match = YAML_RUN_LINE_RE.match(clean)
         if match is None:
             continue
         value = match.group(2).strip()
@@ -4565,7 +4578,7 @@ def yaml_run_shell_texts(yaml_text: str) -> list[str]:
     index = 0
     while index < len(lines):
         clean = strip_comment(lines[index]).rstrip()
-        match = re.match(r"^(\s*)(?:-\s*)?run:\s*(.*?)\s*$", clean)
+        match = YAML_RUN_LINE_RE.match(clean)
         if match is None:
             index += 1
             continue

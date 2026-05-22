@@ -2203,6 +2203,26 @@ jobs:
         raise AssertionError("anchored workflow job was not parsed")
 
 
+def assert_v6_red_yaml_anchor_steps_do_not_hide_raw_storage() -> None:
+    verifier = load_verifier()
+    workflow = """
+name: Probe
+on: [push]
+jobs:
+  hidden:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+      - &raw run: cargo build --target-dir /tmp/raw
+      - &s3 run: aws s3 sync target s3://bolt-v2-active-cache/target
+"""
+    errors = verifier.raw_rust_storage_errors(textwrap.dedent(workflow))
+    expected_target = "cargo --target-dir raw target override must be classified"
+    expected_s3 = "S3 active mutable target cache must be rejected"
+    if expected_target not in errors or expected_s3 not in errors:
+        raise AssertionError(f"anchored workflow step raw-storage drift was silent: {errors!r}")
+
+
 def assert_v6_red_local_composite_actions_are_scanned() -> None:
     extra_action = """
 name: Evade
@@ -2657,6 +2677,7 @@ def main() -> int:
     assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action()
     assert_v6_red_raw_storage_checks_all_ci_automation()
     assert_v6_red_yaml_anchor_jobs_do_not_hide_raw_storage()
+    assert_v6_red_yaml_anchor_steps_do_not_hide_raw_storage()
     assert_v6_red_local_composite_actions_are_scanned()
     assert_shell_logical_lines_handles_crlf_continuations()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))

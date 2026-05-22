@@ -1,0 +1,53 @@
+name: Test GitHub Models Availability
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      models: read
+    steps:
+      - name: Test Model Availability
+        env:
+          GH_MODELS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== GitHub Models Availability Test ==="
+          echo "Testing models from current summary.yml list"
+          echo ""
+
+          MODELS=("openai/gpt-4.1" "openai/gpt-4o" "openai/gpt-4.1-mini" "openai/gpt-4o-mini")
+
+          for model in "${MODELS[@]}"; do
+            echo "=========================================="
+            echo "MODEL: $model"
+            echo "=========================================="
+
+            payload=$(cat <<EOF
+{
+  "model": "$model",
+  "messages": [
+    {"role": "user", "content": "Reply with exactly: MODEL_OK"}
+  ],
+  "max_tokens": 10
+}
+EOF
+)
+
+            response=$(curl -s -w "\n__STATUS__:%{http_code}" \
+              https://models.github.ai/inference/chat/completions \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer $GH_MODELS_TOKEN" \
+              -d "$payload") || response=""
+
+            status=$(echo "$response" | grep -o '__STATUS__:[0-9]*' | cut -d: -f2 || echo "unknown")
+            body=$(echo "$response" | sed 's/__STATUS__:[0-9]*$//')
+
+            echo "HTTP Status: $status"
+            echo "Response:"
+            echo "$body"
+            echo ""
+          done
+
+          echo "=== Test Complete ==="

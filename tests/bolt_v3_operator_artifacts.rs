@@ -2069,6 +2069,60 @@ fn market_selection_source_builder_binds_configured_target_to_nt_instruments() {
 }
 
 #[test]
+fn market_selection_source_builder_uses_nt_expiration_not_rounded_seconds_to_end() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let now_ms = TEST_MARKET_SELECTION_NOW_MS + 999;
+    let market_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let instruments = vec![
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+    ];
+
+    let artifact = bolt_v2::bolt_v3_operator_artifacts::build_market_selection_source_artifact(
+        &loaded,
+        strategy_instance_id,
+        &instruments,
+        now_ms,
+    )
+    .expect("market selection source should build from config and NT instruments");
+    let json = serde_json::to_value(&artifact).expect("market selection source should serialize");
+
+    assert_eq!(
+        json["polymarket_market_end_timestamp_ms"], TEST_MARKET_SELECTION_END_MS,
+        "market-selection source must bind the selected NT instrument expiration"
+    );
+}
+
+#[test]
 fn market_selection_source_writer_fails_closed_until_strategy_decision_inputs_exist() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded

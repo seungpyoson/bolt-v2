@@ -703,6 +703,14 @@ reason = "This is a stable evidence label for the already-selected current marke
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
+literal = '''"next"'''
+context = '''pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";'''
+classification = "strategy_evidence_market_selection_outcome"
+reason = "This is a stable evidence label for the already-selected next market window in the strategy-input snapshot. It records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
 literal = '''"order_intent"'''
 context = '''kind: "order_intent",'''
 classification = "decision_evidence_envelope_kind"

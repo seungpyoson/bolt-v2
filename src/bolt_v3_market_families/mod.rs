@@ -68,7 +68,9 @@ pub struct SelectedBinaryOptionMarket {
     pub instrument_id: InstrumentId,
     pub up_instrument_id: InstrumentId,
     pub down_instrument_id: InstrumentId,
+    pub selection_outcome: MarketSelectionOutcome,
     pub start_timestamp_milliseconds: u64,
+    pub expiration_timestamp_milliseconds: u64,
     pub seconds_to_end: u64,
     pub source_identity: SelectedMarketSourceIdentity,
 }
@@ -439,7 +441,9 @@ mod tests {
             instrument_id: InstrumentId::from("fixture-market.FIXTURE"),
             up_instrument_id: InstrumentId::from("fixture-up.FIXTURE"),
             down_instrument_id: InstrumentId::from("fixture-down.FIXTURE"),
+            selection_outcome: MarketSelectionOutcome::Current,
             start_timestamp_milliseconds: 1_000,
+            expiration_timestamp_milliseconds: 61_000,
             seconds_to_end: 60,
             source_identity: SelectedMarketSourceIdentity {
                 condition_id: "fixture-condition".to_string(),

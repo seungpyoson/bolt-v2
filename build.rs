@@ -36,32 +36,66 @@ fn main() {
 }
 
 fn emit_git_head_rerun_paths(manifest_dir: &Path) {
+    for path in git_head_rerun_paths(manifest_dir) {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+}
+
+pub fn git_head_rerun_paths(manifest_dir: &Path) -> Vec<PathBuf> {
     let dot_git = manifest_dir.join(".git");
-    let git_dir = if dot_git.is_dir() {
-        dot_git
-    } else {
-        let Ok(dot_git_content) = fs::read_to_string(&dot_git) else {
-            return;
-        };
-        let Some(git_dir) = dot_git_content.strip_prefix("gitdir:").map(str::trim) else {
-            return;
-        };
-        manifest_dir.join(git_dir)
+    let Some(git_dir) = git_dir_from_dot_git(manifest_dir, &dot_git) else {
+        return Vec::new();
     };
 
     let head_path = git_dir.join("HEAD");
-    println!("cargo:rerun-if-changed={}", head_path.display());
+    let mut paths = vec![head_path.clone()];
 
     let Ok(head_content) = fs::read_to_string(&head_path) else {
-        return;
+        return paths;
     };
     let Some(head_ref) = head_content.strip_prefix("ref:").map(str::trim) else {
-        return;
+        return paths;
     };
-    println!(
-        "cargo:rerun-if-changed={}",
-        git_dir.join(head_ref).display()
-    );
+
+    let common_dir = git_common_dir(&git_dir);
+    push_unique(&mut paths, common_dir.join(head_ref));
+    push_unique(&mut paths, git_dir.join(head_ref));
+    push_unique(&mut paths, common_dir.join("packed-refs"));
+    paths
+}
+
+fn git_dir_from_dot_git(manifest_dir: &Path, dot_git: &Path) -> Option<PathBuf> {
+    if dot_git.is_dir() {
+        return Some(dot_git.to_path_buf());
+    }
+
+    let dot_git_content = fs::read_to_string(dot_git).ok()?;
+    let git_dir = dot_git_content.strip_prefix("gitdir:").map(str::trim)?;
+    let git_dir = PathBuf::from(git_dir);
+    if git_dir.is_absolute() {
+        Some(git_dir)
+    } else {
+        Some(manifest_dir.join(git_dir))
+    }
+}
+
+fn git_common_dir(git_dir: &Path) -> PathBuf {
+    let Ok(common_dir) = fs::read_to_string(git_dir.join("commondir")) else {
+        return git_dir.to_path_buf();
+    };
+    let common_dir = PathBuf::from(common_dir.trim());
+    let common_dir = if common_dir.is_absolute() {
+        common_dir
+    } else {
+        git_dir.join(common_dir)
+    };
+    fs::canonicalize(&common_dir).unwrap_or(common_dir)
+}
+
+fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.contains(&path) {
+        paths.push(path);
+    }
 }
 
 fn is_git_head_sha(value: &str) -> bool {

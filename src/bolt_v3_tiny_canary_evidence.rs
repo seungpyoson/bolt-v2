@@ -5,7 +5,6 @@ use std::{
     io::{BufReader, Read, Write},
     path::{Path, PathBuf},
     str::FromStr,
-    time::Duration,
 };
 
 use anyhow::{Result, anyhow};
@@ -482,7 +481,8 @@ impl Phase8MarketSelectionSourceEvidenceFile {
         let selected_window = candidate_windows
             .iter()
             .find(|window| {
-                window.start_timestamp_milliseconds == selected.start_timestamp_milliseconds
+                window.outcome == selected.selection_outcome
+                    && window.start_timestamp_milliseconds == selected.start_timestamp_milliseconds
             })
             .ok_or_else(|| {
                 anyhow!(
@@ -494,16 +494,16 @@ impl Phase8MarketSelectionSourceEvidenceFile {
                 "selected market identity does not match configured candidate window"
             ));
         }
-        let market_selection_outcome = match selected_window.outcome {
+        let market_selection_outcome = match selected.selection_outcome {
             MarketSelectionOutcome::Current => PHASE8_MARKET_SELECTION_OUTCOME_CURRENT,
             MarketSelectionOutcome::Next => PHASE8_MARKET_SELECTION_OUTCOME_NEXT,
         };
-        let remaining_milliseconds =
-            u64::try_from(Duration::from_secs(selected.seconds_to_end).as_millis())
-                .map_err(|_| anyhow!("selected market end timestamp overflows u64 milliseconds"))?;
-        let market_end_ms = market_selection_timestamp_ms
-            .checked_add(remaining_milliseconds)
-            .ok_or_else(|| anyhow!("selected market end timestamp overflows u64 milliseconds"))?;
+        let market_end_ms = selected.expiration_timestamp_milliseconds;
+        if market_end_ms <= market_selection_timestamp_ms {
+            return Err(anyhow!(
+                "selected market expiration timestamp must be after selection timestamp"
+            ));
+        }
 
         Ok(Self {
             record_kind: PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND.to_string(),

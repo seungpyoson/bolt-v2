@@ -297,7 +297,9 @@ pub struct SelectedUpdownMarket {
     pub instrument_id: InstrumentId,
     pub up_instrument_id: InstrumentId,
     pub down_instrument_id: InstrumentId,
+    pub selection_outcome: MarketSelectionOutcome,
     pub start_timestamp_milliseconds: u64,
+    pub expiration_timestamp_milliseconds: u64,
     pub seconds_to_end: u64,
     pub source_identity: SelectedMarketSourceIdentity,
 }
@@ -734,9 +736,22 @@ pub fn select_market_from_instruments(
         next_start,
     );
 
-    candidate_market_for_slug(instruments, &current_slug, current_start, now_milliseconds).or_else(
-        || candidate_market_for_slug(instruments, &next_slug, next_start, now_milliseconds),
+    candidate_market_for_slug(
+        instruments,
+        &current_slug,
+        current_start,
+        MarketSelectionOutcome::Current,
+        now_milliseconds,
     )
+    .or_else(|| {
+        candidate_market_for_slug(
+            instruments,
+            &next_slug,
+            next_start,
+            MarketSelectionOutcome::Next,
+            now_milliseconds,
+        )
+    })
 }
 
 pub fn select_binary_option_market(
@@ -758,7 +773,9 @@ pub fn select_binary_option_market(
         instrument_id: market.instrument_id,
         up_instrument_id: market.up_instrument_id,
         down_instrument_id: market.down_instrument_id,
+        selection_outcome: market.selection_outcome,
         start_timestamp_milliseconds: market.start_timestamp_milliseconds,
+        expiration_timestamp_milliseconds: market.expiration_timestamp_milliseconds,
         seconds_to_end: market.seconds_to_end,
         source_identity: market.source_identity,
     })
@@ -860,6 +877,7 @@ fn candidate_market_for_slug(
     instruments: &[InstrumentAny],
     market_slug: &str,
     period_start_unix_secs: i64,
+    selection_outcome: MarketSelectionOutcome,
     now_milliseconds: u64,
 ) -> Option<SelectedUpdownMarket> {
     let mut pair = UpdownOutcomePair::empty();
@@ -908,7 +926,9 @@ fn candidate_market_for_slug(
         instrument_id: up.instrument_id,
         up_instrument_id: up.instrument_id,
         down_instrument_id: down.instrument_id,
+        selection_outcome,
         start_timestamp_milliseconds,
+        expiration_timestamp_milliseconds: expiration_milliseconds,
         seconds_to_end: Duration::from_millis(
             expiration_milliseconds.saturating_sub(now_milliseconds),
         )

@@ -32,10 +32,11 @@ use toml::Value;
 
 use crate::{
     bolt_v3_decision_evidence::{
-        BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT, BoltV3OrderIntentEvidence,
+        BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
+        BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT, BoltV3OrderIntentEvidence,
         BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot, compiled_order_price_source,
     },
-    bolt_v3_market_families::{self, MarketSelectionTarget},
+    bolt_v3_market_families::{self, MarketSelectionOutcome, MarketSelectionTarget},
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
@@ -387,8 +388,10 @@ struct CandidateMarket {
     instrument_id: String,
     up: CandidateOutcome,
     down: CandidateOutcome,
+    selection_outcome: MarketSelectionOutcome,
     price_to_beat: Option<f64>,
     start_ts_ms: u64,
+    expiration_ts_ms: u64,
     seconds_to_end: u64,
 }
 
@@ -730,7 +733,9 @@ struct ActiveMarketState {
     instrument_id: Option<InstrumentId>,
     outcome_fees: OutcomeFeeState,
     price_to_beat: Option<f64>,
+    market_selection_outcome: MarketSelectionOutcome,
     interval_start_ms: Option<u64>,
+    interval_end_ms: Option<u64>,
     selection_published_at_ms: Option<u64>,
     seconds_to_expiry_at_selection: Option<u64>,
     interval_open: Option<f64>,
@@ -1667,7 +1672,9 @@ impl ActiveMarketState {
             instrument_id: None,
             outcome_fees: OutcomeFeeState::empty(),
             price_to_beat: None,
+            market_selection_outcome: MarketSelectionOutcome::Current,
             interval_start_ms: None,
+            interval_end_ms: None,
             selection_published_at_ms: None,
             seconds_to_expiry_at_selection: None,
             interval_open: None,
@@ -1709,7 +1716,9 @@ impl ActiveMarketState {
             instrument_id: Some(InstrumentId::from(market.instrument_id.as_str())),
             outcome_fees: OutcomeFeeState::from_market(market),
             price_to_beat: market.price_to_beat,
+            market_selection_outcome: market.selection_outcome,
             interval_start_ms: Some(market.start_ts_ms),
+            interval_end_ms: Some(market.expiration_ts_ms),
             selection_published_at_ms: None,
             seconds_to_expiry_at_selection: Some(market.seconds_to_end),
             interval_open: None,
@@ -1726,7 +1735,9 @@ impl ActiveMarketState {
         self.phase == other.phase
             && self.market_id == other.market_id
             && self.instrument_id == other.instrument_id
+            && self.market_selection_outcome == other.market_selection_outcome
             && self.interval_start_ms == other.interval_start_ms
+            && self.interval_end_ms == other.interval_end_ms
     }
 
     fn warmup_complete(&self) -> bool {
@@ -1737,15 +1748,21 @@ impl ActiveMarketState {
         match &snapshot.decision.state {
             SelectionState::Active { market } => {
                 self.selection_published_at_ms = Some(snapshot.published_at_ms);
+                self.market_selection_outcome = market.selection_outcome;
+                self.interval_end_ms = Some(market.expiration_ts_ms);
                 self.seconds_to_expiry_at_selection = Some(market.seconds_to_end);
             }
             #[cfg(test)]
             SelectionState::Freeze { market, .. } => {
                 self.selection_published_at_ms = Some(snapshot.published_at_ms);
+                self.market_selection_outcome = market.selection_outcome;
+                self.interval_end_ms = Some(market.expiration_ts_ms);
                 self.seconds_to_expiry_at_selection = Some(market.seconds_to_end);
             }
             SelectionState::Idle { .. } => {
                 self.selection_published_at_ms = None;
+                self.market_selection_outcome = MarketSelectionOutcome::Current;
+                self.interval_end_ms = None;
                 self.seconds_to_expiry_at_selection = None;
             }
         }
@@ -3974,10 +3991,18 @@ impl BinaryOracleEdgeTaker {
         .ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires selected worst-case edge")
         })?;
-        let market_start_timestamp_ms = self.active.interval_start_ms;
-        let market_end_timestamp_ms = market_start_timestamp_ms.map(|start_ms| {
-            start_ms.saturating_add(seconds_to_market_end.saturating_mul(MILLIS_PER_SECOND_U64))
-        });
+        let market_start_timestamp_ms = self.active.interval_start_ms.ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires market start timestamp")
+        })?;
+        let market_selection_timestamp_ms =
+            self.active.selection_published_at_ms.ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires market selection timestamp")
+            })?;
+        let market_end_timestamp_ms = self.active.interval_end_ms.ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires market end timestamp")
+        })?;
+        let market_selection_outcome =
+            strategy_input_market_selection_outcome(self.active.market_selection_outcome);
         let instrument_id = decision.instrument_id.ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires submission instrument id")
         })?;
@@ -3989,8 +4014,7 @@ impl BinaryOracleEdgeTaker {
             strategy_id: self.config.strategy_id.clone(),
             configured_target_id: self.config.configured_target_id.clone(),
             market_selection_ruleset_id: self.config.configured_target_id.clone(),
-            market_selection_outcome: BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT
-                .to_string(),
+            market_selection_outcome: market_selection_outcome.to_string(),
             market_id: self.active.market_id.clone(),
             up_instrument_id: self
                 .active
@@ -4004,10 +4028,10 @@ impl BinaryOracleEdgeTaker {
                 .down
                 .instrument_id
                 .map(|instrument_id| instrument_id.to_string()),
-            market_selection_timestamp_ms: self.active.selection_published_at_ms,
-            selected_market_observed_timestamp_ms: self.active.selection_published_at_ms,
-            polymarket_market_start_timestamp_ms: market_start_timestamp_ms,
-            polymarket_market_end_timestamp_ms: market_end_timestamp_ms,
+            market_selection_timestamp_ms: Some(market_selection_timestamp_ms),
+            selected_market_observed_timestamp_ms: Some(market_selection_timestamp_ms),
+            polymarket_market_start_timestamp_ms: Some(market_start_timestamp_ms),
+            polymarket_market_end_timestamp_ms: Some(market_end_timestamp_ms),
             price_to_beat_source: self.config.price_to_beat_source.clone(),
             price_to_beat_value: evidence_number(price_to_beat),
             reference_quote_ts_event,
@@ -5340,10 +5364,19 @@ fn select_configured_market_from_instruments(
         down: CandidateOutcome {
             instrument_id: market.down_instrument_id.to_string(),
         },
+        selection_outcome: market.selection_outcome,
         price_to_beat: None,
         start_ts_ms: market.start_timestamp_milliseconds,
+        expiration_ts_ms: market.expiration_timestamp_milliseconds,
         seconds_to_end: market.seconds_to_end,
     })
+}
+
+fn strategy_input_market_selection_outcome(outcome: MarketSelectionOutcome) -> &'static str {
+    match outcome {
+        MarketSelectionOutcome::Current => BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
+        MarketSelectionOutcome::Next => BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT,
+    }
 }
 
 fn should_replace_book_subscriptions(
@@ -8223,8 +8256,10 @@ mod tests {
             down: CandidateOutcome {
                 instrument_id: down_instrument_id,
             },
+            selection_outcome: MarketSelectionOutcome::Current,
             price_to_beat: None,
             start_ts_ms: interval_start_ms,
+            expiration_ts_ms: interval_start_ms.saturating_add(300 * MILLIS_PER_SECOND_U64),
             seconds_to_end: 300,
         }
     }
@@ -13017,6 +13052,55 @@ mod tests {
     }
 
     #[test]
+    fn strategy_selects_next_updown_target_outcome_from_nt_binary_option_metadata() {
+        let strategy = test_strategy();
+        let current_start = 1_746_000_000_i64;
+        let next_start = current_start + strategy.config.cadence_seconds as i64;
+        let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+            &strategy.config.underlying_asset,
+            &strategy.config.cadence_slug_token,
+            next_start,
+        );
+        let instruments = vec![
+            updown_binary_option(
+                "token-up.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Up",
+                next_start as u64 * MILLIS_PER_SECOND_U64,
+                next_start as u64 * MILLIS_PER_SECOND_U64
+                    + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64,
+            ),
+            updown_binary_option(
+                "token-down.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Down",
+                next_start as u64 * MILLIS_PER_SECOND_U64,
+                next_start as u64 * MILLIS_PER_SECOND_U64
+                    + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64,
+            ),
+        ];
+
+        let snapshot = selection_snapshot_from_instruments(
+            &strategy.config,
+            &instruments,
+            current_start as u64 * MILLIS_PER_SECOND_U64 + 1,
+        );
+
+        let SelectionState::Active { market } = snapshot.decision.state else {
+            panic!("configured target should select next market: {snapshot:?}");
+        };
+        assert_eq!(market.market_id, "market-next");
+        assert_eq!(market.selection_outcome, MarketSelectionOutcome::Next);
+        assert_eq!(
+            market.expiration_ts_ms,
+            next_start as u64 * MILLIS_PER_SECOND_U64
+                + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64
+        );
+    }
+
+    #[test]
     fn warmup_requires_consecutive_fresh_ticks() {
         let mut strategy = test_strategy();
         strategy.config.warmup_tick_count = 3;
@@ -13932,6 +14016,66 @@ mod tests {
         assert_eq!(snapshot.submission_quantity, intent.quantity);
         assert_eq!(snapshot.client_order_id, intent.client_order_id);
         assert_eq!(admission.client_order_id, intent.client_order_id);
+    }
+
+    #[test]
+    fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_seconds() {
+        let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
+                evidence.clone(),
+            ),
+        );
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            evidence.clone(),
+            submit_admission,
+        );
+        register_test_strategy_with_active_instruments(&mut strategy);
+
+        strategy
+            .try_submit_entry_order(2_000)
+            .expect_err("unarmed submit admission should reject after evidence capture");
+
+        let events = evidence.events();
+        let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
+            panic!("expected first evidence event to be strategy input; got {events:#?}");
+        };
+
+        assert_eq!(snapshot.seconds_to_market_end, 299);
+        assert_eq!(snapshot.market_selection_timestamp_ms, Some(1_000));
+        assert_eq!(snapshot.polymarket_market_start_timestamp_ms, Some(1_000));
+        assert_eq!(
+            snapshot.polymarket_market_end_timestamp_ms,
+            Some(301_000),
+            "market end must bind to selection timestamp plus expiry-at-selection"
+        );
+    }
+
+    #[test]
+    fn strategy_input_evidence_records_next_market_selection_outcome() {
+        let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
+                evidence.clone(),
+            ),
+        );
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            evidence.clone(),
+            submit_admission,
+        );
+        register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.active.market_selection_outcome = MarketSelectionOutcome::Next;
+
+        strategy
+            .try_submit_entry_order(2_000)
+            .expect_err("unarmed submit admission should reject after evidence capture");
+
+        let events = evidence.events();
+        let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
+            panic!("expected first evidence event to be strategy input; got {events:#?}");
+        };
+
+        assert_eq!(snapshot.market_selection_outcome, "next");
     }
 
     #[test]

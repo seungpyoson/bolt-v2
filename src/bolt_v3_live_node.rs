@@ -39,7 +39,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     rc::Rc,
     str::FromStr,
     sync::Arc,
@@ -136,18 +136,25 @@ struct NoSubmitReferenceQuoteSubscription {
 #[derive(Debug, Clone)]
 struct BoltV3NoSubmitReferenceQuoteProbeHandle {
     required: Vec<NoSubmitReferenceQuoteSubscription>,
+    ambiguous_instrument_ids: BTreeSet<String>,
     quotes: Rc<RefCell<Vec<BoltV3NoSubmitReferenceQuote>>>,
 }
 
 impl BoltV3NoSubmitReferenceQuoteProbeHandle {
     fn new(loaded: &LoadedBoltV3Config) -> Self {
+        let (required, ambiguous_instrument_ids) =
+            no_submit_reference_quote_subscription_plan(loaded);
         Self {
-            required: no_submit_reference_quote_subscriptions(loaded),
+            required,
+            ambiguous_instrument_ids,
             quotes: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
     fn has_all_required_quotes(&self) -> bool {
+        if !self.ambiguous_instrument_ids.is_empty() {
+            return false;
+        }
         let quotes = self.quotes.borrow();
         self.required.iter().all(|required| {
             quotes.iter().any(|quote| {
@@ -157,6 +164,16 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         })
     }
 
+    fn ambiguity_error(&self) -> Option<String> {
+        if self.ambiguous_instrument_ids.is_empty() {
+            return None;
+        }
+        Some(
+            "reference quote probe cannot distinguish multiple data clients for the same instrument_id; QuoteTick does not carry data_client_id"
+                .to_string(),
+        )
+    }
+
     fn evidence(&self) -> BoltV3NoSubmitReferenceQuoteEvidence {
         BoltV3NoSubmitReferenceQuoteEvidence {
             quotes: self.quotes.borrow().clone(),
@@ -164,6 +181,10 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
     }
 
     fn record_quote(&self, quote: &QuoteTick, captured_at_unix_nanos: u64) {
+        let quote_instrument_id = quote.instrument_id.to_string();
+        if self.ambiguous_instrument_ids.contains(&quote_instrument_id) {
+            return;
+        }
         let mut quotes = self.quotes.borrow_mut();
         for required in &self.required {
             if quote.instrument_id == required.instrument_id {
@@ -218,17 +239,27 @@ impl DataActor for BoltV3NoSubmitReferenceQuoteProbe {
     }
 }
 
-fn no_submit_reference_quote_subscriptions(
+fn no_submit_reference_quote_subscription_plan(
     loaded: &LoadedBoltV3Config,
-) -> Vec<NoSubmitReferenceQuoteSubscription> {
+) -> (Vec<NoSubmitReferenceQuoteSubscription>, BTreeSet<String>) {
     let mut seen = BTreeSet::new();
+    let mut by_instrument: BTreeMap<String, String> = BTreeMap::new();
+    let mut ambiguous_instrument_ids = BTreeSet::new();
     let mut subscriptions = Vec::new();
     for strategy in &loaded.strategies {
         for reference in strategy.config.reference_data.values() {
-            let key = (
-                reference.data_client_id.to_string(),
-                reference.instrument_id.to_string(),
-            );
+            let data_client_id = reference.data_client_id.to_string();
+            let instrument_id = reference.instrument_id.to_string();
+            match by_instrument.get(&instrument_id) {
+                Some(existing_data_client_id) if existing_data_client_id != &data_client_id => {
+                    ambiguous_instrument_ids.insert(instrument_id.clone());
+                }
+                None => {
+                    by_instrument.insert(instrument_id.clone(), data_client_id.clone());
+                }
+                _ => {}
+            }
+            let key = (data_client_id, instrument_id);
             if seen.insert(key) {
                 subscriptions.push(NoSubmitReferenceQuoteSubscription {
                     data_client_id: reference.data_client_id,
@@ -237,7 +268,7 @@ fn no_submit_reference_quote_subscriptions(
             }
         }
     }
-    subscriptions
+    (subscriptions, ambiguous_instrument_ids)
 }
 
 impl BoltV3NoSubmitReferenceCacheEvidence {
@@ -652,8 +683,22 @@ pub fn build_bolt_v3_live_node(
 pub fn build_bolt_v3_no_submit_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
+    check_no_forbidden_credential_env_vars(&loaded.root)
+        .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
+    let session = SsmResolverSession::new().map_err(BoltV3LiveNodeError::SecretResolverSetup)?;
+    let resolved =
+        resolve_bolt_v3_secrets(&session, loaded).map_err(BoltV3LiveNodeError::SecretResolution)?;
+    let adapters = no_submit_transport_adapter_configs(loaded, &resolved)?;
     let no_submit_loaded = no_submit_transport_loaded_config(loaded);
-    build_bolt_v3_live_node(&no_submit_loaded)
+    let (runtime, _summary) = build_live_node_with_clients(&no_submit_loaded, &resolved, adapters)?;
+    Ok(runtime)
+}
+
+fn no_submit_transport_adapter_configs(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+) -> Result<BoltV3AdapterConfigs, BoltV3LiveNodeError> {
+    map_bolt_v3_adapters(loaded, resolved).map_err(BoltV3LiveNodeError::AdapterMapping)
 }
 
 fn no_submit_transport_loaded_config(loaded: &LoadedBoltV3Config) -> LoadedBoltV3Config {
@@ -869,6 +914,11 @@ fn install_no_submit_reference_quote_probe(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3NoSubmitReferenceQuoteProbeHandle, BoltV3LiveNodeError> {
     let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::new(loaded);
+    if let Some(message) = handle.ambiguity_error() {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(message),
+        ));
+    }
     let config = no_submit_reference_quote_probe_config(loaded)?;
     node.add_actor(BoltV3NoSubmitReferenceQuoteProbe::new(
         handle.clone(),
@@ -1427,8 +1477,9 @@ pub async fn disconnect_bolt_v3_clients(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bolt_v3_config::BoltV3RootConfig;
+    use crate::bolt_v3_config::{BoltV3RootConfig, ReferenceDataBlock};
     use nautilus_model::identifiers::TraderId;
+    use nautilus_model::types::{Price, Quantity};
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
         let root_text = include_str!("../tests/fixtures/bolt_v3/root.toml");
@@ -1497,6 +1548,118 @@ mod tests {
         assert!(
             !loaded.strategies.is_empty(),
             "helper must not mutate the caller's loaded config"
+        );
+    }
+
+    #[test]
+    fn no_submit_adapter_mapping_preserves_strategy_derived_market_filters() {
+        use crate::{
+            bolt_v3_providers::{
+                binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
+            },
+            bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
+        };
+        use nautilus_polymarket::config::PolymarketDataClientConfig;
+        use std::{collections::BTreeMap, sync::Arc};
+
+        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
+        clients.insert(
+            "polymarket_main".to_string(),
+            Arc::new(ResolvedBoltV3PolymarketSecrets {
+                private_key: "fixture-poly-private-key".to_string(),
+                api_key: "fixture-poly-api-key".to_string(),
+                api_secret: "fixture-poly-api-secret".to_string(),
+                passphrase: "fixture-poly-passphrase".to_string(),
+            }),
+        );
+        clients.insert(
+            "binance_reference".to_string(),
+            Arc::new(ResolvedBoltV3BinanceSecrets {
+                api_key: "fixture-binance-api-key".to_string(),
+                api_secret: "fixture-binance-api-secret".to_string(),
+            }),
+        );
+        let resolved = ResolvedBoltV3Secrets { clients };
+
+        let adapters = no_submit_transport_adapter_configs(&loaded, &resolved)
+            .expect("no-submit adapter mapping should retain market identity filters");
+        let polymarket = adapters
+            .clients
+            .get("polymarket_main")
+            .expect("polymarket_main must be mapped");
+        let data = polymarket
+            .data
+            .as_ref()
+            .expect("polymarket data config must be mapped")
+            .config_as::<PolymarketDataClientConfig>()
+            .expect("polymarket data config should downcast");
+
+        assert_eq!(
+            data.filters.len(),
+            1,
+            "no-submit adapter mapping must keep strategy-derived provider filters"
+        );
+        assert_eq!(
+            data.filters[0]
+                .market_slugs()
+                .expect("no-submit data config must keep configured target slug filters")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn reference_quote_probe_does_not_satisfy_distinct_clients_with_one_quote() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load before direct mutation");
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        let primary = strategy
+            .config
+            .reference_data
+            .get("primary")
+            .expect("fixture should include primary reference data")
+            .clone();
+        strategy.config.reference_data.insert(
+            "secondary".to_string(),
+            ReferenceDataBlock {
+                data_client_id: ClientId::from("polymarket_main"),
+                instrument_id: primary.instrument_id,
+            },
+        );
+        let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::new(&loaded);
+        let ambiguity = handle
+            .ambiguity_error()
+            .expect("probe setup should reject ambiguous reference quote sources");
+        assert!(ambiguity.contains("QuoteTick does not carry data_client_id"));
+        let quote = QuoteTick::new(
+            primary.instrument_id,
+            Price::from("100.00"),
+            Price::from("100.01"),
+            Quantity::from("1"),
+            Quantity::from("1"),
+            1_u64.into(),
+            1_u64.into(),
+        );
+
+        handle.record_quote(&quote, 2);
+
+        assert!(
+            !handle.has_all_required_quotes(),
+            "one source-unattributed QuoteTick must not satisfy distinct data clients"
+        );
+        assert_eq!(
+            handle.evidence().quotes.len(),
+            0,
+            "probe must not label a source-unattributed QuoteTick with any ambiguous data client"
         );
     }
 

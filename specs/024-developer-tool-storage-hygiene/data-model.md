@@ -25,6 +25,8 @@ Validation:
 
 Represents configured #375 retention behavior.
 
+Field names below are logical model names. The TOML source remains authoritative and uses the section names shown in the contract, for example `[codex.log]` maps to `codex_log`.
+
 Fields:
 - `codex_log.max_bytes`
 - `codex_log.retained_rotations`
@@ -36,8 +38,9 @@ Fields:
 - `factory_log.active_writer_processes`
 - `native_guidance.codex_history.max_bytes`
 - `native_guidance.codex_history.persistence`
-- `rustup_toolchains.retain_recent`
-- `rustup_toolchains.stale_after_days`
+- `rustup_toolchains.protect_active_default_project_pins`
+- `rustup_toolchains.retain_exact_names`
+- `rustup_toolchains.remove_exact_names`
 - `preflight.free_disk_warning_bytes`
 - `preflight.free_disk_error_bytes`
 - `preflight.owned_storage_warning_bytes`
@@ -46,7 +49,8 @@ Fields:
 
 Validation:
 - Size and day values must be non-negative integers.
-- `retained_rotations` and `retain_recent` must be bounded integers.
+- `retained_rotations` must be a bounded integer.
+- `retain_exact_names` and `remove_exact_names` must use exact installed toolchain names; no wildcard, substring, or pattern matching is allowed.
 - Free-disk error threshold must be less than or equal to free-disk warning threshold.
 - Owned-storage error threshold must be greater than or equal to owned-storage warning threshold.
 - Report-only surfaces and native-guidance values cannot have apply actions.
@@ -59,15 +63,16 @@ Fields:
 - `name`
 - `path`
 - `bytes`
-- `last_modified`
 - `is_project_pinned`
 - `is_active`
 - `is_default`
-- `is_recent_retained`
+- `is_explicitly_retained`
+- `is_explicitly_removable`
 
 Validation:
 - Any true protection flag prevents removal.
-- Candidate status requires stale age, not pinned, not active, not default, and outside retained recent set.
+- Candidate status requires an exact `remove_exact_names` match, not pinned, not active, not default, and not explicitly retained.
+- File age and mtime may appear in reports but must never create a rustup removal candidate.
 
 ## ProcessSnapshot
 

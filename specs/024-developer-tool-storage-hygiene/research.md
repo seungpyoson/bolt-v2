@@ -32,13 +32,14 @@
 - Apply-only cleanup: rejected because it is too destructive.
 - Docs-only instructions: rejected unless operator denies command approval, because #375 asks for bounded behavior, not just an inventory.
 
-## Decision: Protect Active, Default, And Project-Pinned Toolchains
+## Decision: Protect Active, Default, Project-Pinned, And Exact-Retained Toolchains
 
-**Rationale**: `rust-toolchain.toml` pins `1.95.0`, `Cargo.toml` requires Rust `1.95.0`, and local `rustup toolchain list` reports `1.95.0` active and `1.94.1` default. Removing active/default/pinned toolchains can break local work.
+**Rationale**: `rust-toolchain.toml` pins `1.95.0`, `Cargo.toml` requires Rust `1.95.0`, and local `rustup toolchain list` reports `1.95.0` active and `1.94.1` default. Removing active/default/pinned toolchains can break local work. Rustup age and directory mtime are not reliable cleanup predicates, so removal eligibility must come only from exact configured installed toolchain names after protection is applied.
 
 **Alternatives considered**:
 - Keep only the project pin: rejected because default/active may support adjacent current work.
-- Remove stable by name: rejected because retention must be policy-driven, not name-driven.
+- Remove by stale age or directory mtime: rejected because it is heuristic and can remove a toolchain that is still operationally relevant.
+- Remove stable by hardcoded name: rejected because retention/removal must be TOML policy-driven exact-name configuration, not code hardcoding.
 
 ## Decision: Pause Before New Operator-Facing Command Semantics
 

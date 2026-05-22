@@ -44,8 +44,9 @@ active_writer_processes = ["factory", "droid"]
 
 [rustup.toolchains]
 path_family = "~/.rustup/toolchains/*"
-stale_after_days = 14
-retain_recent = 1
+protect_active_default_project_pins = true
+retain_exact_names = ["1.95.0"]
+remove_exact_names = []
 
 [preflight]
 free_disk_warning_bytes = 10737418240
@@ -87,6 +88,7 @@ Dry-run output must include:
 - Codex history native-config status and reason.
 - Report-only Codex archived sessions and reason.
 - Protected rustup toolchains and reason.
+- Exact-name rustup removal candidates and reason.
 - Report-only large surfaces and reason.
 - Out-of-scope adjacent surfaces.
 
@@ -109,7 +111,8 @@ Apply behavior is allowed only after explicit operator approval for any new oper
 - Refuse mutable Codex and Factory actions when configured active writer processes are detected.
 - Refuse protected and report-only targets.
 - Always refuse report-only Codex SQLite db/WAL, Codex history, and Codex archived-session targets.
-- Preserve active, default, and project-pinned rustup toolchains.
+- Preserve active, default, and project-pinned rustup toolchains even if their exact names appear in removal config.
+- Remove rustup toolchains only when their exact installed toolchain name appears in `remove_exact_names`; age, mtime, wildcard, or pattern matching must never create a rustup removal candidate.
 - Emit a post-apply summary.
 
 ## Preflight Contract

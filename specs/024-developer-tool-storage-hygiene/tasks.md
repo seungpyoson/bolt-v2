@@ -67,16 +67,16 @@
 - [ ] T020 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex sqlite db/WAL files are report-only.
 - [ ] T021 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex `history.jsonl` is report-only and mapped to native config guidance.
 - [ ] T022 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex archived sessions are report-only.
-- [ ] T023 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for active, default, and project-pinned rustup toolchain protection.
+- [ ] T023 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for exact-name rustup removal classification plus active, default, project-pinned, and exact-retained protection, proving age/mtime alone does not create rustup candidates.
 - [ ] T024 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for malformed, incomplete, or missing-required-key policy fail-closed validation.
-- [ ] T025 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving dry-run output includes policy path, evaluated root, per-surface bytes/eligibility, candidate actions/reasons/estimated bytes, Codex history native-config status, report-only archived sessions, protected rustup toolchains, report-only large surfaces, out-of-scope adjacent surfaces, and leaves the scratch filesystem unchanged.
+- [ ] T025 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving dry-run output includes policy path, evaluated root, per-surface bytes/eligibility, candidate actions/reasons/estimated bytes, Codex history native-config status, report-only archived sessions, protected rustup toolchains, exact-name rustup removal candidates, report-only large surfaces, out-of-scope adjacent surfaces, and leaves the scratch filesystem unchanged.
 
 ### Implementation for User Story 2
 
 - [ ] T026 [US2] Implement log rotation candidate classification in `scripts/developer_tool_storage_hygiene.py`.
 - [ ] T027 [US2] Implement Codex session TTL candidate classification in `scripts/developer_tool_storage_hygiene.py`.
 - [ ] T028 [US2] Implement report-only surface handling for Codex sqlite, Codex history native-guidance, and Codex archived-session surfaces in `scripts/developer_tool_storage_hygiene.py`.
-- [ ] T029 [US2] Implement rustup toolchain retention classification in `scripts/developer_tool_storage_hygiene.py`.
+- [ ] T029 [US2] Implement exact-name rustup toolchain retention/removal classification in `scripts/developer_tool_storage_hygiene.py`.
 - [ ] T030 [US2] Implement malformed, incomplete, or missing-required-key policy fail-closed validation in `scripts/developer_tool_storage_hygiene.py`.
 - [ ] T031 [US2] Implement contract-complete dry-run report construction in `scripts/developer_tool_storage_hygiene.py`.
 - [ ] T032 [US2] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` after each RED/GREEN slice and record final green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
@@ -116,7 +116,7 @@
 
 - [ ] T038 [US4] Add RED scratch apply test for log rotation in `scripts/test_developer_tool_storage_hygiene.py`.
 - [ ] T039 [US4] Add RED scratch apply test for session TTL pruning in `scripts/test_developer_tool_storage_hygiene.py`.
-- [ ] T040 [US4] Add RED scratch apply test proving protected rustup toolchains remain untouched in `scripts/test_developer_tool_storage_hygiene.py`.
+- [ ] T040 [US4] Add RED scratch apply test proving protected rustup toolchains remain untouched even when their exact names appear in removal config in `scripts/test_developer_tool_storage_hygiene.py`.
 - [ ] T041 [US4] Add RED scratch apply test proving report-only Codex sqlite, Codex history, and Codex archived-session files remain untouched in `scripts/test_developer_tool_storage_hygiene.py`.
 - [ ] T042 [US4] Add RED scratch apply test proving apply revalidates policy immediately before mutation and fails closed if policy becomes malformed or incomplete.
 - [ ] T043 [US4] Add RED scratch apply test proving apply re-scans immediately before mutation and fails closed if candidate state changed after dry-run.

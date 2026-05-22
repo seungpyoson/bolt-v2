@@ -2990,6 +2990,15 @@ def is_managed_just_recipe_guard(recipe: str, stripped_line: str) -> bool:
     return stripped_line == expected
 
 
+def is_allowed_managed_just_recipe_command(recipe: str, stripped_line: str) -> bool:
+    allowed_commands = {
+        "managed-build": "cargo zigbuild --release --target {{target}} --locked",
+        "managed-clippy": "cargo clippy --locked -- -D warnings",
+        "managed-test": "cargo nextest run --locked {{args}}",
+    }
+    return stripped_line == allowed_commands.get(recipe)
+
+
 def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
     errors: list[str] = []
     managed_just_recipe = False
@@ -3015,7 +3024,8 @@ def repo_automation_raw_cargo_errors(file_name: str, text: str) -> list[str]:
             managed_just_recipe = True
             continue
         if is_justfile and managed_just_recipe:
-            continue
+            if is_allowed_managed_just_recipe_command(current_just_recipe, stripped):
+                continue
         tokens = command_tokens(stripped)
         if tokens_have_repo_automation_raw_cargo(tokens, variables=shell_variables):
             errors.append("repo automation raw Cargo must use managed rust_verification wrapper")

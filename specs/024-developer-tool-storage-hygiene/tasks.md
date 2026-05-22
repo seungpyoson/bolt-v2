@@ -119,12 +119,14 @@
 - [ ] T040 [US4] Add RED scratch apply test proving protected rustup toolchains remain untouched in `scripts/test_developer_tool_storage_hygiene.py`.
 - [ ] T041 [US4] Add RED scratch apply test proving report-only Codex sqlite, Codex history, and Codex archived-session files remain untouched in `scripts/test_developer_tool_storage_hygiene.py`.
 - [ ] T042 [US4] Add RED scratch apply test proving apply revalidates policy immediately before mutation and fails closed if policy becomes malformed or incomplete.
+- [ ] T043 [US4] Add RED scratch apply test proving apply re-scans immediately before mutation and fails closed if candidate state changed after dry-run.
+- [ ] T044 [US4] Add RED scratch apply test proving configured active writer processes refuse mutable Codex and Factory log actions before mutation.
 
 ### Implementation for User Story 4
 
-- [ ] T043 [US4] Implement apply behavior over scratch/configured roots with immediate policy revalidation in `scripts/developer_tool_storage_hygiene.py` only if T012 approval permits the command surface.
-- [ ] T044 [US4] Update `docs/ops/developer-tool-storage-hygiene.md` with dry-run/apply safety contract and native macOS config guidance.
-- [ ] T045 [US4] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` and record final green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [ ] T045 [US4] Implement apply behavior over scratch/configured roots with immediate policy revalidation, filesystem re-scan, and active-writer refusal in `scripts/developer_tool_storage_hygiene.py` only if T012 approval permits the command surface.
+- [ ] T046 [US4] Update `docs/ops/developer-tool-storage-hygiene.md` with dry-run/apply safety contract and native macOS config guidance.
+- [ ] T047 [US4] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` and record final green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
 
 **Checkpoint**: User Story 4 is complete when apply behavior is proven safe on scratch fixtures or explicitly scoped out by operator decision.
 
@@ -134,18 +136,18 @@
 
 **Purpose**: Make the #375 branch review-ready without merging and without starting #454.
 
-- [ ] T046 Run `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py`.
-- [ ] T047 Run `git diff --check origin/main...HEAD`.
-- [ ] T048 Run relevant full Rust verification or record source-backed N/A in `specs/024-developer-tool-storage-hygiene/evidence.md`.
-- [ ] T049 Run source-fence/schema/runtime literal checks if touched and record results in `specs/024-developer-tool-storage-hygiene/evidence.md`.
-- [ ] T050 Run `$ai-slop-cleaner` on changed files and record the cleanup report in `specs/024-developer-tool-storage-hygiene/evidence.md`.
-- [ ] T051 Run unresolved-marker scan over `specs/024-developer-tool-storage-hygiene/`, `ci/`, `scripts/`, and `docs/ops/` after #375 edits.
-- [ ] T052 Commit and push branch `codex/375-developer-tool-storage-hygiene`.
-- [ ] T053 Open the #375 PR and include issue scope, exact head SHA, evidence map, Speckit paths, tests, review status, no-mistakes status, remaining risk, and stop-before-merge note in the PR body.
-- [ ] T054 Run no-mistakes on the exact PR head and verify the no-mistakes head equals the PR head.
-- [ ] T055 Confirm exact-head GitHub CI is green for the #375 PR.
-- [ ] T056 Request exact-PR-head external adversarial review and record Claude, Gemini, GLM, DeepSeek, and any skipped reviewers in `specs/024-developer-tool-storage-hygiene/evidence.md`.
-- [ ] T057 Stop for operator approval before merge and before any #454 branch or implementation work.
+- [ ] T048 Run `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py`.
+- [ ] T049 Run `git diff --check origin/main...HEAD`.
+- [ ] T050 Run relevant full Rust verification or record source-backed N/A in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [ ] T051 Run source-fence/schema/runtime literal checks if touched and record results in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [ ] T052 Run `$ai-slop-cleaner` on changed files and record the cleanup report in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [ ] T053 Run unresolved-marker scan over `specs/024-developer-tool-storage-hygiene/`, `ci/`, `scripts/`, and `docs/ops/` after #375 edits.
+- [ ] T054 Commit and push branch `codex/375-developer-tool-storage-hygiene`.
+- [ ] T055 Open the #375 PR and include issue scope, exact head SHA, evidence map, Speckit paths, tests, review status, no-mistakes status, remaining risk, and stop-before-merge note in the PR body.
+- [ ] T056 Run no-mistakes on the exact PR head and verify the no-mistakes head equals the PR head.
+- [ ] T057 Confirm exact-head GitHub CI is green for the #375 PR.
+- [ ] T058 Request exact-PR-head external adversarial review and record Claude, Gemini, GLM, DeepSeek, and any skipped reviewers in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [ ] T059 Stop for operator approval before merge and before any #454 branch or implementation work.
 
 ## Dependencies & Execution Order
 
@@ -154,7 +156,7 @@
 - User Story 1 must complete before User Stories 2 through 4.
 - User Story 2 must complete before User Story 4 apply behavior.
 - Final Phase must complete before #375 is considered review-ready.
-- #454 remains blocked until T053 through T057 are complete and the operator has not objected.
+- #454 remains blocked until T055 through T059 are complete and the operator has not objected.
 
 ## Parallel Opportunities
 

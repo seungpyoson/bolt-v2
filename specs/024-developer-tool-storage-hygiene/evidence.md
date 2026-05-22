@@ -16,7 +16,7 @@ Workspace date: 2026-05-23 Asia/Seoul
 | PR #433 | Adds #374 cargo invocation enumeration only. | Does not implement #375. |
 | PR #436 | Implements #374 T013/T014/T015 verifier/wrapper-governance slice only and states #375 remains separate. | Do not touch verifier/parser architecture for #375 unless evidence requires it. |
 | `specs/014-disk-pressure-governance/spec.md:80-87` | FR-005 blocks #375 implementation until developer-tool enumeration exists; FR-008 routes bolt-v3 runtime and cargo registry/git to #376. | This PR must keep #375 and #376 separate. |
-| `specs/014-disk-pressure-governance/contracts/disk-pressure-governance.md:48-55` | Cleanup safety requires status/dry-run before apply, active-process refusal, and never removing pinned or active Rust toolchains. | #375 cleanup must be dry-run first and protect pinned/active toolchains. |
+| `specs/014-disk-pressure-governance/contracts/disk-pressure-governance.md:48-55` | Cleanup safety requires status/dry-run before apply, active-process refusal, and never removing pinned or active Rust toolchains. | #375 cleanup must be dry-run first, refuse apply when configured active writer processes are detected for mutable surfaces, and protect pinned/active toolchains. |
 
 ## Current Local Measurements
 

@@ -75,7 +75,10 @@ Dry-run must not modify files.
 Apply behavior is allowed only after explicit operator approval for any new operator-facing command surface. If approved, apply must:
 - Re-validate policy immediately before mutation.
 - Re-scan immediately before mutation.
+- Abort if the immediate re-scan no longer matches the candidate state being applied.
+- Refuse mutable log actions when configured active writer processes are detected.
 - Refuse protected and report-only targets.
+- Always refuse report-only Codex SQLite db/WAL, Codex history, and Codex archived-session targets.
 - Preserve active, default, and project-pinned rustup toolchains.
 - Emit a post-apply summary.
 

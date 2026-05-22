@@ -1778,6 +1778,10 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
             "S3 active mutable target cache must be rejected",
         ),
         (
+            "aws s3 cp ./$(echo target)/debug/lib.a s3://bolt-v2-active-cache/",
+            "S3 active mutable target cache must be rejected",
+        ),
+        (
             'aws s3 sync "$(echo target)" s3://bolt-v2-active-cache/target',
             "S3 active mutable target cache must be rejected",
         ),
@@ -2008,6 +2012,14 @@ def assert_v6_red_raw_rust_storage_overrides_are_reported() -> None:
     errors = verifier.raw_rust_storage_errors(false_positive)
     if "cargo --target-dir raw target override must be classified" in errors:
         misses.append(f"non-executed alias text was classified: errors={errors!r}")
+    for false_positive in (
+        "cargo test -- --target-dir /tmp/test-binary-arg",
+        "python3 scripts/rust_verification.py cargo --repo . -- test -- --target-dir /tmp/test-binary-arg",
+        "python3 scripts/rust_verification.py run --repo . test -- --target-dir /tmp/test-binary-arg",
+    ):
+        errors = verifier.raw_rust_storage_errors(false_positive)
+        if "cargo --target-dir raw target override must be classified" in errors:
+            misses.append(f"post-separator test arg was classified: {false_positive!r} errors={errors!r}")
     for false_positive in ("/usr/bin/make build", "/tmp/build-tool test", "cargo -C /tmp/repo build"):
         errors = verifier.raw_rust_storage_errors(false_positive)
         if any("raw target override" in error or "raw Cargo drift" in error for error in errors):
@@ -2203,6 +2215,8 @@ commands:
   test: python3 scripts/rust_verification.py cargo --repo . -- test
   lint: python3 scripts/rust_verification.py cargo --repo . -- clippy --all-targets -- -D warnings
   format: python3 scripts/rust_verification.py cargo --repo . -- fmt --check
+  test-binary-arg: python3 scripts/rust_verification.py cargo --repo . -- test -- --target-dir /tmp/test-binary-arg
+  run-test-binary-arg: python3 scripts/rust_verification.py run --repo . test -- --target-dir /tmp/test-binary-arg
   exact-head-ci: gh run view --repo seungpyoson/bolt-v2 --commit "$GITHUB_SHA" --json conclusion
   sudouserarg: timeout 30 sudo -u cargo echo hello
 """

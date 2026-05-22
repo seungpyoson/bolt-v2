@@ -2190,6 +2190,12 @@ def cargo_args_need_exclusive_cache_lock(cargo_args: list[str]) -> bool:
     return has_archive_file and has_extract
 
 
+def run_args_need_exclusive_cache_lock(command: str, command_args: list[str], *, test_separator: bool) -> bool:
+    if command != "test" or test_separator:
+        return False
+    return cargo_args_need_exclusive_cache_lock(["nextest", "run", "--locked", *command_args])
+
+
 def repo_cargo_aliases(repo: pathlib.Path) -> set[str]:
     aliases: set[str] = set()
     config_paths = [(repo / relative_path, relative_path) for relative_path in CARGO_CONFIG_RELATIVE_PATHS]
@@ -2448,7 +2454,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         refusal = disk_preflight_refusal_payload(repo, policy)
         if refusal is not None:
             return print_refusal(refusal)
-    with cache_lock(policy, exclusive=False):
+    run_exclusive = run_args_need_exclusive_cache_lock(
+        args.command,
+        args.args,
+        test_separator=test_separator,
+    )
+    with cache_lock(policy, exclusive=run_exclusive):
         env = managed_env(repo, policy)
         env["BOLT_MANAGED_JUST"] = "1"
         return run_process(argv, repo=repo, env=env)

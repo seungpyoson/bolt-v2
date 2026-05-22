@@ -1628,6 +1628,105 @@ def managed_rust_verification_tokens(tokens: list[str]) -> bool:
     )
 
 
+def consume_rust_verification_repo_option(tokens: list[str], index: int) -> int:
+    if index >= len(tokens):
+        return index
+    token = tokens[index]
+    if token == "--repo" and index + 1 < len(tokens):
+        return index + 2
+    if token.startswith("--repo="):
+        return index + 1
+    return index
+
+
+def managed_rust_verification_cargo_args(tokens: list[str]) -> list[str] | None:
+    if not managed_rust_verification_tokens(tokens):
+        return None
+    command = tokens[2]
+    tail = tokens[3:]
+    index = 0
+    while index < len(tail):
+        if tail[index] == "--":
+            index += 1
+            break
+        next_index = consume_rust_verification_repo_option(tail, index)
+        if next_index == index:
+            break
+        index = next_index
+    if command == "cargo":
+        return tail[index:]
+    if index >= len(tail):
+        return []
+    managed_command = tail[index]
+    managed_args = tail[index + 1 :]
+    return [managed_command, *managed_args]
+
+
+def cargo_subcommand_with_index(tokens: list[str], start: int = 0) -> tuple[int, str] | None:
+    index = start
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("+"):
+            index += 1
+            continue
+        if token == "--":
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return index, token
+    return None
+
+
+def cargo_subcommand(tokens: list[str]) -> str | None:
+    subcommand = cargo_subcommand_with_index(tokens)
+    if subcommand is None:
+        return None
+    return subcommand[1]
+
+
+def cargo_args_for_target_routing_scan(tokens: list[str]) -> list[str]:
+    subcommand = cargo_subcommand_with_index(tokens)
+    if subcommand is None:
+        return tokens
+    subcommand_index, subcommand_name = subcommand
+    if subcommand_name not in {"bench", "run", "test"}:
+        return tokens
+    for index, token in enumerate(tokens):
+        if index > subcommand_index and token == "--":
+            return tokens[:index]
+    return tokens
+
+
+def target_routing_cargo_args(tokens: list[str]) -> list[str] | None:
+    managed_args = managed_rust_verification_cargo_args(tokens)
+    if managed_args is not None:
+        return managed_args
+    if not tokens:
+        return None
+    executable = pathlib.Path(tokens[0]).name
+    if executable == "cargo" or path_invocation_has_cargo_subcommand(tokens):
+        return tokens[1:]
+    return None
+
+
+def cargo_target_routing_scan_tokens(tokens: list[str]) -> list[str]:
+    cargo_args = target_routing_cargo_args(tokens)
+    if cargo_args is None:
+        return []
+    return cargo_args_for_target_routing_scan(cargo_args)
+
+
 def tokens_have_target_routing_override(tokens: list[str]) -> bool:
     env_prefixes = (
         "BOLT_MANAGED_JUST=",
@@ -1643,14 +1742,16 @@ def tokens_have_target_routing_override(tokens: list[str]) -> bool:
         "RUSTUP_HOME=",
     )
     value_options = {"--artifact-dir", "--out-dir", "--root", "--target-dir"}
-    for index, token in enumerate(tokens):
+    for token in tokens:
         if token.startswith(env_prefixes):
             return True
+    scan_tokens = cargo_target_routing_scan_tokens(tokens)
+    for index, token in enumerate(scan_tokens):
         if token in value_options:
             return True
         if any(token.startswith(f"{option}=") for option in value_options):
             return True
-        if token == "--config" and index + 1 < len(tokens) and cargo_config_has_storage_override(tokens[index + 1]):
+        if token == "--config" and index + 1 < len(scan_tokens) and cargo_config_has_storage_override(scan_tokens[index + 1]):
             return True
         if token.startswith("--config=") and cargo_config_has_storage_override(token.split("=", 1)[1]):
             return True
@@ -2104,7 +2205,7 @@ def find_exec_payloads(tokens: list[str]) -> list[list[str]]:
 
 
 def shell_command_substitution_at(tokens: list[str], index: int) -> tuple[list[str], int] | None:
-    if index + 1 >= len(tokens) or tokens[index] != "$" or tokens[index + 1] != "(":
+    if index + 1 >= len(tokens) or not (tokens[index] == "$" or tokens[index].endswith("$")) or tokens[index + 1] != "(":
         return None
     cursor = index + 2
     depth = 1
@@ -2686,7 +2787,7 @@ def tokens_have_raw_cargo(
             variables=local_variables,
         )
     if managed_rust_verification_tokens(tokens):
-        return tokens_have_target_routing_override(tokens[3:])
+        return tokens_have_target_routing_override(tokens)
     executable = pathlib.Path(tokens[0]).name
     if path_invocation_has_cargo_subcommand(tokens):
         return True
@@ -2901,20 +3002,34 @@ def cargo_config_storage_override_message(tokens: list[str]) -> str | None:
         if token == "--config" and index + 1 < len(tokens) and cargo_config_has_storage_override(tokens[index + 1]):
             if cargo_config_looks_like_path(tokens[index + 1]):
                 return "cargo --config file raw target override must be classified"
+            scan_config = decode_toml_unicode_escapes(tokens[index + 1])
+            if "rustflags" in scan_config and ("--out-dir" in scan_config or "--artifact-dir" in scan_config):
+                return "cargo --config build.rustflags raw output override must be classified"
             return "cargo --config build.target-dir raw target override must be classified"
         if token.startswith("--config="):
             config = token.split("=", 1)[1]
             if cargo_config_has_storage_override(config):
                 if cargo_config_looks_like_path(config):
                     return "cargo --config file raw target override must be classified"
+                scan_config = decode_toml_unicode_escapes(config)
+                if "rustflags" in scan_config and ("--out-dir" in scan_config or "--artifact-dir" in scan_config):
+                    return "cargo --config build.rustflags raw output override must be classified"
                 return "cargo --config build.target-dir raw target override must be classified"
     return None
 
 
 def direct_raw_cargo_storage_override_messages(tokens: list[str]) -> set[str]:
     messages: set[str] = set()
-    if any(token == "--target-dir" or token.startswith("--target-dir=") for token in tokens):
+    cargo_args = target_routing_cargo_args(tokens)
+    cargo_scan_tokens = cargo_args_for_target_routing_scan(cargo_args) if cargo_args is not None else []
+    cargo_command = cargo_subcommand(cargo_args) if cargo_args is not None else None
+    if any(token == "--target-dir" or token.startswith("--target-dir=") for token in cargo_scan_tokens):
         messages.add("cargo --target-dir raw target override must be classified")
+    if cargo_command == "rustc":
+        if any(token == "--out-dir" or token.startswith("--out-dir=") for token in cargo_scan_tokens):
+            messages.add("cargo rustc --out-dir raw output override must be classified")
+        if any(token == "--artifact-dir" or token.startswith("--artifact-dir=") for token in cargo_scan_tokens):
+            messages.add("cargo rustc --artifact-dir raw output override must be classified")
     if tokens and (
         pathlib.Path(tokens[0]).name == "rustc"
         or path_executable_looks_like_rustc(tokens[0])
@@ -2924,13 +3039,22 @@ def direct_raw_cargo_storage_override_messages(tokens: list[str]) -> set[str]:
             messages.add("rustc --out-dir raw output override must be classified")
         if any(token == "--artifact-dir" or token.startswith("--artifact-dir=") for token in tokens):
             messages.add("rustc --artifact-dir raw output override must be classified")
-    config_message = cargo_config_storage_override_message(tokens)
+    config_message = cargo_config_storage_override_message(cargo_scan_tokens)
     if config_message is not None:
         messages.add(config_message)
-    if any(token == "install" for token in tokens):
-        if any(token == "--root" and index + 1 < len(tokens) and tokens[index + 1].startswith("s3://") for index, token in enumerate(tokens)):
+    if cargo_command == "install":
+        has_target_dir = any(token == "--target-dir" or token.startswith("--target-dir=") for token in cargo_scan_tokens)
+        has_root = any(token == "--root" or token.startswith("--root=") for token in cargo_scan_tokens)
+        if has_target_dir and has_root:
+            messages.add("cargo install build target and install root ownership must be classified separately")
+        if any(
+            token == "--root"
+            and index + 1 < len(cargo_scan_tokens)
+            and cargo_scan_tokens[index + 1].startswith("s3://")
+            for index, token in enumerate(cargo_scan_tokens)
+        ):
             messages.add("cargo install S3 install root must be classified")
-        if any(token.startswith("--root=s3://") for token in tokens):
+        if any(token.startswith("--root=s3://") for token in cargo_scan_tokens):
             messages.add("cargo install S3 install root must be classified")
     return messages
 
@@ -3025,6 +3149,20 @@ def raw_cargo_storage_override_messages_from_tokens(
             messages.update(
                 raw_cargo_storage_override_messages_from_tokens(
                     command_tokens(nested),
+                    aliases=aliases,
+                    variables=variables,
+                    depth=depth + 1,
+                )
+            )
+        return messages
+    if executable == "eval":
+        inner = expanded[1:]
+        if inner and inner[0] == "--":
+            inner = inner[1:]
+        if inner:
+            messages.update(
+                raw_cargo_storage_override_messages_from_tokens(
+                    command_tokens(" ".join(inner)),
                     aliases=aliases,
                     variables=variables,
                     depth=depth + 1,
@@ -3612,7 +3750,7 @@ def aws_s3_operands(tokens: list[str]) -> list[str]:
         if token.startswith("-"):
             cursor = consume_storage_option(tokens, cursor, AWS_S3_OPTIONS_WITH_ARGUMENT)
             continue
-        if token == "$" and cursor + 1 < len(tokens) and tokens[cursor + 1] == "(":
+        if (token == "$" or token.endswith("$")) and cursor + 1 < len(tokens) and tokens[cursor + 1] == "(":
             depth = 1
             parts = [token, tokens[cursor + 1]]
             cursor += 2
@@ -3622,6 +3760,9 @@ def aws_s3_operands(tokens: list[str]) -> list[str]:
                     depth += 1
                 elif tokens[cursor] == ")":
                     depth -= 1
+                cursor += 1
+            if cursor < len(tokens) and tokens[cursor].startswith("/"):
+                parts.append(tokens[cursor])
                 cursor += 1
             operands.append(" ".join(parts))
             continue
@@ -3662,7 +3803,7 @@ def aws_s3_transfer_touches_active_target(
     command_substitution_depth = 0
     while cursor < len(tokens):
         token = tokens[cursor]
-        if token == "$" and cursor + 1 < len(tokens) and tokens[cursor + 1] == "(":
+        if (token == "$" or token.endswith("$")) and cursor + 1 < len(tokens) and tokens[cursor + 1] == "(":
             tail.extend([token, tokens[cursor + 1]])
             command_substitution_depth += 1
             cursor += 2
@@ -4045,7 +4186,7 @@ def shell_command_segments_from_tokens(tokens: list[str]) -> list[list[str]]:
             index = next_index
             continue
         token = expanded[index]
-        if token == "$" and index + 1 < len(expanded) and expanded[index + 1] == "(":
+        if (token == "$" or token.endswith("$")) and index + 1 < len(expanded) and expanded[index + 1] == "(":
             segment.extend([token, expanded[index + 1]])
             substitution_depth += 1
             index += 2
@@ -4072,7 +4213,7 @@ def tokens_have_top_level_shell_boundary(tokens: list[str]) -> bool:
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        if token == "$" and index + 1 < len(tokens) and tokens[index + 1] == "(":
+        if (token == "$" or token.endswith("$")) and index + 1 < len(tokens) and tokens[index + 1] == "(":
             substitution_depth += 1
             index += 2
             continue
@@ -4334,22 +4475,18 @@ def add_unique_errors(errors: list[str], messages: Iterable[str]) -> None:
 
 def raw_rust_storage_errors(workflow_text: str, *, alias_depth: int = 0) -> list[str]:
     uncommented = uncommented_text(workflow_text.splitlines())
-    folded_commands = "\n".join(folded_yaml_run_commands(uncommented))
+    folded_command_texts = folded_yaml_run_commands(uncommented)
+    folded_commands = "\n".join(folded_command_texts)
     text = re.sub(r"\\\s*\n\s*", " ", "\n".join(part for part in (uncommented, folded_commands) if part))
     shell_texts = workflow_run_shell_texts(uncommented)
     if not shell_texts:
         shell_texts = [uncommented]
+    shell_texts.extend(folded_command_texts)
     shell_texts = [re.sub(r"\\\s*\n\s*", " ", shell_text) for shell_text in shell_texts]
     checks: tuple[tuple[str, str], ...] = (
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_TARGET_DIR[\"']?\s*(?:=|:)", "CARGO_TARGET_DIR raw target override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_BUILD_TARGET_DIR[\"']?\s*(?:=|:)", "CARGO_BUILD_TARGET_DIR raw target override must be classified"),
         (r"(?:target-dir|build\.target-dir)[^\n]*>\s*\.cargo/config\.toml|\.cargo/config\.toml[^\n]*(?:target-dir|build\.target-dir)", ".cargo/config.toml build.target-dir raw target override must be classified"),
-        (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[\"']?build\.target-dir", "cargo --config build.target-dir raw target override must be classified"),
-        (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:\[build\]|build\s*=|build\.)[^\n;&|]*target-dir", "cargo --config build.target-dir raw target override must be classified"),
-        (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:\[build\]|build\s*=|build\.)[^\n;&|]*target\\(?:u002[Dd]|U0000002[Dd])dir", "cargo --config build.target-dir raw target override must be classified"),
-        (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[^\n;&|]*(?:build\.rustflags|rustflags\s*=)[^\n;&|]*(?:--out-dir|--artifact-dir)", "cargo --config build.rustflags raw output override must be classified"),
-        (r"\bcargo\b[^\n;&|]*\s--config(?:\s+|=)[\"']?(?:/|\./|[^\s\n;&|\"']+\.toml\b)", "cargo --config file raw target override must be classified"),
-        (r"\bcargo\b[^\n;&|]*\s--target-dir\b", "cargo --target-dir raw target override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_TARGET_TMPDIR[\"']?\s*(?:=|:)", "CARGO_TARGET_TMPDIR raw target override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_INCREMENTAL[\"']?\s*(?:=|:)", "CARGO_INCREMENTAL raw cache override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_BUILD_RUSTFLAGS[\"']?\s*(?:=|:).*(?:--out-dir|--artifact-dir)", "CARGO_BUILD_RUSTFLAGS raw output override must be classified"),
@@ -4360,10 +4497,6 @@ def raw_rust_storage_errors(workflow_text: str, *, alias_depth: int = 0) -> list
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTFLAGS[\"']?\s*(?:=|:).*(?:--out-dir|--artifact-dir)", "RUSTFLAGS raw output override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WRAPPER raw compiler wrapper must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WORKSPACE_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified"),
-        (r"\bcargo\b[^\n;&|]*\brustc\b[^\n;&|]*\s--out-dir\b", "cargo rustc --out-dir raw output override must be classified"),
-        (r"\bcargo\b[^\n;&|]*\brustc\b[^\n;&|]*\s--artifact-dir\b", "cargo rustc --artifact-dir raw output override must be classified"),
-        (r"\bcargo\b[^\n;&|]*\binstall\b(?=[^\n;&|]*\s--target-dir\b)(?=[^\n;&|]*\s--root\b)", "cargo install build target and install root ownership must be classified separately"),
-        (r"\bcargo\b[^\n;&|]*\binstall\b[^\n;&|]*\s--root\b[^\n;&|]*\bs3://", "cargo install S3 install root must be classified"),
         (r"(^|[^A-Za-z0-9_$\{])[\"']?BOLT_MANAGED_JUST[\"']?\s*(?:=|:|<<)", "BOLT_MANAGED_JUST private just recipe bypass must be classified"),
         (r"\bno-mistakes\b[^\n]*\bcargo\b", "no-mistakes raw Cargo drift must be classified"),
         (r"\bno-mistakes\b[^\n]*--worktree[^\n]*(?:--target-dir\s+target|\btarget\b)", "no-mistakes worktree-local target path evidence must be reported"),

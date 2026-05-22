@@ -2153,6 +2153,74 @@ def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]
         return result, stdout.getvalue() + stderr.getvalue()
 
 
+def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, str]:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        verifier_path = tmp_path / "scripts" / "verify_ci_workflow_hygiene.py"
+        verifier_path.parent.mkdir(parents=True)
+        verifier_path.write_text(VERIFIER_PATH.read_text())
+
+        workflow_dir = tmp_path / ".github" / "workflows"
+        workflow_dir.mkdir(parents=True)
+        (workflow_dir / "ci.yml").write_text(BASE_WORKFLOW)
+
+        action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
+        action_path.parent.mkdir(parents=True)
+        action_path.write_text(BASE_ACTION)
+
+        extra_action_path = tmp_path / ".github" / "actions" / "evade" / "action.yml"
+        extra_action_path.parent.mkdir(parents=True)
+        extra_action_path.write_text(extra_action_text)
+
+        nextest_path = tmp_path / ".config" / "nextest.toml"
+        nextest_path.parent.mkdir(parents=True)
+        nextest_path.write_text(BASE_NEXTEST_CONFIG)
+
+        temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_action_entrypoint")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = temp_verifier.main()
+        return result, stdout.getvalue() + stderr.getvalue()
+
+
+def assert_v6_red_yaml_anchor_jobs_do_not_hide_raw_storage() -> None:
+    verifier = load_verifier()
+    workflow = """
+name: Probe
+on: [push]
+jobs:
+  hidden: &hidden
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo build --target-dir /tmp/raw
+"""
+    expected = "cargo --target-dir raw target override must be classified"
+    errors = verifier.raw_rust_storage_errors(textwrap.dedent(workflow))
+    if expected not in errors:
+        raise AssertionError(f"anchored workflow job raw-storage drift was silent: {errors!r}")
+    if "hidden" not in verifier.parse_jobs(textwrap.dedent(workflow)):
+        raise AssertionError("anchored workflow job was not parsed")
+
+
+def assert_v6_red_local_composite_actions_are_scanned() -> None:
+    extra_action = """
+name: Evade
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: cargo build
+    - shell: bash
+      run: aws s3 sync target s3://bolt-v2-active-cache/target
+"""
+    result, output = run_verifier_main_with_extra_action(textwrap.dedent(extra_action))
+    expected_raw_cargo = ".github/actions/evade/action.yml: repo automation raw Cargo must use managed rust_verification wrapper"
+    expected_s3 = ".github/actions/evade/action.yml: S3 active mutable target cache must be rejected"
+    if result == 0 or expected_raw_cargo not in output or expected_s3 not in output:
+        raise AssertionError(f"local composite action drift was silent: exit={result}, output={output!r}")
+
+
 def assert_v6_red_no_mistakes_raw_cargo_is_reported() -> None:
     raw_fixture = """
 commands:
@@ -2588,6 +2656,8 @@ def main() -> int:
     assert_pin_consistency_rejects_mismatched_quotes()
     assert_prebuilt_tool_installs_accepts_uppercase_pinned_install_action()
     assert_v6_red_raw_storage_checks_all_ci_automation()
+    assert_v6_red_yaml_anchor_jobs_do_not_hide_raw_storage()
+    assert_v6_red_local_composite_actions_are_scanned()
     assert_shell_logical_lines_handles_crlf_continuations()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(

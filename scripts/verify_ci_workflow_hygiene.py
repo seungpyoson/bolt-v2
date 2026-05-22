@@ -25,6 +25,8 @@ DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / "justfile",)
 DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / "scripts", "*.sh"),
     (REPO_ROOT / "tests", "*.sh"),
+    (REPO_ROOT / ".github" / "actions", "*/action.yml"),
+    (REPO_ROOT / ".github" / "actions", "*/action.yaml"),
 )
 S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
 
@@ -433,7 +435,7 @@ def parse_jobs(workflow_text: str) -> dict[str, list[str]]:
             continue
         if clean and not clean.startswith((" ", "\t")):
             break
-        match = re.match(r"^  ([^ \t:#][^:#]*):\s*$", clean)
+        match = re.match(r"^  ([^ \t:#][^:#]*):(?:\s+&[A-Za-z0-9_.-]+)?\s*$", clean)
         if match:
             current = match.group(1).strip().strip("'\"")
             jobs[current] = []
@@ -4557,6 +4559,44 @@ def workflow_run_commands(workflow_text: str) -> list[str]:
     return commands
 
 
+def yaml_run_shell_texts(yaml_text: str) -> list[str]:
+    lines = yaml_text.splitlines()
+    texts: list[str] = []
+    index = 0
+    while index < len(lines):
+        clean = strip_comment(lines[index]).rstrip()
+        match = re.match(r"^(\s*)(?:-\s*)?run:\s*(.*?)\s*$", clean)
+        if match is None:
+            index += 1
+            continue
+        value = match.group(2).strip()
+        if not value:
+            texts.append("")
+            index += 1
+            continue
+        if value[0] not in {"|", ">"}:
+            texts.append(unquote_yaml_scalar(value))
+            index += 1
+            continue
+
+        folded = value[0] == ">"
+        base_indent = len(match.group(1))
+        command_lines: list[str] = []
+        index += 1
+        while index < len(lines):
+            nested_clean = strip_comment(lines[index]).rstrip()
+            if not nested_clean.strip():
+                index += 1
+                continue
+            indent = len(nested_clean) - len(nested_clean.lstrip(" "))
+            if indent <= base_indent:
+                break
+            command_lines.append(nested_clean.strip())
+            index += 1
+        texts.append(" ".join(command_lines) if folded else "\n".join(command_lines))
+    return texts
+
+
 def github_env_assignment_from_echo_tokens(tokens: list[str]) -> str | None:
     if len(tokens) < 4 or pathlib.Path(tokens[0]).name != "echo":
         return None
@@ -4657,12 +4697,14 @@ def add_unique_errors(errors: list[str], messages: Iterable[str]) -> None:
 def raw_rust_storage_errors(workflow_text: str, *, alias_depth: int = 0) -> list[str]:
     uncommented = uncommented_text(workflow_text.splitlines())
     folded_command_texts = folded_yaml_run_commands(uncommented)
+    yaml_command_texts = yaml_run_shell_texts(uncommented)
     folded_commands = "\n".join(folded_command_texts)
     text = re.sub(r"\\\s*\n\s*", " ", "\n".join(part for part in (uncommented, folded_commands) if part))
     shell_texts = workflow_run_shell_texts(uncommented)
     if not shell_texts:
         shell_texts = [uncommented]
     shell_texts.extend(folded_command_texts)
+    shell_texts.extend(yaml_command_texts)
     shell_texts = [re.sub(r"\\\s*\n\s*", " ", shell_text) for shell_text in shell_texts]
     checks: tuple[tuple[str, str], ...] = (
         (r"(^|[^A-Za-z0-9_])[\"']?CARGO_TARGET_DIR[\"']?\s*(?:=|:)", "CARGO_TARGET_DIR raw target override must be classified"),
@@ -5581,8 +5623,16 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for file_name, text in texts.items():
         errors.extend(f"{file_name}: {error}" for error in raw_rust_storage_errors(text))
-        errors.extend(f"{file_name}: {error}" for error in repo_automation_raw_cargo_errors(file_name, text))
-        errors.extend(f"{file_name}: {error}" for error in repo_automation_source_build_errors(text))
+        automation_texts = [text, *yaml_run_shell_texts(uncommented_text(text.splitlines()))]
+        for automation_text in automation_texts:
+            add_unique_errors(
+                errors,
+                (f"{file_name}: {error}" for error in repo_automation_raw_cargo_errors(file_name, automation_text)),
+            )
+            add_unique_errors(
+                errors,
+                (f"{file_name}: {error}" for error in repo_automation_source_build_errors(automation_text)),
+            )
     return errors
 
 

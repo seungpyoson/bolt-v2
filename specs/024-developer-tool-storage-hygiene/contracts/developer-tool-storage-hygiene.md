@@ -26,19 +26,23 @@ Required cleanup sections:
 
 ```toml
 [codex.log]
+path_family = "~/.codex/log/codex-tui.log"
 max_bytes = 209715200
 retained_rotations = 2
 active_writer_processes = ["codex", "codex-tui"]
 
 [codex.sessions]
+path_family = "~/.codex/sessions/**/*.jsonl"
 ttl_days = 14
 
 [factory.log]
+path_family = "~/.factory/logs/droid-log-single.log"
 max_bytes = 209715200
 retained_rotations = 2
 active_writer_processes = ["factory", "droid"]
 
 [rustup.toolchains]
+path_family = "~/.rustup/toolchains/*"
 stale_after_days = 14
 retain_recent = 1
 
@@ -49,10 +53,23 @@ owned_storage_warning_bytes = 10737418240
 owned_storage_error_bytes = 21474836480
 ```
 
+Required report-only sections name path families that are measured and protected from apply:
+
+```toml
+[codex.sqlite]
+path_family = "~/.codex/logs_2.sqlite*"
+owner = "report_only"
+
+[codex.archived_sessions]
+path_family = "~/.codex/archived_sessions/**"
+owner = "report_only"
+```
+
 Required native-guidance sections are report-only. They document native configuration values to surface in dry-run/preflight output and must never create cleanup candidates:
 
 ```toml
 [native_guidance.codex_history]
+path_family = "~/.codex/history.jsonl"
 max_bytes = 104857600
 persistence = "save-all"
 ```

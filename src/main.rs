@@ -5,7 +5,7 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
-    bolt_v3_operator_artifacts::{BoltV3OperatorArtifactError, write_static_operator_artifacts},
+    bolt_v3_operator_artifacts::write_static_operator_artifacts,
     bolt_v3_providers::binding_for_provider_key,
     bolt_v3_secrets::{check_no_forbidden_credential_env_vars, resolve_bolt_v3_secrets},
     secrets::SsmResolverSession,
@@ -107,11 +107,8 @@ fn run_operator_artifacts_command(
                 "{}",
                 serde_json::to_string_pretty(&outcome.command_summary)?
             );
-            if let Some(prerequisite) = outcome.blockers.first() {
-                return Err(BoltV3OperatorArtifactError::AbortPrerequisiteUnproven {
-                    prerequisite,
-                }
-                .into());
+            if !outcome.blockers.is_empty() {
+                return Err(std::io::Error::other(outcome.blockers.join("; ")).into());
             }
             Ok(())
         }

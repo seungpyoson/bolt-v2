@@ -119,6 +119,10 @@ max_notional_per_order = "10.00"
         stderr.contains("panic gate and service policy"),
         "expected real abort blocker, got: {stderr}"
     );
+    assert!(
+        stderr.contains("T046 remains blocked"),
+        "expected explicit T046 strategy-input blocker, got: {stderr}"
+    );
     for artifact_name in [
         "ssm-manifest.json",
         "financial-envelope.json",
@@ -149,6 +153,10 @@ max_notional_per_order = "10.00"
             "stdout must not expose raw secret path or nonce material {forbidden}"
         );
     }
+    assert!(
+        !output_dir.join("strategy-input.json").exists(),
+        "strategy-input artifact must not be written without source-bound strategy decision evidence"
+    );
     let manifest_path = output_dir.join("static-artifacts-manifest.json");
     let stdout_json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout summary should be JSON");
@@ -208,6 +216,12 @@ max_notional_per_order = "10.00"
             .iter()
             .any(|blocker| blocker == "panic gate and service policy"),
         "manifest should record abort blocker: {manifest_json}"
+    );
+    assert!(
+        blockers.iter().any(|blocker| blocker
+            .as_str()
+            .is_some_and(|blocker| blocker.contains("T046 remains blocked"))),
+        "manifest should record explicit strategy-input blocker: {manifest_json}"
     );
     assert!(
         !output_dir.join("abort-plan.json").exists(),

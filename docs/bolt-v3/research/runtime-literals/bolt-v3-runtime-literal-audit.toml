@@ -4075,6 +4075,14 @@ reason = "This is a helper-owned artifact identifier in the redacted static-arti
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"strategy-input"'''
+context = '''const STRATEGY_INPUT_ARTIFACT_NAME: &str = "strategy-input";'''
+classification = "operator_artifact_manifest_key"
+reason = "This is a helper-owned artifact identifier for strategy-input evidence in the redacted static-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"abort-plan"'''
 context = '''const ABORT_PLAN_ARTIFACT_NAME: &str = "abort-plan";'''
 classification = "operator_artifact_manifest_key"
@@ -4103,6 +4111,14 @@ literal = '''"financial-envelope.json"'''
 context = '''const FINANCIAL_ENVELOPE_FILE_NAME: &str = "financial-envelope.json";'''
 classification = "operator_artifact_file_name"
 reason = "This is the helper-owned output file name for financial envelope evidence under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy-input.json"'''
+context = '''const STRATEGY_INPUT_FILE_NAME: &str = "strategy-input.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name reserved for strategy-input evidence under the operator-selected output directory, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -4138,6 +4154,14 @@ reason = "This names the documented missing abort-plan prerequisite used in fail
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"refusing to write successful strategy-input evidence because {prerequisite}"'''
+context = '''"refusing to write successful strategy-input evidence because {prerequisite}"'''
+classification = "operator_artifact_error_template"
+reason = "This is a fail-closed diagnostic template for missing strategy-input evidence prerequisites, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = '''0_u8'''
 context = '''let mut nonce = [0_u8; APPROVAL_NONCE_BYTES];'''
@@ -4151,3 +4175,11 @@ literal = '''"{}"'''
 context = '''"{}",'''
 classification = "operator_artifact_cli_format"
 reason = "This is the stdout format token for the redacted static-artifacts summary JSON, not an operator runtime value."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"; "'''
+context = '''return Err(std::io::Error::other(outcome.blockers.join("; ")).into());'''
+classification = "operator_artifact_cli_format"
+reason = "This is the diagnostic separator for multiple fail-closed operator-artifact blockers, not an operator runtime value."

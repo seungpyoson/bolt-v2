@@ -24,10 +24,12 @@ const STATIC_ARTIFACTS_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const STATIC_ARTIFACTS_MANIFEST_RECORD_KIND: &str = "bolt_v3.static_operator_artifacts_manifest.v1";
 const SSM_MANIFEST_ARTIFACT_NAME: &str = "ssm-manifest";
 const FINANCIAL_ENVELOPE_ARTIFACT_NAME: &str = "financial-envelope";
+const STRATEGY_INPUT_ARTIFACT_NAME: &str = "strategy-input";
 const ABORT_PLAN_ARTIFACT_NAME: &str = "abort-plan";
 const APPROVAL_NONCE_ARTIFACT_NAME: &str = "approval-nonce";
 const SSM_MANIFEST_FILE_NAME: &str = "ssm-manifest.json";
 const FINANCIAL_ENVELOPE_FILE_NAME: &str = "financial-envelope.json";
+const STRATEGY_INPUT_FILE_NAME: &str = "strategy-input.json";
 const ABORT_PLAN_FILE_NAME: &str = "abort-plan.json";
 const APPROVAL_NONCE_FILE_NAME: &str = "approval-nonce.json";
 const STATIC_ARTIFACTS_MANIFEST_FILE_NAME: &str = "static-artifacts-manifest.json";
@@ -104,6 +106,9 @@ pub enum BoltV3OperatorArtifactError {
     },
     SecretInventory(BoltV3SecretError),
     FinancialEnvelope(anyhow::Error),
+    StrategyInputPrerequisiteUnproven {
+        prerequisite: &'static str,
+    },
     AbortPrerequisiteUnproven {
         prerequisite: &'static str,
     },
@@ -127,6 +132,10 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             ),
             Self::SecretInventory(error) => write!(f, "{error}"),
             Self::FinancialEnvelope(error) => write!(f, "{error}"),
+            Self::StrategyInputPrerequisiteUnproven { prerequisite } => write!(
+                f,
+                "refusing to write successful strategy-input evidence because {prerequisite}"
+            ),
             Self::AbortPrerequisiteUnproven { prerequisite } => write!(
                 f,
                 "refusing to write successful abort plan because {prerequisite} is not proven"
@@ -249,6 +258,21 @@ pub fn write_abort_plan_artifact(
     })
 }
 
+pub fn write_strategy_input_evidence_artifact(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    _path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let _ =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    Err(
+        BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven {
+            prerequisite: "T046 remains blocked: missing source-bound price-to-beat strategy decision input",
+        },
+    )
+}
+
 pub fn write_static_operator_artifacts(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
@@ -282,6 +306,20 @@ pub fn write_static_operator_artifacts(
         APPROVAL_NONCE_ARTIFACT_NAME,
         approval_nonce_written,
     ));
+
+    match write_strategy_input_evidence_artifact(
+        loaded,
+        strategy_instance_id,
+        &output_dir.join(STRATEGY_INPUT_FILE_NAME),
+    ) {
+        Ok(written) => {
+            generated_artifacts.push(static_artifact_ref(STRATEGY_INPUT_ARTIFACT_NAME, written))
+        }
+        Err(BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven { prerequisite }) => {
+            blockers.push(prerequisite);
+        }
+        Err(error) => return Err(error),
+    }
 
     match write_abort_plan_artifact(
         loaded,

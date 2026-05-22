@@ -2027,9 +2027,36 @@ fn financial_envelope_mismatch(field: &'static str) -> anyhow::Error {
     anyhow!("phase8 financial envelope `{field}` does not match loaded TOML")
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Phase8PreRunStateSourceProofs<'a> {
+    pub host_clock_skew_within_bound: bool,
+    pub host_clock_skew_evidence_hash: &'a str,
+    pub conflicting_open_orders_absent: bool,
+    pub preexisting_position_absent: bool,
+    pub venue_account_state_evidence_hash: &'a str,
+    pub market_state_approved: bool,
+    pub market_window_approved: bool,
+    pub market_state_evidence_hash: &'a str,
+    pub funding_margin_covers_max_notional_plus_fees: bool,
+    pub funding_margin_evidence_hash: &'a str,
+    pub single_runner_lock_acquired: bool,
+    pub single_runner_lock_evidence_hash: &'a str,
+    pub egress_identity_approved: bool,
+    pub egress_identity_evidence_hash: &'a str,
+    pub clob_v2_adapter_signing_verified: bool,
+    pub clob_v2_adapter_signing_evidence_hash: &'a str,
+    pub clob_v2_collateral_accounting_verified: bool,
+    pub clob_v2_collateral_accounting_evidence_hash: &'a str,
+    pub clob_v2_fee_behavior_verified: bool,
+    pub clob_v2_fee_behavior_evidence_hash: &'a str,
+    pub release_manifest_clob_signing_version: &'a str,
+    pub release_manifest_nt_revision_matches_compiled_pin: bool,
+    pub release_manifest_evidence_hash: &'a str,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct Phase8PreRunStateEvidenceFile {
+pub struct Phase8PreRunStateEvidenceFile {
     execution_client_id: String,
     configured_target_id: String,
     host_clock_skew_within_bound: bool,
@@ -2058,6 +2085,51 @@ struct Phase8PreRunStateEvidenceFile {
 }
 
 impl Phase8PreRunStateEvidenceFile {
+    pub fn from_financial_envelope_and_source_proofs(
+        loaded: &Phase8FinancialEnvelopeEvidenceFile,
+        proofs: Phase8PreRunStateSourceProofs<'_>,
+    ) -> Result<Self> {
+        let artifact = Self {
+            execution_client_id: loaded.execution_client_id.clone(),
+            configured_target_id: loaded.configured_target_id.clone(),
+            host_clock_skew_within_bound: proofs.host_clock_skew_within_bound,
+            host_clock_skew_evidence_hash: proofs.host_clock_skew_evidence_hash.to_string(),
+            conflicting_open_orders_absent: proofs.conflicting_open_orders_absent,
+            preexisting_position_absent: proofs.preexisting_position_absent,
+            venue_account_state_evidence_hash: proofs.venue_account_state_evidence_hash.to_string(),
+            market_state_approved: proofs.market_state_approved,
+            market_window_approved: proofs.market_window_approved,
+            market_state_evidence_hash: proofs.market_state_evidence_hash.to_string(),
+            funding_margin_covers_max_notional_plus_fees: proofs
+                .funding_margin_covers_max_notional_plus_fees,
+            funding_margin_evidence_hash: proofs.funding_margin_evidence_hash.to_string(),
+            single_runner_lock_acquired: proofs.single_runner_lock_acquired,
+            single_runner_lock_evidence_hash: proofs.single_runner_lock_evidence_hash.to_string(),
+            egress_identity_approved: proofs.egress_identity_approved,
+            egress_identity_evidence_hash: proofs.egress_identity_evidence_hash.to_string(),
+            clob_v2_adapter_signing_verified: proofs.clob_v2_adapter_signing_verified,
+            clob_v2_adapter_signing_evidence_hash: proofs
+                .clob_v2_adapter_signing_evidence_hash
+                .to_string(),
+            clob_v2_collateral_accounting_verified: proofs.clob_v2_collateral_accounting_verified,
+            clob_v2_collateral_accounting_evidence_hash: proofs
+                .clob_v2_collateral_accounting_evidence_hash
+                .to_string(),
+            clob_v2_fee_behavior_verified: proofs.clob_v2_fee_behavior_verified,
+            clob_v2_fee_behavior_evidence_hash: proofs
+                .clob_v2_fee_behavior_evidence_hash
+                .to_string(),
+            release_manifest_clob_signing_version: proofs
+                .release_manifest_clob_signing_version
+                .to_string(),
+            release_manifest_nt_revision_matches_compiled_pin: proofs
+                .release_manifest_nt_revision_matches_compiled_pin,
+            release_manifest_evidence_hash: proofs.release_manifest_evidence_hash.to_string(),
+        };
+        artifact.validate_matches_loaded(loaded)?;
+        Ok(artifact)
+    }
+
     fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
         if self.execution_client_id != loaded.execution_client_id {
             return Err(pre_run_state_mismatch(stringify!(execution_client_id)));

@@ -17,6 +17,7 @@ use crate::{
     bolt_v3_secrets::BoltV3SecretError,
     bolt_v3_tiny_canary_evidence::{
         Phase8FinancialEnvelopeEvidenceFile, Phase8MarketSelectionSourceEvidenceFile,
+        Phase8PreRunStateEvidenceFile, Phase8PreRunStateSourceProofs,
     },
 };
 
@@ -379,6 +380,23 @@ pub fn write_pre_run_state_artifact(
             prerequisite: "T121 remains blocked: T046 source-bound pre-run state evidence is unproven",
         },
     )
+}
+
+pub fn write_pre_run_state_artifact_from_source_proofs(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    proofs: Phase8PreRunStateSourceProofs<'_>,
+    path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let financial_envelope =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    let artifact = Phase8PreRunStateEvidenceFile::from_financial_envelope_and_source_proofs(
+        &financial_envelope,
+        proofs,
+    )
+    .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    write_json_artifact_create_new(path, &artifact)
 }
 
 pub fn write_static_operator_artifacts(

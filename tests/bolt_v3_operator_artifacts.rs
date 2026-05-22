@@ -4,7 +4,7 @@ use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, load_bolt_v3_config},
     bolt_v3_market_families::updown::updown_market_slug,
     bolt_v3_operator_artifacts::build_redacted_ssm_manifest,
-    bolt_v3_tiny_canary_evidence::Phase8OperatorApprovalEnvelope,
+    bolt_v3_tiny_canary_evidence::{Phase8OperatorApprovalEnvelope, Phase8PreRunStateSourceProofs},
 };
 use nautilus_core::Params;
 use nautilus_model::{
@@ -282,6 +282,156 @@ fn pre_run_state_writer_fails_closed_when_source_evidence_is_unproven() {
 }
 
 #[test]
+fn pre_run_state_writer_emits_hash_bound_artifact_from_source_proofs() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let proof_hashes = TestPreRunStateProofHashes::new();
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_pre_run_state_artifact_from_source_proofs(
+            &loaded,
+            strategy_instance_id,
+            proof_hashes.as_source_proofs(),
+            &pre_run_state_path,
+        )
+        .expect("source-bound pre-run state proofs should write artifact");
+
+    let artifact_bytes = std::fs::read(&pre_run_state_path)
+        .expect("pre-run state artifact should exist after source proofs");
+    assert_eq!(written.sha256, hex::encode(Sha256::digest(&artifact_bytes)));
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&artifact_bytes).expect("pre-run state should be JSON");
+    assert_eq!(
+        json["execution_client_id"],
+        loaded.strategies[0].config.execution_client_id.to_string()
+    );
+    assert_eq!(
+        json["configured_target_id"],
+        loaded.strategies[0]
+            .config
+            .target
+            .get("configured_target_id")
+            .and_then(|value| value.as_str())
+            .expect("fixture target should have configured_target_id")
+    );
+    assert_eq!(json["host_clock_skew_within_bound"], true);
+    assert_eq!(json["conflicting_open_orders_absent"], true);
+    assert_eq!(json["preexisting_position_absent"], true);
+    assert_eq!(json["market_state_approved"], true);
+    assert_eq!(json["market_window_approved"], true);
+    assert_eq!(
+        json["release_manifest_clob_signing_version"],
+        "clob-v2-release-test"
+    );
+}
+
+#[test]
+fn pre_run_state_writer_rejects_each_unsatisfied_source_proof_without_artifact() {
+    assert_rejects_unsatisfied_pre_run_source_proof("host_clock_skew_within_bound", |proofs| {
+        proofs.host_clock_skew_within_bound = false;
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof("host_clock_skew_evidence_hash", |proofs| {
+        proofs.host_clock_skew_evidence_hash = "invalid";
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof("conflicting_open_orders_absent", |proofs| {
+        proofs.conflicting_open_orders_absent = false;
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof("preexisting_position_absent", |proofs| {
+        proofs.preexisting_position_absent = false;
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof(
+        "venue_account_state_evidence_hash",
+        |proofs| {
+            proofs.venue_account_state_evidence_hash = "invalid";
+        },
+    );
+    assert_rejects_unsatisfied_pre_run_source_proof("market_state_approved", |proofs| {
+        proofs.market_state_approved = false;
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof("market_window_approved", |proofs| {
+        proofs.market_window_approved = false;
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof("market_state_evidence_hash", |proofs| {
+        proofs.market_state_evidence_hash = "invalid";
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof(
+        "funding_margin_covers_max_notional_plus_fees",
+        |proofs| {
+            proofs.funding_margin_covers_max_notional_plus_fees = false;
+        },
+    );
+    assert_rejects_unsatisfied_pre_run_source_proof("funding_margin_evidence_hash", |proofs| {
+        proofs.funding_margin_evidence_hash = "invalid";
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof("single_runner_lock_acquired", |proofs| {
+        proofs.single_runner_lock_acquired = false;
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof("single_runner_lock_evidence_hash", |proofs| {
+        proofs.single_runner_lock_evidence_hash = "invalid";
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof("egress_identity_approved", |proofs| {
+        proofs.egress_identity_approved = false;
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof("egress_identity_evidence_hash", |proofs| {
+        proofs.egress_identity_evidence_hash = "invalid";
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof("clob_v2_adapter_signing_verified", |proofs| {
+        proofs.clob_v2_adapter_signing_verified = false;
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof(
+        "clob_v2_adapter_signing_evidence_hash",
+        |proofs| {
+            proofs.clob_v2_adapter_signing_evidence_hash = "invalid";
+        },
+    );
+    assert_rejects_unsatisfied_pre_run_source_proof(
+        "clob_v2_collateral_accounting_verified",
+        |proofs| {
+            proofs.clob_v2_collateral_accounting_verified = false;
+        },
+    );
+    assert_rejects_unsatisfied_pre_run_source_proof(
+        "clob_v2_collateral_accounting_evidence_hash",
+        |proofs| {
+            proofs.clob_v2_collateral_accounting_evidence_hash = "invalid";
+        },
+    );
+    assert_rejects_unsatisfied_pre_run_source_proof("clob_v2_fee_behavior_verified", |proofs| {
+        proofs.clob_v2_fee_behavior_verified = false;
+    });
+    assert_rejects_unsatisfied_pre_run_source_proof(
+        "clob_v2_fee_behavior_evidence_hash",
+        |proofs| {
+            proofs.clob_v2_fee_behavior_evidence_hash = "invalid";
+        },
+    );
+    assert_rejects_unsatisfied_pre_run_source_proof(
+        "release_manifest_clob_signing_version",
+        |proofs| {
+            proofs.release_manifest_clob_signing_version = "";
+        },
+    );
+    assert_rejects_unsatisfied_pre_run_source_proof(
+        "release_manifest_nt_revision_matches_compiled_pin",
+        |proofs| {
+            proofs.release_manifest_nt_revision_matches_compiled_pin = false;
+        },
+    );
+    assert_rejects_unsatisfied_pre_run_source_proof("release_manifest_evidence_hash", |proofs| {
+        proofs.release_manifest_evidence_hash = "invalid";
+    });
+}
+
+#[test]
 fn static_operator_artifacts_report_market_selection_blocker_until_runtime_proof_exists() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded
@@ -502,6 +652,101 @@ fn updown_binary_option(
         1.into(),
         1.into(),
     ))
+}
+
+struct TestPreRunStateProofHashes {
+    host_clock: String,
+    venue_account: String,
+    market: String,
+    funding: String,
+    single_runner: String,
+    egress: String,
+    clob_signing: String,
+    clob_collateral: String,
+    clob_fee: String,
+    release_manifest: String,
+}
+
+impl TestPreRunStateProofHashes {
+    fn new() -> Self {
+        Self {
+            host_clock: sha256_text("host-clock-proof"),
+            venue_account: sha256_text("venue-account-state-proof"),
+            market: sha256_text("market-window-proof"),
+            funding: sha256_text("funding-margin-proof"),
+            single_runner: sha256_text("single-runner-lock-proof"),
+            egress: sha256_text("egress-identity-proof"),
+            clob_signing: sha256_text("clob-v2-signing-proof"),
+            clob_collateral: sha256_text("clob-v2-collateral-proof"),
+            clob_fee: sha256_text("clob-v2-fee-proof"),
+            release_manifest: sha256_text("release-manifest-proof"),
+        }
+    }
+
+    fn as_source_proofs(&self) -> Phase8PreRunStateSourceProofs<'_> {
+        Phase8PreRunStateSourceProofs {
+            host_clock_skew_within_bound: true,
+            host_clock_skew_evidence_hash: &self.host_clock,
+            conflicting_open_orders_absent: true,
+            preexisting_position_absent: true,
+            venue_account_state_evidence_hash: &self.venue_account,
+            market_state_approved: true,
+            market_window_approved: true,
+            market_state_evidence_hash: &self.market,
+            funding_margin_covers_max_notional_plus_fees: true,
+            funding_margin_evidence_hash: &self.funding,
+            single_runner_lock_acquired: true,
+            single_runner_lock_evidence_hash: &self.single_runner,
+            egress_identity_approved: true,
+            egress_identity_evidence_hash: &self.egress,
+            clob_v2_adapter_signing_verified: true,
+            clob_v2_adapter_signing_evidence_hash: &self.clob_signing,
+            clob_v2_collateral_accounting_verified: true,
+            clob_v2_collateral_accounting_evidence_hash: &self.clob_collateral,
+            clob_v2_fee_behavior_verified: true,
+            clob_v2_fee_behavior_evidence_hash: &self.clob_fee,
+            release_manifest_clob_signing_version: "clob-v2-release-test",
+            release_manifest_nt_revision_matches_compiled_pin: true,
+            release_manifest_evidence_hash: &self.release_manifest,
+        }
+    }
+}
+
+fn assert_rejects_unsatisfied_pre_run_source_proof<F>(expected_field: &str, mutate: F)
+where
+    F: for<'a> FnOnce(&mut Phase8PreRunStateSourceProofs<'a>),
+{
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let pre_run_state_path = temp.path().join(format!("{expected_field}.json"));
+    let proof_hashes = TestPreRunStateProofHashes::new();
+    let mut source_proofs = proof_hashes.as_source_proofs();
+    mutate(&mut source_proofs);
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_pre_run_state_artifact_from_source_proofs(
+            &loaded,
+            strategy_instance_id,
+            source_proofs,
+            &pre_run_state_path,
+        )
+        .expect_err("unsatisfied source proof should fail closed");
+
+    assert!(
+        error.to_string().contains(expected_field),
+        "pre-run state blocker should cite {expected_field}: {error}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "failed source-proof pre-run state generation must not leave artifact for {expected_field}"
+    );
 }
 
 fn assert_manifest_entry(

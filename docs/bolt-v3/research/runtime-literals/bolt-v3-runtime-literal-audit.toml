@@ -4042,6 +4042,94 @@ reason = "This fixes the helper-owned CSPRNG nonce entropy width for one-shot ap
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const STATIC_ARTIFACTS_MANIFEST_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the static operator-artifacts manifest schema version emitted by the helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.static_operator_artifacts_manifest.v1"'''
+context = '''const STATIC_ARTIFACTS_MANIFEST_RECORD_KIND: &str = "bolt_v3.static_operator_artifacts_manifest.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for the static operator-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"ssm-manifest"'''
+context = '''const SSM_MANIFEST_ARTIFACT_NAME: &str = "ssm-manifest";'''
+classification = "operator_artifact_manifest_key"
+reason = "This is a helper-owned artifact identifier in the redacted static-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"financial-envelope"'''
+context = '''const FINANCIAL_ENVELOPE_ARTIFACT_NAME: &str = "financial-envelope";'''
+classification = "operator_artifact_manifest_key"
+reason = "This is a helper-owned artifact identifier in the redacted static-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"abort-plan"'''
+context = '''const ABORT_PLAN_ARTIFACT_NAME: &str = "abort-plan";'''
+classification = "operator_artifact_manifest_key"
+reason = "This is a helper-owned artifact identifier in the redacted static-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval-nonce"'''
+context = '''const APPROVAL_NONCE_ARTIFACT_NAME: &str = "approval-nonce";'''
+classification = "operator_artifact_manifest_key"
+reason = "This is a helper-owned artifact identifier in the redacted static-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"ssm-manifest.json"'''
+context = '''const SSM_MANIFEST_FILE_NAME: &str = "ssm-manifest.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name for redacted SSM manifest evidence under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"financial-envelope.json"'''
+context = '''const FINANCIAL_ENVELOPE_FILE_NAME: &str = "financial-envelope.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name for financial envelope evidence under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"abort-plan.json"'''
+context = '''const ABORT_PLAN_FILE_NAME: &str = "abort-plan.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name for abort-plan evidence under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval-nonce.json"'''
+context = '''const APPROVAL_NONCE_FILE_NAME: &str = "approval-nonce.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name for approval nonce evidence under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"static-artifacts-manifest.json"'''
+context = '''const STATIC_ARTIFACTS_MANIFEST_FILE_NAME: &str = "static-artifacts-manifest.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name for the redacted static-artifacts manifest under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"panic gate and service policy"'''
 context = '''prerequisite: "panic gate and service policy",'''
@@ -4059,7 +4147,7 @@ reason = "This initializes a nonce byte buffer before OS CSPRNG fill and does no
 [[allowed]]
 path = "src/main.rs"
 kind = "string"
-literal = '''"abort-plan.json"'''
-context = '''let abort_plan_path = output_dir.join("abort-plan.json");'''
-classification = "operator_artifact_file_name"
-reason = "This is the helper-owned output file name for abort-plan evidence under the operator-selected output directory, not an operator runtime value."
+literal = '''"{}"'''
+context = '''"{}",'''
+classification = "operator_artifact_cli_format"
+reason = "This is the stdout format token for the redacted static-artifacts summary JSON, not an operator runtime value."

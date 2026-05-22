@@ -113,10 +113,101 @@ max_notional_per_order = "10.00"
         .expect("bolt-v3 static operator artifacts command should run");
 
     assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("panic gate and service policy"),
         "expected real abort blocker, got: {stderr}"
+    );
+    for artifact_name in [
+        "ssm-manifest.json",
+        "financial-envelope.json",
+        "approval-nonce.json",
+        "static-artifacts-manifest.json",
+    ] {
+        assert!(
+            output_dir.join(artifact_name).exists(),
+            "fail-closed command should still write accepted static artifact {artifact_name}"
+        );
+        assert!(
+            stdout.contains(artifact_name),
+            "stdout should report generated artifact {artifact_name}: {stdout}"
+        );
+    }
+    for forbidden in [
+        "/bolt/polymarket_main/private_key",
+        "/bolt/polymarket_main/api_key",
+        "/bolt/polymarket_main/api_secret",
+        "/bolt/polymarket_main/passphrase",
+        "/bolt/binance_reference/api_key",
+        "/bolt/binance_reference/api_secret",
+        "nonce_bytes",
+        "nonce_material",
+    ] {
+        assert!(
+            !stdout.contains(forbidden),
+            "stdout must not expose raw secret path or nonce material {forbidden}"
+        );
+    }
+    let manifest_path = output_dir.join("static-artifacts-manifest.json");
+    let stdout_json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout summary should be JSON");
+    let stdout_summary = stdout_json
+        .as_object()
+        .expect("stdout summary should be an object");
+    assert_eq!(
+        stdout_summary
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["generated_artifacts", "manifest_artifact"]
+    );
+    for artifact in stdout_json["generated_artifacts"]
+        .as_array()
+        .expect("stdout generated artifacts should be an array")
+        .iter()
+        .chain(std::iter::once(&stdout_json["manifest_artifact"]))
+    {
+        let artifact = artifact
+            .as_object()
+            .expect("stdout artifact ref should be an object");
+        assert_eq!(
+            artifact.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["path", "sha256"]
+        );
+    }
+    let manifest_json: serde_json::Value = serde_json::from_slice(
+        &fs::read(&manifest_path).expect("static artifact manifest should read"),
+    )
+    .expect("static artifact manifest should parse");
+    assert_eq!(
+        manifest_json["record_kind"],
+        "bolt_v3.static_operator_artifacts_manifest.v1"
+    );
+    let generated = manifest_json["generated_artifacts"]
+        .as_array()
+        .expect("generated artifacts should be an array");
+    for artifact_name in ["ssm-manifest", "financial-envelope", "approval-nonce"] {
+        let artifact = generated
+            .iter()
+            .find(|artifact| artifact["name"] == artifact_name)
+            .unwrap_or_else(|| panic!("manifest should list {artifact_name}"));
+        assert_eq!(
+            artifact["sha256"]
+                .as_str()
+                .expect("artifact sha should be a string")
+                .len(),
+            64
+        );
+    }
+    let blockers = manifest_json["blockers"]
+        .as_array()
+        .expect("blockers should be an array");
+    assert!(
+        blockers
+            .iter()
+            .any(|blocker| blocker == "panic gate and service policy"),
+        "manifest should record abort blocker: {manifest_json}"
     );
     assert!(
         !output_dir.join("abort-plan.json").exists(),

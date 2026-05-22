@@ -20,6 +20,17 @@ const REDACTED_SSM_MANIFEST_RECORD_KIND: &str = "bolt_v3.redacted_ssm_manifest.v
 const APPROVAL_NONCE_SCHEMA_VERSION: u32 = 1;
 const APPROVAL_NONCE_RECORD_KIND: &str = "bolt_v3.operator_approval_nonce.v1";
 const APPROVAL_NONCE_BYTES: usize = 32;
+const STATIC_ARTIFACTS_MANIFEST_SCHEMA_VERSION: u32 = 1;
+const STATIC_ARTIFACTS_MANIFEST_RECORD_KIND: &str = "bolt_v3.static_operator_artifacts_manifest.v1";
+const SSM_MANIFEST_ARTIFACT_NAME: &str = "ssm-manifest";
+const FINANCIAL_ENVELOPE_ARTIFACT_NAME: &str = "financial-envelope";
+const ABORT_PLAN_ARTIFACT_NAME: &str = "abort-plan";
+const APPROVAL_NONCE_ARTIFACT_NAME: &str = "approval-nonce";
+const SSM_MANIFEST_FILE_NAME: &str = "ssm-manifest.json";
+const FINANCIAL_ENVELOPE_FILE_NAME: &str = "financial-envelope.json";
+const ABORT_PLAN_FILE_NAME: &str = "abort-plan.json";
+const APPROVAL_NONCE_FILE_NAME: &str = "approval-nonce.json";
+const STATIC_ARTIFACTS_MANIFEST_FILE_NAME: &str = "static-artifacts-manifest.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3RedactedSsmManifest {
@@ -43,6 +54,40 @@ pub struct BoltV3ApprovalNonceArtifact {
     pub schema_version: u32,
     pub record_kind: &'static str,
     pub nonce_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3StaticArtifactsManifest {
+    pub schema_version: u32,
+    pub record_kind: &'static str,
+    pub config_bundle_checksum: String,
+    pub generated_artifacts: Vec<BoltV3StaticArtifactRef>,
+    pub blockers: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3StaticArtifactRef {
+    pub name: &'static str,
+    pub path: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3StaticArtifactsCommandSummary {
+    pub generated_artifacts: Vec<BoltV3StaticArtifactSummaryRef>,
+    pub manifest_artifact: BoltV3StaticArtifactSummaryRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3StaticArtifactSummaryRef {
+    pub path: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3StaticArtifactsWriteOutcome {
+    pub command_summary: BoltV3StaticArtifactsCommandSummary,
+    pub blockers: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +249,80 @@ pub fn write_abort_plan_artifact(
     })
 }
 
+pub fn write_static_operator_artifacts(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    output_dir: &Path,
+) -> Result<BoltV3StaticArtifactsWriteOutcome, BoltV3OperatorArtifactError> {
+    let mut generated_artifacts = Vec::new();
+    let mut blockers = Vec::new();
+
+    let ssm_manifest = build_redacted_ssm_manifest(loaded)?;
+    let ssm_manifest_written =
+        write_json_artifact_create_new(&output_dir.join(SSM_MANIFEST_FILE_NAME), &ssm_manifest)?;
+    generated_artifacts.push(static_artifact_ref(
+        SSM_MANIFEST_ARTIFACT_NAME,
+        ssm_manifest_written,
+    ));
+
+    let financial_envelope = build_phase8_financial_envelope(loaded, strategy_instance_id)
+        .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    let financial_envelope_written = write_json_artifact_create_new(
+        &output_dir.join(FINANCIAL_ENVELOPE_FILE_NAME),
+        &financial_envelope,
+    )?;
+    generated_artifacts.push(static_artifact_ref(
+        FINANCIAL_ENVELOPE_ARTIFACT_NAME,
+        financial_envelope_written,
+    ));
+
+    let approval_nonce_written =
+        write_approval_nonce_artifact(&output_dir.join(APPROVAL_NONCE_FILE_NAME))?;
+    generated_artifacts.push(static_artifact_ref(
+        APPROVAL_NONCE_ARTIFACT_NAME,
+        approval_nonce_written,
+    ));
+
+    match write_abort_plan_artifact(
+        loaded,
+        strategy_instance_id,
+        &output_dir.join(ABORT_PLAN_FILE_NAME),
+    ) {
+        Ok(written) => {
+            generated_artifacts.push(static_artifact_ref(ABORT_PLAN_ARTIFACT_NAME, written))
+        }
+        Err(BoltV3OperatorArtifactError::AbortPrerequisiteUnproven { prerequisite }) => {
+            blockers.push(prerequisite);
+        }
+        Err(error) => return Err(error),
+    }
+
+    let outcome_blockers = blockers.clone();
+    let manifest = BoltV3StaticArtifactsManifest {
+        schema_version: STATIC_ARTIFACTS_MANIFEST_SCHEMA_VERSION,
+        record_kind: STATIC_ARTIFACTS_MANIFEST_RECORD_KIND,
+        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
+        generated_artifacts,
+        blockers,
+    };
+    let manifest_written = write_json_artifact_create_new(
+        &output_dir.join(STATIC_ARTIFACTS_MANIFEST_FILE_NAME),
+        &manifest,
+    )?;
+
+    Ok(BoltV3StaticArtifactsWriteOutcome {
+        command_summary: BoltV3StaticArtifactsCommandSummary {
+            generated_artifacts: manifest
+                .generated_artifacts
+                .iter()
+                .map(static_artifact_summary_ref)
+                .collect(),
+            manifest_artifact: written_artifact_summary_ref(manifest_written),
+        },
+        blockers: outcome_blockers,
+    })
+}
+
 fn build_approval_nonce_artifact()
 -> Result<BoltV3ApprovalNonceArtifact, BoltV3OperatorArtifactError> {
     let mut nonce = [0_u8; APPROVAL_NONCE_BYTES];
@@ -251,4 +370,33 @@ fn write_json_artifact_create_new<T: Serialize>(
 
 fn sha256_text(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
+}
+
+fn static_artifact_ref(
+    name: &'static str,
+    written: WrittenOperatorArtifact,
+) -> BoltV3StaticArtifactRef {
+    BoltV3StaticArtifactRef {
+        name,
+        path: written.path.to_string_lossy().to_string(),
+        sha256: written.sha256,
+    }
+}
+
+fn static_artifact_summary_ref(
+    artifact: &BoltV3StaticArtifactRef,
+) -> BoltV3StaticArtifactSummaryRef {
+    BoltV3StaticArtifactSummaryRef {
+        path: artifact.path.clone(),
+        sha256: artifact.sha256.clone(),
+    }
+}
+
+fn written_artifact_summary_ref(
+    written: WrittenOperatorArtifact,
+) -> BoltV3StaticArtifactSummaryRef {
+    BoltV3StaticArtifactSummaryRef {
+        path: written.path.to_string_lossy().to_string(),
+        sha256: written.sha256,
+    }
 }

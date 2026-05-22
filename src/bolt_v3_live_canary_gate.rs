@@ -923,7 +923,6 @@ struct Phase8OperatorApprovalEnvelopeFile {
     approval_not_before_unix_secs: i64,
     approval_not_after_unix_secs: i64,
     canary_evidence_path_hash: String,
-    #[serde(default)]
     strategy_cancel_path_hash: Option<String>,
 }
 

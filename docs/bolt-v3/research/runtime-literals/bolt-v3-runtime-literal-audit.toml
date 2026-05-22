@@ -1008,10 +1008,66 @@ reason = "This names an optional TOML-owned operator evidence path while validat
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "number"
+literal = "1"
+context = "const APPROVAL_ENVELOPE_SCHEMA_VERSION: i64 = 1;"
+classification = "approval_envelope_schema_version"
+reason = "This is the structural JSON schema version required for the non-circular approval-envelope file, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"phase8_operator_approval_envelope"'''
+context = '''const APPROVAL_ENVELOPE_RECORD_KIND: &str = "phase8_operator_approval_envelope";'''
+classification = "approval_envelope_record_kind"
+reason = "This is the structural approval-envelope record-kind discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
 literal = "14"
 context = ''') -> [(&'static str, &str); 14] {'''
 classification = "operator_evidence_path_field_count"
 reason = "This is the compile-time size of the operator evidence path field table; path values are TOML-owned and validated fail-closed before resolution."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_envelope_path"'''
+context = '''"approval_envelope_path",'''
+classification = "approval_envelope_schema_field"
+reason = "This names the TOML-owned approval-envelope path while resolving and validating the configured evidence file; the path value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"head_sha"'''
+context = '''"head_sha",'''
+classification = "approval_envelope_schema_field"
+reason = "This names a required approval-envelope JSON field whose value must match TOML-owned operator evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"ssm_manifest_sha256"'''
+context = '''"ssm_manifest_sha256",'''
+classification = "approval_envelope_schema_field"
+reason = "This names a required approval-envelope JSON field whose value must match TOML-owned operator evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"abort_plan_sha256"'''
+context = '''"abort_plan_sha256",'''
+classification = "approval_envelope_schema_field"
+reason = "This names a required approval-envelope JSON field whose value must match TOML-owned operator evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_id_hash"'''
+context = '''"approval_id_hash",'''
+classification = "approval_envelope_schema_field"
+reason = "This names a required approval-envelope JSON field derived from the configured approval id."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
@@ -2371,14 +2427,6 @@ reason = "This names the non-secret operator envelope field where the one-shot a
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
-literal = '''"BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256"'''
-context = '''"BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256",'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field containing the configured approval envelope checksum that the consumption proof must bind."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
 literal = '''"BOLT_V3_PHASE8_APPROVAL_NONCE_PATH"'''
 context = '''approval_nonce_path: required_path_env("BOLT_V3_PHASE8_APPROVAL_NONCE_PATH")?,'''
 classification = "phase8_canary_operator_envelope_env_name"
@@ -2468,17 +2516,9 @@ reason = "This names the non-secret operator envelope field containing the pre-r
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"BOLT_V3_PHASE8_ROOT_TOML_PATH"'''
-context = '''root_toml_path: required_path_env("BOLT_V3_PHASE8_ROOT_TOML_PATH")?,'''
+context = '''let root_toml_path = required_path_env("BOLT_V3_PHASE8_ROOT_TOML_PATH")?;'''
 classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field that points to the reviewed root TOML for checksum validation."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
-literal = '''"BOLT_V3_PHASE8_ROOT_TOML_SHA256"'''
-context = '''root_toml_sha256: required_env("BOLT_V3_PHASE8_ROOT_TOML_SHA256")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field containing the reviewed root TOML checksum."
+reason = "This names the non-secret operator envelope field that points to the reviewed root TOML; the harness derives the checksum from the file instead of accepting a separate hash env var."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"

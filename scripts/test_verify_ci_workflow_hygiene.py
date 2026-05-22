@@ -1403,6 +1403,22 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
             True,
         ),
         (
+            "github env printf missing argument clears stale assignment",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      echo "SRC=target" >> "$GITHUB_ENV"
+                  - run: |
+                      printf 'SRC=%s\\n' >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            False,
+        ),
+        (
             "github env printf literal format persists despite extra argument",
             """
             jobs:
@@ -1426,6 +1442,20 @@ def assert_v6_workflow_run_steps_reset_shell_state() -> None:
                       printf 'TARGET=%b\\n' target >> "$GITHUB_ENV"
                   - run: |
                       aws s3 sync "$TARGET" s3://bolt-v2-active-cache/cache
+            """,
+            s3_expected,
+            True,
+        ),
+        (
+            "github env printf b conversion decodes argument newlines",
+            """
+            jobs:
+              test:
+                steps:
+                  - run: |
+                      printf '%b' 'SRC=target\\nDEST=s3://bolt-v2-active-cache/cache' >> "$GITHUB_ENV"
+                  - run: |
+                      aws s3 sync "$SRC" "$DEST"
             """,
             s3_expected,
             True,

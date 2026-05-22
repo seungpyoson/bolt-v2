@@ -4702,8 +4702,6 @@ def github_env_assignment_from_echo_tokens(tokens: list[str]) -> str | None:
 
 
 def printf_rendered_payload(format_payload: str, argument_tokens: list[str]) -> str | None:
-    if not argument_tokens:
-        return format_payload.replace("%%", "%")
     chunks: list[str] = []
     argument_index = 0
     while True:
@@ -4859,16 +4857,19 @@ def workflow_run_shell_texts(workflow_text: str) -> list[str]:
     ):
         step_scopes.append(runs_block)
     for job_lines in step_scopes:
-        persisted_env: list[str] = []
+        persisted_env: dict[str, str] = {}
         for block in step_blocks(job_lines):
             command = step_run_command(block)
             if command is None:
                 continue
-            parts = [*persisted_env]
+            parts = [f"{name}={value}" for name, value in persisted_env.items()]
             if command.strip():
                 parts.append(command)
             texts.append("\n".join(parts))
-            persisted_env.extend(github_env_assignment_lines(command))
+            for assignment in github_env_assignment_lines(command):
+                name, separator, value = assignment.partition("=")
+                if separator and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                    persisted_env[name] = value
     return texts
 
 

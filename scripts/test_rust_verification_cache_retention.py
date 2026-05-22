@@ -2023,6 +2023,38 @@ def assert_managed_cargo_preflight_errors_are_structured() -> None:
         raise AssertionError(f"unexpected preflight refusal payload: {payload!r}")
 
 
+def assert_managed_cargo_clean_target_errors_are_structured() -> None:
+    owner = load_owner_module()
+    original_target_dir = owner.target_dir
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp)
+        write_policy_with_cache(repo)
+
+        def failing_target_dir(_repo: pathlib.Path, _policy: dict[str, object] | None = None) -> pathlib.Path:
+            raise OSError("managed target unavailable")
+
+        args = type("Args", (), {"repo": str(repo), "args": ["clean"]})()
+        stderr = io.StringIO()
+        owner.target_dir = failing_target_dir
+        try:
+            with contextlib.redirect_stderr(stderr):
+                result = owner.cmd_cargo(args)
+        except OSError as exc:
+            raise AssertionError(f"managed cargo clean leaked target-dir exception: {exc}") from exc
+        finally:
+            owner.target_dir = original_target_dir
+
+    if result != 2:
+        raise AssertionError(f"clean target error should refuse with exit 2, got {result}")
+    try:
+        payload = json.loads(stderr.getvalue())
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"clean target error did not emit structured JSON: {stderr.getvalue()!r}") from exc
+    if payload.get("refusal_code") != "preflight_error" or payload.get("refused") is not True:
+        raise AssertionError(f"unexpected clean target refusal payload: {payload!r}")
+
+
 def assert_v6_red_active_process_parser_resolves_config_target_scope() -> None:
     owner = load_owner_module()
     original_run = owner.subprocess.run
@@ -3111,6 +3143,7 @@ def main() -> int:
     assert_cache_prune_apply_refuses_active_related_process_by_cwd()
     assert_cache_prune_active_process_scan_uses_portable_ps_columns()
     assert_managed_cargo_preflight_errors_are_structured()
+    assert_managed_cargo_clean_target_errors_are_structured()
     assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd()
     assert_cache_prune_skips_unrelated_process_before_cwd_lookup()
     assert_cache_prune_apply_ignores_visible_unrelated_process_by_cwd()

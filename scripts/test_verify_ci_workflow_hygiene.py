@@ -353,7 +353,7 @@ jobs:
           mkdir -p "$HOME/.cargo/bin"
           mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
           chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild" && true
+          test -x "$HOME/.cargo/bin/cargo-zigbuild"
       - run: just build
       - name: Stage managed build artifact
         id: managed_artifact
@@ -3149,8 +3149,16 @@ def assert_ci_lint_runs_rust_verification_cache_retention_tests() -> None:
         raise AssertionError("ci-lint-workflow must run rust verification cache retention self-tests")
 
 
+def assert_cargo_zigbuild_probe_has_no_redundant_true() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    redundant = 'test -x "$HOME/.cargo/bin/cargo-zigbuild" && true'
+    if redundant in workflow:
+        raise AssertionError("cargo-zigbuild executable probe must not use redundant && true")
+
+
 def main() -> int:
     assert_ci_lint_runs_rust_verification_cache_retention_tests()
+    assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()
     assert_workflows_clean({"ci.yml": BASE_WORKFLOW, "advisory.yml": BASE_ADVISORY_WORKFLOW})
     assert_pin_consistency_cross_file_mismatch_errors()
@@ -4573,7 +4581,7 @@ def main() -> int:
           mkdir -p "$HOME/.cargo/bin"
           mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
           chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild" && true""",
+          test -x "$HOME/.cargo/bin/cargo-zigbuild\"""",
             '          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked',
         ),
     )
@@ -4699,7 +4707,7 @@ def main() -> int:
           mkdir -p "$HOME/.cargo/bin"
           mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
           chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild" && true
+          test -x "$HOME/.cargo/bin/cargo-zigbuild"
       - run: just build""",
             """      - run: just build
       - name: Install cargo-zigbuild
@@ -4724,7 +4732,7 @@ def main() -> int:
           mkdir -p "$HOME/.cargo/bin"
           mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
           chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild" && true""",
+          test -x "$HOME/.cargo/bin/cargo-zigbuild\"""",
         ),
     )
     assert_workflows_error(

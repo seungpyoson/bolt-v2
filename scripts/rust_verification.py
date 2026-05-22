@@ -2159,6 +2159,24 @@ def disk_preflight_refusal_payload(repo: pathlib.Path, policy: dict[str, Any]) -
     }
 
 
+def clean_preflight_refusal_payload(
+    repo: pathlib.Path,
+    policy: dict[str, Any],
+    target: pathlib.Path | None = None,
+) -> tuple[pathlib.Path | None, dict[str, Any] | None]:
+    try:
+        inspected_target = target if target is not None else target_dir(repo, policy)
+        refusal = active_process_refusal_payload(repo, inspected_target, policy)
+    except (KeyError, OSError, PolicyError, FileNotFoundError) as exc:
+        return target, refusal_payload(
+            code="preflight_error",
+            reason=f"unable to inspect managed cargo clean preflight: {exc}",
+            dry_run=False,
+            target=str(target) if target is not None else None,
+        )
+    return inspected_target, refusal
+
+
 def print_refusal(payload: dict[str, Any]) -> int:
     print(json.dumps(payload, sort_keys=True), file=sys.stderr)
     return 2
@@ -2509,12 +2527,19 @@ def cmd_cargo(args: argparse.Namespace) -> int:
     if override is not None:
         return print_refusal(target_routing_refusal_payload(repo, policy, override))
     if cargo_subcommand(cargo_args) == "clean":
-        target = target_dir(repo, policy)
-        refusal = active_process_refusal_payload(repo, target, policy)
+        target, refusal = clean_preflight_refusal_payload(repo, policy)
         if refusal is not None:
             return print_refusal(refusal)
+        if target is None:
+            return print_refusal(
+                refusal_payload(
+                    code="preflight_error",
+                    reason="unable to inspect managed cargo clean preflight: target dir unavailable",
+                    dry_run=False,
+                )
+            )
         with cache_lock(policy, exclusive=True):
-            refusal = active_process_refusal_payload(repo, target, policy)
+            target, refusal = clean_preflight_refusal_payload(repo, policy, target)
             if refusal is not None:
                 return print_refusal(refusal)
             return run_process([cargo, *cargo_args], repo=repo, env=managed_env(repo, policy))

@@ -349,7 +349,7 @@ ZIGBUILD_PREBUILT_LITERALS = (
     'mkdir -p "$HOME/.cargo/bin"',
     'mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"',
     'chmod +x "$HOME/.cargo/bin/cargo-zigbuild"',
-    'test -x "$HOME/.cargo/bin/cargo-zigbuild" && true',
+    'test -x "$HOME/.cargo/bin/cargo-zigbuild"',
 )
 
 

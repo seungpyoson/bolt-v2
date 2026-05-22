@@ -221,6 +221,40 @@ fn abort_plan_writer_fails_closed_when_static_prerequisites_are_unproven() {
     );
 }
 
+#[test]
+fn pre_run_state_writer_fails_closed_when_source_evidence_is_unproven() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_pre_run_state_artifact(
+        &loaded,
+        strategy_instance_id,
+        &pre_run_state_path,
+    )
+    .expect_err("pre-run state should fail closed until source-bound evidence exists");
+
+    assert!(
+        error.to_string().contains("pre-run state"),
+        "pre-run state blocker should cite missing source-bound evidence: {error}"
+    );
+    assert!(
+        error.to_string().contains("T121 remains blocked"),
+        "pre-run state blocker should cite T121: {error}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "failed pre-run state generation must not leave a success artifact"
+    );
+}
+
 fn load_fixture_with_live_canary() -> bolt_v2::bolt_v3_config::LoadedBoltV3Config {
     let mut loaded = load_bolt_v3_config(&repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture config should load");

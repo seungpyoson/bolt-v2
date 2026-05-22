@@ -4083,6 +4083,14 @@ reason = "This is a helper-owned artifact identifier for strategy-input evidence
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"pre-run-state"'''
+context = '''const PRE_RUN_STATE_ARTIFACT_NAME: &str = "pre-run-state";'''
+classification = "operator_artifact_manifest_key"
+reason = "This is a helper-owned artifact identifier for pre-run state evidence in the redacted static-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"abort-plan"'''
 context = '''const ABORT_PLAN_ARTIFACT_NAME: &str = "abort-plan";'''
 classification = "operator_artifact_manifest_key"
@@ -4123,6 +4131,14 @@ reason = "This is the helper-owned output file name reserved for strategy-input 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"pre-run-state.json"'''
+context = '''const PRE_RUN_STATE_FILE_NAME: &str = "pre-run-state.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name reserved for pre-run state evidence under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"abort-plan.json"'''
 context = '''const ABORT_PLAN_FILE_NAME: &str = "abort-plan.json";'''
 classification = "operator_artifact_file_name"
@@ -4155,10 +4171,26 @@ reason = "This names the documented missing abort-plan prerequisite used in fail
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"T121 remains blocked: T046 source-bound pre-run state evidence is unproven"'''
+context = '''prerequisite: "T121 remains blocked: T046 source-bound pre-run state evidence is unproven",'''
+classification = "operator_artifact_blocker_label"
+reason = "This names the T121 fail-closed pre-run state evidence blocker and links it to unproven T046 source-bound evidence; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"refusing to write successful strategy-input evidence because {prerequisite}"'''
 context = '''"refusing to write successful strategy-input evidence because {prerequisite}"'''
 classification = "operator_artifact_error_template"
 reason = "This is a fail-closed diagnostic template for missing strategy-input evidence prerequisites, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"refusing to write successful pre-run state evidence because {prerequisite}"'''
+context = '''"refusing to write successful pre-run state evidence because {prerequisite}"'''
+classification = "operator_artifact_error_template"
+reason = "This is a fail-closed diagnostic template for missing pre-run state evidence prerequisites, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

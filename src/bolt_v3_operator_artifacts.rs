@@ -25,11 +25,13 @@ const STATIC_ARTIFACTS_MANIFEST_RECORD_KIND: &str = "bolt_v3.static_operator_art
 const SSM_MANIFEST_ARTIFACT_NAME: &str = "ssm-manifest";
 const FINANCIAL_ENVELOPE_ARTIFACT_NAME: &str = "financial-envelope";
 const STRATEGY_INPUT_ARTIFACT_NAME: &str = "strategy-input";
+const PRE_RUN_STATE_ARTIFACT_NAME: &str = "pre-run-state";
 const ABORT_PLAN_ARTIFACT_NAME: &str = "abort-plan";
 const APPROVAL_NONCE_ARTIFACT_NAME: &str = "approval-nonce";
 const SSM_MANIFEST_FILE_NAME: &str = "ssm-manifest.json";
 const FINANCIAL_ENVELOPE_FILE_NAME: &str = "financial-envelope.json";
 const STRATEGY_INPUT_FILE_NAME: &str = "strategy-input.json";
+const PRE_RUN_STATE_FILE_NAME: &str = "pre-run-state.json";
 const ABORT_PLAN_FILE_NAME: &str = "abort-plan.json";
 const APPROVAL_NONCE_FILE_NAME: &str = "approval-nonce.json";
 const STATIC_ARTIFACTS_MANIFEST_FILE_NAME: &str = "static-artifacts-manifest.json";
@@ -109,6 +111,9 @@ pub enum BoltV3OperatorArtifactError {
     StrategyInputPrerequisiteUnproven {
         prerequisite: &'static str,
     },
+    PreRunStatePrerequisiteUnproven {
+        prerequisite: &'static str,
+    },
     AbortPrerequisiteUnproven {
         prerequisite: &'static str,
     },
@@ -135,6 +140,10 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::StrategyInputPrerequisiteUnproven { prerequisite } => write!(
                 f,
                 "refusing to write successful strategy-input evidence because {prerequisite}"
+            ),
+            Self::PreRunStatePrerequisiteUnproven { prerequisite } => write!(
+                f,
+                "refusing to write successful pre-run state evidence because {prerequisite}"
             ),
             Self::AbortPrerequisiteUnproven { prerequisite } => write!(
                 f,
@@ -273,6 +282,21 @@ pub fn write_strategy_input_evidence_artifact(
     )
 }
 
+pub fn write_pre_run_state_artifact(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    _path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let _ =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    Err(
+        BoltV3OperatorArtifactError::PreRunStatePrerequisiteUnproven {
+            prerequisite: "T121 remains blocked: T046 source-bound pre-run state evidence is unproven",
+        },
+    )
+}
+
 pub fn write_static_operator_artifacts(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
@@ -316,6 +340,20 @@ pub fn write_static_operator_artifacts(
             generated_artifacts.push(static_artifact_ref(STRATEGY_INPUT_ARTIFACT_NAME, written))
         }
         Err(BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven { prerequisite }) => {
+            blockers.push(prerequisite);
+        }
+        Err(error) => return Err(error),
+    }
+
+    match write_pre_run_state_artifact(
+        loaded,
+        strategy_instance_id,
+        &output_dir.join(PRE_RUN_STATE_FILE_NAME),
+    ) {
+        Ok(written) => {
+            generated_artifacts.push(static_artifact_ref(PRE_RUN_STATE_ARTIFACT_NAME, written))
+        }
+        Err(BoltV3OperatorArtifactError::PreRunStatePrerequisiteUnproven { prerequisite }) => {
             blockers.push(prerequisite);
         }
         Err(error) => return Err(error),

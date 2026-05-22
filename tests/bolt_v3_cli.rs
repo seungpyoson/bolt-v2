@@ -123,6 +123,14 @@ max_notional_per_order = "10.00"
         stderr.contains("T046 remains blocked"),
         "expected explicit T046 strategy-input blocker, got: {stderr}"
     );
+    assert!(
+        stderr.contains("pre-run state"),
+        "expected explicit pre-run state blocker, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("T121 remains blocked"),
+        "expected explicit T121 pre-run state blocker, got: {stderr}"
+    );
     for artifact_name in [
         "ssm-manifest.json",
         "financial-envelope.json",
@@ -156,6 +164,10 @@ max_notional_per_order = "10.00"
     assert!(
         !output_dir.join("strategy-input.json").exists(),
         "strategy-input artifact must not be written without source-bound strategy decision evidence"
+    );
+    assert!(
+        !output_dir.join("pre-run-state.json").exists(),
+        "pre-run state artifact must not be written without source-bound pre-run evidence"
     );
     let manifest_path = output_dir.join("static-artifacts-manifest.json");
     let stdout_json: serde_json::Value =
@@ -222,6 +234,18 @@ max_notional_per_order = "10.00"
             .as_str()
             .is_some_and(|blocker| blocker.contains("T046 remains blocked"))),
         "manifest should record explicit strategy-input blocker: {manifest_json}"
+    );
+    assert!(
+        blockers.iter().any(|blocker| blocker
+            .as_str()
+            .is_some_and(|blocker| blocker.contains("pre-run state"))),
+        "manifest should record explicit pre-run state blocker: {manifest_json}"
+    );
+    assert!(
+        blockers.iter().any(|blocker| blocker
+            .as_str()
+            .is_some_and(|blocker| blocker.contains("T121 remains blocked"))),
+        "manifest should record explicit T121 blocker: {manifest_json}"
     );
     assert!(
         !output_dir.join("abort-plan.json").exists(),

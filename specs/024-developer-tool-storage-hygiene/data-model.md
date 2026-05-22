@@ -11,6 +11,7 @@ Fields:
 - `growth_shape`: `single_file`, `many_files`, `tree`, or `sqlite_with_wal`.
 - `native_policy`: `yes`, `partial`, `none_found`, or `not_applicable`.
 - `owner`: `this_issue`, `tracked_elsewhere`, `out_of_repo`, or `report_only`.
+- `native_guidance`: optional native configuration key family for report-only surfaces such as Codex history.
 - `cleanup_mode`: `rotate`, `ttl_prune`, `toolchain_retention`, `preflight_only`, or `none`.
 - `protected`: boolean derived from policy and current state.
 
@@ -29,8 +30,8 @@ Fields:
 - `codex_sessions.ttl_days`
 - `factory_log.max_bytes`
 - `factory_log.retained_rotations`
-- `codex_history.max_bytes`
-- `codex_history.persistence`
+- `native_guidance.codex_history.max_bytes`
+- `native_guidance.codex_history.persistence`
 - `rustup_toolchains.retain_recent`
 - `rustup_toolchains.stale_after_days`
 - `preflight.warning_bytes`
@@ -40,7 +41,7 @@ Fields:
 Validation:
 - Size and day values must be non-negative integers.
 - `retained_rotations` and `retain_recent` must be bounded integers.
-- Report-only and native-config surfaces cannot have apply actions.
+- Report-only surfaces and native-guidance values cannot have apply actions.
 
 ## ToolchainState
 

@@ -20,9 +20,9 @@ Excluded:
 
 ## Policy Contract
 
-The policy source must be TOML and must name every cleanup-managed path family explicitly. Runtime defaults are not allowed in code.
+The policy source must be TOML and must name every cleanup-managed and report-only path family explicitly. Runtime defaults are not allowed in code.
 
-Required sections:
+Required cleanup sections:
 
 ```toml
 [codex.log]
@@ -31,10 +31,6 @@ retained_rotations = 2
 
 [codex.sessions]
 ttl_days = 14
-
-[codex.history]
-max_bytes = 104857600
-persistence = "save-all"
 
 [factory.log]
 max_bytes = 209715200
@@ -49,6 +45,14 @@ warning_bytes = 10737418240
 error_bytes = 5368709120
 ```
 
+Required native-guidance sections are report-only. They document native configuration values to surface in dry-run/preflight output and must never create cleanup candidates:
+
+```toml
+[native_guidance.codex_history]
+max_bytes = 104857600
+persistence = "save-all"
+```
+
 Values above are example policy shape for review; implementation must use the committed TOML source as authority.
 
 ## Dry-Run Contract
@@ -59,6 +63,7 @@ Dry-run output must include:
 - Per-surface bytes and cleanup eligibility.
 - Candidate actions with reason and estimated bytes.
 - Codex history native-config status and reason.
+- Report-only Codex archived sessions and reason.
 - Protected rustup toolchains and reason.
 - Report-only large surfaces and reason.
 - Out-of-scope adjacent surfaces.

@@ -29,7 +29,7 @@ As the operator, I can see exactly which #375 path families are eligible for cle
 
 **Why this priority**: Blind deletion can lose debugging context, transcripts, or toolchains; the issue asks for deterministic policy over heuristics.
 
-**Independent Test**: Given a synthetic storage tree, the planned policy classifies Codex log rotation, Codex session TTL, Factory log rotation, and rustup toolchain retention without touching protected or report-only path families.
+**Independent Test**: Given a synthetic storage tree, the planned policy classifies Codex log rotation, Codex session TTL, Factory log rotation, rustup toolchain retention, and report-only Codex data surfaces without touching protected or report-only path families.
 
 **Acceptance Scenarios**:
 
@@ -38,6 +38,7 @@ As the operator, I can see exactly which #375 path families are eligible for cle
 3. **Given** a rustup toolchain is active, default, or matches the project pin, **When** policy is evaluated, **Then** it is protected under every mode.
 4. **Given** Codex SQLite db/WAL files are large, **When** policy is evaluated, **Then** they are measured and reported but not deleted unless a safe native contract is proven.
 5. **Given** Codex `history.jsonl` exists, **When** policy is evaluated, **Then** it is measured as a report-only native-config surface and is not selected for deletion by #375 cleanup policy.
+6. **Given** Codex archived sessions exist, **When** policy is evaluated, **Then** they are measured as report-only session archives and are not selected for deletion by #375 cleanup policy.
 
 ---
 
@@ -67,7 +68,7 @@ As a reviewer, I can validate #375 cleanup and preflight behavior against scratc
 
 **Acceptance Scenarios**:
 
-1. **Given** scratch Codex logs, sessions, sqlite files, Factory logs, and rustup toolchains, **When** tests run, **Then** only configured cleanup candidates are selected.
+1. **Given** scratch Codex logs, sessions, sqlite files, history, archived sessions, Factory logs, and rustup toolchains, **When** tests run, **Then** only configured cleanup candidates are selected.
 2. **Given** scratch rustup includes pinned, active, default, and stale toolchains, **When** tests run, **Then** pinned, active, and default toolchains are protected.
 3. **Given** a policy file is malformed or incomplete, **When** tests run, **Then** behavior fails closed with a specific validation error.
 4. **Given** a policy validates during dry-run but becomes malformed or incomplete before apply, **When** apply begins, **Then** apply revalidates policy, aborts before mutation, and reports the validation error.
@@ -76,6 +77,7 @@ As a reviewer, I can validate #375 cleanup and preflight behavior against scratc
 
 - Codex SQLite db/WAL files are large but do not have a documented cleanup contract: measure and report only.
 - Codex `history.jsonl` is large but has documented native history settings: report the file and native-config guidance, but do not delete it under #375 cleanup policy.
+- Codex archived sessions are present: measure and report them, but do not delete archived transcripts without a separate proven session-archive contract.
 - Factory executable is absent but the log path exists: keep the path in the inventory and apply file-policy only if configured explicitly.
 - Codex sessions newer than TTL, missing mtimes, unreadable files, or symlinks appear: preserve them unless deterministic policy proves they are safe candidates.
 - A rustup toolchain is both stale and active/default/pinned: protected status wins.
@@ -92,7 +94,7 @@ As a reviewer, I can validate #375 cleanup and preflight behavior against scratc
 - **FR-004**: Cleanup policy MUST be deterministic and config-driven; no cleanup candidate may be selected by substring-only heuristics.
 - **FR-005**: Cleanup policy MUST support dry-run output before apply behavior.
 - **FR-006**: Cleanup policy MUST protect active, default, and project-pinned rustup toolchains under every mode.
-- **FR-007**: Cleanup policy MUST treat Codex SQLite db/WAL files and Codex `history.jsonl` as report-only unless a safe native cleanup contract is proven.
+- **FR-007**: Cleanup policy MUST treat Codex SQLite db/WAL files, Codex `history.jsonl`, and Codex archived sessions as report-only unless a safe native cleanup contract is proven.
 - **FR-008**: Preflight MUST report per-family sizes, ownership, cleanup eligibility, protected items, report-only items, and out-of-scope adjacent storage.
 - **FR-009**: Tests MUST use scratch directories and synthetic toolchain/session/log fixtures instead of mutating the operator's real home directory.
 - **FR-010**: The PR MUST NOT change NautilusTrader runtime behavior, Bolt live trading behavior, or #374 verifier/parser architecture unless source evidence proves it is required for #375.

@@ -18,6 +18,7 @@ scratch-home/
 |   |-- log/codex-tui.log
 |   |-- history.jsonl
 |   |-- sessions/2026/05/*.jsonl
+|   |-- archived_sessions/2026/*.jsonl
 |   `-- logs_2.sqlite-wal
 |-- .factory/logs/droid-log-single.log
 `-- .rustup/toolchains/
@@ -31,6 +32,8 @@ RED tests should prove:
 - Stale Codex sessions are TTL prune candidates.
 - Codex sqlite db/WAL files are report-only.
 - Codex history is report-only and mapped to native config guidance.
+- Codex archived sessions are report-only.
+- Dry-run output includes the fields required by the contract.
 - Active, default, and project-pinned rustup toolchains are protected.
 - Stale unprotected toolchains are surfaced as candidates.
 - Preflight fails closed when configured thresholds are breached.

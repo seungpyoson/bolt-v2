@@ -1,7 +1,6 @@
-name: Test GitHub Models Availability
+name: Test GitHub Models
 
-on:
-  workflow_dispatch:
+on: workflow_dispatch
 
 jobs:
   test:
@@ -9,45 +8,19 @@ jobs:
     permissions:
       models: read
     steps:
-      - name: Test Model Availability
+      - name: Probe Models
         env:
-          GH_MODELS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "=== GitHub Models Availability Test ==="
-          echo "Testing models from current summary.yml list"
-          echo ""
-
-          MODELS=("openai/gpt-4.1" "openai/gpt-4o" "openai/gpt-4.1-mini" "openai/gpt-4o-mini")
-
-          for model in "${MODELS[@]}"; do
-            echo "=========================================="
-            echo "MODEL: $model"
-            echo "=========================================="
-
-            payload=$(cat <<EOF
-{
-  "model": "$model",
-  "messages": [
-    {"role": "user", "content": "Reply with exactly: MODEL_OK"}
-  ],
-  "max_tokens": 10
-}
-EOF
-)
-
-            response=$(curl -s -w "\n__STATUS__:%{http_code}" \
+          echo "=== Model Probe ==="
+          for model in openai/gpt-4.1 openai/gpt-4o openai/gpt-4.1-mini openai/gpt-4o-mini; do
+            echo "=== $model ==="
+            curl -s -w "\nSTATUS:%{http_code}\n" \
               https://models.github.ai/inference/chat/completions \
               -H "Content-Type: application/json" \
-              -H "Authorization: Bearer $GH_MODELS_TOKEN" \
-              -d "$payload") || response=""
-
-            status=$(echo "$response" | grep -o '__STATUS__:[0-9]*' | cut -d: -f2 || echo "unknown")
-            body=$(echo "$response" | sed 's/__STATUS__:[0-9]*$//')
-
-            echo "HTTP Status: $status"
-            echo "Response:"
-            echo "$body"
+              -H "Authorization: Bearer $TOKEN" \
+              -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":5}" | head -c 800
             echo ""
+            echo "===================="
           done
-
-          echo "=== Test Complete ==="
+          echo "Done"

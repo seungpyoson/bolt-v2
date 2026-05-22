@@ -573,7 +573,8 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - must remain relative so a root catalog move changes only one config location
 
 Decision-evidence JSONL records use `schema_version = 4` for `order_intent` and `admission_decision` envelopes.
-Each line is a single JSON object with `schema_version`, `gate_version`, `gate_id`, `record_type`, and a payload key matching the record type.
+Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent` or `decision`.
+The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.
 `order_intent` payloads carry the configured strategy/order identity plus compiled NT order semantics under `order_fields`.
 `admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id`.
 

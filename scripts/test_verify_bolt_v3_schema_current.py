@@ -70,6 +70,8 @@ Exit `is_quote_quantity = true` is rejected because exits are sized from held ba
 Forced-flat exits use the configured `forced_exit_order` template.
 When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders.
 Decision-evidence JSONL records use `schema_version = 4` for `order_intent` and `admission_decision` envelopes.
+Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent` or `decision`.
+The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.
 
 ### `[parameters]`
 """
@@ -668,6 +670,17 @@ def test_validate_docs_rejects_stale_strategy_schema_version_examples() -> None:
         raise AssertionError(f"expected stale strategy schema version finding, got {findings!r}")
 
 
+def test_validate_docs_rejects_stale_decision_evidence_record_type_wording() -> None:
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA
+        + "\nEach line has `record_type`, and a payload key matching the record type.\n",
+        CURRENT_STATUS_MAP,
+    )
+
+    if not any("record_type" in finding for finding in findings):
+        raise AssertionError(f"expected stale record_type wording finding, got {findings!r}")
+
+
 def test_extracts_phase8_financial_envelope_fields_from_source_struct() -> None:
     rust_source = """
 #[derive(Debug, Deserialize, PartialEq)]
@@ -809,6 +822,7 @@ def main() -> int:
         test_validate_docs_requires_all_enabled_and_factory_gap_order_types,
         test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift,
         test_validate_docs_rejects_stale_strategy_schema_version_examples,
+        test_validate_docs_rejects_stale_decision_evidence_record_type_wording,
         test_extracts_phase8_financial_envelope_fields_from_source_struct,
         test_validate_docs_rejects_financial_envelope_schema_missing_source_field,
         test_validate_docs_rejects_financial_envelope_schema_extra_doc_field,

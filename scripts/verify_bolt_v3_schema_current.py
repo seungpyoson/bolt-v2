@@ -81,6 +81,8 @@ STALE_SCHEMA_PHRASES = (
     "market_exit_time_in_force",
     "market_exit_reduce_only",
     "separate market-exit TOML fields",
+    "`record_type`",
+    "payload key matching the record type",
 )
 REQUIRED_SCHEMA_PHRASES = (
     "delegates accepted values to NautilusTrader `OmsType`",
@@ -94,6 +96,8 @@ REQUIRED_SCHEMA_PHRASES = (
     "When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders",
     "`trigger_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TriggerType::Default`",
     "`trailing_offset_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TrailingOffsetType::Price`",
+    "Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent` or `decision`.",
+    "The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.",
 )
 STALE_STATUS_MAP_PHRASES = (
     "Single-value enums (`RuntimeMode::Live`, `OmsType::Netting`, `CatalogFsProtocol::File`, `RotationKind::None`)",

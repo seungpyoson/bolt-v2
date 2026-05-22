@@ -664,6 +664,15 @@
 - [x] T301 [US2] GREEN: Bump the supported strategy schema version and current strategy schema docs/fixtures without changing root schema version
 - [ ] T302 [US2] Verify focused config tests, schema/runtime verifiers, source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
 
+## Phase 70: TDD Slice 66 - Example Config And Decision Evidence Schema Follow-Up
+
+**Goal**: Resolve exact-head no-mistakes review evidence that the shipped example strategy config still uses the previous strategy schema version and that active decision-evidence docs describe `record_type` although the serializer emits `kind` plus `intent` or `decision`. The fix must align examples and docs to source only, without changing runtime evidence shape or adding venue, market, strategy, maker-only, or taker-only policy.
+
+- [x] T303 [P] [US2] Record no-mistakes review findings for stale example schema version and decision-evidence envelope wording in `specs/023-nt-order-intent-layer/research.md`
+- [x] T304 [US2] RED: Add regressions proving shipped examples use the supported strategy schema version and active docs reject stale `record_type` wording
+- [x] T305 [US2] GREEN: Update shipped example strategy schema version and decision-evidence docs/verifier to the actual serializer envelope
+- [ ] T306 [US2] Verify focused config/doc tests, schema/runtime verifiers, source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, reviewer state, and no-mistakes state
+
 ## Dependencies & Execution Order
 
 - Phase 1 blocks implementation.
@@ -733,6 +742,7 @@
 - Phase 67 blocks final branch completion because exact-head Kimi review found the Phase 66 financial-envelope schema guard still allowed stale doc-only fields.
 - Phase 68 blocks final branch completion because exact-head no-mistakes document review found active docs/specs still omitted decision-evidence JSONL v4/order-template fields and retained stale Phase 022 forced-exit/GTD text.
 - Phase 69 blocks final branch completion because exact-head no-mistakes found the strategy schema version still advertised the previous forced-exit schema shape.
+- Phase 70 blocks final branch completion because exact-head no-mistakes found the shipped example strategy schema and decision-evidence envelope docs lagged current source.
 
 ## Parallel Opportunities
 

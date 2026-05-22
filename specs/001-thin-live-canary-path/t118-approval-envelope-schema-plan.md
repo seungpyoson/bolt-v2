@@ -73,16 +73,16 @@ The safe split is:
 
 | Value | Owner | May appear in approval-envelope file? | Reason |
 | --- | --- | --- | --- |
-| `approval_envelope_path` | root TOML | No | Path is config-owned; file proves approval content only. |
+| `approval_envelope_path` | root TOML | No | Policy choice: path is config-owned; file proves approval content only. |
 | `approval_envelope_sha256` | root TOML | No | Self-hash loop if placed inside file. |
 | `root_toml_sha256` | gate / approval-consumption proof | No | Root TOML stores envelope hash, so pre-authored file cannot include final root hash. |
 | `config_bundle_checksum` | loaded config / reports | No | Bundle checksum includes final root TOML and would loop through envelope hash. |
 | `head_sha` | root TOML + build-owned head | Yes | Non-circular exact-head approval. |
 | `approval_id_hash` | derived from `[live_canary].approval_id` | Yes | Non-secret approval binding without raw id if desired. |
-| static artifact hashes | root TOML | Yes, if validated equal | Non-circular duplicate approval statement over packet contents. |
+| static artifact hashes | root TOML | Yes, required and validated equal | Non-circular duplicate approval statement over packet contents. |
 | approval window | root TOML | Yes, if validated equal | Non-circular operator approval bounds. |
-| `canary_evidence_path_hash` | derived from root TOML path string | Yes | Non-circular output binding. |
-| optional `strategy_cancel_path_hash` | derived from root TOML path string | Yes | Non-circular optional result binding. |
+| `canary_evidence_path_hash` | derived from exact root TOML path string | Yes | Non-circular output binding; use the same literal-string derivation as approval-consumption proof, not host-resolved absolute paths. |
+| optional `strategy_cancel_path_hash` | derived from exact root TOML path string | Yes | Non-circular optional result binding; use the same literal-string derivation as approval-consumption proof, not host-resolved absolute paths. |
 
 ## TDD Plan
 
@@ -122,8 +122,9 @@ The test writes a valid approval-envelope JSON with:
 Expected result: validation passes only when all values match the loaded TOML
 operator evidence and current head. The approval-envelope file SHA-256 remains
 computed externally and bound through
-`[live_canary.operator_evidence].approval_envelope_sha256`; approval-consumption
-still carries `root_toml_sha256` and `approval_envelope_sha256`.
+`[live_canary.operator_evidence].approval_envelope_sha256`. The assertion must
+stay on the approval-envelope file schema; approval-consumption proof coverage
+remains in existing approval-consumption tests.
 
 ### RED 3: fail on approval-envelope drift
 
@@ -131,10 +132,14 @@ Add:
 
 `operator_approval_envelope_file_rejects_toml_drift`
 
-Mutate one TOML-owned value in the JSON, such as `ssm_manifest_sha256` or
-`approval_id_hash`.
+Create an approval-envelope JSON whose file SHA-256 is valid and whose TOML
+`approval_envelope_sha256` is updated to match the file, but whose attested
+value such as `ssm_manifest_sha256` or `approval_id_hash` disagrees with the
+corresponding TOML field.
 
-Expected result: validation fails closed before approval consumption.
+Expected result: validation fails closed before approval consumption with an
+error naming the value-equality check, not merely the pre-existing file hash
+check.
 
 ### RED 4: harness env and file schema stay separate
 
@@ -145,6 +150,9 @@ Add in `tests/bolt_v3_tiny_canary_operator.rs`:
 Expected result: the ignored operator harness reads env/preflight inputs
 separately from the approval-envelope file schema. The test must fail if
 `Phase8OperatorApprovalEnvelope` is reused as the approval-envelope file schema.
+Use a behavior assertion: a file-schema parse must reject fields required by the
+harness env carrier (`root_toml_path`, `root_toml_sha256`, and
+`approval_envelope_sha256`), while the harness env constructor remains separate.
 
 ### RED 5: harness env no longer requires circular inputs
 
@@ -158,27 +166,37 @@ providing `BOLT_V3_PHASE8_ROOT_TOML_PATH`.
 
 Expected result: the harness computes current root TOML hash internally and
 gets `approval_envelope_path` / `approval_envelope_sha256` from loaded TOML,
-not from environment.
+not from environment. The implementation must update quickstart/operator docs
+and test fixtures that currently provide the removed env vars, and must scan for
+remaining `BOLT_V3_PHASE8_ROOT_TOML_SHA256` /
+`BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256` consumers.
 
 ## Implementation Plan After External Review
 
 1. Add a `Phase8OperatorApprovalEnvelopeFile` JSON schema with
-   `serde(deny_unknown_fields)` and an explicit record kind constant.
+   `serde(deny_unknown_fields)`, `schema_version = 1`, and an explicit record
+   kind constant distinct from approval-consumption proof record kinds.
 2. Add a validator that reads
    `[live_canary.operator_evidence].approval_envelope_path`, verifies bytes
    against TOML-owned `approval_envelope_sha256`, parses the file, rejects
    circular fields by schema, and validates all non-circular bindings against
-   loaded TOML plus current head.
+   loaded TOML plus current head. Wire this validator into the production
+   `validate_operator_evidence` path after existing file-hash validation and
+   before approval-consumption validation, so the schema is enforced by the
+   live canary gate and remains additive fail-closed behavior.
 3. Rename or separate the current harness environment carrier if needed so it is
    not confused with the approval-envelope file schema.
 4. Change `Phase8OperatorApprovalEnvelope::from_env` or its successor to stop
    requiring `BOLT_V3_PHASE8_ROOT_TOML_SHA256` and
-   `BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256`.
+   `BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256`. Prefer a successor constructor
+   that takes loaded config plus root TOML path rather than hiding filesystem
+   reads behind the zero-argument env constructor.
 5. Keep approval-consumption proof unchanged for `root_toml_sha256` and
    `approval_envelope_sha256`, because it is generated after final root TOML and
    is validated by the gate.
 6. Update `specs/001-thin-live-canary-path/quickstart.md` and
-   `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` to state exact hash ownership.
+   `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` to state exact hash ownership
+   and remove obsolete harness env requirements.
 7. Update tests that manually construct the current envelope struct.
 
 ## Verification Plan

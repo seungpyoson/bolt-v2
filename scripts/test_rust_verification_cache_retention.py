@@ -1750,6 +1750,8 @@ def assert_v6_red_active_process_parser_gaps() -> None:
         "/tmp/r --crate-name bolt_v2 --out-dir {target}/debug/deps --emit=dep-info,link",
         "/tmp/myrustc --out-dir {target}/debug/deps",
         "myrustc --out-dir {target}/debug/deps",
+        "bash -c '/tmp/myrustc --out-dir {target}/debug/deps'",
+        "eval /tmp/myrustc --out-dir {target}/debug/deps",
         "/tmp/rust-build build",
         "/tmp/repo/scripts/cargo-build-script",
         "docker exec bolt-dev cargo build /tmp/repo",

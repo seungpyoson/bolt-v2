@@ -1691,15 +1691,22 @@ def tokens_may_be_renamed_rustc(tokens: list[str], *, depth: int = 0) -> bool:
     ):
         return True
     wrapped_tokens = process_wrapper_tokens(tokens)
-    if wrapped_tokens is not None:
-        return tokens_may_be_renamed_rustc(wrapped_tokens, depth=depth + 1)
-    executable = basename_token(tokens[0])
-    if executable.startswith("python"):
-        return any(
-            tokens_may_be_renamed_rustc(command_tokens(payload), depth=depth + 1)
-            for payload in python_inline_command_payloads(tokens)
-        )
-    return False
+    if wrapped_tokens is None:
+        executable = basename_token(tokens[0])
+        if executable == "eval":
+            eval_index = 1
+            if eval_index < len(tokens) and tokens[eval_index] == "--":
+                eval_index += 1
+            wrapped_tokens = command_tokens(" ".join(tokens[eval_index:]))
+        elif executable in ("bash", "dash", "fish", "sh", "zsh"):
+            command = shell_command(tokens)
+            wrapped_tokens = command_tokens(command) if command is not None else None
+        elif executable.startswith("python"):
+            return any(
+                tokens_may_be_renamed_rustc(command_tokens(payload), depth=depth + 1)
+                for payload in python_inline_command_payloads(tokens)
+            )
+    return wrapped_tokens is not None and tokens_may_be_renamed_rustc(wrapped_tokens, depth=depth + 1)
 
 
 def command_may_launch_rust(command: str) -> bool:

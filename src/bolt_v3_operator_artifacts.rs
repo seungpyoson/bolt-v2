@@ -227,6 +227,14 @@ pub enum BoltV3OperatorArtifactError {
     StrategyInputPrerequisiteUnproven {
         prerequisite: &'static str,
     },
+    MarketSelectionSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    MarketSelectionSourceParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
     PreRunStatePrerequisiteUnproven {
         prerequisite: &'static str,
     },
@@ -354,6 +362,18 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "refusing to write successful strategy-input evidence because {prerequisite}"
             ),
+            Self::MarketSelectionSourceRead { source, .. } => {
+                write!(
+                    f,
+                    "failed to read market-selection source evidence: {source}"
+                )
+            }
+            Self::MarketSelectionSourceParse { source, .. } => {
+                write!(
+                    f,
+                    "failed to parse market-selection source evidence: {source}"
+                )
+            }
             Self::PreRunStatePrerequisiteUnproven { prerequisite } => write!(
                 f,
                 "refusing to write successful pre-run state evidence because {prerequisite}"
@@ -510,6 +530,8 @@ impl Error for BoltV3OperatorArtifactError {
             Self::SecretInventory(error) => Some(error),
             Self::FinancialEnvelope(error) => Some(error.as_ref()),
             Self::MarketSelection(error) => Some(error.as_ref()),
+            Self::MarketSelectionSourceRead { source, .. } => Some(source),
+            Self::MarketSelectionSourceParse { source, .. } => Some(source),
             Self::StaticManifestRead { source, .. } => Some(source),
             Self::StaticManifestParse { source, .. } => Some(source),
             Self::StaticManifestArtifactFileRead { source, .. } => Some(source),
@@ -730,7 +752,7 @@ pub fn write_strategy_input_evidence_artifact_from_runtime_snapshot(
     }
     let market_selection_source_bytes =
         fs::read(&market_selection_source_ref.path).map_err(|source| {
-            BoltV3OperatorArtifactError::Write {
+            BoltV3OperatorArtifactError::MarketSelectionSourceRead {
                 path: market_selection_source_ref.path.clone(),
                 source,
             }
@@ -745,8 +767,12 @@ pub fn write_strategy_input_evidence_artifact_from_runtime_snapshot(
         );
     }
     let market_selection_source: Phase8MarketSelectionSourceEvidenceFile =
-        serde_json::from_slice(&market_selection_source_bytes)
-            .map_err(BoltV3OperatorArtifactError::Serialize)?;
+        serde_json::from_slice(&market_selection_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::MarketSelectionSourceParse {
+                path: market_selection_source_ref.path.clone(),
+                source,
+            }
+        })?;
     let artifact =
         Phase8StrategyInputEvidenceFile::from_runtime_snapshot_and_market_selection_source(
             snapshot,

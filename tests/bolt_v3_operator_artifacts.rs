@@ -2296,99 +2296,13 @@ fn market_selection_source_writer_uses_family_dispatch_not_updown_directly() {
 
 #[test]
 fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_source() {
-    let loaded = load_fixture_with_live_canary();
-    let strategy_instance_id = loaded
-        .strategies
-        .first()
-        .expect("fixture should load a strategy")
-        .config
-        .strategy_instance_id
-        .as_str();
-    let temp = tempfile::tempdir().expect("tempdir should create");
-    let market_slug = updown_market_slug(
-        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
-        TEST_MARKET_SELECTION_CADENCE_SLUG,
-        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
-    );
-    let market_selection_source =
-        bolt_v2::bolt_v3_operator_artifacts::build_market_selection_source_artifact(
-            &loaded,
-            strategy_instance_id,
-            &[
-                updown_binary_option(
-                    TEST_UP_INSTRUMENT_ID,
-                    &market_slug,
-                    TEST_MARKET_ID,
-                    TEST_CONDITION_ID,
-                    TEST_QUESTION_ID,
-                    TEST_UP_OUTCOME,
-                    TEST_MARKET_SELECTION_START_MS,
-                    TEST_MARKET_SELECTION_END_MS,
-                ),
-                updown_binary_option(
-                    TEST_DOWN_INSTRUMENT_ID,
-                    &market_slug,
-                    TEST_MARKET_ID,
-                    TEST_CONDITION_ID,
-                    TEST_QUESTION_ID,
-                    TEST_DOWN_OUTCOME,
-                    TEST_MARKET_SELECTION_START_MS,
-                    TEST_MARKET_SELECTION_END_MS,
-                ),
-            ],
-            TEST_MARKET_SELECTION_NOW_MS,
-        )
-        .expect("market selection source should build");
-    let market_selection_source_path = temp.path().join(TEST_MARKET_SELECTION_SOURCE_FILE);
-    std::fs::write(
-        &market_selection_source_path,
-        serde_json::to_vec_pretty(&market_selection_source)
-            .expect("market selection source should serialize"),
-    )
-    .expect("market selection source should write");
-    let market_selection_source_ref = WrittenOperatorArtifact {
-        path: market_selection_source_path.clone(),
-        sha256: Phase8OperatorApprovalEnvelope::sha256_file(&market_selection_source_path)
-            .expect("market selection source sha256 should compute"),
-    };
+    let fixture = strategy_input_runtime_fixture();
+    let loaded = &fixture.loaded;
+    let strategy_instance_id = fixture.strategy_instance_id.as_str();
+    let market_selection_source_ref = &fixture.market_selection_source_ref;
+    let temp = &fixture.temp;
     let strategy_input_path = temp.path().join("strategy-input.json");
-    let snapshot = BoltV3StrategyInputEvidenceSnapshot {
-        strategy_id: strategy_instance_id.to_string(),
-        configured_target_id: "btc_updown_5m".to_string(),
-        market_selection_ruleset_id: "btc_updown_5m".to_string(),
-        market_selection_outcome: "current".to_string(),
-        market_id: Some(TEST_MARKET_ID.to_string()),
-        polymarket_condition_id: Some(TEST_CONDITION_ID.to_string()),
-        polymarket_market_slug: Some(market_slug),
-        polymarket_question_id: Some(TEST_QUESTION_ID.to_string()),
-        up_instrument_id: Some(TEST_UP_INSTRUMENT_ID.to_string()),
-        down_instrument_id: Some(TEST_DOWN_INSTRUMENT_ID.to_string()),
-        market_selection_timestamp_ms: Some(TEST_MARKET_SELECTION_NOW_MS),
-        selected_market_observed_timestamp_ms: Some(TEST_MARKET_SELECTION_NOW_MS),
-        polymarket_market_start_timestamp_ms: Some(TEST_MARKET_SELECTION_START_MS),
-        polymarket_market_end_timestamp_ms: Some(TEST_MARKET_SELECTION_END_MS),
-        price_to_beat_source: "chainlink_data_streams.report_at_boundary".to_string(),
-        price_to_beat_value: "3100".to_string(),
-        reference_quote_ts_event: TEST_MARKET_SELECTION_NOW_MS,
-        spot_price: "3100.5".to_string(),
-        reference_fair_value: Some("3100.5".to_string()),
-        realized_volatility: "1.5".to_string(),
-        seconds_to_market_end: 300,
-        pricing_kurtosis: "3".to_string(),
-        theta_decay_factor: "1".to_string(),
-        theta_scaled_min_edge_bps: "12.5".to_string(),
-        fair_probability_up: "0.6".to_string(),
-        uncertainty_band_probability: "0.01".to_string(),
-        expected_edge_basis_points: "12.5".to_string(),
-        worst_case_edge_basis_points: "12.5".to_string(),
-        fee_rate_basis_points: "0".to_string(),
-        selected_side: Some("up".to_string()),
-        submission_instrument_id: TEST_UP_INSTRUMENT_ID.to_string(),
-        submission_order_side: "Buy".to_string(),
-        submission_price: "0.50".to_string(),
-        submission_quantity: "1".to_string(),
-        client_order_id: "client-order-one".to_string(),
-    };
+    let snapshot = fixture.snapshot.clone();
 
     let intent = BoltV3OrderIntentEvidence {
         strategy_id: snapshot.strategy_id.clone(),
@@ -2475,7 +2389,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
     .expect("strategy input evidence should parse");
     assert_eq!(
         json["market_selection_source_path"],
-        market_selection_source_path.to_string_lossy().as_ref()
+        market_selection_source_ref.path.to_string_lossy().as_ref()
     );
     assert_eq!(
         json["market_selection_source_sha256"],
@@ -2556,6 +2470,141 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
 }
 
 #[test]
+fn strategy_input_writer_rejects_runtime_snapshot_target_source_and_hash_mismatches() {
+    let cases: [(
+        &str,
+        fn(&mut BoltV3StrategyInputEvidenceSnapshot, &mut WrittenOperatorArtifact),
+        &str,
+    ); 3] = [
+        (
+            "configured target",
+            |snapshot, _source_ref| {
+                snapshot.configured_target_id = "other-target".to_string();
+            },
+            "target",
+        ),
+        (
+            "price-to-beat source",
+            |snapshot, _source_ref| {
+                snapshot.price_to_beat_source = "other-source".to_string();
+            },
+            "price-to-beat source",
+        ),
+        (
+            "market-selection source hash",
+            |_snapshot, source_ref| {
+                source_ref.sha256 = "0".repeat(64);
+            },
+            "market-selection source hash",
+        ),
+    ];
+
+    for (case_name, mutate, diagnostic) in cases {
+        let fixture = strategy_input_runtime_fixture();
+        let output_path = fixture.temp.path().join(format!("{case_name}.json"));
+        let mut snapshot = fixture.snapshot.clone();
+        let mut source_ref = fixture.market_selection_source_ref.clone();
+        mutate(&mut snapshot, &mut source_ref);
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_runtime_snapshot(
+                &fixture.loaded,
+                &fixture.strategy_instance_id,
+                &snapshot,
+                &source_ref,
+                &fixture.candidate_market_start_timestamps_ms,
+                &output_path,
+            )
+            .expect_err(case_name);
+
+        assert!(
+            error.to_string().contains(diagnostic),
+            "{case_name} should include {diagnostic} diagnostic: {error}"
+        );
+        assert!(
+            !output_path.exists(),
+            "{case_name} failure must not leave strategy-input artifact"
+        );
+    }
+}
+
+#[test]
+fn strategy_input_writer_reports_market_selection_source_read_as_read_error() {
+    let fixture = strategy_input_runtime_fixture();
+    let output_path = fixture.temp.path().join("strategy-input.json");
+    let missing_ref = WrittenOperatorArtifact {
+        path: fixture
+            .temp
+            .path()
+            .join("missing-market-selection-source.json"),
+        sha256: fixture.market_selection_source_ref.sha256.clone(),
+    };
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_runtime_snapshot(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.snapshot,
+            &missing_ref,
+            &fixture.candidate_market_start_timestamps_ms,
+            &output_path,
+        )
+        .expect_err("missing market-selection source should fail before write");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("failed to read market-selection source evidence"),
+        "missing market-selection source should be a read diagnostic: {message}"
+    );
+    assert!(
+        !message.contains("failed to write operator artifact"),
+        "missing market-selection source must not be reported as output write failure: {message}"
+    );
+    assert!(
+        !output_path.exists(),
+        "read failure must not leave strategy-input artifact"
+    );
+}
+
+#[test]
+fn strategy_input_writer_reports_market_selection_source_json_as_parse_error() {
+    let fixture = strategy_input_runtime_fixture();
+    let output_path = fixture.temp.path().join("strategy-input.json");
+    let invalid_json = b"{not-json";
+    std::fs::write(&fixture.market_selection_source_ref.path, invalid_json)
+        .expect("invalid market-selection source should write");
+    let invalid_ref = WrittenOperatorArtifact {
+        path: fixture.market_selection_source_ref.path.clone(),
+        sha256: sha256_bytes(invalid_json),
+    };
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_runtime_snapshot(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.snapshot,
+            &invalid_ref,
+            &fixture.candidate_market_start_timestamps_ms,
+            &output_path,
+        )
+        .expect_err("invalid market-selection source JSON should fail before write");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("failed to parse market-selection source evidence"),
+        "invalid market-selection source JSON should be a parse diagnostic: {message}"
+    );
+    assert!(
+        !message.contains("failed to serialize operator artifact"),
+        "invalid market-selection source JSON must not be reported as serialization failure: {message}"
+    );
+    assert!(
+        !output_path.exists(),
+        "parse failure must not leave strategy-input artifact"
+    );
+}
+
+#[test]
 fn static_artifact_reader_uses_no_follow_identity_verified_open() {
     let source = std::fs::read_to_string(repo_path("src/bolt_v3_operator_artifacts.rs"))
         .expect("operator artifacts source should read");
@@ -2583,6 +2632,119 @@ fn approval_nonce_builder_zeroizes_raw_nonce_after_hashing() {
         source.contains("nonce.zeroize()"),
         "approval nonce builder must clear raw nonce bytes after hashing"
     );
+}
+
+struct StrategyInputRuntimeFixture {
+    temp: tempfile::TempDir,
+    loaded: bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    strategy_instance_id: String,
+    market_selection_source_ref: WrittenOperatorArtifact,
+    candidate_market_start_timestamps_ms: Vec<u64>,
+    snapshot: BoltV3StrategyInputEvidenceSnapshot,
+}
+
+fn strategy_input_runtime_fixture() -> StrategyInputRuntimeFixture {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let market_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let market_selection_source =
+        bolt_v2::bolt_v3_operator_artifacts::build_market_selection_source_artifact(
+            &loaded,
+            strategy_instance_id.as_str(),
+            &[
+                updown_binary_option(
+                    TEST_UP_INSTRUMENT_ID,
+                    &market_slug,
+                    TEST_MARKET_ID,
+                    TEST_CONDITION_ID,
+                    TEST_QUESTION_ID,
+                    TEST_UP_OUTCOME,
+                    TEST_MARKET_SELECTION_START_MS,
+                    TEST_MARKET_SELECTION_END_MS,
+                ),
+                updown_binary_option(
+                    TEST_DOWN_INSTRUMENT_ID,
+                    &market_slug,
+                    TEST_MARKET_ID,
+                    TEST_CONDITION_ID,
+                    TEST_QUESTION_ID,
+                    TEST_DOWN_OUTCOME,
+                    TEST_MARKET_SELECTION_START_MS,
+                    TEST_MARKET_SELECTION_END_MS,
+                ),
+            ],
+            TEST_MARKET_SELECTION_NOW_MS,
+        )
+        .expect("market selection source should build");
+    let market_selection_source_path = temp.path().join(TEST_MARKET_SELECTION_SOURCE_FILE);
+    std::fs::write(
+        &market_selection_source_path,
+        serde_json::to_vec_pretty(&market_selection_source)
+            .expect("market selection source should serialize"),
+    )
+    .expect("market selection source should write");
+    let market_selection_source_ref = WrittenOperatorArtifact {
+        path: market_selection_source_path.clone(),
+        sha256: Phase8OperatorApprovalEnvelope::sha256_file(&market_selection_source_path)
+            .expect("market selection source sha256 should compute"),
+    };
+    let snapshot = BoltV3StrategyInputEvidenceSnapshot {
+        strategy_id: strategy_instance_id.clone(),
+        configured_target_id: "btc_updown_5m".to_string(),
+        market_selection_ruleset_id: "btc_updown_5m".to_string(),
+        market_selection_outcome: "current".to_string(),
+        market_id: Some(TEST_MARKET_ID.to_string()),
+        polymarket_condition_id: Some(TEST_CONDITION_ID.to_string()),
+        polymarket_market_slug: Some(market_slug),
+        polymarket_question_id: Some(TEST_QUESTION_ID.to_string()),
+        up_instrument_id: Some(TEST_UP_INSTRUMENT_ID.to_string()),
+        down_instrument_id: Some(TEST_DOWN_INSTRUMENT_ID.to_string()),
+        market_selection_timestamp_ms: Some(TEST_MARKET_SELECTION_NOW_MS),
+        selected_market_observed_timestamp_ms: Some(TEST_MARKET_SELECTION_NOW_MS),
+        polymarket_market_start_timestamp_ms: Some(TEST_MARKET_SELECTION_START_MS),
+        polymarket_market_end_timestamp_ms: Some(TEST_MARKET_SELECTION_END_MS),
+        price_to_beat_source: "chainlink_data_streams.report_at_boundary".to_string(),
+        price_to_beat_value: "3100".to_string(),
+        reference_quote_ts_event: TEST_MARKET_SELECTION_NOW_MS,
+        spot_price: "3100.5".to_string(),
+        reference_fair_value: Some("3100.5".to_string()),
+        realized_volatility: "1.5".to_string(),
+        seconds_to_market_end: 300,
+        pricing_kurtosis: "3".to_string(),
+        theta_decay_factor: "1".to_string(),
+        theta_scaled_min_edge_bps: "12.5".to_string(),
+        fair_probability_up: "0.6".to_string(),
+        uncertainty_band_probability: "0.01".to_string(),
+        expected_edge_basis_points: "12.5".to_string(),
+        worst_case_edge_basis_points: "12.5".to_string(),
+        fee_rate_basis_points: "0".to_string(),
+        selected_side: Some("up".to_string()),
+        submission_instrument_id: TEST_UP_INSTRUMENT_ID.to_string(),
+        submission_order_side: "Buy".to_string(),
+        submission_price: "0.50".to_string(),
+        submission_quantity: "1".to_string(),
+        client_order_id: "client-order-one".to_string(),
+    };
+
+    StrategyInputRuntimeFixture {
+        temp,
+        loaded,
+        strategy_instance_id,
+        market_selection_source_ref,
+        candidate_market_start_timestamps_ms: vec![TEST_MARKET_SELECTION_START_MS],
+        snapshot,
+    }
 }
 
 fn load_fixture_with_live_canary() -> bolt_v2::bolt_v3_config::LoadedBoltV3Config {

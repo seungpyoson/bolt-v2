@@ -112,6 +112,67 @@ fn latest_entry_decision_evidence_chain_rejects_untrusted_record_metadata() {
     }
 }
 
+#[test]
+fn latest_entry_decision_evidence_chain_rejects_oversized_file_before_parse() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let lines = sample_entry_decision_evidence_lines();
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let error = read_latest_entry_decision_evidence_chain(&evidence_path, 8)
+        .expect_err("bounded decision evidence reader must reject oversized input");
+
+    assert!(
+        error.to_string().contains("exceeds max_bytes=8"),
+        "oversized decision evidence should name byte bound: {error:#}"
+    );
+}
+
+#[test]
+fn latest_entry_decision_evidence_chain_rejects_cross_record_field_mismatches() {
+    let cases: [(&str, fn(&mut [serde_json::Value; 3])); 7] = [
+        ("intent strategy_id", |lines| {
+            lines[1]["intent"]["strategy_id"] = serde_json::json!("other-strategy");
+        }),
+        ("admission strategy_id", |lines| {
+            lines[2]["decision"]["strategy_id"] = serde_json::json!("other-strategy");
+        }),
+        ("intent instrument_id", |lines| {
+            lines[1]["intent"]["instrument_id"] = serde_json::json!("other-instrument");
+        }),
+        ("admission instrument_id", |lines| {
+            lines[2]["decision"]["instrument_id"] = serde_json::json!("other-instrument");
+        }),
+        ("order_side", |lines| {
+            lines[1]["intent"]["order_side"] = serde_json::json!("Sell");
+        }),
+        ("price", |lines| {
+            lines[1]["intent"]["price"] = serde_json::json!("0.51");
+        }),
+        ("quantity", |lines| {
+            lines[1]["intent"]["quantity"] = serde_json::json!("2");
+        }),
+    ];
+
+    for (field, mutate) in cases {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let evidence_path = temp.path().join("decision-evidence.jsonl");
+        let mut lines = sample_entry_decision_evidence_lines();
+        mutate(&mut lines);
+        write_decision_evidence_lines(&evidence_path, &lines);
+
+        let error =
+            read_latest_entry_decision_evidence_chain(&evidence_path, 100_000).expect_err(field);
+
+        assert!(
+            error
+                .to_string()
+                .contains(field.split_whitespace().last().expect("field label")),
+            "{field} mismatch should be diagnostic: {error:#}"
+        );
+    }
+}
+
 fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
     let snapshot = BoltV3StrategyInputEvidenceSnapshot {
         strategy_id: "strategy-one".to_string(),

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import stat as stat_module
@@ -84,6 +85,7 @@ class PolicySurface:
 @dataclass(frozen=True)
 class Policy:
     path: Path
+    digest: str
     schema_version: int
     surfaces: tuple[PolicySurface, ...]
     adjacent_surfaces: tuple[PolicySurface, ...]
@@ -344,9 +346,11 @@ def _safe_measured_bytes(path: Path) -> int:
         return 0
 
 
-def _project_pinned_channels(repo_root: Path) -> tuple[str, ...]:
+def _project_pinned_channels(repo_root: Path, *, required: bool = False) -> tuple[str, ...]:
     toolchain_toml = repo_root / "rust-toolchain.toml"
     if not toolchain_toml.exists():
+        if required:
+            raise PolicyError(f"repository rust-toolchain.toml is required: {toolchain_toml}")
         return ()
     try:
         with toolchain_toml.open("rb") as handle:
@@ -355,9 +359,13 @@ def _project_pinned_channels(repo_root: Path) -> tuple[str, ...]:
         raise PolicyError(f"invalid repository rust-toolchain.toml: {toolchain_toml}") from exc
     toolchain = data.get("toolchain")
     if not isinstance(toolchain, dict):
+        if required:
+            raise PolicyError(f"repository rust-toolchain.toml missing [toolchain]: {toolchain_toml}")
         return ()
     channel = toolchain.get("channel")
     if not isinstance(channel, str) or not channel:
+        if required:
+            raise PolicyError(f"repository rust-toolchain.toml missing toolchain.channel: {toolchain_toml}")
         return ()
     return (channel,)
 
@@ -388,7 +396,7 @@ def _rustup_entries(
         )
     active_names = set(active_toolchains)
     default_names = set(default_toolchains)
-    pinned_channels = _project_pinned_channels(repo_root)
+    pinned_channels = _project_pinned_channels(repo_root, required=bool(remove_exact_names))
     candidates: list[dict[str, Any]] = []
     protected: list[dict[str, Any]] = []
 
@@ -448,12 +456,26 @@ def _rustup_entries(
 def _report_only_entries(surface: PolicySurface, home_root: Path) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     for path in _paths_for_surface(home_root, surface.path_family):
-        reason = "symlink_not_followed" if path.is_symlink() else "report_only_policy"
+        try:
+            is_symlink = path.is_symlink()
+            measured_bytes = _measured_bytes(path)
+        except OSError:
+            entries.append(
+                {
+                    "surface_id": surface.id,
+                    "path": str(path),
+                    "reason": "path_disappeared_during_scan",
+                    "bytes": 0,
+                    "estimated_reclaim_bytes": 0,
+                }
+            )
+            continue
+        reason = "symlink_not_followed" if is_symlink else "report_only_policy"
         entry = {
             "surface_id": surface.id,
             "path": str(path),
             "reason": reason,
-            "bytes": _measured_bytes(path),
+            "bytes": measured_bytes,
             "estimated_reclaim_bytes": 0,
         }
         if surface.id.startswith("native_guidance."):
@@ -501,12 +523,13 @@ def _adjacent_context(policy: Policy, home_root: Path) -> list[dict[str, Any]]:
 
 def load_policy(policy_path: Path) -> Policy:
     try:
-        with policy_path.open("rb") as handle:
-            data = tomllib.load(handle)
+        raw_policy = policy_path.read_bytes()
+        data = tomllib.loads(raw_policy.decode("utf-8"))
     except OSError as exc:
         raise PolicyError(f"cannot read policy: {policy_path}") from exc
-    except tomllib.TOMLDecodeError as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise PolicyError(f"invalid TOML policy: {exc}") from exc
+    policy_digest = hashlib.sha256(raw_policy).hexdigest()
 
     schema_version = data.get("schema_version")
     if not isinstance(schema_version, int):
@@ -548,6 +571,7 @@ def load_policy(policy_path: Path) -> Policy:
 
     return Policy(
         path=policy_path,
+        digest=policy_digest,
         schema_version=schema_version,
         surfaces=surfaces,
         adjacent_surfaces=adjacent,
@@ -559,6 +583,7 @@ def build_status(policy: Policy, home_root: Path, repo_root: Path) -> dict[str, 
     return {
         "status": "ok",
         "policy_path": str(policy.path),
+        "policy_digest": policy.digest,
         "schema_version": policy.schema_version,
         "home_root": str(home_root),
         "evaluated_root": str(home_root),
@@ -756,6 +781,17 @@ def build_apply(
         active_rustup_toolchains=active_rustup_toolchains,
         default_rustup_toolchains=default_rustup_toolchains,
     )
+    if previous.get("policy_digest") != current.get("policy_digest"):
+        return {
+            "mode": "apply",
+            "status": "aborted",
+            "reason": "policy_changed_after_dry_run",
+            "actions_taken": [],
+            "refusal_reasons": _refusal_candidates(current),
+            "skipped_report_only": current.get("report_only", []),
+            "skipped_protected": current.get("protected", []),
+            "bytes_reclaimed": 0,
+        }
     previous_signatures = [_candidate_signature(candidate) for candidate in _mutating_candidates(previous)]
     current_candidates = _mutating_candidates(current)
     current_signatures = [_candidate_signature(candidate) for candidate in current_candidates]

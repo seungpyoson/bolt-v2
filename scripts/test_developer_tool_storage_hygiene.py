@@ -363,6 +363,44 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(report_only["logs_2.sqlite"]["reason"], "report_only_policy")
         self.assertEqual(report_only["logs_2.sqlite-wal"]["reason"], "report_only_policy")
 
+    def test_dry_run_reports_report_only_file_that_disappears_during_measurement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path)
+
+            sqlite = home_root / ".codex" / "logs_2.sqlite"
+            sqlite.parent.mkdir(parents=True)
+            sqlite.write_bytes(b"sqlite")
+            repo_root.mkdir()
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_lstat = pathlib.Path.lstat
+
+            def disappearing_lstat(path: pathlib.Path) -> os.stat_result:
+                if path == sqlite:
+                    sqlite.unlink(missing_ok=True)
+                    raise FileNotFoundError(str(path))
+                return original_lstat(path)
+
+            pathlib.Path.lstat = disappearing_lstat
+            try:
+                payload = tool.build_dry_run(policy, home_root, repo_root)
+            finally:
+                pathlib.Path.lstat = original_lstat
+
+        reports = [
+            entry
+            for entry in payload["report_only"]
+            if entry["surface_id"] == "codex.sqlite"
+        ]
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["reason"], "path_disappeared_during_scan")
+        self.assertEqual(reports[0]["estimated_reclaim_bytes"], 0)
+
     def test_dry_run_reports_codex_history_native_guidance_as_report_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -522,6 +560,41 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
         self.assertIn("active/default rustup snapshots are required", result.stderr)
+
+    def test_dry_run_fails_closed_for_rustup_removals_without_repo_toolchain_pin(self) -> None:
+        active = "active-aarch64-apple-darwin"
+        default = "default-aarch64-apple-darwin"
+        removable = "old-aarch64-apple-darwin"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy, remove_exact_names=[removable])
+
+            toolchains = home_root / ".rustup" / "toolchains"
+            for name in (active, default, removable):
+                toolchain = toolchains / name
+                toolchain.mkdir(parents=True)
+                (toolchain / "marker").write_bytes(name.encode("utf-8"))
+            repo_root.mkdir()
+
+            result = self.run_tool(
+                "dry-run",
+                home_root,
+                repo_root,
+                policy,
+                [
+                    "--active-rustup-toolchain",
+                    active,
+                    "--default-rustup-toolchain",
+                    default,
+                ],
+            )
+
+        self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+        self.assertIn("rust-toolchain.toml", result.stderr)
 
     def test_policy_validation_fails_closed_when_mutable_active_writers_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -982,6 +1055,51 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["status"], "aborted")
         self.assertEqual(payload["reason"], "candidate_state_changed")
+        self.assertEqual(payload["actions_taken"], [])
+
+    def test_apply_aborts_when_policy_changes_after_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            original = b"codex log requiring rotation"
+            codex_log.write_bytes(original)
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            policy.write_text(
+                policy.read_text(encoding="utf-8").replace(
+                    "retained_rotations = 2",
+                    "retained_rotations = 1",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report)],
+            )
+            after = codex_log.read_bytes()
+            rotated_exists = codex_log.with_name("codex-tui.log.1").exists()
+
+        self.assertEqual(result.returncode, 1, (result.stdout, result.stderr))
+        self.assertEqual(after, original)
+        self.assertFalse(rotated_exists)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "aborted")
+        self.assertEqual(payload["reason"], "policy_changed_after_dry_run")
         self.assertEqual(payload["actions_taken"], [])
 
     def test_apply_refuses_mutable_actions_when_configured_active_writer_detected(self) -> None:

@@ -4460,7 +4460,7 @@ reason = "This field names the missing pending-entry source marker in diagnostic
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"cancel_order"'''
-context = '''"cancel_order",'''
+context = '''cancel_order: abort_plan_cancel_if_open_single_marker_index(&cancel_order, "cancel_order")?,'''
 classification = "operator_source_proof_diagnostic_field"
 reason = "This field names the missing cancel-order source marker in diagnostics; it is not an operator runtime value."
 
@@ -4468,7 +4468,7 @@ reason = "This field names the missing cancel-order source marker in diagnostics
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"cancel_order_context"'''
-context = '''"cancel_order_context",'''
+context = '''context: abort_plan_cancel_if_open_single_marker_index(&context, "cancel_order_context")?,'''
 classification = "operator_source_proof_diagnostic_field"
 reason = "This field names the missing cancel-order context source marker in diagnostics; it is not an operator runtime value."
 
@@ -4476,7 +4476,7 @@ reason = "This field names the missing cancel-order context source marker in dia
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"exit_pending"'''
-context = '''"exit_pending",'''
+context = '''exit_pending: abort_plan_cancel_if_open_single_marker_index(&exit_pending, "exit_pending")?,'''
 classification = "operator_source_proof_diagnostic_field"
 reason = "This field names the missing exit-pending source marker in diagnostics; it is not an operator runtime value."
 

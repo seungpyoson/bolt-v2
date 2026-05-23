@@ -15,6 +15,10 @@ du -sh \
   USER_HOME_DIR/.cargo/git \
   USER_HOME_DIR/.codex/log \
   USER_HOME_DIR/.codex/sessions \
+  USER_HOME_DIR/.codex/history.jsonl \
+  USER_HOME_DIR/.codex/logs_2.sqlite* \
+  USER_HOME_DIR/.codex/archived_sessions \
+  USER_HOME_DIR/.factory/logs \
   USER_HOME_DIR/.rustup/toolchains \
   /private/tmp/claude-* \
   /private/tmp/bolt-v2-* \
@@ -45,7 +49,10 @@ Verified local snapshot for operator `spson` on 2026-05-18:
 | `USER_HOME_DIR/.cache/rust-verification/bolt-v2` | #286 | Completed by PR #404; use status/prune policy and preserve hot cache |
 | `/private/var/.../T/cargo-*` | #70 | Closed historical scratch-diagnostic class unless reproduced |
 | `/private/tmp/claude-*/*/*/tasks/*.output` | #125 / claude-config | Do not unlink live files; follow Claude task-output guard work |
-| Codex logs/sessions, factory logs, rustup toolchains | #375 | Rotation/TTL/pin-driven hygiene |
+| Codex log/session cleanup surfaces | #375 | Use `docs/ops/developer-tool-storage-hygiene.md` and `scripts/developer_tool_storage_hygiene.py` for TOML-owned status, dry-run, preflight, and apply |
+| Codex SQLite, Codex history, Codex archived sessions | #375 | Report-only measurement and native-guidance evidence; no apply-mode cleanup |
+| Factory logs | #375 | TOML-owned rotation workflow with active-writer refusal |
+| Rustup toolchains | #375 | Exact-name retention/removal workflow with active/default/project-pinned protection |
 | bolt-v3 runtime output, local CI/test artifacts, cargo registry/git | #376 | Inventory and cap |
 | unclassified large tree | #377 | Unknown-class detection and triage |
 
@@ -75,7 +82,7 @@ Do not use S3 as active Cargo cache. Use S3 only for immutable deploy artifacts 
 ## 4. Safe Reclaim Order
 
 1. Stop active runaway producers if any are proven.
-2. Use dry-run cleanup/status for owner-specific tools.
+2. Use dry-run cleanup/status for owner-specific tools. For #375 developer-tool storage, use `docs/ops/developer-tool-storage-hygiene.md` and `scripts/developer_tool_storage_hygiene.py`.
 3. Apply only reviewed owner-specific cleanup.
 4. Re-measure `df -h ~` and the affected path family.
 5. Record evidence on the owning issue or PR.

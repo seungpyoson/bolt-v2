@@ -41,7 +41,7 @@ As the developer, I can run bolt-v2 Rust checks through one managed path so bash
 
 As the operator, I can reclaim disk from managed caches, AI tooling logs/sessions, and obsolete toolchains through dry-run-first policies that preserve hot cache and current toolchains.
 
-**Why this priority**: #286 is now complete and #375 remains open; both describe large but partly useful consumers where blind deletion trades disk pressure for slower or broken future work.
+**Why this priority**: #286 is complete and #375 is implemented by the developer-tool storage hygiene slice in `specs/024-developer-tool-storage-hygiene/` and `docs/ops/developer-tool-storage-hygiene.md`; both describe large but partly useful consumers where blind deletion trades disk pressure for slower or broken future work.
 
 **Independent Test**: Requirements distinguish hot cache, rebuildable-but-expensive cache, stale cache, rotating logs, session TTL, and protected toolchains.
 

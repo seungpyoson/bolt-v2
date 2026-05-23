@@ -70,8 +70,8 @@ Explicit #374 residuals from #286 / PR #404 review:
 
 - [x] T016 [US3] Record #286 managed-cache status/prune completion by PR #404 at merge commit `400dac8acc8ec04fc7b4aefc41bab10390d6404f`.
 - [x] T017 [US3] Record #286 verifier coverage as completed by PR #404; residual wrapper inventory remains in #374.
-- [ ] T018 [US3] Draft #375 developer-tool enumeration before rotation/TTL/toolchain code.
-- [ ] T019 [US3] Add failing #375 hygiene verifier before implementation.
+- [x] T018 [US3] Draft #375 developer-tool enumeration before rotation/TTL/toolchain code; completed in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [x] T019 [US3] Add failing #375 hygiene verifier before implementation; completed by `scripts/test_developer_tool_storage_hygiene.py`.
 
 ---
 
@@ -113,4 +113,4 @@ Explicit #374 residuals from #286 / PR #404 review:
 
 ## Implementation Strategy
 
-MVP is US1: issue map, disk-saving walkthrough, and verification policy. #286 is complete via PR #404. Remaining implementation starts with #374/#375/#376/#377 only after each issue's Phase 1 gate is pinned and reviewed.
+MVP is US1: issue map, disk-saving walkthrough, and verification policy. #286 is complete via PR #404. #375 implementation is covered by the developer-tool storage hygiene slice. Remaining implementation starts with #374/#376/#377 only after each issue's Phase 1 gate is pinned and reviewed.

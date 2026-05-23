@@ -1737,6 +1737,36 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(sidecar_one_after, b"sidecar-one")
         self.assertEqual(sidecar_two_after, b"sidecar-two")
 
+    def test_rotate_log_refuses_current_log_reappearing_as_broken_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            codex_log = tmp_path / "home" / ".codex" / "log" / "codex-tui.log"
+            outside_target = tmp_path / "outside-target.log"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex log requiring rotation")
+
+            tool = self.load_tool_module()
+            original_validate = tool._validate_rotation_paths
+
+            def replace_current_after_validation(path: pathlib.Path, retained_rotations: int) -> None:
+                original_validate(path, retained_rotations)
+                if path == codex_log:
+                    path.unlink()
+                    path.symlink_to(outside_target)
+
+            tool._validate_rotation_paths = replace_current_after_validation
+            try:
+                with self.assertRaises((OSError, tool.PolicyError)):
+                    tool._rotate_log(codex_log, 2)
+            finally:
+                tool._validate_rotation_paths = original_validate
+
+            outside_exists = outside_target.exists()
+            current_is_symlink = codex_log.is_symlink()
+
+        self.assertFalse(outside_exists)
+        self.assertTrue(current_is_symlink)
+
     def test_apply_rotation_preserves_original_log_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)

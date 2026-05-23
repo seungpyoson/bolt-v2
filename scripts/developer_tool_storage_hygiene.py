@@ -494,6 +494,26 @@ def _validate_rotation_paths(path: Path, retained_rotations: int) -> None:
             raise PolicyError(f"refusing to rotate symlink: {candidate_path}")
 
 
+def _lstat_if_present(path: Path) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _path_exists_no_follow(path: Path) -> bool:
+    return _lstat_if_present(path) is not None
+
+
+def _create_empty_file_no_follow(path: Path, mode: int) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, mode)
+    try:
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+
 def _rotation_reclaim_bytes(path: Path, retained_rotations: int) -> int:
     oldest = path.with_name(f"{path.name}.{retained_rotations}")
     try:
@@ -938,16 +958,23 @@ def _rotate_log(path: Path, retained_rotations: int) -> None:
         raise PolicyError("retained_rotations must be positive for rotation")
     rotation_paths = _rotation_paths(path, retained_rotations)
     _validate_rotation_paths(path, retained_rotations)
-    original_mode = path.lstat().st_mode & 0o7777
+    original_stat = path.lstat()
+    if stat_module.S_ISLNK(original_stat.st_mode):
+        raise PolicyError(f"refusing to rotate symlink: {path}")
+    original_mode = original_stat.st_mode & 0o7777
     staged: list[tuple[Path, Path, Path]] = []
     created_current = False
 
     try:
         for index, source in enumerate(rotation_paths):
-            if source.exists():
-                temp = source.with_name(f".{source.name}.rotate-{os.getpid()}-{time.time_ns()}-{index}.tmp")
-                source.rename(temp)
-                staged.append((source, temp, temp))
+            source_stat = _lstat_if_present(source)
+            if source_stat is None:
+                continue
+            if stat_module.S_ISLNK(source_stat.st_mode):
+                raise PolicyError(f"refusing to rotate symlink: {source}")
+            temp = source.with_name(f".{source.name}.rotate-{os.getpid()}-{time.time_ns()}-{index}.tmp")
+            source.rename(temp)
+            staged.append((source, temp, temp))
 
         for source, temp, location in list(reversed(staged)):
             source_index = rotation_paths.index(source)
@@ -956,23 +983,22 @@ def _rotate_log(path: Path, retained_rotations: int) -> None:
                 location.rename(destination)
                 staged[staged.index((source, temp, location))] = (source, temp, destination)
 
-        path.write_bytes(b"")
+        _create_empty_file_no_follow(path, original_mode)
         created_current = True
-        path.chmod(original_mode)
 
         for source, temp, location in staged:
-            if rotation_paths.index(source) == retained_rotations and location.exists():
+            if rotation_paths.index(source) == retained_rotations and _path_exists_no_follow(location):
                 location.unlink()
-    except OSError:
+    except (OSError, PolicyError):
         for source, temp, location in list(staged):
-            if location != temp and location.exists():
+            if location != temp and _path_exists_no_follow(location):
                 location.rename(temp)
-        if created_current and path.exists():
+        if created_current and _path_exists_no_follow(path):
             path.unlink()
         for source, temp, _location in staged:
-            if source.exists():
+            if _path_exists_no_follow(source):
                 source.unlink()
-            if temp.exists():
+            if _path_exists_no_follow(temp):
                 temp.rename(source)
         raise
 

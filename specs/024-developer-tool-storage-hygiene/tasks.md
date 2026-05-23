@@ -7,9 +7,9 @@
 
 ## Phase 1: Setup
 
-**Purpose**: Make #375 the active Speckit package and verify branch/base hygiene.
+**Purpose**: Establish the #375 issue-local Speckit package and verify branch/base hygiene.
 
-- [x] T001 Verify `.specify/feature.json`, `AGENTS.md`, and `CLAUDE.md` point to `specs/024-developer-tool-storage-hygiene/plan.md`.
+- [x] T001 Verify the #375 work uses `specs/024-developer-tool-storage-hygiene/plan.md` as its issue-local Speckit package while repo-global active pointers intentionally remain on their current plans.
 - [x] T002 Verify branch `codex/375-developer-tool-storage-hygiene` is based on current `origin/main` and record the SHA in `specs/024-developer-tool-storage-hygiene/evidence.md`.
 - [x] T003 Run placeholder and non-ASCII checks over `specs/024-developer-tool-storage-hygiene/` before external review.
 

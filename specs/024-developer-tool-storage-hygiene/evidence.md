@@ -312,3 +312,12 @@ Tenth no-mistakes run `01KS9T6DNP1B3QJ6PFWPV2ZQ8P` started on head `c308fc96` an
 | Mode-specific cleanup fields were validated only later in dry-run/apply. | Added `test_policy_validation_fails_closed_when_mode_fields_are_missing`; policy load now validates required rotate, TTL, and rustup retention fields by cleanup mode. |
 
 Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.
+
+Eleventh no-mistakes run `01KS9V8AA3VND499HT86FWXKAG` started on head `ba6463a6` and auto-fixed to head `460ac98d` before PR opening:
+
+| Finding | Remediation |
+|---|---|
+| Rustup scanning still had uncaught live-filesystem races around symlink stat, directory measurement, and state-token generation. | Accepted no-mistakes auto-fix `460ac98d`; it added rustup race regression tests and converts those scan races into non-mutating refusal entries. |
+| T001 claimed `.specify/feature.json`, `AGENTS.md`, and `CLAUDE.md` pointed to the #024 plan, while the repo-global active pointers intentionally remained on existing specs. | Updated `specs/024-developer-tool-storage-hygiene/tasks.md` to state #024 is the #375 issue-local Speckit package and repo-global active pointers intentionally remain on their current plans. |
+
+Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.

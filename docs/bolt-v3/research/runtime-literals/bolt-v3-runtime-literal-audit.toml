@@ -5339,6 +5339,22 @@ reason = "This is a stable final operator-packet evidence schema field, record k
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"root_toml_sha256"'''
+context = '''"root_toml_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field used only to bind approval consumption proof to the loaded root TOML; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.root_toml_sha256"'''
+context = '''"approval_consumption_path.root_toml_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet verifier error field for the approval consumption root TOML hash; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"restart_reconciliation_ref"'''
 context = '''"restart_reconciliation_ref",'''
 classification = "final_operator_packet_evidence_schema"

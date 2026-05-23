@@ -2552,6 +2552,30 @@ fn final_packet_verifier_rejects_canary_static_evidence_ref_drift() {
 }
 
 #[test]
+fn final_packet_verifier_rejects_approval_consumption_root_toml_drift() {
+    let fixture = assembled_final_packet_fixture();
+    let evidence = fixture.operator_evidence();
+    let approval_consumption_path = std::path::PathBuf::from(&evidence.approval_consumption_path);
+    let mut approval_consumption = read_json_value(&approval_consumption_path);
+    approval_consumption["root_toml_sha256"] =
+        serde_json::json!(sha256_text("different-root-toml"));
+    write_json_value_and_hash(&approval_consumption_path, &approval_consumption);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("approval consumption root TOML drift should fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("approval_consumption_path.root_toml_sha256"),
+        "root TOML drift error should name root_toml_sha256: {error}"
+    );
+}
+
+#[test]
 fn final_packet_verifier_rejects_stale_approval_envelope_file_hash() {
     let fixture = assembled_final_packet_fixture();
     let approval_envelope_path =
@@ -4152,10 +4176,11 @@ fn write_final_live_evidence_artifacts_for_test(
         .live_canary
         .as_ref()
         .expect("live canary should exist");
+    let root_toml_sha256 = sha256_file(&loaded.root_path);
     let canary = serde_json::json!({
         "schema_version": 1,
         "head_sha": operator_evidence.head_sha,
-        "root_config_sha256": sha256_text("test-root-config"),
+        "root_config_sha256": root_toml_sha256.clone(),
         "ssm_manifest_sha256": operator_evidence.ssm_manifest_sha256,
         "ssm_manifest_ref": final_evidence_ref_for_test(
             &operator_evidence.ssm_manifest_path,
@@ -4215,7 +4240,7 @@ fn write_final_live_evidence_artifacts_for_test(
         "schema_version": 1,
         "record_kind": "phase8_operator_approval_consumption",
         "head_sha": operator_evidence.head_sha,
-        "root_toml_sha256": sha256_text("test-root-config"),
+        "root_toml_sha256": root_toml_sha256,
         "approval_envelope_sha256": operator_evidence.approval_envelope_sha256,
         "ssm_manifest_sha256": operator_evidence.ssm_manifest_sha256,
         "strategy_input_evidence_sha256": operator_evidence.strategy_input_evidence_sha256,

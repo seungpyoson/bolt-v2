@@ -3015,11 +3015,13 @@ fn verify_final_live_evidence_files(
         "approval_consumption_path",
         &operator_evidence.approval_consumption_path,
     )?;
+    let root_toml_sha256 = root_toml_sha256_for_final_evidence(loaded)?;
     validate_approval_consumption_final_evidence(
         &approval_consumption,
         operator_evidence,
         approval_id,
         approval_envelope_sha256,
+        &root_toml_sha256,
     )
 }
 
@@ -3194,6 +3196,7 @@ fn validate_approval_consumption_final_evidence(
     operator_evidence: &LiveCanaryOperatorEvidenceBlock,
     approval_id: &str,
     approval_envelope_sha256: &str,
+    root_toml_sha256: &str,
 ) -> Result<(), BoltV3OperatorArtifactError> {
     let schema_version = expect_final_i64(approval, "approval_consumption_path.schema_version")?;
     if schema_version != 1 {
@@ -3212,6 +3215,12 @@ fn validate_approval_consumption_final_evidence(
         "head_sha",
         "approval_consumption_path.head_sha",
         &operator_evidence.head_sha,
+    )?;
+    expect_final_string_equals(
+        approval,
+        "root_toml_sha256",
+        "approval_consumption_path.root_toml_sha256",
+        root_toml_sha256,
     )?;
     expect_final_string_equals(
         approval,
@@ -3320,6 +3329,20 @@ fn validate_approval_consumption_final_evidence(
             })
         }
     }
+}
+
+fn root_toml_sha256_for_final_evidence(
+    loaded: &LoadedBoltV3Config,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    let root_text =
+        crate::bounded_config_read::read_to_string(&loaded.root_path).map_err(|source| {
+            BoltV3OperatorArtifactError::FinalEvidenceRead {
+                field: "approval_consumption_path.root_toml_sha256",
+                path: loaded.root_path.clone(),
+                source: std::io::Error::other(source),
+            }
+        })?;
+    Ok(hex::encode(Sha256::digest(root_text.as_bytes())))
 }
 
 fn read_final_json_evidence(

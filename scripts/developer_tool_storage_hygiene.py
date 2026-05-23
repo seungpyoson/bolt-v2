@@ -48,8 +48,22 @@ REQUIRED_PREFLIGHT_KEYS = (
 ROTATING_SURFACE_IDS = frozenset(("codex.log", "factory.log"))
 SESSION_SURFACE_ID = "codex.sessions"
 RUSTUP_SURFACE_ID = "rustup.toolchains"
+OWNED_OWNER = "owned"
 REPORT_ONLY_OWNER = "report_only"
+OUT_OF_SCOPE_OWNER = "out_of_scope"
 MUTATING_ACTIONS = frozenset(("rotate", "delete", "remove_tree"))
+ALLOWED_OWNERS = frozenset((OWNED_OWNER, REPORT_ONLY_OWNER, OUT_OF_SCOPE_OWNER))
+ALLOWED_CLEANUP_MODES = frozenset(("rotate", "ttl_prune", "toolchain_retention", "none"))
+MUTATING_CLEANUP_MODES = frozenset(("rotate", "ttl_prune", "toolchain_retention"))
+SURFACE_CLEANUP_MODES = {
+    "codex.log": frozenset(("rotate", "none")),
+    "codex.sessions": frozenset(("ttl_prune", "none")),
+    "codex.sqlite": frozenset(("none",)),
+    "codex.archived_sessions": frozenset(("none",)),
+    "native_guidance.codex_history": frozenset(("none",)),
+    "factory.log": frozenset(("rotate", "none")),
+    "rustup.toolchains": frozenset(("toolchain_retention", "none")),
+}
 
 
 class PolicyError(ValueError):
@@ -137,9 +151,30 @@ def _read_positive_int(section_id: str, value: Any, key: str) -> int:
     return value
 
 
+def _validate_owner_cleanup_mode(section_id: str, owner: str, cleanup_mode: str) -> None:
+    if owner not in ALLOWED_OWNERS:
+        raise PolicyError(f"{section_id}.owner must be one of: {', '.join(sorted(ALLOWED_OWNERS))}")
+    if cleanup_mode not in ALLOWED_CLEANUP_MODES:
+        raise PolicyError(
+            f"{section_id}.cleanup_mode must be one of: {', '.join(sorted(ALLOWED_CLEANUP_MODES))}"
+        )
+    allowed_modes = SURFACE_CLEANUP_MODES.get(section_id)
+    if allowed_modes is not None and cleanup_mode not in allowed_modes:
+        raise PolicyError(
+            f"{section_id}.cleanup_mode is not valid for this surface: "
+            f"{', '.join(sorted(allowed_modes))}"
+        )
+    if owner != OWNED_OWNER and cleanup_mode != "none":
+        raise PolicyError(f"{section_id}.owner/cleanup_mode combination is not cleanup-owned")
+    if cleanup_mode in MUTATING_CLEANUP_MODES and owner != OWNED_OWNER:
+        raise PolicyError(f"{section_id}.owner/cleanup_mode combination is not cleanup-owned")
+
+
 def _surface_from_section(section_id: str, section: dict[str, Any]) -> PolicySurface:
     _require_keys(section_id, section, REQUIRED_SURFACE_KEYS)
+    owner = _read_string(section_id, section, "owner")
     cleanup_mode = _read_string(section_id, section, "cleanup_mode")
+    _validate_owner_cleanup_mode(section_id, owner, cleanup_mode)
     if cleanup_mode in {"rotate", "ttl_prune"}:
         if "active_writer_processes" not in section:
             raise PolicyError(f"{section_id}.active_writer_processes is required")
@@ -171,7 +206,7 @@ def _surface_from_section(section_id: str, section: dict[str, Any]) -> PolicySur
         path_family=_read_string(section_id, section, "path_family"),
         category=_read_string(section_id, section, "category"),
         growth_shape=_read_string(section_id, section, "growth_shape"),
-        owner=_read_string(section_id, section, "owner"),
+        owner=owner,
         native_policy=_read_string(section_id, section, "native_policy"),
         cleanup_mode=cleanup_mode,
         active_writer_processes=_read_string_list(section_id, section, "active_writer_processes"),
@@ -361,11 +396,26 @@ def _measured_bytes(path: Path) -> int:
     return total
 
 
-def _safe_measured_bytes(path: Path) -> int:
+def _measured_bytes_or_error(path: Path) -> tuple[int, dict[str, Any] | None]:
     try:
-        return _measured_bytes(path)
-    except OSError:
-        return 0
+        return _measured_bytes(path), None
+    except OSError as exc:
+        return 0, {
+            "path": str(path),
+            "reason": "measurement_failed",
+            "error": type(exc).__name__,
+        }
+
+
+def _paths_measurement(paths: list[Path]) -> tuple[int, list[dict[str, Any]]]:
+    total = 0
+    errors: list[dict[str, Any]] = []
+    for path in paths:
+        measured_bytes, error = _measured_bytes_or_error(path)
+        total += measured_bytes
+        if error is not None:
+            errors.append(error)
+    return total, errors
 
 
 def _state_token(path: Path) -> str:
@@ -564,15 +614,19 @@ def _report_only_entries(surface: PolicySurface, home_root: Path) -> list[dict[s
 
 def _surface_measurement(surface: PolicySurface, home_root: Path) -> dict[str, Any]:
     paths = _paths_for_surface(home_root, surface.path_family)
-    return {
+    measured_bytes, errors = _paths_measurement(paths)
+    entry = {
         "surface_id": surface.id,
         "path_family": surface.path_family,
         "owner": surface.owner,
         "cleanup_mode": surface.cleanup_mode,
-        "cleanup_eligible": surface.owner == "owned" and surface.cleanup_mode != "none",
-        "bytes": sum(_safe_measured_bytes(path) for path in paths),
+        "cleanup_eligible": surface.owner == OWNED_OWNER and surface.cleanup_mode != "none",
+        "bytes": measured_bytes,
         "path_count": len(paths),
     }
+    if errors:
+        entry["measurement_errors"] = errors
+    return entry
 
 
 def _adjacent_context(policy: Policy, home_root: Path) -> list[dict[str, Any]]:
@@ -581,16 +635,18 @@ def _adjacent_context(policy: Policy, home_root: Path) -> list[dict[str, Any]]:
         paths = _paths_for_surface(home_root, surface.path_family)
         if not paths:
             continue
-        entries.append(
-            {
-                "surface_id": surface.id,
-                "path_family": surface.path_family,
-                "owner": surface.owner,
-                "cleanup_mode": surface.cleanup_mode,
-                "bytes": sum(_safe_measured_bytes(path) for path in paths),
-                "path_count": len(paths),
-            }
-        )
+        measured_bytes, errors = _paths_measurement(paths)
+        entry = {
+            "surface_id": surface.id,
+            "path_family": surface.path_family,
+            "owner": surface.owner,
+            "cleanup_mode": surface.cleanup_mode,
+            "bytes": measured_bytes,
+            "path_count": len(paths),
+        }
+        if errors:
+            entry["measurement_errors"] = errors
+        entries.append(entry)
     return entries
 
 
@@ -641,6 +697,9 @@ def load_policy(policy_path: Path) -> Policy:
     )
     if len(adjacent) != len(adjacent_raw):
         raise PolicyError("adjacent entries must be tables")
+    for surface in adjacent:
+        if surface.owner == OWNED_OWNER:
+            raise PolicyError(f"{surface.id}.owner/cleanup_mode combination is not valid for adjacent context")
 
     return Policy(
         path=policy_path,
@@ -747,8 +806,14 @@ def build_preflight(
     owned_bytes = sum(
         entry["bytes"]
         for entry in payload["surface_measurements"]
-        if entry["owner"] == "owned"
+        if entry["owner"] == OWNED_OWNER
     )
+    owned_measurement_errors = [
+        error
+        for entry in payload["surface_measurements"]
+        if entry["owner"] == OWNED_OWNER
+        for error in entry.get("measurement_errors", [])
+    ]
     warnings: list[str] = []
     errors: list[str] = []
     thresholds = policy.preflight
@@ -760,8 +825,11 @@ def build_preflight(
         errors.append("owned_storage_above_error")
     elif owned_bytes > thresholds["owned_storage_warning_bytes"]:
         warnings.append("owned_storage_above_warning")
+    if owned_measurement_errors:
+        errors.append("owned_storage_measurement_failed")
     payload["available_disk_bytes"] = free_bytes
     payload["owned_storage_bytes"] = owned_bytes
+    payload["owned_storage_measurement_errors"] = owned_measurement_errors
     payload["follow_up_classes"] = sorted(
         entry["surface_id"] for entry in payload["adjacent_context"] if entry["bytes"] > 0
     )

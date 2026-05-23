@@ -692,6 +692,68 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
         self.assertIn("codex.log.active_writer_processes", result.stderr)
 
+    def test_policy_validation_fails_closed_for_unknown_owner_or_cleanup_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            home_root.mkdir()
+            repo_root.mkdir()
+
+            self.write_policy_fixture(policy)
+            policy.write_text(
+                policy.read_text(encoding="utf-8").replace('owner = "owned"', 'owner = "ownd"', 1),
+                encoding="utf-8",
+            )
+            owner_result = self.run_tool("status", home_root, repo_root, policy)
+
+            self.write_policy_fixture(policy)
+            policy.write_text(
+                policy.read_text(encoding="utf-8").replace(
+                    'cleanup_mode = "rotate"',
+                    'cleanup_mode = "rotte"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            mode_result = self.run_tool("status", home_root, repo_root, policy)
+
+            self.write_policy_fixture(policy)
+            policy.write_text(
+                policy.read_text(encoding="utf-8").replace(
+                    'owner = "owned"',
+                    'owner = "report_only"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            combo_result = self.run_tool("status", home_root, repo_root, policy)
+
+            self.write_policy_fixture(policy)
+            policy.write_text(
+                policy.read_text(encoding="utf-8").replace(
+                    'owner = "out_of_scope"',
+                    'owner = "owned"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            adjacent_owner_result = self.run_tool("status", home_root, repo_root, policy)
+
+        self.assertEqual(owner_result.returncode, 2, (owner_result.stdout, owner_result.stderr))
+        self.assertIn("codex.log.owner", owner_result.stderr)
+        self.assertEqual(mode_result.returncode, 2, (mode_result.stdout, mode_result.stderr))
+        self.assertIn("codex.log.cleanup_mode", mode_result.stderr)
+        self.assertEqual(combo_result.returncode, 2, (combo_result.stdout, combo_result.stderr))
+        self.assertIn("codex.log.owner/cleanup_mode", combo_result.stderr)
+        self.assertEqual(
+            adjacent_owner_result.returncode,
+            2,
+            (adjacent_owner_result.stdout, adjacent_owner_result.stderr),
+        )
+        self.assertIn("browser.cache.owner/cleanup_mode", adjacent_owner_result.stderr)
+
     def test_policy_validation_fails_closed_when_threshold_ordering_is_invalid(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -858,6 +920,52 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertIn("owned_storage_above_warning", payload["warnings"])
         self.assertEqual(payload["available_disk_bytes"], 40)
         self.assertGreaterEqual(payload["owned_storage_bytes"], 120)
+
+    def test_preflight_fails_closed_when_owned_surface_measurement_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path)
+            policy_path.write_text(
+                policy_path.read_text(encoding="utf-8").replace(
+                    'cleanup_mode = "rotate"\nmax_bytes = 8',
+                    'cleanup_mode = "none"\nmax_bytes = 8',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"unreadable during measurement")
+            repo_root.mkdir()
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_lstat = pathlib.Path.lstat
+
+            def failing_lstat(path: pathlib.Path) -> os.stat_result:
+                if path == codex_log:
+                    raise PermissionError(str(path))
+                return original_lstat(path)
+
+            pathlib.Path.lstat = failing_lstat
+            try:
+                payload = tool.build_preflight(
+                    policy,
+                    home_root,
+                    repo_root,
+                    available_disk_bytes=1000,
+                )
+            finally:
+                pathlib.Path.lstat = original_lstat
+
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("owned_storage_measurement_failed", payload["errors"])
+        measurements = {entry["surface_id"]: entry for entry in payload["surface_measurements"]}
+        self.assertEqual(measurements["codex.log"]["measurement_errors"][0]["reason"], "measurement_failed")
 
     def test_preflight_reports_adjacent_caches_without_counting_them_as_owned(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

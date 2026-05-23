@@ -4083,7 +4083,9 @@ fn assembled_final_packet_fixture() -> FinalPacketFixture {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
     operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
-        .unwrap_or_else(|| panic!("build head sha should be compiled for final-packet verifier tests"))
+        .unwrap_or_else(|| {
+            panic!("build head sha should be compiled for final-packet verifier tests")
+        })
         .to_string();
     let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
     let manifest_path = temp.path().join("static-artifacts-manifest.json");

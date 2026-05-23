@@ -49,8 +49,8 @@ Fields:
 - `adjacent`
 
 Validation:
-- Size and day values must be non-negative integers.
-- `retained_rotations` must be a bounded integer.
+- Cleanup-mode numeric knobs must be positive integers: `max_bytes` and `retained_rotations` for `cleanup_mode=rotate`, and `ttl_days` for `cleanup_mode=ttl_prune`.
+- Preflight threshold values must be non-negative integers.
 - `retain_exact_names` and `remove_exact_names` must use exact installed toolchain names; no wildcard, substring, or pattern matching is allowed.
 - Active, default, and repository-root project-pinned rustup protections are unconditional and cannot be disabled by TOML.
 - Free-disk error threshold must be less than or equal to free-disk warning threshold.

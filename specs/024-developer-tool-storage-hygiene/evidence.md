@@ -330,3 +330,13 @@ Twelfth no-mistakes run `01KS9WGVFAY1QPPFY3B5BKQMVF` started on head `0be1b966` 
 | Operator docs documented preflight exit behavior but not apply exit behavior. | Updated `docs/ops/developer-tool-storage-hygiene.md` to document apply exit 0 for `status=applied`, exit 1 for `aborted`/`refused`/`failed`, and exit 2 for policy or usage errors. |
 
 Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.
+
+Thirteenth no-mistakes run `01KS9XE6FQBEY5F0KD1K93P2VY` started on head `f2e59e00` and auto-fixed to head `ce7e6c40` before pausing in the document stage:
+
+| Finding | Remediation |
+|---|---|
+| Log rotation could follow a symlink swapped into the active log path after validation but before log recreation. | Accepted no-mistakes auto-fix `ce7e6c40`; it added a regression for the broken-symlink swap race and recreates the log with no-follow exclusive creation. |
+| The parent #014 quickstart still gave only generic #375 routing after this branch added a concrete operator workflow. | Updated `specs/014-disk-pressure-governance/quickstart.md` to route #375 users to `docs/ops/developer-tool-storage-hygiene.md` and `scripts/developer_tool_storage_hygiene.py`, and to name Codex log/session cleanup, Codex SQLite/history/archive report-only surfaces, Factory logs, and rustup toolchains separately. |
+| The #024 data model said size/day values may be non-negative even though cleanup knobs require positive integers. | Updated `specs/024-developer-tool-storage-hygiene/data-model.md` to distinguish positive cleanup-mode numeric knobs from non-negative preflight thresholds. |
+
+Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.

@@ -283,7 +283,7 @@ impl Phase8StrategyInputSafetyAudit {
             theta_scaled_min_edge_bps,
             fee_rate_basis_points,
             price_to_beat_source: &raw.price_to_beat_source,
-            expected_price_to_beat_source: expected_price_to_beat_source.as_ref(),
+            expected_price_to_beat_source,
             reference_quote_ts_event: raw.reference_quote_ts_event,
             pricing_kurtosis,
             theta_decay_factor,

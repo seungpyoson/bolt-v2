@@ -282,6 +282,16 @@ def _inside_root(candidate: Path, root: Path) -> bool:
     return True
 
 
+def _scan_refusal(surface_id: str, path: Path) -> dict[str, Any]:
+    return {
+        "surface_id": surface_id,
+        "path": str(path),
+        "action": "refuse",
+        "reason": "path_disappeared_during_scan",
+        "estimated_reclaim_bytes": 0,
+    }
+
+
 def _candidate_for_rotating_log(surface: PolicySurface, home_root: Path) -> dict[str, Any] | None:
     max_bytes = _read_positive_int(surface.id, surface.extra.get("max_bytes"), "max_bytes")
     retained_rotations = _read_positive_int(
@@ -333,15 +343,7 @@ def _candidates_for_sessions(surface: PolicySurface, home_root: Path) -> list[di
         try:
             stat = candidate_path.lstat()
         except OSError:
-            candidates.append(
-                {
-                    "surface_id": surface.id,
-                    "path": str(candidate_path),
-                    "action": "refuse",
-                    "reason": "path_disappeared_during_scan",
-                    "estimated_reclaim_bytes": 0,
-                }
-            )
+            candidates.append(_scan_refusal(surface.id, candidate_path))
             continue
         if stat_module.S_ISLNK(stat.st_mode):
             candidates.append(
@@ -372,15 +374,7 @@ def _candidates_for_sessions(surface: PolicySurface, home_root: Path) -> list[di
         try:
             state_token = _state_token(candidate_path)
         except OSError:
-            candidates.append(
-                {
-                    "surface_id": surface.id,
-                    "path": str(candidate_path),
-                    "action": "refuse",
-                    "reason": "path_disappeared_during_scan",
-                    "estimated_reclaim_bytes": 0,
-                }
-            )
+            candidates.append(_scan_refusal(surface.id, candidate_path))
             continue
         candidates.append(
             {
@@ -562,19 +556,29 @@ def _rustup_entries(
     candidates: list[dict[str, Any]] = []
     protected: list[dict[str, Any]] = []
 
-    for path in sorted(base.iterdir()):
+    try:
+        paths = sorted(base.iterdir())
+    except OSError:
+        return [], []
+
+    for path in paths:
         name = path.name
-        if path.is_symlink():
+        try:
+            stat = path.lstat()
+        except OSError:
+            candidates.append(_scan_refusal(surface.id, path))
+            continue
+        if stat_module.S_ISLNK(stat.st_mode):
             protected.append(
                 {
                     "surface_id": surface.id,
                     "path": str(path),
                     "reason": "symlink_not_followed",
-                    "bytes": path.lstat().st_size,
+                    "bytes": stat.st_size,
                 }
             )
             continue
-        if not path.is_dir():
+        if not stat_module.S_ISDIR(stat.st_mode):
             continue
 
         reason = ""
@@ -590,17 +594,26 @@ def _rustup_entries(
             reason = "not_in_remove_exact_names"
 
         if reason:
+            measured_bytes, error = _measured_bytes_or_error(path)
+            entry: dict[str, Any] = {
+                "surface_id": surface.id,
+                "path": str(path),
+                "reason": reason,
+                "bytes": measured_bytes,
+            }
+            if error is not None:
+                entry["measurement_error"] = error
             protected.append(
-                {
-                    "surface_id": surface.id,
-                    "path": str(path),
-                    "reason": reason,
-                    "bytes": _measured_bytes(path),
-                }
+                entry
             )
             continue
 
-        measured_bytes = _measured_bytes(path)
+        try:
+            measured_bytes = _measured_bytes(path)
+            state_token = _state_token(path)
+        except OSError:
+            candidates.append(_scan_refusal(surface.id, path))
+            continue
         candidates.append(
             {
                 "surface_id": surface.id,
@@ -609,7 +622,7 @@ def _rustup_entries(
                 "reason": "exact_name_remove_policy",
                 "bytes": measured_bytes,
                 "estimated_reclaim_bytes": measured_bytes,
-                "state_token": _state_token(path),
+                "state_token": state_token,
             }
         )
 

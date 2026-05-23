@@ -672,6 +672,124 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(protected[retained], "exact_name_retain_policy")
         self.assertEqual(protected[unlisted], "not_in_remove_exact_names")
 
+    def test_dry_run_reports_rustup_toolchain_that_disappears_during_measurement_as_refusal(self) -> None:
+        active = "active-aarch64-apple-darwin"
+        default = "default-aarch64-apple-darwin"
+        removable = "old-aarch64-apple-darwin"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path, remove_exact_names=[removable])
+
+            toolchains = home_root / ".rustup" / "toolchains"
+            for name in (active, default, removable):
+                toolchain = toolchains / name
+                toolchain.mkdir(parents=True)
+                (toolchain / "marker").write_bytes(name.encode("utf-8"))
+            repo_root.mkdir()
+            (repo_root / "rust-toolchain.toml").write_text(
+                textwrap.dedent(
+                    """\
+                    [toolchain]
+                    channel = "1.95.0"
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_lstat = pathlib.Path.lstat
+            missing_marker = toolchains / removable / "marker"
+
+            def disappearing_lstat(path: pathlib.Path) -> os.stat_result:
+                if path == missing_marker:
+                    missing_marker.unlink(missing_ok=True)
+                    raise FileNotFoundError(str(path))
+                return original_lstat(path)
+
+            pathlib.Path.lstat = disappearing_lstat
+            try:
+                payload = tool.build_dry_run(
+                    policy,
+                    home_root,
+                    repo_root,
+                    active_rustup_toolchains=(active,),
+                    default_rustup_toolchains=(default,),
+                )
+            finally:
+                pathlib.Path.lstat = original_lstat
+
+        refusals = [
+            entry
+            for entry in payload["candidates"]
+            if entry["surface_id"] == "rustup.toolchains" and entry["action"] == "refuse"
+        ]
+        self.assertEqual(len(refusals), 1)
+        self.assertEqual(refusals[0]["reason"], "path_disappeared_during_scan")
+        self.assertEqual(refusals[0]["estimated_reclaim_bytes"], 0)
+
+    def test_dry_run_reports_rustup_toolchain_that_disappears_during_state_tokening_as_refusal(self) -> None:
+        active = "active-aarch64-apple-darwin"
+        default = "default-aarch64-apple-darwin"
+        removable = "old-aarch64-apple-darwin"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path, remove_exact_names=[removable])
+
+            toolchains = home_root / ".rustup" / "toolchains"
+            for name in (active, default, removable):
+                toolchain = toolchains / name
+                toolchain.mkdir(parents=True)
+                (toolchain / "marker").write_bytes(name.encode("utf-8"))
+            repo_root.mkdir()
+            (repo_root / "rust-toolchain.toml").write_text(
+                textwrap.dedent(
+                    """\
+                    [toolchain]
+                    channel = "1.95.0"
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_state_token = tool._state_token
+
+            def disappearing_state_token(path: pathlib.Path) -> str:
+                if path == toolchains / removable:
+                    raise FileNotFoundError(str(path))
+                return original_state_token(path)
+
+            tool._state_token = disappearing_state_token
+            try:
+                payload = tool.build_dry_run(
+                    policy,
+                    home_root,
+                    repo_root,
+                    active_rustup_toolchains=(active,),
+                    default_rustup_toolchains=(default,),
+                )
+            finally:
+                tool._state_token = original_state_token
+
+        refusals = [
+            entry
+            for entry in payload["candidates"]
+            if entry["surface_id"] == "rustup.toolchains" and entry["action"] == "refuse"
+        ]
+        self.assertEqual(len(refusals), 1)
+        self.assertEqual(refusals[0]["reason"], "path_disappeared_during_scan")
+        self.assertEqual(refusals[0]["estimated_reclaim_bytes"], 0)
+
     def test_dry_run_fails_closed_for_rustup_removals_without_active_default_snapshots(self) -> None:
         active = "active-aarch64-apple-darwin"
 

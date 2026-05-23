@@ -41,7 +41,7 @@ python3 scripts/developer_tool_storage_hygiene.py dry-run \
   --json
 ```
 
-Log rotation bounds the active writer file and preserves the rotated file as history. Current-log rotation therefore reports zero estimated reclaimed bytes unless a retained old rotation is explicitly removed by a future policy.
+Log rotation bounds the active writer file and preserves the rotated file as history. Current-log rotation reports zero reclaimed bytes unless the configured retained-rotation limit causes the oldest sidecar to be removed; dry-run/apply revalidate both the active log and retained sidecars before mutation.
 
 Preflight is read-only and compares measured #375-owned storage plus supplied or observed free disk against configured thresholds:
 

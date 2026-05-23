@@ -232,6 +232,11 @@ def _inside_root(candidate: Path, root: Path) -> bool:
 
 def _candidate_for_rotating_log(surface: PolicySurface, home_root: Path) -> dict[str, Any] | None:
     max_bytes = _read_positive_int(surface.id, surface.extra.get("max_bytes"), "max_bytes")
+    retained_rotations = _read_positive_int(
+        surface.id,
+        surface.extra.get("retained_rotations"),
+        "retained_rotations",
+    )
     candidate_path = _configured_path(home_root, surface.path_family)
     if not _inside_root(candidate_path, home_root):
         return {
@@ -264,8 +269,9 @@ def _candidate_for_rotating_log(surface: PolicySurface, home_root: Path) -> dict
         "reason": "size_exceeds_max_bytes",
         "bytes": stat.st_size,
         "max_bytes": max_bytes,
-        "estimated_reclaim_bytes": 0,
-        "state_token": _state_token(candidate_path),
+        "retained_rotations": retained_rotations,
+        "estimated_reclaim_bytes": _rotation_reclaim_bytes(candidate_path, retained_rotations),
+        "state_token": _paths_state_token(_rotation_paths(candidate_path, retained_rotations)),
     }
 
 
@@ -316,6 +322,19 @@ def _candidates_for_sessions(surface: PolicySurface, home_root: Path) -> list[di
             continue
         if not stat_module.S_ISREG(stat.st_mode) or stat.st_mtime > cutoff:
             continue
+        try:
+            state_token = _state_token(candidate_path)
+        except OSError:
+            candidates.append(
+                {
+                    "surface_id": surface.id,
+                    "path": str(candidate_path),
+                    "action": "refuse",
+                    "reason": "path_disappeared_during_scan",
+                    "estimated_reclaim_bytes": 0,
+                }
+            )
+            continue
         candidates.append(
             {
                 "surface_id": surface.id,
@@ -325,7 +344,7 @@ def _candidates_for_sessions(surface: PolicySurface, home_root: Path) -> list[di
                 "bytes": stat.st_size,
                 "ttl_days": ttl_days,
                 "estimated_reclaim_bytes": stat.st_size,
-                "state_token": _state_token(candidate_path),
+                "state_token": state_token,
             }
         )
     return candidates
@@ -367,6 +386,36 @@ def _state_token(path: Path) -> str:
         for child in sorted(path.rglob("*")):
             add_stat(str(child.relative_to(path)), child.lstat())
     return digest.hexdigest()
+
+
+def _paths_state_token(paths: list[Path]) -> str:
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(str(path).encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0")
+        try:
+            stat_result = path.lstat()
+        except FileNotFoundError:
+            digest.update(b"missing")
+        else:
+            digest.update(
+                f"{stat_result.st_dev}:{stat_result.st_ino}:{stat_result.st_mode}:"
+                f"{stat_result.st_size}:{stat_result.st_mtime_ns}".encode("ascii")
+            )
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _rotation_paths(path: Path, retained_rotations: int) -> list[Path]:
+    return [path] + [path.with_name(f"{path.name}.{index}") for index in range(1, retained_rotations + 1)]
+
+
+def _rotation_reclaim_bytes(path: Path, retained_rotations: int) -> int:
+    oldest = path.with_name(f"{path.name}.{retained_rotations}")
+    try:
+        return oldest.lstat().st_size
+    except FileNotFoundError:
+        return 0
 
 
 def _project_pinned_channels(repo_root: Path, *, required: bool = False) -> tuple[str, ...]:
@@ -764,6 +813,7 @@ def _refusal_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _rotate_log(path: Path, retained_rotations: int) -> None:
     if retained_rotations <= 0:
         raise PolicyError("retained_rotations must be positive for rotation")
+    original_mode = path.lstat().st_mode & 0o7777
     oldest = path.with_name(f"{path.name}.{retained_rotations}")
     if oldest.exists():
         oldest.unlink()
@@ -773,6 +823,7 @@ def _rotate_log(path: Path, retained_rotations: int) -> None:
             source.rename(path.with_name(f"{path.name}.{index + 1}"))
     path.rename(path.with_name(f"{path.name}.1"))
     path.write_bytes(b"")
+    path.chmod(original_mode)
 
 
 def _active_writer_refusals(

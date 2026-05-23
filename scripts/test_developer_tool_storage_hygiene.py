@@ -357,6 +357,49 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(refusals[0]["reason"], "path_disappeared_during_scan")
         self.assertEqual(refusals[0]["estimated_reclaim_bytes"], 0)
 
+    def test_dry_run_reports_session_that_disappears_during_state_tokening_as_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path, sessions_ttl_days=1)
+
+            session = home_root / ".codex" / "sessions" / "old.jsonl"
+            session.parent.mkdir(parents=True)
+            session.write_bytes(b"old session")
+            old_mtime = time.time() - (2 * 24 * 60 * 60)
+            os.utime(session, (old_mtime, old_mtime))
+            repo_root.mkdir()
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_lstat = pathlib.Path.lstat
+            calls = {"session": 0}
+
+            def disappearing_lstat(path: pathlib.Path) -> os.stat_result:
+                if path == session:
+                    calls["session"] += 1
+                    if calls["session"] >= 2:
+                        session.unlink(missing_ok=True)
+                        raise FileNotFoundError(str(path))
+                return original_lstat(path)
+
+            pathlib.Path.lstat = disappearing_lstat
+            try:
+                payload = tool.build_dry_run(policy, home_root, repo_root)
+            finally:
+                pathlib.Path.lstat = original_lstat
+
+        refusals = [
+            entry
+            for entry in payload["candidates"]
+            if entry["surface_id"] == "codex.sessions" and entry["action"] == "refuse"
+        ]
+        self.assertEqual(len(refusals), 1)
+        self.assertEqual(refusals[0]["reason"], "path_disappeared_during_scan")
+        self.assertEqual(refusals[0]["estimated_reclaim_bytes"], 0)
+
     def test_dry_run_reports_codex_sqlite_files_as_report_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -1231,6 +1274,77 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(payload["status"], "aborted")
         self.assertEqual(payload["reason"], "candidate_state_changed")
         self.assertEqual(payload["actions_taken"], [])
+
+    def test_apply_rescans_and_aborts_when_rotation_sidecar_state_changed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            sidecar = codex_log.with_name("codex-tui.log.1")
+            codex_log.parent.mkdir(parents=True)
+            original = b"codex log requiring rotation"
+            codex_log.write_bytes(original)
+            sidecar.write_bytes(b"sidecar-a")
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            time.sleep(0.01)
+            sidecar.write_bytes(b"sidecar-b")
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report), "--process-snapshot-empty"],
+            )
+            log_after = codex_log.read_bytes()
+            sidecar_after = sidecar.read_bytes()
+
+        self.assertEqual(result.returncode, 1, (result.stdout, result.stderr))
+        self.assertEqual(log_after, original)
+        self.assertEqual(sidecar_after, b"sidecar-b")
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "aborted")
+        self.assertEqual(payload["reason"], "candidate_state_changed")
+
+    def test_apply_rotation_preserves_original_log_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex log requiring rotation")
+            codex_log.chmod(0o600)
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report), "--process-snapshot-empty"],
+            )
+            mode_after = codex_log.stat().st_mode & 0o777
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertEqual(mode_after, 0o600)
 
     def test_apply_aborts_when_policy_changes_after_dry_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

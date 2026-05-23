@@ -355,6 +355,19 @@ def _path_family_refusal(
     return None
 
 
+def _path_family_ancestors(path: Path, home_root: Path) -> set[Path]:
+    try:
+        relative = path.relative_to(home_root)
+    except ValueError:
+        return {path}
+    ancestors: set[Path] = set()
+    current = home_root
+    for part in relative.parts:
+        current = current / part
+        ancestors.add(current)
+    return ancestors
+
+
 def _stale_rotation_sidecar_candidates(
     surface_id: str,
     path: Path,
@@ -481,7 +494,7 @@ def _candidates_for_rotating_log(surface: PolicySurface, home_root: Path) -> lis
 def _candidates_for_sessions(surface: PolicySurface, home_root: Path) -> list[dict[str, Any]]:
     ttl_days = _read_positive_int(surface.id, surface.extra.get("ttl_days"), "ttl_days")
     base, pattern = _path_family_root_and_pattern(home_root, surface.path_family)
-    root_refusal = _root_refusal(surface.id, base, home_root, include_action=True)
+    root_refusal = _path_family_refusal(surface.id, base, home_root, include_action=True)
     if root_refusal is not None:
         return [root_refusal]
     if not base.exists():
@@ -714,6 +727,21 @@ def _create_empty_file_no_follow(path: Path, mode: int) -> None:
         os.close(fd)
 
 
+def _rename_no_replace(source: Path, destination: Path) -> None:
+    try:
+        os.link(source, destination, follow_symlinks=False)
+    except FileExistsError as exc:
+        raise PolicyError(f"refusing to overwrite rotation destination: {destination}") from exc
+    try:
+        source.unlink()
+    except OSError:
+        try:
+            destination.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def _rotation_reclaim_bytes(
     path: Path,
     retained_rotations: int,
@@ -781,7 +809,7 @@ def _rustup_entries(
     base, pattern = _path_family_root_and_pattern(home_root, surface.path_family)
     if pattern != "*":
         raise PolicyError(f"{surface.id}.path_family must end with one exact-name wildcard")
-    root_refusal = _root_refusal(surface.id, base, home_root, include_action=True)
+    root_refusal = _path_family_refusal(surface.id, base, home_root, include_action=True)
     if root_refusal is not None:
         return [root_refusal], []
     if not base.exists():
@@ -877,7 +905,7 @@ def _report_only_entries(surface: PolicySurface, home_root: Path) -> list[dict[s
     entries: list[dict[str, Any]] = []
     if _path_family_has_glob(surface.path_family):
         base, _pattern = _path_family_root_and_pattern(home_root, surface.path_family)
-        root_refusal = _root_refusal(surface.id, base, home_root, include_action=False)
+        root_refusal = _path_family_refusal(surface.id, base, home_root, include_action=False)
         if root_refusal is not None:
             return [root_refusal]
     else:
@@ -954,12 +982,13 @@ def _owned_root_refusal_errors(
         if surface.owner != OWNED_OWNER:
             continue
         if _path_family_has_glob(surface.path_family):
-            paths = {_path_family_root_and_pattern(home_root, surface.path_family)[0]}
+            root = _path_family_root_and_pattern(home_root, surface.path_family)[0]
+            paths = _path_family_ancestors(root, home_root)
         else:
             configured_path = _configured_path(home_root, surface.path_family)
-            paths = {configured_path}
+            paths = _path_family_ancestors(configured_path, home_root)
             if surface.cleanup_mode == "rotate" and surface.id in ROTATING_SURFACE_IDS:
-                paths.add(configured_path.parent)
+                paths.update(_path_family_ancestors(configured_path.parent, home_root))
         owned_refusal_paths[surface.id] = paths
     errors: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -1262,7 +1291,7 @@ def _rotate_log(path: Path, retained_rotations: int) -> None:
         for index, source, temp, location in list(reversed(staged)):
             if index < retained_rotations:
                 destination = _rotation_slot_path(path, index + 1)
-                location.rename(destination)
+                _rename_no_replace(location, destination)
                 staged[staged.index((index, source, temp, location))] = (
                     index,
                     source,
@@ -1333,6 +1362,189 @@ def _process_snapshot_required(policy: Policy, candidates: list[dict[str, Any]])
     return any(surfaces[candidate["surface_id"]].active_writer_processes for candidate in candidates)
 
 
+def _single_session_candidate(
+    surface: PolicySurface,
+    home_root: Path,
+    path: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ttl_days = _read_positive_int(surface.id, surface.extra.get("ttl_days"), "ttl_days")
+    base, _pattern = _path_family_root_and_pattern(home_root, surface.path_family)
+    root_refusal = _path_family_refusal(surface.id, base, home_root, include_action=True)
+    if root_refusal is not None:
+        return [root_refusal], []
+    if not base.exists():
+        return [], []
+    try:
+        path.relative_to(base)
+    except ValueError:
+        return [], []
+    try:
+        stat = path.lstat()
+    except OSError:
+        return [_scan_refusal(surface.id, path)], []
+    if stat_module.S_ISLNK(stat.st_mode):
+        return [
+            {
+                "surface_id": surface.id,
+                "path": str(path),
+                "action": "refuse",
+                "reason": "symlink_not_followed",
+                "bytes": stat.st_size,
+                "estimated_reclaim_bytes": 0,
+            }
+        ], []
+    if not _inside_root(path, base):
+        return [
+            {
+                "surface_id": surface.id,
+                "path": str(path),
+                "action": "refuse",
+                "reason": "outside_configured_root",
+                "bytes": stat.st_size,
+                "estimated_reclaim_bytes": 0,
+            }
+        ], []
+    cutoff = time.time() - (ttl_days * 24 * 60 * 60)
+    if not stat_module.S_ISREG(stat.st_mode) or stat.st_mtime > cutoff:
+        return [], []
+    try:
+        state_token = _state_token(path)
+    except OSError:
+        return [_scan_refusal(surface.id, path)], []
+    return [
+        {
+            "surface_id": surface.id,
+            "path": str(path),
+            "action": "delete",
+            "reason": "older_than_ttl_days",
+            "bytes": stat.st_size,
+            "ttl_days": ttl_days,
+            "estimated_reclaim_bytes": stat.st_size,
+            "state_token": state_token,
+        }
+    ], []
+
+
+def _single_rustup_candidate(
+    surface: PolicySurface,
+    home_root: Path,
+    repo_root: Path,
+    path: Path,
+    active_toolchains: tuple[str, ...],
+    default_toolchains: tuple[str, ...],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    base, pattern = _path_family_root_and_pattern(home_root, surface.path_family)
+    if pattern != "*":
+        raise PolicyError(f"{surface.id}.path_family must end with one exact-name wildcard")
+    root_refusal = _path_family_refusal(surface.id, base, home_root, include_action=True)
+    if root_refusal is not None:
+        return [root_refusal], []
+    if not base.exists() or path.parent != base:
+        return [], []
+
+    retain_exact_names = set(_string_tuple_from_extra(surface, "retain_exact_names"))
+    remove_exact_names = set(_string_tuple_from_extra(surface, "remove_exact_names"))
+    if remove_exact_names and (not active_toolchains or not default_toolchains):
+        raise PolicyError(
+            f"{surface.id} active/default rustup snapshots are required when "
+            "remove_exact_names is non-empty"
+        )
+    active_names = set(active_toolchains)
+    default_names = set(default_toolchains)
+    pinned_channels = _project_pinned_channels(repo_root, required=bool(remove_exact_names))
+
+    name = path.name
+    try:
+        stat = path.lstat()
+    except OSError:
+        return [_scan_refusal(surface.id, path)], []
+    if stat_module.S_ISLNK(stat.st_mode):
+        return [], [
+            {
+                "surface_id": surface.id,
+                "path": str(path),
+                "reason": "symlink_not_followed",
+                "bytes": stat.st_size,
+            }
+        ]
+    if not stat_module.S_ISDIR(stat.st_mode):
+        return [], []
+
+    reason = ""
+    if name in active_names:
+        reason = "active_toolchain"
+    elif name in default_names:
+        reason = "default_toolchain"
+    elif _is_project_pinned_toolchain(name, pinned_channels):
+        reason = "project_pinned_toolchain"
+    elif name in retain_exact_names:
+        reason = "exact_name_retain_policy"
+    elif name not in remove_exact_names:
+        reason = "not_in_remove_exact_names"
+
+    if reason:
+        measured_bytes, error = _measured_bytes_or_error(path)
+        entry: dict[str, Any] = {
+            "surface_id": surface.id,
+            "path": str(path),
+            "reason": reason,
+            "bytes": measured_bytes,
+        }
+        if error is not None:
+            entry["measurement_error"] = error
+        return [], [entry]
+
+    try:
+        measured_bytes = _measured_bytes(path)
+        state_token = _state_token(path)
+    except OSError:
+        return [_scan_refusal(surface.id, path)], []
+    return [
+        {
+            "surface_id": surface.id,
+            "path": str(path),
+            "action": "remove_tree",
+            "reason": "exact_name_remove_policy",
+            "bytes": measured_bytes,
+            "estimated_reclaim_bytes": measured_bytes,
+            "state_token": state_token,
+        }
+    ], []
+
+
+def _fresh_candidate_payload(
+    policy: Policy,
+    home_root: Path,
+    repo_root: Path,
+    candidate: dict[str, Any],
+    *,
+    active_rustup_toolchains: tuple[str, ...],
+    default_rustup_toolchains: tuple[str, ...],
+) -> dict[str, Any]:
+    surfaces = {surface.id: surface for surface in policy.surfaces}
+    surface = surfaces.get(str(candidate.get("surface_id", "")))
+    if surface is None or not isinstance(candidate.get("path"), str):
+        return {"candidates": [], "report_only": [], "protected": []}
+    path = Path(candidate["path"])
+    protected: list[dict[str, Any]] = []
+    if surface.cleanup_mode == "rotate" and surface.id in ROTATING_SURFACE_IDS:
+        candidates = _candidates_for_rotating_log(surface, home_root)
+    elif surface.cleanup_mode == "ttl_prune" and surface.id == SESSION_SURFACE_ID:
+        candidates, protected = _single_session_candidate(surface, home_root, path)
+    elif surface.cleanup_mode == "toolchain_retention" and surface.id == RUSTUP_SURFACE_ID:
+        candidates, protected = _single_rustup_candidate(
+            surface,
+            home_root,
+            repo_root,
+            path,
+            active_rustup_toolchains,
+            default_rustup_toolchains,
+        )
+    else:
+        candidates = []
+    return {"candidates": candidates, "report_only": [], "protected": protected}
+
+
 def _fresh_candidate_match(
     policy: Policy,
     home_root: Path,
@@ -1342,10 +1554,11 @@ def _fresh_candidate_match(
     active_rustup_toolchains: tuple[str, ...],
     default_rustup_toolchains: tuple[str, ...],
 ) -> tuple[bool, dict[str, Any]]:
-    fresh = build_dry_run(
+    fresh = _fresh_candidate_payload(
         policy,
         home_root,
         repo_root,
+        candidate,
         active_rustup_toolchains=active_rustup_toolchains,
         default_rustup_toolchains=default_rustup_toolchains,
     )

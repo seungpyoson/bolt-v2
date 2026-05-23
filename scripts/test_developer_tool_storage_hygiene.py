@@ -576,7 +576,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(pathlib.Path(report_only["codex.archived_sessions"]["path"]).name, "archived_sessions")
         self.assertEqual(report_only["codex.archived_sessions"]["estimated_reclaim_bytes"], 0)
 
-    def test_dry_run_reports_outside_configured_root_for_relocated_glob_parent(self) -> None:
+    def test_dry_run_reports_symlink_refusal_for_relocated_glob_parent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
             policy = tmp_path / "policy.toml"
@@ -587,7 +587,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
             outside_codex = tmp_path / "outside-codex"
             (outside_codex / "sessions").mkdir(parents=True)
             codex_root = home_root / ".codex"
-            codex_root.parent.mkdir(parents=True)
+            codex_root.parent.mkdir(parents=True, exist_ok=True)
             codex_root.symlink_to(outside_codex, target_is_directory=True)
             repo_root.mkdir()
 
@@ -598,10 +598,65 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         candidates = {
             entry["surface_id"]: entry
             for entry in payload["candidates"]
-            if entry.get("reason") == "outside_configured_root"
+            if entry.get("reason") == "symlink_not_followed"
         }
-        self.assertEqual(pathlib.Path(candidates["codex.sessions"]["path"]).name, "sessions")
+        self.assertEqual(pathlib.Path(candidates["codex.sessions"]["path"]).name, ".codex")
         self.assertEqual(candidates["codex.sessions"]["action"], "refuse")
+
+    def test_dry_run_refuses_glob_ancestor_symlinks_within_home_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy, remove_exact_names=["old-toolchain"])
+
+            relocated_codex = home_root / "relocated-codex"
+            session = relocated_codex / "sessions" / "old.jsonl"
+            session.parent.mkdir(parents=True)
+            session.write_bytes(b"old session")
+            old_mtime = time.time() - (20 * 24 * 60 * 60)
+            os.utime(session, (old_mtime, old_mtime))
+            codex_root = home_root / ".codex"
+            codex_root.parent.mkdir(parents=True, exist_ok=True)
+            codex_root.symlink_to(relocated_codex, target_is_directory=True)
+
+            relocated_rustup = home_root / "relocated-rustup"
+            toolchain = relocated_rustup / "toolchains" / "old-toolchain"
+            toolchain.mkdir(parents=True)
+            (toolchain / "bin").mkdir()
+            rustup_root = home_root / ".rustup"
+            rustup_root.symlink_to(relocated_rustup, target_is_directory=True)
+            repo_root.mkdir()
+            (repo_root / "rust-toolchain.toml").write_text(
+                "[toolchain]\nchannel = \"stable\"\n",
+                encoding="utf-8",
+            )
+
+            result = self.run_tool(
+                "dry-run",
+                home_root,
+                repo_root,
+                policy,
+                [
+                    "--active-rustup-toolchain",
+                    "stable-aarch64-apple-darwin",
+                    "--default-rustup-toolchain",
+                    "stable-aarch64-apple-darwin",
+                ],
+            )
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        candidates = {
+            entry["surface_id"]: entry
+            for entry in payload["candidates"]
+            if entry.get("reason") == "symlink_not_followed"
+        }
+        self.assertEqual(pathlib.Path(candidates["codex.sessions"]["path"]).name, ".codex")
+        self.assertEqual(candidates["codex.sessions"]["action"], "refuse")
+        self.assertEqual(pathlib.Path(candidates["rustup.toolchains"]["path"]).name, ".rustup")
+        self.assertEqual(candidates["rustup.toolchains"]["action"], "refuse")
 
     def test_dry_run_reports_session_that_disappears_during_scan_as_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1500,6 +1555,41 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(pathlib.Path(root_errors[0]["path"]).name, "sessions")
         self.assertEqual(root_errors[0]["reason"], "symlink_not_followed")
 
+    def test_preflight_fails_closed_when_owned_glob_ancestor_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path)
+
+            relocated_codex = home_root / "relocated-codex"
+            (relocated_codex / "sessions").mkdir(parents=True)
+            codex_root = home_root / ".codex"
+            codex_root.parent.mkdir(parents=True, exist_ok=True)
+            codex_root.symlink_to(relocated_codex, target_is_directory=True)
+            repo_root.mkdir()
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            payload = tool.build_preflight(
+                policy,
+                home_root,
+                repo_root,
+                available_disk_bytes=1000,
+            )
+
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("owned_storage_measurement_failed", payload["errors"])
+        root_errors = [
+            entry
+            for entry in payload["owned_storage_measurement_errors"]
+            if entry.get("surface_id") == "codex.sessions"
+        ]
+        self.assertEqual(len(root_errors), 1)
+        self.assertEqual(pathlib.Path(root_errors[0]["path"]).name, ".codex")
+        self.assertEqual(root_errors[0]["reason"], "symlink_not_followed")
+
     def test_preflight_fails_closed_when_owned_fixed_path_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -1911,6 +2001,54 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertTrue(session_exists_after)
         self.assertEqual(session_after, fresh_session)
 
+    def test_apply_rechecks_candidate_without_rebuilding_full_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path, sessions_ttl_days=1)
+
+            sessions_root = home_root / ".codex" / "sessions"
+            sessions_root.mkdir(parents=True)
+            for name in ("old-a.jsonl", "old-b.jsonl"):
+                session = sessions_root / name
+                session.write_bytes(b"old session")
+                old_mtime = time.time() - (2 * 24 * 60 * 60)
+                os.utime(session, (old_mtime, old_mtime))
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy_path)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_build_dry_run = tool.build_dry_run
+            build_dry_run_calls = 0
+
+            def counting_build_dry_run(*args, **kwargs):
+                nonlocal build_dry_run_calls
+                build_dry_run_calls += 1
+                return original_build_dry_run(*args, **kwargs)
+
+            tool.build_dry_run = counting_build_dry_run
+            try:
+                payload = tool.build_apply(
+                    policy,
+                    home_root,
+                    repo_root,
+                    dry_run_report=report,
+                    process_snapshot_supplied=True,
+                )
+            finally:
+                tool.build_dry_run = original_build_dry_run
+
+        self.assertEqual(payload["status"], "applied")
+        self.assertEqual(len(payload["actions_taken"]), 2)
+        self.assertEqual(build_dry_run_calls, 1)
+
     def test_apply_reports_partial_summary_when_later_mutation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -2280,6 +2418,42 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(current_after, b"codex log requiring rotation")
         self.assertEqual(sidecar_one_after, b"sidecar-one")
         self.assertEqual(sidecar_two_after, b"sidecar-two")
+
+    def test_rotate_log_refuses_recreated_rotation_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            codex_log = tmp_path / "home" / ".codex" / "log" / "codex-tui.log"
+            sidecar_one = codex_log.with_name("codex-tui.log.1")
+            live_sidecar = b"live sidecar recreated during rotation"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex log requiring rotation")
+
+            tool = self.load_tool_module()
+            original_rename = pathlib.Path.rename
+            original_link = os.link
+
+            def recreate_destination_before_rename(path: pathlib.Path, target: pathlib.Path) -> pathlib.Path:
+                if target == sidecar_one and path.name.startswith(".codex-tui.log.rotate-"):
+                    sidecar_one.write_bytes(live_sidecar)
+                return original_rename(path, target)
+
+            def recreate_destination_before_link(src: pathlib.Path, dst: pathlib.Path, *args, **kwargs) -> None:
+                if pathlib.Path(dst) == sidecar_one and pathlib.Path(src).name.startswith(".codex-tui.log.rotate-"):
+                    sidecar_one.write_bytes(live_sidecar)
+                return original_link(src, dst, *args, **kwargs)
+
+            pathlib.Path.rename = recreate_destination_before_rename
+            os.link = recreate_destination_before_link
+            try:
+                with self.assertRaises((OSError, tool.PolicyError)):
+                    tool._rotate_log(codex_log, 2)
+            finally:
+                pathlib.Path.rename = original_rename
+                os.link = original_link
+
+            sidecar_after = sidecar_one.read_bytes()
+
+        self.assertEqual(sidecar_after, live_sidecar)
 
     def test_rotate_log_rollback_preserves_recreated_current_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

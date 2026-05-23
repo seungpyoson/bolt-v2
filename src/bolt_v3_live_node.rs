@@ -43,7 +43,7 @@ use std::{
     rc::Rc,
     str::FromStr,
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use ahash::AHashMap;
@@ -78,7 +78,10 @@ use crate::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
     },
-    bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate},
+    bolt_v3_live_canary_gate::{
+        BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_pre_consumption_gate,
+        current_build_head_sha,
+    },
     bolt_v3_providers,
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
@@ -89,6 +92,7 @@ use crate::{
         BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
     },
     bolt_v3_submit_admission::{BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState},
+    bolt_v3_tiny_canary_evidence::Phase8OperatorApprovalEnvelope,
     nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
     secrets::SsmResolverSession,
 };
@@ -428,6 +432,10 @@ pub enum BoltV3LiveNodeError {
     /// `LiveNode::run` was invoked. This variant wraps the specific
     /// fail-closed reason from [`BoltV3LiveCanaryGateError`].
     LiveCanaryGate(BoltV3LiveCanaryGateError),
+    /// The live runner entrypoint passed the pre-consumption gate but
+    /// could not atomically create the operator-approval consumption
+    /// proof before arming submit admission.
+    OperatorApprovalConsumption(anyhow::Error),
     /// The validated live canary gate report could not arm the shared
     /// submit-admission state before `LiveNode::run` was invoked.
     SubmitAdmission(BoltV3SubmitAdmissionError),
@@ -544,6 +552,12 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                     "bolt-v3 live canary gate rejected runtime start: {error}"
                 )
             }
+            BoltV3LiveNodeError::OperatorApprovalConsumption(error) => {
+                write!(
+                    f,
+                    "bolt-v3 live canary approval consumption failed before runtime start: {error}"
+                )
+            }
             BoltV3LiveNodeError::SubmitAdmission(error) => {
                 write!(
                     f,
@@ -648,6 +662,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::StrategyRegistration(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
             BoltV3LiveNodeError::LiveCanaryGate(error) => Some(error),
+            BoltV3LiveNodeError::OperatorApprovalConsumption(error) => Some(error.as_ref()),
             BoltV3LiveNodeError::SubmitAdmission(error) => Some(error),
             BoltV3LiveNodeError::Run(error) => error.source(),
             BoltV3LiveNodeError::RuntimeCaptureWire(error)
@@ -733,9 +748,11 @@ pub async fn run_bolt_v3_live_node(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let gate_report = check_bolt_v3_live_canary_gate(loaded)
+    let gate_report = check_bolt_v3_live_canary_pre_consumption_gate(loaded)
         .await
         .map_err(BoltV3LiveNodeError::LiveCanaryGate)?;
+    consume_bolt_v3_live_runner_approval(loaded)
+        .map_err(BoltV3LiveNodeError::OperatorApprovalConsumption)?;
     runtime
         .submit_admission
         .arm(gate_report)
@@ -765,6 +782,65 @@ pub async fn run_bolt_v3_live_node(
     let shutdown_result = capture_guards.shutdown().await;
 
     classify_live_node_run_and_capture_shutdown(run_result, shutdown_result)
+}
+
+pub fn consume_bolt_v3_live_runner_approval(
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), anyhow::Error> {
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing `[live_canary]` config"))?;
+    let operator_evidence = live_canary
+        .operator_evidence
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing `[live_canary.operator_evidence]` config"))?;
+    let current_head_sha = current_build_head_sha()
+        .ok_or_else(|| anyhow::anyhow!("bolt-v3 build head_sha is unavailable or invalid"))?;
+    let current_root_toml_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(&loaded.root_path)?;
+    let current_unix_secs = current_unix_seconds_i64()?;
+    let envelope = Phase8OperatorApprovalEnvelope {
+        head_sha: operator_evidence.head_sha.clone(),
+        root_toml_path: loaded.root_path.to_string_lossy().to_string(),
+        root_toml_sha256: current_root_toml_sha256.clone(),
+        approval_envelope_sha256: operator_evidence.approval_envelope_sha256.clone(),
+        ssm_manifest_path: operator_evidence.ssm_manifest_path.clone(),
+        ssm_manifest_sha256: operator_evidence.ssm_manifest_sha256.clone(),
+        strategy_input_evidence_path: operator_evidence.strategy_input_evidence_path.clone(),
+        strategy_input_evidence_sha256: operator_evidence.strategy_input_evidence_sha256.clone(),
+        financial_envelope_path: operator_evidence.financial_envelope_path.clone(),
+        financial_envelope_sha256: operator_evidence.financial_envelope_sha256.clone(),
+        pre_run_state_path: operator_evidence.pre_run_state_path.clone(),
+        pre_run_state_sha256: operator_evidence.pre_run_state_sha256.clone(),
+        abort_plan_path: operator_evidence.abort_plan_path.clone(),
+        abort_plan_sha256: operator_evidence.abort_plan_sha256.clone(),
+        operator_approval_id: live_canary.approval_id.clone(),
+        approval_not_before_unix_secs: operator_evidence.approval_not_before_unix_seconds,
+        approval_not_after_unix_secs: operator_evidence.approval_not_after_unix_seconds,
+        approval_nonce_path: operator_evidence.approval_nonce_path.clone(),
+        approval_nonce_sha256: operator_evidence.approval_nonce_sha256.clone(),
+        approval_consumption_path: operator_evidence.approval_consumption_path.clone(),
+        canary_evidence_path: operator_evidence.canary_evidence_path.clone(),
+        strategy_cancel_path: operator_evidence.strategy_cancel_path.clone(),
+    };
+
+    envelope.validate_and_consume_against(
+        current_head_sha,
+        &current_root_toml_sha256,
+        &live_canary.approval_id,
+        loaded,
+        current_unix_secs,
+    )
+}
+
+fn current_unix_seconds_i64() -> Result<i64, anyhow::Error> {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|source| anyhow::anyhow!("system time is before UNIX_EPOCH: {source}"))?
+        .as_secs();
+    i64::try_from(seconds)
+        .map_err(|source| anyhow::anyhow!("current unix seconds exceeds i64: {source}"))
 }
 
 pub async fn controlled_no_submit_readiness<F>(

@@ -410,6 +410,25 @@ pub enum BoltV3OperatorArtifactError {
     ApprovalEnvelopeMismatch {
         field: &'static str,
     },
+    FinalEvidenceRead {
+        field: &'static str,
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    FinalEvidenceParse {
+        field: &'static str,
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    FinalEvidenceSchema {
+        field: &'static str,
+    },
+    FinalEvidenceMismatch {
+        field: &'static str,
+    },
+    FinalEvidenceHashMismatch {
+        field: &'static str,
+    },
     Random(getrandom::Error),
     Serialize(serde_json::Error),
     Write {
@@ -634,6 +653,24 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                     "approval envelope field `{field}` does not match configured operator evidence"
                 )
             }
+            Self::FinalEvidenceRead { field, source, .. } => {
+                write!(f, "failed to read final evidence `{field}`: {source}")
+            }
+            Self::FinalEvidenceParse { field, source, .. } => {
+                write!(f, "failed to parse final evidence `{field}`: {source}")
+            }
+            Self::FinalEvidenceSchema { field } => {
+                write!(f, "final evidence field `{field}` is invalid")
+            }
+            Self::FinalEvidenceMismatch { field } => {
+                write!(
+                    f,
+                    "final evidence field `{field}` does not match configured operator evidence"
+                )
+            }
+            Self::FinalEvidenceHashMismatch { field } => {
+                write!(f, "final evidence field `{field}` file hash mismatch")
+            }
             Self::Random(error) => write!(f, "failed to generate approval nonce bytes: {error}"),
             Self::Serialize(error) => write!(f, "failed to serialize operator artifact: {error}"),
             Self::Write { source, .. } => {
@@ -679,6 +716,8 @@ impl Error for BoltV3OperatorArtifactError {
             Self::OperatorPacketParse { source, .. } => Some(source),
             Self::ApprovalEnvelopeRead { source, .. } => Some(source),
             Self::ApprovalEnvelopeParse { source, .. } => Some(source),
+            Self::FinalEvidenceRead { source, .. } => Some(source),
+            Self::FinalEvidenceParse { source, .. } => Some(source),
             Self::Random(error) => Some(error),
             Self::Serialize(error) => Some(error),
             Self::Write { source, .. } => Some(source),
@@ -2252,8 +2291,9 @@ pub fn assemble_operator_packet_from_static_manifest(
         .operator_evidence
         .as_ref()
         .ok_or(BoltV3OperatorArtifactError::MissingOperatorEvidence)?;
+    let static_manifest_path = resolve_loaded_config_path_from_path(loaded, static_manifest_path);
     let parsed_static_manifest = read_static_manifest(
-        static_manifest_path,
+        &static_manifest_path,
         operator_evidence.max_operator_evidence_file_bytes,
     )?;
     let static_manifest = &parsed_static_manifest.manifest;
@@ -2278,7 +2318,7 @@ pub fn assemble_operator_packet_from_static_manifest(
     let approval_envelope_sha256 = json_artifact_sha256(&approval_envelope)?;
     let operator_packet = operator_evidence_packet(
         loaded,
-        static_manifest_path,
+        &static_manifest_path,
         parsed_static_manifest.sha256.as_str(),
         operator_evidence,
         approval_envelope_sha256.clone(),
@@ -2300,6 +2340,12 @@ pub fn assemble_operator_packet_from_static_manifest(
     ensure_output_path_absent(&approval_envelope_path)?;
     ensure_output_path_absent(&operator_packet_path)?;
 
+    if operator_evidence.approval_envelope_sha256 != approval_envelope_sha256 {
+        return Err(BoltV3OperatorArtifactError::ApprovalEnvelopeMismatch {
+            field: "approval_envelope_sha256",
+        });
+    }
+
     let approval_envelope_written =
         write_json_artifact_create_new(&approval_envelope_path, &approval_envelope)?;
     debug_assert_eq!(approval_envelope_written.sha256, approval_envelope_sha256);
@@ -2312,7 +2358,7 @@ pub fn assemble_operator_packet_from_static_manifest(
             }
         };
     let static_manifest_written = WrittenOperatorArtifact {
-        path: static_manifest_path.to_path_buf(),
+        path: static_manifest_path,
         sha256: parsed_static_manifest.sha256,
     };
 
@@ -2321,6 +2367,26 @@ pub fn assemble_operator_packet_from_static_manifest(
         operator_packet: operator_packet_written,
         static_manifest: static_manifest_written,
     })
+}
+
+pub fn compute_operator_approval_envelope_sha256(
+    loaded: &LoadedBoltV3Config,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or(BoltV3OperatorArtifactError::MissingLiveCanary)?;
+    let operator_evidence = live_canary
+        .operator_evidence
+        .as_ref()
+        .ok_or(BoltV3OperatorArtifactError::MissingOperatorEvidence)?;
+    let approval_envelope = approval_envelope_from_operator_evidence(
+        operator_evidence,
+        live_canary.approval_id.as_str(),
+    );
+
+    json_artifact_sha256(&approval_envelope)
 }
 
 pub fn verify_final_operator_packet(
@@ -2392,6 +2458,14 @@ pub fn verify_final_operator_packet(
         loaded,
         operator_evidence,
         live_canary.approval_id.as_str(),
+    )?;
+    verify_final_live_evidence_files(
+        loaded,
+        operator_evidence,
+        live_canary.approval_id.as_str(),
+        approval_envelope.sha256.as_str(),
+        live_canary.max_live_order_count,
+        live_canary.max_notional_per_order.to_string().as_str(),
     )?;
 
     Ok(BoltV3FinalOperatorPacketVerification {
@@ -2858,6 +2932,494 @@ fn validate_approval_envelope_fields(
         });
     }
     Ok(())
+}
+
+fn verify_final_live_evidence_files(
+    loaded: &LoadedBoltV3Config,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+    approval_id: &str,
+    approval_envelope_sha256: &str,
+    max_live_order_count: u32,
+    max_notional_per_order: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let (canary, _) = read_final_json_evidence(
+        loaded,
+        operator_evidence,
+        "canary_evidence_path",
+        &operator_evidence.canary_evidence_path,
+    )?;
+    validate_canary_final_evidence(
+        &canary,
+        operator_evidence,
+        approval_id,
+        max_live_order_count,
+        max_notional_per_order,
+    )?;
+    verify_canary_static_evidence_ref(
+        &canary,
+        "ssm_manifest_ref",
+        &operator_evidence.ssm_manifest_path,
+        &operator_evidence.ssm_manifest_sha256,
+    )?;
+    verify_canary_static_evidence_ref(
+        &canary,
+        "strategy_input_evidence_ref",
+        &operator_evidence.strategy_input_evidence_path,
+        &operator_evidence.strategy_input_evidence_sha256,
+    )?;
+    verify_canary_final_evidence_ref(
+        loaded,
+        operator_evidence,
+        &canary,
+        "decision_evidence_ref",
+        "decision_evidence_path",
+        &operator_evidence.decision_evidence_path,
+    )?;
+    verify_canary_final_evidence_ref(
+        loaded,
+        operator_evidence,
+        &canary,
+        "nt_submit_event_ref",
+        "nt_submit_event_path",
+        &operator_evidence.nt_submit_event_path,
+    )?;
+    verify_canary_final_evidence_ref(
+        loaded,
+        operator_evidence,
+        &canary,
+        "venue_order_state_ref",
+        "venue_order_state_path",
+        &operator_evidence.venue_order_state_path,
+    )?;
+    verify_optional_strategy_cancel_ref(loaded, operator_evidence, &canary)?;
+    verify_canary_final_evidence_ref(
+        loaded,
+        operator_evidence,
+        &canary,
+        "restart_reconciliation_ref",
+        "restart_reconciliation_path",
+        &operator_evidence.restart_reconciliation_path,
+    )?;
+    verify_canary_final_evidence_ref(
+        loaded,
+        operator_evidence,
+        &canary,
+        "post_run_hygiene_ref",
+        "post_run_hygiene_path",
+        &operator_evidence.post_run_hygiene_path,
+    )?;
+
+    let (approval_consumption, _) = read_final_json_evidence(
+        loaded,
+        operator_evidence,
+        "approval_consumption_path",
+        &operator_evidence.approval_consumption_path,
+    )?;
+    validate_approval_consumption_final_evidence(
+        &approval_consumption,
+        operator_evidence,
+        approval_id,
+        approval_envelope_sha256,
+    )
+}
+
+fn validate_canary_final_evidence(
+    canary: &serde_json::Value,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+    approval_id: &str,
+    max_live_order_count: u32,
+    max_notional_per_order: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let schema_version = expect_final_u64(canary, "canary_evidence_path.schema_version")?;
+    if schema_version != 1 {
+        return Err(BoltV3OperatorArtifactError::FinalEvidenceSchema {
+            field: "canary_evidence_path.schema_version",
+        });
+    }
+    expect_final_string_equals(
+        canary,
+        "head_sha",
+        "canary_evidence_path.head_sha",
+        &operator_evidence.head_sha,
+    )?;
+    expect_final_string_equals(
+        canary,
+        "ssm_manifest_sha256",
+        "canary_evidence_path.ssm_manifest_sha256",
+        &operator_evidence.ssm_manifest_sha256,
+    )?;
+    expect_final_string_equals(
+        canary,
+        "approval_id_hash",
+        "canary_evidence_path.approval_id_hash",
+        &sha256_text(approval_id),
+    )?;
+    let reported_count = expect_final_u64(canary, "canary_evidence_path.max_live_order_count")?;
+    if reported_count != u64::from(max_live_order_count) {
+        return Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
+            field: "canary_evidence_path.max_live_order_count",
+        });
+    }
+    expect_final_string_equals(
+        canary,
+        "max_notional_per_order",
+        "canary_evidence_path.max_notional_per_order",
+        max_notional_per_order,
+    )?;
+    expect_final_string_equals(
+        canary,
+        "outcome",
+        "canary_evidence_path.outcome",
+        "live_canary_proof",
+    )?;
+    let block_reasons = canary
+        .get("block_reasons")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(BoltV3OperatorArtifactError::FinalEvidenceSchema {
+            field: "canary_evidence_path.block_reasons",
+        })?;
+    if !block_reasons.is_empty() {
+        return Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
+            field: "canary_evidence_path.block_reasons",
+        });
+    }
+    let submit_ref = canary.get("submit_admission_ref").ok_or(
+        BoltV3OperatorArtifactError::FinalEvidenceSchema {
+            field: "canary_evidence_path.submit_admission_ref",
+        },
+    )?;
+    expect_final_string_equals(
+        submit_ref,
+        "status",
+        "canary_evidence_path.submit_admission_ref.status",
+        "accepted",
+    )?;
+    let admitted_order_count = expect_final_u64(
+        submit_ref,
+        "canary_evidence_path.submit_admission_ref.admitted_order_count",
+    )?;
+    if admitted_order_count != u64::from(max_live_order_count) {
+        return Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
+            field: "canary_evidence_path.submit_admission_ref.admitted_order_count",
+        });
+    }
+    Ok(())
+}
+
+fn verify_canary_static_evidence_ref(
+    canary: &serde_json::Value,
+    ref_field: &'static str,
+    configured_path: &str,
+    configured_sha256: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let evidence_ref = canary
+        .get(ref_field)
+        .filter(|value| !value.is_null())
+        .ok_or(BoltV3OperatorArtifactError::FinalEvidenceSchema { field: ref_field })?;
+    expect_final_string_equals(
+        evidence_ref,
+        "path_hash",
+        ref_field,
+        &sha256_text(configured_path),
+    )?;
+    expect_final_string_equals(evidence_ref, "record_hash", ref_field, configured_sha256)
+}
+
+fn verify_canary_final_evidence_ref(
+    loaded: &LoadedBoltV3Config,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+    canary: &serde_json::Value,
+    ref_field: &'static str,
+    path_field: &'static str,
+    configured_path: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let evidence_ref = canary
+        .get(ref_field)
+        .filter(|value| !value.is_null())
+        .ok_or(BoltV3OperatorArtifactError::FinalEvidenceSchema { field: ref_field })?;
+    expect_final_string_equals(
+        evidence_ref,
+        "path_hash",
+        ref_field,
+        &sha256_text(configured_path),
+    )?;
+    let record_hash = expect_final_string(evidence_ref, "record_hash", ref_field)?;
+    let actual_hash =
+        read_final_evidence_sha256(loaded, operator_evidence, path_field, configured_path)?;
+    if record_hash != actual_hash {
+        return Err(BoltV3OperatorArtifactError::FinalEvidenceHashMismatch { field: ref_field });
+    }
+    Ok(())
+}
+
+fn verify_optional_strategy_cancel_ref(
+    loaded: &LoadedBoltV3Config,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+    canary: &serde_json::Value,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    match (
+        operator_evidence.strategy_cancel_path.as_deref(),
+        canary.get("strategy_cancel_ref"),
+    ) {
+        (None, None) | (None, Some(serde_json::Value::Null)) => Ok(()),
+        (Some(configured), Some(value)) if !value.is_null() => {
+            expect_final_string_equals(
+                value,
+                "path_hash",
+                "strategy_cancel_ref",
+                &sha256_text(configured),
+            )?;
+            let record_hash = expect_final_string(value, "record_hash", "strategy_cancel_ref")?;
+            let actual_hash = read_final_evidence_sha256(
+                loaded,
+                operator_evidence,
+                "strategy_cancel_path",
+                configured,
+            )?;
+            if record_hash != actual_hash {
+                return Err(BoltV3OperatorArtifactError::FinalEvidenceHashMismatch {
+                    field: "strategy_cancel_ref",
+                });
+            }
+            Ok(())
+        }
+        (Some(_), _) | (None, Some(_)) => Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
+            field: "strategy_cancel_ref",
+        }),
+    }
+}
+
+fn validate_approval_consumption_final_evidence(
+    approval: &serde_json::Value,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+    approval_id: &str,
+    approval_envelope_sha256: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let schema_version = expect_final_i64(approval, "approval_consumption_path.schema_version")?;
+    if schema_version != 1 {
+        return Err(BoltV3OperatorArtifactError::FinalEvidenceSchema {
+            field: "approval_consumption_path.schema_version",
+        });
+    }
+    expect_final_string_equals(
+        approval,
+        "record_kind",
+        "approval_consumption_path.record_kind",
+        "phase8_operator_approval_consumption",
+    )?;
+    expect_final_string_equals(
+        approval,
+        "head_sha",
+        "approval_consumption_path.head_sha",
+        &operator_evidence.head_sha,
+    )?;
+    expect_final_string_equals(
+        approval,
+        "approval_envelope_sha256",
+        "approval_consumption_path.approval_envelope_sha256",
+        approval_envelope_sha256,
+    )?;
+    expect_final_string_equals(
+        approval,
+        "ssm_manifest_sha256",
+        "approval_consumption_path.ssm_manifest_sha256",
+        &operator_evidence.ssm_manifest_sha256,
+    )?;
+    expect_final_string_equals(
+        approval,
+        "strategy_input_evidence_sha256",
+        "approval_consumption_path.strategy_input_evidence_sha256",
+        &operator_evidence.strategy_input_evidence_sha256,
+    )?;
+    expect_final_string_equals(
+        approval,
+        "financial_envelope_sha256",
+        "approval_consumption_path.financial_envelope_sha256",
+        &operator_evidence.financial_envelope_sha256,
+    )?;
+    expect_final_string_equals(
+        approval,
+        "pre_run_state_sha256",
+        "approval_consumption_path.pre_run_state_sha256",
+        &operator_evidence.pre_run_state_sha256,
+    )?;
+    expect_final_string_equals(
+        approval,
+        "abort_plan_sha256",
+        "approval_consumption_path.abort_plan_sha256",
+        &operator_evidence.abort_plan_sha256,
+    )?;
+    expect_final_string_equals(
+        approval,
+        "approval_id_hash",
+        "approval_consumption_path.approval_id_hash",
+        &sha256_text(approval_id),
+    )?;
+    expect_final_string_equals(
+        approval,
+        "approval_nonce_sha256",
+        "approval_consumption_path.approval_nonce_sha256",
+        &operator_evidence.approval_nonce_sha256,
+    )?;
+    expect_final_string_equals(
+        approval,
+        "canary_evidence_path_hash",
+        "approval_consumption_path.canary_evidence_path_hash",
+        &sha256_text(&operator_evidence.canary_evidence_path),
+    )?;
+    let not_before = expect_final_i64(
+        approval,
+        "approval_consumption_path.approval_not_before_unix_secs",
+    )?;
+    if not_before != operator_evidence.approval_not_before_unix_seconds {
+        return Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
+            field: "approval_consumption_path.approval_not_before_unix_secs",
+        });
+    }
+    let not_after = expect_final_i64(
+        approval,
+        "approval_consumption_path.approval_not_after_unix_secs",
+    )?;
+    if not_after != operator_evidence.approval_not_after_unix_seconds {
+        return Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
+            field: "approval_consumption_path.approval_not_after_unix_secs",
+        });
+    }
+    let consumed_unix_secs =
+        expect_final_i64(approval, "approval_consumption_path.consumed_unix_secs")?;
+    if consumed_unix_secs < operator_evidence.approval_not_before_unix_seconds
+        || consumed_unix_secs > operator_evidence.approval_not_after_unix_seconds
+    {
+        return Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
+            field: "approval_consumption_path.consumed_unix_secs",
+        });
+    }
+    match (
+        operator_evidence.strategy_cancel_path.as_deref(),
+        approval.get("strategy_cancel_path_hash"),
+    ) {
+        (None, None) | (None, Some(serde_json::Value::Null)) => Ok(()),
+        (Some(configured), Some(value)) => {
+            let actual =
+                value
+                    .as_str()
+                    .ok_or(BoltV3OperatorArtifactError::FinalEvidenceSchema {
+                        field: "approval_consumption_path.strategy_cancel_path_hash",
+                    })?;
+            if actual == sha256_text(configured) {
+                Ok(())
+            } else {
+                Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
+                    field: "approval_consumption_path.strategy_cancel_path_hash",
+                })
+            }
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
+                field: "approval_consumption_path.strategy_cancel_path_hash",
+            })
+        }
+    }
+}
+
+fn read_final_json_evidence(
+    loaded: &LoadedBoltV3Config,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+    field: &'static str,
+    configured_path: &str,
+) -> Result<(serde_json::Value, String), BoltV3OperatorArtifactError> {
+    let resolved_path = resolve_loaded_config_path(loaded, configured_path);
+    let bytes = read_file_bounded(
+        &resolved_path,
+        operator_evidence.max_operator_evidence_file_bytes,
+    )
+    .map_err(|source| BoltV3OperatorArtifactError::FinalEvidenceRead {
+        field,
+        path: resolved_path.clone(),
+        source,
+    })?;
+    let sha256 = hex::encode(Sha256::digest(&bytes));
+    let value = serde_json::from_slice(&bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::FinalEvidenceParse {
+            field,
+            path: resolved_path.clone(),
+            source,
+        }
+    })?;
+    Ok((value, sha256))
+}
+
+fn read_final_evidence_sha256(
+    loaded: &LoadedBoltV3Config,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+    field: &'static str,
+    configured_path: &str,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    let resolved_path = resolve_loaded_config_path(loaded, configured_path);
+    let bytes = read_file_bounded(
+        &resolved_path,
+        operator_evidence.max_operator_evidence_file_bytes,
+    )
+    .map_err(|source| BoltV3OperatorArtifactError::FinalEvidenceRead {
+        field,
+        path: resolved_path,
+        source,
+    })?;
+    Ok(hex::encode(Sha256::digest(&bytes)))
+}
+
+fn expect_final_string_equals(
+    value: &serde_json::Value,
+    json_field: &str,
+    error_field: &'static str,
+    expected: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let actual = expect_final_string(value, json_field, error_field)?;
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch { field: error_field })
+    }
+}
+
+fn expect_final_string<'a>(
+    value: &'a serde_json::Value,
+    json_field: &str,
+    error_field: &'static str,
+) -> Result<&'a str, BoltV3OperatorArtifactError> {
+    value
+        .get(json_field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or(BoltV3OperatorArtifactError::FinalEvidenceSchema { field: error_field })
+}
+
+fn expect_final_i64(
+    value: &serde_json::Value,
+    error_field: &'static str,
+) -> Result<i64, BoltV3OperatorArtifactError> {
+    let json_field = final_json_field(error_field);
+    value
+        .get(json_field)
+        .and_then(serde_json::Value::as_i64)
+        .ok_or(BoltV3OperatorArtifactError::FinalEvidenceSchema { field: error_field })
+}
+
+fn expect_final_u64(
+    value: &serde_json::Value,
+    error_field: &'static str,
+) -> Result<u64, BoltV3OperatorArtifactError> {
+    let json_field = final_json_field(error_field);
+    value
+        .get(json_field)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(BoltV3OperatorArtifactError::FinalEvidenceSchema { field: error_field })
+}
+
+fn final_json_field(error_field: &'static str) -> &'static str {
+    error_field
+        .rsplit_once('.')
+        .map(|(_, field)| field)
+        .unwrap_or(error_field)
 }
 
 fn approval_envelope_from_operator_evidence(

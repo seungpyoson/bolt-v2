@@ -1298,6 +1298,53 @@ fn approval_packet_assembly_refuses_static_manifest_with_blockers() {
 }
 
 #[test]
+fn approval_packet_assembly_rejects_unbound_approval_envelope_hash_before_writes() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
+        .expect("build head sha should be compiled for packet assembly tests")
+        .to_string();
+    operator_evidence.approval_envelope_sha256 = "0".repeat(64);
+    let approval_envelope_path = operator_evidence.approval_envelope_path.clone();
+    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence);
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs,
+        Vec::new(),
+    );
+    let operator_packet_path = temp.path().join("operator-evidence-packet.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+        &loaded,
+        &manifest_path,
+        &operator_packet_path,
+    )
+    .expect_err("assembly must reject a configured approval_envelope_sha256 that cannot verify");
+
+    assert!(
+        error.to_string().contains("approval_envelope_sha256"),
+        "unbound approval-envelope hash error should name the configured hash field: {error}"
+    );
+    assert!(
+        !std::path::Path::new(&approval_envelope_path).exists(),
+        "rejected assembly must not write approval envelope"
+    );
+    assert!(
+        !operator_packet_path.exists(),
+        "rejected assembly must not write operator packet"
+    );
+}
+
+#[test]
 fn approval_packet_assembly_rejects_static_manifest_integrity_gaps() {
     let mut loaded = load_fixture_with_live_canary();
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -1447,6 +1494,7 @@ fn approval_packet_assembly_writes_non_circular_envelope_from_existing_refs() {
         .as_mut()
         .expect("fixture should have live canary")
         .operator_evidence = Some(operator_evidence.clone());
+    bind_expected_approval_envelope_hash(&mut loaded, &mut operator_evidence);
     let manifest_path = temp.path().join("static-artifacts-manifest.json");
     write_static_artifacts_manifest_for_test(
         &manifest_path,
@@ -1613,6 +1661,56 @@ fn approval_packet_assembly_writes_non_circular_envelope_from_existing_refs() {
         ),
         "operator packet must not print raw approval id"
     );
+}
+
+#[test]
+fn approval_packet_assembly_binds_relative_static_manifest_to_config_root() {
+    let mut loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    loaded.root_path = temp.path().join("root.toml");
+    std::fs::write(&loaded.root_path, "fixture root").expect("root fixture should write");
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
+        .expect("build head sha should be compiled for relative manifest verifier test")
+        .to_string();
+    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("fixture should have live canary")
+        .operator_evidence = Some(operator_evidence.clone());
+    bind_expected_approval_envelope_hash(&mut loaded, &mut operator_evidence);
+    write_final_live_evidence_artifacts_for_test(&loaded, &operator_evidence);
+    let manifest_path = temp.path().join("static-artifacts-manifest.json");
+    write_static_artifacts_manifest_for_test(
+        &manifest_path,
+        &loaded.config_bundle_checksum,
+        refs,
+        Vec::new(),
+    );
+    let relative_manifest_path = std::path::Path::new("static-artifacts-manifest.json");
+    let operator_packet_path = temp.path().join("operator-evidence-packet.json");
+
+    let outcome =
+        bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
+            &loaded,
+            relative_manifest_path,
+            &operator_packet_path,
+        )
+        .expect("relative static manifest should resolve from config root");
+    let packet = read_json_value(&operator_packet_path);
+
+    assert_eq!(outcome.static_manifest.path, manifest_path);
+    assert_eq!(
+        packet["static_manifest_path"],
+        manifest_path.to_string_lossy().to_string()
+    );
+    bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &loaded,
+        &operator_packet_path,
+    )
+    .expect("verifier should resolve the same manifest path stored by assembly");
 }
 
 #[test]
@@ -2404,6 +2502,52 @@ fn final_packet_verifier_rejects_missing_approval_envelope_file() {
     assert!(
         !error.to_string().contains(&evidence.approval_envelope_path),
         "missing approval envelope error must not echo raw artifact path: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_missing_live_canary_evidence_file() {
+    let fixture = assembled_final_packet_fixture();
+    let evidence = fixture.operator_evidence();
+    let canary_evidence_path = std::path::PathBuf::from(&evidence.canary_evidence_path);
+    let _ = std::fs::remove_file(&canary_evidence_path);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("final packet verifier must read and verify live canary evidence");
+
+    assert!(
+        error.to_string().contains("canary_evidence_path"),
+        "missing live-canary evidence error should name the configured final evidence field: {error}"
+    );
+    assert!(
+        !error
+            .to_string()
+            .contains(&canary_evidence_path.to_string_lossy().to_string()),
+        "missing live-canary evidence error must not echo raw artifact path: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_canary_static_evidence_ref_drift() {
+    let fixture = assembled_final_packet_fixture();
+    let evidence = fixture.operator_evidence();
+    let canary_evidence_path = std::path::PathBuf::from(&evidence.canary_evidence_path);
+    let mut canary = read_json_value(&canary_evidence_path);
+    canary["strategy_input_evidence_ref"]["record_hash"] = serde_json::json!("0".repeat(64));
+    write_json_value_and_hash(&canary_evidence_path, &canary);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("canary static evidence ref drift should fail closed");
+
+    assert!(
+        error.to_string().contains("strategy_input_evidence_ref"),
+        "static canary evidence ref drift should name the drifted ref: {error}"
     );
 }
 
@@ -3929,23 +4073,8 @@ fn assembled_final_packet_fixture() -> FinalPacketFixture {
         .as_mut()
         .expect("live canary should exist")
         .operator_evidence = Some(operator_evidence.clone());
-    let draft_packet_path = temp.path().join("draft-operator-evidence-packet.json");
-    let draft = bolt_v2::bolt_v3_operator_artifacts::assemble_operator_packet_from_static_manifest(
-        &loaded,
-        &manifest_path,
-        &draft_packet_path,
-    )
-    .expect("draft packet should compute approval envelope hash");
-    std::fs::remove_file(&draft.operator_packet.path).expect("draft packet should remove");
-    std::fs::remove_file(&draft.approval_envelope.path).expect("draft envelope should remove");
-
-    operator_evidence.approval_envelope_sha256 = draft.approval_envelope.sha256;
-    loaded
-        .root
-        .live_canary
-        .as_mut()
-        .expect("live canary should exist")
-        .operator_evidence = Some(operator_evidence.clone());
+    bind_expected_approval_envelope_hash(&mut loaded, &mut operator_evidence);
+    write_final_live_evidence_artifacts_for_test(&loaded, &operator_evidence);
     write_static_artifacts_manifest_for_test(
         &manifest_path,
         &loaded.config_bundle_checksum,
@@ -3971,6 +4100,151 @@ fn assembled_final_packet_fixture() -> FinalPacketFixture {
         static_manifest_path: manifest_path,
         operator_packet_path,
     }
+}
+
+fn bind_expected_approval_envelope_hash(
+    loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+) {
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should exist")
+        .operator_evidence = Some(operator_evidence.clone());
+    operator_evidence.approval_envelope_sha256 =
+        bolt_v2::bolt_v3_operator_artifacts::compute_operator_approval_envelope_sha256(loaded)
+            .expect("approval envelope hash should compute");
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should exist")
+        .operator_evidence = Some(operator_evidence.clone());
+}
+
+fn write_final_live_evidence_artifacts_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+) {
+    let decision_hash = write_final_bytes_for_test(
+        &operator_evidence.decision_evidence_path,
+        b"{\"kind\":\"admission_decision\",\"outcome\":\"admitted\"}\n",
+    );
+    let nt_submit_hash = write_json_value_and_hash(
+        std::path::Path::new(&operator_evidence.nt_submit_event_path),
+        &serde_json::json!({"record_kind": "phase8.nt_submit_event.v1"}),
+    );
+    let venue_order_hash = write_json_value_and_hash(
+        std::path::Path::new(&operator_evidence.venue_order_state_path),
+        &serde_json::json!({"record_kind": "phase8.venue_order_state.v1"}),
+    );
+    let restart_hash = write_json_value_and_hash(
+        std::path::Path::new(&operator_evidence.restart_reconciliation_path),
+        &serde_json::json!({"record_kind": "phase8.restart_reconciliation.v1"}),
+    );
+    let hygiene_hash = write_json_value_and_hash(
+        std::path::Path::new(&operator_evidence.post_run_hygiene_path),
+        &serde_json::json!({"record_kind": "phase8.post_run_hygiene.v1"}),
+    );
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("live canary should exist");
+    let canary = serde_json::json!({
+        "schema_version": 1,
+        "head_sha": operator_evidence.head_sha,
+        "root_config_sha256": sha256_text("test-root-config"),
+        "ssm_manifest_sha256": operator_evidence.ssm_manifest_sha256,
+        "ssm_manifest_ref": final_evidence_ref_for_test(
+            &operator_evidence.ssm_manifest_path,
+            &operator_evidence.ssm_manifest_sha256,
+        ),
+        "strategy_input_evidence_ref": final_evidence_ref_for_test(
+            &operator_evidence.strategy_input_evidence_path,
+            &operator_evidence.strategy_input_evidence_sha256,
+        ),
+        "approval_id_hash": sha256_text(&live_canary.approval_id),
+        "max_live_order_count": live_canary.max_live_order_count,
+        "max_notional_per_order": live_canary.max_notional_per_order.to_string(),
+        "decision_evidence_ref": final_evidence_ref_for_test(
+            &operator_evidence.decision_evidence_path,
+            &decision_hash,
+        ),
+        "submit_admission_ref": {
+            "status": "accepted",
+            "admitted_order_count": live_canary.max_live_order_count,
+            "reason": "nt_adapter_submit_proven"
+        },
+        "live_order_ref": {
+            "strategy_instance_id_hash": sha256_text("test-strategy"),
+            "client_order_id_hash": sha256_text("test-client-order"),
+            "venue_order_id_hash": sha256_text("test-venue-order")
+        },
+        "nt_submit_event_ref": final_evidence_ref_for_test(
+            &operator_evidence.nt_submit_event_path,
+            &nt_submit_hash,
+        ),
+        "venue_order_state_ref": final_evidence_ref_for_test(
+            &operator_evidence.venue_order_state_path,
+            &venue_order_hash,
+        ),
+        "strategy_cancel_ref": serde_json::Value::Null,
+        "restart_reconciliation_ref": final_evidence_ref_for_test(
+            &operator_evidence.restart_reconciliation_path,
+            &restart_hash,
+        ),
+        "post_run_hygiene_ref": final_evidence_ref_for_test(
+            &operator_evidence.post_run_hygiene_path,
+            &hygiene_hash,
+        ),
+        "runtime_capture_ref": {
+            "spool_root_hash": sha256_text("test-spool-root"),
+            "run_id": "test-run"
+        },
+        "nt_lifecycle_refs": [],
+        "outcome": "live_canary_proof",
+        "block_reasons": []
+    });
+    write_json_value_and_hash(
+        std::path::Path::new(&operator_evidence.canary_evidence_path),
+        &canary,
+    );
+    let approval_consumption = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "phase8_operator_approval_consumption",
+        "head_sha": operator_evidence.head_sha,
+        "root_toml_sha256": sha256_text("test-root-config"),
+        "approval_envelope_sha256": operator_evidence.approval_envelope_sha256,
+        "ssm_manifest_sha256": operator_evidence.ssm_manifest_sha256,
+        "strategy_input_evidence_sha256": operator_evidence.strategy_input_evidence_sha256,
+        "financial_envelope_sha256": operator_evidence.financial_envelope_sha256,
+        "pre_run_state_sha256": operator_evidence.pre_run_state_sha256,
+        "abort_plan_sha256": operator_evidence.abort_plan_sha256,
+        "approval_id_hash": sha256_text(&live_canary.approval_id),
+        "approval_nonce_sha256": operator_evidence.approval_nonce_sha256,
+        "approval_not_before_unix_secs": operator_evidence.approval_not_before_unix_seconds,
+        "approval_not_after_unix_secs": operator_evidence.approval_not_after_unix_seconds,
+        "canary_evidence_path_hash": sha256_text(&operator_evidence.canary_evidence_path),
+        "consumed_unix_secs": operator_evidence.approval_not_before_unix_seconds,
+    });
+    write_json_value_and_hash(
+        std::path::Path::new(&operator_evidence.approval_consumption_path),
+        &approval_consumption,
+    );
+}
+
+fn write_final_bytes_for_test(path: &str, bytes: &[u8]) -> String {
+    std::fs::write(path, bytes).expect("final evidence fixture should write");
+    sha256_bytes(bytes)
+}
+
+fn final_evidence_ref_for_test(path: &str, record_hash: &str) -> serde_json::Value {
+    serde_json::json!({
+        "path_hash": sha256_text(path),
+        "record_hash": record_hash,
+    })
 }
 
 fn read_json_value(path: &std::path::Path) -> serde_json::Value {

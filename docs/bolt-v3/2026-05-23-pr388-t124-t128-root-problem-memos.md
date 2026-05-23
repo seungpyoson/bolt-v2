@@ -3,17 +3,17 @@
 Date: 2026-05-23
 PR: #388
 Branch: `codex/production-readiness-evidence-audit`
-Head: `3ac5b3a40367803ea126bb2fa07232d73d235c04`
+Historical review head: `3ac5b3a40367803ea126bb2fa07232d73d235c04`
 Base recorded by PR API: `08d26ae05b03d448b8917f2aaf39a4c37bd0b38d`
-Current `origin/main`: `500f0aa0b423fd852dcde8b52658f14b9545670f`
+`origin/main` recorded at review time: `500f0aa0b423fd852dcde8b52658f14b9545670f`
 
-State anchor:
+Historical state anchor:
 
 - `git fetch origin` completed after sandbox escalation for worktree git metadata.
 - `git status --short --branch` reported branch `codex/production-readiness-evidence-audit...origin/codex/production-readiness-evidence-audit` with unrelated dirty dotfiles: modified `.codex/config.toml`, deleted `.codex/hooks.json`, deleted `.gemini/settings.json`.
-- `gh pr view 388 --repo seungpyoson/bolt-v2 --json state,title,url,headRefOid,baseRefOid,mergeStateStatus,isDraft` reported PR open, non-draft, clean merge state, and head `3ac5b3a40367803ea126bb2fa07232d73d235c04`.
-- `gh pr checks 388 --repo seungpyoson/bolt-v2` reported current PR checks passing, with deploy and same-sha-main-evidence skipped.
-- `gh api repos/seungpyoson/bolt-v2/branches/main --jq .commit.sha` reported current remote main `500f0aa0b423fd852dcde8b52658f14b9545670f`; `gh api repos/seungpyoson/bolt-v2/pulls/388 --jq '{base:.base.sha, head:.head.sha, mergeable_state:.mergeable}'` still reported PR base `08d26ae05b03d448b8917f2aaf39a4c37bd0b38d`, head `3ac5b3a40367803ea126bb2fa07232d73d235c04`, mergeable `true`, mergeable_state `clean`.
+- `gh pr view 388 --repo seungpyoson/bolt-v2 --json state,title,url,headRefOid,baseRefOid,mergeStateStatus,isDraft` reported the historical review target as PR open, non-draft, clean merge state, with target SHA `3ac5b3a40367803ea126bb2fa07232d73d235c04`.
+- `gh pr checks 388 --repo seungpyoson/bolt-v2` reported checks passing for that historical PR head, with deploy and same-sha-main-evidence skipped.
+- `gh api repos/seungpyoson/bolt-v2/branches/main --jq .commit.sha` reported remote main at review time `500f0aa0b423fd852dcde8b52658f14b9545670f`; `gh api repos/seungpyoson/bolt-v2/pulls/388 --jq '{base:.base.sha, head:.head.sha, mergeable_state:.mergeable}'` reported PR base `08d26ae05b03d448b8917f2aaf39a4c37bd0b38d`, historical target SHA `3ac5b3a40367803ea126bb2fa07232d73d235c04`, mergeable `true`, mergeable_state `clean`.
 
 Scope note:
 

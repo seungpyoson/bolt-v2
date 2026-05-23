@@ -262,7 +262,6 @@ pub fn resolve_secrets(
     validate_binance_api_secret_shape(&api_secret).map_err(|_| BoltV3SecretError {
         client_key: context.client_key.to_string(),
         field: "api_secret_ssm_path".to_string(),
-        ssm_path: secrets.api_secret_ssm_path.clone(),
         source: "resolved binance api_secret is not valid Ed25519 PKCS8 base64 key material accepted by the NautilusTrader binance adapter".to_string(),
     })?;
     let api_key = resolve_field(
@@ -304,7 +303,6 @@ fn parse_secrets_config(
         .ok_or_else(|| BoltV3SecretError {
             client_key: context.client_key.to_string(),
             field: "secrets".to_string(),
-            ssm_path: String::new(),
             source: "missing [secrets] block".to_string(),
         })?;
     secrets_value
@@ -313,7 +311,6 @@ fn parse_secrets_config(
         .map_err(|error: toml::de::Error| BoltV3SecretError {
             client_key: context.client_key.to_string(),
             field: KEY.to_string(),
-            ssm_path: String::new(),
             source: format!("invalid binance secrets schema: {error}"),
         })
 }

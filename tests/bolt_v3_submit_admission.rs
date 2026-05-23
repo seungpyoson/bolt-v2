@@ -42,6 +42,38 @@ fn live_node_runtime_does_not_expose_manual_admission_or_raw_run_bypass() {
 }
 
 #[test]
+fn live_node_runner_consumes_operator_approval_before_arming_submit_admission() {
+    let source = support::repo_text("src/bolt_v3_live_node.rs");
+    let start = source
+        .find("pub async fn run_bolt_v3_live_node")
+        .expect("live runner entrypoint should exist");
+    let end = source[start..]
+        .find("pub async fn controlled_no_submit_readiness")
+        .map(|offset| start + offset)
+        .expect("next public function should bound live runner source");
+    let runner = &source[start..end];
+
+    let preflight_index = runner
+        .find("check_bolt_v3_live_canary_pre_consumption_gate")
+        .expect("live runner must use the pre-consumption gate before approval consumption");
+    let consume_index = runner
+        .find("consume_bolt_v3_live_runner_approval")
+        .expect("live runner must atomically consume approval before arming submit admission");
+    let arm_index = runner
+        .find(".arm(")
+        .expect("live runner should arm submit admission");
+
+    assert!(
+        preflight_index < consume_index && consume_index < arm_index,
+        "live runner must preflight, atomically consume approval, then arm submit admission"
+    );
+    assert!(
+        !runner.contains("check_bolt_v3_live_canary_gate(loaded)"),
+        "live runner must not accept replayable pre-existing approval consumption proof"
+    );
+}
+
+#[test]
 fn unarmed_submit_admission_rejects_before_nt_submit() {
     let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
@@ -552,13 +584,13 @@ fn entry_replace_and_exit_submit_intents_are_classified_before_admission() {
 }
 
 #[test]
-fn risk_reducing_exit_after_entry_is_admitted_by_explicit_policy() {
+fn risk_reducing_exit_after_entry_is_admitted_within_operator_count_cap() {
     let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
     ));
     admission
         .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
+            2,
             Decimal::new(1, 0),
         ))
         .expect("valid gate report should arm admission");
@@ -591,7 +623,51 @@ fn risk_reducing_exit_after_entry_is_admitted_by_explicit_policy() {
 }
 
 #[test]
-fn replace_submit_does_not_inflate_risk_reducing_exit_carveout() {
+fn risk_reducing_exit_cannot_exceed_operator_live_order_count_cap() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(1, 0),
+        ))
+        .expect("valid gate report should arm admission");
+
+    admission
+        .admit(&submit_request_with_kind(
+            Decimal::new(1, 1),
+            BoltV3SubmitIntentKind::Entry,
+        ))
+        .expect("entry submit should consume the only operator-approved count slot");
+
+    let exit = admission
+        .admit(&submit_request_with_kind(
+            Decimal::new(1, 1),
+            BoltV3SubmitIntentKind::RiskReducingExit,
+        ))
+        .expect_err("risk-reducing exit must not exceed max_live_order_count=1");
+
+    assert!(matches!(
+        exit,
+        BoltV3SubmitAdmissionError::CountCapExhausted
+    ));
+    let outcomes: Vec<BoltV3AdmissionOutcome> = writer
+        .admission_decisions()
+        .into_iter()
+        .map(|decision| decision.outcome)
+        .collect();
+    assert_eq!(
+        outcomes,
+        vec![
+            BoltV3AdmissionOutcome::Admitted,
+            BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+        ]
+    );
+    assert_eq!(admission.admitted_order_count(), 1);
+}
+
+#[test]
+fn replace_submit_consumes_operator_count_budget_before_risk_reducing_exit() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
     admission
@@ -613,22 +689,16 @@ fn replace_submit_does_not_inflate_risk_reducing_exit_carveout() {
             BoltV3SubmitIntentKind::ReplaceSubmit,
         ))
         .expect("replace-submit should be admissible when lifecycle policy enables it");
-    admission
-        .admit(&submit_request_with_kind(
-            Decimal::new(1, 1),
-            BoltV3SubmitIntentKind::RiskReducingExit,
-        ))
-        .expect("one risk-reducing exit remains admissible for the real entry");
 
-    let second_exit = admission
+    let exit = admission
         .admit(&submit_request_with_kind(
             Decimal::new(1, 1),
             BoltV3SubmitIntentKind::RiskReducingExit,
         ))
-        .expect_err("replace-submit must not mint another risk-reducing-exit allowance");
+        .expect_err("replace-submit must consume count budget and leave no extra exit slot");
 
     assert!(matches!(
-        second_exit,
+        exit,
         BoltV3SubmitAdmissionError::CountCapExhausted
     ));
     let outcomes: Vec<BoltV3AdmissionOutcome> = writer
@@ -641,11 +711,10 @@ fn replace_submit_does_not_inflate_risk_reducing_exit_carveout() {
         vec![
             BoltV3AdmissionOutcome::Admitted,
             BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::Admitted,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
         ]
     );
-    assert_eq!(admission.admitted_order_count(), 3);
+    assert_eq!(admission.admitted_order_count(), 2);
 }
 
 #[test]

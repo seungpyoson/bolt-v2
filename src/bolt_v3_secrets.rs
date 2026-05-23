@@ -148,7 +148,6 @@ impl std::fmt::Debug for ResolvedBoltV3Secrets {
 pub struct BoltV3SecretError {
     pub client_key: String,
     pub field: String,
-    pub ssm_path: String,
     pub source: String,
 }
 
@@ -219,7 +218,6 @@ where
             return Err(BoltV3SecretError {
                 client_key: client_key.clone(),
                 field: "venue".to_string(),
-                ssm_path: String::new(),
                 source: format!(
                     "venue `{}` is not supported by this build",
                     client.venue.as_str()
@@ -252,14 +250,12 @@ pub fn resolve_field(
         .map_err(|error| BoltV3SecretError {
             client_key: client_key.to_string(),
             field: field.to_string(),
-            ssm_path: ssm_path.to_string(),
             source: error,
         })?;
     if value.trim().is_empty() {
         return Err(BoltV3SecretError {
             client_key: client_key.to_string(),
             field: field.to_string(),
-            ssm_path: ssm_path.to_string(),
             source: "resolved SSM value is empty or whitespace-only".to_string(),
         });
     }
@@ -267,7 +263,6 @@ pub fn resolve_field(
         return Err(BoltV3SecretError {
             client_key: client_key.to_string(),
             field: field.to_string(),
-            ssm_path: ssm_path.to_string(),
             source: "resolved SSM value has leading or trailing whitespace".to_string(),
         });
     }
@@ -275,7 +270,6 @@ pub fn resolve_field(
         return Err(BoltV3SecretError {
             client_key: client_key.to_string(),
             field: field.to_string(),
-            ssm_path: ssm_path.to_string(),
             source: "resolved SSM value contains embedded whitespace".to_string(),
         });
     }
@@ -450,7 +444,6 @@ mod tests {
 
         assert_eq!(error.client_key, "polymarket_main");
         assert_eq!(error.field, "api_key_ssm_path");
-        assert_eq!(error.ssm_path, "/bolt/polymarket_main/api_key");
         assert_eq!(
             error.source,
             "resolved SSM value is empty or whitespace-only"
@@ -472,7 +465,6 @@ mod tests {
 
         assert_eq!(error.client_key, "polymarket_main");
         assert_eq!(error.field, "private_key_ssm_path");
-        assert_eq!(error.ssm_path, "/bolt/polymarket_main/private_key");
         assert!(
             error.source.contains(
                 "resolved polymarket private_key is not valid EVM private key material accepted by the NautilusTrader polymarket adapter:"
@@ -571,7 +563,6 @@ mod tests {
 
         assert_eq!(error.client_key, "polymarket_main");
         assert_eq!(error.field, "api_secret_ssm_path");
-        assert_eq!(error.ssm_path, "/bolt/polymarket_main/api_secret");
         assert_eq!(
             error.source,
             "resolved SSM value has leading or trailing whitespace"
@@ -593,7 +584,6 @@ mod tests {
 
         assert_eq!(error.client_key, "polymarket_main");
         assert_eq!(error.field, "api_key_ssm_path");
-        assert_eq!(error.ssm_path, "/bolt/polymarket_main/api_key");
         assert_eq!(
             error.source,
             "resolved SSM value contains embedded whitespace"
@@ -638,7 +628,7 @@ mod tests {
             }
         })
         .expect_err("SSM failure should abort resolution");
-        let raw_path = error.ssm_path.clone();
+        let raw_path = "/bolt/binance_reference/api_secret";
         let message = error.to_string();
 
         assert!(
@@ -658,6 +648,17 @@ mod tests {
         assert!(
             !debug.contains(&raw_path),
             "SSM failure Debug output must not expose raw path: {debug}"
+        );
+    }
+
+    #[test]
+    fn bolt_v3_secret_error_does_not_expose_raw_ssm_path_as_public_api() {
+        let source = include_str!("bolt_v3_secrets.rs");
+        let forbidden = format!("{} {}", "pub", "ssm_path:");
+
+        assert!(
+            !source.contains(&forbidden),
+            "BoltV3SecretError must not expose raw SSM paths as a public field"
         );
     }
 

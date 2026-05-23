@@ -5033,6 +5033,398 @@ classification = "operator_artifact_nonce_buffer_initialization"
 reason = "This initializes a nonce byte buffer before OS CSPRNG fill and does not configure trading behavior."
 
 [[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"accepted"'''
+context = '''"accepted",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.abort_plan_sha256"'''
+context = '''"approval_consumption_path.abort_plan_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.approval_envelope_sha256"'''
+context = '''"approval_consumption_path.approval_envelope_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.approval_id_hash"'''
+context = '''"approval_consumption_path.approval_id_hash",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.approval_nonce_sha256"'''
+context = '''"approval_consumption_path.approval_nonce_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.approval_not_after_unix_secs"'''
+context = '''"approval_consumption_path.approval_not_after_unix_secs",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.approval_not_before_unix_secs"'''
+context = '''"approval_consumption_path.approval_not_before_unix_secs",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.canary_evidence_path_hash"'''
+context = '''"approval_consumption_path.canary_evidence_path_hash",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.consumed_unix_secs"'''
+context = '''expect_final_i64(approval, "approval_consumption_path.consumed_unix_secs")?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.financial_envelope_sha256"'''
+context = '''"approval_consumption_path.financial_envelope_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.head_sha"'''
+context = '''"approval_consumption_path.head_sha",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.pre_run_state_sha256"'''
+context = '''"approval_consumption_path.pre_run_state_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.record_kind"'''
+context = '''"approval_consumption_path.record_kind",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.schema_version"'''
+context = '''let schema_version = expect_final_i64(approval, "approval_consumption_path.schema_version")?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.ssm_manifest_sha256"'''
+context = '''"approval_consumption_path.ssm_manifest_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.strategy_input_evidence_sha256"'''
+context = '''"approval_consumption_path.strategy_input_evidence_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"block_reasons"'''
+context = '''.get("block_reasons")'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.approval_id_hash"'''
+context = '''"canary_evidence_path.approval_id_hash",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.head_sha"'''
+context = '''"canary_evidence_path.head_sha",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.max_live_order_count"'''
+context = '''let reported_count = expect_final_u64(canary, "canary_evidence_path.max_live_order_count")?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.max_notional_per_order"'''
+context = '''"canary_evidence_path.max_notional_per_order",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.outcome"'''
+context = '''"canary_evidence_path.outcome",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.schema_version"'''
+context = '''let schema_version = expect_final_u64(canary, "canary_evidence_path.schema_version")?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.ssm_manifest_sha256"'''
+context = '''"canary_evidence_path.ssm_manifest_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.submit_admission_ref.admitted_order_count"'''
+context = '''"canary_evidence_path.submit_admission_ref.admitted_order_count",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.submit_admission_ref.status"'''
+context = '''"canary_evidence_path.submit_admission_ref.status",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"decision_evidence_ref"'''
+context = '''"decision_evidence_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"live_canary_proof"'''
+context = '''"live_canary_proof",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"max_notional_per_order"'''
+context = '''"max_notional_per_order",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"nt_submit_event_ref"'''
+context = '''"nt_submit_event_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"outcome"'''
+context = '''"outcome",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"path_hash"'''
+context = '''"path_hash",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"phase8_operator_approval_consumption"'''
+context = '''"phase8_operator_approval_consumption",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"post_run_hygiene_ref"'''
+context = '''"post_run_hygiene_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"record_hash"'''
+context = '''expect_final_string_equals(evidence_ref, "record_hash", ref_field, configured_sha256)'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"record_hash"'''
+context = '''let record_hash = expect_final_string(evidence_ref, "record_hash", ref_field)?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"record_hash"'''
+context = '''let record_hash = expect_final_string(value, "record_hash", "strategy_cancel_ref")?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"record_kind"'''
+context = '''"record_kind",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"restart_reconciliation_ref"'''
+context = '''"restart_reconciliation_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"ssm_manifest_ref"'''
+context = '''"ssm_manifest_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"status"'''
+context = '''"status",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_cancel_path"'''
+context = '''"strategy_cancel_path",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_cancel_path_hash"'''
+context = '''approval.get("strategy_cancel_path_hash"),'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_cancel_ref"'''
+context = '''"strategy_cancel_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_cancel_ref"'''
+context = '''canary.get("strategy_cancel_ref"),'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_cancel_ref"'''
+context = '''let record_hash = expect_final_string(value, "record_hash", "strategy_cancel_ref")?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_ref"'''
+context = '''"strategy_input_evidence_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"submit_admission_ref"'''
+context = '''let submit_ref = canary.get("submit_admission_ref").ok_or('''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"venue_order_state_ref"'''
+context = '''"venue_order_state_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
 path = "src/main.rs"
 kind = "string"
 literal = '''"{}"'''

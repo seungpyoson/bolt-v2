@@ -122,11 +122,7 @@ impl BoltV3SubmitAdmissionState {
         if request.notional > report.max_notional_per_order() {
             return BoltV3AdmissionOutcome::RejectedNotionalCapExceeded;
         }
-        if inner.admitted_order_count >= report.max_live_order_count()
-            && !request
-                .lifecycle_policy
-                .allows_risk_reducing_exit_after_entry(inner, request)
-        {
+        if inner.admitted_order_count >= report.max_live_order_count() {
             return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
         }
         BoltV3AdmissionOutcome::Admitted
@@ -153,14 +149,14 @@ pub enum BoltV3OrderLifecycleIntent {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct BoltV3SubmitLifecyclePolicy {
-    risk_reducing_exit_after_entry: bool,
+    _risk_reducing_exit_after_entry: bool,
     replace_submit: bool,
 }
 
 impl BoltV3SubmitLifecyclePolicy {
     pub fn new(risk_reducing_exit_after_entry: bool, replace_submit: bool) -> Self {
         Self {
-            risk_reducing_exit_after_entry,
+            _risk_reducing_exit_after_entry: risk_reducing_exit_after_entry,
             replace_submit,
         }
     }
@@ -187,16 +183,6 @@ impl BoltV3SubmitLifecyclePolicy {
             BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit => true,
             BoltV3SubmitIntentKind::ReplaceSubmit => self.replace_submit,
         }
-    }
-
-    fn allows_risk_reducing_exit_after_entry(
-        &self,
-        inner: &BoltV3SubmitAdmissionInner,
-        request: &BoltV3SubmitAdmissionRequest,
-    ) -> bool {
-        self.risk_reducing_exit_after_entry
-            && request.intent_kind == BoltV3SubmitIntentKind::RiskReducingExit
-            && inner.admitted_entry_order_count > inner.admitted_risk_reducing_exit_order_count
     }
 }
 

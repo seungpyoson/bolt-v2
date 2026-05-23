@@ -590,8 +590,11 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
         })
         .expect("run wrapper body must be present");
     let gate_index = source
-        .find("check_bolt_v3_live_canary_gate(loaded)")
-        .expect("run wrapper must call the live canary gate");
+        .find("check_bolt_v3_live_canary_pre_consumption_gate(loaded)")
+        .expect("run wrapper must call the pre-consumption live canary gate");
+    let consume_index = source
+        .find("consume_bolt_v3_live_runner_approval(loaded)")
+        .expect("run wrapper must atomically consume approval after the live canary gate");
     let submit_admission_index = source
         .find(".arm(gate_report)")
         .expect("run wrapper must arm submit admission from the live canary gate report");
@@ -610,10 +613,11 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
         "live canary gate must execute before NT LiveNode::run"
     );
     assert!(
-        gate_index < submit_admission_index
+        gate_index < consume_index
+            && consume_index < submit_admission_index
             && submit_admission_index < capture_index
             && capture_index < live_run_index,
-        "submit admission must arm after the live canary gate and before NT runtime capture / LiveNode::run"
+        "approval must be consumed after the live canary gate and before submit admission, NT runtime capture, and LiveNode::run"
     );
     assert_eq!(
         source.matches("let run_future = node.run();").count(),

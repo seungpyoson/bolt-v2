@@ -397,7 +397,6 @@ pub fn resolve_secrets(
         return Err(BoltV3SecretError {
             client_key: context.client_key.to_string(),
             field: "private_key_ssm_path".to_string(),
-            ssm_path: secrets.private_key_ssm_path.clone(),
             source: format!(
                 "resolved polymarket private_key is not valid EVM private key material accepted by the NautilusTrader polymarket adapter: {reason}"
             ),
@@ -467,7 +466,6 @@ fn parse_secrets_config(
         .ok_or_else(|| BoltV3SecretError {
             client_key: context.client_key.to_string(),
             field: "secrets".to_string(),
-            ssm_path: String::new(),
             source: "missing [secrets] block".to_string(),
         })?;
     secrets_value
@@ -476,7 +474,6 @@ fn parse_secrets_config(
         .map_err(|error: toml::de::Error| BoltV3SecretError {
             client_key: context.client_key.to_string(),
             field: KEY.to_string(),
-            ssm_path: String::new(),
             source: format!("invalid polymarket secrets schema: {error}"),
         })
 }

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import stat as stat_module
 import sys
 import time
 import tomllib
@@ -272,8 +273,20 @@ def _candidates_for_sessions(surface: PolicySurface, home_root: Path) -> list[di
     cutoff = time.time() - (ttl_days * 24 * 60 * 60)
     candidates: list[dict[str, Any]] = []
     for candidate_path in sorted(base.glob(pattern)):
-        stat = candidate_path.lstat()
-        if candidate_path.is_symlink():
+        try:
+            stat = candidate_path.lstat()
+        except OSError:
+            candidates.append(
+                {
+                    "surface_id": surface.id,
+                    "path": str(candidate_path),
+                    "action": "refuse",
+                    "reason": "path_disappeared_during_scan",
+                    "estimated_reclaim_bytes": 0,
+                }
+            )
+            continue
+        if stat_module.S_ISLNK(stat.st_mode):
             candidates.append(
                 {
                     "surface_id": surface.id,
@@ -297,7 +310,7 @@ def _candidates_for_sessions(surface: PolicySurface, home_root: Path) -> list[di
                 }
             )
             continue
-        if not candidate_path.is_file() or stat.st_mtime > cutoff:
+        if not stat_module.S_ISREG(stat.st_mode) or stat.st_mtime > cutoff:
             continue
         candidates.append(
             {
@@ -322,6 +335,13 @@ def _measured_bytes(path: Path) -> int:
     for child in path.rglob("*"):
         total += child.lstat().st_size
     return total
+
+
+def _safe_measured_bytes(path: Path) -> int:
+    try:
+        return _measured_bytes(path)
+    except OSError:
+        return 0
 
 
 def _project_pinned_channels(repo_root: Path) -> tuple[str, ...]:
@@ -361,6 +381,11 @@ def _rustup_entries(
 
     retain_exact_names = set(_string_tuple_from_extra(surface, "retain_exact_names"))
     remove_exact_names = set(_string_tuple_from_extra(surface, "remove_exact_names"))
+    if remove_exact_names and (not active_toolchains or not default_toolchains):
+        raise PolicyError(
+            f"{surface.id} active/default rustup snapshots are required when "
+            "remove_exact_names is non-empty"
+        )
     active_names = set(active_toolchains)
     default_names = set(default_toolchains)
     pinned_channels = _project_pinned_channels(repo_root)
@@ -450,7 +475,7 @@ def _surface_measurement(surface: PolicySurface, home_root: Path) -> dict[str, A
         "owner": surface.owner,
         "cleanup_mode": surface.cleanup_mode,
         "cleanup_eligible": surface.owner == "owned" and surface.cleanup_mode != "none",
-        "bytes": sum(_measured_bytes(path) for path in paths),
+        "bytes": sum(_safe_measured_bytes(path) for path in paths),
         "path_count": len(paths),
     }
 
@@ -467,7 +492,7 @@ def _adjacent_context(policy: Policy, home_root: Path) -> list[dict[str, Any]]:
                 "path_family": surface.path_family,
                 "owner": surface.owner,
                 "cleanup_mode": surface.cleanup_mode,
-                "bytes": sum(_measured_bytes(path) for path in paths),
+                "bytes": sum(_safe_measured_bytes(path) for path in paths),
                 "path_count": len(paths),
             }
         )
@@ -496,8 +521,8 @@ def load_policy(policy_path: Path) -> Policy:
     preflight_values: dict[str, int] = {}
     for key in REQUIRED_PREFLIGHT_KEYS:
         value = preflight[key]
-        if not isinstance(value, int):
-            raise PolicyError(f"preflight.{key} must be an integer")
+        if type(value) is not int or value < 0:
+            raise PolicyError(f"preflight.{key} must be a non-negative integer")
         preflight_values[key] = value
     if preflight_values["free_disk_error_bytes"] > preflight_values["free_disk_warning_bytes"]:
         raise PolicyError(
@@ -554,10 +579,6 @@ def build_dry_run(
 ) -> dict[str, Any]:
     payload = build_status(policy, home_root, repo_root)
     payload["mode"] = "dry_run"
-    payload["surface_measurements"] = [
-        _surface_measurement(surface, home_root) for surface in policy.surfaces
-    ]
-    payload["adjacent_context"] = _adjacent_context(policy, home_root)
     candidates: list[dict[str, Any]] = []
     report_only: list[dict[str, Any]] = []
     protected: list[dict[str, Any]] = []
@@ -583,6 +604,10 @@ def build_dry_run(
     payload["candidates"] = candidates
     payload["report_only"] = report_only
     payload["protected"] = protected
+    payload["surface_measurements"] = [
+        _surface_measurement(surface, home_root) for surface in policy.surfaces
+    ]
+    payload["adjacent_context"] = _adjacent_context(policy, home_root)
     return payload
 
 

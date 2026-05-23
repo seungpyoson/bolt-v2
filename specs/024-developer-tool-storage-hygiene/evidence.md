@@ -182,12 +182,12 @@ Operator approval for the T012 command surface was recorded by the operator's `c
 
 | Command | Result | Notes |
 |---|---|---|
-| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 20 tests in 1.231s | Scratch fixtures only; no real home-directory mutation. |
+| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 23 tests in 1.399s | Scratch fixtures only; no real home-directory mutation. |
 | `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py` | Pass | Syntax check for the new script and test. |
 | `git diff --check` | Pass | Whitespace check. |
 | `git diff --check origin/main...HEAD` | Pass | Exact local branch diff whitespace check. |
 | `rg -n "104857600\|10737418240\|5368709120\|21474836480\|~/.codex\|~/.factory\|~/.rustup\|codex-tui.log\|droid-log-single.log\|history.jsonl\|logs_2.sqlite\|archived_sessions" scripts/developer_tool_storage_hygiene.py` | Pass with one schema-id hit: `codex.archived_sessions` | Runtime paths, caps, thresholds, TTLs, and tool path families remain TOML-owned. |
-| `rg -n "TODO\|FIXME\|TBD\|XXX\|PLACEHOLDER\|REPLACEME\|not implemented" specs/024-developer-tool-storage-hygiene ci/developer-tool-storage-hygiene.toml docs/ops/developer-tool-storage-hygiene.md scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py` | Pass: no matches | Changed #375 surfaces only. |
+| Unresolved-marker scan over `specs/024-developer-tool-storage-hygiene`, `ci/developer-tool-storage-hygiene.toml`, `docs/ops/developer-tool-storage-hygiene.md`, `scripts/developer_tool_storage_hygiene.py`, and `scripts/test_developer_tool_storage_hygiene.py` | Pass: no matches | Changed #375 surfaces only. |
 | `rg -n "API_KEY\|SECRET\|TOKEN\|PASSWORD\|PRIVATE KEY\|BEGIN .*KEY" ci/developer-tool-storage-hygiene.toml docs/ops/developer-tool-storage-hygiene.md scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py specs/024-developer-tool-storage-hygiene/evidence.md` | Pass: no matches | No credentials or secret-looking literals in changed #375 files. |
 
 Rust verification relevance: no Rust source, Cargo manifest, workflow, or verifier runtime file is changed by the implementation. The only executable change is a standalone developer-ops Python script plus its scratch-only test and TOML/docs. Full Rust verification is therefore recorded as source-backed N/A for this #375 slice unless CI or no-mistakes requires a broader repo run.
@@ -207,8 +207,20 @@ Passes completed:
 
 Quality gates:
 
-- Regression tests: pass, 20 tests.
+- Regression tests: pass, 23 tests.
 - Type/syntax check: pass via `python3 -m py_compile`.
 - Static literal/unresolved-marker scan: pass for changed #375 files.
 
 Remaining risk: the script intentionally does not collect the host process table; apply active-writer refusal depends on explicit `--process-name` snapshot inputs.
+
+## No-Mistakes Pre-PR Remediation
+
+Initial no-mistakes run `01KS9K6A3H83RCKGENHXXM2EZB` on head `56efab79` reported three findings before PR opening:
+
+| Finding | Remediation |
+|---|---|
+| Rustup active/default protections were not fail-closed when `remove_exact_names` was non-empty and no active/default snapshots were supplied. | Added `test_dry_run_fails_closed_for_rustup_removals_without_active_default_snapshots`; dry-run/apply now reject rustup removals unless exact active and default snapshots are supplied. |
+| Preflight thresholds accepted TOML booleans and negative ints. | Added `test_policy_validation_fails_closed_when_threshold_values_are_negative_or_bool`; preflight thresholds now require real non-negative integers. |
+| Session files disappearing between glob and stat could crash scanning. | Added `test_dry_run_reports_session_that_disappears_during_scan_as_refusal`; session scan now reports `path_disappeared_during_scan` refusals and measurement tolerates disappearing paths. |
+
+Final no-mistakes must be rerun on the remediated exact PR head after the follow-up commit is pushed.

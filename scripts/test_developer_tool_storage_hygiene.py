@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import pathlib
@@ -20,6 +21,15 @@ POLICY = REPO_ROOT / "ci" / "developer-tool-storage-hygiene.toml"
 
 
 class DeveloperToolStorageHygieneTests(unittest.TestCase):
+    def load_tool_module(self) -> object:
+        spec = importlib.util.spec_from_file_location("developer_tool_storage_hygiene_under_test", SCRIPT)
+        if spec is None or spec.loader is None:
+            raise AssertionError(f"unable to load {SCRIPT}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+
     def run_tool(
         self,
         command: str,
@@ -277,6 +287,46 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(sessions_by_name["old.jsonl"]["reason"], "older_than_ttl_days")
         self.assertEqual(sessions_by_name["old.jsonl"]["estimated_reclaim_bytes"], len(b"old session"))
 
+    def test_dry_run_reports_session_that_disappears_during_scan_as_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path, sessions_ttl_days=1)
+
+            session = home_root / ".codex" / "sessions" / "old.jsonl"
+            session.parent.mkdir(parents=True)
+            session.write_bytes(b"old session")
+            old_mtime = time.time() - (2 * 24 * 60 * 60)
+            os.utime(session, (old_mtime, old_mtime))
+            repo_root.mkdir()
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_lstat = pathlib.Path.lstat
+
+            def disappearing_lstat(path: pathlib.Path) -> os.stat_result:
+                if path == session:
+                    session.unlink(missing_ok=True)
+                    raise FileNotFoundError(str(path))
+                return original_lstat(path)
+
+            pathlib.Path.lstat = disappearing_lstat
+            try:
+                payload = tool.build_dry_run(policy, home_root, repo_root)
+            finally:
+                pathlib.Path.lstat = original_lstat
+
+        refusals = [
+            entry
+            for entry in payload["candidates"]
+            if entry["surface_id"] == "codex.sessions" and entry["action"] == "refuse"
+        ]
+        self.assertEqual(len(refusals), 1)
+        self.assertEqual(refusals[0]["reason"], "path_disappeared_during_scan")
+        self.assertEqual(refusals[0]["estimated_reclaim_bytes"], 0)
+
     def test_dry_run_reports_codex_sqlite_files_as_report_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -453,6 +503,26 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(protected[retained], "exact_name_retain_policy")
         self.assertEqual(protected[unlisted], "not_in_remove_exact_names")
 
+    def test_dry_run_fails_closed_for_rustup_removals_without_active_default_snapshots(self) -> None:
+        active = "active-aarch64-apple-darwin"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy, remove_exact_names=[active])
+
+            toolchain = home_root / ".rustup" / "toolchains" / active
+            toolchain.mkdir(parents=True)
+            (toolchain / "marker").write_bytes(b"active")
+            repo_root.mkdir()
+
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+        self.assertIn("active/default rustup snapshots are required", result.stderr)
+
     def test_policy_validation_fails_closed_when_mutable_active_writers_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -498,6 +568,43 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
         self.assertIn("free_disk_error_bytes", result.stderr)
+
+    def test_policy_validation_fails_closed_when_threshold_values_are_negative_or_bool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            home_root.mkdir()
+            repo_root.mkdir()
+            self.write_policy_fixture(policy)
+            policy.write_text(
+                policy.read_text(encoding="utf-8").replace(
+                    "owned_storage_warning_bytes = 100",
+                    "owned_storage_warning_bytes = true",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            bool_result = self.run_tool("status", home_root, repo_root, policy)
+
+            self.write_policy_fixture(policy)
+            policy.write_text(
+                policy.read_text(encoding="utf-8").replace(
+                    "owned_storage_warning_bytes = 100",
+                    "owned_storage_warning_bytes = -1",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            negative_result = self.run_tool("status", home_root, repo_root, policy)
+
+        self.assertEqual(bool_result.returncode, 2, (bool_result.stdout, bool_result.stderr))
+        self.assertIn("owned_storage_warning_bytes", bool_result.stderr)
+        self.assertEqual(negative_result.returncode, 2, (negative_result.stdout, negative_result.stderr))
+        self.assertIn("owned_storage_warning_bytes", negative_result.stderr)
 
     def test_dry_run_output_includes_measurements_refusals_and_adjacent_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

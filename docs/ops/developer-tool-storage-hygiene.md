@@ -68,6 +68,18 @@ python3 scripts/developer_tool_storage_hygiene.py apply \
   --json
 ```
 
+If `rustup.toolchains.remove_exact_names` is non-empty, dry-run/apply also require exact active and default rustup snapshots. The script does not infer these values because protecting active/default toolchains is a fail-closed safety requirement:
+
+```sh
+python3 scripts/developer_tool_storage_hygiene.py dry-run \
+  --policy ci/developer-tool-storage-hygiene.toml \
+  --home-root "$HOME" \
+  --repo-root "$PWD" \
+  --active-rustup-toolchain 1.95.0-aarch64-apple-darwin \
+  --default-rustup-toolchain 1.94.1-aarch64-apple-darwin \
+  --json
+```
+
 The script does not collect the host process table. To refuse apply when a known writer is active, pass exact observed process names explicitly:
 
 ```sh

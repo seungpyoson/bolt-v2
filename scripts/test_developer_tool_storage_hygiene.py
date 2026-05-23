@@ -13,6 +13,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest import mock
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -219,6 +220,39 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(mutable["codex.sessions"], ["codex", "codex-tui"])
         self.assertEqual(mutable["factory.log"], ["factory", "droid"])
 
+    def test_status_loads_primary_surfaces_from_policy_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            home_root.mkdir()
+            repo_root.mkdir()
+            self.write_policy_fixture(policy)
+            policy.write_text(
+                policy.read_text(encoding="utf-8")
+                + textwrap.dedent(
+                    """\
+
+                    [codex.extra_report]
+                    path_family = "~/.codex/extra-report.jsonl"
+                    category = "AI agent"
+                    growth_shape = "single_file"
+                    owner = "report_only"
+                    native_policy = "none_found"
+                    cleanup_mode = "none"
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.run_tool("status", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        surface_ids = {entry["id"] for entry in payload["surfaces"]}
+        self.assertIn("codex.extra_report", surface_ids)
+
     def test_load_policy_rejects_unsupported_schema_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -247,6 +281,16 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
             tool = self.load_tool_module()
 
             with self.assertRaisesRegex(tool.PolicyError, "schema_version must be an integer"):
+                tool.load_policy(policy_path)
+
+    def test_load_policy_rejects_oversized_policy_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            tool = self.load_tool_module()
+            policy_path.write_bytes(b"x" * (tool.MAX_POLICY_BYTES + 1))
+
+            with self.assertRaisesRegex(tool.PolicyError, "policy file exceeds"):
                 tool.load_policy(policy_path)
 
     def test_dry_run_reports_oversized_log_rotation_candidates_without_mutation(self) -> None:
@@ -1078,7 +1122,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(refusals[0]["reason"], "path_disappeared_during_scan")
         self.assertEqual(refusals[0]["estimated_reclaim_bytes"], 0)
 
-    def test_dry_run_reports_rustup_toolchain_that_disappears_during_state_tokening_as_refusal(self) -> None:
+    def test_dry_run_reports_rustup_toolchain_that_disappears_during_measurement_as_refusal(self) -> None:
         active = "active-aarch64-apple-darwin"
         default = "default-aarch64-apple-darwin"
         removable = "old-aarch64-apple-darwin"
@@ -1108,14 +1152,14 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
 
             tool = self.load_tool_module()
             policy = tool.load_policy(policy_path)
-            original_state_token = tool._state_token
+            original_measurement = tool._measurement_and_state_token
 
-            def disappearing_state_token(path: pathlib.Path) -> str:
+            def disappearing_measurement(path: pathlib.Path) -> tuple[int, str]:
                 if path == toolchains / removable:
                     raise FileNotFoundError(str(path))
-                return original_state_token(path)
+                return original_measurement(path)
 
-            tool._state_token = disappearing_state_token
+            tool._measurement_and_state_token = disappearing_measurement
             try:
                 payload = tool.build_dry_run(
                     policy,
@@ -1125,7 +1169,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                     default_rustup_toolchains=(default,),
                 )
             finally:
-                tool._state_token = original_state_token
+                tool._measurement_and_state_token = original_measurement
 
         refusals = [
             entry
@@ -1135,6 +1179,130 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(len(refusals), 1)
         self.assertEqual(refusals[0]["reason"], "path_disappeared_during_scan")
         self.assertEqual(refusals[0]["estimated_reclaim_bytes"], 0)
+
+    def test_dry_run_measures_rustup_toolchain_without_path_rglob(self) -> None:
+        active = "active-aarch64-apple-darwin"
+        default = "default-aarch64-apple-darwin"
+        removable = "old-aarch64-apple-darwin"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path, remove_exact_names=[removable])
+
+            toolchains = home_root / ".rustup" / "toolchains"
+            for name in (active, default, removable):
+                toolchain = toolchains / name
+                (toolchain / "nested").mkdir(parents=True)
+                (toolchain / "nested" / "marker").write_bytes(name.encode("utf-8"))
+            repo_root.mkdir()
+            (repo_root / "rust-toolchain.toml").write_text(
+                textwrap.dedent(
+                    """\
+                    [toolchain]
+                    channel = "1.95.0"
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_rglob = pathlib.Path.rglob
+
+            def refusing_rglob(path: pathlib.Path, pattern: str) -> object:
+                if path == toolchains / removable:
+                    raise AssertionError("rustup removal measurement used Path.rglob")
+                return original_rglob(path, pattern)
+
+            with mock.patch.object(pathlib.Path, "rglob", refusing_rglob):
+                payload = tool.build_dry_run(
+                    policy,
+                    home_root,
+                    repo_root,
+                    active_rustup_toolchains=(active,),
+                    default_rustup_toolchains=(default,),
+                )
+
+        removals = [
+            entry
+            for entry in payload["candidates"]
+            if entry["surface_id"] == "rustup.toolchains" and entry["action"] == "remove_tree"
+        ]
+        self.assertEqual(len(removals), 1)
+        self.assertGreater(removals[0]["bytes"], 0)
+        self.assertIn("state_token", removals[0])
+
+    def test_dry_run_does_not_measure_internal_directory_symlink_targets(self) -> None:
+        active = "active-aarch64-apple-darwin"
+        default = "default-aarch64-apple-darwin"
+        removable = "old-aarch64-apple-darwin"
+        outside_payload = b"outside-target" * 1024
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path, remove_exact_names=[removable])
+
+            toolchains = home_root / ".rustup" / "toolchains"
+            for name in (active, default, removable):
+                toolchain = toolchains / name
+                toolchain.mkdir(parents=True)
+                (toolchain / "marker").write_bytes(name.encode("utf-8"))
+            outside_tree = tmp_path / "outside-tree"
+            outside_tree.mkdir()
+            outside_file = outside_tree / "large.bin"
+            outside_file.write_bytes(outside_payload)
+            (toolchains / removable / "linked-tree").symlink_to(
+                outside_tree,
+                target_is_directory=True,
+            )
+            repo_root.mkdir()
+            (repo_root / "rust-toolchain.toml").write_text(
+                textwrap.dedent(
+                    """\
+                    [toolchain]
+                    channel = "1.95.0"
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            first = tool.build_dry_run(
+                policy,
+                home_root,
+                repo_root,
+                active_rustup_toolchains=(active,),
+                default_rustup_toolchains=(default,),
+            )
+            outside_file.write_bytes(outside_payload + b"changed")
+            second = tool.build_dry_run(
+                policy,
+                home_root,
+                repo_root,
+                active_rustup_toolchains=(active,),
+                default_rustup_toolchains=(default,),
+            )
+
+        first_removal = next(
+            entry
+            for entry in first["candidates"]
+            if entry["surface_id"] == "rustup.toolchains" and entry["action"] == "remove_tree"
+        )
+        second_removal = next(
+            entry
+            for entry in second["candidates"]
+            if entry["surface_id"] == "rustup.toolchains" and entry["action"] == "remove_tree"
+        )
+        self.assertLess(first_removal["bytes"], len(outside_payload))
+        self.assertEqual(first_removal["bytes"], second_removal["bytes"])
+        self.assertEqual(first_removal["state_token"], second_removal["state_token"])
 
     def test_dry_run_fails_closed_for_rustup_removals_without_active_default_snapshots(self) -> None:
         active = "active-aarch64-apple-darwin"
@@ -1190,6 +1358,45 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
         self.assertIn("rust-toolchain.toml", result.stderr)
+
+    def test_dry_run_rejects_oversized_repo_toolchain_pin(self) -> None:
+        active = "active-aarch64-apple-darwin"
+        default = "default-aarch64-apple-darwin"
+        removable = "old-aarch64-apple-darwin"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy, remove_exact_names=[removable])
+
+            toolchains = home_root / ".rustup" / "toolchains"
+            for name in (active, default, removable):
+                toolchain = toolchains / name
+                toolchain.mkdir(parents=True)
+                (toolchain / "marker").write_bytes(name.encode("utf-8"))
+            repo_root.mkdir()
+            tool = self.load_tool_module()
+            (repo_root / "rust-toolchain.toml").write_bytes(
+                b"x" * (tool.MAX_RUST_TOOLCHAIN_BYTES + 1)
+            )
+
+            result = self.run_tool(
+                "dry-run",
+                home_root,
+                repo_root,
+                policy,
+                [
+                    "--active-rustup-toolchain",
+                    active,
+                    "--default-rustup-toolchain",
+                    default,
+                ],
+            )
+
+        self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+        self.assertIn("rust-toolchain.toml exceeds", result.stderr)
 
     def test_policy_validation_fails_closed_when_mutable_active_writers_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1780,6 +1987,30 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(payload["status"], "applied")
         self.assertEqual(payload["actions_taken"][0]["action"], "rotate")
         self.assertEqual(payload["actions_taken"][0]["surface_id"], "codex.log")
+
+    def test_apply_rejects_oversized_dry_run_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+            home_root.mkdir()
+            repo_root.mkdir()
+            tool = self.load_tool_module()
+            report.write_bytes(b"x" * (tool.MAX_DRY_RUN_REPORT_BYTES + 1))
+
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report), "--process-snapshot-empty"],
+            )
+
+        self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+        self.assertIn("dry-run report exceeds", result.stderr)
 
     def test_apply_rotates_log_and_prunes_extra_rotation_sidecars(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

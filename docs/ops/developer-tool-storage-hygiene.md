@@ -19,6 +19,8 @@ This policy covers developer-tool storage outside the Bolt runtime. It does not 
 
 The authoritative policy is `ci/developer-tool-storage-hygiene.toml`. Runtime path families, size caps, TTLs, retained rotations, exact rustup names, preflight thresholds, and active-writer process names all come from that TOML file.
 
+Parser input guardrails are fixed fail-closed limits: policy TOML is capped at 1 MiB, repository `rust-toolchain.toml` is capped at 64 KiB, and saved dry-run reports are capped at 10 MiB. These caps protect the cleanup tool before it can trust a policy file; they do not select cleanup candidates or change retention thresholds.
+
 ## Commands
 
 Status is read-only and reports the configured surface inventory:

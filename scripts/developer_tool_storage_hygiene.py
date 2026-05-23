@@ -14,21 +14,15 @@ import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
-
-SURFACE_SECTIONS = (
-    ("codex.log", ("codex", "log")),
-    ("codex.sessions", ("codex", "sessions")),
-    ("codex.sqlite", ("codex", "sqlite")),
-    ("codex.archived_sessions", ("codex", "archived_sessions")),
-    ("native_guidance.codex_history", ("native_guidance", "codex_history")),
-    ("factory.log", ("factory", "log")),
-    ("rustup.toolchains", ("rustup", "toolchains")),
-)
 
 PREFLIGHT_SECTION = ("preflight",)
 SUPPORTED_POLICY_SCHEMA_VERSION = 1
+RESERVED_POLICY_TABLES = frozenset(("adjacent", "preflight"))
+MAX_POLICY_BYTES = 1024 * 1024
+MAX_RUST_TOOLCHAIN_BYTES = 64 * 1024
+MAX_DRY_RUN_REPORT_BYTES = 10 * 1024 * 1024
 
 REQUIRED_SURFACE_KEYS = (
     "path_family",
@@ -46,9 +40,6 @@ REQUIRED_PREFLIGHT_KEYS = (
     "owned_storage_error_bytes",
 )
 
-ROTATING_SURFACE_IDS = frozenset(("codex.log", "factory.log"))
-SESSION_SURFACE_ID = "codex.sessions"
-RUSTUP_SURFACE_ID = "rustup.toolchains"
 OWNED_OWNER = "owned"
 REPORT_ONLY_OWNER = "report_only"
 OUT_OF_SCOPE_OWNER = "out_of_scope"
@@ -56,15 +47,6 @@ MUTATING_ACTIONS = frozenset(("rotate", "delete", "remove_tree"))
 ALLOWED_OWNERS = frozenset((OWNED_OWNER, REPORT_ONLY_OWNER, OUT_OF_SCOPE_OWNER))
 ALLOWED_CLEANUP_MODES = frozenset(("rotate", "ttl_prune", "toolchain_retention", "none"))
 MUTATING_CLEANUP_MODES = frozenset(("rotate", "ttl_prune", "toolchain_retention"))
-SURFACE_CLEANUP_MODES = {
-    "codex.log": frozenset(("rotate", "none")),
-    "codex.sessions": frozenset(("ttl_prune", "none")),
-    "codex.sqlite": frozenset(("none",)),
-    "codex.archived_sessions": frozenset(("none",)),
-    "native_guidance.codex_history": frozenset(("none",)),
-    "factory.log": frozenset(("rotate", "none")),
-    "rustup.toolchains": frozenset(("toolchain_retention", "none")),
-}
 
 
 class PolicyError(ValueError):
@@ -119,6 +101,45 @@ def _section(data: dict[str, Any], path: tuple[str, ...]) -> dict[str, Any]:
     return current
 
 
+def _read_bounded_bytes(path: Path, *, max_bytes: int, label: str) -> bytes:
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise PolicyError(f"cannot read {label}: {path}") from exc
+    if size > max_bytes:
+        raise PolicyError(f"{label} exceeds maximum size: {path}")
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(max_bytes + 1)
+    except OSError as exc:
+        raise PolicyError(f"cannot read {label}: {path}") from exc
+    if len(data) > max_bytes:
+        raise PolicyError(f"{label} exceeds maximum size: {path}")
+    return data
+
+
+def _primary_surface_sections(data: dict[str, Any]) -> tuple[tuple[str, dict[str, Any]], ...]:
+    sections: list[tuple[str, dict[str, Any]]] = []
+
+    def collect(path: tuple[str, ...], table: dict[str, Any]) -> None:
+        if all(key in table for key in REQUIRED_SURFACE_KEYS):
+            sections.append((".".join(path), table))
+            return
+        for key, value in sorted(table.items()):
+            if isinstance(value, dict):
+                collect((*path, key), value)
+
+    for key, value in sorted(data.items()):
+        if key == "schema_version" or key in RESERVED_POLICY_TABLES:
+            continue
+        if isinstance(value, dict):
+            collect((key,), value)
+
+    if not sections:
+        raise PolicyError("missing primary policy surfaces")
+    return tuple(sections)
+
+
 def _require_keys(section_id: str, section: dict[str, Any], keys: tuple[str, ...]) -> None:
     missing = [key for key in keys if key not in section]
     if missing:
@@ -158,12 +179,6 @@ def _validate_owner_cleanup_mode(section_id: str, owner: str, cleanup_mode: str)
     if cleanup_mode not in ALLOWED_CLEANUP_MODES:
         raise PolicyError(
             f"{section_id}.cleanup_mode must be one of: {', '.join(sorted(ALLOWED_CLEANUP_MODES))}"
-        )
-    allowed_modes = SURFACE_CLEANUP_MODES.get(section_id)
-    if allowed_modes is not None and cleanup_mode not in allowed_modes:
-        raise PolicyError(
-            f"{section_id}.cleanup_mode is not valid for this surface: "
-            f"{', '.join(sorted(allowed_modes))}"
         )
     if owner != OWNED_OWNER and cleanup_mode != "none":
         raise PolicyError(f"{section_id}.owner/cleanup_mode combination is not cleanup-owned")
@@ -551,15 +566,43 @@ def _candidates_for_sessions(surface: PolicySurface, home_root: Path) -> list[di
     return candidates
 
 
+def _iter_tree_entries(path: Path) -> Iterator[tuple[Path, os.stat_result]]:
+    entries: list[tuple[str, Path, os.stat_result]] = []
+    with os.scandir(path) as scanner:
+        for entry in scanner:
+            stat = entry.stat(follow_symlinks=False)
+            entries.append((entry.name, Path(entry.path), stat))
+    ordered = sorted(entries, key=lambda item: item[0])
+    for _name, child, child_stat in ordered:
+        yield child, child_stat
+        if stat_module.S_ISDIR(child_stat.st_mode) and not stat_module.S_ISLNK(child_stat.st_mode):
+            yield from _iter_tree_entries(child)
+
+
+def _add_state_stat(digest: Any, label: str, stat_result: os.stat_result) -> None:
+    digest.update(label.encode("utf-8", errors="surrogateescape"))
+    digest.update(b"\0")
+    digest.update(
+        f"{stat_result.st_dev}:{stat_result.st_ino}:{stat_result.st_mode}:"
+        f"{stat_result.st_size}:{stat_result.st_mtime_ns}".encode("ascii")
+    )
+    digest.update(b"\0")
+
+
+def _measurement_and_state_token(path: Path) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    root_stat = path.lstat()
+    total = root_stat.st_size
+    _add_state_stat(digest, ".", root_stat)
+    if stat_module.S_ISDIR(root_stat.st_mode) and not stat_module.S_ISLNK(root_stat.st_mode):
+        for child, child_stat in _iter_tree_entries(path):
+            total += child_stat.st_size
+            _add_state_stat(digest, str(child.relative_to(path)), child_stat)
+    return total, digest.hexdigest()
+
+
 def _measured_bytes(path: Path) -> int:
-    if path.is_symlink() or path.is_file():
-        return path.lstat().st_size
-    if not path.is_dir():
-        return path.lstat().st_size
-    total = path.lstat().st_size
-    for child in path.rglob("*"):
-        total += child.lstat().st_size
-    return total
+    return _measurement_and_state_token(path)[0]
 
 
 def _measured_bytes_or_error(path: Path) -> tuple[int, dict[str, Any] | None]:
@@ -585,23 +628,7 @@ def _paths_measurement(paths: list[Path]) -> tuple[int, list[dict[str, Any]]]:
 
 
 def _state_token(path: Path) -> str:
-    digest = hashlib.sha256()
-
-    def add_stat(label: str, stat_result: os.stat_result) -> None:
-        digest.update(label.encode("utf-8", errors="surrogateescape"))
-        digest.update(b"\0")
-        digest.update(
-            f"{stat_result.st_dev}:{stat_result.st_ino}:{stat_result.st_mode}:"
-            f"{stat_result.st_size}:{stat_result.st_mtime_ns}".encode("ascii")
-        )
-        digest.update(b"\0")
-
-    root_stat = path.lstat()
-    add_stat(".", root_stat)
-    if stat_module.S_ISDIR(root_stat.st_mode) and not stat_module.S_ISLNK(root_stat.st_mode):
-        for child in sorted(path.rglob("*")):
-            add_stat(str(child.relative_to(path)), child.lstat())
-    return digest.hexdigest()
+    return _measurement_and_state_token(path)[1]
 
 
 def _paths_state_token(paths: list[Path]) -> str:
@@ -776,9 +803,13 @@ def _project_pinned_channels(repo_root: Path, *, required: bool = False) -> tupl
             raise PolicyError(f"repository rust-toolchain.toml is required: {toolchain_toml}")
         return ()
     try:
-        with toolchain_toml.open("rb") as handle:
-            data = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raw_toolchain = _read_bounded_bytes(
+            toolchain_toml,
+            max_bytes=MAX_RUST_TOOLCHAIN_BYTES,
+            label="repository rust-toolchain.toml",
+        )
+        data = tomllib.loads(raw_toolchain.decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise PolicyError(f"invalid repository rust-toolchain.toml: {toolchain_toml}") from exc
     toolchain = data.get("toolchain")
     if not isinstance(toolchain, dict):
@@ -879,8 +910,7 @@ def _rustup_entries(
             continue
 
         try:
-            measured_bytes = _measured_bytes(path)
-            state_token = _state_token(path)
+            measured_bytes, state_token = _measurement_and_state_token(path)
         except OSError:
             candidates.append(_scan_refusal(surface.id, path))
             continue
@@ -950,7 +980,7 @@ def _report_only_entries(surface: PolicySurface, home_root: Path) -> list[dict[s
 
 
 def _surface_measurement(surface: PolicySurface, home_root: Path) -> dict[str, Any]:
-    if surface.cleanup_mode == "rotate" and surface.id in ROTATING_SURFACE_IDS:
+    if surface.cleanup_mode == "rotate":
         path = _configured_path(home_root, surface.path_family)
         paths = _rotation_measurement_paths(path) if _inside_root(path, home_root) else []
     else:
@@ -999,7 +1029,7 @@ def _owned_root_refusal_errors(
         else:
             configured_path = _configured_path(home_root, surface.path_family)
             paths = _path_family_ancestors(configured_path, home_root)
-            if surface.cleanup_mode == "rotate" and surface.id in ROTATING_SURFACE_IDS:
+            if surface.cleanup_mode == "rotate":
                 paths.update(_path_family_ancestors(configured_path.parent, home_root))
             refusal_probe = configured_path
         owned_refusal_paths[surface.id] = paths
@@ -1056,10 +1086,12 @@ def _adjacent_context(policy: Policy, home_root: Path) -> list[dict[str, Any]]:
 
 def load_policy(policy_path: Path) -> Policy:
     try:
-        raw_policy = policy_path.read_bytes()
+        raw_policy = _read_bounded_bytes(
+            policy_path,
+            max_bytes=MAX_POLICY_BYTES,
+            label="policy file",
+        )
         data = tomllib.loads(raw_policy.decode("utf-8"))
-    except OSError as exc:
-        raise PolicyError(f"cannot read policy: {policy_path}") from exc
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise PolicyError(f"invalid TOML policy: {exc}") from exc
     policy_digest = hashlib.sha256(raw_policy).hexdigest()
@@ -1071,9 +1103,14 @@ def load_policy(policy_path: Path) -> Policy:
         raise PolicyError(f"unsupported schema_version: {schema_version}")
 
     surfaces = tuple(
-        _surface_from_section(section_id, _section(data, path))
-        for section_id, path in SURFACE_SECTIONS
+        _surface_from_section(section_id, section)
+        for section_id, section in _primary_surface_sections(data)
     )
+    seen_surface_ids: set[str] = set()
+    for surface in surfaces:
+        if surface.id in seen_surface_ids:
+            raise PolicyError(f"{surface.id} primary surface id is duplicated")
+        seen_surface_ids.add(surface.id)
     preflight = _section(data, PREFLIGHT_SECTION)
     _require_keys("preflight", preflight, REQUIRED_PREFLIGHT_KEYS)
     preflight_values: dict[str, int] = {}
@@ -1150,32 +1187,21 @@ def build_dry_run(
     report_only: list[dict[str, Any]] = []
     protected: list[dict[str, Any]] = []
     for surface in policy.surfaces:
-        if (
-            surface.owner == "owned"
-            and surface.cleanup_mode == "rotate"
-            and surface.id in ROTATING_SURFACE_IDS
-        ):
-            candidates.extend(_candidates_for_rotating_log(surface, home_root))
-        elif (
-            surface.owner == "owned"
-            and surface.cleanup_mode == "ttl_prune"
-            and surface.id == SESSION_SURFACE_ID
-        ):
-            candidates.extend(_candidates_for_sessions(surface, home_root))
-        elif (
-            surface.owner == "owned"
-            and surface.cleanup_mode == "toolchain_retention"
-            and surface.id == RUSTUP_SURFACE_ID
-        ):
-            rustup_candidates, rustup_protected = _rustup_entries(
-                surface,
-                home_root,
-                repo_root,
-                active_rustup_toolchains,
-                default_rustup_toolchains,
-            )
-            candidates.extend(rustup_candidates)
-            protected.extend(rustup_protected)
+        if surface.owner == OWNED_OWNER:
+            if surface.cleanup_mode == "rotate":
+                candidates.extend(_candidates_for_rotating_log(surface, home_root))
+            elif surface.cleanup_mode == "ttl_prune":
+                candidates.extend(_candidates_for_sessions(surface, home_root))
+            elif surface.cleanup_mode == "toolchain_retention":
+                rustup_candidates, rustup_protected = _rustup_entries(
+                    surface,
+                    home_root,
+                    repo_root,
+                    active_rustup_toolchains,
+                    default_rustup_toolchains,
+                )
+                candidates.extend(rustup_candidates)
+                protected.extend(rustup_protected)
         if surface.owner == REPORT_ONLY_OWNER:
             report_only.extend(_report_only_entries(surface, home_root))
     payload["candidates"] = candidates
@@ -1252,9 +1278,13 @@ def build_preflight(
 
 def _load_dry_run_report(path: Path) -> dict[str, Any]:
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError) as exc:
+        raw_report = _read_bounded_bytes(
+            path,
+            max_bytes=MAX_DRY_RUN_REPORT_BYTES,
+            label="dry-run report",
+        )
+        payload = json.loads(raw_report.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise PolicyError(f"invalid dry-run report: {path}") from exc
     if payload.get("mode") != "dry_run":
         raise PolicyError("dry-run report mode must be dry_run")
@@ -1520,8 +1550,7 @@ def _single_rustup_candidate(
         return [], [entry]
 
     try:
-        measured_bytes = _measured_bytes(path)
-        state_token = _state_token(path)
+        measured_bytes, state_token = _measurement_and_state_token(path)
     except OSError:
         return [_scan_refusal(surface.id, path)], []
     return [
@@ -1552,11 +1581,11 @@ def _fresh_candidate_payload(
         return {"candidates": [], "report_only": [], "protected": []}
     path = Path(candidate["path"])
     protected: list[dict[str, Any]] = []
-    if surface.cleanup_mode == "rotate" and surface.id in ROTATING_SURFACE_IDS:
+    if surface.cleanup_mode == "rotate":
         candidates = _candidates_for_rotating_log(surface, home_root)
-    elif surface.cleanup_mode == "ttl_prune" and surface.id == SESSION_SURFACE_ID:
+    elif surface.cleanup_mode == "ttl_prune":
         candidates, protected = _single_session_candidate(surface, home_root, path)
-    elif surface.cleanup_mode == "toolchain_retention" and surface.id == RUSTUP_SURFACE_ID:
+    elif surface.cleanup_mode == "toolchain_retention":
         candidates, protected = _single_rustup_candidate(
             surface,
             home_root,
@@ -1741,7 +1770,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy", required=True, type=Path)
     parser.add_argument("--home-root", required=True, type=Path)
     parser.add_argument("--repo-root", required=True, type=Path)
-    parser.add_argument("--json", action="store_true", required=True)
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        required=True,
+        help="Required explicit JSON-output contract acknowledgement.",
+    )
     parser.add_argument("--active-rustup-toolchain", action="append", default=[])
     parser.add_argument("--default-rustup-toolchain", action="append", default=[])
     parser.add_argument("--available-disk-bytes", type=int)
@@ -1755,40 +1789,43 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if not args.json:
+            raise PolicyError("--json is required for the JSON output contract")
         policy = load_policy(args.policy)
         if args.command == "status":
             payload = build_status(policy, args.home_root, args.repo_root)
         elif args.command == "dry-run":
-                payload = build_dry_run(
-                    policy,
-                    args.home_root,
-                    args.repo_root,
-                    active_rustup_toolchains=tuple(args.active_rustup_toolchain),
-                    default_rustup_toolchains=tuple(args.default_rustup_toolchain),
-                )
+            payload = build_dry_run(
+                policy,
+                args.home_root,
+                args.repo_root,
+                active_rustup_toolchains=tuple(args.active_rustup_toolchain),
+                default_rustup_toolchains=tuple(args.default_rustup_toolchain),
+            )
+        elif args.command == "preflight":
+            payload = build_preflight(
+                policy,
+                args.home_root,
+                args.repo_root,
+                available_disk_bytes=args.available_disk_bytes,
+                active_rustup_toolchains=tuple(args.active_rustup_toolchain),
+                default_rustup_toolchains=tuple(args.default_rustup_toolchain),
+            )
         else:
-            if args.command == "preflight":
-                payload = build_preflight(
-                    policy,
-                    args.home_root,
-                    args.repo_root,
-                    available_disk_bytes=args.available_disk_bytes,
-                    active_rustup_toolchains=tuple(args.active_rustup_toolchain),
-                    default_rustup_toolchains=tuple(args.default_rustup_toolchain),
-                )
-            else:
-                if args.dry_run_report is None:
-                    raise PolicyError("apply requires --dry-run-report")
-                payload = build_apply(
-                    policy,
-                    args.home_root,
-                    args.repo_root,
-                    dry_run_report=args.dry_run_report,
-                    active_rustup_toolchains=tuple(args.active_rustup_toolchain),
-                    default_rustup_toolchains=tuple(args.default_rustup_toolchain),
-                    process_names=tuple(args.process_name or []),
-                    process_snapshot_supplied=bool(args.process_snapshot_empty or args.process_name is not None),
-                )
+            if args.dry_run_report is None:
+                raise PolicyError("apply requires --dry-run-report")
+            payload = build_apply(
+                policy,
+                args.home_root,
+                args.repo_root,
+                dry_run_report=args.dry_run_report,
+                active_rustup_toolchains=tuple(args.active_rustup_toolchain),
+                default_rustup_toolchains=tuple(args.default_rustup_toolchain),
+                process_names=tuple(args.process_name or []),
+                process_snapshot_supplied=bool(
+                    args.process_snapshot_empty or args.process_name is not None
+                ),
+            )
     except PolicyError as exc:
         print(str(exc), file=sys.stderr)
         return 2

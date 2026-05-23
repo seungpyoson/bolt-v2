@@ -171,6 +171,21 @@ def _validate_owner_cleanup_mode(section_id: str, owner: str, cleanup_mode: str)
         raise PolicyError(f"{section_id}.owner/cleanup_mode combination is not cleanup-owned")
 
 
+def _validate_mode_fields(section_id: str, section: dict[str, Any], cleanup_mode: str) -> None:
+    if cleanup_mode == "rotate":
+        _read_positive_int(section_id, section.get("max_bytes"), "max_bytes")
+        _read_positive_int(section_id, section.get("retained_rotations"), "retained_rotations")
+    elif cleanup_mode == "ttl_prune":
+        _read_positive_int(section_id, section.get("ttl_days"), "ttl_days")
+    elif cleanup_mode == "toolchain_retention":
+        if "retain_exact_names" not in section:
+            raise PolicyError(f"{section_id}.retain_exact_names must be a list of non-empty strings")
+        if "remove_exact_names" not in section:
+            raise PolicyError(f"{section_id}.remove_exact_names must be a list of non-empty strings")
+        _read_string_list(section_id, section, "retain_exact_names")
+        _read_string_list(section_id, section, "remove_exact_names")
+
+
 def _surface_from_section(section_id: str, section: dict[str, Any]) -> PolicySurface:
     _require_keys(section_id, section, REQUIRED_SURFACE_KEYS)
     owner = _read_string(section_id, section, "owner")
@@ -181,6 +196,7 @@ def _surface_from_section(section_id: str, section: dict[str, Any]) -> PolicySur
             raise PolicyError(f"{section_id}.active_writer_processes is required")
         if not _read_string_list(section_id, section, "active_writer_processes"):
             raise PolicyError(f"{section_id}.active_writer_processes must not be empty")
+    _validate_mode_fields(section_id, section, cleanup_mode)
     known = set(REQUIRED_SURFACE_KEYS) | {
         "active_writer_processes",
         "id",
@@ -282,18 +298,13 @@ def _candidate_for_rotating_log(surface: PolicySurface, home_root: Path) -> dict
             "reason": "outside_configured_root",
             "estimated_reclaim_bytes": 0,
         }
-    if not candidate_path.exists():
+    symlink_refusal = _rotation_symlink_refusal(surface.id, candidate_path, retained_rotations)
+    if symlink_refusal is not None:
+        return symlink_refusal
+    try:
+        stat = candidate_path.lstat()
+    except FileNotFoundError:
         return None
-    stat = candidate_path.lstat()
-    if candidate_path.is_symlink():
-        return {
-            "surface_id": surface.id,
-            "path": str(candidate_path),
-            "action": "refuse",
-            "reason": "symlink_not_followed",
-            "bytes": stat.st_size,
-            "estimated_reclaim_bytes": 0,
-        }
     if not candidate_path.is_file():
         return None
     if stat.st_size <= max_bytes:
@@ -459,6 +470,34 @@ def _paths_state_token(paths: list[Path]) -> str:
 
 def _rotation_paths(path: Path, retained_rotations: int) -> list[Path]:
     return [path] + [path.with_name(f"{path.name}.{index}") for index in range(1, retained_rotations + 1)]
+
+
+def _rotation_symlink_refusal(surface_id: str, path: Path, retained_rotations: int) -> dict[str, Any] | None:
+    for candidate_path in _rotation_paths(path, retained_rotations):
+        try:
+            stat = candidate_path.lstat()
+        except FileNotFoundError:
+            continue
+        if stat_module.S_ISLNK(stat.st_mode):
+            return {
+                "surface_id": surface_id,
+                "path": str(candidate_path),
+                "action": "refuse",
+                "reason": "symlink_not_followed",
+                "bytes": stat.st_size,
+                "estimated_reclaim_bytes": 0,
+            }
+    return None
+
+
+def _validate_rotation_paths(path: Path, retained_rotations: int) -> None:
+    for candidate_path in _rotation_paths(path, retained_rotations):
+        try:
+            stat = candidate_path.lstat()
+        except FileNotFoundError:
+            continue
+        if stat_module.S_ISLNK(stat.st_mode):
+            raise PolicyError(f"refusing to rotate symlink: {candidate_path}")
 
 
 def _rotation_reclaim_bytes(path: Path, retained_rotations: int) -> int:
@@ -662,7 +701,7 @@ def load_policy(policy_path: Path) -> Policy:
     policy_digest = hashlib.sha256(raw_policy).hexdigest()
 
     schema_version = data.get("schema_version")
-    if not isinstance(schema_version, int):
+    if type(schema_version) is not int:
         raise PolicyError("schema_version must be an integer")
     if schema_version != SUPPORTED_POLICY_SCHEMA_VERSION:
         raise PolicyError(f"unsupported schema_version: {schema_version}")
@@ -884,8 +923,9 @@ def _refusal_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _rotate_log(path: Path, retained_rotations: int) -> None:
     if retained_rotations <= 0:
         raise PolicyError("retained_rotations must be positive for rotation")
-    original_mode = path.lstat().st_mode & 0o7777
     rotation_paths = _rotation_paths(path, retained_rotations)
+    _validate_rotation_paths(path, retained_rotations)
+    original_mode = path.lstat().st_mode & 0o7777
     staged: list[tuple[Path, Path, Path]] = []
     created_current = False
 

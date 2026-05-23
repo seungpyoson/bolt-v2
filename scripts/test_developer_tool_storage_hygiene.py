@@ -234,6 +234,21 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
             with self.assertRaisesRegex(tool.PolicyError, "unsupported schema_version"):
                 tool.load_policy(policy_path)
 
+    def test_load_policy_rejects_boolean_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            self.write_policy_fixture(policy_path)
+            policy_path.write_text(
+                policy_path.read_text(encoding="utf-8").replace("schema_version = 1", "schema_version = true", 1),
+                encoding="utf-8",
+            )
+
+            tool = self.load_tool_module()
+
+            with self.assertRaisesRegex(tool.PolicyError, "schema_version must be an integer"):
+                tool.load_policy(policy_path)
+
     def test_dry_run_reports_oversized_log_rotation_candidates_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -265,6 +280,34 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(candidates[("factory.log", "droid-log-single.log")]["action"], "rotate")
         self.assertEqual(candidates[("factory.log", "droid-log-single.log")]["reason"], "size_exceeds_max_bytes")
         self.assertEqual(candidates[("factory.log", "droid-log-single.log")]["estimated_reclaim_bytes"], 0)
+
+    def test_dry_run_refuses_log_rotation_when_retained_sidecar_is_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex log requiring rotation")
+            sidecar_target = tmp_path / "sidecar-target.log"
+            sidecar_target.write_bytes(b"outside")
+            codex_log.with_name("codex-tui.log.1").symlink_to(sidecar_target)
+            repo_root.mkdir()
+
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        codex_candidates = [
+            entry for entry in payload["candidates"] if entry["surface_id"] == "codex.log"
+        ]
+        self.assertEqual(len(codex_candidates), 1)
+        self.assertEqual(codex_candidates[0]["action"], "refuse")
+        self.assertEqual(codex_candidates[0]["reason"], "symlink_not_followed")
+        self.assertEqual(pathlib.Path(codex_candidates[0]["path"]).name, "codex-tui.log.1")
 
     def test_dry_run_honors_cleanup_mode_none_for_configured_surface(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -707,6 +750,37 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
         self.assertIn("codex.log.active_writer_processes", result.stderr)
 
+    def test_policy_validation_fails_closed_when_mode_fields_are_missing(self) -> None:
+        cases = (
+            ("max_bytes = 8\n", "codex.log.max_bytes"),
+            ("retained_rotations = 2\n", "codex.log.retained_rotations"),
+            ("ttl_days = 14\n", "codex.sessions.ttl_days"),
+            (
+                'retain_exact_names = ["1.95.0-aarch64-apple-darwin"]\n',
+                "rustup.toolchains.retain_exact_names",
+            ),
+            ("remove_exact_names = []\n", "rustup.toolchains.remove_exact_names"),
+        )
+        for removed_line, expected_error in cases:
+            with self.subTest(expected_error=expected_error):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = pathlib.Path(tmp)
+                    policy = tmp_path / "policy.toml"
+                    home_root = tmp_path / "home"
+                    repo_root = tmp_path / "repo"
+                    home_root.mkdir()
+                    repo_root.mkdir()
+                    self.write_policy_fixture(policy)
+                    policy.write_text(
+                        policy.read_text(encoding="utf-8").replace(removed_line, "", 1),
+                        encoding="utf-8",
+                    )
+
+                    result = self.run_tool("status", home_root, repo_root, policy)
+
+                self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+                self.assertIn(expected_error, result.stderr)
+
     def test_policy_validation_fails_closed_for_unknown_owner_or_cleanup_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -1050,6 +1124,59 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(payload["status"], "applied")
         self.assertEqual(payload["actions_taken"][0]["action"], "rotate")
         self.assertEqual(payload["actions_taken"][0]["surface_id"], "codex.log")
+
+    def test_apply_does_not_rotate_when_retained_sidecar_is_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            original = b"codex log requiring rotation"
+            codex_log.write_bytes(original)
+            sidecar_target = tmp_path / "sidecar-target.log"
+            sidecar_target.write_bytes(b"outside")
+            sidecar = codex_log.with_name("codex-tui.log.1")
+            sidecar.symlink_to(sidecar_target)
+            repo_root.mkdir()
+
+            stale_report = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(stale_report.returncode, 0, (stale_report.stdout, stale_report.stderr))
+            payload = json.loads(stale_report.stdout)
+            payload["candidates"] = [
+                {
+                    "surface_id": "codex.log",
+                    "path": str(codex_log),
+                    "action": "rotate",
+                    "reason": "size_exceeds_max_bytes",
+                    "bytes": len(original),
+                    "estimated_reclaim_bytes": 0,
+                    "state_token": "stale",
+                }
+            ]
+            report.write_text(json.dumps(payload), encoding="utf-8")
+
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report), "--process-snapshot-empty"],
+            )
+            current_after = codex_log.read_bytes()
+            sidecar_is_symlink = sidecar.is_symlink()
+
+        self.assertEqual(result.returncode, 1, (result.stdout, result.stderr))
+        self.assertEqual(current_after, original)
+        self.assertTrue(sidecar_is_symlink)
+        apply_payload = json.loads(result.stdout)
+        self.assertEqual(apply_payload["status"], "aborted")
+        self.assertEqual(apply_payload["reason"], "candidate_state_changed")
+        self.assertEqual(apply_payload["refusal_reasons"][0]["reason"], "symlink_not_followed")
 
     def test_apply_requires_process_snapshot_for_mutable_writer_surfaces(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

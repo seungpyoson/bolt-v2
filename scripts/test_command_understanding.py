@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""Characterization tests for shared command-understanding helpers."""
+
+from __future__ import annotations
+
+import ast
+import importlib
+import importlib.util
+import pathlib
+import sys
+import tempfile
+
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+RUNTIME_VERIFIER = REPO_ROOT / "scripts" / "rust_verification.py"
+STATIC_VERIFIER = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
+SHARED_HELPERS = REPO_ROOT / "scripts" / "command_understanding.py"
+
+
+def load_module(path: pathlib.Path, module_name: str) -> object:
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"could not load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_shared_module() -> object:
+    if not SHARED_HELPERS.exists():
+        raise AssertionError("missing scripts/command_understanding.py")
+    return importlib.import_module("command_understanding")
+
+
+def expression(source: str) -> ast.AST:
+    return ast.parse(source, mode="eval").body
+
+
+def first_call(source: str) -> ast.Call:
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            return node
+    raise AssertionError(f"no call found in {source!r}")
+
+
+def assert_python_ast_helpers_match_current_verifiers() -> None:
+    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_under_test")
+    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_under_test")
+    shared = load_shared_module()
+
+    constant_cases = [
+        ("'cargo build'", "cargo build"),
+        ("'car' + 'go build'", "cargo build"),
+        ("f'cargo build'", "cargo build"),
+        ("f'cargo {target}'", None),
+    ]
+    for source, expected in constant_cases:
+        node = expression(source)
+        values = [
+            runtime.python_constant_string(node),
+            static.python_constant_string(node),
+            shared.python_constant_string(node),
+        ]
+        if values != [expected, expected, expected]:
+            raise AssertionError(f"python_constant_string({source!r}) returned {values!r}")
+
+    command_cases = [
+        ("'cargo build'", "cargo build"),
+        ("['cargo', 'test', '--target-dir', '/tmp/raw']", "cargo test --target-dir /tmp/raw"),
+        ("('cargo', 'build with space')", "cargo 'build with space'"),
+        ("['cargo', dynamic]", None),
+    ]
+    for source, expected in command_cases:
+        node = expression(source)
+        values = [
+            runtime.python_command_string(node),
+            static.python_command_string(node),
+            shared.python_command_string(node),
+        ]
+        if values != [expected, expected, expected]:
+            raise AssertionError(f"python_command_string({source!r}) returned {values!r}")
+
+    call_name_cases = [
+        ("os.system('cargo build')", "os.system"),
+        ("subprocess.run(['cargo', 'test'])", "subprocess.run"),
+        ("run(['cargo'])", "run"),
+    ]
+    for source, expected in call_name_cases:
+        call = first_call(source)
+        values = [
+            runtime.python_call_name(call.func),
+            static.python_call_name(call.func),
+            shared.python_call_name(call.func),
+        ]
+        if values != [expected, expected, expected]:
+            raise AssertionError(f"python_call_name({source!r}) returned {values!r}")
+
+    argument_cases = [
+        ("subprocess.run(['cargo', 'test'])", "cargo test"),
+        ("subprocess.run(args=['cargo', 'build'])", "cargo build"),
+        ("subprocess.run(command=['cargo', 'check'])", "cargo check"),
+        ("subprocess.run(timeout=30)", None),
+    ]
+    for source, expected in argument_cases:
+        calls = [first_call(source)] * 3
+        argument_nodes = [
+            runtime.python_call_command_argument(calls[0]),
+            static.python_call_command_argument(calls[1]),
+            shared.python_call_command_argument(calls[2]),
+        ]
+        values = [
+            None if argument_nodes[0] is None else runtime.python_command_string(argument_nodes[0]),
+            None if argument_nodes[1] is None else static.python_command_string(argument_nodes[1]),
+            None if argument_nodes[2] is None else shared.python_command_string(argument_nodes[2]),
+        ]
+        if values != [expected, expected, expected]:
+            raise AssertionError(f"python_call_command_argument({source!r}) returned {values!r}")
+
+
+def assert_python_inline_payloads_match_current_verifiers() -> None:
+    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_inline_under_test")
+    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_inline_under_test")
+    shared = load_shared_module()
+
+    cases = [
+        (
+            ["python", "-c", "import os; os.system('car' + 'go build')"],
+            ["cargo build"],
+        ),
+        (
+            ["python", "-c", "import subprocess; subprocess.run(['cargo', 'test', '--target-dir', '/tmp/raw'])"],
+            ["cargo test --target-dir /tmp/raw"],
+        ),
+        (
+            ["python", "-c", "import subprocess; subprocess.run(args=['cargo', 'check'])"],
+            ["cargo check"],
+        ),
+        (
+            ["python", "-c", "import subprocess; subprocess.call(command=['cargo', 'clippy'])"],
+            ["cargo clippy"],
+        ),
+        (
+            ["python", "-c", "import os; os.system('cargo ' + target)"],
+            [],
+        ),
+        (
+            ["python", "-c", "not valid python"],
+            [],
+        ),
+    ]
+    for tokens, expected in cases:
+        values = [
+            runtime.python_inline_command_payloads(tokens),
+            static.python_inline_command_payloads(tokens),
+            shared.python_inline_command_payloads(tokens),
+        ]
+        if values != [expected, expected, expected]:
+            raise AssertionError(f"python_inline_command_payloads({tokens!r}) returned {values!r}")
+
+
+def assert_verifier_clients_use_shared_python_helpers() -> None:
+    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_client_under_test")
+    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_client_under_test")
+    shared = load_shared_module()
+
+    helper_names = [
+        "python_constant_string",
+        "python_command_string",
+        "python_call_name",
+        "python_call_command_argument",
+        "python_inline_command_payloads",
+    ]
+    failures: list[str] = []
+    for helper_name in helper_names:
+        shared_helper = getattr(shared, helper_name)
+        if getattr(runtime, helper_name) is not shared_helper:
+            failures.append(f"rust_verification.{helper_name}")
+        if getattr(static, helper_name) is not shared_helper:
+            failures.append(f"verify_ci_workflow_hygiene.{helper_name}")
+    if failures:
+        raise AssertionError("verifier clients must import shared helpers: " + ", ".join(failures))
+
+
+def assert_non_exported_candidate_helpers_are_characterized() -> None:
+    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_candidates_under_test")
+    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_candidates_under_test")
+    shared = load_shared_module()
+
+    non_exports = [
+        "command_tokens",
+        "shell_command_substitution_payloads",
+        "shell_command_substitution_at",
+        "path_name_looks_like_renamed_cargo",
+        "path_executable_looks_like_cargo",
+        "path_name_looks_like_renamed_rustc",
+        "path_executable_looks_like_rustc",
+        "cargo_subcommand_with_index",
+        "cargo_target_routing_override",
+        "tokens_have_target_routing_override",
+        "process_wrapper_tokens",
+        "wrapper_inner_tokens",
+    ]
+    leaked = [helper_name for helper_name in non_exports if hasattr(shared, helper_name)]
+    if leaked:
+        raise AssertionError("unproven helpers must not be shared exports: " + ", ".join(leaked))
+
+    command = "cargo build&&cargo test"
+    runtime_tokens = runtime.command_tokens(command)
+    static_tokens = static.command_tokens(command)
+    if runtime_tokens != ["cargo", "build&&cargo", "test"]:
+        raise AssertionError(f"runtime command_tokens boundary changed: {runtime_tokens!r}")
+    if static_tokens != ["cargo", "build", "&&", "cargo", "test"]:
+        raise AssertionError(f"static command_tokens boundary changed: {static_tokens!r}")
+
+    substitution_tokens = ["echo", "$(", "cargo", ")"]
+    runtime_payloads = runtime.shell_command_substitution_payloads(substitution_tokens)
+    static_payloads = static.shell_command_substitution_payloads(substitution_tokens)
+    if runtime_payloads != [["cargo"]] or static_payloads != []:
+        raise AssertionError(
+            "shell_command_substitution_payloads divergence changed: "
+            f"runtime={runtime_payloads!r} static={static_payloads!r}"
+        )
+
+    prefix_tokens = ["prefix$", "(", "cargo", ")"]
+    runtime_substitution = runtime.shell_command_substitution_at(prefix_tokens, 0)
+    static_substitution = static.shell_command_substitution_at(prefix_tokens, 0)
+    if runtime_substitution is not None or static_substitution != (["cargo"], 4):
+        raise AssertionError(
+            "shell_command_substitution_at prefix-$ divergence changed: "
+            f"runtime={runtime_substitution!r} static={static_substitution!r}"
+        )
+
+    if runtime.path_name_looks_like_renamed_cargo("rustup") is not True:
+        raise AssertionError("runtime rustup-as-cargo path-name classification changed")
+    if static.path_name_looks_like_renamed_cargo("rustup") is not False:
+        raise AssertionError("static rustup-as-cargo path-name classification changed")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        cargo_target = tmp_path / "cargo"
+        cargo_target.write_text("", encoding="utf-8")
+        cargo_link = tmp_path / "tool"
+        cargo_link.symlink_to(cargo_target)
+        runtime_cargo = runtime.path_executable_looks_like_cargo(str(cargo_link))
+        static_cargo = static.path_executable_looks_like_cargo(str(cargo_link))
+        if runtime_cargo is not True or static_cargo is not False:
+            raise AssertionError(
+                "cargo symlink executable classification changed: "
+                f"runtime={runtime_cargo!r} static={static_cargo!r}"
+            )
+
+        rustc_target = tmp_path / "rustc"
+        rustc_target.write_text("", encoding="utf-8")
+        rustc_link = tmp_path / "compiler"
+        rustc_link.symlink_to(rustc_target)
+        runtime_rustc = runtime.path_executable_looks_like_rustc(str(rustc_link))
+        static_rustc = static.path_executable_looks_like_rustc(str(rustc_link))
+        if runtime_rustc is not True or static_rustc is not False:
+            raise AssertionError(
+                "rustc symlink executable classification changed: "
+                f"runtime={runtime_rustc!r} static={static_rustc!r}"
+            )
+
+    cargo_args = ["--manifest-path", "Cargo.toml", "test", "--", "--target-dir", "/tmp/raw"]
+    if runtime.cargo_subcommand_with_index(cargo_args) != (2, "test"):
+        raise AssertionError("runtime cargo_subcommand_with_index changed")
+    if static.cargo_subcommand_with_index(cargo_args) != (2, "test"):
+        raise AssertionError("static cargo_subcommand_with_index default changed")
+    if static.cargo_subcommand_with_index(["cargo", *cargo_args], start=1) != (3, "test"):
+        raise AssertionError("static cargo_subcommand_with_index start-offset behavior changed")
+
+    if runtime.process_wrapper_tokens(["command", "--", "cargo", "build"]) != ["cargo", "build"]:
+        raise AssertionError("runtime process_wrapper_tokens representative behavior changed")
+    if static.wrapper_inner_tokens(["command", "--", "cargo", "build"]) != ["cargo", "build"]:
+        raise AssertionError("static wrapper_inner_tokens representative behavior changed")
+
+    if runtime.cargo_target_routing_override(["test", "--target-dir", "/tmp/raw"]) != "--target-dir":
+        raise AssertionError("runtime target-routing override detection changed")
+    if static.tokens_have_target_routing_override(["cargo", "test", "--target-dir", "/tmp/raw"]) is not True:
+        raise AssertionError("static target-routing override detection changed")
+    if runtime.cargo_target_routing_override(["test", "--", "--target-dir", "/tmp/raw"]) is not None:
+        raise AssertionError("runtime post-separator target-routing handling changed")
+    if static.tokens_have_target_routing_override(["cargo", "test", "--", "--target-dir", "/tmp/raw"]) is not False:
+        raise AssertionError("static post-separator target-routing handling changed")
+
+
+def main() -> int:
+    assert_python_ast_helpers_match_current_verifiers()
+    assert_python_inline_payloads_match_current_verifiers()
+    assert_verifier_clients_use_shared_python_helpers()
+    assert_non_exported_candidate_helpers_are_characterized()
+    print("OK: command understanding self-tests passed.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

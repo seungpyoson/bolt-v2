@@ -20,6 +20,18 @@
 | `python3 scripts/test_verify_ci_workflow_hygiene.py` on 2026-05-24 | Pass: `OK: CI workflow hygiene verifier self-tests passed.` |
 | `python3 -m py_compile scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py scripts/test_rust_verification_cache_retention.py scripts/test_verify_ci_workflow_hygiene.py` on 2026-05-24 | Pass: no output. |
 
+## Implementation Verification
+
+| Command | Result |
+|---|---|
+| `python3 scripts/test_command_understanding.py` before `scripts/command_understanding.py` existed | RED: failed with `AssertionError: missing scripts/command_understanding.py`. |
+| `python3 scripts/test_command_understanding.py` after adding `scripts/command_understanding.py` | GREEN: `OK: command understanding self-tests passed.` |
+| `python3 scripts/test_command_understanding.py` before rewiring verifier clients | RED: failed because both verifier clients still used local Python AST helper definitions. |
+| `python3 scripts/test_command_understanding.py` after rewiring verifier clients | GREEN: `OK: command understanding self-tests passed.` |
+| `python3 -m py_compile scripts/command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py scripts/test_command_understanding.py` | Pass: no output. |
+| `python3 scripts/test_rust_verification_cache_retention.py` | Pass: `OK: Rust verification cache retention self-tests passed.` |
+| `python3 scripts/test_verify_ci_workflow_hygiene.py` | Pass: `OK: CI workflow hygiene verifier self-tests passed.` |
+
 ## Planning Validation
 
 | Command | Result |
@@ -32,8 +44,12 @@
 
 | File | Lines |
 |---|---:|
-| `scripts/rust_verification.py` | 2738 |
-| `scripts/verify_ci_workflow_hygiene.py` | 6175 |
+| `scripts/rust_verification.py` before extraction | 2738 |
+| `scripts/rust_verification.py` after extraction | 2663 |
+| `scripts/verify_ci_workflow_hygiene.py` before extraction | 6175 |
+| `scripts/verify_ci_workflow_hygiene.py` after extraction | 6099 |
+| `scripts/command_understanding.py` | 88 |
+| `scripts/test_command_understanding.py` | 298 |
 | `scripts/test_rust_verification_cache_retention.py` | 3175 |
 | `scripts/test_verify_ci_workflow_hygiene.py` | 5102 |
 
@@ -44,8 +60,8 @@
 | `command_tokens` | `scripts/rust_verification.py:507` | `scripts/verify_ci_workflow_hygiene.py:1215` | Divergent: runtime uses simple `shlex.split`; static uses punctuation-aware lexing and token splitting. Characterize only unless a semantic change is approved. |
 | `shell_command_substitution_payloads` | `scripts/rust_verification.py:622` | `scripts/verify_ci_workflow_hygiene.py:1311` | Divergent dependency boundary: runtime normalizes tokens before scanning; static scans caller tokens. |
 | `shell_command_substitution_at` | `scripts/rust_verification.py:655` | `scripts/verify_ci_workflow_hygiene.py:2339` | Divergent: runtime requires normalized exact `$`; static accepts tokens ending in `$`. |
-| Python AST command helpers | `scripts/rust_verification.py:740` | `scripts/verify_ci_workflow_hygiene.py:1388` | Equivalent candidate: includes `python_constant_string`, `python_command_string`, `python_call_name`, and `python_call_command_argument`. |
-| `python_inline_command_payloads` | `scripts/rust_verification.py:792` | `scripts/verify_ci_workflow_hygiene.py:1440` | Equivalent candidate when moved with its Python AST helper dependencies. |
+| Python AST command helpers | `scripts/rust_verification.py:21` imports shared helpers | `scripts/verify_ci_workflow_hygiene.py:13` imports shared helpers | Extracted to `scripts/command_understanding.py:9`, `:28`, `:43`, and `:52`; characterization tests prove current behavior parity. |
+| `python_inline_command_payloads` | `scripts/rust_verification.py:21` imports shared helper | `scripts/verify_ci_workflow_hygiene.py:13` imports shared helper | Extracted to `scripts/command_understanding.py:61`; characterization tests cover scalar, list, keyword-argument, dynamic, and syntax-error cases. |
 | `path_name_looks_like_renamed_cargo` | `scripts/rust_verification.py:1626` | `scripts/verify_ci_workflow_hygiene.py:2605` | Divergent: runtime includes `rustup`; static raw-token helper does not. |
 | `path_executable_looks_like_cargo` | `scripts/rust_verification.py:1632` | `scripts/verify_ci_workflow_hygiene.py:2609` | Divergent: runtime resolves filesystem symlinks; static inspects only token path name. |
 | `path_name_looks_like_renamed_rustc` | `scripts/rust_verification.py:1645` | `scripts/verify_ci_workflow_hygiene.py:2618` | Similar, but still requires pre-extraction behavior comparison before export. |
@@ -67,6 +83,14 @@
 - Rewire both verifier clients only after the shared module tests are red/green.
 - Keep any remaining oversized-surface split mechanical and separately evidenced.
 
+## Implementation Result
+
+- Extracted only the proven-equivalent Python AST helper family to `scripts/command_understanding.py`.
+- Rewired `scripts/rust_verification.py` and `scripts/verify_ci_workflow_hygiene.py` to import the shared helper path.
+- Left divergent or unproven helper families local: tokenization, shell command substitutions, renamed executable detection, wrapper handling, cargo subcommand scanning, and target-routing override scanning.
+- Added `scripts/test_command_understanding.py` characterization tests for both extracted helpers and representative divergent/deferred helper behavior.
+- No mechanical test split was made; remaining oversized verifier test files are intentionally deferred and documented as residual review risk.
+
 ## Review Notes
 
 - Planning artifacts received initial adversarial review on head `c966ce2f4509cfe5f577a79f7847cfcecb3f6717`.
@@ -77,6 +101,8 @@
 - This planning revision narrows extraction eligibility to pre-extraction-proven equivalent helpers and treats divergent candidates as characterization-only unless operator-approved semantic-change evidence is added.
 - Exact-head re-review on `39e5a22b93de193fd019bf7334e676eeed9aad7b` returned APPROVE from Claude `4f0661e9-485e-46ad-862f-540a9a2be3ba`, Kimi `6b2c181a-9165-426a-8b06-2ce71633c1ef`, GLM `job_c42abe34-c146-40bb-a833-b2f16189540c`, and DeepSeek `job_c0e20a68-7c2d-44f4-9a1b-f0f69255a853`.
 - On 2026-05-24 the required planning gate was strengthened to require unanimous current-head approvals from Claude, Gemini, Kimi, Grok, GLM, and DeepSeek before implementation starts.
+- Planning gate record for exact head `c0d7332bf4f30e4ddef314c69f3a51c13cfc31d2` was posted to issue #454: https://github.com/seungpyoson/bolt-v2/issues/454#issuecomment-4525926019. Clean APPROVE slots: Claude `cc2312d6-429e-4e6c-bc6e-9b92e669a30a`, Gemini `00e31366-c3bc-43d6-bd10-35c2a76037fa`, Grok `job_6d446dd9-d391-493c-b709-7871f6867324`, GLM `job_5315e9db-2110-4eea-8d9a-a438669d037d`, DeepSeek `job_2bb9cfed-fb15-45c8-a10a-b92def6b6f9c`, and Kimi `99c0e045-b37f-4fca-9e3b-52c3fd5d34b9`.
+- Kimi's clean approval used a core planning custom-review packet after two branch-diff attempts failed; final PR-head external review must still include Kimi on the full PR head before merge readiness.
 - no-mistakes is intentionally excluded unless the operator explicitly requests it.
 
 ## Reviewer Availability Evidence

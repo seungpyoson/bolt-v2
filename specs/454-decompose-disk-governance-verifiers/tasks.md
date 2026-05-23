@@ -30,7 +30,7 @@
 - [x] T012 Request DeepSeek adversarial planning review for `specs/454-decompose-disk-governance-verifiers/` and record verdict in `evidence.md`.
 - [x] T013 Resolve or explicitly classify every source-proven planning blocker in `specs/454-decompose-disk-governance-verifiers/`.
 - [x] T014 Verify Claude, Gemini, Kimi, Grok, GLM, and DeepSeek reviewer availability and record readiness in `evidence.md`.
-- [ ] T015 Re-run exact-head adversarial planning review for Claude, Gemini, Kimi, Grok, GLM, and DeepSeek; record unanimous current-head approval before implementation.
+- [x] T015 Re-run exact-head adversarial planning review for Claude, Gemini, Kimi, Grok, GLM, and DeepSeek; record unanimous current-head approval before implementation.
 
 **Checkpoint**: No implementation starts until T007 through T015 are complete.
 
@@ -44,14 +44,14 @@
 
 ### Tests for User Story 1
 
-- [ ] T016 [US1] Add pre-extraction comparison tests or evidence cases that classify each candidate helper family as equivalent, divergent, or deferred before `scripts/command_understanding.py` exists.
-- [ ] T017 [P] [US1] Add RED characterization tests for `command_tokens`, shell command boundaries, command substitutions, and Python inline command payloads in `scripts/test_command_understanding.py`.
-- [ ] T018 [P] [US1] Add RED characterization tests for renamed cargo/rustc executable detection, current wrapper handling, cargo subcommand scanning, and target-routing scan cases in `scripts/test_command_understanding.py`.
+- [x] T016 [US1] Add pre-extraction comparison tests or evidence cases that classify each candidate helper family as equivalent, divergent, or deferred before `scripts/command_understanding.py` exists.
+- [x] T017 [P] [US1] Add RED characterization tests for `command_tokens`, shell command boundaries, command substitutions, and Python inline command payloads in `scripts/test_command_understanding.py`.
+- [x] T018 [P] [US1] Add RED characterization tests for renamed cargo/rustc executable detection, current wrapper handling, cargo subcommand scanning, and target-routing scan cases in `scripts/test_command_understanding.py`.
 
 ### Implementation for User Story 1
 
-- [ ] T019 [US1] Add `scripts/command_understanding.py` with mechanically copied current helper behavior only for candidates classified equivalent by T016 through T018.
-- [ ] T020 [US1] Run `python3 scripts/test_command_understanding.py` and record RED/GREEN evidence in `specs/454-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T019 [US1] Add `scripts/command_understanding.py` with mechanically copied current helper behavior only for candidates classified equivalent by T016 through T018.
+- [x] T020 [US1] Run `python3 scripts/test_command_understanding.py` and record RED/GREEN evidence in `specs/454-decompose-disk-governance-verifiers/evidence.md`.
 
 **Checkpoint**: User Story 1 is complete when shared-module characterization tests pass and prove the current baseline behavior.
 
@@ -65,15 +65,15 @@
 
 ### Tests for User Story 2
 
-- [ ] T021 [P] [US2] Add parity tests in `scripts/test_command_understanding.py` proving both verifier clients classify representative samples consistently through the shared helper path for extracted equivalent helpers.
-- [ ] T022 [P] [US2] Add drift-guard tests in `scripts/test_command_understanding.py` for representative raw-cargo/storage override and active-process command samples.
+- [x] T021 [P] [US2] Add parity tests in `scripts/test_command_understanding.py` proving both verifier clients classify representative samples consistently through the shared helper path for extracted equivalent helpers.
+- [x] T022 [P] [US2] Add drift-guard tests in `scripts/test_command_understanding.py` for representative raw-cargo/storage override and active-process command samples.
 
 ### Implementation for User Story 2
 
-- [ ] T023 [US2] Rewire `scripts/rust_verification.py` to import extracted equivalent helpers from `scripts/command_understanding.py`.
-- [ ] T024 [US2] Rewire `scripts/verify_ci_workflow_hygiene.py` to import extracted equivalent helpers from `scripts/command_understanding.py`.
-- [ ] T025 [US2] Remove duplicate local helper definitions only after both clients import the shared path and tests pass; leave divergent helpers local.
-- [ ] T026 [US2] Run `python3 scripts/test_command_understanding.py`, `python3 scripts/test_rust_verification_cache_retention.py`, and `python3 scripts/test_verify_ci_workflow_hygiene.py`; record results in `evidence.md`.
+- [x] T023 [US2] Rewire `scripts/rust_verification.py` to import extracted equivalent helpers from `scripts/command_understanding.py`.
+- [x] T024 [US2] Rewire `scripts/verify_ci_workflow_hygiene.py` to import extracted equivalent helpers from `scripts/command_understanding.py`.
+- [x] T025 [US2] Remove duplicate local helper definitions only after both clients import the shared path and tests pass; leave divergent helpers local.
+- [x] T026 [US2] Run `python3 scripts/test_command_understanding.py`, `python3 scripts/test_rust_verification_cache_retention.py`, and `python3 scripts/test_verify_ci_workflow_hygiene.py`; record results in `evidence.md`.
 
 **Checkpoint**: User Story 2 is complete when both verifier clients use the shared path with no accepted behavior drift.
 
@@ -87,12 +87,12 @@
 
 ### Tests for User Story 3
 
-- [ ] T027 [US3] Add or update evidence checks in `scripts/test_command_understanding.py` only if a mechanical test split is made.
+- [x] T027 [US3] Add or update evidence checks in `scripts/test_command_understanding.py` only if a mechanical test split is made.
 
 ### Implementation for User Story 3
 
-- [ ] T028 [US3] Update `specs/454-decompose-disk-governance-verifiers/evidence.md` with extracted helper families, divergent candidates, line-count deltas, remaining oversized surfaces, and deferred non-goals.
-- [ ] T029 [US3] Split any moved characterization tests only if the split is mechanical and reviewable; otherwise record the deferral in `evidence.md`.
+- [x] T028 [US3] Update `specs/454-decompose-disk-governance-verifiers/evidence.md` with extracted helper families, divergent candidates, line-count deltas, remaining oversized surfaces, and deferred non-goals.
+- [x] T029 [US3] Split any moved characterization tests only if the split is mechanical and reviewable; otherwise record the deferral in `evidence.md`.
 
 **Checkpoint**: User Story 3 is complete when remaining risk is explicit and no cosmetic broad split is hidden in the PR.
 

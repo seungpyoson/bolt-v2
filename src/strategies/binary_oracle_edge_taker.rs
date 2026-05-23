@@ -7177,14 +7177,14 @@ mod tests {
             .borrow_mut()
             .add_quote(quote_tick(&instrument_id.to_string(), 0.75, 0.76, 1_200))
             .expect("test cache should accept quote tick");
-        let quote_quantity = Quantity::new(25.0, 2);
+        let submitted_quote_order_quantity = Quantity::new(25.0, 2);
         let limit_price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-S1");
         let order = strategy
             .build_configured_entry_order(
                 instrument_id,
                 OrderSide::Sell,
-                quote_quantity,
+                submitted_quote_order_quantity,
                 limit_price,
                 client_order_id,
             )
@@ -7222,14 +7222,14 @@ mod tests {
         strategy.config.entry_order.is_quote_quantity = true;
         let instrument_id = selected_entry_instrument(&strategy);
         set_active_books_best_prices(&mut strategy, 0.75, 0.76);
-        let quote_quantity = Quantity::new(25.0, 2);
+        let submitted_quote_order_quantity = Quantity::new(25.0, 2);
         let limit_price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-S2");
         let order = strategy
             .build_configured_entry_order(
                 instrument_id,
                 OrderSide::Sell,
-                quote_quantity,
+                submitted_quote_order_quantity,
                 limit_price,
                 client_order_id,
             )
@@ -7263,14 +7263,14 @@ mod tests {
         builder.config.entry_order.is_quote_quantity = true;
         let instrument_id = selected_entry_instrument(&builder);
         set_active_books_best_prices(&mut builder, 0.75, 0.76);
-        let quote_quantity = Quantity::new(25.0, 2);
+        let submitted_quote_order_quantity = Quantity::new(25.0, 2);
         let limit_price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-S3");
         let order = builder
             .build_configured_entry_order(
                 instrument_id,
                 OrderSide::Sell,
-                quote_quantity,
+                submitted_quote_order_quantity,
                 limit_price,
                 client_order_id,
             )
@@ -7320,14 +7320,14 @@ mod tests {
             .borrow_mut()
             .add_quote(quote_tick(&instrument_id.to_string(), 0.75, 0.76, 1_200))
             .expect("test cache should accept quote tick");
-        let quote_quantity = Quantity::new(25.0, 2);
+        let submitted_quote_order_quantity = Quantity::new(25.0, 2);
         let limit_price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-S4");
         let order = strategy
             .build_configured_entry_order(
                 instrument_id,
                 OrderSide::Sell,
-                quote_quantity,
+                submitted_quote_order_quantity,
                 limit_price,
                 client_order_id,
             )
@@ -7365,14 +7365,14 @@ mod tests {
         strategy.config.entry_order.is_quote_quantity = true;
         let instrument_id = selected_entry_instrument(&strategy);
         set_active_books_best_prices(&mut strategy, 0.75, 0.76);
-        let quote_quantity = Quantity::new(25.0, 2);
+        let submitted_quote_order_quantity = Quantity::new(25.0, 2);
         let limit_price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-S5");
         let order = strategy
             .build_configured_entry_order(
                 instrument_id,
                 OrderSide::Sell,
-                quote_quantity,
+                submitted_quote_order_quantity,
                 limit_price,
                 client_order_id,
             )
@@ -7408,14 +7408,14 @@ mod tests {
         builder.config.entry_order.is_quote_quantity = true;
         let instrument_id = selected_entry_instrument(&builder);
         set_active_books_best_prices(&mut builder, 0.75, 0.76);
-        let quote_quantity = Quantity::new(25.0, 2);
+        let submitted_quote_order_quantity = Quantity::new(25.0, 2);
         let limit_price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-S6");
         let order = builder
             .build_configured_entry_order(
                 instrument_id,
                 OrderSide::Sell,
-                quote_quantity,
+                submitted_quote_order_quantity,
                 limit_price,
                 client_order_id,
             )

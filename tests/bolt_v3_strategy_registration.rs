@@ -1184,10 +1184,6 @@ fn binary_oracle_registration_resolves_fee_provider_through_provider_boundary() 
         source.contains("resolve_fee_provider"),
         "binary_oracle_edge_taker registration should call the generic fee-provider resolver"
     );
-    assert!(
-        !source.contains("polymarket::build_fee_provider"),
-        "binary_oracle_edge_taker registration must not construct the concrete provider directly"
-    );
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -1416,21 +1412,56 @@ fn fee_provider_source_fence_blocks_concrete_provider_in_shared_layers() {
     );
 
     fn push_rs_files(repo_root: &std::path::Path, directory: &str, files: &mut Vec<String>) {
-        for entry in std::fs::read_dir(repo_root.join(directory))
-            .expect("source-fence directory should be readable")
-        {
-            let entry = entry.expect("source-fence directory entry should be readable");
-            let path = entry.path();
-            if path.extension().is_some_and(|extension| extension == "rs") {
-                files.push(
-                    path.strip_prefix(repo_root)
-                        .unwrap()
-                        .to_string_lossy()
-                        .to_string(),
-                );
+        fn push_rs_files_from_path(
+            repo_root: &std::path::Path,
+            path: &std::path::Path,
+            files: &mut Vec<String>,
+        ) {
+            for entry in std::fs::read_dir(path).expect("source-fence directory should be readable")
+            {
+                let entry = entry.expect("source-fence directory entry should be readable");
+                let file_type = entry
+                    .file_type()
+                    .expect("source-fence directory entry type should be readable");
+                let path = entry.path();
+                if file_type.is_dir() {
+                    push_rs_files_from_path(repo_root, &path, files);
+                } else if file_type.is_file()
+                    && path.extension().is_some_and(|extension| extension == "rs")
+                {
+                    files.push(
+                        path.strip_prefix(repo_root)
+                            .unwrap()
+                            .to_string_lossy()
+                            .replace('\\', "/"),
+                    );
+                }
             }
         }
+
+        push_rs_files_from_path(repo_root, &repo_root.join(directory), files);
     }
+
+    let recursive_temp = support::TempCaseDir::new("fee-provider-source-fence-recursive");
+    let nested_strategy_dir = recursive_temp.path().join("src/strategies/nested");
+    std::fs::create_dir_all(&nested_strategy_dir)
+        .expect("recursive source-fence control directory should be created");
+    std::fs::write(nested_strategy_dir.join("mod.rs"), "")
+        .expect("recursive source-fence control Rust file should be created");
+    std::fs::write(nested_strategy_dir.join("notes.txt"), "")
+        .expect("recursive source-fence control non-Rust file should be created");
+    let mut recursive_control_files = Vec::new();
+    push_rs_files(
+        recursive_temp.path(),
+        "src/strategies",
+        &mut recursive_control_files,
+    );
+    recursive_control_files.sort();
+    assert_eq!(
+        recursive_control_files,
+        vec!["src/strategies/nested/mod.rs".to_string()],
+        "source-fence collection must recurse into nested strategy modules and ignore non-Rust files"
+    );
 
     let repo_root = support::repo_path("");
     let mut files = Vec::new();

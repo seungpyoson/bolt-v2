@@ -114,8 +114,8 @@
 - [X] T062 Run `just clippy`
 - [X] T063 Run the ai-slop-cleaner skill against the final diff before requesting review
 - [X] T064 Open a PR for issue #452 only
-- [ ] T065 Confirm exact PR head CI is green
-- [ ] T066 Request external exact-head review after all local checks pass and PR CI is green
+- [X] T065 Confirm exact PR head CI is green
+- [X] T066 Request external exact-head review after all local checks pass and PR CI is green
 
 ---
 

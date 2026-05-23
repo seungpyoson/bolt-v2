@@ -1625,6 +1625,49 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(pathlib.Path(root_errors[0]["path"]).name, "log")
         self.assertEqual(root_errors[0]["reason"], "symlink_not_followed")
 
+    def test_preflight_fails_closed_when_owned_cleanup_none_path_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path)
+            policy_path.write_text(
+                policy_path.read_text(encoding="utf-8").replace(
+                    'cleanup_mode = "rotate"\nmax_bytes = 8',
+                    'cleanup_mode = "none"\nmax_bytes = 8',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            outside_log_root = tmp_path / "outside-log-root"
+            outside_log_root.mkdir()
+            log_root = home_root / ".codex" / "log"
+            log_root.parent.mkdir(parents=True)
+            log_root.symlink_to(outside_log_root, target_is_directory=True)
+            repo_root.mkdir()
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            payload = tool.build_preflight(
+                policy,
+                home_root,
+                repo_root,
+                available_disk_bytes=1000,
+            )
+
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("owned_storage_measurement_failed", payload["errors"])
+        root_errors = [
+            entry
+            for entry in payload["owned_storage_measurement_errors"]
+            if entry.get("surface_id") == "codex.log"
+        ]
+        self.assertEqual(len(root_errors), 1)
+        self.assertEqual(pathlib.Path(root_errors[0]["path"]).name, "log")
+        self.assertEqual(root_errors[0]["reason"], "symlink_not_followed")
+
     def test_preflight_fails_closed_when_log_sidecar_scan_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)

@@ -978,19 +978,45 @@ def _owned_root_refusal_errors(
     candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     owned_refusal_paths: dict[str, set[Path]] = {}
+    errors_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    def add_refusal(surface_id: str, path: str, reason: str) -> None:
+        key = (surface_id, path, reason)
+        if key in errors_by_key:
+            return
+        errors_by_key[key] = {
+            "surface_id": surface_id,
+            "path": path,
+            "reason": reason,
+            "error": "root_refusal",
+        }
+
     for surface in policy.surfaces:
         if surface.owner != OWNED_OWNER:
             continue
         if _path_family_has_glob(surface.path_family):
             root = _path_family_root_and_pattern(home_root, surface.path_family)[0]
             paths = _path_family_ancestors(root, home_root)
+            refusal_probe = root
         else:
             configured_path = _configured_path(home_root, surface.path_family)
             paths = _path_family_ancestors(configured_path, home_root)
             if surface.cleanup_mode == "rotate" and surface.id in ROTATING_SURFACE_IDS:
                 paths.update(_path_family_ancestors(configured_path.parent, home_root))
+            refusal_probe = configured_path
         owned_refusal_paths[surface.id] = paths
-    errors: list[dict[str, Any]] = []
+        root_refusal = _path_family_refusal(
+            surface.id,
+            refusal_probe,
+            home_root,
+            include_action=False,
+        )
+        if root_refusal is not None and isinstance(root_refusal.get("path"), str):
+            add_refusal(
+                surface.id,
+                str(root_refusal["path"]),
+                str(root_refusal.get("reason", "measurement_failed")),
+            )
     for candidate in candidates:
         surface_paths = owned_refusal_paths.get(str(candidate.get("surface_id", "")), set())
         path = candidate.get("path")
@@ -1001,15 +1027,12 @@ def _owned_root_refusal_errors(
             or Path(path) not in surface_paths
         ):
             continue
-        errors.append(
-            {
-                "surface_id": candidate["surface_id"],
-                "path": path,
-                "reason": candidate.get("reason", "measurement_failed"),
-                "error": "root_refusal",
-            }
+        add_refusal(
+            str(candidate["surface_id"]),
+            path,
+            str(candidate.get("reason", "measurement_failed")),
         )
-    return errors
+    return list(errors_by_key.values())
 
 
 def _adjacent_context(policy: Policy, home_root: Path) -> list[dict[str, Any]]:

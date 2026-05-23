@@ -43,27 +43,27 @@
 
 ### Tests for User Story 1
 
-- [ ] T016 [US1] Add a failing `quote_quantity_sell_limit_helper_floors_to_submitted_quote_quantity` helper test in `tests/bolt_v3_submit_admission.rs`
+- [ ] T016 [US1] Add a failing `quote_quantity_sell_limit_helper_floors_to_submitted_quote_quantity` helper test in `tests/bolt_v3_submit_admission.rs`, including a fractional fixture that proves the floor uses `rust_decimal::Decimal` values instead of `f64` or string comparison
 - [ ] T017 [US1] Run `quote_quantity_sell_limit_helper_floors_to_submitted_quote_quantity` and confirm it fails before helper implementation in `tests/bolt_v3_submit_admission.rs`
-- [ ] T018 [US1] Implement the pure conservative helper for SELL Limit floor behavior for non-inverse inputs only, keeping inverse instruments on the existing NT-derived path until explicit inverse coverage lands, in `src/bolt_v3_submit_admission.rs`
+- [ ] T018 [US1] Implement the pure conservative helper for SELL Limit floor behavior for non-inverse inputs only, using the existing `rust_decimal::Decimal` dependency for parsed price, quantity, calculated notional, submitted quote quantity, and `Decimal::max` floor comparison, keeping inverse instruments on the existing NT-derived path until explicit inverse coverage lands, in `src/bolt_v3_submit_admission.rs`
 - [ ] T019 [US1] Wire SELL Limit `submit_admission_request_from_order` through the conservative helper in `src/strategies/binary_oracle_edge_taker.rs`
 - [ ] T020 [US1] Run `quote_quantity_sell_limit_submit_admission_floors_to_quote_quantity`, `quote_quantity_sell_limit_helper_floors_to_submitted_quote_quantity`, and the existing BUY/Market admission regressions in `src/strategies/binary_oracle_edge_taker.rs` and `tests/bolt_v3_submit_admission.rs`
 - [ ] T021 [US1] Add a failing `quote_quantity_sell_limit_helper_missing_quote_uses_submitted_quote_quantity` helper test in `tests/bolt_v3_submit_admission.rs`
 - [ ] T022 [US1] Run `quote_quantity_sell_limit_helper_missing_quote_uses_submitted_quote_quantity` and confirm it fails before fallback implementation in `tests/bolt_v3_submit_admission.rs`
 - [ ] T023 [US1] Implement the SELL Limit missing-quote-cache fallback in the conservative helper in `src/bolt_v3_submit_admission.rs`
-- [ ] T024 [US1] Add a failing `quote_quantity_sell_limit_helper_missing_context_fails_closed` helper test in `tests/bolt_v3_submit_admission.rs`
+- [ ] T024 [US1] Add a failing `quote_quantity_sell_limit_helper_missing_context_fails_closed` helper test in `tests/bolt_v3_submit_admission.rs` covering both missing instrument context and decimal parse failure
 - [ ] T025 [US1] Run `quote_quantity_sell_limit_helper_missing_context_fails_closed` and confirm it fails before fail-closed implementation in `tests/bolt_v3_submit_admission.rs`
 - [ ] T026 [US1] Implement the SELL Limit missing-context fail-closed guard in `src/bolt_v3_submit_admission.rs`
 - [ ] T027 [US1] Re-run SELL Limit missing-quote/missing-context strategy and helper regressions plus existing BUY/Market admission regressions in `src/strategies/binary_oracle_edge_taker.rs` and `tests/bolt_v3_submit_admission.rs`
-- [ ] T028 [US1] Add a failing `quote_quantity_sell_stop_limit_helper_floors_to_submitted_quote_quantity` helper test in `tests/bolt_v3_submit_admission.rs`
+- [ ] T028 [US1] Add a failing `quote_quantity_sell_stop_limit_helper_floors_to_submitted_quote_quantity` helper test in `tests/bolt_v3_submit_admission.rs`, including a fractional fixture that proves the floor uses `rust_decimal::Decimal` values instead of `f64` or string comparison
 - [ ] T029 [US1] Run `quote_quantity_sell_stop_limit_helper_floors_to_submitted_quote_quantity` and confirm it fails before StopLimit floor implementation in `tests/bolt_v3_submit_admission.rs`
-- [ ] T030 [US1] Extend the conservative floor path to SELL StopLimit orders for non-inverse inputs only in `src/bolt_v3_submit_admission.rs`
+- [ ] T030 [US1] Extend the conservative floor path to SELL StopLimit orders for non-inverse inputs only, preserving the same `rust_decimal::Decimal` parse and `Decimal::max` floor domain, in `src/bolt_v3_submit_admission.rs`
 - [ ] T031 [US1] Wire SELL StopLimit `submit_admission_request_from_order` through the conservative helper in `src/strategies/binary_oracle_edge_taker.rs`
 - [ ] T032 [US1] Run SELL StopLimit floor strategy/helper regressions plus existing BUY/Market admission regressions in `src/strategies/binary_oracle_edge_taker.rs` and `tests/bolt_v3_submit_admission.rs`
 - [ ] T033 [US1] Add a failing `quote_quantity_sell_stop_limit_helper_missing_quote_uses_submitted_quote_quantity` helper test in `tests/bolt_v3_submit_admission.rs`
 - [ ] T034 [US1] Run `quote_quantity_sell_stop_limit_helper_missing_quote_uses_submitted_quote_quantity` and confirm it fails before fallback implementation in `tests/bolt_v3_submit_admission.rs`
 - [ ] T035 [US1] Implement the SELL StopLimit missing-quote-cache fallback in `src/bolt_v3_submit_admission.rs`
-- [ ] T036 [US1] Add a failing `quote_quantity_sell_stop_limit_helper_missing_context_fails_closed` helper test in `tests/bolt_v3_submit_admission.rs`
+- [ ] T036 [US1] Add a failing `quote_quantity_sell_stop_limit_helper_missing_context_fails_closed` helper test in `tests/bolt_v3_submit_admission.rs` covering both missing instrument context and decimal parse failure
 - [ ] T037 [US1] Run `quote_quantity_sell_stop_limit_helper_missing_context_fails_closed` and confirm it fails before fail-closed implementation in `tests/bolt_v3_submit_admission.rs`
 - [ ] T038 [US1] Implement the SELL StopLimit missing-context fail-closed guard in `src/bolt_v3_submit_admission.rs`
 - [ ] T039 [US1] Re-run SELL StopLimit missing-quote/missing-context strategy and helper regressions in `src/strategies/binary_oracle_edge_taker.rs` and `tests/bolt_v3_submit_admission.rs`

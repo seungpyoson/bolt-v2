@@ -10,13 +10,13 @@ Harden Bolt submit-admission notional derivation for compiled quote-quantity SEL
 ## Technical Context
 
 **Language/Version**: Rust, repository toolchain
-**Primary Dependencies**: NautilusTrader Rust crates pinned in `Cargo.toml` at rev `7c2aafb30fb143069c915a3f2057bb12174405f6`
+**Primary Dependencies**: NautilusTrader Rust crates pinned in `Cargo.toml` at rev `7c2aafb30fb143069c915a3f2057bb12174405f6`; existing `rust_decimal = "1.42.0"` dependency for admission price, quantity, notional, and quote-floor comparisons
 **Storage**: TOML config, JSONL decision evidence, Spec Kit docs
 **Testing**: Focused `cargo test` for strategy admission regression, existing quote-quantity admission tests, `cargo fmt -- --check`, `just clippy`, relevant source-fence checks if shared layers are touched
 **Target Platform**: bolt-v3 pure Rust LiveNode path
 **Project Type**: Rust trading runtime and config/admission layer
 **Performance Goals**: Admission derivation remains per-order and bounded; no new polling or venue simulation
-**Constraints**: No hardcoded runtime values, no venue/market/strategy policy in generic layers, no #451 extraction without approval, no live submit
+**Constraints**: No hardcoded runtime values, no venue/market/strategy policy in generic layers, no #451 extraction without approval, no live submit, no `f64` or string comparison for admission-notional flooring
 **Scale/Scope**: #452 only. Long-only current behavior remains supported; future shorts and quote-sized exits remain gated.
 
 ## Constitution Check
@@ -61,6 +61,8 @@ tests/
 
 **Structure Decision**: Start with the strategy-local admission code because #452's current risk is in `src/strategies/binary_oracle_edge_taker.rs`. Extract only a minimal generic admission helper if the red test proves a shared compiled-order helper is necessary. Do not move evidence/admission/submit sequencing into a #451 wrapper in this issue.
 
+**Decimal Decision**: Use the repository-pinned `rust_decimal::Decimal` domain already used by Bolt live-canary and strategy tests. Parse compiled NT price/quantity/notional strings into `Decimal` or use NT decimal accessors where available, compute calculated notional and submitted quote quantity as `Decimal`, then apply `Decimal::max` for the conservative floor. Reject or fail closed on decimal parse/context failure. Do not introduce another decimal dependency, do not convert through `f64`, and do not compare string-rendered numeric values.
+
 ## Phase 0: Research
 
 Research output: `specs/452-quote-quantity-sell-admission/research.md`.
@@ -71,6 +73,7 @@ Required decisions:
 - Classify current reachable paths, latent paths, and future enablement requirements.
 - Identify whether a small helper can be shared without implementing #451.
 - Define the exact red test path and expected failure.
+- Pin the existing `rust_decimal::Decimal` implementation approach for admission-floor math and fail-closed decimal parsing.
 
 ## Phase 1: Design
 

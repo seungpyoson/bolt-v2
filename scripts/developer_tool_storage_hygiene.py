@@ -292,6 +292,49 @@ def _scan_refusal(surface_id: str, path: Path) -> dict[str, Any]:
     }
 
 
+def _root_refusal(
+    surface_id: str,
+    path: Path,
+    home_root: Path,
+    *,
+    include_action: bool,
+) -> dict[str, Any] | None:
+    try:
+        stat = path.lstat()
+    except FileNotFoundError:
+        if _inside_root(path, home_root):
+            return None
+        entry: dict[str, Any] = {
+            "surface_id": surface_id,
+            "path": str(path),
+            "reason": "outside_configured_root",
+            "estimated_reclaim_bytes": 0,
+        }
+        if include_action:
+            entry["action"] = "refuse"
+        return entry
+    except OSError:
+        entry = _scan_refusal(surface_id, path)
+        if not include_action:
+            entry.pop("action")
+        return entry
+    reason = "symlink_not_followed" if stat_module.S_ISLNK(stat.st_mode) else ""
+    if not reason and not _inside_root(path, home_root):
+        reason = "outside_configured_root"
+    if not reason:
+        return None
+    entry = {
+        "surface_id": surface_id,
+        "path": str(path),
+        "reason": reason,
+        "bytes": stat.st_size,
+        "estimated_reclaim_bytes": 0,
+    }
+    if include_action:
+        entry["action"] = "refuse"
+    return entry
+
+
 def _stale_rotation_sidecar_candidates(
     surface_id: str,
     path: Path,
@@ -378,7 +421,10 @@ def _candidates_for_rotating_log(surface: PolicySurface, home_root: Path) -> lis
 def _candidates_for_sessions(surface: PolicySurface, home_root: Path) -> list[dict[str, Any]]:
     ttl_days = _read_positive_int(surface.id, surface.extra.get("ttl_days"), "ttl_days")
     base, pattern = _path_family_root_and_pattern(home_root, surface.path_family)
-    if not _inside_root(base, home_root) or not base.exists():
+    root_refusal = _root_refusal(surface.id, base, home_root, include_action=True)
+    if root_refusal is not None:
+        return [root_refusal]
+    if not base.exists():
         return []
     cutoff = time.time() - (ttl_days * 24 * 60 * 60)
     candidates: list[dict[str, Any]] = []
@@ -648,7 +694,10 @@ def _rustup_entries(
     base, pattern = _path_family_root_and_pattern(home_root, surface.path_family)
     if pattern != "*":
         raise PolicyError(f"{surface.id}.path_family must end with one exact-name wildcard")
-    if not _inside_root(base, home_root) or not base.exists():
+    root_refusal = _root_refusal(surface.id, base, home_root, include_action=True)
+    if root_refusal is not None:
+        return [root_refusal], []
+    if not base.exists():
         return [], []
 
     retain_exact_names = set(_string_tuple_from_extra(surface, "retain_exact_names"))
@@ -739,6 +788,11 @@ def _rustup_entries(
 
 def _report_only_entries(surface: PolicySurface, home_root: Path) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
+    if _path_family_has_glob(surface.path_family):
+        base, _pattern = _path_family_root_and_pattern(home_root, surface.path_family)
+        root_refusal = _root_refusal(surface.id, base, home_root, include_action=False)
+        if root_refusal is not None:
+            return [root_refusal]
     for path in _paths_for_surface(home_root, surface.path_family):
         try:
             is_symlink = path.is_symlink()
@@ -1054,6 +1108,7 @@ def _rotate_log(path: Path, retained_rotations: int) -> None:
     rotation_sources = [(0, path)] + _rotation_sidecar_entries(path)
     staged: list[tuple[int, Path, Path, Path]] = []
     created_current = False
+    created_current_stat: tuple[int, int, int, int] | None = None
 
     try:
         for index, source in rotation_sources:
@@ -1079,6 +1134,13 @@ def _rotate_log(path: Path, retained_rotations: int) -> None:
 
         _create_empty_file_no_follow(path, original_mode)
         created_current = True
+        current_stat = path.lstat()
+        created_current_stat = (
+            current_stat.st_dev,
+            current_stat.st_ino,
+            current_stat.st_size,
+            current_stat.st_mtime_ns,
+        )
 
         for index, _source, _temp, location in staged:
             if index >= retained_rotations and _path_exists_no_follow(location):
@@ -1088,11 +1150,17 @@ def _rotate_log(path: Path, retained_rotations: int) -> None:
             if location != temp and _path_exists_no_follow(location):
                 location.rename(temp)
         if created_current and _path_exists_no_follow(path):
-            path.unlink()
+            current_stat = path.lstat()
+            current_token = (
+                current_stat.st_dev,
+                current_stat.st_ino,
+                current_stat.st_size,
+                current_stat.st_mtime_ns,
+            )
+            if current_token == created_current_stat:
+                path.unlink()
         for _index, source, temp, _location in staged:
-            if _path_exists_no_follow(source):
-                source.unlink()
-            if _path_exists_no_follow(temp):
+            if not _path_exists_no_follow(source) and _path_exists_no_follow(temp):
                 temp.rename(source)
         raise
 

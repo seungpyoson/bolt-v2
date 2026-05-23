@@ -500,6 +500,80 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(sessions_by_name["old.jsonl"]["reason"], "older_than_ttl_days")
         self.assertEqual(sessions_by_name["old.jsonl"]["estimated_reclaim_bytes"], len(b"old session"))
 
+    def test_dry_run_reports_refusals_for_glob_roots_that_cannot_be_scanned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            outside_sessions = tmp_path / "outside-sessions"
+            outside_sessions.mkdir()
+            sessions_root = home_root / ".codex" / "sessions"
+            sessions_root.parent.mkdir(parents=True)
+            sessions_root.symlink_to(outside_sessions, target_is_directory=True)
+
+            outside_archived = tmp_path / "outside-archived"
+            outside_archived.mkdir()
+            archived_root = home_root / ".codex" / "archived_sessions"
+            archived_root.symlink_to(outside_archived, target_is_directory=True)
+
+            outside_rustup = tmp_path / "outside-rustup-toolchains"
+            outside_rustup.mkdir()
+            rustup_root = home_root / ".rustup" / "toolchains"
+            rustup_root.parent.mkdir(parents=True)
+            rustup_root.symlink_to(outside_rustup, target_is_directory=True)
+            repo_root.mkdir()
+
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        candidates = {
+            entry["surface_id"]: entry
+            for entry in payload["candidates"]
+            if entry.get("reason") == "symlink_not_followed"
+        }
+        report_only = {
+            entry["surface_id"]: entry
+            for entry in payload["report_only"]
+            if entry.get("reason") == "symlink_not_followed"
+        }
+        self.assertEqual(pathlib.Path(candidates["codex.sessions"]["path"]).name, "sessions")
+        self.assertEqual(candidates["codex.sessions"]["action"], "refuse")
+        self.assertEqual(pathlib.Path(candidates["rustup.toolchains"]["path"]).name, "toolchains")
+        self.assertEqual(candidates["rustup.toolchains"]["action"], "refuse")
+        self.assertEqual(pathlib.Path(report_only["codex.archived_sessions"]["path"]).name, "archived_sessions")
+        self.assertEqual(report_only["codex.archived_sessions"]["estimated_reclaim_bytes"], 0)
+
+    def test_dry_run_reports_outside_configured_root_for_relocated_glob_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            outside_codex = tmp_path / "outside-codex"
+            (outside_codex / "sessions").mkdir(parents=True)
+            codex_root = home_root / ".codex"
+            codex_root.parent.mkdir(parents=True)
+            codex_root.symlink_to(outside_codex, target_is_directory=True)
+            repo_root.mkdir()
+
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        candidates = {
+            entry["surface_id"]: entry
+            for entry in payload["candidates"]
+            if entry.get("reason") == "outside_configured_root"
+        }
+        self.assertEqual(pathlib.Path(candidates["codex.sessions"]["path"]).name, "sessions")
+        self.assertEqual(candidates["codex.sessions"]["action"], "refuse")
+
     def test_dry_run_reports_session_that_disappears_during_scan_as_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -1948,6 +2022,33 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(current_after, b"codex log requiring rotation")
         self.assertEqual(sidecar_one_after, b"sidecar-one")
         self.assertEqual(sidecar_two_after, b"sidecar-two")
+
+    def test_rotate_log_rollback_preserves_recreated_current_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            codex_log = tmp_path / "home" / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex log requiring rotation")
+
+            tool = self.load_tool_module()
+            original_create = tool._create_empty_file_no_follow
+
+            def recreate_current_then_fail(path: pathlib.Path, mode: int) -> None:
+                if path == codex_log:
+                    path.write_bytes(b"live log recreated during rollback")
+                    raise OSError("synthetic current log recreation")
+                original_create(path, mode)
+
+            tool._create_empty_file_no_follow = recreate_current_then_fail
+            try:
+                with self.assertRaises(OSError):
+                    tool._rotate_log(codex_log, 2)
+            finally:
+                tool._create_empty_file_no_follow = original_create
+
+            current_after = codex_log.read_bytes()
+
+        self.assertEqual(current_after, b"live log recreated during rollback")
 
     def test_rotate_log_refuses_current_log_reappearing_as_broken_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

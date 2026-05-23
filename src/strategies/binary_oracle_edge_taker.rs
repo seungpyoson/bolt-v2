@@ -36,7 +36,9 @@ use crate::{
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT, BoltV3OrderIntentEvidence,
         BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot, compiled_order_price_source,
     },
-    bolt_v3_market_families::{self, MarketSelectionOutcome, MarketSelectionTarget},
+    bolt_v3_market_families::{
+        self, MarketSelectionOutcome, MarketSelectionTarget, SelectedMarketSourceIdentity,
+    },
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
@@ -388,6 +390,7 @@ struct CandidateMarket {
     instrument_id: String,
     up: CandidateOutcome,
     down: CandidateOutcome,
+    source_identity: SelectedMarketSourceIdentity,
     selection_outcome: MarketSelectionOutcome,
     price_to_beat: Option<f64>,
     start_ts_ms: u64,
@@ -730,6 +733,7 @@ impl OutcomePreparedBooks {
 struct ActiveMarketState {
     phase: SelectionPhase,
     market_id: Option<String>,
+    source_identity: Option<SelectedMarketSourceIdentity>,
     instrument_id: Option<InstrumentId>,
     outcome_fees: OutcomeFeeState,
     price_to_beat: Option<f64>,
@@ -1669,6 +1673,7 @@ impl ActiveMarketState {
         Self {
             phase: SelectionPhase::Idle,
             market_id: None,
+            source_identity: None,
             instrument_id: None,
             outcome_fees: OutcomeFeeState::empty(),
             price_to_beat: None,
@@ -1713,6 +1718,7 @@ impl ActiveMarketState {
         Self {
             phase,
             market_id: Some(market.market_id.clone()),
+            source_identity: Some(market.source_identity.clone()),
             instrument_id: Some(InstrumentId::from(market.instrument_id.as_str())),
             outcome_fees: OutcomeFeeState::from_market(market),
             price_to_beat: market.price_to_beat,
@@ -4016,6 +4022,21 @@ impl BinaryOracleEdgeTaker {
             market_selection_ruleset_id: self.config.configured_target_id.clone(),
             market_selection_outcome: market_selection_outcome.to_string(),
             market_id: self.active.market_id.clone(),
+            polymarket_condition_id: self
+                .active
+                .source_identity
+                .as_ref()
+                .map(|identity| identity.condition_id.clone()),
+            polymarket_market_slug: self
+                .active
+                .source_identity
+                .as_ref()
+                .map(|identity| identity.market_slug.clone()),
+            polymarket_question_id: self
+                .active
+                .source_identity
+                .as_ref()
+                .map(|identity| identity.question_id.clone()),
             up_instrument_id: self
                 .active
                 .books
@@ -5368,6 +5389,7 @@ fn select_configured_market_from_instruments(
         down: CandidateOutcome {
             instrument_id: market.down_instrument_id.to_string(),
         },
+        source_identity: market.source_identity,
         selection_outcome: market.selection_outcome,
         price_to_beat: None,
         start_ts_ms: market.start_timestamp_milliseconds,
@@ -8259,6 +8281,11 @@ mod tests {
             },
             down: CandidateOutcome {
                 instrument_id: down_instrument_id,
+            },
+            source_identity: SelectedMarketSourceIdentity {
+                condition_id,
+                market_slug: format!("slug-{market_id}"),
+                question_id: format!("question-{market_id}"),
             },
             selection_outcome: MarketSelectionOutcome::Current,
             price_to_beat: None,
@@ -14005,6 +14032,18 @@ mod tests {
         assert_eq!(snapshot.realized_volatility, "1.5");
         assert_eq!(snapshot.seconds_to_market_end, 300);
         assert_eq!(snapshot.market_id.as_deref(), Some("MKT-1"));
+        assert_eq!(
+            snapshot.polymarket_condition_id.as_deref(),
+            Some("condition-MKT-1")
+        );
+        assert_eq!(
+            snapshot.polymarket_market_slug.as_deref(),
+            Some("slug-MKT-1")
+        );
+        assert_eq!(
+            snapshot.polymarket_question_id.as_deref(),
+            Some("question-MKT-1")
+        );
         assert_eq!(
             snapshot.up_instrument_id.as_deref(),
             Some("condition-MKT-1-MKT-1-UP.POLYMARKET")

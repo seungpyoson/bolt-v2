@@ -13,6 +13,9 @@ use zeroize::Zeroize;
 
 use crate::{
     bolt_v3_config::{LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
+    bolt_v3_decision_evidence::{
+        BoltV3StrategyInputEvidenceSnapshot, read_latest_entry_decision_evidence_chain,
+    },
     bolt_v3_live_canary_gate::{
         APPROVAL_ENVELOPE_RECORD_KIND, APPROVAL_ENVELOPE_SCHEMA_VERSION,
         Phase8OperatorApprovalEnvelopeFile, current_build_head_sha,
@@ -24,6 +27,7 @@ use crate::{
         Phase8AbortPlanEvidenceFile, Phase8AbortPlanSourceProofs,
         Phase8FinancialEnvelopeEvidenceFile, Phase8MarketSelectionSourceEvidenceFile,
         Phase8PreRunStateEvidenceFile, Phase8PreRunStateSourceProofs,
+        Phase8StrategyInputEvidenceFile,
     },
 };
 
@@ -696,6 +700,89 @@ pub fn write_strategy_input_evidence_artifact(
         BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven {
             prerequisite: "T046 remains blocked: missing source-bound price-to-beat strategy decision input",
         },
+    )
+}
+
+pub fn write_strategy_input_evidence_artifact_from_runtime_snapshot(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    market_selection_source_ref: &WrittenOperatorArtifact,
+    candidate_market_start_timestamps_ms: &[u64],
+    path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let financial_envelope =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    if snapshot.configured_target_id != financial_envelope.configured_target_id() {
+        return Err(
+            BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven {
+                prerequisite: "T046 remains blocked: strategy input target does not match config",
+            },
+        );
+    }
+    if snapshot.price_to_beat_source != financial_envelope.price_to_beat_source() {
+        return Err(
+            BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven {
+                prerequisite: "T046 remains blocked: strategy input price-to-beat source does not match config",
+            },
+        );
+    }
+    let market_selection_source_bytes =
+        fs::read(&market_selection_source_ref.path).map_err(|source| {
+            BoltV3OperatorArtifactError::Write {
+                path: market_selection_source_ref.path.clone(),
+                source,
+            }
+        })?;
+    if hex::encode(Sha256::digest(&market_selection_source_bytes))
+        != market_selection_source_ref.sha256
+    {
+        return Err(
+            BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven {
+                prerequisite: "T046 remains blocked: market-selection source hash does not match",
+            },
+        );
+    }
+    let market_selection_source: Phase8MarketSelectionSourceEvidenceFile =
+        serde_json::from_slice(&market_selection_source_bytes)
+            .map_err(BoltV3OperatorArtifactError::Serialize)?;
+    let artifact =
+        Phase8StrategyInputEvidenceFile::from_runtime_snapshot_and_market_selection_source(
+            snapshot,
+            financial_envelope.strategy_instance_id(),
+            &market_selection_source,
+            market_selection_source_ref.path.to_string_lossy(),
+            &market_selection_source_ref.sha256,
+            candidate_market_start_timestamps_ms,
+        )
+        .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    write_json_artifact_create_new(path, &artifact)
+}
+
+pub fn write_strategy_input_evidence_artifact_from_decision_evidence_file(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    decision_evidence_path: &Path,
+    max_decision_evidence_bytes: u64,
+    market_selection_source_ref: &WrittenOperatorArtifact,
+    candidate_market_start_timestamps_ms: &[u64],
+    path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let chain = read_latest_entry_decision_evidence_chain(
+        decision_evidence_path,
+        max_decision_evidence_bytes,
+    )
+    .map_err(|_| BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven {
+        prerequisite: "T046 remains blocked: missing complete source-bound strategy decision input",
+    })?;
+    write_strategy_input_evidence_artifact_from_runtime_snapshot(
+        loaded,
+        strategy_instance_id,
+        &chain.snapshot,
+        market_selection_source_ref,
+        candidate_market_start_timestamps_ms,
+        path,
     )
 }
 

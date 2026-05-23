@@ -4815,3 +4815,179 @@ literal = '''"; "'''
 context = '''return Err(std::io::Error::other(outcome.blockers.join("; ")).into());'''
 classification = "operator_artifact_cli_format"
 reason = "This is the diagnostic separator for multiple fail-closed operator-artifact blockers, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = '''1'''
+context = '''.take(max_bytes.saturating_add(1))'''
+classification = "decision_evidence_bounded_read_oversize_probe"
+reason = "This reads one extra byte beyond the caller-owned decision evidence byte cap to detect oversize evidence; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 decision evidence file exceeds max_bytes={max_bytes}"'''
+context = '''"bolt-v3 decision evidence file exceeds max_bytes={max_bytes}"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic template for bounded decision-evidence reads using a caller-owned cap, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"strategy_input_snapshot"'''
+context = '''"strategy_input_snapshot" => {'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL decision-evidence record kind emitted by the strategy runtime, not a venue, market, quantity, timeout, path, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_intent"'''
+context = '''"order_intent" => {'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL decision-evidence record kind emitted by the strategy runtime, not a venue, market, quantity, timeout, path, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"admission_decision"'''
+context = '''"admission_decision" => {'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL decision-evidence record kind emitted by the submit-admission path, not a venue, market, quantity, timeout, path, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"strategy_input_snapshot"'''
+context = '''"strategy_input_snapshot",'''
+classification = "decision_evidence_record_kind_validation"
+reason = "This is the expected JSONL envelope discriminator used when validating runtime decision-evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_intent"'''
+context = '''decoded.validate_header("order_intent", BOLT_V3_ORDER_INTENT_GATE_ID, index)?;'''
+classification = "decision_evidence_record_kind_validation"
+reason = "This is the expected JSONL envelope discriminator used when validating runtime decision-evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"admission_decision"'''
+context = '''"admission_decision",'''
+classification = "decision_evidence_record_kind_validation"
+reason = "This is the expected JSONL envelope discriminator used when validating runtime decision-evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 decision evidence schema_version mismatch at line index {index}"'''
+context = '''"bolt-v3 decision evidence schema_version mismatch at line index {index}"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision-evidence envelope provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 decision evidence gate_id mismatch at line index {index}"'''
+context = '''"bolt-v3 decision evidence gate_id mismatch at line index {index}"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision-evidence envelope provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 decision evidence gate_version mismatch at line index {index}"'''
+context = '''"bolt-v3 decision evidence gate_version mismatch at line index {index}"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision-evidence envelope provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 decision evidence kind mismatch at line index {index}"'''
+context = '''"bolt-v3 decision evidence kind mismatch at line index {index}"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision-evidence envelope provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 entry decision evidence strategy_id mismatch"'''
+context = '''"bolt-v3 entry decision evidence strategy_id mismatch"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 entry decision evidence instrument_id mismatch"'''
+context = '''"bolt-v3 entry decision evidence instrument_id mismatch"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 entry decision evidence order_side mismatch"'''
+context = '''"bolt-v3 entry decision evidence order_side mismatch"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 entry decision evidence price mismatch"'''
+context = '''return Err(anyhow!("bolt-v3 entry decision evidence price mismatch"));'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 entry decision evidence quantity mismatch"'''
+context = '''return Err(anyhow!("bolt-v3 entry decision evidence quantity mismatch"));'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"polymarket_condition_id"'''
+context = '''"polymarket_condition_id",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names a required source-identity field in the Phase 8 strategy-input evidence schema, not a concrete market id or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"polymarket_market_slug"'''
+context = '''"polymarket_market_slug",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names a required source-identity field in the Phase 8 strategy-input evidence schema, not a concrete market slug or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"polymarket_question_id"'''
+context = '''"polymarket_question_id",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names a required source-identity field in the Phase 8 strategy-input evidence schema, not a concrete question id or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"up_instrument_id"'''
+context = '''"up_instrument_id",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names a required source-bound instrument field in the Phase 8 strategy-input evidence schema, not a concrete instrument id or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"down_instrument_id"'''
+context = '''"down_instrument_id",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names a required source-bound instrument field in the Phase 8 strategy-input evidence schema, not a concrete instrument id or operator runtime value."

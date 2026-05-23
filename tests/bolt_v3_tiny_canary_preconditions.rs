@@ -67,6 +67,82 @@ fn strategy_audit_from_evidence_file(
     )
 }
 
+fn write_current_market_selection_source(
+    dir: &Path,
+) -> anyhow::Result<(std::path::PathBuf, String)> {
+    let source_path = dir.join("current-market-selection-source.json");
+    std::fs::write(
+        &source_path,
+        serde_json::to_vec(&serde_json::json!({
+            "record_kind": "market_selection_result",
+            "source": "nt_runtime_selection_snapshot",
+            "market_selection_timestamp_ms": 1234567890_u64,
+            "candidate_market_start_timestamps_ms": [1234567000_u64],
+            "market_selection_outcome": "current",
+            "polymarket_condition_id": "condition-1",
+            "polymarket_market_slug": "btc-updown-5m",
+            "polymarket_question_id": "question-1",
+            "up_instrument_id": "condition-1-UP.POLYMARKET",
+            "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+            "selected_market_observed_timestamp_ms": 1234567890_u64,
+            "polymarket_market_start_timestamp_ms": 1234567000_u64,
+            "polymarket_market_end_timestamp_ms": 1234867000_u64
+        }))?,
+    )?;
+    let source_hash = Phase8OperatorApprovalEnvelope::sha256_file(&source_path)?;
+    Ok((source_path, source_hash))
+}
+
+fn current_strategy_input_evidence_json(
+    price_to_beat_source: &str,
+    market_selection_source_path: &Path,
+    market_selection_source_sha256: &str,
+) -> Value {
+    serde_json::json!({
+        "realized_volatility": "2.5",
+        "seconds_to_market_end": 300_u64,
+        "spot_price": "100000.0",
+        "price_to_beat_value": "100000.0",
+        "expected_edge_basis_points": "12.5",
+        "worst_case_edge_basis_points": "12.5",
+        "fee_rate_basis_points": "0",
+        "price_to_beat_source": price_to_beat_source,
+        "reference_quote_ts_event": 1234567890_u64,
+        "pricing_kurtosis": "0",
+        "theta_decay_factor": "0",
+        "theta_scaled_min_edge_bps": "12.5",
+        "market_selection_timestamp_ms": 1234567890_u64,
+        "market_selection_source_path": market_selection_source_path.to_string_lossy(),
+        "market_selection_source_sha256": market_selection_source_sha256,
+        "market_selection_outcome": "current",
+        "polymarket_condition_id": "condition-1",
+        "polymarket_market_slug": "btc-updown-5m",
+        "polymarket_question_id": "question-1",
+        "up_instrument_id": "condition-1-UP.POLYMARKET",
+        "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+        "selected_market_observed_timestamp_ms": 1234567890_u64,
+        "polymarket_market_start_timestamp_ms": 1234567000_u64,
+        "polymarket_market_end_timestamp_ms": 1234867000_u64
+    })
+}
+
+fn write_current_strategy_input_evidence(
+    path: &Path,
+    price_to_beat_source: &str,
+    market_selection_source_path: &Path,
+    market_selection_source_sha256: &str,
+) -> anyhow::Result<()> {
+    std::fs::write(
+        path,
+        serde_json::to_vec(&current_strategy_input_evidence_json(
+            price_to_beat_source,
+            market_selection_source_path,
+            market_selection_source_sha256,
+        ))?,
+    )?;
+    Ok(())
+}
+
 #[test]
 fn tiny_canary_quickstart_names_required_operator_artifacts() {
     let quickstart = include_str!("../specs/001-thin-live-canary-path/quickstart.md");
@@ -328,9 +404,13 @@ fn strategy_audit_blocks_zero_time_to_market_end() {
 fn strategy_audit_binds_price_to_beat_source_to_approved_source() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("strategy-input.json");
-    std::fs::write(
+    let (source_path, source_hash) =
+        write_current_market_selection_source(temp.path()).expect("source should write");
+    write_current_strategy_input_evidence(
         &evidence_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"operator_configured_source","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        "operator_configured_source",
+        &source_path,
+        &source_hash,
     )
     .expect("strategy input evidence should write");
     let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
@@ -361,8 +441,16 @@ fn strategy_audit_binds_price_to_beat_source_to_approved_source() {
 fn strategy_audit_uses_market_end_field_name_for_time_remaining() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("strategy-input.json");
-    let current_evidence = r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#;
-    std::fs::write(&evidence_path, current_evidence).expect("strategy input evidence should write");
+    let (source_path, source_hash) =
+        write_current_market_selection_source(temp.path()).expect("source should write");
+    let current_evidence = serde_json::to_string(&current_strategy_input_evidence_json(
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+        &source_path,
+        &source_hash,
+    ))
+    .expect("strategy input evidence should serialize");
+    std::fs::write(&evidence_path, &current_evidence)
+        .expect("strategy input evidence should write");
     let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
         .expect("strategy evidence should hash");
 
@@ -388,8 +476,16 @@ fn strategy_audit_uses_market_end_field_name_for_time_remaining() {
 fn strategy_audit_uses_unit_suffixed_selected_market_observation_timestamp() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("strategy-input.json");
-    let current_evidence = r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#;
-    std::fs::write(&evidence_path, current_evidence).expect("strategy input evidence should write");
+    let (source_path, source_hash) =
+        write_current_market_selection_source(temp.path()).expect("source should write");
+    let current_evidence = serde_json::to_string(&current_strategy_input_evidence_json(
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+        &source_path,
+        &source_hash,
+    ))
+    .expect("strategy input evidence should serialize");
+    std::fs::write(&evidence_path, &current_evidence)
+        .expect("strategy input evidence should write");
     let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
         .expect("strategy evidence should hash");
 
@@ -821,6 +917,29 @@ fn strategy_audit_requires_nearest_next_market_selection() {
 }
 
 #[test]
+fn strategy_audit_requires_source_bound_current_market_selection() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    std::fs::write(
+        &strategy_input_path,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+    )
+    .expect("strategy input evidence should write");
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+        .expect("strategy input evidence hash should compute");
+
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("current strategy input evidence should parse");
+
+    assert!(!audit.is_approved());
+    assert!(
+        audit
+            .block_reasons()
+            .contains(&Phase8CanaryBlockReason::InvalidMarketSelectionBinding)
+    );
+}
+
+#[test]
 fn strategy_audit_rejects_next_market_without_source_bound_candidates() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
@@ -1011,9 +1130,13 @@ fn strategy_audit_rejects_unknown_input_evidence_fields() {
 fn strategy_audit_verifies_input_evidence_hash_before_approving() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("strategy-input-evidence.json");
-    std::fs::write(
+    let (source_path, source_hash) =
+        write_current_market_selection_source(temp.path()).expect("source should write");
+    write_current_strategy_input_evidence(
         &evidence_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+        &source_path,
+        &source_hash,
     )
     .expect("strategy input evidence should write");
     let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)

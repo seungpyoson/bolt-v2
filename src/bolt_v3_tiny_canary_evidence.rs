@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
     bolt_v3_live_canary_gate::{
         BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_pre_consumption_gate,
     },
@@ -270,6 +271,11 @@ impl Phase8StrategyInputSafetyAudit {
         );
         let source_bound_candidate_market_start_timestamps_ms =
             phase8_source_bound_candidate_market_start_timestamps(&raw, market_selection_outcome)?;
+        audit.block_if(
+            phase8_market_selection_outcome_is_live_entry_candidate(market_selection_outcome)
+                && source_bound_candidate_market_start_timestamps_ms.is_none(),
+            Phase8CanaryBlockReason::InvalidMarketSelectionBinding,
+        );
         let candidate_market_start_timestamps_ms = match market_selection_outcome {
             PHASE8_MARKET_SELECTION_OUTCOME_NEXT => {
                 source_bound_candidate_market_start_timestamps_ms
@@ -323,7 +329,7 @@ fn phase8_source_bound_candidate_market_start_timestamps(
     raw: &Phase8StrategyInputEvidenceFile,
     market_selection_outcome: &str,
 ) -> Result<Option<Vec<u64>>> {
-    if market_selection_outcome != PHASE8_MARKET_SELECTION_OUTCOME_NEXT {
+    if !phase8_market_selection_outcome_is_live_entry_candidate(market_selection_outcome) {
         return Ok(None);
     }
     let Some(source_path) = raw
@@ -358,7 +364,8 @@ fn phase8_source_bound_candidate_market_start_timestamps(
     {
         return Ok(None);
     }
-    if let Some(reported_candidates) = raw.candidate_market_start_timestamps_ms.as_ref()
+    if market_selection_outcome == PHASE8_MARKET_SELECTION_OUTCOME_NEXT
+        && let Some(reported_candidates) = raw.candidate_market_start_timestamps_ms.as_ref()
         && reported_candidates != &source.candidate_market_start_timestamps_ms
     {
         return Ok(None);
@@ -424,9 +431,10 @@ fn phase8_market_selection_start_is_nearest_next(
         == Some(market_start_timestamp_ms)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Phase8StrategyInputEvidenceFile {
+pub struct Phase8StrategyInputEvidenceFile {
+    strategy_instance_id: Option<String>,
     realized_volatility: String,
     seconds_to_market_end: u64,
     spot_price: String,
@@ -452,6 +460,125 @@ struct Phase8StrategyInputEvidenceFile {
     selected_market_observed_timestamp_ms: u64,
     polymarket_market_start_timestamp_ms: u64,
     polymarket_market_end_timestamp_ms: u64,
+}
+
+impl Phase8StrategyInputEvidenceFile {
+    pub fn from_runtime_snapshot_and_market_selection_source(
+        snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        strategy_instance_id: impl AsRef<str>,
+        market_selection_source: &Phase8MarketSelectionSourceEvidenceFile,
+        market_selection_source_path: impl AsRef<str>,
+        market_selection_source_sha256: impl AsRef<str>,
+        candidate_market_start_timestamps_ms: &[u64],
+    ) -> Result<Self> {
+        let strategy_instance_id = strategy_instance_id.as_ref().trim();
+        if strategy_instance_id.is_empty() {
+            return Err(anyhow!(
+                "phase8 strategy input evidence requires strategy_instance_id"
+            ));
+        }
+        if snapshot.strategy_id != strategy_instance_id {
+            return Err(anyhow!(
+                "phase8 strategy input evidence strategy_instance_id does not match runtime strategy_id"
+            ));
+        }
+        let market_selection_timestamp_ms =
+            snapshot.market_selection_timestamp_ms.ok_or_else(|| {
+                anyhow!("phase8 strategy input evidence requires market_selection_timestamp_ms")
+            })?;
+        let selected_market_observed_timestamp_ms = snapshot
+            .selected_market_observed_timestamp_ms
+            .ok_or_else(|| {
+                anyhow!(
+                    "phase8 strategy input evidence requires selected_market_observed_timestamp_ms"
+                )
+            })?;
+        let polymarket_market_start_timestamp_ms = snapshot
+            .polymarket_market_start_timestamp_ms
+            .ok_or_else(|| {
+                anyhow!(
+                    "phase8 strategy input evidence requires polymarket_market_start_timestamp_ms"
+                )
+            })?;
+        let polymarket_market_end_timestamp_ms =
+            snapshot.polymarket_market_end_timestamp_ms.ok_or_else(|| {
+                anyhow!(
+                    "phase8 strategy input evidence requires polymarket_market_end_timestamp_ms"
+                )
+            })?;
+        let source_path = market_selection_source_path.as_ref().trim();
+        if source_path.is_empty() {
+            return Err(anyhow!(
+                "phase8 strategy input evidence requires market_selection_source_path"
+            ));
+        }
+        let source_sha256 = market_selection_source_sha256.as_ref().trim();
+        if !phase8_is_sha256_hex(source_sha256) {
+            return Err(anyhow!(
+                "phase8 strategy input evidence requires market_selection_source_sha256"
+            ));
+        }
+
+        let raw = Self {
+            strategy_instance_id: Some(strategy_instance_id.to_string()),
+            realized_volatility: snapshot.realized_volatility.clone(),
+            seconds_to_market_end: snapshot.seconds_to_market_end,
+            spot_price: snapshot.spot_price.clone(),
+            price_to_beat_value: snapshot.price_to_beat_value.clone(),
+            expected_edge_basis_points: snapshot.expected_edge_basis_points.clone(),
+            worst_case_edge_basis_points: snapshot.worst_case_edge_basis_points.clone(),
+            fee_rate_basis_points: snapshot.fee_rate_basis_points.clone(),
+            price_to_beat_source: snapshot.price_to_beat_source.clone(),
+            reference_quote_ts_event: snapshot.reference_quote_ts_event,
+            pricing_kurtosis: snapshot.pricing_kurtosis.clone(),
+            theta_decay_factor: snapshot.theta_decay_factor.clone(),
+            theta_scaled_min_edge_bps: snapshot.theta_scaled_min_edge_bps.clone(),
+            market_selection_timestamp_ms,
+            candidate_market_start_timestamps_ms: Some(
+                candidate_market_start_timestamps_ms.to_vec(),
+            ),
+            market_selection_source_path: Some(source_path.to_string()),
+            market_selection_source_sha256: Some(source_sha256.to_string()),
+            market_selection_outcome: snapshot.market_selection_outcome.clone(),
+            polymarket_condition_id: required_snapshot_string(
+                snapshot.polymarket_condition_id.as_deref(),
+                "polymarket_condition_id",
+            )?,
+            polymarket_market_slug: required_snapshot_string(
+                snapshot.polymarket_market_slug.as_deref(),
+                "polymarket_market_slug",
+            )?,
+            polymarket_question_id: required_snapshot_string(
+                snapshot.polymarket_question_id.as_deref(),
+                "polymarket_question_id",
+            )?,
+            up_instrument_id: required_snapshot_string(
+                snapshot.up_instrument_id.as_deref(),
+                "up_instrument_id",
+            )?,
+            down_instrument_id: required_snapshot_string(
+                snapshot.down_instrument_id.as_deref(),
+                "down_instrument_id",
+            )?,
+            selected_market_observed_timestamp_ms,
+            polymarket_market_start_timestamp_ms,
+            polymarket_market_end_timestamp_ms,
+        };
+        if !phase8_market_selection_source_matches_strategy(&raw, market_selection_source) {
+            return Err(anyhow!(
+                "phase8 strategy input evidence does not match market selection source evidence"
+            ));
+        }
+        Ok(raw)
+    }
+}
+
+fn required_snapshot_string(value: Option<&str>, field: &str) -> Result<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("phase8 strategy input evidence requires {field}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1879,6 +2006,18 @@ pub struct Phase8FinancialEnvelopeEvidenceFile {
 }
 
 impl Phase8FinancialEnvelopeEvidenceFile {
+    pub fn strategy_instance_id(&self) -> &str {
+        &self.strategy_instance_id
+    }
+
+    pub fn configured_target_id(&self) -> &str {
+        &self.configured_target_id
+    }
+
+    pub fn price_to_beat_source(&self) -> &str {
+        &self.price_to_beat_source
+    }
+
     pub fn from_loaded_for_strategy(
         loaded: &LoadedBoltV3Config,
         strategy_instance_id: &str,

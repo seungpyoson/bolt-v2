@@ -2,10 +2,16 @@ use sha2::{Digest, Sha256};
 
 use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, load_bolt_v3_config},
+    bolt_v3_decision_evidence::{
+        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3OrderIntentEvidence,
+        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitIntentKind,
+    },
     bolt_v3_market_families::updown::updown_market_slug,
-    bolt_v3_operator_artifacts::build_redacted_ssm_manifest,
+    bolt_v3_operator_artifacts::{WrittenOperatorArtifact, build_redacted_ssm_manifest},
     bolt_v3_tiny_canary_evidence::{
         Phase8AbortPlanSourceProofs, Phase8OperatorApprovalEnvelope, Phase8PreRunStateSourceProofs,
+        Phase8StrategyInputSafetyAudit,
     },
 };
 use nautilus_core::Params;
@@ -2285,6 +2291,267 @@ fn market_selection_source_writer_uses_family_dispatch_not_updown_directly() {
     assert!(
         !source.contains("updown::"),
         "operator artifacts must use market-family dispatch instead of direct updown calls"
+    );
+}
+
+#[test]
+fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_source() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let market_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let market_selection_source =
+        bolt_v2::bolt_v3_operator_artifacts::build_market_selection_source_artifact(
+            &loaded,
+            strategy_instance_id,
+            &[
+                updown_binary_option(
+                    TEST_UP_INSTRUMENT_ID,
+                    &market_slug,
+                    TEST_MARKET_ID,
+                    TEST_CONDITION_ID,
+                    TEST_QUESTION_ID,
+                    TEST_UP_OUTCOME,
+                    TEST_MARKET_SELECTION_START_MS,
+                    TEST_MARKET_SELECTION_END_MS,
+                ),
+                updown_binary_option(
+                    TEST_DOWN_INSTRUMENT_ID,
+                    &market_slug,
+                    TEST_MARKET_ID,
+                    TEST_CONDITION_ID,
+                    TEST_QUESTION_ID,
+                    TEST_DOWN_OUTCOME,
+                    TEST_MARKET_SELECTION_START_MS,
+                    TEST_MARKET_SELECTION_END_MS,
+                ),
+            ],
+            TEST_MARKET_SELECTION_NOW_MS,
+        )
+        .expect("market selection source should build");
+    let market_selection_source_path = temp.path().join(TEST_MARKET_SELECTION_SOURCE_FILE);
+    std::fs::write(
+        &market_selection_source_path,
+        serde_json::to_vec_pretty(&market_selection_source)
+            .expect("market selection source should serialize"),
+    )
+    .expect("market selection source should write");
+    let market_selection_source_ref = WrittenOperatorArtifact {
+        path: market_selection_source_path.clone(),
+        sha256: Phase8OperatorApprovalEnvelope::sha256_file(&market_selection_source_path)
+            .expect("market selection source sha256 should compute"),
+    };
+    let strategy_input_path = temp.path().join("strategy-input.json");
+    let snapshot = BoltV3StrategyInputEvidenceSnapshot {
+        strategy_id: strategy_instance_id.to_string(),
+        configured_target_id: "btc_updown_5m".to_string(),
+        market_selection_ruleset_id: "btc_updown_5m".to_string(),
+        market_selection_outcome: "current".to_string(),
+        market_id: Some(TEST_MARKET_ID.to_string()),
+        polymarket_condition_id: Some(TEST_CONDITION_ID.to_string()),
+        polymarket_market_slug: Some(market_slug),
+        polymarket_question_id: Some(TEST_QUESTION_ID.to_string()),
+        up_instrument_id: Some(TEST_UP_INSTRUMENT_ID.to_string()),
+        down_instrument_id: Some(TEST_DOWN_INSTRUMENT_ID.to_string()),
+        market_selection_timestamp_ms: Some(TEST_MARKET_SELECTION_NOW_MS),
+        selected_market_observed_timestamp_ms: Some(TEST_MARKET_SELECTION_NOW_MS),
+        polymarket_market_start_timestamp_ms: Some(TEST_MARKET_SELECTION_START_MS),
+        polymarket_market_end_timestamp_ms: Some(TEST_MARKET_SELECTION_END_MS),
+        price_to_beat_source: "chainlink_data_streams.report_at_boundary".to_string(),
+        price_to_beat_value: "3100".to_string(),
+        reference_quote_ts_event: TEST_MARKET_SELECTION_NOW_MS,
+        spot_price: "3100.5".to_string(),
+        reference_fair_value: Some("3100.5".to_string()),
+        realized_volatility: "1.5".to_string(),
+        seconds_to_market_end: 300,
+        pricing_kurtosis: "3".to_string(),
+        theta_decay_factor: "1".to_string(),
+        theta_scaled_min_edge_bps: "12.5".to_string(),
+        fair_probability_up: "0.6".to_string(),
+        uncertainty_band_probability: "0.01".to_string(),
+        expected_edge_basis_points: "12.5".to_string(),
+        worst_case_edge_basis_points: "12.5".to_string(),
+        fee_rate_basis_points: "0".to_string(),
+        selected_side: Some("up".to_string()),
+        submission_instrument_id: TEST_UP_INSTRUMENT_ID.to_string(),
+        submission_order_side: "Buy".to_string(),
+        submission_price: "0.50".to_string(),
+        submission_quantity: "1".to_string(),
+        client_order_id: "client-order-one".to_string(),
+    };
+
+    let intent = BoltV3OrderIntentEvidence {
+        strategy_id: snapshot.strategy_id.clone(),
+        intent_kind: BoltV3OrderIntentKind::Entry,
+        instrument_id: snapshot.submission_instrument_id.clone(),
+        client_order_id: snapshot.client_order_id.clone(),
+        order_side: snapshot.submission_order_side.clone(),
+        price: snapshot.submission_price.clone(),
+        quantity: snapshot.submission_quantity.clone(),
+        order_fields: BoltV3OrderIntentOrderFields {
+            order_type: "Limit".to_string(),
+            time_in_force: "Gtc".to_string(),
+            price: Some(snapshot.submission_price.clone()),
+            trigger_price: None,
+            activation_price: None,
+            trigger_type: None,
+            trigger_instrument_id: None,
+            trailing_offset: None,
+            trailing_offset_type: None,
+            expire_time_unix_nanos: None,
+            is_post_only: false,
+            is_reduce_only: false,
+            is_quote_quantity: false,
+        },
+    };
+    let admission = BoltV3AdmissionDecisionEvidence {
+        strategy_id: snapshot.strategy_id.clone(),
+        client_order_id: snapshot.client_order_id.clone(),
+        instrument_id: snapshot.submission_instrument_id.clone(),
+        notional: "0.50".to_string(),
+        intent_kind: BoltV3SubmitIntentKind::Entry,
+        outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+    };
+    let decision_evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut decision_evidence = String::new();
+    for line in [
+        serde_json::json!({
+            "schema_version": 5,
+            "recorded_at_utc_ns": 1_i64,
+            "gate_id": "bolt_v3.strategy_input_snapshot",
+            "gate_version": "0.1.0",
+            "kind": "strategy_input_snapshot",
+            "snapshot": snapshot.clone(),
+        }),
+        serde_json::json!({
+            "schema_version": 5,
+            "recorded_at_utc_ns": 2_i64,
+            "gate_id": "bolt_v3.order_intent",
+            "gate_version": "0.1.0",
+            "kind": "order_intent",
+            "intent": intent.clone(),
+        }),
+        serde_json::json!({
+            "schema_version": 5,
+            "recorded_at_utc_ns": 3_i64,
+            "gate_id": "bolt_v3.submit_admission",
+            "gate_version": "0.1.0",
+            "kind": "admission_decision",
+            "decision": admission.clone(),
+        }),
+    ] {
+        decision_evidence.push_str(
+            &serde_json::to_string(&line).expect("decision evidence line should serialize"),
+        );
+        decision_evidence.push('\n');
+    }
+    std::fs::write(&decision_evidence_path, decision_evidence)
+        .expect("decision evidence should write");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_decision_evidence_file(
+        &loaded,
+        strategy_instance_id,
+        &decision_evidence_path,
+        100_000,
+        &market_selection_source_ref,
+        &[TEST_MARKET_SELECTION_START_MS],
+        &strategy_input_path,
+    )
+    .expect("source-bound runtime decision evidence should write strategy input evidence");
+
+    let json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&strategy_input_path).expect("strategy input evidence should read"),
+    )
+    .expect("strategy input evidence should parse");
+    assert_eq!(
+        json["market_selection_source_path"],
+        market_selection_source_path.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        json["market_selection_source_sha256"],
+        market_selection_source_ref.sha256
+    );
+    assert_eq!(json["strategy_instance_id"], strategy_instance_id);
+    assert_eq!(json["polymarket_condition_id"], TEST_CONDITION_ID);
+    assert_eq!(json["polymarket_question_id"], TEST_QUESTION_ID);
+
+    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
+        &strategy_input_path,
+        &written.sha256,
+        "chainlink_data_streams.report_at_boundary",
+    )
+    .expect("strategy input evidence should parse");
+    assert!(
+        audit.is_approved(),
+        "runtime snapshot artifact should approve"
+    );
+
+    let wrong_strategy_input_path = temp.path().join("wrong-strategy-input.json");
+    let wrong_decision_evidence_path = temp.path().join("wrong-strategy-decision-evidence.jsonl");
+    let mut wrong_snapshot = snapshot.clone();
+    wrong_snapshot.strategy_id = "other-strategy-instance".to_string();
+    let mut wrong_intent = intent.clone();
+    wrong_intent.strategy_id = wrong_snapshot.strategy_id.clone();
+    let mut wrong_admission = admission.clone();
+    wrong_admission.strategy_id = wrong_snapshot.strategy_id.clone();
+    let mut wrong_decision_evidence = String::new();
+    for line in [
+        serde_json::json!({
+            "schema_version": 5,
+            "recorded_at_utc_ns": 1_i64,
+            "gate_id": "bolt_v3.strategy_input_snapshot",
+            "gate_version": "0.1.0",
+            "kind": "strategy_input_snapshot",
+            "snapshot": wrong_snapshot,
+        }),
+        serde_json::json!({
+            "schema_version": 5,
+            "recorded_at_utc_ns": 2_i64,
+            "gate_id": "bolt_v3.order_intent",
+            "gate_version": "0.1.0",
+            "kind": "order_intent",
+            "intent": wrong_intent,
+        }),
+        serde_json::json!({
+            "schema_version": 5,
+            "recorded_at_utc_ns": 3_i64,
+            "gate_id": "bolt_v3.submit_admission",
+            "gate_version": "0.1.0",
+            "kind": "admission_decision",
+            "decision": wrong_admission,
+        }),
+    ] {
+        wrong_decision_evidence.push_str(
+            &serde_json::to_string(&line).expect("decision evidence line should serialize"),
+        );
+        wrong_decision_evidence.push('\n');
+    }
+    std::fs::write(&wrong_decision_evidence_path, wrong_decision_evidence)
+        .expect("wrong strategy decision evidence should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_decision_evidence_file(
+        &loaded,
+        strategy_instance_id,
+        &wrong_decision_evidence_path,
+        100_000,
+        &market_selection_source_ref,
+        &[TEST_MARKET_SELECTION_START_MS],
+        &wrong_strategy_input_path,
+    )
+    .expect_err("strategy input evidence must reject decision chains from another strategy");
+    assert!(
+        error.to_string().contains("strategy"),
+        "strategy mismatch should be diagnostic: {error}"
     );
 }
 

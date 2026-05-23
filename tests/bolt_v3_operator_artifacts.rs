@@ -581,6 +581,36 @@ fn static_operator_artifacts_report_market_selection_blocker_until_runtime_proof
 }
 
 #[test]
+fn static_operator_artifacts_validate_financial_envelope_before_first_write() {
+    let loaded = load_fixture_with_live_canary();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_static_operator_artifacts(
+        &loaded,
+        "missing-strategy-instance",
+        temp.path(),
+    )
+    .expect_err("invalid strategy must fail before static artifact writes");
+
+    assert!(
+        error.to_string().contains("strategy_instance_id"),
+        "financial envelope validation error should name strategy instance: {error}"
+    );
+    assert!(
+        !temp.path().join("ssm-manifest.json").exists(),
+        "failed static artifact build must not leave ssm manifest"
+    );
+    assert!(
+        !temp.path().join("financial-envelope.json").exists(),
+        "failed static artifact build must not leave financial envelope"
+    );
+    assert!(
+        !temp.path().join("static-artifacts-manifest.json").exists(),
+        "failed static artifact build must not leave static manifest"
+    );
+}
+
+#[test]
 fn approval_packet_assembly_refuses_static_manifest_with_blockers() {
     let mut loaded = load_fixture_with_live_canary();
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -2166,6 +2196,25 @@ fn market_selection_source_writer_uses_family_dispatch_not_updown_directly() {
     assert!(
         !source.contains("updown::"),
         "operator artifacts must use market-family dispatch instead of direct updown calls"
+    );
+}
+
+#[test]
+fn static_artifact_reader_uses_no_follow_identity_verified_open() {
+    let source = std::fs::read_to_string(repo_path("src/bolt_v3_operator_artifacts.rs"))
+        .expect("operator artifacts source should read");
+
+    assert!(
+        !source.contains("fs::File::open(path)"),
+        "operator artifact reads must not use symlink-following File::open"
+    );
+    assert!(
+        source.contains("O_NOFOLLOW"),
+        "operator artifact reads must use no-follow open on Unix"
+    );
+    assert!(
+        source.contains("MetadataExt"),
+        "operator artifact reads must compare opened file identity on Unix"
     );
 }
 

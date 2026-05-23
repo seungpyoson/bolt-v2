@@ -4770,6 +4770,14 @@ reason = "This is a fail-closed diagnostic template for bounded operator-artifac
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"operator artifact path changed during open"'''
+context = '''"operator artifact path changed during open",'''
+classification = "operator_artifact_error_template"
+reason = "This is a fail-closed diagnostic template for operator-artifact read identity drift, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = '''64'''
 context = '''value.len() == 64'''

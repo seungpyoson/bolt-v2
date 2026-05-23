@@ -738,29 +738,54 @@ pub fn write_static_operator_artifacts(
     output_dir: &Path,
 ) -> Result<BoltV3StaticArtifactsWriteOutcome, BoltV3OperatorArtifactError> {
     let mut generated_artifacts = Vec::new();
+    let mut written_artifacts = Vec::new();
     let mut blockers = Vec::new();
 
     let ssm_manifest = build_redacted_ssm_manifest(loaded)?;
-    let ssm_manifest_written =
-        write_json_artifact_create_new(&output_dir.join(SSM_MANIFEST_FILE_NAME), &ssm_manifest)?;
+    let financial_envelope = build_phase8_financial_envelope(loaded, strategy_instance_id)
+        .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    let approval_nonce = build_approval_nonce_artifact()?;
+
+    let ssm_manifest_written = match write_json_artifact_create_new(
+        &output_dir.join(SSM_MANIFEST_FILE_NAME),
+        &ssm_manifest,
+    ) {
+        Ok(written) => written,
+        Err(error) => return Err(error),
+    };
+    written_artifacts.push(ssm_manifest_written.clone());
     generated_artifacts.push(static_artifact_ref(
         SSM_MANIFEST_ARTIFACT_NAME,
         ssm_manifest_written,
     ));
 
-    let financial_envelope = build_phase8_financial_envelope(loaded, strategy_instance_id)
-        .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
-    let financial_envelope_written = write_json_artifact_create_new(
+    let financial_envelope_written = match write_json_artifact_create_new(
         &output_dir.join(FINANCIAL_ENVELOPE_FILE_NAME),
         &financial_envelope,
-    )?;
+    ) {
+        Ok(written) => written,
+        Err(error) => {
+            remove_written_static_artifacts(&written_artifacts);
+            return Err(error);
+        }
+    };
+    written_artifacts.push(financial_envelope_written.clone());
     generated_artifacts.push(static_artifact_ref(
         FINANCIAL_ENVELOPE_ARTIFACT_NAME,
         financial_envelope_written,
     ));
 
-    let approval_nonce_written =
-        write_approval_nonce_artifact(&output_dir.join(APPROVAL_NONCE_FILE_NAME))?;
+    let approval_nonce_written = match write_json_artifact_create_new(
+        &output_dir.join(APPROVAL_NONCE_FILE_NAME),
+        &approval_nonce,
+    ) {
+        Ok(written) => written,
+        Err(error) => {
+            remove_written_static_artifacts(&written_artifacts);
+            return Err(error);
+        }
+    };
+    written_artifacts.push(approval_nonce_written.clone());
     generated_artifacts.push(static_artifact_ref(
         APPROVAL_NONCE_ARTIFACT_NAME,
         approval_nonce_written,
@@ -779,7 +804,10 @@ pub fn write_static_operator_artifacts(
         Err(BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven { prerequisite }) => {
             blockers.push(prerequisite);
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            remove_written_static_artifacts(&written_artifacts);
+            return Err(error);
+        }
     }
 
     match write_pre_run_state_artifact(
@@ -793,7 +821,10 @@ pub fn write_static_operator_artifacts(
         Err(BoltV3OperatorArtifactError::PreRunStatePrerequisiteUnproven { prerequisite }) => {
             blockers.push(prerequisite);
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            remove_written_static_artifacts(&written_artifacts);
+            return Err(error);
+        }
     }
 
     match write_abort_plan_artifact(
@@ -807,7 +838,10 @@ pub fn write_static_operator_artifacts(
         Err(BoltV3OperatorArtifactError::AbortPrerequisiteUnproven { prerequisite }) => {
             blockers.push(prerequisite);
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            remove_written_static_artifacts(&written_artifacts);
+            return Err(error);
+        }
     }
 
     let outcome_blockers = blockers.clone();
@@ -818,10 +852,16 @@ pub fn write_static_operator_artifacts(
         generated_artifacts,
         blockers,
     };
-    let manifest_written = write_json_artifact_create_new(
+    let manifest_written = match write_json_artifact_create_new(
         &output_dir.join(STATIC_ARTIFACTS_MANIFEST_FILE_NAME),
         &manifest,
-    )?;
+    ) {
+        Ok(written) => written,
+        Err(error) => {
+            remove_written_static_artifacts(&written_artifacts);
+            return Err(error);
+        }
+    };
 
     Ok(BoltV3StaticArtifactsWriteOutcome {
         command_summary: BoltV3StaticArtifactsCommandSummary {
@@ -834,6 +874,12 @@ pub fn write_static_operator_artifacts(
         },
         blockers: outcome_blockers,
     })
+}
+
+fn remove_written_static_artifacts(written_artifacts: &[WrittenOperatorArtifact]) {
+    for artifact in written_artifacts.iter().rev() {
+        let _ = fs::remove_file(&artifact.path);
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1713,14 +1759,7 @@ fn sha256_file_for_static_manifest(
 }
 
 fn read_file_bounded(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "operator artifact path is not a regular file",
-        ));
-    }
-    let mut file = fs::File::open(path)?;
+    let mut file = open_regular_artifact_file(path)?;
     let mut bytes = Vec::new();
     Read::by_ref(&mut file)
         .take(max_bytes.saturating_add(1))
@@ -1735,6 +1774,62 @@ fn read_file_bounded(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
         ));
     }
     Ok(bytes)
+}
+
+fn open_regular_artifact_file(path: &Path) -> std::io::Result<fs::File> {
+    let pre_open_metadata = fs::symlink_metadata(path)?;
+    validate_operator_artifact_regular_file(&pre_open_metadata)?;
+    let file = open_artifact_file_no_follow(path)?;
+    let opened_metadata = file.metadata()?;
+    validate_operator_artifact_regular_file(&opened_metadata)?;
+    validate_same_artifact_file(&pre_open_metadata, &opened_metadata)?;
+    let post_open_metadata = fs::symlink_metadata(path)?;
+    validate_operator_artifact_regular_file(&post_open_metadata)?;
+    validate_same_artifact_file(&opened_metadata, &post_open_metadata)?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_artifact_file_no_follow(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_artifact_file_no_follow(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new().read(true).open(path)
+}
+
+fn validate_operator_artifact_regular_file(metadata: &fs::Metadata) -> std::io::Result<()> {
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "operator artifact path is not a regular file",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_same_artifact_file(left: &fs::Metadata, right: &fs::Metadata) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    if left.dev() != right.dev() || left.ino() != right.ino() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "operator artifact path changed during open",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_same_artifact_file(_left: &fs::Metadata, _right: &fs::Metadata) -> std::io::Result<()> {
+    Ok(())
 }
 
 fn validate_operator_evidence_sha256(

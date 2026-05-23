@@ -1178,6 +1178,48 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
 }
 
 #[test]
+fn binary_oracle_registration_resolves_fee_provider_through_provider_boundary() {
+    let source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
+    assert!(
+        source.contains("resolve_fee_provider"),
+        "binary_oracle_edge_taker registration should call the generic fee-provider resolver"
+    );
+    assert!(
+        !source.contains("polymarket::build_fee_provider"),
+        "binary_oracle_edge_taker registration must not construct the concrete provider directly"
+    );
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-fee-provider-boundary");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+
+    let (node, _summary) =
+        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
+            .expect("configured Polymarket strategy should register through provider boundary");
+
+    assert_eq!(
+        node.registered_strategy_ids(),
+        vec![StrategyId::from("binary_oracle_edge_taker-001")]
+    );
+}
+
+#[test]
+fn fee_provider_resolution_does_not_warm_during_registration() {
+    let resolver_source = include_str!("../src/bolt_v3_providers/mod.rs");
+    let archetype_source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
+
+    assert!(
+        !resolver_source.contains(".warm("),
+        "fee-provider resolver must construct only; fee warm remains in strategy runtime readiness"
+    );
+    assert!(
+        !archetype_source.contains(".warm("),
+        "runtime registration must not warm fee providers"
+    );
+}
+
+#[test]
 fn binary_oracle_runtime_rejects_execution_client_id_without_execution_block() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -1211,5 +1253,68 @@ fn binary_oracle_runtime_rejects_execution_client_id_without_execution_block() {
     assert!(
         message.contains("is required by the existing taker fee-provider boundary"),
         "{message}"
+    );
+}
+
+#[test]
+fn fee_provider_source_fence_blocks_concrete_provider_in_shared_layers() {
+    fn forbidden_fee_provider_reference(line: &str) -> bool {
+        line.contains("bolt_v3_providers::polymarket")
+            || line.contains("polymarket::")
+            || line.contains("build_fee_provider")
+    }
+
+    assert!(
+        forbidden_fee_provider_reference("let _ = polymarket::build_fee_provider;"),
+        "positive control must catch direct concrete provider construction"
+    );
+
+    fn push_rs_files(repo_root: &std::path::Path, directory: &str, files: &mut Vec<String>) {
+        for entry in std::fs::read_dir(repo_root.join(directory))
+            .expect("source-fence directory should be readable")
+        {
+            let entry = entry.expect("source-fence directory entry should be readable");
+            let path = entry.path();
+            if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(
+                    path.strip_prefix(repo_root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    let repo_root = support::repo_path("");
+    let mut files = Vec::new();
+    push_rs_files(&repo_root, "src/bolt_v3_archetypes", &mut files);
+    push_rs_files(&repo_root, "src/strategies", &mut files);
+    files.extend([
+        "src/bolt_v3_strategy_registration.rs".to_string(),
+        "src/bolt_v3_submit_admission.rs".to_string(),
+        "src/bolt_v3_order_intent.rs".to_string(),
+    ]);
+
+    let mut violations = Vec::new();
+    files.sort();
+    files.dedup();
+    for relative in files {
+        let source = std::fs::read_to_string(repo_root.join(&relative))
+            .expect("source-fence target should be readable");
+        for (line_index, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("*") {
+                continue;
+            }
+            if forbidden_fee_provider_reference(line) {
+                violations.push(format!("{}:{}", relative, line_index + 1));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "concrete provider construction leaked into shared registration layers: {violations:?}"
     );
 }

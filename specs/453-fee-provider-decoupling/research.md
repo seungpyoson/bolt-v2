@@ -17,8 +17,8 @@
 - `src/bolt_v3_strategy_registration.rs:16-23`: generic runtime binding delegates strategy registration through a `StrategyRuntimeBinding` function pointer.
 - `src/bolt_v3_strategy_registration.rs:96-126`: generic strategy registration iterates loaded strategies and calls the concrete binding's `register` function.
 - `src/bolt_v3_providers/mod.rs:1-16`: provider module root already owns per-provider client block shape and dispatch responsibility while keeping provider-neutral helpers in core.
-- `src/bolt_v3_providers/mod.rs:97-148`: current `ProviderBinding` registry maps provider keys to concrete provider validators, secret resolution, and adapter mapping functions.
-- `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs:265-305`: the concrete `binary_oracle_edge_taker` runtime binding loads the execution client, calls `polymarket::build_fee_provider(...)` directly, builds `StrategyBuildContext`, and registers the strategy.
+- `src/bolt_v3_providers/mod.rs:97-146`: current `ProviderBinding` registry maps provider keys to concrete provider validators, secret resolution, adapter mapping functions, and fee-provider construction capabilities.
+- `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs:268-281`: the concrete `binary_oracle_edge_taker` runtime binding resolves the fee provider through the generic provider boundary, builds `StrategyBuildContext`, and registers the strategy.
 - `src/strategies/registry.rs:36-39`: strategy-facing `FeeProvider` interface is already generic: `fee_bps(...)` and `warm(...)`.
 - `src/strategies/registry.rs:41-67`: `StrategyBuildContext` already carries `Arc<dyn FeeProvider>` and exposes generic accessors.
 - `src/strategies/binary_oracle_edge_taker.rs:1984-2000`: strategy runtime warms fees through `self.context.fee_provider()` and `fee_provider_arc()`.
@@ -44,7 +44,7 @@
 
 - Runtime strategy registration is generic until it enters the `binary_oracle_edge_taker` binding.
 - The strategy itself consumes only `FeeProvider`, not Polymarket concrete types.
-- Direct Polymarket coupling is concentrated in archetype registration and provider modules.
+- Concrete Polymarket fee-provider construction is concentrated in provider modules and selected through provider binding registration.
 - Existing Polymarket fee provider depends on SSM-resolved secrets and NT Polymarket CLOB HTTP.
 
 ### Latent Risk
@@ -80,3 +80,15 @@ Runtime registration must resolve `Arc<dyn FeeProvider>` from the execution clie
 **Alternatives considered**:
 
 - Delete Polymarket provider: rejected because current behavior must be preserved.
+
+## Implementation Evidence
+
+- `src/bolt_v3_providers/mod.rs:70` defines the provider-agnostic fee-provider builder function shape; `src/bolt_v3_providers/mod.rs:120` adds it to `ProviderBinding`.
+- `src/bolt_v3_providers/mod.rs:193` defines resolver-owned error taxonomy without raw secret fields.
+- `src/bolt_v3_providers/mod.rs:256` resolves fee providers from loaded `execution_client_id` through `clients.<id>.venue` and the provider binding registry.
+- `src/bolt_v3_providers/mod.rs:134` registers the existing Polymarket fee-provider builder through the provider binding; `src/bolt_v3_providers/mod.rs:146` leaves Binance without a fee-provider binding.
+- `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs:271` replaces direct concrete provider construction with `resolve_fee_provider(...)`.
+- `src/bolt_v3_providers/polymarket.rs:508` keeps concrete Polymarket HTTP, secrets, and CLOB fee-provider construction in the provider module.
+- `src/bolt_v3_providers/polymarket.rs:541` rejects malformed fee-provider HTTP base URL config before constructing the Polymarket fee client.
+- `src/bolt_v3_providers/mod.rs:464`, `src/bolt_v3_providers/mod.rs:486`, `src/bolt_v3_providers/mod.rs:505`, `src/bolt_v3_providers/mod.rs:532`, `src/bolt_v3_providers/mod.rs:551`, `src/bolt_v3_providers/mod.rs:576`, `src/bolt_v3_providers/mod.rs:597`, `src/bolt_v3_providers/mod.rs:626`, and `src/bolt_v3_providers/mod.rs:650` cover resolver success, missing client, unsupported provider, missing fee binding, config parse failure, invalid secret binding, client construction failure, secret-safe formatting, and redaction for provider build errors.
+- `tests/bolt_v3_strategy_registration.rs:1181`, `tests/bolt_v3_strategy_registration.rs:1208`, and `tests/bolt_v3_strategy_registration.rs:1260` cover registration through the provider boundary, no warm during registration, and the shared-layer concrete-provider source fence.

@@ -33,6 +33,7 @@ cargo test --lib fee_provider_resolution_reports_provider_config_parse_failure -
 cargo test --lib fee_provider_resolution_rejects_invalid_secret_binding -- --nocapture
 cargo test --lib fee_provider_resolution_reports_provider_client_construction_failure -- --nocapture
 cargo test --lib fee_provider_resolution_error_display_debug_redacts_sentinel_secret -- --nocapture
+cargo test --lib fee_provider_resolution_redacts_provider_build_secret_errors -- --nocapture
 cargo test --test bolt_v3_strategy_registration fee_provider_resolution_does_not_warm_during_registration -- --nocapture
 ```
 
@@ -57,6 +58,7 @@ cargo test --lib fee_provider_resolution_reports_provider_config_parse_failure -
 cargo test --lib fee_provider_resolution_rejects_invalid_secret_binding -- --nocapture
 cargo test --lib fee_provider_resolution_reports_provider_client_construction_failure -- --nocapture
 cargo test --lib fee_provider_resolution_error_display_debug_redacts_sentinel_secret -- --nocapture
+cargo test --lib fee_provider_resolution_redacts_provider_build_secret_errors -- --nocapture
 cargo test --test bolt_v3_strategy_registration fee_provider_resolution_does_not_warm_during_registration -- --nocapture
 cargo test --test bolt_v3_strategy_registration fee_provider_source_fence_blocks_concrete_provider_in_shared_layers -- --nocapture
 cargo test --lib fee_provider_ -- --nocapture

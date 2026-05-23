@@ -50,7 +50,7 @@ use crate::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
         is_observed_open_side,
     },
-    bolt_v3_providers::polymarket,
+    bolt_v3_providers::resolve_fee_provider,
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
     },
@@ -268,23 +268,9 @@ pub fn register_runtime_strategy(
 ) -> Result<StrategyId, BoltV3StrategyRegistrationError> {
     let raw = raw_taker_config(context.strategy, context.loaded)
         .map_err(|error| binding_error(&context, error))?;
-    let client = context
-        .loaded
-        .root
-        .clients
-        .get(context.strategy.config.execution_client_id.as_str())
-        .ok_or_else(|| {
-            binding_message(
-                &context,
-                format!(
-                    "strategy execution_client_id `{}` is not present in loaded clients",
-                    context.strategy.config.execution_client_id
-                ),
-            )
-        })?;
-    let fee_provider = polymarket::build_fee_provider(
+    let fee_provider = resolve_fee_provider(
+        context.loaded,
         context.strategy.config.execution_client_id.as_str(),
-        client,
         context.resolved,
     )
     .map_err(|error| binding_message(&context, error.to_string()))?;

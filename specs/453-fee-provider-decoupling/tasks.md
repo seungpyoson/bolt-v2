@@ -18,7 +18,7 @@
 
 **Purpose**: Prove the current direct coupling and define the generic provider capability boundary before touching the archetype registration path.
 
-- [X] T004 [US2] Add a failing `fee_provider_source_fence_blocks_concrete_provider_in_shared_layers` deterministic source-fence test that scans every file under `src/bolt_v3_archetypes/`, strategy modules under `src/strategies/`, `src/bolt_v3_strategy_registration.rs`, `src/bolt_v3_submit_admission.rs`, and `src/bolt_v3_order_intent.rs` for forbidden concrete-provider references in `tests/bolt_v3_strategy_registration.rs`
+- [X] T004 [US2] Add a failing `fee_provider_source_fence_blocks_concrete_provider_in_shared_layers` deterministic source-fence test with bounded reads, metadata size checks, comment stripping, and mock-content controls that scans every file under `src/bolt_v3_archetypes/`, strategy modules under `src/strategies/`, `src/bolt_v3_strategy_registration.rs`, `src/bolt_v3_submit_admission.rs`, and `src/bolt_v3_order_intent.rs` for forbidden concrete-provider references in `tests/bolt_v3_strategy_registration.rs`
 - [X] T005 [US2] Run `fee_provider_source_fence_blocks_concrete_provider_in_shared_layers` and confirm it fails on the current direct Polymarket archetype call before production edits
 - [X] T006 [US1] Add a failing `fee_provider_resolution_uses_provider_binding_registry` provider-binding unit test for fee-provider resolution through `ProviderBinding` in `src/bolt_v3_providers/mod.rs`
 - [X] T007 [US1] Run `fee_provider_resolution_uses_provider_binding_registry` and confirm it fails before resolver implementation

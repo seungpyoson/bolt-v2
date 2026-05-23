@@ -59,4 +59,4 @@ Invariant:
 - Disallow concrete provider imports in shared order/admission/runtime core outside provider registry wiring. The fence must reject at least `bolt_v3_providers::polymarket`, `polymarket::`, and direct `build_fee_provider` usage in prohibited files.
 - Allow concrete Polymarket provider construction in `src/bolt_v3_providers/polymarket*`.
 - Allow provider registry references in `src/bolt_v3_providers/mod.rs`.
-- Source-fence tests must scan source text or an equivalent parsed representation across the prohibited directories/files; merely exercising runtime registration is not enough for the fence.
+- Source-fence tests must scan source text or an equivalent parsed representation across the prohibited directories/files with bounded reads, metadata size checks, comment stripping, and mock-content self-tests; merely exercising runtime registration is not enough for the fence.

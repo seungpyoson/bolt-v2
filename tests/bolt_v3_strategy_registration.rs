@@ -1258,15 +1258,161 @@ fn binary_oracle_runtime_rejects_execution_client_id_without_execution_block() {
 
 #[test]
 fn fee_provider_source_fence_blocks_concrete_provider_in_shared_layers() {
+    const SOURCE_FENCE_MAX_FILE_BYTES: u64 = 1024 * 1024;
+
     fn forbidden_fee_provider_reference(line: &str) -> bool {
         line.contains("bolt_v3_providers::polymarket")
             || line.contains("polymarket::")
             || line.contains("build_fee_provider")
     }
 
+    fn source_contains_forbidden_fee_provider_reference(source: &str) -> bool {
+        source.lines().any(forbidden_fee_provider_reference)
+    }
+
+    fn strip_rust_comments(source: &str) -> String {
+        enum State {
+            Code,
+            LineComment,
+            BlockComment,
+            String { escaped: bool },
+            RawString { hashes: usize },
+        }
+
+        fn raw_string_hashes_at(chars: &[char], index: usize) -> Option<usize> {
+            if chars.get(index) != Some(&'r') {
+                return None;
+            }
+            let mut cursor = index + 1;
+            let mut hashes = 0;
+            while chars.get(cursor) == Some(&'#') {
+                hashes += 1;
+                cursor += 1;
+            }
+            (chars.get(cursor) == Some(&'"')).then_some(hashes)
+        }
+
+        let chars = source.chars().collect::<Vec<_>>();
+        let mut output = String::with_capacity(source.len());
+        let mut state = State::Code;
+        let mut index = 0;
+        while let Some(&current) = chars.get(index) {
+            match state {
+                State::Code => {
+                    if chars.get(index) == Some(&'/') && chars.get(index + 1) == Some(&'/') {
+                        state = State::LineComment;
+                        index += 2;
+                    } else if chars.get(index) == Some(&'/') && chars.get(index + 1) == Some(&'*') {
+                        state = State::BlockComment;
+                        index += 2;
+                    } else if let Some(hashes) = raw_string_hashes_at(&chars, index) {
+                        output.push('r');
+                        index += 1;
+                        for _ in 0..hashes {
+                            output.push('#');
+                            index += 1;
+                        }
+                        output.push('"');
+                        index += 1;
+                        state = State::RawString { hashes };
+                    } else if current == '"' {
+                        output.push(current);
+                        state = State::String { escaped: false };
+                        index += 1;
+                    } else {
+                        output.push(current);
+                        index += 1;
+                    }
+                }
+                State::LineComment => {
+                    if current == '\n' {
+                        output.push(current);
+                        state = State::Code;
+                    }
+                    index += 1;
+                }
+                State::BlockComment => {
+                    if current == '\n' {
+                        output.push(current);
+                        index += 1;
+                    } else if current == '*' && chars.get(index + 1) == Some(&'/') {
+                        state = State::Code;
+                        index += 2;
+                    } else {
+                        index += 1;
+                    }
+                }
+                State::String { escaped } => {
+                    output.push(current);
+                    state = if escaped {
+                        State::String { escaped: false }
+                    } else if current == '\\' {
+                        State::String { escaped: true }
+                    } else if current == '"' {
+                        State::Code
+                    } else {
+                        State::String { escaped: false }
+                    };
+                    index += 1;
+                }
+                State::RawString { hashes } => {
+                    output.push(current);
+                    if current == '"' {
+                        let closes_raw_string =
+                            (1..=hashes).all(|offset| chars.get(index + offset) == Some(&'#'));
+                        if closes_raw_string {
+                            for offset in 1..=hashes {
+                                output.push(chars[index + offset]);
+                            }
+                            index += hashes + 1;
+                            state = State::Code;
+                        } else {
+                            index += 1;
+                        }
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+        }
+        output
+    }
+
+    fn read_source_fence_target(repo_root: &std::path::Path, relative: &str) -> String {
+        let path = repo_root.join(relative);
+        let metadata = std::fs::metadata(&path).expect("source-fence target metadata should load");
+        assert!(
+            metadata.is_file(),
+            "source-fence target must be a file: {relative}"
+        );
+        assert!(
+            metadata.len() <= SOURCE_FENCE_MAX_FILE_BYTES,
+            "source-fence target {relative} is {} bytes; limit is {SOURCE_FENCE_MAX_FILE_BYTES}",
+            metadata.len()
+        );
+        std::fs::read_to_string(path).expect("source-fence target should be readable")
+    }
+
     assert!(
-        forbidden_fee_provider_reference("let _ = polymarket::build_fee_provider;"),
+        source_contains_forbidden_fee_provider_reference("let _ = polymarket::build_fee_provider;"),
         "positive control must catch direct concrete provider construction"
+    );
+    assert!(
+        !source_contains_forbidden_fee_provider_reference(&strip_rust_comments(
+            "// let _ = polymarket::build_fee_provider;"
+        )),
+        "negative control must ignore direct construction in line comments"
+    );
+    assert!(
+        !source_contains_forbidden_fee_provider_reference(&strip_rust_comments(
+            "/* let _ = polymarket::build_fee_provider; */"
+        )),
+        "negative control must ignore direct construction in block comments"
+    );
+    assert_eq!(
+        strip_rust_comments("let text = \"// this is string content\";"),
+        "let text = \"// this is string content\";",
+        "comment stripping must not treat line-comment markers inside strings as comments"
     );
 
     fn push_rs_files(repo_root: &std::path::Path, directory: &str, files: &mut Vec<String>) {
@@ -1300,13 +1446,8 @@ fn fee_provider_source_fence_blocks_concrete_provider_in_shared_layers() {
     files.sort();
     files.dedup();
     for relative in files {
-        let source = std::fs::read_to_string(repo_root.join(&relative))
-            .expect("source-fence target should be readable");
+        let source = strip_rust_comments(&read_source_fence_target(&repo_root, &relative));
         for (line_index, line) in source.lines().enumerate() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("//") || trimmed.starts_with("*") {
-                continue;
-            }
             if forbidden_fee_provider_reference(line) {
                 violations.push(format!("{}:{}", relative, line_index + 1));
             }

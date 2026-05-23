@@ -167,8 +167,6 @@ def _validate_owner_cleanup_mode(section_id: str, owner: str, cleanup_mode: str)
         )
     if owner != OWNED_OWNER and cleanup_mode != "none":
         raise PolicyError(f"{section_id}.owner/cleanup_mode combination is not cleanup-owned")
-    if cleanup_mode in MUTATING_CLEANUP_MODES and owner != OWNED_OWNER:
-        raise PolicyError(f"{section_id}.owner/cleanup_mode combination is not cleanup-owned")
 
 
 def _validate_mode_fields(section_id: str, section: dict[str, Any], cleanup_mode: str) -> None:
@@ -1105,7 +1103,11 @@ def load_policy(policy_path: Path) -> Policy:
     )
     if len(adjacent) != len(adjacent_raw):
         raise PolicyError("adjacent entries must be tables")
+    seen_adjacent_ids: set[str] = set()
     for surface in adjacent:
+        if surface.id in seen_adjacent_ids:
+            raise PolicyError(f"{surface.id} adjacent surface id is duplicated")
+        seen_adjacent_ids.add(surface.id)
         if surface.owner == OWNED_OWNER:
             raise PolicyError(f"{surface.id}.owner/cleanup_mode combination is not valid for adjacent context")
 

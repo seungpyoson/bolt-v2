@@ -20,7 +20,6 @@ concurrency:
 
 permissions:
   contents: read
-  checks: write
 
 jobs:
   actionlint:

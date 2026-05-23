@@ -251,6 +251,36 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(candidates[("factory.log", "droid-log-single.log")]["reason"], "size_exceeds_max_bytes")
         self.assertEqual(candidates[("factory.log", "droid-log-single.log")]["estimated_reclaim_bytes"], 8)
 
+    def test_dry_run_honors_cleanup_mode_none_for_configured_surface(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+            policy.write_text(
+                policy.read_text(encoding="utf-8").replace(
+                    'cleanup_mode = "rotate"\nmax_bytes = 8',
+                    'cleanup_mode = "none"\nmax_bytes = 8',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex log requiring rotation")
+            repo_root.mkdir()
+
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            [entry for entry in payload["candidates"] if entry["surface_id"] == "codex.log"],
+            [],
+        )
+
     def test_dry_run_reports_only_stale_codex_session_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -679,6 +709,28 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(negative_result.returncode, 2, (negative_result.stdout, negative_result.stderr))
         self.assertIn("owned_storage_warning_bytes", negative_result.stderr)
 
+    def test_policy_validation_fails_closed_when_cleanup_integer_is_bool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+            policy.write_text(
+                policy.read_text(encoding="utf-8").replace("max_bytes = 8", "max_bytes = true", 1),
+                encoding="utf-8",
+            )
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex log requiring rotation")
+            repo_root.mkdir()
+
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+        self.assertIn("codex.log.max_bytes", result.stderr)
+
     def test_dry_run_output_includes_measurements_refusals_and_adjacent_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -820,7 +872,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                 home_root,
                 repo_root,
                 policy,
-                ["--dry-run-report", str(report)],
+                ["--dry-run-report", str(report), "--process-snapshot-empty"],
             )
             current_after = codex_log.read_bytes()
             rotated_after = codex_log.with_name("codex-tui.log.1").read_bytes()
@@ -832,6 +884,41 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(payload["status"], "applied")
         self.assertEqual(payload["actions_taken"][0]["action"], "rotate")
         self.assertEqual(payload["actions_taken"][0]["surface_id"], "codex.log")
+
+    def test_apply_requires_process_snapshot_for_mutable_writer_surfaces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            original = b"codex log requiring rotation"
+            codex_log.write_bytes(original)
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report)],
+            )
+            after = codex_log.read_bytes()
+
+        self.assertEqual(result.returncode, 1, (result.stdout, result.stderr))
+        self.assertEqual(after, original)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "refused")
+        self.assertEqual(payload["reason"], "process_snapshot_required")
+        self.assertEqual(payload["actions_taken"], [])
 
     def test_apply_deletes_stale_session_candidate_from_matching_dry_run_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -858,7 +945,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                 home_root,
                 repo_root,
                 policy,
-                ["--dry-run-report", str(report)],
+                ["--dry-run-report", str(report), "--process-snapshot-empty"],
             )
             exists_after = session.exists()
 
@@ -868,6 +955,53 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(payload["status"], "applied")
         self.assertEqual(payload["actions_taken"][0]["action"], "delete")
         self.assertEqual(payload["actions_taken"][0]["surface_id"], "codex.sessions")
+
+    def test_apply_reports_partial_summary_when_later_mutation_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            factory_log = home_root / ".factory" / "logs" / "droid-log-single.log"
+            codex_log.parent.mkdir(parents=True)
+            factory_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex log requiring rotation")
+            factory_log.write_bytes(b"factory log requiring rotation")
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy_path)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_rotate = tool._rotate_log
+
+            def flaky_rotate(path: pathlib.Path, retained_rotations: int) -> None:
+                if path.name == "droid-log-single.log":
+                    raise OSError("synthetic rotate failure")
+                original_rotate(path, retained_rotations)
+
+            tool._rotate_log = flaky_rotate
+            try:
+                payload = tool.build_apply(
+                    policy,
+                    home_root,
+                    repo_root,
+                    dry_run_report=report,
+                    process_snapshot_supplied=True,
+                )
+            finally:
+                tool._rotate_log = original_rotate
+
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["reason"], "mutation_failed")
+        self.assertEqual(payload["actions_taken"][0]["surface_id"], "codex.log")
+        self.assertEqual(payload["failed_action"]["surface_id"], "factory.log")
 
     def test_apply_removes_only_unprotected_exact_name_rustup_candidate(self) -> None:
         active = "active-aarch64-apple-darwin"
@@ -962,7 +1096,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                 home_root,
                 repo_root,
                 policy,
-                ["--dry-run-report", str(report)],
+                ["--dry-run-report", str(report), "--process-snapshot-empty"],
             )
             after = {sqlite: sqlite.read_bytes(), history: history.read_bytes(), archived: archived.read_bytes()}
 
@@ -1011,7 +1145,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                 home_root,
                 repo_root,
                 policy,
-                ["--dry-run-report", str(report)],
+                ["--dry-run-report", str(report), "--process-snapshot-empty"],
             )
             after = codex_log.read_bytes()
 
@@ -1044,7 +1178,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                 home_root,
                 repo_root,
                 policy,
-                ["--dry-run-report", str(report)],
+                ["--dry-run-report", str(report), "--process-snapshot-empty"],
             )
             after = codex_log.read_bytes()
             rotated_exists = codex_log.with_name("codex-tui.log.1").exists()
@@ -1174,7 +1308,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                 home_root,
                 repo_root,
                 policy,
-                ["--dry-run-report", str(report)],
+                ["--dry-run-report", str(report), "--process-snapshot-empty"],
             )
 
         self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))

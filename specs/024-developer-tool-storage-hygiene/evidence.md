@@ -182,7 +182,7 @@ Operator approval for the T012 command surface was recorded by the operator's `c
 
 | Command | Result | Notes |
 |---|---|---|
-| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 26 tests in 1.515s | Scratch fixtures only; no real home-directory mutation. |
+| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 30 tests in 1.933s | Scratch fixtures only; no real home-directory mutation. |
 | `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py` | Pass | Syntax check for the new script and test. |
 | `git diff --check` | Pass | Whitespace check. |
 | `git diff --check origin/main...HEAD` | Pass | Exact local branch diff whitespace check. |
@@ -207,7 +207,7 @@ Passes completed:
 
 Quality gates:
 
-- Regression tests: pass, 26 tests.
+- Regression tests: pass, 30 tests.
 - Type/syntax check: pass via `python3 -m py_compile`.
 - Static literal/unresolved-marker scan: pass for changed #375 files.
 
@@ -232,5 +232,16 @@ Second no-mistakes run `01KS9KRTZ6S2P34CGY4XTN15N5` on head `3610e7cd` reported 
 | Apply candidate comparison did not catch policy-only drift such as changed `retained_rotations`. | Added `test_apply_aborts_when_policy_changes_after_dry_run`; dry-run now records a policy SHA-256 digest and apply aborts when the current digest differs. |
 | Rustup removals could proceed when `--repo-root` lacked `rust-toolchain.toml`, disabling project-pin protection. | Added `test_dry_run_fails_closed_for_rustup_removals_without_repo_toolchain_pin`; rustup removals now require a readable repository-root `rust-toolchain.toml` with `toolchain.channel`. |
 | Report-only entries could crash if a Codex db/history/archive path disappeared during measurement. | Added `test_dry_run_reports_report_only_file_that_disappears_during_measurement`; report-only measurement now emits a non-mutating `path_disappeared_during_scan` entry. |
+
+Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.
+
+Third no-mistakes run `01KS9MCGN4TV5XGG0RJB1PTBVZ` on head `426360e2` reported additional destructive-path findings before PR opening:
+
+| Finding | Remediation |
+|---|---|
+| Candidate dispatch ignored `owner` and `cleanup_mode`, so a disabled/report-only surface could still emit mutating candidates. | Added `test_dry_run_honors_cleanup_mode_none_for_configured_surface`; dry-run now requires `owner = "owned"` plus the expected cleanup mode before emitting mutating candidates. |
+| Positive integer validation accepted TOML booleans for cleanup parameters such as `max_bytes` and `ttl_days`. | Added `test_policy_validation_fails_closed_when_cleanup_integer_is_bool`; positive integer validation now uses exact `int` type checks. |
+| Apply could proceed without an explicit process snapshot for mutable Codex/Factory surfaces. | Added `test_apply_requires_process_snapshot_for_mutable_writer_surfaces`; apply now refuses mutable writer-owned candidates unless `--process-name` or `--process-snapshot-empty` is supplied. |
+| Later mutation failure could leave partial cleanup without structured summary. | Added `test_apply_reports_partial_summary_when_later_mutation_fails`; apply now returns structured `status=failed`, `actions_taken`, and `failed_action` data for mutation errors. |
 
 Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.

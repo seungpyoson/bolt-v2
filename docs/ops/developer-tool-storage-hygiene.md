@@ -65,6 +65,7 @@ python3 scripts/developer_tool_storage_hygiene.py apply \
   --home-root "$HOME" \
   --repo-root "$PWD" \
   --dry-run-report /tmp/bolt-v2-developer-tool-storage-dry-run.json \
+  --process-snapshot-empty \
   --json
 ```
 
@@ -80,7 +81,7 @@ python3 scripts/developer_tool_storage_hygiene.py dry-run \
   --json
 ```
 
-The script does not collect the host process table. To refuse apply when a known writer is active, pass exact observed process names explicitly:
+The script does not collect the host process table. Apply refuses mutable Codex and Factory actions unless an explicit process snapshot is supplied. Use `--process-snapshot-empty` only after checking that no configured writer process is active, or pass exact observed process names explicitly:
 
 ```sh
 python3 scripts/developer_tool_storage_hygiene.py apply \

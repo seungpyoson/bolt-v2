@@ -131,7 +131,7 @@ def _string_tuple_from_extra(surface: PolicySurface, key: str) -> tuple[str, ...
 
 
 def _read_positive_int(section_id: str, value: Any, key: str) -> int:
-    if not isinstance(value, int) or value <= 0:
+    if type(value) is not int or value <= 0:
         raise PolicyError(f"{section_id}.{key} must be a positive integer")
     return value
 
@@ -608,13 +608,25 @@ def build_dry_run(
     report_only: list[dict[str, Any]] = []
     protected: list[dict[str, Any]] = []
     for surface in policy.surfaces:
-        if surface.id in ROTATING_SURFACE_IDS:
+        if (
+            surface.owner == "owned"
+            and surface.cleanup_mode == "rotate"
+            and surface.id in ROTATING_SURFACE_IDS
+        ):
             candidate = _candidate_for_rotating_log(surface, home_root)
             if candidate is not None:
                 candidates.append(candidate)
-        elif surface.id == SESSION_SURFACE_ID:
+        elif (
+            surface.owner == "owned"
+            and surface.cleanup_mode == "ttl_prune"
+            and surface.id == SESSION_SURFACE_ID
+        ):
             candidates.extend(_candidates_for_sessions(surface, home_root))
-        elif surface.id == RUSTUP_SURFACE_ID:
+        elif (
+            surface.owner == "owned"
+            and surface.cleanup_mode == "toolchain_retention"
+            and surface.id == RUSTUP_SURFACE_ID
+        ):
             rustup_candidates, rustup_protected = _rustup_entries(
                 surface,
                 home_root,
@@ -763,6 +775,11 @@ def _active_writer_refusals(
     return refusals
 
 
+def _process_snapshot_required(policy: Policy, candidates: list[dict[str, Any]]) -> bool:
+    surfaces = {surface.id: surface for surface in policy.surfaces}
+    return any(surfaces[candidate["surface_id"]].active_writer_processes for candidate in candidates)
+
+
 def build_apply(
     policy: Policy,
     home_root: Path,
@@ -772,6 +789,7 @@ def build_apply(
     active_rustup_toolchains: tuple[str, ...] = (),
     default_rustup_toolchains: tuple[str, ...] = (),
     process_names: tuple[str, ...] = (),
+    process_snapshot_supplied: bool = False,
 ) -> dict[str, Any]:
     previous = _load_dry_run_report(dry_run_report)
     current = build_dry_run(
@@ -807,6 +825,18 @@ def build_apply(
             "bytes_reclaimed": 0,
         }
 
+    if _process_snapshot_required(policy, current_candidates) and not process_snapshot_supplied:
+        return {
+            "mode": "apply",
+            "status": "refused",
+            "reason": "process_snapshot_required",
+            "actions_taken": [],
+            "refusal_reasons": _refusal_candidates(current),
+            "skipped_report_only": current.get("report_only", []),
+            "skipped_protected": current.get("protected", []),
+            "bytes_reclaimed": 0,
+        }
+
     active_writer_refusals = _active_writer_refusals(policy, current_candidates, process_names)
     if active_writer_refusals:
         return {
@@ -827,24 +857,39 @@ def build_apply(
     for candidate in current_candidates:
         action = candidate["action"]
         path = Path(candidate["path"])
-        if action == "rotate":
-            surface = surfaces[candidate["surface_id"]]
-            retained_rotations = _read_positive_int(
-                surface.id,
-                surface.extra.get("retained_rotations"),
-                "retained_rotations",
-            )
-            _rotate_log(path, retained_rotations)
-        elif action == "delete":
-            if path.is_symlink():
-                raise PolicyError(f"refusing to delete symlink: {path}")
-            path.unlink()
-        elif action == "remove_tree":
-            if path.is_symlink():
-                raise PolicyError(f"refusing to remove symlink: {path}")
-            shutil.rmtree(path)
-        else:
-            raise PolicyError(f"unsupported apply action: {action}")
+        try:
+            if action == "rotate":
+                surface = surfaces[candidate["surface_id"]]
+                retained_rotations = _read_positive_int(
+                    surface.id,
+                    surface.extra.get("retained_rotations"),
+                    "retained_rotations",
+                )
+                _rotate_log(path, retained_rotations)
+            elif action == "delete":
+                if path.is_symlink():
+                    raise PolicyError(f"refusing to delete symlink: {path}")
+                path.unlink()
+            elif action == "remove_tree":
+                if path.is_symlink():
+                    raise PolicyError(f"refusing to remove symlink: {path}")
+                shutil.rmtree(path)
+            else:
+                raise PolicyError(f"unsupported apply action: {action}")
+        except (OSError, PolicyError) as exc:
+            failed_action = dict(candidate)
+            failed_action["error"] = str(exc)
+            return {
+                "mode": "apply",
+                "status": "failed",
+                "reason": "mutation_failed",
+                "actions_taken": actions_taken,
+                "failed_action": failed_action,
+                "refusal_reasons": _refusal_candidates(current),
+                "skipped_report_only": current.get("report_only", []),
+                "skipped_protected": current.get("protected", []),
+                "bytes_reclaimed": bytes_reclaimed,
+            }
         actions_taken.append(candidate)
         bytes_reclaimed += int(candidate.get("estimated_reclaim_bytes", 0))
 
@@ -870,7 +915,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--default-rustup-toolchain", action="append", default=[])
     parser.add_argument("--available-disk-bytes", type=int)
     parser.add_argument("--dry-run-report", type=Path)
-    parser.add_argument("--process-name", action="append", default=[])
+    parser.add_argument("--process-name", action="append", default=None)
+    parser.add_argument("--process-snapshot-empty", action="store_true")
     return parser
 
 
@@ -882,13 +928,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "status":
             payload = build_status(policy, args.home_root, args.repo_root)
         elif args.command == "dry-run":
-            payload = build_dry_run(
-                policy,
-                args.home_root,
-                args.repo_root,
-                active_rustup_toolchains=tuple(args.active_rustup_toolchain),
-                default_rustup_toolchains=tuple(args.default_rustup_toolchain),
-            )
+                payload = build_dry_run(
+                    policy,
+                    args.home_root,
+                    args.repo_root,
+                    active_rustup_toolchains=tuple(args.active_rustup_toolchain),
+                    default_rustup_toolchains=tuple(args.default_rustup_toolchain),
+                )
         else:
             if args.command == "preflight":
                 payload = build_preflight(
@@ -909,7 +955,8 @@ def main(argv: list[str] | None = None) -> int:
                     dry_run_report=args.dry_run_report,
                     active_rustup_toolchains=tuple(args.active_rustup_toolchain),
                     default_rustup_toolchains=tuple(args.default_rustup_toolchain),
-                    process_names=tuple(args.process_name),
+                    process_names=tuple(args.process_name or []),
+                    process_snapshot_supplied=bool(args.process_snapshot_empty or args.process_name is not None),
                 )
     except PolicyError as exc:
         print(str(exc), file=sys.stderr)

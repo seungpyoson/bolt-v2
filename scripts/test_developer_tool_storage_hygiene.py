@@ -1445,6 +1445,85 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(pathlib.Path(root_errors[0]["path"]).name, "sessions")
         self.assertEqual(root_errors[0]["reason"], "symlink_not_followed")
 
+    def test_preflight_fails_closed_when_owned_fixed_path_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path)
+
+            outside_log_root = tmp_path / "outside-log-root"
+            outside_log_root.mkdir()
+            log_root = home_root / ".codex" / "log"
+            log_root.parent.mkdir(parents=True)
+            log_root.symlink_to(outside_log_root, target_is_directory=True)
+            repo_root.mkdir()
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            payload = tool.build_preflight(
+                policy,
+                home_root,
+                repo_root,
+                available_disk_bytes=1000,
+            )
+
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("owned_storage_measurement_failed", payload["errors"])
+        root_errors = [
+            entry
+            for entry in payload["owned_storage_measurement_errors"]
+            if entry.get("surface_id") == "codex.log"
+        ]
+        self.assertEqual(len(root_errors), 1)
+        self.assertEqual(pathlib.Path(root_errors[0]["path"]).name, "codex-tui.log")
+        self.assertEqual(root_errors[0]["reason"], "outside_configured_root")
+
+    def test_preflight_fails_closed_when_log_sidecar_scan_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"ok")
+            repo_root.mkdir()
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_iterdir = pathlib.Path.iterdir
+
+            def failing_iterdir(path: pathlib.Path):
+                if path == codex_log.parent:
+                    raise PermissionError(str(path))
+                return original_iterdir(path)
+
+            pathlib.Path.iterdir = failing_iterdir
+            try:
+                payload = tool.build_preflight(
+                    policy,
+                    home_root,
+                    repo_root,
+                    available_disk_bytes=1000,
+                )
+            finally:
+                pathlib.Path.iterdir = original_iterdir
+
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("owned_storage_measurement_failed", payload["errors"])
+        root_errors = [
+            entry
+            for entry in payload["owned_storage_measurement_errors"]
+            if entry.get("surface_id") == "codex.log"
+        ]
+        self.assertEqual(len(root_errors), 1)
+        self.assertEqual(pathlib.Path(root_errors[0]["path"]).name, "log")
+        self.assertEqual(root_errors[0]["reason"], "path_disappeared_during_scan")
+
     def test_preflight_reports_adjacent_caches_without_counting_them_as_owned(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)

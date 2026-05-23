@@ -339,9 +339,11 @@ def _stale_rotation_sidecar_candidates(
     surface_id: str,
     path: Path,
     retained_rotations: int,
+    sidecar_entries: list[tuple[int, Path]] | None = None,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    for index, sidecar_path in _rotation_sidecar_entries(path):
+    sidecars = sidecar_entries if sidecar_entries is not None else _rotation_sidecar_entries(path)
+    for index, sidecar_path in sidecars:
         if index <= retained_rotations:
             continue
         try:
@@ -392,17 +394,41 @@ def _candidates_for_rotating_log(surface: PolicySurface, home_root: Path) -> lis
                 "estimated_reclaim_bytes": 0,
             }
         ]
-    symlink_refusal = _rotation_symlink_refusal(surface.id, candidate_path, retained_rotations)
+    try:
+        sidecar_entries = _rotation_sidecar_entries(candidate_path)
+    except OSError:
+        return [_scan_refusal(surface.id, candidate_path.parent)]
+    symlink_refusal = _rotation_symlink_refusal(
+        surface.id,
+        candidate_path,
+        retained_rotations,
+        sidecar_entries,
+    )
     if symlink_refusal is not None:
         return [symlink_refusal]
     try:
         stat = candidate_path.lstat()
     except FileNotFoundError:
-        return _stale_rotation_sidecar_candidates(surface.id, candidate_path, retained_rotations)
+        return _stale_rotation_sidecar_candidates(
+            surface.id,
+            candidate_path,
+            retained_rotations,
+            sidecar_entries,
+        )
     if not candidate_path.is_file():
-        return _stale_rotation_sidecar_candidates(surface.id, candidate_path, retained_rotations)
+        return _stale_rotation_sidecar_candidates(
+            surface.id,
+            candidate_path,
+            retained_rotations,
+            sidecar_entries,
+        )
     if stat.st_size <= max_bytes:
-        return _stale_rotation_sidecar_candidates(surface.id, candidate_path, retained_rotations)
+        return _stale_rotation_sidecar_candidates(
+            surface.id,
+            candidate_path,
+            retained_rotations,
+            sidecar_entries,
+        )
     return [
         {
             "surface_id": surface.id,
@@ -412,8 +438,14 @@ def _candidates_for_rotating_log(surface: PolicySurface, home_root: Path) -> lis
             "bytes": stat.st_size,
             "max_bytes": max_bytes,
             "retained_rotations": retained_rotations,
-            "estimated_reclaim_bytes": _rotation_reclaim_bytes(candidate_path, retained_rotations),
-            "state_token": _paths_state_token(_rotation_paths(candidate_path, retained_rotations)),
+            "estimated_reclaim_bytes": _rotation_reclaim_bytes(
+                candidate_path,
+                retained_rotations,
+                sidecar_entries,
+            ),
+            "state_token": _paths_state_token(
+                _rotation_paths(candidate_path, retained_rotations, sidecar_entries)
+            ),
         }
     ]
 
@@ -575,21 +607,35 @@ def _rotation_sidecar_entries(path: Path) -> list[tuple[int, Path]]:
     return sorted(entries, key=lambda entry: entry[0])
 
 
-def _rotation_paths(path: Path, retained_rotations: int) -> list[Path]:
+def _rotation_paths(
+    path: Path,
+    retained_rotations: int,
+    sidecar_entries: list[tuple[int, Path]] | None = None,
+) -> list[Path]:
     configured_paths = [path] + [
         _rotation_slot_path(path, index) for index in range(1, retained_rotations + 1)
     ]
     configured = set(configured_paths)
+    sidecars = sidecar_entries if sidecar_entries is not None else _rotation_sidecar_entries(path)
     extra_paths = [
         sidecar_path
-        for index, sidecar_path in _rotation_sidecar_entries(path)
+        for index, sidecar_path in sidecars
         if index > retained_rotations and sidecar_path not in configured
     ]
     return configured_paths + extra_paths
 
 
-def _rotation_symlink_refusal(surface_id: str, path: Path, retained_rotations: int) -> dict[str, Any] | None:
-    for candidate_path in _rotation_paths(path, retained_rotations):
+def _rotation_symlink_refusal(
+    surface_id: str,
+    path: Path,
+    retained_rotations: int,
+    sidecar_entries: list[tuple[int, Path]] | None = None,
+) -> dict[str, Any] | None:
+    try:
+        rotation_paths = _rotation_paths(path, retained_rotations, sidecar_entries)
+    except OSError:
+        return _scan_refusal(surface_id, path.parent)
+    for candidate_path in rotation_paths:
         try:
             stat = candidate_path.lstat()
         except FileNotFoundError:
@@ -607,7 +653,11 @@ def _rotation_symlink_refusal(surface_id: str, path: Path, retained_rotations: i
 
 
 def _validate_rotation_paths(path: Path, retained_rotations: int) -> None:
-    for candidate_path in _rotation_paths(path, retained_rotations):
+    try:
+        rotation_paths = _rotation_paths(path, retained_rotations)
+    except OSError as exc:
+        raise PolicyError(f"unable to inspect rotation sidecars: {path.parent}") from exc
+    for candidate_path in rotation_paths:
         try:
             stat = candidate_path.lstat()
         except FileNotFoundError:
@@ -636,9 +686,14 @@ def _create_empty_file_no_follow(path: Path, mode: int) -> None:
         os.close(fd)
 
 
-def _rotation_reclaim_bytes(path: Path, retained_rotations: int) -> int:
+def _rotation_reclaim_bytes(
+    path: Path,
+    retained_rotations: int,
+    sidecar_entries: list[tuple[int, Path]] | None = None,
+) -> int:
     total = 0
-    for index, sidecar_path in _rotation_sidecar_entries(path):
+    sidecars = sidecar_entries if sidecar_entries is not None else _rotation_sidecar_entries(path)
+    for index, sidecar_path in sidecars:
         if index < retained_rotations:
             continue
         try:
@@ -652,7 +707,11 @@ def _rotation_measurement_paths(path: Path) -> list[Path]:
     paths: list[Path] = []
     if _path_exists_no_follow(path):
         paths.append(path)
-    paths.extend(sidecar_path for _index, sidecar_path in _rotation_sidecar_entries(path))
+    try:
+        sidecars = _rotation_sidecar_entries(path)
+    except OSError:
+        sidecars = []
+    paths.extend(sidecar_path for _index, sidecar_path in sidecars)
     return paths
 
 
@@ -853,20 +912,27 @@ def _owned_root_refusal_errors(
     home_root: Path,
     candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    owned_glob_roots = {
-        surface.id: _path_family_root_and_pattern(home_root, surface.path_family)[0]
-        for surface in policy.surfaces
-        if surface.owner == OWNED_OWNER and _path_family_has_glob(surface.path_family)
-    }
+    owned_refusal_paths: dict[str, set[Path]] = {}
+    for surface in policy.surfaces:
+        if surface.owner != OWNED_OWNER:
+            continue
+        if _path_family_has_glob(surface.path_family):
+            paths = {_path_family_root_and_pattern(home_root, surface.path_family)[0]}
+        else:
+            configured_path = _configured_path(home_root, surface.path_family)
+            paths = {configured_path}
+            if surface.cleanup_mode == "rotate" and surface.id in ROTATING_SURFACE_IDS:
+                paths.add(configured_path.parent)
+        owned_refusal_paths[surface.id] = paths
     errors: list[dict[str, Any]] = []
     for candidate in candidates:
-        root = owned_glob_roots.get(str(candidate.get("surface_id", "")))
+        surface_paths = owned_refusal_paths.get(str(candidate.get("surface_id", "")), set())
         path = candidate.get("path")
         if (
-            root is None
+            not surface_paths
             or candidate.get("action") != "refuse"
             or not isinstance(path, str)
-            or Path(path) != root
+            or Path(path) not in surface_paths
         ):
             continue
         errors.append(

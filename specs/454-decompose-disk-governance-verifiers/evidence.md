@@ -37,7 +37,7 @@
 | Command | Result |
 |---|---|
 | `marker_pattern='NEEDS'' CLARIFICATION|\\[FEA''TURE|\\[#''##|ACTION'' REQUIRED|TO''DO|fix'' later'; rg -n "$marker_pattern" specs/454-decompose-disk-governance-verifiers/spec.md specs/454-decompose-disk-governance-verifiers/plan.md specs/454-decompose-disk-governance-verifiers/research.md specs/454-decompose-disk-governance-verifiers/data-model.md specs/454-decompose-disk-governance-verifiers/evidence.md specs/454-decompose-disk-governance-verifiers/tasks.md specs/454-decompose-disk-governance-verifiers/contracts` | Pass: no unresolved marker matches. |
-| `rg -n "specs/454-decompose-disk-governance-verifiers/plan.md" AGENTS.md .specify/feature.json` | Pass: `AGENTS.md` points at the #454 plan. |
+| `rg -n "specs/023-nt-order-intent-layer/plan.md" AGENTS.md .specify/feature.json` | Pass: global project pointers stay on the existing active plan; #454 artifacts remain PR-scoped under `specs/454-decompose-disk-governance-verifiers/`. |
 | `git diff --check` | Pass: no whitespace errors. |
 
 ## Size Evidence

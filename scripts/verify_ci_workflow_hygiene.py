@@ -14,6 +14,8 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+# Keep the full former verifier-local helper family module-scoped so the
+# parity tests prove the old helper surface now points at the shared path.
 from command_understanding import (
     python_call_command_argument,
     python_call_name,

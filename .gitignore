@@ -24,7 +24,7 @@ __pycache__/
 .opencode/package.json
 .opencode/package-lock.json
 .opencode/bun.lock
-.opencode/plugins/entire.ts
+.opencode/plugins/
 .DS_Store
 __pycache__/
 *.pyc

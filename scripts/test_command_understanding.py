@@ -7,6 +7,7 @@ import ast
 import importlib
 import importlib.util
 import pathlib
+import subprocess
 import sys
 import tempfile
 
@@ -15,14 +16,19 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNTIME_VERIFIER = REPO_ROOT / "scripts" / "rust_verification.py"
 STATIC_VERIFIER = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 SHARED_HELPERS = REPO_ROOT / "scripts" / "command_understanding.py"
+_MODULE_CACHE: dict[pathlib.Path, object] = {}
 
 
 def load_module(path: pathlib.Path, module_name: str) -> object:
+    cached = _MODULE_CACHE.get(path)
+    if cached is not None:
+        return cached
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise AssertionError(f"could not load {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    _MODULE_CACHE[path] = module
     return module
 
 
@@ -42,6 +48,50 @@ def first_call(source: str) -> ast.Call:
         if isinstance(node, ast.Call):
             return node
     raise AssertionError(f"no call found in {source!r}")
+
+
+def assert_verifier_modules_import_from_repo_root() -> None:
+    command = (
+        "import importlib.util; "
+        "paths = ['scripts/rust_verification.py', 'scripts/verify_ci_workflow_hygiene.py']; "
+        "\nfor index, path in enumerate(paths):\n"
+        "    spec = importlib.util.spec_from_file_location(f'verifier_{index}', path)\n"
+        "    module = importlib.util.module_from_spec(spec)\n"
+        "    spec.loader.exec_module(module)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", command],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            "verifier modules must import from repo root without relying on scripts/ sys.path; "
+            f"stderr={result.stderr.strip()!r}"
+        )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.rust_verification", "--help"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"rust_verification module execution failed: {result.stderr.strip()!r}")
+
+
+def assert_load_module_caches_verifier_modules() -> None:
+    runtime_first = load_module(RUNTIME_VERIFIER, "rust_verification_cache_first")
+    runtime_second = load_module(RUNTIME_VERIFIER, "rust_verification_cache_second")
+    static_first = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_cache_first")
+    static_second = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_cache_second")
+    if runtime_first is not runtime_second:
+        raise AssertionError("runtime verifier was re-executed instead of loaded from cache")
+    if static_first is not static_second:
+        raise AssertionError("static verifier was re-executed instead of loaded from cache")
 
 
 def assert_python_ast_helpers_match_current_verifiers() -> None:
@@ -286,6 +336,8 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
 
 
 def main() -> int:
+    assert_verifier_modules_import_from_repo_root()
+    assert_load_module_caches_verifier_modules()
     assert_python_ast_helpers_match_current_verifiers()
     assert_python_inline_payloads_match_current_verifiers()
     assert_verifier_clients_use_shared_python_helpers()

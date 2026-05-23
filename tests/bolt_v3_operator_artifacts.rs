@@ -1241,6 +1241,55 @@ fn pre_run_single_runner_lock_source_proof_derives_source_owned_values() {
 }
 
 #[test]
+fn pre_run_single_runner_lock_source_proof_resolves_relative_path_from_config_root() {
+    let mut loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    loaded.root_path = temp.path().join("root.toml");
+    std::fs::write(&loaded.root_path, "fixture root").expect("root fixture should write");
+    let relative_lock_path = std::path::PathBuf::from(format!(
+        "target/bolt-v3-single-runner-lock-review-fix/{}-single-runner.lock",
+        std::process::id()
+    ));
+    let expected_config_root_lock_path = temp.path().join(&relative_lock_path);
+    let cwd_lock_path = repo_path(
+        relative_lock_path
+            .to_str()
+            .expect("relative lock path should be utf-8"),
+    );
+    let _ = std::fs::remove_file(&cwd_lock_path);
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            &strategy_instance_id,
+            &relative_lock_path,
+            100_000,
+        )
+        .expect("relative lock proof should acquire a config-root lock");
+
+    assert_eq!(
+        proof.single_runner_lock_evidence_hash,
+        sha256_file(&expected_config_root_lock_path)
+    );
+    assert!(
+        !cwd_lock_path.exists(),
+        "relative lock path must not be resolved from the process cwd"
+    );
+    let json = read_json_value(&expected_config_root_lock_path);
+    assert_eq!(
+        json["lock_path_sha256"],
+        sha256_text(&expected_config_root_lock_path.to_string_lossy())
+    );
+}
+
+#[test]
 fn static_operator_artifacts_report_market_selection_blocker_until_runtime_proof_exists() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded

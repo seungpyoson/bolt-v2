@@ -1704,7 +1704,8 @@ pub fn collect_pre_run_single_runner_lock_source_proof(
         Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
             .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
     validate_output_path_components("single_runner_lock_path", lock_path)?;
-    if lock_path.exists() {
+    let resolved_lock_path = resolve_loaded_config_path_from_path(loaded, lock_path);
+    if resolved_lock_path.exists() {
         return Err(
             BoltV3OperatorArtifactError::PreRunSingleRunnerLockSourceInvalid {
                 field: "single_runner_lock_acquired",
@@ -1716,7 +1717,7 @@ pub fn collect_pre_run_single_runner_lock_source_proof(
         record_kind: PRE_RUN_SINGLE_RUNNER_LOCK_SOURCE_PROOF_RECORD_KIND,
         config_bundle_checksum: loaded.config_bundle_checksum.as_str(),
         strategy_instance_id,
-        lock_path_sha256: sha256_text(&lock_path.to_string_lossy()),
+        lock_path_sha256: sha256_text(&resolved_lock_path.to_string_lossy()),
     };
     let bytes =
         serde_json::to_vec_pretty(&artifact).map_err(BoltV3OperatorArtifactError::Serialize)?;
@@ -1727,7 +1728,7 @@ pub fn collect_pre_run_single_runner_lock_source_proof(
             },
         );
     }
-    let written = write_json_artifact_create_new(lock_path, &artifact)?;
+    let written = write_json_artifact_create_new(&resolved_lock_path, &artifact)?;
     Ok(Phase8PreRunSingleRunnerLockSourceProof {
         single_runner_lock_acquired: true,
         single_runner_lock_evidence_hash: written.sha256,

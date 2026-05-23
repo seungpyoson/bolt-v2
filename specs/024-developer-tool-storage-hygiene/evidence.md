@@ -340,3 +340,12 @@ Thirteenth no-mistakes run `01KS9XE6FQBEY5F0KD1K93P2VY` started on head `f2e59e0
 | The #024 data model said size/day values may be non-negative even though cleanup knobs require positive integers. | Updated `specs/024-developer-tool-storage-hygiene/data-model.md` to distinguish positive cleanup-mode numeric knobs from non-negative preflight thresholds. |
 
 Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.
+
+Fourteenth no-mistakes run `01KS9YRAJTWMGCRPMS92M5ZB48` started on head `f959916d`, auto-fixed to head `23898258`, then auto-fixed again to head `0b0c2778` before PR opening:
+
+| Finding | Remediation |
+|---|---|
+| Numeric rotation sidecars beyond `retained_rotations` were not included in dry-run accounting, state validation, or apply pruning, leaving managed log storage unbounded. | Accepted no-mistakes auto-fix `23898258`; it added regression coverage and made dry-run, state validation, measurement, and apply include numeric sidecars outside the retained window. |
+| Stale numeric sidecars were still discovered only when the active log itself exceeded `max_bytes`, so `.3+` sidecars could remain when the active log was below cap or missing. | Accepted no-mistakes auto-fix `0b0c2778`; it added regressions for small/missing active logs and discovers stale sidecar cleanup independently of active-log oversize rotation. |
+
+The follow-up no-mistakes review continuation exceeded 15 minutes without reaching a terminal result after the second auto-fix. The auto-fix was adopted locally and a fresh exact-head no-mistakes run must be started after this evidence commit is pushed.

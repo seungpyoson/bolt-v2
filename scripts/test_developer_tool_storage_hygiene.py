@@ -931,6 +931,43 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(refusals[0]["reason"], "path_disappeared_during_scan")
         self.assertEqual(refusals[0]["estimated_reclaim_bytes"], 0)
 
+    def test_dry_run_reports_rustup_toolchains_root_iterdir_failure_as_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path)
+
+            toolchains = home_root / ".rustup" / "toolchains"
+            toolchains.mkdir(parents=True)
+            repo_root.mkdir()
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_iterdir = pathlib.Path.iterdir
+
+            def failing_iterdir(path: pathlib.Path):
+                if path == toolchains:
+                    raise PermissionError(str(path))
+                return original_iterdir(path)
+
+            pathlib.Path.iterdir = failing_iterdir
+            try:
+                payload = tool.build_dry_run(policy, home_root, repo_root)
+            finally:
+                pathlib.Path.iterdir = original_iterdir
+
+        refusals = [
+            entry
+            for entry in payload["candidates"]
+            if entry["surface_id"] == "rustup.toolchains" and entry["action"] == "refuse"
+        ]
+        self.assertEqual(len(refusals), 1)
+        self.assertEqual(pathlib.Path(refusals[0]["path"]).name, "toolchains")
+        self.assertEqual(refusals[0]["reason"], "path_disappeared_during_scan")
+        self.assertEqual(refusals[0]["estimated_reclaim_bytes"], 0)
+
     def test_dry_run_reports_rustup_toolchain_that_disappears_during_state_tokening_as_refusal(self) -> None:
         active = "active-aarch64-apple-darwin"
         default = "default-aarch64-apple-darwin"
@@ -1372,6 +1409,41 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertIn("owned_storage_measurement_failed", payload["errors"])
         measurements = {entry["surface_id"]: entry for entry in payload["surface_measurements"]}
         self.assertEqual(measurements["codex.log"]["measurement_errors"][0]["reason"], "measurement_failed")
+
+    def test_preflight_fails_closed_when_owned_glob_root_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path)
+
+            outside_sessions = tmp_path / "outside-sessions"
+            outside_sessions.mkdir()
+            sessions_root = home_root / ".codex" / "sessions"
+            sessions_root.parent.mkdir(parents=True)
+            sessions_root.symlink_to(outside_sessions, target_is_directory=True)
+            repo_root.mkdir()
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            payload = tool.build_preflight(
+                policy,
+                home_root,
+                repo_root,
+                available_disk_bytes=1000,
+            )
+
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("owned_storage_measurement_failed", payload["errors"])
+        root_errors = [
+            entry
+            for entry in payload["owned_storage_measurement_errors"]
+            if entry.get("surface_id") == "codex.sessions"
+        ]
+        self.assertEqual(len(root_errors), 1)
+        self.assertEqual(pathlib.Path(root_errors[0]["path"]).name, "sessions")
+        self.assertEqual(root_errors[0]["reason"], "symlink_not_followed")
 
     def test_preflight_reports_adjacent_caches_without_counting_them_as_owned(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

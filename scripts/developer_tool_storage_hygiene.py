@@ -716,7 +716,7 @@ def _rustup_entries(
     try:
         paths = sorted(base.iterdir())
     except OSError:
-        return [], []
+        return [_scan_refusal(surface.id, base)], []
 
     for path in paths:
         name = path.name
@@ -846,6 +846,38 @@ def _surface_measurement(surface: PolicySurface, home_root: Path) -> dict[str, A
     if errors:
         entry["measurement_errors"] = errors
     return entry
+
+
+def _owned_root_refusal_errors(
+    policy: Policy,
+    home_root: Path,
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    owned_glob_roots = {
+        surface.id: _path_family_root_and_pattern(home_root, surface.path_family)[0]
+        for surface in policy.surfaces
+        if surface.owner == OWNED_OWNER and _path_family_has_glob(surface.path_family)
+    }
+    errors: list[dict[str, Any]] = []
+    for candidate in candidates:
+        root = owned_glob_roots.get(str(candidate.get("surface_id", "")))
+        path = candidate.get("path")
+        if (
+            root is None
+            or candidate.get("action") != "refuse"
+            or not isinstance(path, str)
+            or Path(path) != root
+        ):
+            continue
+        errors.append(
+            {
+                "surface_id": candidate["surface_id"],
+                "path": path,
+                "reason": candidate.get("reason", "measurement_failed"),
+                "error": "root_refusal",
+            }
+        )
+    return errors
 
 
 def _adjacent_context(policy: Policy, home_root: Path) -> list[dict[str, Any]]:
@@ -1033,6 +1065,9 @@ def build_preflight(
         if entry["owner"] == OWNED_OWNER
         for error in entry.get("measurement_errors", [])
     ]
+    owned_measurement_errors.extend(
+        _owned_root_refusal_errors(policy, home_root, payload["candidates"])
+    )
     warnings: list[str] = []
     errors: list[str] = []
     thresholds = policy.preflight

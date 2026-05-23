@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::anyhow;
 use nautilus_model::instruments::InstrumentAny;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -678,6 +679,78 @@ pub fn write_market_selection_source_artifact(
             prerequisite: MARKET_SELECTION_SOURCE_BLOCKER,
         },
     )
+}
+
+pub fn write_market_selection_source_artifact_from_decision_evidence_file(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    decision_evidence_path: &Path,
+    max_decision_evidence_bytes: u64,
+    instruments: &[InstrumentAny],
+    path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let chain = read_latest_entry_decision_evidence_chain(
+        decision_evidence_path,
+        max_decision_evidence_bytes,
+    )
+    .map_err(|_| BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
+        prerequisite: "T046 remains blocked: missing complete source-bound strategy decision input",
+    })?;
+    let financial_envelope =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    if chain.snapshot.configured_target_id != financial_envelope.configured_target_id() {
+        return Err(
+            BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
+                prerequisite: "T046 remains blocked: strategy decision target does not match config",
+            },
+        );
+    }
+    if chain.snapshot.price_to_beat_source != financial_envelope.price_to_beat_source() {
+        return Err(
+            BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
+                prerequisite: "T046 remains blocked: strategy decision price-to-beat source does not match config",
+            },
+        );
+    }
+    if !source_bound_price_to_beat_value_is_usable(&chain.snapshot.price_to_beat_value) {
+        return Err(
+            BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
+                prerequisite: "T046 remains blocked: strategy decision price-to-beat value is missing or unusable",
+            },
+        );
+    }
+    let market_selection_timestamp_ms =
+        chain.snapshot.market_selection_timestamp_ms.ok_or(
+            BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
+                prerequisite: "T046 remains blocked: strategy decision market-selection timestamp is missing",
+            },
+        )?;
+    let artifact = build_market_selection_source_artifact(
+        loaded,
+        strategy_instance_id,
+        instruments,
+        market_selection_timestamp_ms,
+    )?;
+    let source_sha256 = json_artifact_sha256(&artifact)?;
+    let _ =
+        Phase8StrategyInputEvidenceFile::from_runtime_snapshot_and_market_selection_source(
+            &chain.snapshot,
+            financial_envelope.strategy_instance_id(),
+            &artifact,
+            path.to_string_lossy(),
+            &source_sha256,
+            &[],
+        )
+        .map_err(|_| BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
+            prerequisite: "T046 remains blocked: market selection source does not match source-bound strategy decision input",
+        })?;
+    write_json_artifact_create_new(path, &artifact)
+}
+
+fn source_bound_price_to_beat_value_is_usable(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty() && Decimal::from_str_exact(trimmed).is_ok_and(|value| value > Decimal::ZERO)
 }
 
 pub fn write_abort_plan_artifact(

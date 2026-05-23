@@ -2284,6 +2284,85 @@ fn market_selection_source_writer_fails_closed_until_strategy_decision_inputs_ex
 }
 
 #[test]
+fn market_selection_source_writer_promotes_source_bound_decision_evidence() {
+    let fixture = strategy_input_runtime_fixture();
+    let output_path = fixture
+        .temp
+        .path()
+        .join("decision-bound-market-selection.json");
+    let decision_evidence_path =
+        write_entry_decision_evidence_chain(&fixture.temp, &fixture.snapshot);
+    let market_slug = fixture
+        .snapshot
+        .polymarket_market_slug
+        .as_deref()
+        .expect("fixture snapshot should bind market slug");
+    let instruments = market_selection_instruments_for_slug(market_slug);
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_market_selection_source_artifact_from_decision_evidence_file(
+        &fixture.loaded,
+        &fixture.strategy_instance_id,
+        &decision_evidence_path,
+        100_000,
+        &instruments,
+        &output_path,
+    )
+    .expect("source-bound decision evidence should write market-selection source");
+
+    let artifact_bytes =
+        std::fs::read(&output_path).expect("market-selection source artifact should read");
+    assert_eq!(written.sha256, hex::encode(Sha256::digest(&artifact_bytes)));
+    let json: serde_json::Value =
+        serde_json::from_slice(&artifact_bytes).expect("market-selection source should parse");
+    assert_eq!(
+        json["market_selection_timestamp_ms"],
+        TEST_MARKET_SELECTION_NOW_MS
+    );
+    assert_eq!(json["polymarket_condition_id"], TEST_CONDITION_ID);
+    assert_eq!(json["polymarket_question_id"], TEST_QUESTION_ID);
+    assert_eq!(json["up_instrument_id"], TEST_UP_INSTRUMENT_ID);
+    assert_eq!(json["down_instrument_id"], TEST_DOWN_INSTRUMENT_ID);
+}
+
+#[test]
+fn market_selection_source_writer_rejects_unusable_price_to_beat_values() {
+    for (case_index, price_to_beat_value) in ["not-a-price", "0"].into_iter().enumerate() {
+        let fixture = strategy_input_runtime_fixture();
+        let output_path = fixture
+            .temp
+            .path()
+            .join(format!("decision-bound-market-selection-{case_index}.json"));
+        let mut snapshot = fixture.snapshot.clone();
+        snapshot.price_to_beat_value = price_to_beat_value.to_string();
+        let decision_evidence_path = write_entry_decision_evidence_chain(&fixture.temp, &snapshot);
+        let market_slug = snapshot
+            .polymarket_market_slug
+            .as_deref()
+            .expect("fixture snapshot should bind market slug");
+        let instruments = market_selection_instruments_for_slug(market_slug);
+
+        let error = bolt_v2::bolt_v3_operator_artifacts::write_market_selection_source_artifact_from_decision_evidence_file(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &decision_evidence_path,
+            100_000,
+            &instruments,
+            &output_path,
+        )
+        .expect_err("unusable price-to-beat values must fail closed before market-selection source write");
+
+        assert!(
+            error.to_string().contains("price-to-beat value"),
+            "price-to-beat rejection should stay diagnostic and redacted: {error}"
+        );
+        assert!(
+            !output_path.exists(),
+            "failed price-to-beat validation must not leave a market-selection artifact"
+        );
+    }
+}
+
+#[test]
 fn market_selection_source_writer_uses_family_dispatch_not_updown_directly() {
     let source = std::fs::read_to_string(repo_path("src/bolt_v3_operator_artifacts.rs"))
         .expect("operator artifacts source should read");
@@ -2833,6 +2912,105 @@ fn strategy_input_runtime_fixture() -> StrategyInputRuntimeFixture {
         candidate_market_start_timestamps_ms: vec![TEST_MARKET_SELECTION_START_MS],
         snapshot,
     }
+}
+
+fn write_entry_decision_evidence_chain(
+    temp: &tempfile::TempDir,
+    snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+) -> std::path::PathBuf {
+    let intent = BoltV3OrderIntentEvidence {
+        strategy_id: snapshot.strategy_id.clone(),
+        intent_kind: BoltV3OrderIntentKind::Entry,
+        instrument_id: snapshot.submission_instrument_id.clone(),
+        client_order_id: snapshot.client_order_id.clone(),
+        order_side: snapshot.submission_order_side.clone(),
+        price: snapshot.submission_price.clone(),
+        quantity: snapshot.submission_quantity.clone(),
+        order_fields: BoltV3OrderIntentOrderFields {
+            order_type: "Limit".to_string(),
+            time_in_force: "Gtc".to_string(),
+            price: Some(snapshot.submission_price.clone()),
+            trigger_price: None,
+            activation_price: None,
+            trigger_type: None,
+            trigger_instrument_id: None,
+            trailing_offset: None,
+            trailing_offset_type: None,
+            expire_time_unix_nanos: None,
+            is_post_only: false,
+            is_reduce_only: false,
+            is_quote_quantity: false,
+        },
+    };
+    let admission = BoltV3AdmissionDecisionEvidence {
+        strategy_id: snapshot.strategy_id.clone(),
+        client_order_id: snapshot.client_order_id.clone(),
+        instrument_id: snapshot.submission_instrument_id.clone(),
+        notional: "0.50".to_string(),
+        intent_kind: BoltV3SubmitIntentKind::Entry,
+        outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+    };
+    let decision_evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut decision_evidence = String::new();
+    for line in [
+        serde_json::json!({
+            "schema_version": 5,
+            "recorded_at_utc_ns": 1_i64,
+            "gate_id": "bolt_v3.strategy_input_snapshot",
+            "gate_version": "0.1.0",
+            "kind": "strategy_input_snapshot",
+            "snapshot": snapshot,
+        }),
+        serde_json::json!({
+            "schema_version": 5,
+            "recorded_at_utc_ns": 2_i64,
+            "gate_id": "bolt_v3.order_intent",
+            "gate_version": "0.1.0",
+            "kind": "order_intent",
+            "intent": intent,
+        }),
+        serde_json::json!({
+            "schema_version": 5,
+            "recorded_at_utc_ns": 3_i64,
+            "gate_id": "bolt_v3.submit_admission",
+            "gate_version": "0.1.0",
+            "kind": "admission_decision",
+            "decision": admission,
+        }),
+    ] {
+        decision_evidence.push_str(
+            &serde_json::to_string(&line).expect("decision evidence line should serialize"),
+        );
+        decision_evidence.push('\n');
+    }
+    std::fs::write(&decision_evidence_path, decision_evidence)
+        .expect("decision evidence should write");
+    decision_evidence_path
+}
+
+fn market_selection_instruments_for_slug(market_slug: &str) -> [InstrumentAny; 2] {
+    [
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+    ]
 }
 
 fn load_fixture_with_live_canary() -> bolt_v2::bolt_v3_config::LoadedBoltV3Config {

@@ -1070,6 +1070,109 @@ fn pre_run_single_runner_lock_source_proof_rejects_existing_lock_without_artifac
 }
 
 #[test]
+fn pre_run_single_runner_lock_source_proof_rejects_parent_dir_lock_path() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let lock_path = temp
+        .path()
+        .join("nested")
+        .join("..")
+        .join("single-runner.lock");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            strategy_instance_id,
+            &lock_path,
+            100_000,
+        )
+        .expect_err("parent-dir single-runner lock path must fail closed");
+
+    assert!(
+        error.to_string().contains("single_runner_lock_path"),
+        "path failure should identify the lock path diagnostic field: {error}"
+    );
+    assert!(
+        !lock_path.exists(),
+        "rejected parent-dir lock path must not leave a lock artifact"
+    );
+}
+
+#[test]
+fn pre_run_single_runner_lock_source_proof_rejects_unknown_strategy_before_lock_write() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let missing_strategy_instance_id = format!("{strategy_instance_id}-missing");
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let lock_path = temp.path().join("single-runner.lock");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            &missing_strategy_instance_id,
+            &lock_path,
+            100_000,
+        )
+        .expect_err("unknown strategy must fail before lock acquisition");
+
+    assert!(
+        error.to_string().contains("financial envelope"),
+        "unknown strategy failure should preserve the envelope source error: {error}"
+    );
+    assert!(
+        !lock_path.exists(),
+        "unknown strategy failure must not leave a lock artifact"
+    );
+}
+
+#[test]
+fn pre_run_single_runner_lock_source_proof_rejects_oversize_lock_without_artifact() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let lock_path = temp.path().join("single-runner.lock");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            strategy_instance_id,
+            &lock_path,
+            1,
+        )
+        .expect_err("oversize single-runner lock proof must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("single_runner_lock_evidence_size"),
+        "size failure should identify the evidence-size diagnostic field: {error}"
+    );
+    assert!(
+        !lock_path.exists(),
+        "oversize single-runner lock proof must not leave a lock artifact"
+    );
+}
+
+#[test]
 fn pre_run_single_runner_lock_source_proof_derives_source_owned_values() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded
@@ -1118,6 +1221,19 @@ fn pre_run_single_runner_lock_source_proof_derives_source_owned_values() {
         json["lock_path_sha256"],
         sha256_text(&lock_path.to_string_lossy())
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(
+            std::fs::metadata(&lock_path)
+                .expect("single-runner lock metadata should read")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
     assert!(
         !pre_run_state_path.exists(),
         "single-runner lock collection must not write final pre-run-state.json"

@@ -1723,7 +1723,7 @@ pub fn collect_pre_run_single_runner_lock_source_proof(
     if bytes.len() as u64 > max_lock_file_bytes {
         return Err(
             BoltV3OperatorArtifactError::PreRunSingleRunnerLockSourceInvalid {
-                field: "single_runner_lock_evidence_hash",
+                field: "single_runner_lock_evidence_size",
             },
         );
     }

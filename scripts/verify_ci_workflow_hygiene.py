@@ -240,6 +240,7 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'.config/nextest.toml'",
     "'ci/rust-verification.toml'",
     "'scripts/rust_verification.py'",
+    "'scripts/command_understanding.py'",
     "'justfile'",
     "'build.rs'",
     "'src/**'",
@@ -253,6 +254,7 @@ EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
     "'.github/actions/setup-environment/action.yml'",
     "'.no-mistakes.yaml'",
+    "'scripts/command_understanding.py'",
 )
 TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst"
 TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"

@@ -1035,6 +1035,96 @@ const DOMAIN_VERSION: &str = "2";
 }
 
 #[test]
+fn pre_run_single_runner_lock_source_proof_rejects_existing_lock_without_artifact() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let lock_path = temp.path().join("single-runner.lock");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    std::fs::write(&lock_path, b"existing runner lock")
+        .expect("existing lock fixture should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            strategy_instance_id,
+            &lock_path,
+            100_000,
+        )
+        .expect_err("existing single-runner lock must fail closed");
+
+    assert!(
+        error.to_string().contains("single_runner_lock"),
+        "single-runner lock failure should identify the source proof field: {error}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "failed single-runner lock proof must not leave pre-run-state artifact"
+    );
+}
+
+#[test]
+fn pre_run_single_runner_lock_source_proof_derives_source_owned_values() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let lock_path = temp.path().join("single-runner.lock");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            strategy_instance_id,
+            &lock_path,
+            100_000,
+        )
+        .expect("single-runner lock proof should acquire a fresh lock");
+
+    assert!(proof.single_runner_lock_acquired);
+    assert_eq!(
+        proof.single_runner_lock_evidence_hash,
+        sha256_file(&lock_path)
+    );
+    assert!(
+        proof
+            .single_runner_lock_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "single-runner lock evidence hash should be lowercase hex"
+    );
+    let json = read_json_value(&lock_path);
+    assert_eq!(
+        json["record_kind"],
+        "bolt_v3.pre_run_single_runner_lock_source_proof.v1"
+    );
+    assert_eq!(
+        json["config_bundle_checksum"],
+        loaded.config_bundle_checksum
+    );
+    assert_eq!(json["strategy_instance_id"], strategy_instance_id);
+    assert_eq!(
+        json["lock_path_sha256"],
+        sha256_text(&lock_path.to_string_lossy())
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "single-runner lock collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
 fn static_operator_artifacts_report_market_selection_blocker_until_runtime_proof_exists() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded

@@ -4394,6 +4394,30 @@ reason = "This is the stable record-kind discriminator for market/window source-
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_SINGLE_RUNNER_LOCK_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the single-runner lock source-proof artifact schema version emitted by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_single_runner_lock_source_proof.v1"'''
+context = '''"bolt_v3.pre_run_single_runner_lock_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for single-runner lock source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"single_runner_lock_path"'''
+context = '''validate_output_path_components("single_runner_lock_path", lock_path)?;'''
+classification = "operator_artifact_json_field_name"
+reason = "This names the single-runner lock evidence path field for path-policy diagnostics; the actual path remains caller/config supplied."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"market_selection_source_path"'''
 context = '''.get("market_selection_source_path")'''

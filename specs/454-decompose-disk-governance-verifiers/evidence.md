@@ -7,9 +7,10 @@
 | #375 issue state | Closed as completed at 2026-05-23T14:52:18Z after PR #460 merge. |
 | #460 merge commit | `f354efbaa2afc78575e9cc40580cf2b682bd66e6` |
 | #454 issue state | Open: "Decompose disk-governance verifier scripts after #436" |
+| Pull request | PR #461 for issue #454 |
 | Branch | `codex/454-decompose-disk-governance-verifiers` |
 | Branch base | `0cc03a07b4ef7da5c1bef71476d48d4745933772` |
-| Current PR head | `9a7e8e4678359f7978c9d09cdcf432f729e28676` |
+| Pre-cleanup exact-head review target | `aebef62fac663ef2f6713533b64cab7a77afe1ad` |
 
 ## Baseline Verification
 
@@ -32,6 +33,10 @@
 | `python3 -m py_compile scripts/command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py scripts/test_command_understanding.py` | Pass: no output. |
 | `python3 scripts/test_rust_verification_cache_retention.py` | Pass: `OK: Rust verification cache retention self-tests passed.` |
 | `python3 scripts/test_verify_ci_workflow_hygiene.py` | Pass: `OK: CI workflow hygiene verifier self-tests passed.` |
+| `python3 scripts/test_command_understanding.py` after exact-head review cleanup | GREEN: `OK: command understanding self-tests passed.` |
+| `python3 -m scripts.test_command_understanding` after exact-head review cleanup | GREEN: `OK: command understanding self-tests passed.` |
+| `python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py` after exact-head review cleanup | Pass: no output. |
+| `just ci-lint-workflow` after exact-head review cleanup | Pass: workflow hygiene, path-filter, Rust verification, command-understanding, decoupling, and cache-retention self-tests passed. |
 
 ## Planning Validation
 
@@ -91,6 +96,7 @@
 - Left divergent or unproven helper families local: tokenization, shell command substitutions, renamed executable detection, wrapper handling, cargo subcommand scanning, and target-routing override scanning.
 - Added `scripts/test_command_understanding.py` characterization tests for both extracted helpers and representative divergent/deferred helper behavior.
 - No mechanical test split was made; remaining oversized verifier test files are intentionally deferred and documented as residual review risk.
+- PR #461 is the merge vehicle for the issue #454 verifier-decomposition slice. Operator-requested no-mistakes cleanup is accepted only as ancillary gate cleanup and does not broaden the claimed #454 product scope or close any broader residual scope.
 
 ## Review Notes
 
@@ -105,6 +111,13 @@
 - Planning gate record for exact head `c0d7332bf4f30e4ddef314c69f3a51c13cfc31d2` was posted to issue #454: https://github.com/seungpyoson/bolt-v2/issues/454#issuecomment-4525926019. Clean APPROVE slots: Claude `cc2312d6-429e-4e6c-bc6e-9b92e669a30a`, Gemini `00e31366-c3bc-43d6-bd10-35c2a76037fa`, Grok `job_6d446dd9-d391-493c-b709-7871f6867324`, GLM `job_5315e9db-2110-4eea-8d9a-a438669d037d`, DeepSeek `job_2bb9cfed-fb15-45c8-a10a-b92def6b6f9c`, and Kimi `99c0e045-b37f-4fca-9e3b-52c3fd5d34b9`.
 - Kimi's clean approval used a core planning custom-review packet after two branch-diff attempts failed; final PR-head external review must still include Kimi on the full PR head before merge readiness.
 - no-mistakes was run after the operator explicitly requested it; the live PR head includes its follow-up lint/CI commits and still requires exact-head CI plus exact-head external review before merge readiness.
+- Exact-head CI on `aebef62fac663ef2f6713533b64cab7a77afe1ad` was green before this cleanup: GitHub Actions `CI` run `26341597485` and `actionlint` run `26341597472` completed successfully.
+- Exact-head no-mistakes run `01KSB5A0QPW0JT0G2RH115EJV4` completed for `aebef62fac663ef2f6713533b64cab7a77afe1ad` with no active run remaining.
+- Exact-head external review on `aebef62fac663ef2f6713533b64cab7a77afe1ad` found no code blockers: Claude `2d2ce865-f225-434a-b5a9-df0e7b37a168`, Gemini `e9e02b74-4c6b-40e3-90e5-fd0b912a3713`, and Kimi `9cb5e9ad-c813-45a2-bdcf-783952d1cb63` approved the branch diff; GLM, DeepSeek, and Grok approved the verifier, CI, and Rust cleanup shards listed below.
+- Exact-head external docs shards requested cleanup because this file used a stale current-head value, omitted PR #461 identity, and did not explicitly reconcile operator-requested no-mistakes cleanup with the bounded issue #454 slice: Grok docs shard `job_bce1ff89-e4f9-4ca7-8e7a-1974fede304e`, GLM docs shard `job_0b11a03f-8fe4-4c9d-9d53-a66b4f2a81c2`, and DeepSeek docs shard `job_70a9f86a-50bf-4589-aaca-1bc8c564fdaa`.
+- GLM approved code shards for exact-head review target `aebef62fac663ef2f6713533b64cab7a77afe1ad`: verifier/CI shard 1 `job_227877ee-6834-49f8-920c-3a66b0f4e49f`, verifier/CI shard 2 `job_b3de7eba-34f0-4a1c-91d4-169cff68b028`, and Rust cleanup shard `job_04186524-507e-4fe6-be27-06869a811600`.
+- DeepSeek approved code shards for exact-head review target `aebef62fac663ef2f6713533b64cab7a77afe1ad`: verifier/CI shard 1 `job_33023d35-bb1f-49e6-8ad5-cbba13ffd6df`, verifier/CI shard 2 `job_6e8673b0-4ddb-4bca-8b7a-a0ec17f1fdbd`, and Rust cleanup shard `job_c9b49adb-9689-4618-887b-776631da867d`.
+- Grok approved code shards for exact-head review target `aebef62fac663ef2f6713533b64cab7a77afe1ad`: workflow hygiene `job_60c08072-9717-42e3-a71e-f9b019914e5c`, verifier/CI shard 1a `job_fbc9ee24-2b70-4e9d-b987-01c1dd51fe12`, verifier/CI tests `job_46898eb8-78b2-4620-933d-2f6f9bfd769e`, Rust cleanup shard 1 `job_5e6cee7c-d65f-47a4-b7a1-76f0b21ec1f5`, and Rust cleanup shard 2 `job_23eaaaf3-a9ce-4be8-b8e5-698f5f7e715b`.
 
 ## Reviewer Availability Evidence
 

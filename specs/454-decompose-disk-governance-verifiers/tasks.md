@@ -3,7 +3,7 @@
 **Input**: Design documents from `/specs/454-decompose-disk-governance-verifiers/`
 **Prerequisites**: `plan.md`, `spec.md`, `evidence.md`, `research.md`, `data-model.md`, `contracts/command-understanding.md`, `quickstart.md`
 **Tests**: Required by issue #454 and constitution TDD gate. Characterization/parity tests must be written before extraction.
-**Execution Mode**: Sequential only. One bounded #454 PR; do not merge without operator approval.
+**Execution Mode**: Sequential only. One bounded PR #461 for issue #454; do not merge without operator approval.
 
 ## Phase 1: Setup
 
@@ -100,16 +100,18 @@
 
 ## Final Phase: Verification, PR, And Review
 
-**Purpose**: Make #454 review-ready without merging.
+**Purpose**: Make PR #461 for issue #454 review-ready without merging.
 
 - [x] T030 Run `python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py`.
 - [x] T031 Run `git diff --check`.
 - [x] T032 Run unresolved-marker scan over changed docs and scripts.
 - [x] T033 Commit and push branch `codex/454-decompose-disk-governance-verifiers`.
-- [x] T034 Open the #454 PR with scope, non-goals, evidence map, tests, review status, skipped slots, remaining risk, and stop-before-merge note.
-- [ ] T035 Confirm exact-head GitHub CI is green for the #454 PR.
+- [x] T034 Open PR #461 for issue #454 with scope, non-goals, evidence map, tests, review status, skipped slots, remaining risk, and stop-before-merge note.
+- [ ] T035 Confirm exact-head GitHub CI is green for PR #461.
 - [ ] T036 Request exact-PR-head external adversarial review from Claude, Gemini, Kimi, Grok, GLM, and DeepSeek; record all verdicts or skipped slots in `evidence.md`.
 - [ ] T037 Stop for operator approval before merge.
+
+**Current final-gate note**: CI and no-mistakes were green on pre-cleanup head `aebef62fac663ef2f6713533b64cab7a77afe1ad`. Documentation cleanup changes the final PR head, so T035 and T036 remain unchecked until the new exact head is verified and reviewed.
 
 ## Dependencies & Execution Order
 

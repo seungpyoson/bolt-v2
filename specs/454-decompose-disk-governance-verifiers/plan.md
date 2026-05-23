@@ -16,7 +16,7 @@
 **Target Platform**: macOS developer workstation for local verification; GitHub Actions Linux runners for exact-head CI.
 **Project Type**: Developer tooling governance; no product runtime behavior.
 **Performance Goals**: Preserve current test practicality; shared parsing must avoid adding subprocess or filesystem work to static classification paths.
-**Constraints**: One #454 PR; no #375 follow-up work; no no-mistakes unless explicitly requested; no new command semantics; no broad verifier redesign; all six external reviewer slots are required for approval; slots over 15 minutes are skipped and recorded as not approved. Extraction eligibility requires pre-extraction function-body and representative-behavior comparison.
+**Constraints**: One bounded PR #461 for issue #454; no #375 follow-up work; no no-mistakes unless explicitly requested; no new command semantics; no broad verifier redesign; all six external reviewer slots are required for approval; slots over 15 minutes are skipped and recorded as not approved. Extraction eligibility requires pre-extraction function-body and representative-behavior comparison. The operator later explicitly requested no-mistakes, so its lint/CI cleanup is ancillary gate cleanup recorded in PR #461 evidence rather than hidden scope expansion.
 **Scale/Scope**: Current oversized surfaces are `scripts/rust_verification.py` (2738 lines), `scripts/verify_ci_workflow_hygiene.py` (6175 lines), `scripts/test_rust_verification_cache_retention.py` (3175 lines), and `scripts/test_verify_ci_workflow_hygiene.py` (5102 lines). This slice targets proven-equivalent parser/scanner logic and characterization of divergent candidates, not every oversized function.
 
 ## Constitution Check
@@ -30,7 +30,7 @@
 | Single path and config-controlled runtime | Pass | Product runtime config and secret paths are untouched. The shared tooling parser reduces dual paths in verifier code. |
 | Test-first safety gates | Pass | Tasks require RED shared-module/parity tests before moving parser code. |
 | Evidence before claims | Pass | `evidence.md` records exact base SHA, issue state, baseline commands, line counts, candidate helper locations, and current equivalence classification. |
-| Minimal slice discipline | Pass | Scope is exactly #454. #375 is closed; no no-mistakes or broad redesign is included. |
+| Minimal slice discipline | Pass | Scope is PR #461 for the issue #454 verifier-decomposition slice. #375 is closed; operator-requested no-mistakes cleanup is recorded as ancillary gate cleanup, and broad redesign is not included. |
 | Pure Rust binary / SSM / TOML runtime | Pass | No production Rust binary, SSM, or runtime TOML behavior changes are planned. |
 
 Pre-implementation gate: adversarial plan/spec/tasks review must complete before implementation. Claude, Gemini, Kimi, Grok, GLM, and DeepSeek slots are required for this plan. Any slot exceeding 15 minutes is recorded as skipped, not approved. Implementation may start only after all six reviewers return non-skipped current-head approval and no unresolved blocking findings.
@@ -91,4 +91,4 @@ Outputs: `data-model.md`, `contracts/command-understanding.md`, `quickstart.md`
 | Single path and config-controlled runtime | Pass | The design consolidates proven-equivalent verifier parser paths while leaving runtime config untouched and divergent verifier behavior surface-specific. |
 | Test-first safety gates | Pass | `tasks.md` starts implementation with RED shared-module/parity tests. |
 | Evidence before claims | Pass | Evidence map and quickstart name the exact verification commands and current baseline. |
-| Minimal slice discipline | Pass | #454 excludes no-mistakes, #375 follow-up, new semantics, and broad redesign. |
+| Minimal slice discipline | Pass | #454 excludes unrequested no-mistakes work, #375 follow-up, new semantics, and broad redesign. Operator-requested no-mistakes cleanup is tracked separately as gate cleanup in PR #461 evidence. |

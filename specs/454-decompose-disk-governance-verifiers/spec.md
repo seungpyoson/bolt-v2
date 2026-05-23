@@ -58,7 +58,7 @@ As a maintainer, I need any remaining oversized verifier/test surfaces split onl
 - Same-named helpers with divergent behavior must remain surface-specific unless the PR explicitly documents, tests, and receives operator approval for a semantic change.
 - Any external review slot exceeding 15 minutes is recorded as skipped, not approved.
 - Planning and PR review gates require all six configured reviewers: Claude, Gemini, Kimi, Grok, GLM, and DeepSeek. If any reviewer is unavailable, skipped, stale, or returns blocking findings, implementation or review-ready handoff waits.
-- no-mistakes is not part of this issue unless the operator explicitly requests it.
+- no-mistakes is not part of this issue unless the operator explicitly requests it. If requested, resulting lint or CI cleanup must be recorded as ancillary gate cleanup and must not broaden the claimed issue #454 product scope.
 
 ## Requirements
 
@@ -99,4 +99,4 @@ As a maintainer, I need any remaining oversized verifier/test surfaces split onl
 - #375 is complete and closed before this issue starts.
 - The accepted behavior from PR #436 and current `main` is the baseline unless the operator explicitly approves a change.
 - The first PR should prefer a narrow shared parser extraction over broad file reorganization.
-- no-mistakes is intentionally out of scope unless the operator explicitly requests it.
+- no-mistakes is intentionally out of scope unless the operator explicitly requests it; an explicit operator request may add gate cleanup evidence without changing the bounded issue #454 verifier-decomposition scope.

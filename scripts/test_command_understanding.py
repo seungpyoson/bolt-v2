@@ -13,10 +13,14 @@ import tempfile
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+SCRIPTS_DIR = REPO_ROOT / "scripts"
 RUNTIME_VERIFIER = REPO_ROOT / "scripts" / "rust_verification.py"
 STATIC_VERIFIER = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 SHARED_HELPERS = REPO_ROOT / "scripts" / "command_understanding.py"
 _MODULE_CACHE: dict[pathlib.Path, object] = {}
+
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
 
 def load_module(path: pathlib.Path, module_name: str) -> object:

@@ -50,6 +50,6 @@ The initial shared module export set is therefore limited to helper families tha
 
 ## Decision: Keep no-mistakes out of this issue unless explicitly requested
 
-**Rationale**: Issue #454 says "Do not use no-mistakes unless explicitly requested by the operator." The required gate is exact-head GitHub CI plus external exact-head review.
+**Rationale**: Issue #454 says "Do not use no-mistakes unless explicitly requested by the operator." The required gate is exact-head GitHub CI plus external exact-head review. The operator later explicitly requested no-mistakes for PR #461, so any resulting lint or CI cleanup is ancillary gate cleanup and must be recorded separately from the issue #454 verifier-decomposition slice.
 
 **Alternatives considered**: Running no-mistakes by default was rejected because it would violate the issue process contract.

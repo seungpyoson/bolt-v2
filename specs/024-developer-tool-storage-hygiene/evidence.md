@@ -182,7 +182,7 @@ Operator approval for the T012 command surface was recorded by the operator's `c
 
 | Command | Result | Notes |
 |---|---|---|
-| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 42 tests in 2.711s | Scratch fixtures only; no real home-directory mutation. |
+| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 73 tests in 4.211s | Scratch fixtures only; no real home-directory mutation. |
 | `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py` | Pass | Syntax check for the new script and test. |
 | `git diff --check` | Pass | Whitespace check. |
 | `git diff --check origin/main...HEAD` | Pass | Exact local branch diff whitespace check. |
@@ -209,7 +209,7 @@ Passes completed:
 
 Quality gates:
 
-- Regression tests: pass, 42 tests.
+- Regression tests: pass, 73 tests.
 - Type/syntax check: pass via `python3 -m py_compile`.
 - Static literal/unresolved-marker scan: pass for changed #375 files.
 
@@ -385,3 +385,25 @@ Sixteenth no-mistakes run `01KSA4YAA8ZTWETFQWSXTKRC04` was started after `codex 
 No-mistakes review follow-up on `fb2ec227` reported no new findings and retained only one info-level ask-user note about whether stale-sidecar prune failure should roll back otherwise successful log rotation. The exact no-mistakes test step on `fb2ec227` ran `python3 scripts/rust_verification.py cargo --repo . -- test` and reported `all tests passed`.
 
 Final no-mistakes must be rerun on the follow-up documentation fix commit after it is pushed.
+
+## Post-PR Symlink Hardening
+
+Exact-head external adversarial review on PR head `5c297748` found one blocking portability risk after CI and no-mistakes were green: glob-owned surfaces still used `Path.glob("**/...")` for candidate enumeration, so a Python implementation or platform behavior that traverses directory symlinks could discover candidates outside the configured managed surface. The same review cycle also exposed a duplicated unittest method name that masked one rustup disappearance regression.
+
+| Finding | Remediation |
+|---|---|
+| Glob-owned cleanup families could traverse directory symlinks inside the configured surface while expanding recursive patterns. | Committed `cd6e413f`; `_glob_no_follow` now walks with `os.scandir()` and `follow_symlinks=False`, refuses symlink directories by not recursing into them, and `test_dry_run_does_not_traverse_directory_symlink_inside_glob_surface` locks the behavior. |
+| A duplicate rustup test method name masked the lstat-disappearance regression. | Committed `cd6e413f`; the duplicate test was renamed to `test_dry_run_reports_rustup_toolchain_lstat_disappearance_as_refusal`, exposing the formerly shadowed test path. |
+| The first symlink-hardening regression mocked `Path.glob`, which no longer covered the committed no-follow walk after replacing `Path.glob`. | Committed `77ee0c17`; the test now exercises the real `_glob_no_follow` path, and `_entry_lstat` centralizes patchable no-follow lstat behavior for race regressions. |
+| Parent #014 planning docs still described #375 as future work after PR #460 carried the implementation slice. | Committed `77ee0c17`; `specs/014-disk-pressure-governance/plan.md` now points to `specs/024-developer-tool-storage-hygiene/` for the #375 implementation slice. |
+
+Manual verification after `77ee0c17`:
+
+| Command | Result | Notes |
+|---|---|---|
+| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 73 tests in 4.211s | Scratch fixtures only; no real home-directory mutation. |
+| `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py` | Pass | Syntax check after symlink-hardening remediation. |
+| `git diff --check` | Pass | Whitespace check after symlink-hardening remediation. |
+| GitHub PR #460 checks on `77ee0c17` | Pass | Exact-head CI was green before this evidence-only documentation update. |
+
+Current no-mistakes run `01KSAG9B6E7ACBWJTN695J1BCB` reviewed exact head `77ee0c17`, reported no blocking code findings, passed `python3 scripts/rust_verification.py cargo --repo . -- test`, and requested this evidence update because the verification trail still ended at the pre-symlink-hardening state. Final no-mistakes must be rerun on the evidence-update commit after it is pushed.

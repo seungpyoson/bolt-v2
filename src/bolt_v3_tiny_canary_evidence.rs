@@ -198,6 +198,42 @@ impl Phase8StrategyInputSafetyAudit {
                 "phase8 strategy input evidence",
                 "phase8 strategy input evidence sha256 does not match current evidence",
             )?;
+        Self::from_raw_evidence(raw, expected_price_to_beat_source.as_ref(), None)
+    }
+
+    pub fn from_evidence_bytes_with_market_selection_source(
+        evidence_bytes: &[u8],
+        expected_sha256: impl AsRef<str>,
+        expected_price_to_beat_source: impl AsRef<str>,
+        market_selection_source_bytes: &[u8],
+    ) -> Result<Self> {
+        let expected_sha256 = expected_sha256.as_ref().trim();
+        if expected_sha256.is_empty() {
+            return Err(anyhow!(
+                "required phase8 strategy input evidence sha256 is empty"
+            ));
+        }
+        if Phase8OperatorApprovalEnvelope::sha256_bytes(evidence_bytes) != expected_sha256 {
+            return Err(anyhow!(
+                "phase8 strategy input evidence sha256 does not match current evidence"
+            ));
+        }
+        let raw: Phase8StrategyInputEvidenceFile =
+            serde_json::from_slice(evidence_bytes).map_err(|source| {
+                anyhow!("failed to parse phase8 strategy input evidence: {source}")
+            })?;
+        Self::from_raw_evidence(
+            raw,
+            expected_price_to_beat_source.as_ref(),
+            Some(market_selection_source_bytes),
+        )
+    }
+
+    fn from_raw_evidence(
+        raw: Phase8StrategyInputEvidenceFile,
+        expected_price_to_beat_source: &str,
+        market_selection_source_bytes: Option<&[u8]>,
+    ) -> Result<Self> {
         let realized_volatility =
             Decimal::from_str_exact(raw.realized_volatility.trim()).map_err(|source| {
                 anyhow!("failed to parse phase8 strategy input realized_volatility: {source}")
@@ -270,7 +306,11 @@ impl Phase8StrategyInputSafetyAudit {
             Phase8CanaryBlockReason::InvalidMarketSelectionOutcome,
         );
         let source_bound_candidate_market_start_timestamps_ms =
-            phase8_source_bound_candidate_market_start_timestamps(&raw, market_selection_outcome)?;
+            phase8_source_bound_candidate_market_start_timestamps(
+                &raw,
+                market_selection_outcome,
+                market_selection_source_bytes,
+            )?;
         audit.block_if(
             phase8_market_selection_outcome_is_live_entry_candidate(market_selection_outcome)
                 && source_bound_candidate_market_start_timestamps_ms.is_none(),
@@ -328,6 +368,7 @@ impl Phase8StrategyInputSafetyAudit {
 fn phase8_source_bound_candidate_market_start_timestamps(
     raw: &Phase8StrategyInputEvidenceFile,
     market_selection_outcome: &str,
+    market_selection_source_bytes: Option<&[u8]>,
 ) -> Result<Option<Vec<u64>>> {
     if !phase8_market_selection_outcome_is_live_entry_candidate(market_selection_outcome) {
         return Ok(None);
@@ -351,12 +392,21 @@ fn phase8_source_bound_candidate_market_start_timestamps(
 
     phase8_reject_parent_dir(source_path, "market selection source evidence")?;
     let source: Phase8MarketSelectionSourceEvidenceFile =
-        Phase8OperatorApprovalEnvelope::read_json_file_with_expected_sha256(
-            source_path,
-            source_sha256,
-            "phase8 market selection source evidence",
-            "phase8 market selection source evidence sha256 does not match current evidence",
-        )?;
+        if let Some(source_bytes) = market_selection_source_bytes {
+            if Phase8OperatorApprovalEnvelope::sha256_bytes(source_bytes) != source_sha256 {
+                return Ok(None);
+            }
+            serde_json::from_slice(source_bytes).map_err(|source| {
+                anyhow!("failed to parse phase8 market selection source evidence: {source}")
+            })?
+        } else {
+            Phase8OperatorApprovalEnvelope::read_json_file_with_expected_sha256(
+                source_path,
+                source_sha256,
+                "phase8 market selection source evidence",
+                "phase8 market selection source evidence sha256 does not match current evidence",
+            )?
+        };
 
     if source.record_kind.trim() != PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND
         || source.source.trim() != PHASE8_MARKET_SELECTION_SOURCE

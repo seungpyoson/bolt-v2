@@ -1064,14 +1064,15 @@ pub fn collect_pre_run_market_window_source_proof(
             },
         );
     }
-    validate_strategy_input_market_selection_source_ref(
+    let market_selection_source_bytes = read_strategy_input_market_selection_source_bytes(
         &strategy_input_evidence_bytes,
         max_strategy_input_evidence_bytes,
     )?;
-    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        strategy_input_evidence_path,
+    let audit = Phase8StrategyInputSafetyAudit::from_evidence_bytes_with_market_selection_source(
+        &strategy_input_evidence_bytes,
         strategy_input_evidence_sha256,
         expected_price_to_beat_source,
+        &market_selection_source_bytes,
     )
     .map_err(
         |_| BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid {
@@ -1100,10 +1101,10 @@ pub fn collect_pre_run_market_window_source_proof(
     })
 }
 
-fn validate_strategy_input_market_selection_source_ref(
+fn read_strategy_input_market_selection_source_bytes(
     strategy_input_evidence_bytes: &[u8],
     max_market_selection_source_bytes: u64,
-) -> Result<(), BoltV3OperatorArtifactError> {
+) -> Result<Vec<u8>, BoltV3OperatorArtifactError> {
     let json: serde_json::Value =
         serde_json::from_slice(strategy_input_evidence_bytes).map_err(|_| {
             BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid {
@@ -1137,14 +1138,14 @@ fn validate_strategy_input_market_selection_source_ref(
                 field: "market_selection_source_path",
             }
         })?;
-    if hex::encode(Sha256::digest(source_bytes)) != source_sha256 {
+    if hex::encode(Sha256::digest(&source_bytes)) != source_sha256 {
         return Err(
             BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid {
                 field: "market_selection_source_sha256",
             },
         );
     }
-    Ok(())
+    Ok(source_bytes)
 }
 
 #[derive(Serialize)]

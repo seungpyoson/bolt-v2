@@ -1804,6 +1804,58 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(payload["actions_taken"][0]["action"], "delete")
         self.assertEqual(payload["actions_taken"][0]["surface_id"], "codex.sessions")
 
+    def test_apply_rechecks_candidate_state_immediately_before_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path, sessions_ttl_days=1)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            session = home_root / ".codex" / "sessions" / "old.jsonl"
+            codex_log.parent.mkdir(parents=True)
+            session.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex log requiring rotation")
+            session.write_bytes(b"old session")
+            old_mtime = time.time() - (2 * 24 * 60 * 60)
+            os.utime(session, (old_mtime, old_mtime))
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy_path)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_rotate = tool._rotate_log
+            fresh_session = b"fresh session data"
+
+            def rotate_then_rewrite_session(path: pathlib.Path, retained_rotations: int) -> None:
+                original_rotate(path, retained_rotations)
+                session.write_bytes(fresh_session)
+
+            tool._rotate_log = rotate_then_rewrite_session
+            try:
+                payload = tool.build_apply(
+                    policy,
+                    home_root,
+                    repo_root,
+                    dry_run_report=report,
+                    process_snapshot_supplied=True,
+                )
+            finally:
+                tool._rotate_log = original_rotate
+            session_exists_after = session.exists()
+            session_after = session.read_bytes() if session_exists_after else None
+
+        self.assertEqual(payload["status"], "aborted")
+        self.assertEqual(payload["reason"], "candidate_state_changed")
+        self.assertEqual(payload["actions_taken"][0]["action"], "rotate")
+        self.assertTrue(session_exists_after)
+        self.assertEqual(session_after, fresh_session)
+
     def test_apply_reports_partial_summary_when_later_mutation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)

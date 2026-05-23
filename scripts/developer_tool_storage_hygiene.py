@@ -1296,6 +1296,27 @@ def _process_snapshot_required(policy: Policy, candidates: list[dict[str, Any]])
     return any(surfaces[candidate["surface_id"]].active_writer_processes for candidate in candidates)
 
 
+def _fresh_candidate_match(
+    policy: Policy,
+    home_root: Path,
+    repo_root: Path,
+    candidate: dict[str, Any],
+    *,
+    active_rustup_toolchains: tuple[str, ...],
+    default_rustup_toolchains: tuple[str, ...],
+) -> tuple[bool, dict[str, Any]]:
+    fresh = build_dry_run(
+        policy,
+        home_root,
+        repo_root,
+        active_rustup_toolchains=active_rustup_toolchains,
+        default_rustup_toolchains=default_rustup_toolchains,
+    )
+    signature = _candidate_signature(candidate)
+    fresh_signatures = {_candidate_signature(fresh_candidate) for fresh_candidate in _mutating_candidates(fresh)}
+    return signature in fresh_signatures, fresh
+
+
 def build_apply(
     policy: Policy,
     home_root: Path,
@@ -1373,6 +1394,25 @@ def build_apply(
     for candidate in current_candidates:
         action = candidate["action"]
         path = Path(candidate["path"])
+        candidate_matches, fresh = _fresh_candidate_match(
+            policy,
+            home_root,
+            repo_root,
+            candidate,
+            active_rustup_toolchains=active_rustup_toolchains,
+            default_rustup_toolchains=default_rustup_toolchains,
+        )
+        if not candidate_matches:
+            return {
+                "mode": "apply",
+                "status": "aborted",
+                "reason": "candidate_state_changed",
+                "actions_taken": actions_taken,
+                "refusal_reasons": _refusal_candidates(fresh),
+                "skipped_report_only": fresh.get("report_only", []),
+                "skipped_protected": fresh.get("protected", []),
+                "bytes_reclaimed": bytes_reclaimed,
+            }
         try:
             if action == "rotate":
                 surface = surfaces[candidate["surface_id"]]

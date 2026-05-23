@@ -292,7 +292,46 @@ def _scan_refusal(surface_id: str, path: Path) -> dict[str, Any]:
     }
 
 
-def _candidate_for_rotating_log(surface: PolicySurface, home_root: Path) -> dict[str, Any] | None:
+def _stale_rotation_sidecar_candidates(
+    surface_id: str,
+    path: Path,
+    retained_rotations: int,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for index, sidecar_path in _rotation_sidecar_entries(path):
+        if index <= retained_rotations:
+            continue
+        try:
+            stat = sidecar_path.lstat()
+        except FileNotFoundError:
+            continue
+        if stat_module.S_ISLNK(stat.st_mode):
+            return [
+                {
+                    "surface_id": surface_id,
+                    "path": str(sidecar_path),
+                    "action": "refuse",
+                    "reason": "symlink_not_followed",
+                    "bytes": stat.st_size,
+                    "estimated_reclaim_bytes": 0,
+                }
+            ]
+        candidates.append(
+            {
+                "surface_id": surface_id,
+                "path": str(sidecar_path),
+                "action": "delete",
+                "reason": "rotation_retention_exceeded",
+                "bytes": stat.st_size,
+                "retained_rotations": retained_rotations,
+                "estimated_reclaim_bytes": stat.st_size,
+                "state_token": _paths_state_token([sidecar_path]),
+            }
+        )
+    return candidates
+
+
+def _candidates_for_rotating_log(surface: PolicySurface, home_root: Path) -> list[dict[str, Any]]:
     max_bytes = _read_positive_int(surface.id, surface.extra.get("max_bytes"), "max_bytes")
     retained_rotations = _read_positive_int(
         surface.id,
@@ -301,35 +340,39 @@ def _candidate_for_rotating_log(surface: PolicySurface, home_root: Path) -> dict
     )
     candidate_path = _configured_path(home_root, surface.path_family)
     if not _inside_root(candidate_path, home_root):
-        return {
-            "surface_id": surface.id,
-            "path": str(candidate_path),
-            "action": "refuse",
-            "reason": "outside_configured_root",
-            "estimated_reclaim_bytes": 0,
-        }
+        return [
+            {
+                "surface_id": surface.id,
+                "path": str(candidate_path),
+                "action": "refuse",
+                "reason": "outside_configured_root",
+                "estimated_reclaim_bytes": 0,
+            }
+        ]
     symlink_refusal = _rotation_symlink_refusal(surface.id, candidate_path, retained_rotations)
     if symlink_refusal is not None:
-        return symlink_refusal
+        return [symlink_refusal]
     try:
         stat = candidate_path.lstat()
     except FileNotFoundError:
-        return None
+        return _stale_rotation_sidecar_candidates(surface.id, candidate_path, retained_rotations)
     if not candidate_path.is_file():
-        return None
+        return _stale_rotation_sidecar_candidates(surface.id, candidate_path, retained_rotations)
     if stat.st_size <= max_bytes:
-        return None
-    return {
-        "surface_id": surface.id,
-        "path": str(candidate_path),
-        "action": "rotate",
-        "reason": "size_exceeds_max_bytes",
-        "bytes": stat.st_size,
-        "max_bytes": max_bytes,
-        "retained_rotations": retained_rotations,
-        "estimated_reclaim_bytes": _rotation_reclaim_bytes(candidate_path, retained_rotations),
-        "state_token": _paths_state_token(_rotation_paths(candidate_path, retained_rotations)),
-    }
+        return _stale_rotation_sidecar_candidates(surface.id, candidate_path, retained_rotations)
+    return [
+        {
+            "surface_id": surface.id,
+            "path": str(candidate_path),
+            "action": "rotate",
+            "reason": "size_exceeds_max_bytes",
+            "bytes": stat.st_size,
+            "max_bytes": max_bytes,
+            "retained_rotations": retained_rotations,
+            "estimated_reclaim_bytes": _rotation_reclaim_bytes(candidate_path, retained_rotations),
+            "state_token": _paths_state_token(_rotation_paths(candidate_path, retained_rotations)),
+        }
+    ]
 
 
 def _candidates_for_sessions(surface: PolicySurface, home_root: Path) -> list[dict[str, Any]]:
@@ -869,9 +912,7 @@ def build_dry_run(
             and surface.cleanup_mode == "rotate"
             and surface.id in ROTATING_SURFACE_IDS
         ):
-            candidate = _candidate_for_rotating_log(surface, home_root)
-            if candidate is not None:
-                candidates.append(candidate)
+            candidates.extend(_candidates_for_rotating_log(surface, home_root))
         elif (
             surface.owner == "owned"
             and surface.cleanup_mode == "ttl_prune"

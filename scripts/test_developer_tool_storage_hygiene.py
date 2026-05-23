@@ -379,6 +379,61 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
             + len(extra_sidecar),
         )
 
+    def test_dry_run_reports_extra_rotation_sidecar_when_active_log_is_small(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"ok")
+            extra_sidecar = b"sidecar-three"
+            codex_log.with_name("codex-tui.log.3").write_bytes(extra_sidecar)
+            repo_root.mkdir()
+
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        codex_candidates = [
+            entry for entry in payload["candidates"] if entry["surface_id"] == "codex.log"
+        ]
+        self.assertEqual(len(codex_candidates), 1)
+        self.assertEqual(codex_candidates[0]["action"], "delete")
+        self.assertEqual(codex_candidates[0]["reason"], "rotation_retention_exceeded")
+        self.assertEqual(pathlib.Path(codex_candidates[0]["path"]).name, "codex-tui.log.3")
+        self.assertEqual(codex_candidates[0]["estimated_reclaim_bytes"], len(extra_sidecar))
+
+    def test_dry_run_reports_extra_rotation_sidecar_when_active_log_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            extra_sidecar = b"sidecar-three"
+            codex_log.with_name("codex-tui.log.3").write_bytes(extra_sidecar)
+            repo_root.mkdir()
+
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        codex_candidates = [
+            entry for entry in payload["candidates"] if entry["surface_id"] == "codex.log"
+        ]
+        self.assertEqual(len(codex_candidates), 1)
+        self.assertEqual(codex_candidates[0]["action"], "delete")
+        self.assertEqual(codex_candidates[0]["reason"], "rotation_retention_exceeded")
+        self.assertEqual(pathlib.Path(codex_candidates[0]["path"]).name, "codex-tui.log.3")
+        self.assertEqual(codex_candidates[0]["estimated_reclaim_bytes"], len(extra_sidecar))
+
     def test_dry_run_honors_cleanup_mode_none_for_configured_surface(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -1357,6 +1412,48 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertFalse(extra_exists_after)
         payload = json.loads(result.stdout)
         self.assertEqual(payload["bytes_reclaimed"], len(sidecar_two) + len(b"sidecar-three"))
+
+    def test_apply_prunes_extra_rotation_sidecar_without_rotating_small_active_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            original = b"ok"
+            extra_sidecar = b"sidecar-three"
+            codex_log.write_bytes(original)
+            extra_path = codex_log.with_name("codex-tui.log.3")
+            extra_path.write_bytes(extra_sidecar)
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report), "--process-snapshot-empty"],
+            )
+            current_after = codex_log.read_bytes()
+            rotated_exists = codex_log.with_name("codex-tui.log.1").exists()
+            extra_exists_after = extra_path.exists()
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertEqual(current_after, original)
+        self.assertFalse(rotated_exists)
+        self.assertFalse(extra_exists_after)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "applied")
+        self.assertEqual(payload["actions_taken"][0]["action"], "delete")
+        self.assertEqual(payload["bytes_reclaimed"], len(extra_sidecar))
 
     def test_apply_does_not_rotate_when_retained_sidecar_is_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

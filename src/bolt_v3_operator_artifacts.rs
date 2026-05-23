@@ -746,13 +746,8 @@ pub fn write_static_operator_artifacts(
         .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
     let approval_nonce = build_approval_nonce_artifact()?;
 
-    let ssm_manifest_written = match write_json_artifact_create_new(
-        &output_dir.join(SSM_MANIFEST_FILE_NAME),
-        &ssm_manifest,
-    ) {
-        Ok(written) => written,
-        Err(error) => return Err(error),
-    };
+    let ssm_manifest_written =
+        write_json_artifact_create_new(&output_dir.join(SSM_MANIFEST_FILE_NAME), &ssm_manifest)?;
     written_artifacts.push(ssm_manifest_written.clone());
     generated_artifacts.push(static_artifact_ref(
         SSM_MANIFEST_ARTIFACT_NAME,

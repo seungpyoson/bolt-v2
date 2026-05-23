@@ -462,8 +462,41 @@ def _paths_state_token(paths: list[Path]) -> str:
     return digest.hexdigest()
 
 
+def _rotation_slot_path(path: Path, index: int) -> Path:
+    return path.with_name(f"{path.name}.{index}")
+
+
+def _rotation_sidecar_entries(path: Path) -> list[tuple[int, Path]]:
+    prefix = f"{path.name}."
+    try:
+        candidates = path.parent.iterdir()
+    except FileNotFoundError:
+        return []
+    entries: list[tuple[int, Path]] = []
+    for candidate in candidates:
+        if not candidate.name.startswith(prefix):
+            continue
+        suffix = candidate.name[len(prefix):]
+        if not suffix.isdecimal():
+            continue
+        index = int(suffix)
+        if index <= 0 or suffix != str(index):
+            continue
+        entries.append((index, candidate))
+    return sorted(entries, key=lambda entry: entry[0])
+
+
 def _rotation_paths(path: Path, retained_rotations: int) -> list[Path]:
-    return [path] + [path.with_name(f"{path.name}.{index}") for index in range(1, retained_rotations + 1)]
+    configured_paths = [path] + [
+        _rotation_slot_path(path, index) for index in range(1, retained_rotations + 1)
+    ]
+    configured = set(configured_paths)
+    extra_paths = [
+        sidecar_path
+        for index, sidecar_path in _rotation_sidecar_entries(path)
+        if index > retained_rotations and sidecar_path not in configured
+    ]
+    return configured_paths + extra_paths
 
 
 def _rotation_symlink_refusal(surface_id: str, path: Path, retained_rotations: int) -> dict[str, Any] | None:
@@ -515,11 +548,23 @@ def _create_empty_file_no_follow(path: Path, mode: int) -> None:
 
 
 def _rotation_reclaim_bytes(path: Path, retained_rotations: int) -> int:
-    oldest = path.with_name(f"{path.name}.{retained_rotations}")
-    try:
-        return oldest.lstat().st_size
-    except FileNotFoundError:
-        return 0
+    total = 0
+    for index, sidecar_path in _rotation_sidecar_entries(path):
+        if index < retained_rotations:
+            continue
+        try:
+            total += sidecar_path.lstat().st_size
+        except FileNotFoundError:
+            continue
+    return total
+
+
+def _rotation_measurement_paths(path: Path) -> list[Path]:
+    paths: list[Path] = []
+    if _path_exists_no_follow(path):
+        paths.append(path)
+    paths.extend(sidecar_path for _index, sidecar_path in _rotation_sidecar_entries(path))
+    return paths
 
 
 def _project_pinned_channels(repo_root: Path, *, required: bool = False) -> tuple[str, ...]:
@@ -686,7 +731,11 @@ def _report_only_entries(surface: PolicySurface, home_root: Path) -> list[dict[s
 
 
 def _surface_measurement(surface: PolicySurface, home_root: Path) -> dict[str, Any]:
-    paths = _paths_for_surface(home_root, surface.path_family)
+    if surface.cleanup_mode == "rotate" and surface.id in ROTATING_SURFACE_IDS:
+        path = _configured_path(home_root, surface.path_family)
+        paths = _rotation_measurement_paths(path) if _inside_root(path, home_root) else []
+    else:
+        paths = _paths_for_surface(home_root, surface.path_family)
     measured_bytes, errors = _paths_measurement(paths)
     entry = {
         "surface_id": surface.id,
@@ -956,17 +1005,17 @@ def _refusal_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _rotate_log(path: Path, retained_rotations: int) -> None:
     if retained_rotations <= 0:
         raise PolicyError("retained_rotations must be positive for rotation")
-    rotation_paths = _rotation_paths(path, retained_rotations)
     _validate_rotation_paths(path, retained_rotations)
     original_stat = path.lstat()
     if stat_module.S_ISLNK(original_stat.st_mode):
         raise PolicyError(f"refusing to rotate symlink: {path}")
     original_mode = original_stat.st_mode & 0o7777
-    staged: list[tuple[Path, Path, Path]] = []
+    rotation_sources = [(0, path)] + _rotation_sidecar_entries(path)
+    staged: list[tuple[int, Path, Path, Path]] = []
     created_current = False
 
     try:
-        for index, source in enumerate(rotation_paths):
+        for index, source in rotation_sources:
             source_stat = _lstat_if_present(source)
             if source_stat is None:
                 continue
@@ -974,28 +1023,32 @@ def _rotate_log(path: Path, retained_rotations: int) -> None:
                 raise PolicyError(f"refusing to rotate symlink: {source}")
             temp = source.with_name(f".{source.name}.rotate-{os.getpid()}-{time.time_ns()}-{index}.tmp")
             source.rename(temp)
-            staged.append((source, temp, temp))
+            staged.append((index, source, temp, temp))
 
-        for source, temp, location in list(reversed(staged)):
-            source_index = rotation_paths.index(source)
-            if source_index < retained_rotations:
-                destination = rotation_paths[source_index + 1]
+        for index, source, temp, location in list(reversed(staged)):
+            if index < retained_rotations:
+                destination = _rotation_slot_path(path, index + 1)
                 location.rename(destination)
-                staged[staged.index((source, temp, location))] = (source, temp, destination)
+                staged[staged.index((index, source, temp, location))] = (
+                    index,
+                    source,
+                    temp,
+                    destination,
+                )
 
         _create_empty_file_no_follow(path, original_mode)
         created_current = True
 
-        for source, temp, location in staged:
-            if rotation_paths.index(source) == retained_rotations and _path_exists_no_follow(location):
+        for index, _source, _temp, location in staged:
+            if index >= retained_rotations and _path_exists_no_follow(location):
                 location.unlink()
     except (OSError, PolicyError):
-        for source, temp, location in list(staged):
+        for _index, _source, temp, location in list(staged):
             if location != temp and _path_exists_no_follow(location):
                 location.rename(temp)
         if created_current and _path_exists_no_follow(path):
             path.unlink()
-        for source, temp, _location in staged:
+        for _index, source, temp, _location in staged:
             if _path_exists_no_follow(source):
                 source.unlink()
             if _path_exists_no_follow(temp):

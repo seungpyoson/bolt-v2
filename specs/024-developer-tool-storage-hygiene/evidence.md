@@ -182,7 +182,7 @@ Operator approval for the T012 command surface was recorded by the operator's `c
 
 | Command | Result | Notes |
 |---|---|---|
-| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 38 tests in 4.787s | Scratch fixtures only; no real home-directory mutation. |
+| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 42 tests in 2.711s | Scratch fixtures only; no real home-directory mutation. |
 | `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py` | Pass | Syntax check for the new script and test. |
 | `git diff --check` | Pass | Whitespace check. |
 | `git diff --check origin/main...HEAD` | Pass | Exact local branch diff whitespace check. |
@@ -209,7 +209,7 @@ Passes completed:
 
 Quality gates:
 
-- Regression tests: pass, 38 tests.
+- Regression tests: pass, 42 tests.
 - Type/syntax check: pass via `python3 -m py_compile`.
 - Static literal/unresolved-marker scan: pass for changed #375 files.
 
@@ -300,5 +300,15 @@ Ninth no-mistakes run `01KS9S5TNDATHE9BG962YTX0HB` on head `b14f7438` reported o
 | Finding | Remediation |
 |---|---|
 | Operator docs said only dry-run/apply require rustup active/default snapshots when removals are configured, but preflight also calls dry-run candidate construction and fails closed without those snapshots. | Updated `docs/ops/developer-tool-storage-hygiene.md` so dry-run, preflight, and apply all document the same rustup snapshot requirement and preflight example. |
+
+Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.
+
+Tenth no-mistakes run `01KS9T6DNP1B3QJ6PFWPV2ZQ8P` started on head `c308fc96` and auto-fixed to head `60a351e4` before PR opening:
+
+| Finding | Remediation |
+|---|---|
+| Retained log sidecar symlinks were not validated before rotation. | Added dry-run and apply regressions for sidecar symlink refusal; rotation candidate generation and apply mutation now validate every retained rotation path with `lstat()`. |
+| Boolean `schema_version` values passed Python `isinstance(..., int)` and could be accepted as schema version 1. | Added `test_load_policy_rejects_boolean_schema_version`; schema version validation now requires exact integer type. |
+| Mode-specific cleanup fields were validated only later in dry-run/apply. | Added `test_policy_validation_fails_closed_when_mode_fields_are_missing`; policy load now validates required rotate, TTL, and rustup retention fields by cleanup mode. |
 
 Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.

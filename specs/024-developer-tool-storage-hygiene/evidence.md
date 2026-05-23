@@ -182,15 +182,17 @@ Operator approval for the T012 command surface was recorded by the operator's `c
 
 | Command | Result | Notes |
 |---|---|---|
-| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 34 tests in 2.269s | Scratch fixtures only; no real home-directory mutation. |
+| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 36 tests in 2.379s | Scratch fixtures only; no real home-directory mutation. |
 | `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py` | Pass | Syntax check for the new script and test. |
 | `git diff --check` | Pass | Whitespace check. |
 | `git diff --check origin/main...HEAD` | Pass | Exact local branch diff whitespace check. |
-| `rg -n "104857600\|10737418240\|5368709120\|21474836480\|~/.codex\|~/.factory\|~/.rustup\|codex-tui.log\|droid-log-single.log\|history.jsonl\|logs_2.sqlite\|archived_sessions" scripts/developer_tool_storage_hygiene.py` | Pass with one schema-id hit: `codex.archived_sessions` | Runtime paths, caps, thresholds, TTLs, and tool path families remain TOML-owned. |
+| `rg -n "104857600\|10737418240\|5368709120\|21474836480\|~/.codex\|~/.factory\|~/.rustup\|codex-tui.log\|droid-log-single.log\|history.jsonl\|logs_2.sqlite\|archived_sessions" scripts/developer_tool_storage_hygiene.py` | Pass with two schema-id hits for `codex.archived_sessions` | Runtime paths, caps, thresholds, TTLs, and tool path families remain TOML-owned. |
 | Unresolved-marker scan over `specs/024-developer-tool-storage-hygiene`, `ci/developer-tool-storage-hygiene.toml`, `docs/ops/developer-tool-storage-hygiene.md`, `scripts/developer_tool_storage_hygiene.py`, and `scripts/test_developer_tool_storage_hygiene.py` | Pass: no matches | Changed #375 surfaces only. |
-| `rg -n "API_KEY\|SECRET\|TOKEN\|PASSWORD\|PRIVATE KEY\|BEGIN .*KEY" ci/developer-tool-storage-hygiene.toml docs/ops/developer-tool-storage-hygiene.md scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py specs/024-developer-tool-storage-hygiene/evidence.md` | Pass: no matches | No credentials or secret-looking literals in changed #375 files. |
+| `rg -n "API_KEY\|SECRET\|TOKEN\|PASSWORD\|PRIVATE KEY\|BEGIN .*KEY" ci/developer-tool-storage-hygiene.toml docs/ops/developer-tool-storage-hygiene.md scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py specs/024-developer-tool-storage-hygiene/spec.md specs/024-developer-tool-storage-hygiene/plan.md specs/024-developer-tool-storage-hygiene/tasks.md specs/024-developer-tool-storage-hygiene/research.md specs/024-developer-tool-storage-hygiene/data-model.md specs/024-developer-tool-storage-hygiene/quickstart.md specs/024-developer-tool-storage-hygiene/contracts/developer-tool-storage-hygiene.md` | Pass: no matches | No credentials or secret-looking literals in changed #375 files outside the evidence log command text. |
+| `just source-fence` | Pass | Required elevated filesystem access for the managed Rust cache lock under `~/.cache/rust-verification`; source-fence itself passed after restoring active Speckit pointers to `origin/main` values. |
+| `just test` | Pass: 736 tests passed, 2 skipped in 154.309s | Full managed Rust test gate through `scripts/rust_verification.py`. |
 
-Rust verification relevance: no Rust source, Cargo manifest, workflow, or verifier runtime file is changed by the implementation. The only executable change is a standalone developer-ops Python script plus its scratch-only test and TOML/docs. Full Rust verification is therefore recorded as source-backed N/A for this #375 slice unless CI or no-mistakes requires a broader repo run.
+Rust verification relevance: no Rust source, Cargo manifest, workflow, or verifier runtime file is changed by the implementation. The local full managed Rust test gate still passed to keep the #375 PR evidence aligned with the global verification requirement.
 
 ## AI Slop Cleanup Report
 
@@ -207,7 +209,7 @@ Passes completed:
 
 Quality gates:
 
-- Regression tests: pass, 34 tests.
+- Regression tests: pass, 36 tests.
 - Type/syntax check: pass via `python3 -m py_compile`.
 - Static literal/unresolved-marker scan: pass for changed #375 files.
 
@@ -262,5 +264,14 @@ Third no-mistakes run `01KS9MCGN4TV5XGG0RJB1PTBVZ` on head `426360e2` reported a
 | Positive integer validation accepted TOML booleans for cleanup parameters such as `max_bytes` and `ttl_days`. | Added `test_policy_validation_fails_closed_when_cleanup_integer_is_bool`; positive integer validation now uses exact `int` type checks. |
 | Apply could proceed without an explicit process snapshot for mutable Codex/Factory surfaces. | Added `test_apply_requires_process_snapshot_for_mutable_writer_surfaces`; apply now refuses mutable writer-owned candidates unless `--process-name` or `--process-snapshot-empty` is supplied. |
 | Later mutation failure could leave partial cleanup without structured summary. | Added `test_apply_reports_partial_summary_when_later_mutation_fails`; apply now returns structured `status=failed`, `actions_taken`, and `failed_action` data for mutation errors. |
+
+Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.
+
+Sixth no-mistakes run `01KS9P225193E7R5QECGMTR6VQ` started on head `b6c70432` and auto-fixed to head `7287b817` before PR opening:
+
+| Finding | Remediation |
+|---|---|
+| Policy surface enum values were accepted without validation, so unknown `owner` or `cleanup_mode` values could silently skip cleanup dispatch and owned-byte accounting. | Added `test_policy_validation_fails_closed_for_unknown_owner_or_cleanup_mode`; policy load now validates owner, cleanup mode, per-surface cleanup mode, and adjacent-context ownership. |
+| Owned surface measurement errors were converted to zero bytes in preflight, allowing unreadable or racing paths to undercount storage and pass thresholds. | Added `test_preflight_fails_closed_when_owned_surface_measurement_fails`; preflight now records owned measurement errors and returns `owned_storage_measurement_failed`. |
 
 Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.

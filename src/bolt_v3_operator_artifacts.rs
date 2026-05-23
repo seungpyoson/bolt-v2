@@ -1132,6 +1132,7 @@ fn read_strategy_input_market_selection_source_bytes(
             },
         )?;
     let source_path = Path::new(source_path);
+    validate_market_window_source_path("market_selection_source_path", source_path)?;
     let source_bytes =
         read_file_bounded(source_path, max_market_selection_source_bytes).map_err(|_| {
             BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid {
@@ -1146,6 +1147,19 @@ fn read_strategy_input_market_selection_source_bytes(
         );
     }
     Ok(source_bytes)
+}
+
+fn validate_market_window_source_path(
+    field: &'static str,
+    path: &Path,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid { field });
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]

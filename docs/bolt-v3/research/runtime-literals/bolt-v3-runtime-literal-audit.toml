@@ -4371,6 +4371,14 @@ reason = "This names the strategy-input evidence JSON field that points to the m
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"market_selection_source_path"'''
+context = '''validate_market_window_source_path("market_selection_source_path", source_path)?;'''
+classification = "operator_artifact_json_field_name"
+reason = "This reuses the strategy-input evidence JSON field name for pre-read source-path policy validation; it is not an operator runtime path."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"market_selection_source_sha256"'''
 context = '''.get("market_selection_source_sha256")'''
 classification = "operator_artifact_json_field_name"

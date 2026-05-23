@@ -3040,6 +3040,63 @@ fn pre_run_market_window_source_proof_rejects_stale_market_source_hash() {
 }
 
 #[test]
+fn pre_run_market_window_source_proof_rejects_parent_dir_market_source_before_read() {
+    let fixture = strategy_input_runtime_fixture();
+    let strategy_input_path = fixture.temp.path().join("strategy-input.json");
+    let strategy_input = bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_runtime_snapshot(
+        &fixture.loaded,
+        &fixture.strategy_instance_id,
+        &fixture.snapshot,
+        &fixture.market_selection_source_ref,
+        &fixture.candidate_market_start_timestamps_ms,
+        &strategy_input_path,
+    )
+    .expect("source-bound strategy input evidence should write");
+    let intermediate_dir = fixture.temp.path().join("parent-dir-hop");
+    std::fs::create_dir(&intermediate_dir).expect("intermediate directory should create");
+    let parent_dir_source_path = intermediate_dir
+        .join("..")
+        .join(TEST_MARKET_SELECTION_SOURCE_FILE);
+    let market_source_bytes = std::fs::read(&fixture.market_selection_source_ref.path)
+        .expect("market source should read");
+    let mut strategy_input_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&strategy_input_path).expect("strategy input should read"),
+    )
+    .expect("strategy input should parse");
+    strategy_input_json["market_selection_source_path"] =
+        serde_json::Value::String(parent_dir_source_path.to_string_lossy().into_owned());
+    strategy_input_json["market_selection_source_sha256"] =
+        serde_json::Value::String(sha256_bytes(&market_source_bytes));
+    let strategy_input_bytes =
+        serde_json::to_vec_pretty(&strategy_input_json).expect("strategy input should serialize");
+    std::fs::write(&strategy_input_path, &strategy_input_bytes)
+        .expect("strategy input should rewrite");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_market_window_source_proof(
+        &strategy_input_path,
+        &sha256_bytes(&strategy_input_bytes),
+        fixture.snapshot.price_to_beat_source.as_str(),
+        100_000,
+    )
+    .expect_err("parent-dir market source must not approve market/window proof");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("market_selection_source_path"),
+        "parent-dir market source should fail source path policy before audit: {message}"
+    );
+    assert!(
+        !message.contains("strategy_input_evidence"),
+        "parent-dir market source must not be discovered only by later audit: {message}"
+    );
+    assert_ne!(
+        strategy_input.sha256,
+        sha256_bytes(&strategy_input_bytes),
+        "test must rewrite strategy-input evidence so new hash is required"
+    );
+}
+
+#[test]
 fn pre_run_market_window_source_proof_rejects_oversized_market_source_before_audit() {
     let fixture = strategy_input_runtime_fixture();
     let strategy_input_path = fixture.temp.path().join("strategy-input.json");

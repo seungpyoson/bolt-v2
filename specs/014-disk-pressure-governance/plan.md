@@ -5,7 +5,7 @@
 
 ## Summary
 
-Turn epic #123 into a reliable disk-pressure governance plan before additional code changes. The first deliverable is docs/spec coverage: live issue map, operator walkthrough, verified local-vs-CI Rust verification policy, no-mistakes routing evidence, issue-to-PR decomposition, #286 completion evidence, and finite Phase 1 research gates for #374, #375, and #377. Remaining implementation slices follow TDD one issue per PR.
+Turn epic #123 into a reliable disk-pressure governance plan before additional code changes. The first deliverable was docs/spec coverage: live issue map, operator walkthrough, verified local-vs-CI Rust verification policy, no-mistakes routing evidence, issue-to-PR decomposition, #286 completion evidence, and finite Phase 1 research gates. #375 is now implemented by the separate `specs/024-developer-tool-storage-hygiene/` slice; remaining implementation slices continue to follow TDD one issue per PR.
 
 ## Technical Context
 
@@ -59,7 +59,7 @@ tests/
 scripts/
 ```
 
-**Structure Decision**: Keep this first slice docs-only plus current-feature pointers. Add tests/scripts only in later implementation PRs after each owning issue's Phase 1 gate is satisfied.
+**Structure Decision**: Keep the original #123 slice docs-only plus current-feature pointers. Later implementation PRs add tests/scripts only after each owning issue's Phase 1 gate is satisfied; #375 now does so through `specs/024-developer-tool-storage-hygiene/`.
 
 ## Complexity Tracking
 

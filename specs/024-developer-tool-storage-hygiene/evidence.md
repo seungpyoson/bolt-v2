@@ -372,3 +372,16 @@ Manual verification after `7c010efa`:
 | `git diff --check` | Pass | Whitespace check after manual no-mistakes remediation. |
 
 Final no-mistakes must be rerun on exact head `7c010efa` after this evidence commit is pushed.
+
+Sixteenth no-mistakes run `01KSA4YAA8ZTWETFQWSXTKRC04` was started after `codex doctor` reported no Codex credentials and the Codex-backed run `01KSA4PMHZCH4MRAHD2VYF86RD` failed before review with the same `401 Unauthorized` Responses API error. The no-mistakes agent was switched for the rerun from `codex` to `claude`, using the configured `/Users/spson/.claude/bin/claude-launch.sh` subscription/OAuth route. The rerun rebased #375 onto `origin/main` head `e8edbb48`, reviewed target `6dd84527`, and auto-fixed to `fb2ec227`:
+
+| Finding | Remediation |
+|---|---|
+| `_validate_owner_cleanup_mode` contained a redundant branch already covered by the preceding owner/cleanup-mode guard. | Accepted no-mistakes auto-fix `fb2ec227`; it removed the redundant check. |
+| Adjacent-context surfaces did not validate duplicate `id` values, allowing duplicate report rows. | Accepted no-mistakes auto-fix `fb2ec227`; policy loading now rejects duplicate adjacent surface IDs. |
+| `REASONIX.md` did not mention the new developer-tool storage hygiene script category. | Updated `REASONIX.md` to include developer-tool storage hygiene policy checks in the `scripts/` layout description. |
+| Operator docs documented `preflight` and `apply` exit codes but not `status` and `dry-run`. | Updated `docs/ops/developer-tool-storage-hygiene.md` to document `status` and `dry-run` exit behavior. |
+
+No-mistakes review follow-up on `fb2ec227` reported no new findings and retained only one info-level ask-user note about whether stale-sidecar prune failure should roll back otherwise successful log rotation. The exact no-mistakes test step on `fb2ec227` ran `python3 scripts/rust_verification.py cargo --repo . -- test` and reported `all tests passed`.
+
+Final no-mistakes must be rerun on the follow-up documentation fix commit after it is pushed.

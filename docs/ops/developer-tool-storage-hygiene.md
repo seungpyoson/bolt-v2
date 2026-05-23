@@ -31,6 +31,8 @@ python3 scripts/developer_tool_storage_hygiene.py status \
   --json
 ```
 
+Status exits 0 after successful inventory output and exits 2 for policy or usage errors.
+
 Dry-run is read-only and emits cleanup candidates, protected entries, report-only entries, per-surface measurements, adjacent context, and refusal reasons:
 
 ```sh
@@ -40,6 +42,8 @@ python3 scripts/developer_tool_storage_hygiene.py dry-run \
   --repo-root "$PWD" \
   --json
 ```
+
+Dry-run exits 0 after producing the report and exits 2 for policy or usage errors. Refusal entries are report data, not a nonzero exit by themselves.
 
 Log rotation bounds the active writer file and preserves the rotated file as history. Current-log rotation reports zero reclaimed bytes unless the configured retained-rotation limit causes the oldest sidecar to be removed; dry-run/apply revalidate both the active log and retained sidecars before mutation.
 

@@ -28,6 +28,7 @@ SURFACE_SECTIONS = (
 )
 
 PREFLIGHT_SECTION = ("preflight",)
+SUPPORTED_POLICY_SCHEMA_VERSION = 1
 
 REQUIRED_SURFACE_KEYS = (
     "path_family",
@@ -663,6 +664,8 @@ def load_policy(policy_path: Path) -> Policy:
     schema_version = data.get("schema_version")
     if not isinstance(schema_version, int):
         raise PolicyError("schema_version must be an integer")
+    if schema_version != SUPPORTED_POLICY_SCHEMA_VERSION:
+        raise PolicyError(f"unsupported schema_version: {schema_version}")
 
     surfaces = tuple(
         _surface_from_section(section_id, _section(data, path))
@@ -882,16 +885,43 @@ def _rotate_log(path: Path, retained_rotations: int) -> None:
     if retained_rotations <= 0:
         raise PolicyError("retained_rotations must be positive for rotation")
     original_mode = path.lstat().st_mode & 0o7777
-    oldest = path.with_name(f"{path.name}.{retained_rotations}")
-    if oldest.exists():
-        oldest.unlink()
-    for index in range(retained_rotations - 1, 0, -1):
-        source = path.with_name(f"{path.name}.{index}")
-        if source.exists():
-            source.rename(path.with_name(f"{path.name}.{index + 1}"))
-    path.rename(path.with_name(f"{path.name}.1"))
-    path.write_bytes(b"")
-    path.chmod(original_mode)
+    rotation_paths = _rotation_paths(path, retained_rotations)
+    staged: list[tuple[Path, Path, Path]] = []
+    created_current = False
+
+    try:
+        for index, source in enumerate(rotation_paths):
+            if source.exists():
+                temp = source.with_name(f".{source.name}.rotate-{os.getpid()}-{time.time_ns()}-{index}.tmp")
+                source.rename(temp)
+                staged.append((source, temp, temp))
+
+        for source, temp, location in list(reversed(staged)):
+            source_index = rotation_paths.index(source)
+            if source_index < retained_rotations:
+                destination = rotation_paths[source_index + 1]
+                location.rename(destination)
+                staged[staged.index((source, temp, location))] = (source, temp, destination)
+
+        path.write_bytes(b"")
+        created_current = True
+        path.chmod(original_mode)
+
+        for source, temp, location in staged:
+            if rotation_paths.index(source) == retained_rotations and location.exists():
+                location.unlink()
+    except OSError:
+        for source, temp, location in list(staged):
+            if location != temp and location.exists():
+                location.rename(temp)
+        if created_current and path.exists():
+            path.unlink()
+        for source, temp, _location in staged:
+            if source.exists():
+                source.unlink()
+            if temp.exists():
+                temp.rename(source)
+        raise
 
 
 def _active_writer_refusals(

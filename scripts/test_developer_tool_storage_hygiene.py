@@ -219,6 +219,21 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(mutable["codex.sessions"], ["codex", "codex-tui"])
         self.assertEqual(mutable["factory.log"], ["factory", "droid"])
 
+    def test_load_policy_rejects_unsupported_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            self.write_policy_fixture(policy_path)
+            policy_path.write_text(
+                policy_path.read_text(encoding="utf-8").replace("schema_version = 1", "schema_version = 2", 1),
+                encoding="utf-8",
+            )
+
+            tool = self.load_tool_module()
+
+            with self.assertRaisesRegex(tool.PolicyError, "unsupported schema_version"):
+                tool.load_policy(policy_path)
+
     def test_dry_run_reports_oversized_log_rotation_candidates_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -1422,6 +1437,60 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["status"], "aborted")
         self.assertEqual(payload["reason"], "candidate_state_changed")
+
+    def test_apply_rotation_failure_preserves_oldest_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            sidecar_one = codex_log.with_name("codex-tui.log.1")
+            sidecar_two = codex_log.with_name("codex-tui.log.2")
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex log requiring rotation")
+            sidecar_one.write_bytes(b"sidecar-one")
+            sidecar_two.write_bytes(b"sidecar-two")
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy_path)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_rename = pathlib.Path.rename
+
+            def failing_current_log_rename(path: pathlib.Path, target: pathlib.Path) -> pathlib.Path:
+                if path == codex_log:
+                    raise OSError("synthetic current log rename failure")
+                return original_rename(path, target)
+
+            pathlib.Path.rename = failing_current_log_rename
+            try:
+                payload = tool.build_apply(
+                    policy,
+                    home_root,
+                    repo_root,
+                    dry_run_report=report,
+                    process_snapshot_supplied=True,
+                )
+            finally:
+                pathlib.Path.rename = original_rename
+
+            current_after = codex_log.read_bytes() if codex_log.exists() else None
+            sidecar_one_after = sidecar_one.read_bytes() if sidecar_one.exists() else None
+            sidecar_two_after = sidecar_two.read_bytes() if sidecar_two.exists() else None
+
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["reason"], "mutation_failed")
+        self.assertEqual(payload["actions_taken"], [])
+        self.assertEqual(current_after, b"codex log requiring rotation")
+        self.assertEqual(sidecar_one_after, b"sidecar-one")
+        self.assertEqual(sidecar_two_after, b"sidecar-two")
 
     def test_apply_rotation_preserves_original_log_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

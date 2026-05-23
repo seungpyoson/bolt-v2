@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
@@ -273,6 +274,73 @@ def _path_family_has_glob(path_family: str) -> bool:
     return any(marker in path_family for marker in ("*", "?", "["))
 
 
+def _glob_no_follow(base: Path, pattern: str) -> list[Path]:
+    parts = tuple(part for part in pattern.split("/") if part and part != ".")
+
+    def scan(path: Path) -> list[os.DirEntry[str]]:
+        with os.scandir(path) as entries:
+            return sorted(entries, key=lambda entry: entry.name)
+
+    def walk(path: Path, index: int) -> Iterator[Path]:
+        if index >= len(parts):
+            yield path
+            return
+
+        segment = parts[index]
+        if segment == "**":
+            yield from walk(path, index + 1)
+            try:
+                entries = scan(path)
+            except OSError:
+                return
+            for entry in entries:
+                try:
+                    entry_stat = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat_module.S_ISDIR(entry_stat.st_mode) and not stat_module.S_ISLNK(
+                    entry_stat.st_mode
+                ):
+                    yield from walk(Path(entry.path), index)
+            return
+
+        has_glob = any(marker in segment for marker in ("*", "?", "["))
+        if has_glob:
+            try:
+                entries = scan(path)
+            except OSError:
+                return
+            for entry in entries:
+                if not fnmatch.fnmatchcase(entry.name, segment):
+                    continue
+                child = Path(entry.path)
+                if index == len(parts) - 1:
+                    yield child
+                    continue
+                try:
+                    entry_stat = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat_module.S_ISDIR(entry_stat.st_mode) and not stat_module.S_ISLNK(
+                    entry_stat.st_mode
+                ):
+                    yield from walk(child, index + 1)
+            return
+
+        child = path / segment
+        try:
+            child_stat = child.lstat()
+        except OSError:
+            return
+        if index == len(parts) - 1:
+            yield child
+            return
+        if stat_module.S_ISDIR(child_stat.st_mode) and not stat_module.S_ISLNK(child_stat.st_mode):
+            yield from walk(child, index + 1)
+
+    return list(walk(base, 0))
+
+
 def _paths_for_surface(home_root: Path, path_family: str) -> list[Path]:
     if _path_family_has_glob(path_family):
         base, pattern = _path_family_root_and_pattern(home_root, path_family)
@@ -280,7 +348,7 @@ def _paths_for_surface(home_root: Path, path_family: str) -> list[Path]:
             return []
         if pattern == "**":
             return [base]
-        return sorted(base.glob(pattern))
+        return _glob_no_follow(base, pattern)
     candidate = _configured_path(home_root, path_family)
     if not _inside_root(candidate, home_root) or not candidate.exists():
         return []
@@ -514,7 +582,7 @@ def _candidates_for_sessions(surface: PolicySurface, home_root: Path) -> list[di
         return []
     cutoff = time.time() - (ttl_days * 24 * 60 * 60)
     candidates: list[dict[str, Any]] = []
-    for candidate_path in sorted(base.glob(pattern)):
+    for candidate_path in _glob_no_follow(base, pattern):
         try:
             stat = candidate_path.lstat()
         except OSError:
@@ -570,8 +638,9 @@ def _iter_tree_entries(path: Path) -> Iterator[tuple[Path, os.stat_result]]:
     entries: list[tuple[str, Path, os.stat_result]] = []
     with os.scandir(path) as scanner:
         for entry in scanner:
-            stat = entry.stat(follow_symlinks=False)
-            entries.append((entry.name, Path(entry.path), stat))
+            child = Path(entry.path)
+            stat = child.lstat()
+            entries.append((entry.name, child, stat))
     ordered = sorted(entries, key=lambda item: item[0])
     for _name, child, child_stat in ordered:
         yield child, child_stat

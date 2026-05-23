@@ -702,6 +702,42 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(pathlib.Path(candidates["rustup.toolchains"]["path"]).name, ".rustup")
         self.assertEqual(candidates["rustup.toolchains"]["action"], "refuse")
 
+    def test_dry_run_does_not_traverse_directory_symlink_inside_glob_surface(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy_path = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy_path)
+
+            sessions_root = home_root / ".codex" / "sessions"
+            sessions_root.mkdir(parents=True)
+            outside_sessions = tmp_path / "outside-sessions"
+            outside_sessions.mkdir()
+            outside_file = outside_sessions / "old.jsonl"
+            outside_file.write_bytes(b"outside")
+            stale_time = time.time() - (31 * 24 * 60 * 60)
+            os.utime(outside_file, (stale_time, stale_time))
+            (sessions_root / "linked").symlink_to(outside_sessions, target_is_directory=True)
+            repo_root.mkdir()
+
+            tool = self.load_tool_module()
+            policy = tool.load_policy(policy_path)
+            original_glob = pathlib.Path.glob
+
+            def following_glob(path: pathlib.Path, pattern: str) -> object:
+                if path == sessions_root and pattern == "**/*.jsonl":
+                    return [sessions_root / "linked" / outside_file.name]
+                return original_glob(path, pattern)
+
+            with mock.patch.object(pathlib.Path, "glob", following_glob):
+                payload = tool.build_dry_run(policy, home_root, repo_root)
+
+        session_entries = [
+            entry for entry in payload["candidates"] if entry["surface_id"] == "codex.sessions"
+        ]
+        self.assertEqual(session_entries, [])
+
     def test_dry_run_reports_session_that_disappears_during_scan_as_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -1025,7 +1061,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(protected[retained], "exact_name_retain_policy")
         self.assertEqual(protected[unlisted], "not_in_remove_exact_names")
 
-    def test_dry_run_reports_rustup_toolchain_that_disappears_during_measurement_as_refusal(self) -> None:
+    def test_dry_run_reports_rustup_toolchain_lstat_disappearance_as_refusal(self) -> None:
         active = "active-aarch64-apple-darwin"
         default = "default-aarch64-apple-darwin"
         removable = "old-aarch64-apple-darwin"

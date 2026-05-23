@@ -13,6 +13,7 @@ __pycache__/
 .claude/findings/
 .codex/agents/
 .gemini/agents/
+.pi/agents/
 .aider.chat.history.md
 .aider.input.history
 .aider.tags.cache.v*/

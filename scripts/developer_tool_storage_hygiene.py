@@ -335,6 +335,26 @@ def _root_refusal(
     return entry
 
 
+def _path_family_refusal(
+    surface_id: str,
+    path: Path,
+    home_root: Path,
+    *,
+    include_action: bool,
+) -> dict[str, Any] | None:
+    try:
+        relative = path.relative_to(home_root)
+    except ValueError:
+        return _root_refusal(surface_id, path, home_root, include_action=include_action)
+    current = home_root
+    for part in relative.parts:
+        current = current / part
+        refusal = _root_refusal(surface_id, current, home_root, include_action=include_action)
+        if refusal is not None:
+            return refusal
+    return None
+
+
 def _stale_rotation_sidecar_candidates(
     surface_id: str,
     path: Path,
@@ -384,6 +404,14 @@ def _candidates_for_rotating_log(surface: PolicySurface, home_root: Path) -> lis
         "retained_rotations",
     )
     candidate_path = _configured_path(home_root, surface.path_family)
+    path_refusal = _path_family_refusal(
+        surface.id,
+        candidate_path,
+        home_root,
+        include_action=True,
+    )
+    if path_refusal is not None:
+        return [path_refusal]
     if not _inside_root(candidate_path, home_root):
         return [
             {
@@ -852,6 +880,15 @@ def _report_only_entries(surface: PolicySurface, home_root: Path) -> list[dict[s
         root_refusal = _root_refusal(surface.id, base, home_root, include_action=False)
         if root_refusal is not None:
             return [root_refusal]
+    else:
+        path_refusal = _path_family_refusal(
+            surface.id,
+            _configured_path(home_root, surface.path_family),
+            home_root,
+            include_action=False,
+        )
+        if path_refusal is not None:
+            return [path_refusal]
     for path in _paths_for_surface(home_root, surface.path_family):
         try:
             is_symlink = path.is_symlink()

@@ -337,6 +337,35 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(codex_candidates[0]["reason"], "symlink_not_followed")
         self.assertEqual(pathlib.Path(codex_candidates[0]["path"]).name, "codex-tui.log.3")
 
+    def test_dry_run_refuses_log_rotation_when_log_directory_is_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            target_log_root = home_root / "relocated" / "codex-log"
+            target_log_root.mkdir(parents=True)
+            codex_log = target_log_root / "codex-tui.log"
+            codex_log.write_bytes(b"codex log requiring rotation")
+            log_root = home_root / ".codex" / "log"
+            log_root.parent.mkdir(parents=True)
+            log_root.symlink_to(target_log_root, target_is_directory=True)
+            repo_root.mkdir()
+
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        codex_candidates = [
+            entry for entry in payload["candidates"] if entry["surface_id"] == "codex.log"
+        ]
+        self.assertEqual(len(codex_candidates), 1)
+        self.assertEqual(codex_candidates[0]["action"], "refuse")
+        self.assertEqual(codex_candidates[0]["reason"], "symlink_not_followed")
+        self.assertEqual(pathlib.Path(codex_candidates[0]["path"]).name, "log")
+
     def test_dry_run_counts_extra_rotation_sidecars_as_reclaimable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -765,6 +794,32 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
             history_reports[0]["native_config"],
             {"max_bytes": 10, "persistence": "save-all"},
         )
+
+    def test_dry_run_reports_fixed_report_only_symlink_as_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            outside_history = tmp_path / "history.jsonl"
+            outside_history.write_bytes(b"outside history")
+            history = home_root / ".codex" / "history.jsonl"
+            history.parent.mkdir(parents=True)
+            history.symlink_to(outside_history)
+            repo_root.mkdir()
+
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        history_reports = [
+            entry for entry in payload["report_only"] if entry["surface_id"] == "native_guidance.codex_history"
+        ]
+        self.assertEqual(len(history_reports), 1)
+        self.assertEqual(history_reports[0]["reason"], "symlink_not_followed")
+        self.assertEqual(pathlib.Path(history_reports[0]["path"]).name, "history.jsonl")
 
     def test_dry_run_reports_archived_sessions_tree_as_report_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1477,8 +1532,8 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
             if entry.get("surface_id") == "codex.log"
         ]
         self.assertEqual(len(root_errors), 1)
-        self.assertEqual(pathlib.Path(root_errors[0]["path"]).name, "codex-tui.log")
-        self.assertEqual(root_errors[0]["reason"], "outside_configured_root")
+        self.assertEqual(pathlib.Path(root_errors[0]["path"]).name, "log")
+        self.assertEqual(root_errors[0]["reason"], "symlink_not_followed")
 
     def test_preflight_fails_closed_when_log_sidecar_scan_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

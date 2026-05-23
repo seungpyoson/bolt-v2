@@ -95,6 +95,128 @@ fn bolt_v3_cli_exposes_final_operator_packet_verifier_command() {
 }
 
 #[test]
+fn bolt_v3_cli_exposes_final_operator_packet_assembly_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args(["operator-artifacts", "assemble-final", "--help"])
+        .output()
+        .expect("bolt-v3 final operator packet assembler help should run");
+
+    assert!(
+        output.status.success(),
+        "expected operator-artifacts assemble-final help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--static-manifest"));
+    assert!(stdout.contains("--operator-packet"));
+}
+
+#[test]
+fn bolt_v3_cli_exposes_static_manifest_from_operator_evidence_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "write-manifest-from-operator-evidence",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 operator-evidence manifest help should run");
+
+    assert!(
+        output.status.success(),
+        "expected manifest-from-operator-evidence help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--output"));
+}
+
+#[test]
+fn bolt_v3_cli_exposes_source_bundle_artifact_commands() {
+    for command in [
+        "generate-pre-run-state-from-source-bundle",
+        "generate-abort-plan-from-source-bundle",
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+            .args(["operator-artifacts", command, "--help"])
+            .output()
+            .unwrap_or_else(|error| panic!("bolt-v3 {command} help should run: {error}"));
+
+        assert!(
+            output.status.success(),
+            "expected operator-artifacts {command} help to pass, stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("--config"), "{stdout}");
+        assert!(stdout.contains("--strategy-instance-id"), "{stdout}");
+        assert!(stdout.contains("--source-bundle"), "{stdout}");
+        assert!(stdout.contains("--output"), "{stdout}");
+        assert!(stdout.contains("--max-source-bundle-bytes"), "{stdout}");
+    }
+}
+
+#[test]
+fn bolt_v3_cli_exposes_strategy_input_decision_evidence_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-strategy-input-from-decision-evidence",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 strategy-input decision-evidence help should run");
+
+    assert!(
+        output.status.success(),
+        "expected strategy-input decision-evidence help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--strategy-instance-id"));
+    assert!(stdout.contains("--decision-evidence"));
+    assert!(stdout.contains("--max-decision-evidence-bytes"));
+    assert!(stdout.contains("--market-selection-source"));
+    assert!(stdout.contains("--market-selection-source-sha256"));
+    assert!(stdout.contains("--candidate-market-start-timestamp-ms"));
+    assert!(stdout.contains("--output"));
+}
+
+#[test]
+fn bolt_v3_cli_exposes_market_selection_decision_evidence_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-market-selection-from-decision-evidence",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 market-selection decision-evidence help should run");
+
+    assert!(
+        output.status.success(),
+        "expected market-selection decision-evidence help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--strategy-instance-id"));
+    assert!(stdout.contains("--decision-evidence"));
+    assert!(stdout.contains("--max-decision-evidence-bytes"));
+    assert!(stdout.contains("--instrument-source"));
+    assert!(stdout.contains("--max-instrument-source-bytes"));
+    assert!(stdout.contains("--output"));
+}
+
+#[test]
 fn bolt_v3_static_operator_artifacts_command_fails_closed_on_abort_blocker() {
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(

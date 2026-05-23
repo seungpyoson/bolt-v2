@@ -39,6 +39,12 @@ const APPROVAL_NONCE_RECORD_KIND: &str = "bolt_v3.operator_approval_nonce.v1";
 const APPROVAL_NONCE_BYTES: usize = 32;
 const STATIC_ARTIFACTS_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const STATIC_ARTIFACTS_MANIFEST_RECORD_KIND: &str = "bolt_v3.static_operator_artifacts_manifest.v1";
+const PRE_RUN_STATE_SOURCE_PROOF_BUNDLE_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_STATE_SOURCE_PROOF_BUNDLE_RECORD_KIND: &str =
+    "bolt_v3.pre_run_state_source_proof_bundle.v1";
+const ABORT_PLAN_SOURCE_PROOF_BUNDLE_SCHEMA_VERSION: u32 = 1;
+const ABORT_PLAN_SOURCE_PROOF_BUNDLE_RECORD_KIND: &str =
+    "bolt_v3.abort_plan_source_proof_bundle.v1";
 const SSM_MANIFEST_ARTIFACT_NAME: &str = "ssm-manifest";
 const FINANCIAL_ENVELOPE_ARTIFACT_NAME: &str = "financial-envelope";
 const STRATEGY_INPUT_ARTIFACT_NAME: &str = "strategy-input";
@@ -264,6 +270,17 @@ pub enum BoltV3OperatorArtifactError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    MarketSelectionInstrumentSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    MarketSelectionInstrumentSourceParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    MarketSelectionInstrumentSourceInvalid {
+        field: &'static str,
+    },
     PreRunStatePrerequisiteUnproven {
         prerequisite: &'static str,
     },
@@ -281,8 +298,30 @@ pub enum BoltV3OperatorArtifactError {
     PreRunMarketWindowSourceInvalid {
         field: &'static str,
     },
+    PreRunStateSourceBundleRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    PreRunStateSourceBundleParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    PreRunStateSourceBundleInvalid {
+        field: &'static str,
+    },
     AbortPrerequisiteUnproven {
         prerequisite: &'static str,
+    },
+    AbortPlanSourceBundleRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    AbortPlanSourceBundleParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    AbortPlanSourceBundleInvalid {
+        field: &'static str,
     },
     MissingLiveCanary,
     MissingOperatorEvidence,
@@ -417,6 +456,22 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                     "failed to parse market-selection source evidence: {source}"
                 )
             }
+            Self::MarketSelectionInstrumentSourceRead { source, .. } => {
+                write!(
+                    f,
+                    "failed to read market-selection instrument source: {source}"
+                )
+            }
+            Self::MarketSelectionInstrumentSourceParse { source, .. } => {
+                write!(
+                    f,
+                    "failed to parse market-selection instrument source: {source}"
+                )
+            }
+            Self::MarketSelectionInstrumentSourceInvalid { field } => write!(
+                f,
+                "market-selection instrument source field `{field}` is invalid or unproven"
+            ),
             Self::PreRunStatePrerequisiteUnproven { prerequisite } => write!(
                 f,
                 "refusing to write successful pre-run state evidence because {prerequisite}"
@@ -435,9 +490,29 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "market/window source field `{field}` is invalid or unproven"
             ),
+            Self::PreRunStateSourceBundleRead { source, .. } => {
+                write!(f, "failed to read pre-run state source bundle: {source}")
+            }
+            Self::PreRunStateSourceBundleParse { source, .. } => {
+                write!(f, "failed to parse pre-run state source bundle: {source}")
+            }
+            Self::PreRunStateSourceBundleInvalid { field } => write!(
+                f,
+                "pre-run state source bundle field `{field}` is invalid or unproven"
+            ),
             Self::AbortPrerequisiteUnproven { prerequisite } => write!(
                 f,
                 "refusing to write successful abort plan because {prerequisite} is not proven"
+            ),
+            Self::AbortPlanSourceBundleRead { source, .. } => {
+                write!(f, "failed to read abort plan source bundle: {source}")
+            }
+            Self::AbortPlanSourceBundleParse { source, .. } => {
+                write!(f, "failed to parse abort plan source bundle: {source}")
+            }
+            Self::AbortPlanSourceBundleInvalid { field } => write!(
+                f,
+                "abort plan source bundle field `{field}` is invalid or unproven"
             ),
             Self::MissingLiveCanary => write!(
                 f,
@@ -589,8 +664,14 @@ impl Error for BoltV3OperatorArtifactError {
             Self::MarketSelection(error) => Some(error.as_ref()),
             Self::MarketSelectionSourceRead { source, .. } => Some(source),
             Self::MarketSelectionSourceParse { source, .. } => Some(source),
+            Self::MarketSelectionInstrumentSourceRead { source, .. } => Some(source),
+            Self::MarketSelectionInstrumentSourceParse { source, .. } => Some(source),
             Self::PreRunReleaseManifestSourceRead { source, .. } => Some(source),
             Self::PreRunMarketWindowSourceRead { source, .. } => Some(source),
+            Self::PreRunStateSourceBundleRead { source, .. } => Some(source),
+            Self::PreRunStateSourceBundleParse { source, .. } => Some(source),
+            Self::AbortPlanSourceBundleRead { source, .. } => Some(source),
+            Self::AbortPlanSourceBundleParse { source, .. } => Some(source),
             Self::StaticManifestRead { source, .. } => Some(source),
             Self::StaticManifestParse { source, .. } => Some(source),
             Self::StaticManifestArtifactFileRead { source, .. } => Some(source),
@@ -802,8 +883,48 @@ pub fn write_market_selection_source_artifact_from_decision_evidence_file(
         )
         .map_err(|_| BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
             prerequisite: "T046 remains blocked: market selection source does not match source-bound strategy decision input",
-        })?;
+    })?;
     write_json_artifact_create_new(path, &artifact)
+}
+
+pub fn write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    decision_evidence_path: &Path,
+    max_decision_evidence_bytes: u64,
+    instrument_source_path: &Path,
+    max_instrument_source_bytes: u64,
+    path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let instrument_source_bytes =
+        read_file_bounded(instrument_source_path, max_instrument_source_bytes).map_err(
+            |source| BoltV3OperatorArtifactError::MarketSelectionInstrumentSourceRead {
+                path: instrument_source_path.to_path_buf(),
+                source,
+            },
+        )?;
+    let instruments: Vec<InstrumentAny> = serde_json::from_slice(&instrument_source_bytes)
+        .map_err(
+            |source| BoltV3OperatorArtifactError::MarketSelectionInstrumentSourceParse {
+                path: instrument_source_path.to_path_buf(),
+                source,
+            },
+        )?;
+    if instruments.is_empty() {
+        return Err(
+            BoltV3OperatorArtifactError::MarketSelectionInstrumentSourceInvalid {
+                field: "instruments",
+            },
+        );
+    }
+    write_market_selection_source_artifact_from_decision_evidence_file(
+        loaded,
+        strategy_instance_id,
+        decision_evidence_path,
+        max_decision_evidence_bytes,
+        &instruments,
+        path,
+    )
 }
 
 fn source_bound_price_to_beat_value_is_usable(value: &str) -> bool {
@@ -841,6 +962,167 @@ pub fn write_abort_plan_artifact_from_source_proofs(
     write_json_artifact_create_new(path, &artifact)
 }
 
+#[derive(Debug)]
+struct OwnedPhase8AbortPlanSourceProofs {
+    cancel_if_open_evidence_hash: String,
+    nt_accepted_venue_pending_abort_evidence_hash: String,
+    partial_fill_abort_evidence_hash: String,
+    network_partition_during_submit_abort_evidence_hash: String,
+    panic_gate_trip_abort_evidence_hash: String,
+}
+
+impl OwnedPhase8AbortPlanSourceProofs {
+    fn as_source_proofs(&self) -> Phase8AbortPlanSourceProofs<'_> {
+        Phase8AbortPlanSourceProofs {
+            cancel_if_open_defined: true,
+            cancel_if_open_evidence_hash: &self.cancel_if_open_evidence_hash,
+            nt_accepted_venue_pending_abort_defined: true,
+            nt_accepted_venue_pending_abort_evidence_hash: &self
+                .nt_accepted_venue_pending_abort_evidence_hash,
+            partial_fill_abort_defined: true,
+            partial_fill_abort_evidence_hash: &self.partial_fill_abort_evidence_hash,
+            network_partition_during_submit_abort_defined: true,
+            network_partition_during_submit_abort_evidence_hash: &self
+                .network_partition_during_submit_abort_evidence_hash,
+            panic_gate_trip_abort_defined: true,
+            panic_gate_trip_abort_evidence_hash: &self.panic_gate_trip_abort_evidence_hash,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Phase8AbortPlanSourceProofBundle {
+    schema_version: u32,
+    record_kind: String,
+    cancel_if_open_defined: bool,
+    cancel_if_open_evidence: serde_json::Value,
+    nt_accepted_venue_pending_abort_defined: bool,
+    nt_accepted_venue_pending_abort_evidence: serde_json::Value,
+    partial_fill_abort_defined: bool,
+    partial_fill_abort_evidence: serde_json::Value,
+    network_partition_during_submit_abort_defined: bool,
+    network_partition_during_submit_abort_evidence: serde_json::Value,
+    panic_gate_trip_abort_defined: bool,
+    panic_gate_trip_abort_evidence: serde_json::Value,
+}
+
+impl Phase8AbortPlanSourceProofBundle {
+    fn into_source_proofs(
+        self,
+    ) -> Result<OwnedPhase8AbortPlanSourceProofs, BoltV3OperatorArtifactError> {
+        if self.schema_version != ABORT_PLAN_SOURCE_PROOF_BUNDLE_SCHEMA_VERSION {
+            return Err(BoltV3OperatorArtifactError::AbortPlanSourceBundleInvalid {
+                field: "schema_version",
+            });
+        }
+        if self.record_kind != ABORT_PLAN_SOURCE_PROOF_BUNDLE_RECORD_KIND {
+            return Err(BoltV3OperatorArtifactError::AbortPlanSourceBundleInvalid {
+                field: "record_kind",
+            });
+        }
+        require_abort_plan_source_bundle_bool(
+            "cancel_if_open_defined",
+            self.cancel_if_open_defined,
+        )?;
+        require_abort_plan_source_bundle_bool(
+            "nt_accepted_venue_pending_abort_defined",
+            self.nt_accepted_venue_pending_abort_defined,
+        )?;
+        require_abort_plan_source_bundle_bool(
+            "partial_fill_abort_defined",
+            self.partial_fill_abort_defined,
+        )?;
+        require_abort_plan_source_bundle_bool(
+            "network_partition_during_submit_abort_defined",
+            self.network_partition_during_submit_abort_defined,
+        )?;
+        require_abort_plan_source_bundle_bool(
+            "panic_gate_trip_abort_defined",
+            self.panic_gate_trip_abort_defined,
+        )?;
+        Ok(OwnedPhase8AbortPlanSourceProofs {
+            cancel_if_open_evidence_hash: abort_plan_source_bundle_evidence_hash(
+                "cancel_if_open_evidence",
+                &self.cancel_if_open_evidence,
+            )?,
+            nt_accepted_venue_pending_abort_evidence_hash: abort_plan_source_bundle_evidence_hash(
+                "nt_accepted_venue_pending_abort_evidence",
+                &self.nt_accepted_venue_pending_abort_evidence,
+            )?,
+            partial_fill_abort_evidence_hash: abort_plan_source_bundle_evidence_hash(
+                "partial_fill_abort_evidence",
+                &self.partial_fill_abort_evidence,
+            )?,
+            network_partition_during_submit_abort_evidence_hash:
+                abort_plan_source_bundle_evidence_hash(
+                    "network_partition_during_submit_abort_evidence",
+                    &self.network_partition_during_submit_abort_evidence,
+                )?,
+            panic_gate_trip_abort_evidence_hash: abort_plan_source_bundle_evidence_hash(
+                "panic_gate_trip_abort_evidence",
+                &self.panic_gate_trip_abort_evidence,
+            )?,
+        })
+    }
+}
+
+fn read_abort_plan_source_bundle_file(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<Phase8AbortPlanSourceProofBundle, BoltV3OperatorArtifactError> {
+    let bytes = read_file_bounded(path, max_bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::AbortPlanSourceBundleRead {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    serde_json::from_slice(&bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::AbortPlanSourceBundleParse {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
+}
+
+fn require_abort_plan_source_bundle_bool(
+    field: &'static str,
+    value: bool,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if value {
+        Ok(())
+    } else {
+        Err(BoltV3OperatorArtifactError::AbortPlanSourceBundleInvalid { field })
+    }
+}
+
+fn abort_plan_source_bundle_evidence_hash(
+    field: &'static str,
+    value: &serde_json::Value,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    if value.is_null() {
+        return Err(BoltV3OperatorArtifactError::AbortPlanSourceBundleInvalid { field });
+    }
+    json_artifact_sha256(value)
+}
+
+pub fn write_abort_plan_artifact_from_source_bundle_file(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    source_bundle_path: &Path,
+    max_source_bundle_bytes: u64,
+    path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let bundle = read_abort_plan_source_bundle_file(source_bundle_path, max_source_bundle_bytes)?;
+    let proofs = bundle.into_source_proofs()?;
+    write_abort_plan_artifact_from_source_proofs(
+        loaded,
+        strategy_instance_id,
+        proofs.as_source_proofs(),
+        path,
+    )
+}
+
 pub fn write_strategy_input_evidence_artifact(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
@@ -861,6 +1143,7 @@ pub fn write_strategy_input_evidence_artifact_from_runtime_snapshot(
     strategy_instance_id: &str,
     snapshot: &BoltV3StrategyInputEvidenceSnapshot,
     market_selection_source_ref: &WrittenOperatorArtifact,
+    max_market_selection_source_bytes: u64,
     candidate_market_start_timestamps_ms: &[u64],
     path: &Path,
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
@@ -881,22 +1164,16 @@ pub fn write_strategy_input_evidence_artifact_from_runtime_snapshot(
             },
         );
     }
-    let mut market_selection_source_file =
-        open_regular_artifact_file(&market_selection_source_ref.path).map_err(|source| {
-            BoltV3OperatorArtifactError::MarketSelectionSourceRead {
-                path: market_selection_source_ref.path.clone(),
-                source,
-            }
-        })?;
-    let mut market_selection_source_bytes = Vec::new();
-    market_selection_source_file
-        .read_to_end(&mut market_selection_source_bytes)
-        .map_err(
-            |source| BoltV3OperatorArtifactError::MarketSelectionSourceRead {
-                path: market_selection_source_ref.path.clone(),
-                source,
-            },
-        )?;
+    let market_selection_source_bytes = read_file_bounded(
+        &market_selection_source_ref.path,
+        max_market_selection_source_bytes,
+    )
+    .map_err(
+        |source| BoltV3OperatorArtifactError::MarketSelectionSourceRead {
+            path: market_selection_source_ref.path.clone(),
+            source,
+        },
+    )?;
     if hex::encode(Sha256::digest(&market_selection_source_bytes))
         != market_selection_source_ref.sha256
     {
@@ -947,6 +1224,7 @@ pub fn write_strategy_input_evidence_artifact_from_decision_evidence_file(
         strategy_instance_id,
         &chain.snapshot,
         market_selection_source_ref,
+        max_decision_evidence_bytes,
         candidate_market_start_timestamps_ms,
         path,
     )
@@ -982,6 +1260,266 @@ pub fn write_pre_run_state_artifact_from_source_proofs(
     )
     .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
     write_json_artifact_create_new(path, &artifact)
+}
+
+#[derive(Debug)]
+struct OwnedPhase8PreRunStateSourceProofs {
+    host_clock_skew_evidence_hash: String,
+    venue_account_state_evidence_hash: String,
+    market_state_evidence_hash: String,
+    funding_margin_evidence_hash: String,
+    single_runner_lock_evidence_hash: String,
+    egress_identity_evidence_hash: String,
+    clob_v2_adapter_signing_evidence_hash: String,
+    clob_v2_collateral_accounting_evidence_hash: String,
+    clob_v2_fee_behavior_evidence_hash: String,
+    release_manifest_clob_signing_version: String,
+    release_manifest_evidence_hash: String,
+}
+
+impl OwnedPhase8PreRunStateSourceProofs {
+    fn as_source_proofs(&self) -> Phase8PreRunStateSourceProofs<'_> {
+        Phase8PreRunStateSourceProofs {
+            host_clock_skew_within_bound: true,
+            host_clock_skew_evidence_hash: &self.host_clock_skew_evidence_hash,
+            conflicting_open_orders_absent: true,
+            preexisting_position_absent: true,
+            venue_account_state_evidence_hash: &self.venue_account_state_evidence_hash,
+            market_state_approved: true,
+            market_window_approved: true,
+            market_state_evidence_hash: &self.market_state_evidence_hash,
+            funding_margin_covers_max_notional_plus_fees: true,
+            funding_margin_evidence_hash: &self.funding_margin_evidence_hash,
+            single_runner_lock_acquired: true,
+            single_runner_lock_evidence_hash: &self.single_runner_lock_evidence_hash,
+            egress_identity_approved: true,
+            egress_identity_evidence_hash: &self.egress_identity_evidence_hash,
+            clob_v2_adapter_signing_verified: true,
+            clob_v2_adapter_signing_evidence_hash: &self.clob_v2_adapter_signing_evidence_hash,
+            clob_v2_collateral_accounting_verified: true,
+            clob_v2_collateral_accounting_evidence_hash: &self
+                .clob_v2_collateral_accounting_evidence_hash,
+            clob_v2_fee_behavior_verified: true,
+            clob_v2_fee_behavior_evidence_hash: &self.clob_v2_fee_behavior_evidence_hash,
+            release_manifest_clob_signing_version: &self.release_manifest_clob_signing_version,
+            release_manifest_nt_revision_matches_compiled_pin: true,
+            release_manifest_evidence_hash: &self.release_manifest_evidence_hash,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Phase8PreRunStateSourceProofBundle {
+    schema_version: u32,
+    record_kind: String,
+    host_clock_skew_within_bound: bool,
+    host_clock_evidence: serde_json::Value,
+    conflicting_open_orders_absent: bool,
+    preexisting_position_absent: bool,
+    venue_account_state_evidence: serde_json::Value,
+    market_state_approved: bool,
+    market_window_approved: bool,
+    market_state_evidence_hash: String,
+    funding_margin_covers_max_notional_plus_fees: bool,
+    funding_margin_evidence: serde_json::Value,
+    single_runner_lock_acquired: bool,
+    single_runner_lock_evidence: serde_json::Value,
+    egress_identity_approved: bool,
+    egress_identity_evidence: serde_json::Value,
+    clob_v2_adapter_signing_verified: bool,
+    clob_v2_adapter_signing_evidence: serde_json::Value,
+    clob_v2_collateral_accounting_verified: bool,
+    clob_v2_collateral_accounting_evidence: serde_json::Value,
+    clob_v2_fee_behavior_verified: bool,
+    clob_v2_fee_behavior_evidence: serde_json::Value,
+    release_manifest_clob_signing_version: String,
+    release_manifest_nt_revision_matches_compiled_pin: bool,
+    release_manifest_evidence_hash: String,
+}
+
+impl Phase8PreRunStateSourceProofBundle {
+    fn into_source_proofs(
+        self,
+    ) -> Result<OwnedPhase8PreRunStateSourceProofs, BoltV3OperatorArtifactError> {
+        if self.schema_version != PRE_RUN_STATE_SOURCE_PROOF_BUNDLE_SCHEMA_VERSION {
+            return Err(
+                BoltV3OperatorArtifactError::PreRunStateSourceBundleInvalid {
+                    field: "schema_version",
+                },
+            );
+        }
+        if self.record_kind != PRE_RUN_STATE_SOURCE_PROOF_BUNDLE_RECORD_KIND {
+            return Err(
+                BoltV3OperatorArtifactError::PreRunStateSourceBundleInvalid {
+                    field: "record_kind",
+                },
+            );
+        }
+        require_pre_run_source_bundle_bool(
+            "host_clock_skew_within_bound",
+            self.host_clock_skew_within_bound,
+        )?;
+        require_pre_run_source_bundle_bool(
+            "conflicting_open_orders_absent",
+            self.conflicting_open_orders_absent,
+        )?;
+        require_pre_run_source_bundle_bool(
+            "preexisting_position_absent",
+            self.preexisting_position_absent,
+        )?;
+        require_pre_run_source_bundle_bool("market_state_approved", self.market_state_approved)?;
+        require_pre_run_source_bundle_bool("market_window_approved", self.market_window_approved)?;
+        require_pre_run_source_bundle_sha256(
+            "market_state_evidence_hash",
+            &self.market_state_evidence_hash,
+        )?;
+        require_pre_run_source_bundle_bool(
+            "funding_margin_covers_max_notional_plus_fees",
+            self.funding_margin_covers_max_notional_plus_fees,
+        )?;
+        require_pre_run_source_bundle_bool(
+            "single_runner_lock_acquired",
+            self.single_runner_lock_acquired,
+        )?;
+        require_pre_run_source_bundle_bool(
+            "egress_identity_approved",
+            self.egress_identity_approved,
+        )?;
+        require_pre_run_source_bundle_bool(
+            "clob_v2_adapter_signing_verified",
+            self.clob_v2_adapter_signing_verified,
+        )?;
+        require_pre_run_source_bundle_bool(
+            "clob_v2_collateral_accounting_verified",
+            self.clob_v2_collateral_accounting_verified,
+        )?;
+        require_pre_run_source_bundle_bool(
+            "clob_v2_fee_behavior_verified",
+            self.clob_v2_fee_behavior_verified,
+        )?;
+        if self.release_manifest_clob_signing_version.trim().is_empty() {
+            return Err(
+                BoltV3OperatorArtifactError::PreRunStateSourceBundleInvalid {
+                    field: "release_manifest_clob_signing_version",
+                },
+            );
+        }
+        require_pre_run_source_bundle_bool(
+            "release_manifest_nt_revision_matches_compiled_pin",
+            self.release_manifest_nt_revision_matches_compiled_pin,
+        )?;
+        require_pre_run_source_bundle_sha256(
+            "release_manifest_evidence_hash",
+            &self.release_manifest_evidence_hash,
+        )?;
+
+        Ok(OwnedPhase8PreRunStateSourceProofs {
+            host_clock_skew_evidence_hash: pre_run_source_bundle_evidence_hash(
+                "host_clock_evidence",
+                &self.host_clock_evidence,
+            )?,
+            venue_account_state_evidence_hash: pre_run_source_bundle_evidence_hash(
+                "venue_account_state_evidence",
+                &self.venue_account_state_evidence,
+            )?,
+            market_state_evidence_hash: self.market_state_evidence_hash,
+            funding_margin_evidence_hash: pre_run_source_bundle_evidence_hash(
+                "funding_margin_evidence",
+                &self.funding_margin_evidence,
+            )?,
+            single_runner_lock_evidence_hash: pre_run_source_bundle_evidence_hash(
+                "single_runner_lock_evidence",
+                &self.single_runner_lock_evidence,
+            )?,
+            egress_identity_evidence_hash: pre_run_source_bundle_evidence_hash(
+                "egress_identity_evidence",
+                &self.egress_identity_evidence,
+            )?,
+            clob_v2_adapter_signing_evidence_hash: pre_run_source_bundle_evidence_hash(
+                "clob_v2_adapter_signing_evidence",
+                &self.clob_v2_adapter_signing_evidence,
+            )?,
+            clob_v2_collateral_accounting_evidence_hash: pre_run_source_bundle_evidence_hash(
+                "clob_v2_collateral_accounting_evidence",
+                &self.clob_v2_collateral_accounting_evidence,
+            )?,
+            clob_v2_fee_behavior_evidence_hash: pre_run_source_bundle_evidence_hash(
+                "clob_v2_fee_behavior_evidence",
+                &self.clob_v2_fee_behavior_evidence,
+            )?,
+            release_manifest_clob_signing_version: self.release_manifest_clob_signing_version,
+            release_manifest_evidence_hash: self.release_manifest_evidence_hash,
+        })
+    }
+}
+
+fn read_pre_run_state_source_bundle_file(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<Phase8PreRunStateSourceProofBundle, BoltV3OperatorArtifactError> {
+    let bytes = read_file_bounded(path, max_bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::PreRunStateSourceBundleRead {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    serde_json::from_slice(&bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::PreRunStateSourceBundleParse {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
+}
+
+fn require_pre_run_source_bundle_bool(
+    field: &'static str,
+    value: bool,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if value {
+        Ok(())
+    } else {
+        Err(BoltV3OperatorArtifactError::PreRunStateSourceBundleInvalid { field })
+    }
+}
+
+fn require_pre_run_source_bundle_sha256(
+    field: &'static str,
+    value: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if is_lowercase_sha256(value) {
+        Ok(())
+    } else {
+        Err(BoltV3OperatorArtifactError::PreRunStateSourceBundleInvalid { field })
+    }
+}
+
+fn pre_run_source_bundle_evidence_hash(
+    field: &'static str,
+    value: &serde_json::Value,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    if value.is_null() {
+        return Err(BoltV3OperatorArtifactError::PreRunStateSourceBundleInvalid { field });
+    }
+    json_artifact_sha256(value)
+}
+
+pub fn write_pre_run_state_artifact_from_source_bundle_file(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    source_bundle_path: &Path,
+    max_source_bundle_bytes: u64,
+    path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let bundle =
+        read_pre_run_state_source_bundle_file(source_bundle_path, max_source_bundle_bytes)?;
+    let proofs = bundle.into_source_proofs()?;
+    write_pre_run_state_artifact_from_source_proofs(
+        loaded,
+        strategy_instance_id,
+        proofs.as_source_proofs(),
+        path,
+    )
 }
 
 pub fn collect_pre_run_release_manifest_source_proof(
@@ -1452,6 +1990,7 @@ pub fn write_static_operator_artifacts(
         &output_dir.join(STRATEGY_INPUT_FILE_NAME),
     ) {
         Ok(written) => {
+            written_artifacts.push(written.clone());
             generated_artifacts.push(static_artifact_ref(STRATEGY_INPUT_ARTIFACT_NAME, written))
         }
         Err(BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven { prerequisite }) => {
@@ -1469,6 +2008,7 @@ pub fn write_static_operator_artifacts(
         &output_dir.join(PRE_RUN_STATE_FILE_NAME),
     ) {
         Ok(written) => {
+            written_artifacts.push(written.clone());
             generated_artifacts.push(static_artifact_ref(PRE_RUN_STATE_ARTIFACT_NAME, written))
         }
         Err(BoltV3OperatorArtifactError::PreRunStatePrerequisiteUnproven { prerequisite }) => {
@@ -1486,6 +2026,7 @@ pub fn write_static_operator_artifacts(
         &output_dir.join(ABORT_PLAN_FILE_NAME),
     ) {
         Ok(written) => {
+            written_artifacts.push(written.clone());
             generated_artifacts.push(static_artifact_ref(ABORT_PLAN_ARTIFACT_NAME, written))
         }
         Err(BoltV3OperatorArtifactError::AbortPrerequisiteUnproven { prerequisite }) => {
@@ -1526,6 +2067,106 @@ pub fn write_static_operator_artifacts(
             manifest_artifact: written_artifact_summary_ref(manifest_written),
         },
         blockers: outcome_blockers,
+    })
+}
+
+pub fn write_static_artifacts_manifest_from_operator_evidence(
+    loaded: &LoadedBoltV3Config,
+    path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or(BoltV3OperatorArtifactError::MissingLiveCanary)?;
+    let operator_evidence = live_canary
+        .operator_evidence
+        .as_ref()
+        .ok_or(BoltV3OperatorArtifactError::MissingOperatorEvidence)?;
+    let max_bytes = operator_evidence.max_operator_evidence_file_bytes;
+    let generated_artifacts = vec![
+        static_artifact_ref_from_operator_evidence(
+            loaded,
+            SSM_MANIFEST_ARTIFACT_NAME,
+            &operator_evidence.ssm_manifest_path,
+            &operator_evidence.ssm_manifest_sha256,
+            "ssm_manifest_sha256",
+            max_bytes,
+        )?,
+        static_artifact_ref_from_operator_evidence(
+            loaded,
+            STRATEGY_INPUT_ARTIFACT_NAME,
+            &operator_evidence.strategy_input_evidence_path,
+            &operator_evidence.strategy_input_evidence_sha256,
+            "strategy_input_evidence_sha256",
+            max_bytes,
+        )?,
+        static_artifact_ref_from_operator_evidence(
+            loaded,
+            FINANCIAL_ENVELOPE_ARTIFACT_NAME,
+            &operator_evidence.financial_envelope_path,
+            &operator_evidence.financial_envelope_sha256,
+            "financial_envelope_sha256",
+            max_bytes,
+        )?,
+        static_artifact_ref_from_operator_evidence(
+            loaded,
+            PRE_RUN_STATE_ARTIFACT_NAME,
+            &operator_evidence.pre_run_state_path,
+            &operator_evidence.pre_run_state_sha256,
+            "pre_run_state_sha256",
+            max_bytes,
+        )?,
+        static_artifact_ref_from_operator_evidence(
+            loaded,
+            ABORT_PLAN_ARTIFACT_NAME,
+            &operator_evidence.abort_plan_path,
+            &operator_evidence.abort_plan_sha256,
+            "abort_plan_sha256",
+            max_bytes,
+        )?,
+        static_artifact_ref_from_operator_evidence(
+            loaded,
+            APPROVAL_NONCE_ARTIFACT_NAME,
+            &operator_evidence.approval_nonce_path,
+            &operator_evidence.approval_nonce_sha256,
+            "approval_nonce_sha256",
+            max_bytes,
+        )?,
+    ];
+    let manifest = BoltV3StaticArtifactsManifest {
+        schema_version: STATIC_ARTIFACTS_MANIFEST_SCHEMA_VERSION,
+        record_kind: STATIC_ARTIFACTS_MANIFEST_RECORD_KIND,
+        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
+        generated_artifacts,
+        blockers: Vec::new(),
+    };
+    write_json_artifact_create_new(path, &manifest)
+}
+
+fn static_artifact_ref_from_operator_evidence(
+    loaded: &LoadedBoltV3Config,
+    name: &'static str,
+    configured_path: &str,
+    configured_sha256: &str,
+    configured_sha256_field: &'static str,
+    max_bytes: u64,
+) -> Result<BoltV3StaticArtifactRef, BoltV3OperatorArtifactError> {
+    validate_operator_evidence_sha256(configured_sha256_field, configured_sha256)?;
+    let resolved_path = resolve_loaded_config_path(loaded, configured_path);
+    let actual = sha256_file_for_static_manifest(name, &resolved_path, max_bytes)?;
+    if actual != configured_sha256 {
+        return Err(
+            BoltV3OperatorArtifactError::StaticManifestArtifactFileHashMismatch {
+                name,
+                path: resolved_path,
+            },
+        );
+    }
+    Ok(BoltV3StaticArtifactRef {
+        name,
+        path: configured_path.to_string(),
+        sha256: configured_sha256.to_string(),
     })
 }
 

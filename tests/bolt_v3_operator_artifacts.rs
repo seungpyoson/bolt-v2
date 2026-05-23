@@ -324,6 +324,80 @@ fn abort_plan_writer_emits_config_bound_artifact_from_source_proofs() {
 }
 
 #[test]
+fn abort_plan_writer_emits_artifact_from_source_bundle_file() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let bundle = abort_plan_source_bundle_json();
+    let bundle_path = temp.path().join("abort-source-bundle.json");
+    write_json_value_and_hash(&bundle_path, &bundle);
+    let output_path = temp.path().join("abort-plan.json");
+
+    bolt_v2::bolt_v3_operator_artifacts::write_abort_plan_artifact_from_source_bundle_file(
+        &loaded,
+        strategy_instance_id,
+        &bundle_path,
+        100_000,
+        &output_path,
+    )
+    .expect("source bundle should write abort-plan artifact");
+
+    let json = read_json_value(&output_path);
+    assert_eq!(json["cancel_if_open_defined"], true);
+    assert_eq!(
+        json["cancel_if_open_evidence_hash"],
+        sha256_json_value(&bundle["cancel_if_open_evidence"])
+    );
+    assert_eq!(
+        json["panic_gate_trip_abort_evidence_hash"],
+        sha256_json_value(&bundle["panic_gate_trip_abort_evidence"])
+    );
+}
+
+#[test]
+fn abort_plan_writer_rejects_source_bundle_false_path_without_artifact() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut bundle = abort_plan_source_bundle_json();
+    bundle["cancel_if_open_defined"] = serde_json::json!(false);
+    let bundle_path = temp.path().join("abort-source-bundle.json");
+    write_json_value_and_hash(&bundle_path, &bundle);
+    let output_path = temp.path().join("abort-plan.json");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_abort_plan_artifact_from_source_bundle_file(
+            &loaded,
+            strategy_instance_id,
+            &bundle_path,
+            100_000,
+            &output_path,
+        )
+        .expect_err("false cancel proof must fail closed");
+
+    assert!(
+        error.to_string().contains("cancel_if_open_defined"),
+        "cancel proof failure should identify field: {error}"
+    );
+    assert!(
+        !output_path.exists(),
+        "false cancel proof must not leave abort-plan artifact"
+    );
+}
+
+#[test]
 fn abort_plan_writer_rejects_each_undefined_source_path_without_artifact() {
     assert_rejects_undefined_abort_plan_source_path("cancel_if_open_defined", |proofs| {
         proofs.cancel_if_open_defined = false;
@@ -456,6 +530,88 @@ fn pre_run_state_writer_emits_hash_bound_artifact_from_source_proofs() {
     assert_eq!(
         json["release_manifest_clob_signing_version"],
         "clob-v2-release-test"
+    );
+}
+
+#[test]
+fn pre_run_state_writer_emits_artifact_from_source_bundle_file() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let bundle = pre_run_state_source_bundle_json();
+    let bundle_path = temp.path().join("pre-run-source-bundle.json");
+    write_json_value_and_hash(&bundle_path, &bundle);
+    let output_path = temp.path().join("pre-run-state.json");
+
+    bolt_v2::bolt_v3_operator_artifacts::write_pre_run_state_artifact_from_source_bundle_file(
+        &loaded,
+        strategy_instance_id,
+        &bundle_path,
+        100_000,
+        &output_path,
+    )
+    .expect("source bundle should write pre-run-state artifact");
+
+    let json = read_json_value(&output_path);
+    assert_eq!(json["host_clock_skew_within_bound"], true);
+    assert_eq!(
+        json["host_clock_skew_evidence_hash"],
+        sha256_json_value(&bundle["host_clock_evidence"])
+    );
+    assert_eq!(
+        json["venue_account_state_evidence_hash"],
+        sha256_json_value(&bundle["venue_account_state_evidence"])
+    );
+    assert_eq!(
+        json["market_state_evidence_hash"],
+        bundle["market_state_evidence_hash"]
+    );
+    assert_eq!(
+        json["release_manifest_evidence_hash"],
+        bundle["release_manifest_evidence_hash"]
+    );
+}
+
+#[test]
+fn pre_run_state_writer_rejects_source_bundle_false_proof_without_artifact() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut bundle = pre_run_state_source_bundle_json();
+    bundle["host_clock_skew_within_bound"] = serde_json::json!(false);
+    let bundle_path = temp.path().join("pre-run-source-bundle.json");
+    write_json_value_and_hash(&bundle_path, &bundle);
+    let output_path = temp.path().join("pre-run-state.json");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_pre_run_state_artifact_from_source_bundle_file(
+            &loaded,
+            strategy_instance_id,
+            &bundle_path,
+            100_000,
+            &output_path,
+        )
+        .expect_err("false host-clock proof must fail closed");
+
+    assert!(
+        error.to_string().contains("host_clock_skew_within_bound"),
+        "host-clock proof failure should identify field: {error}"
+    );
+    assert!(
+        !output_path.exists(),
+        "false host-clock proof must not leave pre-run-state artifact"
     );
 }
 
@@ -981,6 +1137,38 @@ fn static_operator_artifacts_remove_prior_outputs_when_later_write_fails() {
 }
 
 #[test]
+fn static_operator_artifacts_track_future_success_outputs_for_cleanup() {
+    let source = std::fs::read_to_string(repo_path("src/bolt_v3_operator_artifacts.rs"))
+        .expect("operator artifacts source should read");
+    let function_start = source
+        .find("pub fn write_static_operator_artifacts")
+        .expect("static artifact writer should exist");
+    let function_end = source[function_start..]
+        .find("let outcome_blockers = blockers.clone();")
+        .map(|offset| function_start + offset)
+        .expect("static artifact writer should build outcome after source artifact attempts");
+    let writer_source = &source[function_start..function_end];
+
+    for artifact_name in [
+        "STRATEGY_INPUT_ARTIFACT_NAME",
+        "PRE_RUN_STATE_ARTIFACT_NAME",
+        "ABORT_PLAN_ARTIFACT_NAME",
+    ] {
+        let artifact_ref = format!("static_artifact_ref({artifact_name}, written)");
+        let ref_index = writer_source
+            .find(&artifact_ref)
+            .unwrap_or_else(|| panic!("writer should reference {artifact_name}"));
+        let preceding_branch = &writer_source[..ref_index];
+        assert!(
+            preceding_branch.ends_with(
+                "written_artifacts.push(written.clone());\n            generated_artifacts.push("
+            ),
+            "{artifact_name} successful write must enter cleanup ledger before manifest reference"
+        );
+    }
+}
+
+#[test]
 #[cfg(unix)]
 fn approval_nonce_writer_creates_private_mode_artifact() {
     use std::os::unix::fs::PermissionsExt;
@@ -1025,6 +1213,42 @@ fn approval_nonce_writer_rejects_broken_symlink_output_path() {
         std::fs::symlink_metadata(&link).is_ok(),
         "failed symlink write must leave the original symlink untouched"
     );
+}
+
+#[test]
+fn static_manifest_writer_emits_blocker_free_manifest_from_operator_evidence() {
+    let fixture = assembled_final_packet_fixture();
+    std::fs::remove_file(&fixture.static_manifest_path)
+        .expect("fixture static manifest should be removable");
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_static_artifacts_manifest_from_operator_evidence(
+            &fixture.loaded,
+            &fixture.static_manifest_path,
+        )
+        .expect("operator-evidence-bound manifest should write");
+
+    let manifest = read_json_value(&fixture.static_manifest_path);
+    assert_eq!(written.sha256, sha256_file(&fixture.static_manifest_path));
+    assert_eq!(manifest["blockers"], serde_json::json!([]));
+    let generated = manifest["generated_artifacts"]
+        .as_array()
+        .expect("generated artifacts should be an array");
+    for expected_name in [
+        "ssm-manifest",
+        "strategy-input",
+        "financial-envelope",
+        "pre-run-state",
+        "abort-plan",
+        "approval-nonce",
+    ] {
+        assert!(
+            generated
+                .iter()
+                .any(|artifact| artifact["name"] == expected_name),
+            "manifest should include {expected_name}: {manifest}"
+        );
+    }
 }
 
 #[test]
@@ -2647,6 +2871,48 @@ fn market_selection_source_writer_promotes_source_bound_decision_evidence() {
 }
 
 #[test]
+fn market_selection_source_writer_promotes_decision_evidence_from_instrument_source_file() {
+    let fixture = strategy_input_runtime_fixture();
+    let output_path = fixture
+        .temp
+        .path()
+        .join("decision-bound-market-selection-from-instrument-file.json");
+    let decision_evidence_path =
+        write_entry_decision_evidence_chain(&fixture.temp, &fixture.snapshot);
+    let market_slug = fixture
+        .snapshot
+        .polymarket_market_slug
+        .as_deref()
+        .expect("fixture snapshot should bind market slug");
+    let instruments = market_selection_instruments_for_slug(market_slug);
+    let instrument_source_path = fixture.temp.path().join("market-instruments.json");
+    std::fs::write(
+        &instrument_source_path,
+        serde_json::to_vec_pretty(&instruments).expect("instrument source should serialize"),
+    )
+    .expect("instrument source should write");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file(
+        &fixture.loaded,
+        &fixture.strategy_instance_id,
+        &decision_evidence_path,
+        100_000,
+        &instrument_source_path,
+        100_000,
+        &output_path,
+    )
+    .expect("source-bound decision evidence plus instrument source should write market-selection source");
+
+    let json = read_json_value(&output_path);
+    assert_eq!(written.sha256, sha256_file(&output_path));
+    assert_eq!(
+        json["market_selection_timestamp_ms"],
+        TEST_MARKET_SELECTION_NOW_MS
+    );
+    assert_eq!(json["polymarket_condition_id"], TEST_CONDITION_ID);
+}
+
+#[test]
 fn market_selection_source_writer_rejects_unusable_price_to_beat_values() {
     for (case_index, price_to_beat_value) in ["not-a-price", "0"].into_iter().enumerate() {
         let fixture = strategy_input_runtime_fixture();
@@ -2913,6 +3179,7 @@ fn strategy_input_writer_rejects_runtime_snapshot_target_source_and_hash_mismatc
                 &fixture.strategy_instance_id,
                 &snapshot,
                 &source_ref,
+                100_000,
                 &fixture.candidate_market_start_timestamps_ms,
                 &output_path,
             )
@@ -2930,6 +3197,37 @@ fn strategy_input_writer_rejects_runtime_snapshot_target_source_and_hash_mismatc
 }
 
 #[test]
+fn strategy_input_writer_rejects_oversized_market_selection_source_before_artifact() {
+    let fixture = strategy_input_runtime_fixture();
+    let output_path = fixture.temp.path().join("strategy-input.json");
+    let source_len = std::fs::metadata(&fixture.market_selection_source_ref.path)
+        .expect("market source metadata should read")
+        .len();
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_runtime_snapshot(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.snapshot,
+            &fixture.market_selection_source_ref,
+            source_len.saturating_sub(1),
+            &fixture.candidate_market_start_timestamps_ms,
+            &output_path,
+        )
+        .expect_err("oversized market-selection source must fail before strategy-input write");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("failed to read market-selection source evidence"),
+        "oversized market-selection source should be a read diagnostic: {message}"
+    );
+    assert!(
+        !output_path.exists(),
+        "oversized market-selection source failure must not write strategy-input artifact"
+    );
+}
+
+#[test]
 fn pre_run_market_window_source_proof_derives_source_owned_values() {
     let fixture = strategy_input_runtime_fixture();
     let loaded = &fixture.loaded;
@@ -2943,6 +3241,7 @@ fn pre_run_market_window_source_proof_derives_source_owned_values() {
         strategy_instance_id,
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
+        100_000,
         &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
@@ -2982,6 +3281,7 @@ fn pre_run_market_window_source_proof_rejects_symlinked_market_source() {
         &fixture.strategy_instance_id,
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
+        100_000,
         &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
@@ -3018,6 +3318,7 @@ fn pre_run_market_window_source_proof_rejects_stale_market_source_hash() {
         &fixture.strategy_instance_id,
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
+        100_000,
         &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
@@ -3048,6 +3349,7 @@ fn pre_run_market_window_source_proof_rejects_parent_dir_market_source_before_re
         &fixture.strategy_instance_id,
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
+        100_000,
         &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
@@ -3105,6 +3407,7 @@ fn pre_run_market_window_source_proof_rejects_oversized_market_source_before_aud
         &fixture.strategy_instance_id,
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
+        100_000,
         &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
@@ -3174,6 +3477,7 @@ fn strategy_input_writer_reports_market_selection_source_read_as_read_error() {
             &fixture.strategy_instance_id,
             &fixture.snapshot,
             &missing_ref,
+            100_000,
             &fixture.candidate_market_start_timestamps_ms,
             &output_path,
         )
@@ -3223,6 +3527,7 @@ fn strategy_input_writer_reports_market_selection_source_json_as_parse_error() {
             &fixture.strategy_instance_id,
             &fixture.snapshot,
             &invalid_ref,
+            100_000,
             &fixture.candidate_market_start_timestamps_ms,
             &output_path,
         )
@@ -3274,6 +3579,7 @@ fn strategy_input_writer_rejects_symlinked_market_selection_source_before_artifa
             &fixture.strategy_instance_id,
             &fixture.snapshot,
             &fixture.market_selection_source_ref,
+            100_000,
             &fixture.candidate_market_start_timestamps_ms,
             &output_path,
         )
@@ -3676,6 +3982,99 @@ fn write_json_value_and_hash(path: &std::path::Path, value: &serde_json::Value) 
     let bytes = serde_json::to_vec_pretty(value).expect("JSON artifact should serialize");
     std::fs::write(path, &bytes).expect("JSON artifact should write");
     sha256_bytes(&bytes)
+}
+
+fn sha256_json_value(value: &serde_json::Value) -> String {
+    sha256_bytes(&serde_json::to_vec_pretty(value).expect("JSON value should serialize"))
+}
+
+fn pre_run_state_source_bundle_json() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.pre_run_state_source_proof_bundle.v1",
+        "host_clock_skew_within_bound": true,
+        "host_clock_evidence": {
+            "source": "clock-skew-probe",
+            "observed_skew_ms": 1,
+            "max_skew_ms": 100
+        },
+        "conflicting_open_orders_absent": true,
+        "preexisting_position_absent": true,
+        "venue_account_state_evidence": {
+            "source": "venue-account-state-probe",
+            "open_orders": [],
+            "positions": []
+        },
+        "market_state_approved": true,
+        "market_window_approved": true,
+        "market_state_evidence_hash": sha256_text("market-window-proof"),
+        "funding_margin_covers_max_notional_plus_fees": true,
+        "funding_margin_evidence": {
+            "source": "funding-margin-probe",
+            "available_collateral": "10.00",
+            "required_collateral": "1.00"
+        },
+        "single_runner_lock_acquired": true,
+        "single_runner_lock_evidence": {
+            "source": "single-runner-lock",
+            "lock_held": true
+        },
+        "egress_identity_approved": true,
+        "egress_identity_evidence": {
+            "source": "egress-identity-probe",
+            "approved": true
+        },
+        "clob_v2_adapter_signing_verified": true,
+        "clob_v2_adapter_signing_evidence": {
+            "source": "clob-signing-audit",
+            "verified": true
+        },
+        "clob_v2_collateral_accounting_verified": true,
+        "clob_v2_collateral_accounting_evidence": {
+            "source": "clob-collateral-audit",
+            "verified": true
+        },
+        "clob_v2_fee_behavior_verified": true,
+        "clob_v2_fee_behavior_evidence": {
+            "source": "clob-fee-audit",
+            "verified": true
+        },
+        "release_manifest_clob_signing_version": "clob-v2-release-test",
+        "release_manifest_nt_revision_matches_compiled_pin": true,
+        "release_manifest_evidence_hash": sha256_text("release-manifest-proof")
+    })
+}
+
+fn abort_plan_source_bundle_json() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.abort_plan_source_proof_bundle.v1",
+        "cancel_if_open_defined": true,
+        "cancel_if_open_evidence": {
+            "source": "cancel-if-open-policy",
+            "defined": true
+        },
+        "nt_accepted_venue_pending_abort_defined": true,
+        "nt_accepted_venue_pending_abort_evidence": {
+            "source": "nt-accepted-venue-pending-policy",
+            "defined": true
+        },
+        "partial_fill_abort_defined": true,
+        "partial_fill_abort_evidence": {
+            "source": "partial-fill-policy",
+            "defined": true
+        },
+        "network_partition_during_submit_abort_defined": true,
+        "network_partition_during_submit_abort_evidence": {
+            "source": "network-partition-policy",
+            "defined": true
+        },
+        "panic_gate_trip_abort_defined": true,
+        "panic_gate_trip_abort_evidence": {
+            "source": "panic-gate-service-policy",
+            "defined": true
+        }
+    })
 }
 
 fn mutate_packet_json<F>(path: &std::path::Path, mutate: F)

@@ -5217,6 +5217,334 @@ classification = "phase8_strategy_input_schema_field"
 reason = "This names a required source-bound instrument field in the Phase 8 strategy-input evidence schema, not a concrete instrument id or operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_STATE_SOURCE_PROOF_BUNDLE_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_source_bundle_schema_version"
+reason = "This is the pre-run-state source-proof bundle schema version parsed by the operator-artifact helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_state_source_proof_bundle.v1"'''
+context = '''"bolt_v3.pre_run_state_source_proof_bundle.v1";'''
+classification = "operator_source_bundle_record_kind"
+reason = "This is the stable pre-run-state source-proof bundle record-kind discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const ABORT_PLAN_SOURCE_PROOF_BUNDLE_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_source_bundle_schema_version"
+reason = "This is the abort-plan source-proof bundle schema version parsed by the operator-artifact helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.abort_plan_source_proof_bundle.v1"'''
+context = '''"bolt_v3.abort_plan_source_proof_bundle.v1";'''
+classification = "operator_source_bundle_record_kind"
+reason = "This is the stable abort-plan source-proof bundle record-kind discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"cancel_if_open_defined"'''
+context = '''"cancel_if_open_defined",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"nt_accepted_venue_pending_abort_defined"'''
+context = '''"nt_accepted_venue_pending_abort_defined",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_abort_defined"'''
+context = '''"partial_fill_abort_defined",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"network_partition_during_submit_abort_defined"'''
+context = '''"network_partition_during_submit_abort_defined",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"panic_gate_trip_abort_defined"'''
+context = '''"panic_gate_trip_abort_defined",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"cancel_if_open_evidence"'''
+context = '''"cancel_if_open_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"nt_accepted_venue_pending_abort_evidence"'''
+context = '''"nt_accepted_venue_pending_abort_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_abort_evidence"'''
+context = '''"partial_fill_abort_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"network_partition_during_submit_abort_evidence"'''
+context = '''"network_partition_during_submit_abort_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"panic_gate_trip_abort_evidence"'''
+context = '''"panic_gate_trip_abort_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"host_clock_skew_within_bound"'''
+context = '''"host_clock_skew_within_bound",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"conflicting_open_orders_absent"'''
+context = '''"conflicting_open_orders_absent",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"preexisting_position_absent"'''
+context = '''"preexisting_position_absent",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_state_approved"'''
+context = '''require_pre_run_source_bundle_bool("market_state_approved", self.market_state_approved)?;'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_window_approved"'''
+context = '''require_pre_run_source_bundle_bool("market_window_approved", self.market_window_approved)?;'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_state_evidence_hash"'''
+context = '''"market_state_evidence_hash",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle hash field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"funding_margin_covers_max_notional_plus_fees"'''
+context = '''"funding_margin_covers_max_notional_plus_fees",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"single_runner_lock_acquired"'''
+context = '''"single_runner_lock_acquired",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"egress_identity_approved"'''
+context = '''"egress_identity_approved",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_v2_adapter_signing_verified"'''
+context = '''"clob_v2_adapter_signing_verified",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_v2_collateral_accounting_verified"'''
+context = '''"clob_v2_collateral_accounting_verified",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_v2_fee_behavior_verified"'''
+context = '''"clob_v2_fee_behavior_verified",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"release_manifest_nt_revision_matches_compiled_pin"'''
+context = '''"release_manifest_nt_revision_matches_compiled_pin",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"release_manifest_evidence_hash"'''
+context = '''"release_manifest_evidence_hash",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle hash field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"host_clock_evidence"'''
+context = '''"host_clock_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"venue_account_state_evidence"'''
+context = '''"venue_account_state_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"funding_margin_evidence"'''
+context = '''"funding_margin_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"single_runner_lock_evidence"'''
+context = '''"single_runner_lock_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"egress_identity_evidence"'''
+context = '''"egress_identity_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_v2_adapter_signing_evidence"'''
+context = '''"clob_v2_adapter_signing_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_v2_collateral_accounting_evidence"'''
+context = '''"clob_v2_collateral_accounting_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_v2_fee_behavior_evidence"'''
+context = '''"clob_v2_fee_behavior_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"approval_envelope"'''
+context = '''"approval_envelope": written_operator_artifact_json(&outcome.approval_envelope),'''
+classification = "operator_artifact_cli_summary_field"
+reason = "This names a CLI JSON summary field for the generated approval-envelope artifact; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"operator_packet"'''
+context = '''"operator_packet": written_operator_artifact_json(&outcome.operator_packet),'''
+classification = "operator_artifact_cli_summary_field"
+reason = "This names a CLI JSON summary field for the generated operator packet artifact; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"static_manifest"'''
+context = '''"static_manifest": written_operator_artifact_json(&outcome.static_manifest),'''
+classification = "operator_artifact_cli_summary_field"
+reason = "This names a CLI JSON summary field for the static manifest consumed by final assembly; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"path"'''
+context = '''"path": &written.path,'''
+classification = "operator_artifact_cli_summary_field"
+reason = "This names the CLI JSON summary path field for generated artifacts; the value is evidence output metadata."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"sha256"'''
+context = '''"sha256": &written.sha256,'''
+classification = "operator_artifact_cli_summary_field"
+reason = "This names the CLI JSON summary SHA-256 field for generated artifacts; the value is evidence output metadata."
+
+[[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"down_instrument_id"'''

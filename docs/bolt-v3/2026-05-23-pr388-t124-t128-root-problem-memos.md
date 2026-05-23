@@ -35,7 +35,7 @@ Implementation notes carried forward from review:
 
 - When T125-T127 static-generation success paths become reachable, add those output files to the cleanup ledger used by `write_static_operator_artifacts`.
 - Bound market-selection source reads on the strategy-input writer path instead of using an unbounded `read_to_end`.
-- Align embedded market-selection source path validation with the stricter decision-evidence path posture.
+- Keep embedded market-selection source paths bounded, symlink-rejected, and parent-dir-rejected; do not reject absolute paths without changing the existing operator-evidence path contract.
 - Treat market-selection source as bound into the final packet through strategy-input/pre-run proof hashes, not as a top-level `[live_canary.operator_evidence]` field.
 
 ## T124

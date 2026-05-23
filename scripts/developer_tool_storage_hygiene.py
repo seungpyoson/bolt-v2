@@ -634,13 +634,16 @@ def _candidates_for_sessions(surface: PolicySurface, home_root: Path) -> list[di
     return candidates
 
 
+def _entry_lstat(entry: os.DirEntry[str]) -> os.stat_result:
+    return entry.stat(follow_symlinks=False)
+
+
 def _iter_tree_entries(path: Path) -> Iterator[tuple[Path, os.stat_result]]:
     entries: list[tuple[str, Path, os.stat_result]] = []
     with os.scandir(path) as scanner:
         for entry in scanner:
-            child = Path(entry.path)
-            stat = child.lstat()
-            entries.append((entry.name, child, stat))
+            stat = _entry_lstat(entry)
+            entries.append((entry.name, Path(entry.path), stat))
     ordered = sorted(entries, key=lambda item: item[0])
     for _name, child, child_stat in ordered:
         yield child, child_stat

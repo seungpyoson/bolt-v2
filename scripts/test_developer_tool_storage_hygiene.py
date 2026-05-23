@@ -723,15 +723,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
 
             tool = self.load_tool_module()
             policy = tool.load_policy(policy_path)
-            original_glob = pathlib.Path.glob
-
-            def following_glob(path: pathlib.Path, pattern: str) -> object:
-                if path == sessions_root and pattern == "**/*.jsonl":
-                    return [sessions_root / "linked" / outside_file.name]
-                return original_glob(path, pattern)
-
-            with mock.patch.object(pathlib.Path, "glob", following_glob):
-                payload = tool.build_dry_run(policy, home_root, repo_root)
+            payload = tool.build_dry_run(policy, home_root, repo_root)
 
         session_entries = [
             entry for entry in payload["candidates"] if entry["surface_id"] == "codex.sessions"
@@ -1091,16 +1083,16 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
 
             tool = self.load_tool_module()
             policy = tool.load_policy(policy_path)
-            original_lstat = pathlib.Path.lstat
+            original_entry_lstat = tool._entry_lstat
             missing_marker = toolchains / removable / "marker"
 
-            def disappearing_lstat(path: pathlib.Path) -> os.stat_result:
-                if path == missing_marker:
+            def disappearing_entry_lstat(entry: os.DirEntry[str]) -> os.stat_result:
+                if pathlib.Path(entry.path) == missing_marker:
                     missing_marker.unlink(missing_ok=True)
-                    raise FileNotFoundError(str(path))
-                return original_lstat(path)
+                    raise FileNotFoundError(entry.path)
+                return original_entry_lstat(entry)
 
-            pathlib.Path.lstat = disappearing_lstat
+            tool._entry_lstat = disappearing_entry_lstat
             try:
                 payload = tool.build_dry_run(
                     policy,
@@ -1110,7 +1102,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
                     default_rustup_toolchains=(default,),
                 )
             finally:
-                pathlib.Path.lstat = original_lstat
+                tool._entry_lstat = original_entry_lstat
 
         refusals = [
             entry

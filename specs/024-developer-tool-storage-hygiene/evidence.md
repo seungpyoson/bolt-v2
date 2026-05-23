@@ -182,7 +182,7 @@ Operator approval for the T012 command surface was recorded by the operator's `c
 
 | Command | Result | Notes |
 |---|---|---|
-| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 36 tests in 2.379s | Scratch fixtures only; no real home-directory mutation. |
+| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 38 tests in 4.787s | Scratch fixtures only; no real home-directory mutation. |
 | `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py` | Pass | Syntax check for the new script and test. |
 | `git diff --check` | Pass | Whitespace check. |
 | `git diff --check origin/main...HEAD` | Pass | Exact local branch diff whitespace check. |
@@ -209,7 +209,7 @@ Passes completed:
 
 Quality gates:
 
-- Regression tests: pass, 36 tests.
+- Regression tests: pass, 38 tests.
 - Type/syntax check: pass via `python3 -m py_compile`.
 - Static literal/unresolved-marker scan: pass for changed #375 files.
 
@@ -273,5 +273,24 @@ Sixth no-mistakes run `01KS9P225193E7R5QECGMTR6VQ` started on head `b6c70432` an
 |---|---|
 | Policy surface enum values were accepted without validation, so unknown `owner` or `cleanup_mode` values could silently skip cleanup dispatch and owned-byte accounting. | Added `test_policy_validation_fails_closed_for_unknown_owner_or_cleanup_mode`; policy load now validates owner, cleanup mode, per-surface cleanup mode, and adjacent-context ownership. |
 | Owned surface measurement errors were converted to zero bytes in preflight, allowing unreadable or racing paths to undercount storage and pass thresholds. | Added `test_preflight_fails_closed_when_owned_surface_measurement_fails`; preflight now records owned measurement errors and returns `owned_storage_measurement_failed`. |
+
+Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.
+
+Seventh no-mistakes run `01KS9QBW3X54JC2AT029095A78` on head `7fb5f52d` reported stale documentation-contract findings before PR opening:
+
+| Finding | Remediation |
+|---|---|
+| The #024 data model still documented stale owner, cleanup-mode, candidate action, and preflight field names. | Updated `specs/024-developer-tool-storage-hygiene/data-model.md` to match the committed TOML/script contract: `owned`/`report_only`/`out_of_scope`, `rotate`/`delete`/`remove_tree`/`refuse`, and current preflight fields. |
+| Operator preflight docs omitted `--available-disk-bytes` and exit-code behavior. | Updated `docs/ops/developer-tool-storage-hygiene.md` with the flag, observed-free-disk fallback, and exit codes 0/1/2. |
+| Parent #014 status, tasks, and issue-to-PR mapping still described #375 as future work. | Updated `specs/014-disk-pressure-governance/spec.md`, `tasks.md`, and `contracts/disk-pressure-governance.md` to reference this #375 implementation slice while preserving stop-before-merge gates. |
+
+Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.
+
+Eighth no-mistakes run `01KS9RDM7886S72R3SP6VA77FH` started on head `2319bad7` and auto-fixed to head `7a9c726b` before PR opening:
+
+| Finding | Remediation |
+|---|---|
+| Policy load accepted unsupported integer `schema_version` values. | Added `test_load_policy_rejects_unsupported_schema_version`; policy load now requires `schema_version == 1`. |
+| Log rotation could delete the oldest retained sidecar before later rotation steps succeeded. | Added `test_apply_rotation_failure_preserves_oldest_sidecar`; rotation now stages moves and rolls back on mutation failure. |
 
 Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.

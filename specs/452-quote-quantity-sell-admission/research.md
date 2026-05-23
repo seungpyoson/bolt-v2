@@ -11,27 +11,27 @@
 
 ### Bolt Current Path
 
-- `src/strategies/binary_oracle_edge_taker.rs:3745-3762`: `submit_order_with_decision_evidence(...)` records order intent, derives submit admission, calls `submit_admission().admit(&request)`, then calls NT `submit_order(...)`.
-- `src/strategies/binary_oracle_edge_taker.rs:3764-3798`: `submit_admission_request_from_order(...)` parses compiled order quantity/price and uses quote-quantity special handling before constructing `BoltV3SubmitAdmissionRequest`.
-- `src/strategies/binary_oracle_edge_taker.rs:3800-3813`: `quote_quantity_last_price_for_order(...)` uses order price for Limit/StopLimit by falling through to `order.price()`.
-- `src/strategies/binary_oracle_edge_taker.rs:3833-3851`: `quote_quantity_submit_notional(...)` calculates effective base quantity using `effective_price`, then calculates notional using `last_px`.
-- `src/strategies/binary_oracle_edge_taker.rs:3853-3875`: `quote_quantity_effective_price_for_order(...)` uses quote tick ask for BUY lower bound and bid for SELL upper bound; SELL Limit/StopLimit becomes `last_px.max(bid_price)`.
-- `src/strategies/binary_oracle_edge_taker.rs:3880-3905`: entry orders are compiled from config through `build_nt_order(...)`.
-- `src/strategies/binary_oracle_edge_taker.rs:3966-3993`: exit order construction rejects quote quantity before NT factory.
-- `src/strategies/binary_oracle_edge_taker.rs:3522-3525`: exit submission decision blocks quote-quantity exits before order construction.
+- `src/strategies/binary_oracle_edge_taker.rs:3749-3765`: `submit_order_with_decision_evidence(...)` records order intent, derives submit admission, calls `submit_admission().admit(&request)`, then calls NT `submit_order(...)`.
+- `src/strategies/binary_oracle_edge_taker.rs:3768-3807`: `submit_admission_request_from_order(...)` parses compiled order quantity/price and uses quote-quantity special handling before constructing `BoltV3SubmitAdmissionRequest`.
+- `src/strategies/binary_oracle_edge_taker.rs:3809-3822`: `quote_quantity_last_price_for_order(...)` uses order price for Limit/StopLimit by falling through to `order.price()`.
+- `src/strategies/binary_oracle_edge_taker.rs:3842-3878`: `quote_quantity_submit_notional(...)` calculates effective base quantity using `effective_price`, then calculates notional using `last_px`.
+- `src/strategies/binary_oracle_edge_taker.rs:3880-3902`: `quote_quantity_effective_price_for_order(...)` uses quote tick ask for BUY lower bound and bid for SELL upper bound; SELL Limit/StopLimit becomes `last_px.max(bid_price)`.
+- `src/strategies/binary_oracle_edge_taker.rs:3904-3932`: entry orders are compiled from config through `build_nt_order(...)`.
+- `src/strategies/binary_oracle_edge_taker.rs:3993-4020`: exit order construction rejects quote quantity before NT factory.
+- `src/strategies/binary_oracle_edge_taker.rs:3520-3528`: exit submission decision blocks quote-quantity exits before order construction.
 - `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs:925-931`: config validation rejects `parameters.exit_order.is_quote_quantity=true`.
 - `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs:941-946`: config validation rejects `parameters.forced_exit_order.is_quote_quantity=true`.
 - `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs:970-973`: config validation rejects short-side position contracts.
 
 ### Existing Regression Anchors
 
-- `src/strategies/binary_oracle_edge_taker.rs:7098`: `quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy`.
-- `src/strategies/binary_oracle_edge_taker.rs:7142`: `quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing`.
-- `src/strategies/binary_oracle_edge_taker.rs:7181`: `quote_quantity_market_submit_admission_uses_nt_cache_quote_ask`.
-- `src/strategies/binary_oracle_edge_taker.rs:7238`: `quote_quantity_market_submit_admission_uses_nt_cache_trade_when_quote_missing`.
-- `src/strategies/binary_oracle_edge_taker.rs:9837`: `exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used`.
-- `src/strategies/binary_oracle_edge_taker.rs:9869`: `exit_quote_quantity_order_build_is_rejected_before_nt_factory`.
-- `src/strategies/binary_oracle_edge_taker.rs:10993`: `configured_short_position_contract_is_rejected_until_short_economics_exists`.
+- `src/strategies/binary_oracle_edge_taker.rs:7125`: `quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy`.
+- `src/strategies/binary_oracle_edge_taker.rs:7453`: `quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing`.
+- `src/strategies/binary_oracle_edge_taker.rs:7492`: `quote_quantity_market_submit_admission_uses_nt_cache_quote_ask`.
+- `src/strategies/binary_oracle_edge_taker.rs:7549`: `quote_quantity_market_submit_admission_uses_nt_cache_trade_when_quote_missing`.
+- `src/strategies/binary_oracle_edge_taker.rs:10148`: `exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used`.
+- `src/strategies/binary_oracle_edge_taker.rs:10180`: `exit_quote_quantity_order_build_is_rejected_before_nt_factory`.
+- `src/strategies/binary_oracle_edge_taker.rs:11304`: `configured_short_position_contract_is_rejected_until_short_economics_exists`.
 
 ### Pinned NautilusTrader Evidence
 
@@ -83,3 +83,14 @@ Before enabling shorts or quote-sized exits, Bolt must have an explicit admissio
 **Alternatives considered**:
 
 - Implement #451 first: rejected because user marked #451 context only.
+
+## Implementation Evidence
+
+- `src/bolt_v3_submit_admission.rs:125` defines the generic quote-quantity admission input without venue, market-family, or strategy identity.
+- `src/bolt_v3_submit_admission.rs:148` floors non-inverse quote-quantity SELL Limit/StopLimit calculated notional with `Decimal::max(submitted_quote_quantity)`.
+- `src/strategies/binary_oracle_edge_taker.rs:3791` fails closed before quote-quantity admission when instrument context is unavailable.
+- `src/strategies/binary_oracle_edge_taker.rs:3860` wires compiled order admission through the generic helper while preserving current order-factory and submit flow.
+- `src/strategies/binary_oracle_edge_taker.rs:7169` and `src/strategies/binary_oracle_edge_taker.rs:7309` cover SELL Limit and StopLimit `bid > limit_price` strategy regressions.
+- `src/strategies/binary_oracle_edge_taker.rs:7219`, `src/strategies/binary_oracle_edge_taker.rs:7260`, `src/strategies/binary_oracle_edge_taker.rs:7359`, and `src/strategies/binary_oracle_edge_taker.rs:7402` cover missing quote fallback and missing instrument context fail-closed strategy behavior.
+- `tests/bolt_v3_submit_admission.rs:157`, `tests/bolt_v3_submit_admission.rs:176`, `tests/bolt_v3_submit_admission.rs:195`, `tests/bolt_v3_submit_admission.rs:210`, `tests/bolt_v3_submit_admission.rs:225`, and `tests/bolt_v3_submit_admission.rs:240` cover helper floor, fallback, and inverse bypass behavior.
+- `tests/bolt_v3_submit_admission.rs:255` is the source-fence positive control and real helper assertion for forbidden market/provider/strategy tokens.

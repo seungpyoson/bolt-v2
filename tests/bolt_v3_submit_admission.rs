@@ -7,7 +7,9 @@ use bolt_v2::bolt_v3_decision_evidence::{
 };
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_submit_admission::{
+    BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderKind, BoltV3QuoteQuantityOrderSide,
     BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
+    conservative_quote_quantity_admission_notional,
 };
 use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
@@ -149,6 +151,141 @@ fn non_positive_notional_rejects_before_nt_submit_without_consuming_count() {
     ));
     assert_eq!(admission.admitted_order_count(), 0);
     assert!(!nt_submit_called, "NT submit must not be reached");
+}
+
+#[test]
+fn quote_quantity_sell_limit_helper_floors_to_submitted_quote_quantity() {
+    let notional =
+        conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
+            order_kind: BoltV3QuoteQuantityOrderKind::Limit,
+            order_side: BoltV3QuoteQuantityOrderSide::Sell,
+            is_quote_quantity: true,
+            is_inverse: false,
+            submitted_quote_quantity: Decimal::new(25019, 3),
+            calculated_notional: Decimal::new(16679333, 6),
+        });
+
+    assert_eq!(
+        notional,
+        Decimal::new(25019, 3),
+        "fractional SELL Limit fixture must floor with Decimal::max, not f64 or string comparison"
+    );
+}
+
+#[test]
+fn quote_quantity_sell_stop_limit_helper_floors_to_submitted_quote_quantity() {
+    let notional =
+        conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
+            order_kind: BoltV3QuoteQuantityOrderKind::StopLimit,
+            order_side: BoltV3QuoteQuantityOrderSide::Sell,
+            is_quote_quantity: true,
+            is_inverse: false,
+            submitted_quote_quantity: Decimal::new(25019, 3),
+            calculated_notional: Decimal::new(16679333, 6),
+        });
+
+    assert_eq!(
+        notional,
+        Decimal::new(25019, 3),
+        "fractional SELL StopLimit fixture must floor with Decimal::max, not f64 or string comparison"
+    );
+}
+
+#[test]
+fn quote_quantity_sell_limit_helper_missing_quote_uses_submitted_quote_quantity() {
+    let notional =
+        conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
+            order_kind: BoltV3QuoteQuantityOrderKind::Limit,
+            order_side: BoltV3QuoteQuantityOrderSide::Sell,
+            is_quote_quantity: true,
+            is_inverse: false,
+            submitted_quote_quantity: Decimal::new(2500, 2),
+            calculated_notional: Decimal::new(2500, 2),
+        });
+
+    assert_eq!(notional, Decimal::new(2500, 2));
+}
+
+#[test]
+fn quote_quantity_sell_stop_limit_helper_missing_quote_uses_submitted_quote_quantity() {
+    let notional =
+        conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
+            order_kind: BoltV3QuoteQuantityOrderKind::StopLimit,
+            order_side: BoltV3QuoteQuantityOrderSide::Sell,
+            is_quote_quantity: true,
+            is_inverse: false,
+            submitted_quote_quantity: Decimal::new(2500, 2),
+            calculated_notional: Decimal::new(2500, 2),
+        });
+
+    assert_eq!(notional, Decimal::new(2500, 2));
+}
+
+#[test]
+fn quote_quantity_inverse_sell_limit_preserves_nt_notional() {
+    let notional =
+        conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
+            order_kind: BoltV3QuoteQuantityOrderKind::Limit,
+            order_side: BoltV3QuoteQuantityOrderSide::Sell,
+            is_quote_quantity: true,
+            is_inverse: true,
+            submitted_quote_quantity: Decimal::new(2500, 2),
+            calculated_notional: Decimal::new(1665, 2),
+        });
+
+    assert_eq!(notional, Decimal::new(1665, 2));
+}
+
+#[test]
+fn quote_quantity_inverse_sell_stop_limit_preserves_nt_notional() {
+    let notional =
+        conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
+            order_kind: BoltV3QuoteQuantityOrderKind::StopLimit,
+            order_side: BoltV3QuoteQuantityOrderSide::Sell,
+            is_quote_quantity: true,
+            is_inverse: true,
+            submitted_quote_quantity: Decimal::new(2500, 2),
+            calculated_notional: Decimal::new(1665, 2),
+        });
+
+    assert_eq!(notional, Decimal::new(1665, 2));
+}
+
+#[test]
+fn quote_quantity_admission_helper_source_fence_blocks_market_tokens() {
+    fn contains_forbidden_market_token(source: &str) -> bool {
+        source
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.starts_with("//") && !trimmed.starts_with('*')
+            })
+            .any(|line| {
+                line.contains("POLYMARKET")
+                    || line.contains("binary_oracle")
+                    || line.contains("updown")
+            })
+    }
+
+    assert!(
+        contains_forbidden_market_token("let venue = \"POLYMARKET\";"),
+        "positive control must catch forbidden venue token"
+    );
+    assert!(
+        contains_forbidden_market_token("fn binary_oracle_policy() {}"),
+        "positive control must catch forbidden strategy token"
+    );
+    assert!(
+        !contains_forbidden_market_token("// POLYMARKET appears only in a comment"),
+        "comment text must not trip source fence"
+    );
+
+    let source = std::fs::read_to_string("src/bolt_v3_submit_admission.rs")
+        .expect("submit-admission source should be readable");
+    assert!(
+        !contains_forbidden_market_token(&source),
+        "shared submit-admission helper must remain venue, market, and strategy agnostic"
+    );
 }
 
 #[test]

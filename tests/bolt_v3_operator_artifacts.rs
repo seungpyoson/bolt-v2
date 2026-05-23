@@ -2930,6 +2930,86 @@ fn strategy_input_writer_rejects_runtime_snapshot_target_source_and_hash_mismatc
 }
 
 #[test]
+fn pre_run_market_window_source_proof_derives_source_owned_values() {
+    let fixture = strategy_input_runtime_fixture();
+    let loaded = &fixture.loaded;
+    let strategy_instance_id = fixture.strategy_instance_id.as_str();
+    let temp = &fixture.temp;
+    let strategy_input_path = temp.path().join("strategy-input.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+
+    let strategy_input = bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_runtime_snapshot(
+        loaded,
+        strategy_instance_id,
+        &fixture.snapshot,
+        &fixture.market_selection_source_ref,
+        &fixture.candidate_market_start_timestamps_ms,
+        &strategy_input_path,
+    )
+    .expect("source-bound strategy input evidence should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_market_window_source_proof(
+        &strategy_input_path,
+        &strategy_input.sha256,
+        fixture.snapshot.price_to_beat_source.as_str(),
+        100_000,
+    )
+    .expect("source-bound market/window proof should collect");
+
+    assert!(proof.market_state_approved);
+    assert!(proof.market_window_approved);
+    assert_eq!(proof.market_state_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .market_state_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "market proof evidence hash should be lowercase hex"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "market/window proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn pre_run_market_window_source_proof_rejects_symlinked_market_source() {
+    let fixture = strategy_input_runtime_fixture();
+    let strategy_input_path = fixture.temp.path().join("strategy-input.json");
+    let strategy_input = bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_runtime_snapshot(
+        &fixture.loaded,
+        &fixture.strategy_instance_id,
+        &fixture.snapshot,
+        &fixture.market_selection_source_ref,
+        &fixture.candidate_market_start_timestamps_ms,
+        &strategy_input_path,
+    )
+    .expect("source-bound strategy input evidence should write");
+    let real_path = fixture
+        .temp
+        .path()
+        .join("real-market-selection-source.json");
+    std::fs::rename(&fixture.market_selection_source_ref.path, &real_path)
+        .expect("market source should move behind symlink");
+    std::os::unix::fs::symlink(&real_path, &fixture.market_selection_source_ref.path)
+        .expect("market source symlink should create");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_market_window_source_proof(
+        &strategy_input_path,
+        &strategy_input.sha256,
+        fixture.snapshot.price_to_beat_source.as_str(),
+        100_000,
+    )
+    .expect_err("symlinked market source must not approve market/window proof");
+
+    assert!(
+        error.to_string().contains("market_selection_source_path"),
+        "symlinked market source should identify source path validation: {error}"
+    );
+}
+
+#[test]
 fn strategy_input_writer_reports_market_selection_source_read_as_read_error() {
     let fixture = strategy_input_runtime_fixture();
     let output_path = fixture.temp.path().join("strategy-input.json");

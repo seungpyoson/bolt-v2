@@ -28,7 +28,7 @@ use crate::{
         Phase8AbortPlanEvidenceFile, Phase8AbortPlanSourceProofs,
         Phase8FinancialEnvelopeEvidenceFile, Phase8MarketSelectionSourceEvidenceFile,
         Phase8PreRunStateEvidenceFile, Phase8PreRunStateSourceProofs,
-        Phase8StrategyInputEvidenceFile,
+        Phase8StrategyInputEvidenceFile, Phase8StrategyInputSafetyAudit,
     },
 };
 
@@ -57,6 +57,9 @@ const OPERATOR_EVIDENCE_PACKET_RECORD_KIND: &str = "bolt_v3.operator_evidence_pa
 const PRE_RUN_RELEASE_MANIFEST_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_RELEASE_MANIFEST_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_release_manifest_source_proof.v1";
+const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.pre_run_market_window_source_proof.v1";
 const BUILD_CARGO_TOML: &str = include_str!("../Cargo.toml");
 const NAUTILUS_TRADER_GIT_URL: &str = "https://github.com/nautechsystems/nautilus_trader.git";
 const NAUTILUS_TRADER_CARGO_LOCK_SOURCE_PREFIX: &str =
@@ -223,6 +226,13 @@ pub struct Phase8PreRunReleaseManifestSourceProof {
     pub evidence_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8PreRunMarketWindowSourceProof {
+    pub market_state_approved: bool,
+    pub market_window_approved: bool,
+    pub market_state_evidence_hash: String,
+}
+
 impl fmt::Debug for WrittenOperatorArtifact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WrittenOperatorArtifact")
@@ -262,6 +272,13 @@ pub enum BoltV3OperatorArtifactError {
         source: std::io::Error,
     },
     PreRunReleaseManifestSourceInvalid {
+        field: &'static str,
+    },
+    PreRunMarketWindowSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    PreRunMarketWindowSourceInvalid {
         field: &'static str,
     },
     AbortPrerequisiteUnproven {
@@ -410,6 +427,13 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::PreRunReleaseManifestSourceInvalid { field } => write!(
                 f,
                 "release manifest source field `{field}` is invalid or unproven"
+            ),
+            Self::PreRunMarketWindowSourceRead { source, .. } => {
+                write!(f, "failed to read market/window source input: {source}")
+            }
+            Self::PreRunMarketWindowSourceInvalid { field } => write!(
+                f,
+                "market/window source field `{field}` is invalid or unproven"
             ),
             Self::AbortPrerequisiteUnproven { prerequisite } => write!(
                 f,
@@ -566,6 +590,7 @@ impl Error for BoltV3OperatorArtifactError {
             Self::MarketSelectionSourceRead { source, .. } => Some(source),
             Self::MarketSelectionSourceParse { source, .. } => Some(source),
             Self::PreRunReleaseManifestSourceRead { source, .. } => Some(source),
+            Self::PreRunMarketWindowSourceRead { source, .. } => Some(source),
             Self::StaticManifestRead { source, .. } => Some(source),
             Self::StaticManifestParse { source, .. } => Some(source),
             Self::StaticManifestArtifactFileRead { source, .. } => Some(source),
@@ -1008,6 +1033,120 @@ pub fn collect_pre_run_release_manifest_source_proof(
     })
 }
 
+pub fn collect_pre_run_market_window_source_proof(
+    strategy_input_evidence_path: &Path,
+    strategy_input_evidence_sha256: &str,
+    expected_price_to_beat_source: &str,
+    max_strategy_input_evidence_bytes: u64,
+) -> Result<Phase8PreRunMarketWindowSourceProof, BoltV3OperatorArtifactError> {
+    if !is_lowercase_sha256(strategy_input_evidence_sha256) {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid {
+                field: "strategy_input_evidence_sha256",
+            },
+        );
+    }
+    let strategy_input_evidence_bytes = read_file_bounded(
+        strategy_input_evidence_path,
+        max_strategy_input_evidence_bytes,
+    )
+    .map_err(
+        |source| BoltV3OperatorArtifactError::PreRunMarketWindowSourceRead {
+            path: strategy_input_evidence_path.to_path_buf(),
+            source,
+        },
+    )?;
+    let actual_sha256 = hex::encode(Sha256::digest(&strategy_input_evidence_bytes));
+    if actual_sha256 != strategy_input_evidence_sha256 {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid {
+                field: "strategy_input_evidence_sha256",
+            },
+        );
+    }
+    validate_strategy_input_market_selection_source_ref(
+        &strategy_input_evidence_bytes,
+        max_strategy_input_evidence_bytes,
+    )?;
+    let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
+        strategy_input_evidence_path,
+        strategy_input_evidence_sha256,
+        expected_price_to_beat_source,
+    )
+    .map_err(
+        |_| BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid {
+            field: "strategy_input_evidence",
+        },
+    )?;
+    if !audit.is_approved() {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid {
+                field: "strategy_input_audit",
+            },
+        );
+    }
+    let proof_input = Phase8PreRunMarketWindowSourceProofHashInput {
+        schema_version: PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_RECORD_KIND,
+        strategy_input_evidence_sha256,
+        expected_price_to_beat_source,
+    };
+    let market_state_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8PreRunMarketWindowSourceProof {
+        market_state_approved: true,
+        market_window_approved: true,
+        market_state_evidence_hash,
+    })
+}
+
+fn validate_strategy_input_market_selection_source_ref(
+    strategy_input_evidence_bytes: &[u8],
+    max_market_selection_source_bytes: u64,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let json: serde_json::Value =
+        serde_json::from_slice(strategy_input_evidence_bytes).map_err(|_| {
+            BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid {
+                field: "strategy_input_evidence",
+            }
+        })?;
+    let source_path = json
+        .get("market_selection_source_path")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(
+            BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid {
+                field: "market_selection_source_path",
+            },
+        )?;
+    let source_sha256 = json
+        .get("market_selection_source_sha256")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| is_lowercase_sha256(value))
+        .ok_or(
+            BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid {
+                field: "market_selection_source_sha256",
+            },
+        )?;
+    let source_path = Path::new(source_path);
+    let source_bytes =
+        read_file_bounded(source_path, max_market_selection_source_bytes).map_err(|_| {
+            BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid {
+                field: "market_selection_source_path",
+            }
+        })?;
+    if hex::encode(Sha256::digest(source_bytes)) != source_sha256 {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunMarketWindowSourceInvalid {
+                field: "market_selection_source_sha256",
+            },
+        );
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct Phase8PreRunReleaseManifestSourceProofHashInput<'a> {
     schema_version: u32,
@@ -1017,6 +1156,14 @@ struct Phase8PreRunReleaseManifestSourceProofHashInput<'a> {
     cargo_toml_sha256: &'a str,
     cargo_lock_sha256: &'a str,
     clob_signing_source_sha256: &'a str,
+}
+
+#[derive(Serialize)]
+struct Phase8PreRunMarketWindowSourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    strategy_input_evidence_sha256: &'a str,
+    expected_price_to_beat_source: &'a str,
 }
 
 fn read_release_manifest_source_file(

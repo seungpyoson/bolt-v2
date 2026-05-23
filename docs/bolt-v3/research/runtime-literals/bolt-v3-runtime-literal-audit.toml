@@ -4346,6 +4346,38 @@ reason = "This is the stable record-kind discriminator for release-manifest sour
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the market/window source-proof artifact schema version emitted by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_market_window_source_proof.v1"'''
+context = '''"bolt_v3.pre_run_market_window_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for market/window source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_selection_source_path"'''
+context = '''.get("market_selection_source_path")'''
+classification = "operator_artifact_json_field_name"
+reason = "This names the strategy-input evidence JSON field that points to the market-selection source artifact for validation; it is not an operator runtime path."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_selection_source_sha256"'''
+context = '''.get("market_selection_source_sha256")'''
+classification = "operator_artifact_json_field_name"
+reason = "This names the strategy-input evidence JSON field that binds the market-selection source artifact hash; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"../Cargo.toml"'''
 context = '''const BUILD_CARGO_TOML: &str = include_str!("../Cargo.toml");'''

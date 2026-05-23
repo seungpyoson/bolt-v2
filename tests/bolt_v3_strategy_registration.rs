@@ -1183,6 +1183,44 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
 }
 
 #[test]
+fn binary_oracle_registration_resolves_fee_provider_through_provider_boundary() {
+    let source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
+    assert!(
+        source.contains("resolve_fee_provider"),
+        "binary_oracle_edge_taker registration should call the generic fee-provider resolver"
+    );
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-fee-provider-boundary");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+
+    let (node, _summary) =
+        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
+            .expect("configured Polymarket strategy should register through provider boundary");
+
+    assert_eq!(
+        node.registered_strategy_ids(),
+        vec![StrategyId::from("binary_oracle_edge_taker-001")]
+    );
+}
+
+#[test]
+fn fee_provider_resolution_does_not_warm_during_registration() {
+    let resolver_source = include_str!("../src/bolt_v3_providers/mod.rs");
+    let archetype_source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
+
+    assert!(
+        !resolver_source.contains(".warm("),
+        "fee-provider resolver must construct only; fee warm remains in strategy runtime readiness"
+    );
+    assert!(
+        !archetype_source.contains(".warm("),
+        "runtime registration must not warm fee providers"
+    );
+}
+
+#[test]
 fn binary_oracle_runtime_rejects_execution_client_id_without_execution_block() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -1216,5 +1254,244 @@ fn binary_oracle_runtime_rejects_execution_client_id_without_execution_block() {
     assert!(
         message.contains("is required by the existing taker fee-provider boundary"),
         "{message}"
+    );
+}
+
+#[test]
+fn fee_provider_source_fence_blocks_concrete_provider_in_shared_layers() {
+    const SOURCE_FENCE_MAX_FILE_BYTES: u64 = 1024 * 1024;
+
+    fn forbidden_fee_provider_reference(line: &str) -> bool {
+        line.contains("bolt_v3_providers::polymarket")
+            || line.contains("polymarket::")
+            || line.contains("build_fee_provider")
+    }
+
+    fn source_contains_forbidden_fee_provider_reference(source: &str) -> bool {
+        source.lines().any(forbidden_fee_provider_reference)
+    }
+
+    fn strip_rust_comments(source: &str) -> String {
+        enum State {
+            Code,
+            LineComment,
+            BlockComment,
+            String { escaped: bool },
+            RawString { hashes: usize },
+        }
+
+        fn raw_string_hashes_at(chars: &[char], index: usize) -> Option<usize> {
+            if chars.get(index) != Some(&'r') {
+                return None;
+            }
+            let mut cursor = index + 1;
+            let mut hashes = 0;
+            while chars.get(cursor) == Some(&'#') {
+                hashes += 1;
+                cursor += 1;
+            }
+            (chars.get(cursor) == Some(&'"')).then_some(hashes)
+        }
+
+        let chars = source.chars().collect::<Vec<_>>();
+        let mut output = String::with_capacity(source.len());
+        let mut state = State::Code;
+        let mut index = 0;
+        while let Some(&current) = chars.get(index) {
+            match state {
+                State::Code => {
+                    if chars.get(index) == Some(&'/') && chars.get(index + 1) == Some(&'/') {
+                        state = State::LineComment;
+                        index += 2;
+                    } else if chars.get(index) == Some(&'/') && chars.get(index + 1) == Some(&'*') {
+                        state = State::BlockComment;
+                        index += 2;
+                    } else if let Some(hashes) = raw_string_hashes_at(&chars, index) {
+                        output.push('r');
+                        index += 1;
+                        for _ in 0..hashes {
+                            output.push('#');
+                            index += 1;
+                        }
+                        output.push('"');
+                        index += 1;
+                        state = State::RawString { hashes };
+                    } else if current == '"' {
+                        output.push(current);
+                        state = State::String { escaped: false };
+                        index += 1;
+                    } else {
+                        output.push(current);
+                        index += 1;
+                    }
+                }
+                State::LineComment => {
+                    if current == '\n' {
+                        output.push(current);
+                        state = State::Code;
+                    }
+                    index += 1;
+                }
+                State::BlockComment => {
+                    if current == '\n' {
+                        output.push(current);
+                        index += 1;
+                    } else if current == '*' && chars.get(index + 1) == Some(&'/') {
+                        state = State::Code;
+                        index += 2;
+                    } else {
+                        index += 1;
+                    }
+                }
+                State::String { escaped } => {
+                    output.push(current);
+                    state = if escaped {
+                        State::String { escaped: false }
+                    } else if current == '\\' {
+                        State::String { escaped: true }
+                    } else if current == '"' {
+                        State::Code
+                    } else {
+                        State::String { escaped: false }
+                    };
+                    index += 1;
+                }
+                State::RawString { hashes } => {
+                    output.push(current);
+                    if current == '"' {
+                        let closes_raw_string =
+                            (1..=hashes).all(|offset| chars.get(index + offset) == Some(&'#'));
+                        if closes_raw_string {
+                            for offset in 1..=hashes {
+                                output.push(chars[index + offset]);
+                            }
+                            index += hashes + 1;
+                            state = State::Code;
+                        } else {
+                            index += 1;
+                        }
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+        }
+        output
+    }
+
+    fn read_source_fence_target(repo_root: &std::path::Path, relative: &str) -> String {
+        let path = repo_root.join(relative);
+        let metadata = std::fs::metadata(&path).expect("source-fence target metadata should load");
+        assert!(
+            metadata.is_file(),
+            "source-fence target must be a file: {relative}"
+        );
+        assert!(
+            metadata.len() <= SOURCE_FENCE_MAX_FILE_BYTES,
+            "source-fence target {relative} is {} bytes; limit is {SOURCE_FENCE_MAX_FILE_BYTES}",
+            metadata.len()
+        );
+        std::fs::read_to_string(path).expect("source-fence target should be readable")
+    }
+
+    assert!(
+        source_contains_forbidden_fee_provider_reference("let _ = polymarket::build_fee_provider;"),
+        "positive control must catch direct concrete provider construction"
+    );
+    assert!(
+        !source_contains_forbidden_fee_provider_reference(&strip_rust_comments(
+            "// let _ = polymarket::build_fee_provider;"
+        )),
+        "negative control must ignore direct construction in line comments"
+    );
+    assert!(
+        !source_contains_forbidden_fee_provider_reference(&strip_rust_comments(
+            "/* let _ = polymarket::build_fee_provider; */"
+        )),
+        "negative control must ignore direct construction in block comments"
+    );
+    assert_eq!(
+        strip_rust_comments("let text = \"// this is string content\";"),
+        "let text = \"// this is string content\";",
+        "comment stripping must not treat line-comment markers inside strings as comments"
+    );
+
+    fn push_rs_files(repo_root: &std::path::Path, directory: &str, files: &mut Vec<String>) {
+        fn push_rs_files_from_path(
+            repo_root: &std::path::Path,
+            path: &std::path::Path,
+            files: &mut Vec<String>,
+        ) {
+            for entry in std::fs::read_dir(path).expect("source-fence directory should be readable")
+            {
+                let entry = entry.expect("source-fence directory entry should be readable");
+                let file_type = entry
+                    .file_type()
+                    .expect("source-fence directory entry type should be readable");
+                let path = entry.path();
+                if file_type.is_dir() {
+                    push_rs_files_from_path(repo_root, &path, files);
+                } else if file_type.is_file()
+                    && path.extension().is_some_and(|extension| extension == "rs")
+                {
+                    files.push(
+                        path.strip_prefix(repo_root)
+                            .unwrap()
+                            .to_string_lossy()
+                            .replace('\\', "/"),
+                    );
+                }
+            }
+        }
+
+        push_rs_files_from_path(repo_root, &repo_root.join(directory), files);
+    }
+
+    let recursive_temp = support::TempCaseDir::new("fee-provider-source-fence-recursive");
+    let nested_strategy_dir = recursive_temp.path().join("src/strategies/nested");
+    std::fs::create_dir_all(&nested_strategy_dir)
+        .expect("recursive source-fence control directory should be created");
+    std::fs::write(nested_strategy_dir.join("mod.rs"), "")
+        .expect("recursive source-fence control Rust file should be created");
+    std::fs::write(nested_strategy_dir.join("notes.txt"), "")
+        .expect("recursive source-fence control non-Rust file should be created");
+    let mut recursive_control_files = Vec::new();
+    push_rs_files(
+        recursive_temp.path(),
+        "src/strategies",
+        &mut recursive_control_files,
+    );
+    recursive_control_files.sort();
+    assert_eq!(
+        recursive_control_files,
+        vec!["src/strategies/nested/mod.rs".to_string()],
+        "source-fence collection must recurse into nested strategy modules and ignore non-Rust files"
+    );
+
+    let repo_root = support::repo_path("");
+    let mut files = Vec::new();
+    push_rs_files(&repo_root, "src/bolt_v3_archetypes", &mut files);
+    push_rs_files(&repo_root, "src/strategies", &mut files);
+    files.extend([
+        "src/bolt_v3_strategy_registration.rs".to_string(),
+        "src/bolt_v3_submit_admission.rs".to_string(),
+        "src/bolt_v3_order_intent.rs".to_string(),
+    ]);
+
+    let mut violations = Vec::new();
+    files.sort();
+    files.dedup();
+    for relative in files {
+        let source = strip_rust_comments(&read_source_fence_target(&repo_root, &relative));
+        for (line_index, line) in source.lines().enumerate() {
+            if forbidden_fee_provider_reference(line) {
+                violations.push(format!("{}:{}", relative, line_index + 1));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "concrete provider construction leaked into shared registration layers: {violations:?}"
     );
 }

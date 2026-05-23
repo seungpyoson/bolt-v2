@@ -460,6 +460,7 @@ mod tests {
         resolve_secrets: resolve_fake_provider_secrets,
         configured_secret_paths: configured_fake_provider_secret_paths,
         map_adapters: map_fake_provider_adapters,
+        build_fee_provider: None,
     };
 
     static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
@@ -473,6 +474,7 @@ mod tests {
         resolve_secrets: resolve_fake_provider_secrets,
         configured_secret_paths: configured_fake_provider_secret_paths,
         map_adapters: map_fake_provider_adapters,
+        build_fee_provider: None,
     };
 
     static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
@@ -486,6 +488,7 @@ mod tests {
         resolve_secrets: resolve_fake_provider_secrets,
         configured_secret_paths: configured_fake_provider_secret_paths,
         map_adapters: map_fake_no_target_provider_adapters,
+        build_fee_provider: None,
     };
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {

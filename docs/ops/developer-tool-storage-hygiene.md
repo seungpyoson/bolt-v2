@@ -75,6 +75,8 @@ python3 scripts/developer_tool_storage_hygiene.py apply \
   --json
 ```
 
+Apply exits 0 only for `status=applied`, exits 1 for `status=aborted`, `status=refused`, or `status=failed`, and exits 2 for policy or usage errors.
+
 If `rustup.toolchains.remove_exact_names` is non-empty, dry-run, preflight, and apply also require exact active and default rustup snapshots. The script does not infer these values because protecting active/default toolchains is a fail-closed safety requirement. The same snapshot flags are accepted by all three commands:
 
 ```sh

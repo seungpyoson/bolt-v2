@@ -25,25 +25,47 @@ The policy source must be TOML and must name every cleanup-managed and report-on
 Required cleanup sections:
 
 ```toml
+schema_version = 1
+
 [codex.log]
 path_family = "~/.codex/log/codex-tui.log"
+category = "AI agent"
+growth_shape = "single_file"
+owner = "owned"
+native_policy = "partial"
+cleanup_mode = "rotate"
 max_bytes = 209715200
 retained_rotations = 2
 active_writer_processes = ["codex", "codex-tui"]
 
 [codex.sessions]
 path_family = "~/.codex/sessions/**/*.jsonl"
+category = "AI agent"
+growth_shape = "many_files"
+owner = "owned"
+native_policy = "none_found"
+cleanup_mode = "ttl_prune"
 ttl_days = 14
 active_writer_processes = ["codex", "codex-tui"]
 
 [factory.log]
 path_family = "~/.factory/logs/droid-log-single.log"
+category = "AI agent"
+growth_shape = "single_file"
+owner = "owned"
+native_policy = "none_found"
+cleanup_mode = "rotate"
 max_bytes = 209715200
 retained_rotations = 2
 active_writer_processes = ["factory", "droid"]
 
 [rustup.toolchains]
 path_family = "~/.rustup/toolchains/*"
+category = "version manager"
+growth_shape = "tree"
+owner = "owned"
+native_policy = "yes"
+cleanup_mode = "toolchain_retention"
 retain_exact_names = ["1.95.0-aarch64-apple-darwin"]
 remove_exact_names = []
 
@@ -59,11 +81,19 @@ Required report-only sections name path families that are measured and protected
 ```toml
 [codex.sqlite]
 path_family = "~/.codex/logs_2.sqlite*"
+category = "AI agent"
+growth_shape = "sqlite_with_wal"
 owner = "report_only"
+native_policy = "none_found"
+cleanup_mode = "none"
 
 [codex.archived_sessions]
 path_family = "~/.codex/archived_sessions/**"
+category = "AI agent"
+growth_shape = "tree"
 owner = "report_only"
+native_policy = "none_found"
+cleanup_mode = "none"
 ```
 
 Required native-guidance sections are report-only. They document native configuration values to surface in dry-run/preflight output and must never create cleanup candidates:
@@ -71,6 +101,11 @@ Required native-guidance sections are report-only. They document native configur
 ```toml
 [native_guidance.codex_history]
 path_family = "~/.codex/history.jsonl"
+category = "AI agent"
+growth_shape = "single_file"
+owner = "report_only"
+native_policy = "yes"
+cleanup_mode = "none"
 max_bytes = 104857600
 persistence = "save-all"
 ```

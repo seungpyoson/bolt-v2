@@ -321,3 +321,12 @@ Eleventh no-mistakes run `01KS9V8AA3VND499HT86FWXKAG` started on head `ba6463a6`
 | T001 claimed `.specify/feature.json`, `AGENTS.md`, and `CLAUDE.md` pointed to the #024 plan, while the repo-global active pointers intentionally remained on existing specs. | Updated `specs/024-developer-tool-storage-hygiene/tasks.md` to state #024 is the #375 issue-local Speckit package and repo-global active pointers intentionally remain on their current plans. |
 
 Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.
+
+Twelfth no-mistakes run `01KS9WGVFAY1QPPFY3B5BKQMVF` started on head `0be1b966` and paused in the document stage before PR opening:
+
+| Finding | Remediation |
+|---|---|
+| Policy contract examples omitted required `schema_version` and common surface fields required by the committed loader. | Updated `specs/024-developer-tool-storage-hygiene/contracts/developer-tool-storage-hygiene.md` examples to include `schema_version`, `category`, `growth_shape`, `owner`, `native_policy`, and `cleanup_mode` fields matching the committed TOML shape. |
+| Operator docs documented preflight exit behavior but not apply exit behavior. | Updated `docs/ops/developer-tool-storage-hygiene.md` to document apply exit 0 for `status=applied`, exit 1 for `aborted`/`refused`/`failed`, and exit 2 for policy or usage errors. |
+
+Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.

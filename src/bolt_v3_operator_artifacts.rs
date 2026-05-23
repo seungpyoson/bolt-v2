@@ -750,13 +750,22 @@ pub fn write_strategy_input_evidence_artifact_from_runtime_snapshot(
             },
         );
     }
-    let market_selection_source_bytes =
-        fs::read(&market_selection_source_ref.path).map_err(|source| {
+    let mut market_selection_source_file =
+        open_regular_artifact_file(&market_selection_source_ref.path).map_err(|source| {
             BoltV3OperatorArtifactError::MarketSelectionSourceRead {
                 path: market_selection_source_ref.path.clone(),
                 source,
             }
         })?;
+    let mut market_selection_source_bytes = Vec::new();
+    market_selection_source_file
+        .read_to_end(&mut market_selection_source_bytes)
+        .map_err(
+            |source| BoltV3OperatorArtifactError::MarketSelectionSourceRead {
+                path: market_selection_source_ref.path.clone(),
+                source,
+            },
+        )?;
     if hex::encode(Sha256::digest(&market_selection_source_bytes))
         != market_selection_source_ref.sha256
     {

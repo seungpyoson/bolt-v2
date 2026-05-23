@@ -2561,6 +2561,10 @@ fn strategy_input_writer_reports_market_selection_source_read_as_read_error() {
         "missing market-selection source must not be reported as output write failure: {message}"
     );
     assert!(
+        !message.contains(missing_ref.path.to_string_lossy().as_ref()),
+        "missing market-selection source diagnostic must not print source path: {message}"
+    );
+    assert!(
         !output_path.exists(),
         "read failure must not leave strategy-input artifact"
     );
@@ -2599,8 +2603,65 @@ fn strategy_input_writer_reports_market_selection_source_json_as_parse_error() {
         "invalid market-selection source JSON must not be reported as serialization failure: {message}"
     );
     assert!(
+        !message.contains(invalid_ref.path.to_string_lossy().as_ref()),
+        "invalid market-selection source diagnostic must not print source path: {message}"
+    );
+    assert!(
         !output_path.exists(),
         "parse failure must not leave strategy-input artifact"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn strategy_input_writer_rejects_symlinked_market_selection_source_before_artifact() {
+    let fixture = strategy_input_runtime_fixture();
+    let output_path = fixture.temp.path().join("strategy-input.json");
+    let real_path = fixture
+        .temp
+        .path()
+        .join("real-market-selection-source.json");
+    std::fs::rename(&fixture.market_selection_source_ref.path, &real_path)
+        .expect("market-selection source should move behind symlink");
+    std::os::unix::fs::symlink(&real_path, &fixture.market_selection_source_ref.path)
+        .expect("market-selection source symlink should create");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_runtime_snapshot(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.snapshot,
+            &fixture.market_selection_source_ref,
+            &fixture.candidate_market_start_timestamps_ms,
+            &output_path,
+        )
+        .expect_err("symlinked market-selection source must fail before artifact write");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("failed to read market-selection source evidence"),
+        "symlinked market-selection source should be a read diagnostic: {message}"
+    );
+    assert!(
+        !message.contains(
+            fixture
+                .market_selection_source_ref
+                .path
+                .to_string_lossy()
+                .as_ref()
+        ),
+        "symlinked market-selection source diagnostic must not print source path: {message}"
+    );
+    assert!(
+        !output_path.exists(),
+        "symlinked market-selection source failure must not leave strategy-input artifact"
+    );
+    assert!(
+        std::fs::symlink_metadata(&fixture.market_selection_source_ref.path)
+            .expect("source symlink metadata should read")
+            .file_type()
+            .is_symlink(),
+        "failed symlink read must leave original symlink untouched"
     );
 }
 

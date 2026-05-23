@@ -40,7 +40,11 @@ use crate::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
         is_observed_open_side,
     },
-    bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest,
+    bolt_v3_submit_admission::{
+        BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderKind,
+        BoltV3QuoteQuantityOrderSide, BoltV3SubmitAdmissionRequest,
+        conservative_quote_quantity_admission_notional,
+    },
     strategies::registry::{
         BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
     },
@@ -3782,6 +3786,11 @@ impl BinaryOracleEdgeTaker {
             )
         })?;
         let notional = if order.is_quote_quantity() {
+            anyhow::ensure!(
+                self.current_instrument(order.instrument_id()).is_some(),
+                "bolt-v3 submit admission missing instrument context for quote-quantity client_order_id={}",
+                client_order_id
+            );
             self.quote_quantity_last_price_for_order(order)
                 .and_then(|last_px| self.quote_quantity_submit_notional(order, last_px))
                 .unwrap_or(quantity)
@@ -3843,11 +3852,29 @@ impl BinaryOracleEdgeTaker {
         } else {
             order.quantity()
         };
-        Some(
-            instrument
-                .calculate_notional_value(effective_quantity, last_px, Some(true))
-                .as_decimal(),
-        )
+        let notional = instrument
+            .calculate_notional_value(effective_quantity, last_px, Some(true))
+            .as_decimal();
+        let submitted_quote_quantity =
+            Decimal::from_str(order.quantity().to_string().trim()).ok()?;
+        Some(conservative_quote_quantity_admission_notional(
+            BoltV3QuoteQuantityAdmissionInput {
+                order_kind: match order {
+                    OrderAny::Limit(_) => BoltV3QuoteQuantityOrderKind::Limit,
+                    OrderAny::StopLimit(_) => BoltV3QuoteQuantityOrderKind::StopLimit,
+                    _ => BoltV3QuoteQuantityOrderKind::Other,
+                },
+                order_side: match order.order_side() {
+                    OrderSide::Buy => BoltV3QuoteQuantityOrderSide::Buy,
+                    OrderSide::Sell => BoltV3QuoteQuantityOrderSide::Sell,
+                    _ => BoltV3QuoteQuantityOrderSide::Other,
+                },
+                is_quote_quantity: order.is_quote_quantity(),
+                is_inverse: instrument.is_inverse(),
+                submitted_quote_quantity,
+                calculated_notional: notional,
+            },
+        ))
     }
 
     fn quote_quantity_effective_price_for_order(
@@ -7135,6 +7162,290 @@ mod tests {
         assert_eq!(
             admission.notional,
             Decimal::from_str("50.00").expect("expected decimal should parse")
+        );
+    }
+
+    #[test]
+    fn quote_quantity_sell_limit_submit_admission_floors_to_quote_quantity() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        strategy.config.entry_order.is_quote_quantity = true;
+        let instrument_id = selected_entry_instrument(&strategy);
+        set_active_books_best_prices(&mut strategy, 0.75, 0.76);
+        cache
+            .borrow_mut()
+            .add_quote(quote_tick(&instrument_id.to_string(), 0.75, 0.76, 1_200))
+            .expect("test cache should accept quote tick");
+        let submitted_quote_order_quantity = Quantity::new(25.0, 2);
+        let limit_price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-S1");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Sell,
+                submitted_quote_order_quantity,
+                limit_price,
+                client_order_id,
+            )
+            .expect(
+                "quote-quantity sell limit order should build through the strategy factory path",
+            );
+        assert!(order.is_quote_quantity());
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    limit_price.to_string(),
+                    &order,
+                ),
+                &order,
+            )
+            .expect(
+                "quote-quantity sell limit admission should derive from compiled order context",
+            );
+        let submitted_quote_quantity = Decimal::from_str(order.quantity().to_string().trim())
+            .expect("order quantity should parse as quote quantity");
+
+        assert_eq!(
+            admission.notional, submitted_quote_quantity,
+            "SELL Limit admission must not understate submitted quote quantity when bid exceeds limit price"
+        );
+    }
+
+    #[test]
+    fn quote_quantity_sell_limit_missing_quote_uses_submitted_quote_quantity() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.config.entry_order.is_quote_quantity = true;
+        let instrument_id = selected_entry_instrument(&strategy);
+        set_active_books_best_prices(&mut strategy, 0.75, 0.76);
+        let submitted_quote_order_quantity = Quantity::new(25.0, 2);
+        let limit_price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-S2");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Sell,
+                submitted_quote_order_quantity,
+                limit_price,
+                client_order_id,
+            )
+            .expect(
+                "quote-quantity sell limit order should build through the strategy factory path",
+            );
+        assert!(order.is_quote_quantity());
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    limit_price.to_string(),
+                    &order,
+                ),
+                &order,
+            )
+            .expect("missing quote should fall back to submitted quote quantity");
+
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("25.00").expect("expected decimal should parse")
+        );
+    }
+
+    #[test]
+    fn quote_quantity_sell_limit_missing_context_fails_closed() {
+        let mut builder = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        register_test_strategy_with_active_instruments(&mut builder);
+        builder.config.entry_order.is_quote_quantity = true;
+        let instrument_id = selected_entry_instrument(&builder);
+        set_active_books_best_prices(&mut builder, 0.75, 0.76);
+        let submitted_quote_order_quantity = Quantity::new(25.0, 2);
+        let limit_price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-S3");
+        let order = builder
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Sell,
+                submitted_quote_order_quantity,
+                limit_price,
+                client_order_id,
+            )
+            .expect(
+                "quote-quantity sell limit order should build through the strategy factory path",
+            );
+        assert!(order.is_quote_quantity());
+
+        let mut strategy_without_instrument =
+            ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let cache = register_test_strategy(&mut strategy_without_instrument);
+        cache
+            .borrow_mut()
+            .add_quote(quote_tick(&instrument_id.to_string(), 0.75, 0.76, 1_200))
+            .expect("test cache should accept quote tick");
+
+        let error = strategy_without_instrument
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy_without_instrument.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    limit_price.to_string(),
+                    &order,
+                ),
+                &order,
+            )
+            .expect_err("missing instrument context must fail closed");
+
+        assert!(
+            error.to_string().contains("instrument context"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn quote_quantity_sell_stop_limit_submit_admission_floors_to_quote_quantity() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        strategy.config.entry_order.order_type = OrderType::StopLimit;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        strategy.config.entry_order.is_quote_quantity = true;
+        let instrument_id = selected_entry_instrument(&strategy);
+        set_active_books_best_prices(&mut strategy, 0.75, 0.76);
+        cache
+            .borrow_mut()
+            .add_quote(quote_tick(&instrument_id.to_string(), 0.75, 0.76, 1_200))
+            .expect("test cache should accept quote tick");
+        let submitted_quote_order_quantity = Quantity::new(25.0, 2);
+        let limit_price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-S4");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Sell,
+                submitted_quote_order_quantity,
+                limit_price,
+                client_order_id,
+            )
+            .expect("quote-quantity sell stop-limit order should build through the strategy factory path");
+        assert!(order.is_quote_quantity());
+        assert!(matches!(order, OrderAny::StopLimit(_)));
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    limit_price.to_string(),
+                    &order,
+                ),
+                &order,
+            )
+            .expect("quote-quantity sell stop-limit admission should derive from compiled order context");
+        let submitted_quote_quantity = Decimal::from_str(order.quantity().to_string().trim())
+            .expect("order quantity should parse as quote quantity");
+
+        assert_eq!(
+            admission.notional, submitted_quote_quantity,
+            "SELL StopLimit admission must not understate submitted quote quantity when bid exceeds limit price"
+        );
+    }
+
+    #[test]
+    fn quote_quantity_sell_stop_limit_missing_quote_uses_submitted_quote_quantity() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.config.entry_order.order_type = OrderType::StopLimit;
+        strategy.config.entry_order.trigger_price = Some(0.52);
+        strategy.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        strategy.config.entry_order.is_quote_quantity = true;
+        let instrument_id = selected_entry_instrument(&strategy);
+        set_active_books_best_prices(&mut strategy, 0.75, 0.76);
+        let submitted_quote_order_quantity = Quantity::new(25.0, 2);
+        let limit_price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-S5");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Sell,
+                submitted_quote_order_quantity,
+                limit_price,
+                client_order_id,
+            )
+            .expect("quote-quantity sell stop-limit order should build through the strategy factory path");
+        assert!(order.is_quote_quantity());
+        assert!(matches!(order, OrderAny::StopLimit(_)));
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    limit_price.to_string(),
+                    &order,
+                ),
+                &order,
+            )
+            .expect("missing quote should fall back to submitted quote quantity");
+
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("25.00").expect("expected decimal should parse")
+        );
+    }
+
+    #[test]
+    fn quote_quantity_sell_stop_limit_missing_context_fails_closed() {
+        let mut builder = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        register_test_strategy_with_active_instruments(&mut builder);
+        builder.config.entry_order.order_type = OrderType::StopLimit;
+        builder.config.entry_order.trigger_price = Some(0.52);
+        builder.config.entry_order.trigger_type = Some(TriggerType::LastPrice);
+        builder.config.entry_order.is_quote_quantity = true;
+        let instrument_id = selected_entry_instrument(&builder);
+        set_active_books_best_prices(&mut builder, 0.75, 0.76);
+        let submitted_quote_order_quantity = Quantity::new(25.0, 2);
+        let limit_price = Price::new(0.50, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-QQQ-S6");
+        let order = builder
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Sell,
+                submitted_quote_order_quantity,
+                limit_price,
+                client_order_id,
+            )
+            .expect("quote-quantity sell stop-limit order should build through the strategy factory path");
+        assert!(order.is_quote_quantity());
+        assert!(matches!(order, OrderAny::StopLimit(_)));
+
+        let mut strategy_without_instrument =
+            ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let cache = register_test_strategy(&mut strategy_without_instrument);
+        cache
+            .borrow_mut()
+            .add_quote(quote_tick(&instrument_id.to_string(), 0.75, 0.76, 1_200))
+            .expect("test cache should accept quote tick");
+
+        let error = strategy_without_instrument
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy_without_instrument.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    limit_price.to_string(),
+                    &order,
+                ),
+                &order,
+            )
+            .expect_err("missing instrument context must fail closed");
+
+        assert!(
+            error.to_string().contains("instrument context"),
+            "{error:#}"
         );
     }
 

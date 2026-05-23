@@ -8,7 +8,8 @@
 | #460 merge commit | `f354efbaa2afc78575e9cc40580cf2b682bd66e6` |
 | #454 issue state | Open: "Decompose disk-governance verifier scripts after #436" |
 | Branch | `codex/454-decompose-disk-governance-verifiers` |
-| Branch base | `f354efbaa2afc78575e9cc40580cf2b682bd66e6` |
+| Branch base | `0cc03a07b4ef7da5c1bef71476d48d4745933772` |
+| Current PR head | `9a7e8e4678359f7978c9d09cdcf432f729e28676` |
 
 ## Baseline Verification
 
@@ -49,7 +50,7 @@
 | `scripts/verify_ci_workflow_hygiene.py` before extraction | 6175 |
 | `scripts/verify_ci_workflow_hygiene.py` after extraction | 6099 |
 | `scripts/command_understanding.py` | 88 |
-| `scripts/test_command_understanding.py` | 298 |
+| `scripts/test_command_understanding.py` | 350 |
 | `scripts/test_rust_verification_cache_retention.py` | 3175 |
 | `scripts/test_verify_ci_workflow_hygiene.py` | 5102 |
 
@@ -103,7 +104,7 @@
 - On 2026-05-24 the required planning gate was strengthened to require unanimous current-head approvals from Claude, Gemini, Kimi, Grok, GLM, and DeepSeek before implementation starts.
 - Planning gate record for exact head `c0d7332bf4f30e4ddef314c69f3a51c13cfc31d2` was posted to issue #454: https://github.com/seungpyoson/bolt-v2/issues/454#issuecomment-4525926019. Clean APPROVE slots: Claude `cc2312d6-429e-4e6c-bc6e-9b92e669a30a`, Gemini `00e31366-c3bc-43d6-bd10-35c2a76037fa`, Grok `job_6d446dd9-d391-493c-b709-7871f6867324`, GLM `job_5315e9db-2110-4eea-8d9a-a438669d037d`, DeepSeek `job_2bb9cfed-fb15-45c8-a10a-b92def6b6f9c`, and Kimi `99c0e045-b37f-4fca-9e3b-52c3fd5d34b9`.
 - Kimi's clean approval used a core planning custom-review packet after two branch-diff attempts failed; final PR-head external review must still include Kimi on the full PR head before merge readiness.
-- no-mistakes is intentionally excluded unless the operator explicitly requests it.
+- no-mistakes was run after the operator explicitly requested it; the live PR head includes its follow-up lint/CI commits and still requires exact-head CI plus exact-head external review before merge readiness.
 
 ## Reviewer Availability Evidence
 

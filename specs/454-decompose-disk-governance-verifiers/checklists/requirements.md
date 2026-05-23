@@ -1,7 +1,7 @@
 # Specification Quality Checklist: Decompose Disk-Governance Verifiers
 
-**Purpose**: Validate specification completeness and quality before proceeding to planning  
-**Created**: 2026-05-23  
+**Purpose**: Validate specification completeness and quality before proceeding to planning
+**Created**: 2026-05-23
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality

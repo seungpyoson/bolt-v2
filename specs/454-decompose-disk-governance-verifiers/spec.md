@@ -1,8 +1,8 @@
 # Feature Specification: Decompose Disk-Governance Verifiers
 
-**Feature Branch**: `codex/454-decompose-disk-governance-verifiers`  
-**Created**: 2026-05-23  
-**Status**: Draft  
+**Feature Branch**: `codex/454-decompose-disk-governance-verifiers`
+**Created**: 2026-05-23
+**Status**: Draft
 **Input**: GitHub issue #454, "Decompose disk-governance verifier scripts after #436"
 
 ## User Scenarios & Testing

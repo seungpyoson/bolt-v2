@@ -9,13 +9,13 @@
 
 ## Technical Context
 
-**Language/Version**: Python 3 repo tooling and tests; Rust product/runtime remains untouched.  
-**Primary Dependencies**: Python standard library only; existing direct Python self-test style. No new dependency is planned.  
-**Storage**: Source files and Markdown evidence only; no runtime storage or operator home cleanup.  
-**Testing**: TDD with characterization/parity tests, `python3 scripts/test_rust_verification_cache_retention.py`, `python3 scripts/test_verify_ci_workflow_hygiene.py`, `python3 -m py_compile` for touched Python files, and `git diff --check`.  
-**Target Platform**: macOS developer workstation for local verification; GitHub Actions Linux runners for exact-head CI.  
-**Project Type**: Developer tooling governance; no product runtime behavior.  
-**Performance Goals**: Preserve current test practicality; shared parsing must avoid adding subprocess or filesystem work to static classification paths.  
+**Language/Version**: Python 3 repo tooling and tests; Rust product/runtime remains untouched.
+**Primary Dependencies**: Python standard library only; existing direct Python self-test style. No new dependency is planned.
+**Storage**: Source files and Markdown evidence only; no runtime storage or operator home cleanup.
+**Testing**: TDD with characterization/parity tests, `python3 scripts/test_rust_verification_cache_retention.py`, `python3 scripts/test_verify_ci_workflow_hygiene.py`, `python3 -m py_compile` for touched Python files, and `git diff --check`.
+**Target Platform**: macOS developer workstation for local verification; GitHub Actions Linux runners for exact-head CI.
+**Project Type**: Developer tooling governance; no product runtime behavior.
+**Performance Goals**: Preserve current test practicality; shared parsing must avoid adding subprocess or filesystem work to static classification paths.
 **Constraints**: One #454 PR; no #375 follow-up work; no no-mistakes unless explicitly requested; no new command semantics; no broad verifier redesign; all six external reviewer slots are required for approval; slots over 15 minutes are skipped and recorded as not approved. Extraction eligibility requires pre-extraction function-body and representative-behavior comparison.
 **Scale/Scope**: Current oversized surfaces are `scripts/rust_verification.py` (2738 lines), `scripts/verify_ci_workflow_hygiene.py` (6175 lines), `scripts/test_rust_verification_cache_retention.py` (3175 lines), and `scripts/test_verify_ci_workflow_hygiene.py` (5102 lines). This slice targets proven-equivalent parser/scanner logic and characterization of divergent candidates, not every oversized function.
 

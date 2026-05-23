@@ -1,8 +1,8 @@
 # Tasks: Decompose Disk-Governance Verifiers
 
-**Input**: Design documents from `/specs/454-decompose-disk-governance-verifiers/`  
-**Prerequisites**: `plan.md`, `spec.md`, `evidence.md`, `research.md`, `data-model.md`, `contracts/command-understanding.md`, `quickstart.md`  
-**Tests**: Required by issue #454 and constitution TDD gate. Characterization/parity tests must be written before extraction.  
+**Input**: Design documents from `/specs/454-decompose-disk-governance-verifiers/`
+**Prerequisites**: `plan.md`, `spec.md`, `evidence.md`, `research.md`, `data-model.md`, `contracts/command-understanding.md`, `quickstart.md`
+**Tests**: Required by issue #454 and constitution TDD gate. Characterization/parity tests must be written before extraction.
 **Execution Mode**: Sequential only. One bounded #454 PR; do not merge without operator approval.
 
 ## Phase 1: Setup
@@ -102,11 +102,11 @@
 
 **Purpose**: Make #454 review-ready without merging.
 
-- [ ] T030 Run `python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py`.
-- [ ] T031 Run `git diff --check`.
-- [ ] T032 Run unresolved-marker scan over changed docs and scripts.
-- [ ] T033 Commit and push branch `codex/454-decompose-disk-governance-verifiers`.
-- [ ] T034 Open the #454 PR with scope, non-goals, evidence map, tests, review status, skipped slots, remaining risk, and stop-before-merge note.
+- [x] T030 Run `python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py`.
+- [x] T031 Run `git diff --check`.
+- [x] T032 Run unresolved-marker scan over changed docs and scripts.
+- [x] T033 Commit and push branch `codex/454-decompose-disk-governance-verifiers`.
+- [x] T034 Open the #454 PR with scope, non-goals, evidence map, tests, review status, skipped slots, remaining risk, and stop-before-merge note.
 - [ ] T035 Confirm exact-head GitHub CI is green for the #454 PR.
 - [ ] T036 Request exact-PR-head external adversarial review from Claude, Gemini, Kimi, Grok, GLM, and DeepSeek; record all verdicts or skipped slots in `evidence.md`.
 - [ ] T037 Stop for operator approval before merge.

@@ -66,6 +66,19 @@ const PRE_RUN_RELEASE_MANIFEST_SOURCE_PROOF_RECORD_KIND: &str =
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_market_window_source_proof.v1";
+const ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.abort_plan_cancel_if_open_source_proof.v1";
+const ABORT_PLAN_CANCEL_IF_OPEN_FORCED_FLAT_MARKER: &str =
+    "!decision.forced_flat_reasons.is_empty()";
+const ABORT_PLAN_CANCEL_IF_OPEN_PENDING_ENTRY_MARKER: &str =
+    "managed_position.pending_entry.as_ref()";
+const ABORT_PLAN_CANCEL_IF_OPEN_CANCEL_ORDER_MARKER: &str =
+    "self.cancel_order(pending_entry.client_order_id, Some(client_id), None)";
+const ABORT_PLAN_CANCEL_IF_OPEN_CONTEXT_MARKER: &str =
+    "forced-flat exit could not cancel pending entry client_order_id={}";
+const ABORT_PLAN_CANCEL_IF_OPEN_EXIT_PENDING_MARKER: &str =
+    "self.exposure = ExposureState::ExitPending";
 const BUILD_CARGO_TOML: &str = include_str!("../Cargo.toml");
 const NAUTILUS_TRADER_GIT_URL: &str = "https://github.com/nautechsystems/nautilus_trader.git";
 const NAUTILUS_TRADER_CARGO_LOCK_SOURCE_PREFIX: &str =
@@ -239,6 +252,12 @@ pub struct Phase8PreRunMarketWindowSourceProof {
     pub market_state_evidence_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8AbortPlanCancelIfOpenSourceProof {
+    pub cancel_if_open_defined: bool,
+    pub cancel_if_open_evidence_hash: String,
+}
+
 impl fmt::Debug for WrittenOperatorArtifact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WrittenOperatorArtifact")
@@ -311,6 +330,13 @@ pub enum BoltV3OperatorArtifactError {
     },
     AbortPrerequisiteUnproven {
         prerequisite: &'static str,
+    },
+    AbortPlanCancelIfOpenSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    AbortPlanCancelIfOpenSourceInvalid {
+        field: &'static str,
     },
     AbortPlanSourceBundleRead {
         path: PathBuf,
@@ -523,6 +549,16 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "refusing to write successful abort plan because {prerequisite} is not proven"
             ),
+            Self::AbortPlanCancelIfOpenSourceRead { source, .. } => {
+                write!(
+                    f,
+                    "failed to read abort plan cancel-if-open source: {source}"
+                )
+            }
+            Self::AbortPlanCancelIfOpenSourceInvalid { field } => write!(
+                f,
+                "abort plan cancel-if-open source field `{field}` is invalid or unproven"
+            ),
             Self::AbortPlanSourceBundleRead { source, .. } => {
                 write!(f, "failed to read abort plan source bundle: {source}")
             }
@@ -707,6 +743,7 @@ impl Error for BoltV3OperatorArtifactError {
             Self::PreRunMarketWindowSourceRead { source, .. } => Some(source),
             Self::PreRunStateSourceBundleRead { source, .. } => Some(source),
             Self::PreRunStateSourceBundleParse { source, .. } => Some(source),
+            Self::AbortPlanCancelIfOpenSourceRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleParse { source, .. } => Some(source),
             Self::StaticManifestRead { source, .. } => Some(source),
@@ -1160,6 +1197,39 @@ pub fn write_abort_plan_artifact_from_source_bundle_file(
         proofs.as_source_proofs(),
         path,
     )
+}
+
+pub fn collect_abort_plan_cancel_if_open_source_proof(
+    strategy_source_path: &Path,
+    max_strategy_source_bytes: u64,
+) -> Result<Phase8AbortPlanCancelIfOpenSourceProof, BoltV3OperatorArtifactError> {
+    let strategy_source_bytes = read_file_bounded(strategy_source_path, max_strategy_source_bytes)
+        .map_err(
+            |source| BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceRead {
+                path: strategy_source_path.to_path_buf(),
+                source,
+            },
+        )?;
+    let strategy_source_sha256 = hex::encode(Sha256::digest(&strategy_source_bytes));
+    let strategy_source = std::str::from_utf8(&strategy_source_bytes).map_err(|_| {
+        BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid {
+            field: "strategy_source_utf8",
+        }
+    })?;
+    require_abort_plan_cancel_if_open_contract(strategy_source)?;
+
+    let proof_input = Phase8AbortPlanCancelIfOpenSourceProofHashInput {
+        schema_version: ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_RECORD_KIND,
+        strategy_source_sha256: strategy_source_sha256.as_str(),
+        forced_flat_cancel_before_exit_pending: true,
+    };
+    let cancel_if_open_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8AbortPlanCancelIfOpenSourceProof {
+        cancel_if_open_defined: true,
+        cancel_if_open_evidence_hash,
+    })
 }
 
 pub fn write_strategy_input_evidence_artifact(
@@ -1756,6 +1826,68 @@ struct Phase8PreRunMarketWindowSourceProofHashInput<'a> {
     record_kind: &'static str,
     strategy_input_evidence_sha256: &'a str,
     expected_price_to_beat_source: &'a str,
+}
+
+#[derive(Serialize)]
+struct Phase8AbortPlanCancelIfOpenSourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    strategy_source_sha256: &'a str,
+    forced_flat_cancel_before_exit_pending: bool,
+}
+
+fn require_abort_plan_cancel_if_open_contract(
+    strategy_source: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let forced_flat_index = abort_plan_cancel_if_open_marker_index(
+        strategy_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_FORCED_FLAT_MARKER,
+        "forced_flat_reasons",
+    )?;
+    let pending_entry_index = abort_plan_cancel_if_open_marker_index(
+        strategy_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_PENDING_ENTRY_MARKER,
+        "pending_entry",
+    )?;
+    let cancel_order_index = abort_plan_cancel_if_open_marker_index(
+        strategy_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_CANCEL_ORDER_MARKER,
+        "cancel_order",
+    )?;
+    let context_index = abort_plan_cancel_if_open_marker_index(
+        strategy_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_CONTEXT_MARKER,
+        "cancel_order_context",
+    )?;
+    let exit_pending_index = abort_plan_cancel_if_open_marker_index(
+        strategy_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_EXIT_PENDING_MARKER,
+        "exit_pending",
+    )?;
+
+    if forced_flat_index < pending_entry_index
+        && pending_entry_index < cancel_order_index
+        && cancel_order_index < context_index
+        && context_index < exit_pending_index
+    {
+        Ok(())
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid {
+                field: "forced_flat_cancel_before_exit_pending",
+            },
+        )
+    }
+}
+
+fn abort_plan_cancel_if_open_marker_index(
+    strategy_source: &str,
+    marker: &str,
+    field: &'static str,
+) -> Result<usize, BoltV3OperatorArtifactError> {
+    strategy_source
+        .find(marker)
+        .ok_or(BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid { field })
 }
 
 fn read_release_manifest_source_file(

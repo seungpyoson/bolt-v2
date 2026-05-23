@@ -447,6 +447,74 @@ fn abort_plan_writer_rejects_each_undefined_source_path_without_artifact() {
 }
 
 #[test]
+fn abort_plan_cancel_if_open_source_proof_derives_source_owned_values_without_artifact() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let abort_plan_path = temp.path().join("abort-plan.json");
+    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            1_000_000,
+        )
+        .expect("strategy source should prove cancel-if-open abort path");
+
+    assert!(proof.cancel_if_open_defined);
+    assert_eq!(proof.cancel_if_open_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .cancel_if_open_evidence_hash
+            .chars()
+            .all(|char| char.is_ascii_hexdigit() && !char.is_ascii_uppercase()),
+        "cancel-if-open proof hash should be lowercase sha256"
+    );
+    assert!(
+        !abort_plan_path.exists(),
+        "collector must not write final abort-plan artifact"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_cancel_after_exit_pending() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn forced_flat_exit() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("late cancel should not prove cancel-if-open abort path");
+
+    assert!(
+        error
+            .to_string()
+            .contains("forced_flat_cancel_before_exit_pending"),
+        "late cancel error should identify ordering proof: {error}"
+    );
+}
+
+#[test]
 fn pre_run_state_writer_fails_closed_when_source_evidence_is_unproven() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded

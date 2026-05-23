@@ -4394,6 +4394,94 @@ reason = "This is the stable record-kind discriminator for market/window source-
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the cancel-if-open source-proof artifact schema version emitted by the abort-plan evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.abort_plan_cancel_if_open_source_proof.v1"'''
+context = '''"bolt_v3.abort_plan_cancel_if_open_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for cancel-if-open source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"!decision.forced_flat_reasons.is_empty()"'''
+context = '''"!decision.forced_flat_reasons.is_empty()";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the production forced-flat cancel-if-open source contract; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"managed_position.pending_entry.as_ref()"'''
+context = '''"managed_position.pending_entry.as_ref()";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the production pending-entry guard in the cancel-if-open source contract; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.cancel_order(pending_entry.client_order_id, Some(client_id), None)"'''
+context = '''"self.cancel_order(pending_entry.client_order_id, Some(client_id), None)";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the production NT cancel-order call in the cancel-if-open source contract; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.exposure = ExposureState::ExitPending"'''
+context = '''"self.exposure = ExposureState::ExitPending";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies cancel-if-open ordering before the production exit-pending transition; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"forced_flat_reasons"'''
+context = '''"forced_flat_reasons",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing cancel-if-open source marker in diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"pending_entry"'''
+context = '''"pending_entry",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing pending-entry source marker in diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"cancel_order"'''
+context = '''"cancel_order",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing cancel-order source marker in diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"cancel_order_context"'''
+context = '''"cancel_order_context",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing cancel-order context source marker in diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"exit_pending"'''
+context = '''"exit_pending",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing exit-pending source marker in diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"market_selection_source_path"'''
 context = '''.get("market_selection_source_path")'''

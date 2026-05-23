@@ -57,6 +57,7 @@ As a maintainer, I need any remaining oversized verifier/test surfaces split onl
 - Characterization fixtures must cover both runtime-owned cleanup enforcement and static workflow/no-mistakes hygiene paths.
 - Same-named helpers with divergent behavior must remain surface-specific unless the PR explicitly documents, tests, and receives operator approval for a semantic change.
 - Any external review slot exceeding 15 minutes is recorded as skipped, not approved.
+- Planning and PR review gates require all six configured reviewers: Claude, Gemini, Kimi, Grok, GLM, and DeepSeek. If any reviewer is unavailable, skipped, stale, or returns blocking findings, implementation or review-ready handoff waits.
 - no-mistakes is not part of this issue unless the operator explicitly requests it.
 
 ## Requirements
@@ -72,7 +73,7 @@ As a maintainer, I need any remaining oversized verifier/test surfaces split onl
 - **FR-007**: The PR MUST remain scoped to #454 and MUST NOT include #375 follow-up work or unrelated verifier redesign.
 - **FR-008**: The PR body MUST state scope, non-goals, verification, remaining risk, external review status, and that merge still requires operator approval.
 - **FR-009**: Exact-head GitHub CI and external review MUST be green before the PR is presented as review-ready.
-- **FR-010**: External review readiness MUST include at least one non-skipped adversarial review approval and no unresolved blocking findings. Skipped, timed-out, or stale-head slots are not approvals.
+- **FR-010**: External review readiness MUST include unanimous non-skipped adversarial approvals from Claude, Gemini, Kimi, Grok, GLM, and DeepSeek on the current head, with no unresolved blocking findings. Skipped, timed-out, unavailable, failed-quality, or stale-head slots are not approvals.
 
 ### Key Entities
 
@@ -91,7 +92,7 @@ As a maintainer, I need any remaining oversized verifier/test surfaces split onl
 - **SC-004**: Every helper family proven equivalent by the pre-extraction comparison is moved or isolated behind a shared path used by both relevant verifier surfaces, and every divergent candidate is recorded with a deferral or operator-approved change rationale.
 - **SC-005**: Characterization/parity tests fail on representative drift and pass after the mechanical extraction.
 - **SC-006**: Exact-head GitHub CI is green before review-ready handoff.
-- **SC-007**: External exact-head review reports no blocking findings, with skipped slots recorded if a reviewer exceeds the 15-minute limit.
+- **SC-007**: External exact-head review reports unanimous approval from Claude, Gemini, Kimi, Grok, GLM, and DeepSeek with no blocking findings, with skipped or unavailable slots recorded as not approved.
 
 ## Assumptions
 

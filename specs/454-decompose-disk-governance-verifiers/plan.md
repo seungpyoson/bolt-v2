@@ -16,7 +16,7 @@
 **Target Platform**: macOS developer workstation for local verification; GitHub Actions Linux runners for exact-head CI.  
 **Project Type**: Developer tooling governance; no product runtime behavior.  
 **Performance Goals**: Preserve current test practicality; shared parsing must avoid adding subprocess or filesystem work to static classification paths.  
-**Constraints**: One #454 PR; no #375 follow-up work; no no-mistakes unless explicitly requested; no new command semantics; no broad verifier redesign; external reviewer slots over 15 minutes are skipped and recorded. Extraction eligibility requires pre-extraction function-body and representative-behavior comparison.
+**Constraints**: One #454 PR; no #375 follow-up work; no no-mistakes unless explicitly requested; no new command semantics; no broad verifier redesign; all six external reviewer slots are required for approval; slots over 15 minutes are skipped and recorded as not approved. Extraction eligibility requires pre-extraction function-body and representative-behavior comparison.
 **Scale/Scope**: Current oversized surfaces are `scripts/rust_verification.py` (2738 lines), `scripts/verify_ci_workflow_hygiene.py` (6175 lines), `scripts/test_rust_verification_cache_retention.py` (3175 lines), and `scripts/test_verify_ci_workflow_hygiene.py` (5102 lines). This slice targets proven-equivalent parser/scanner logic and characterization of divergent candidates, not every oversized function.
 
 ## Constitution Check
@@ -33,7 +33,7 @@
 | Minimal slice discipline | Pass | Scope is exactly #454. #375 is closed; no no-mistakes or broad redesign is included. |
 | Pure Rust binary / SSM / TOML runtime | Pass | No production Rust binary, SSM, or runtime TOML behavior changes are planned. |
 
-Pre-implementation gate: adversarial plan/spec/tasks review must complete before implementation. Claude/Kimi/GLM/DeepSeek slots are requested for this plan. Any slot exceeding 15 minutes is recorded as skipped, not approved. Implementation may start only after at least one non-skipped approval and no unresolved blocking findings on the current head.
+Pre-implementation gate: adversarial plan/spec/tasks review must complete before implementation. Claude, Gemini, Kimi, Grok, GLM, and DeepSeek slots are required for this plan. Any slot exceeding 15 minutes is recorded as skipped, not approved. Implementation may start only after all six reviewers return non-skipped current-head approval and no unresolved blocking findings.
 
 ## Project Structure
 

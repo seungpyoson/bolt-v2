@@ -57,4 +57,4 @@ pr_number=$(gh pr view --json number --jq .number)
 gh pr checks "$pr_number" --repo seungpyoson/bolt-v2
 ```
 
-Then request external exact-head review. no-mistakes is intentionally not run unless the operator explicitly requests it.
+Then request external exact-head review from Claude, Gemini, Kimi, Grok, GLM, and DeepSeek. All six reviewers must approve the current head with no blocking findings. no-mistakes is intentionally not run unless the operator explicitly requests it.

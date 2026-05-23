@@ -16,6 +16,9 @@
 |---|---|
 | `python3 scripts/test_rust_verification_cache_retention.py` | Pass: `OK: Rust verification cache retention self-tests passed.` |
 | `python3 scripts/test_verify_ci_workflow_hygiene.py` | Pass: `OK: CI workflow hygiene verifier self-tests passed.` |
+| `python3 scripts/test_rust_verification_cache_retention.py` on 2026-05-24 | Pass: `OK: Rust verification cache retention self-tests passed.` |
+| `python3 scripts/test_verify_ci_workflow_hygiene.py` on 2026-05-24 | Pass: `OK: CI workflow hygiene verifier self-tests passed.` |
+| `python3 -m py_compile scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py scripts/test_rust_verification_cache_retention.py scripts/test_verify_ci_workflow_hygiene.py` on 2026-05-24 | Pass: no output. |
 
 ## Planning Validation
 
@@ -72,5 +75,17 @@
 - GLM `job_af3c8ed8-768b-4608-9c46-73629a2e628b`: REQUEST_CHANGES because `python_command_string` was missing from the contract and unproven helpers were predeclared.
 - DeepSeek `job_909a409d-5486-4f30-83f6-6a35cf69a941`: APPROVE with non-blocking notes about `python_command_string` and classification contingencies.
 - This planning revision narrows extraction eligibility to pre-extraction-proven equivalent helpers and treats divergent candidates as characterization-only unless operator-approved semantic-change evidence is added.
-- Current-head adversarial re-review is required before implementation starts.
+- Exact-head re-review on `39e5a22b93de193fd019bf7334e676eeed9aad7b` returned APPROVE from Claude `4f0661e9-485e-46ad-862f-540a9a2be3ba`, Kimi `6b2c181a-9165-426a-8b06-2ce71633c1ef`, GLM `job_c42abe34-c146-40bb-a833-b2f16189540c`, and DeepSeek `job_c0e20a68-7c2d-44f4-9a1b-f0f69255a853`.
+- On 2026-05-24 the required planning gate was strengthened to require unanimous current-head approvals from Claude, Gemini, Kimi, Grok, GLM, and DeepSeek before implementation starts.
 - no-mistakes is intentionally excluded unless the operator explicitly requests it.
+
+## Reviewer Availability Evidence
+
+| Reviewer | Command | Result |
+|---|---|---|
+| Claude | `node .../claude-companion.mjs doctor --auth-mode subscription --cwd ...` | Ready: subscription OAuth, model `claude-opus-4-7`. |
+| Gemini | `node .../gemini-companion.mjs doctor --cwd ...` | Ready: subscription OAuth, model `gemini-3.1-pro-preview`. |
+| Kimi | `node .../kimi-companion.mjs doctor --cwd ...` | Ready: subscription OAuth, model `kimi-code/kimi-for-coding`. |
+| Grok | `node .../grok-companion.mjs doctor` | Ready after operator login: subscription CLI, logged in, model `grok-build`. |
+| DeepSeek | `api-reviewer doctor --provider deepseek` | Ready: direct API, model `deepseek-v4-pro`, source-free probe HTTP 200. |
+| GLM | `api-reviewer doctor --provider glm` | Ready: direct API, model `glm-5.1`, source-free probe HTTP 200. |

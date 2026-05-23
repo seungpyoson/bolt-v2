@@ -64,7 +64,6 @@ pub struct BoltV3RedactedSsmManifestEntry {
     pub client_key: String,
     pub provider_key: String,
     pub field_name: &'static str,
-    pub ssm_path_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -552,7 +551,6 @@ pub fn build_redacted_ssm_manifest(
                 client_key: client_key.clone(),
                 provider_key: provider_key.to_string(),
                 field_name: path.field_name,
-                ssm_path_sha256: sha256_text(path.ssm_path.as_str()),
             });
         }
     }

@@ -96,7 +96,7 @@ Add a narrow production helper surface:
 
 Generated files:
 
-- `ssm-manifest.json`: deterministic redacted inventory of configured SSM references. It includes non-secret config identity, client key, provider key, field name, AWS region, and lowercase SHA-256 hashes of the exact configured SSM path strings. It must not include raw SSM paths or raw secret values.
+- `ssm-manifest.json`: deterministic redacted inventory of configured SSM references. It includes non-secret config identity, client key, provider key, field name, and AWS region. Exact SSM path strings remain bound by the root config bundle checksum and by the generated manifest file SHA, but the shareable manifest must not include raw SSM paths, raw secret values, or dictionary-confirmable per-path hashes.
 - `financial-envelope.json`: exact `Phase8FinancialEnvelopeEvidenceFile` values derived from loaded TOML for the requested `strategy_instance_id`.
 - `approval-nonce.json`: one-shot nonce evidence with schema/version/record kind and a generated nonce hash. The nonce source is 32 bytes from an OS CSPRNG through a direct production dependency added for this helper; the artifact stores only lowercase SHA-256 of those bytes. Raw nonce material must not be written, printed, logged, or returned.
 - `abort-plan.json`: strict abort plan JSON. It must not report all booleans true unless the helper can prove each static abort prerequisite from current source-owned contracts. If proof is incomplete, the command must fail closed before writing a successful abort plan.
@@ -122,7 +122,7 @@ Proceed one vertical slice at a time. Do not write broad implementation before e
    GREEN: add minimal clap command wired to the first safe artifact writer; do not commit a permanent dead command.
 
 2. RED: helper generates redacted SSM manifest from `tests/fixtures/bolt_v3/root.toml` without invoking an SSM resolver and without printing raw secret values.
-   GREEN: add provider-owned manifest extraction for configured SSM path hashes.
+   GREEN: add provider-owned manifest extraction for redacted configured SSM reference inventory without raw paths or per-path dictionary hashes.
 
 3. RED: helper generates financial envelope from loaded TOML for one strategy, and a changed TOML value changes or rejects the artifact through existing validator.
    GREEN: reuse the existing `from_loaded_for_strategy` logic by moving or exposing it without duplicating test fixture literals.
@@ -143,7 +143,7 @@ Proceed one vertical slice at a time. Do not write broad implementation before e
 External reviewers must answer before implementation:
 
 - Does the plan satisfy T119 without weakening the existing live canary gate?
-- Does the firm path-hashes-only SSM manifest policy preserve enough auditability without leaking account or parameter naming structure?
+- Does the no-raw-path/no-per-path-hash SSM manifest policy preserve enough auditability through config checksum, client/provider/field inventory, and artifact SHA without leaking account or parameter naming structure?
 - Is fail-closed abort-plan generation acceptable for T119 if panic-gate evidence remains missing, or must T119 remain unchecked until panic-gate proof exists?
 - Does exposing or moving `Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy` preserve schema and validation behavior without creating a second source of truth?
 - Does the planned provider-owned SSM extractor avoid production hardcodes and provider leakage into core?

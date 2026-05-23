@@ -38,7 +38,7 @@ const TEST_BINARY_OPTION_PRICE_INCREMENT: &str = "0.001";
 const TEST_BINARY_OPTION_SIZE_INCREMENT: &str = "0.01";
 
 #[test]
-fn redacted_ssm_manifest_hashes_configured_ssm_paths_without_values() {
+fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
     let loaded = load_bolt_v3_config(&repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture config should load");
 
@@ -68,49 +68,52 @@ fn redacted_ssm_manifest_hashes_configured_ssm_paths_without_values() {
             !manifest_json.contains(raw_path),
             "redacted SSM manifest must not contain raw SSM path {raw_path}"
         );
+        let dictionary_hash = sha256_text(raw_path);
+        assert!(
+            !manifest_json.contains(&dictionary_hash),
+            "redacted SSM manifest must not contain dictionary-confirmable SSM path hash {dictionary_hash}"
+        );
     }
+    assert!(
+        !manifest_json.contains("ssm_path_sha256"),
+        "redacted SSM manifest schema must not expose per-path dictionary hashes"
+    );
 
     assert_manifest_entry(
         &manifest,
         "polymarket_main",
         "POLYMARKET",
         "private_key_ssm_path",
-        "/bolt/polymarket_main/private_key",
     );
     assert_manifest_entry(
         &manifest,
         "polymarket_main",
         "POLYMARKET",
         "api_key_ssm_path",
-        "/bolt/polymarket_main/api_key",
     );
     assert_manifest_entry(
         &manifest,
         "polymarket_main",
         "POLYMARKET",
         "api_secret_ssm_path",
-        "/bolt/polymarket_main/api_secret",
     );
     assert_manifest_entry(
         &manifest,
         "polymarket_main",
         "POLYMARKET",
         "passphrase_ssm_path",
-        "/bolt/polymarket_main/passphrase",
     );
     assert_manifest_entry(
         &manifest,
         "binance_reference",
         "BINANCE",
         "api_key_ssm_path",
-        "/bolt/binance_reference/api_key",
     );
     assert_manifest_entry(
         &manifest,
         "binance_reference",
         "BINANCE",
         "api_secret_ssm_path",
-        "/bolt/binance_reference/api_secret",
     );
 }
 
@@ -2570,9 +2573,8 @@ fn assert_manifest_entry(
     client_key: &str,
     provider_key: &str,
     field_name: &str,
-    ssm_path: &str,
 ) {
-    let entry = manifest
+    manifest
         .entries
         .iter()
         .find(|entry| {
@@ -2581,7 +2583,6 @@ fn assert_manifest_entry(
                 && entry.field_name == field_name
         })
         .expect("expected redacted SSM manifest entry");
-    assert_eq!(entry.ssm_path_sha256, sha256_text(ssm_path));
 }
 
 fn test_operator_evidence_packet_bindings(

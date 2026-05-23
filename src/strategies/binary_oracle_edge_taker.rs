@@ -6694,8 +6694,8 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq)]
     enum RecordedDecisionEvidenceEvent {
-        StrategyInput(crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot),
-        OrderIntent(crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence),
+        StrategyInput(Box<crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot>),
+        OrderIntent(Box<crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence>),
         AdmissionDecision(crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence),
     }
 
@@ -6723,9 +6723,9 @@ mod tests {
             self.events
                 .lock()
                 .expect("recording evidence writer mutex poisoned")
-                .push(RecordedDecisionEvidenceEvent::StrategyInput(
+                .push(RecordedDecisionEvidenceEvent::StrategyInput(Box::new(
                     snapshot.clone(),
-                ));
+                )));
             Ok(())
         }
 
@@ -6736,7 +6736,9 @@ mod tests {
             self.events
                 .lock()
                 .expect("recording evidence writer mutex poisoned")
-                .push(RecordedDecisionEvidenceEvent::OrderIntent(intent.clone()));
+                .push(RecordedDecisionEvidenceEvent::OrderIntent(Box::new(
+                    intent.clone(),
+                )));
             Ok(())
         }
 

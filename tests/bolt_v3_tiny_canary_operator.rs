@@ -501,7 +501,8 @@ async fn phase8_preflight_accepts_valid_gate_inputs_before_approval_consumption(
 
     let preflight = evaluate_phase8_canary_preflight(
         &loaded,
-        option_env!("BOLT_V3_BUILD_HEAD_SHA").expect("build head should be embedded"),
+        option_env!("BOLT_V3_BUILD_HEAD_SHA")
+            .unwrap_or_else(|| panic!("build head should be embedded")),
         phase8_approved_strategy_audit(),
     )
     .await;
@@ -531,7 +532,8 @@ async fn phase8_preflight_rejects_invalid_report_before_approval_consumption() {
 
     let preflight = evaluate_phase8_canary_preflight(
         &loaded,
-        option_env!("BOLT_V3_BUILD_HEAD_SHA").expect("build head should be embedded"),
+        option_env!("BOLT_V3_BUILD_HEAD_SHA")
+            .unwrap_or_else(|| panic!("build head should be embedded")),
         phase8_approved_strategy_audit(),
     )
     .await;
@@ -554,7 +556,8 @@ async fn phase8_preflight_rejects_existing_approval_consumption_before_runner_en
 
     let preflight = evaluate_phase8_canary_preflight(
         &loaded,
-        option_env!("BOLT_V3_BUILD_HEAD_SHA").expect("build head should be embedded"),
+        option_env!("BOLT_V3_BUILD_HEAD_SHA")
+            .unwrap_or_else(|| panic!("build head should be embedded")),
         phase8_approved_strategy_audit(),
     )
     .await;

@@ -210,6 +210,48 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct BoltV3QuoteQuantityAdmissionInput {
+    pub order_kind: BoltV3QuoteQuantityOrderKind,
+    pub order_side: BoltV3QuoteQuantityOrderSide,
+    pub is_quote_quantity: bool,
+    pub is_inverse: bool,
+    pub submitted_quote_quantity: Decimal,
+    pub calculated_notional: Decimal,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum BoltV3QuoteQuantityOrderKind {
+    Limit,
+    StopLimit,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum BoltV3QuoteQuantityOrderSide {
+    Buy,
+    Sell,
+    Other,
+}
+
+pub fn conservative_quote_quantity_admission_notional(
+    input: BoltV3QuoteQuantityAdmissionInput,
+) -> Decimal {
+    if input.is_quote_quantity
+        && !input.is_inverse
+        && input.order_side == BoltV3QuoteQuantityOrderSide::Sell
+        && matches!(
+            input.order_kind,
+            BoltV3QuoteQuantityOrderKind::Limit | BoltV3QuoteQuantityOrderKind::StopLimit
+        )
+    {
+        return input
+            .calculated_notional
+            .max(input.submitted_quote_quantity);
+    }
+    input.calculated_notional
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum BoltV3SubmitAdmissionError {
     NotArmed,

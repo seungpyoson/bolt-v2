@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     fmt, fs,
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -1642,6 +1642,41 @@ fn write_json_artifact_create_new<T: Serialize>(
     path: &Path,
     value: &T,
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    write_json_artifact_create_new_with_file(path, value, open_json_artifact_create_new_file)
+}
+
+trait ArtifactFile {
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()>;
+    fn sync_all(&self) -> io::Result<()>;
+}
+
+impl ArtifactFile for fs::File {
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        Write::write_all(self, bytes)
+    }
+
+    fn sync_all(&self) -> io::Result<()> {
+        fs::File::sync_all(self)
+    }
+}
+
+fn open_json_artifact_create_new_file(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    configure_private_artifact_create_options(&mut options);
+    options.open(path)
+}
+
+fn write_json_artifact_create_new_with_file<T, F, File>(
+    path: &Path,
+    value: &T,
+    open_file: F,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError>
+where
+    T: Serialize,
+    F: FnOnce(&Path) -> io::Result<File>,
+    File: ArtifactFile,
+{
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -1652,15 +1687,10 @@ fn write_json_artifact_create_new<T: Serialize>(
         })?;
     }
     let bytes = serde_json::to_vec_pretty(value).map_err(BoltV3OperatorArtifactError::Serialize)?;
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    configure_private_artifact_create_options(&mut options);
-    let mut file = options
-        .open(path)
-        .map_err(|source| BoltV3OperatorArtifactError::Write {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let mut file = open_file(path).map_err(|source| BoltV3OperatorArtifactError::Write {
+        path: path.to_path_buf(),
+        source,
+    })?;
     if let Err(source) = file.write_all(&bytes) {
         let _ = fs::remove_file(path);
         return Err(BoltV3OperatorArtifactError::Write {
@@ -1702,6 +1732,51 @@ fn ensure_output_path_absent(path: &Path) -> Result<(), BoltV3OperatorArtifactEr
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct SyncFailingArtifactFile {
+        file: fs::File,
+    }
+
+    impl ArtifactFile for SyncFailingArtifactFile {
+        fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+            std::io::Write::write_all(&mut self.file, bytes)
+        }
+
+        fn sync_all(&self) -> io::Result<()> {
+            Err(io::Error::other("forced sync failure"))
+        }
+    }
+
+    #[test]
+    fn json_artifact_writer_removes_create_new_output_when_sync_fails() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let path = temp.path().join("approval-nonce.json");
+        let artifact = BoltV3ApprovalNonceArtifact {
+            schema_version: APPROVAL_NONCE_SCHEMA_VERSION,
+            record_kind: APPROVAL_NONCE_RECORD_KIND,
+            nonce_sha256: "0".repeat(64),
+        };
+
+        let error = write_json_artifact_create_new_with_file(&path, &artifact, |path| {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map(|file| SyncFailingArtifactFile { file })
+        })
+        .expect_err("sync failure must fail the artifact write");
+
+        assert!(matches!(error, BoltV3OperatorArtifactError::Write { .. }));
+        assert!(
+            !path.exists(),
+            "sync failure must remove the partially-written final artifact path"
+        );
+    }
 }
 
 fn validate_output_parent(

@@ -789,44 +789,6 @@ fn no_submit_readiness_run_helper_polls_runner_while_waiting_for_reference_quote
 }
 
 #[test]
-fn no_submit_readiness_wait_helpers_do_not_spin_on_yield_now() {
-    let source = support::repo_text("src/bolt_v3_live_node.rs");
-    let probe_handle = source
-        .split("struct BoltV3NoSubmitReferenceQuoteProbeHandle")
-        .nth(1)
-        .and_then(|tail| {
-            tail.split("struct BoltV3NoSubmitReferenceQuoteProbe")
-                .next()
-        })
-        .expect("reference quote probe handle should be present");
-    let wait_helpers = source
-        .split("async fn await_no_submit_reference_quote_probe")
-        .nth(1)
-        .and_then(|tail| {
-            tail.split("fn no_submit_required_execution_accounts_registered")
-                .next()
-        })
-        .expect("no-submit wait helpers should be present");
-
-    assert!(
-        !wait_helpers.contains("yield_now"),
-        "no-submit readiness wait helpers must not immediately re-wake on the readiness runtime"
-    );
-    assert!(
-        wait_helpers.contains("runtime_capture_start_poll_interval_ms"),
-        "no-submit node-running wait must use the config-owned poll interval"
-    );
-    assert!(
-        wait_helpers.contains("wait_for_all_required_quotes().await"),
-        "reference quote wait helper must delegate to notification-driven probe wait"
-    );
-    assert!(
-        probe_handle.contains(".notified().await"),
-        "reference quote probe handle must use a notification-driven signal"
-    );
-}
-
-#[test]
 fn no_submit_reference_quote_probe_source_is_subscription_only() {
     let source = support::repo_text("src/bolt_v3_live_node.rs");
     let probe_source = source

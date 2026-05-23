@@ -1682,6 +1682,72 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn reference_quote_probe_wait_wakes_when_required_quote_records() {
+        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::new(&loaded);
+        let required = handle
+            .required
+            .first()
+            .expect("fixture should require reference quote evidence")
+            .clone();
+        let quote = QuoteTick::new(
+            required.instrument_id,
+            Price::from("100.00"),
+            Price::from("100.01"),
+            Quantity::from("1"),
+            Quantity::from("1"),
+            1_u64.into(),
+            1_u64.into(),
+        );
+        let wait = handle.wait_for_all_required_quotes();
+        tokio::pin!(wait);
+
+        tokio::select! {
+            () = &mut wait => panic!("wait should not complete before required quote evidence"),
+            () = tokio::time::sleep(Duration::from_millis(5)) => {}
+        }
+
+        handle.record_quote(&quote, 2);
+        tokio::time::timeout(Duration::from_millis(100), &mut wait)
+            .await
+            .expect("notify must wake required-quote wait");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reference_quote_probe_wait_accepts_quote_recorded_before_wait_starts() {
+        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::new(&loaded);
+        let required = handle
+            .required
+            .first()
+            .expect("fixture should require reference quote evidence")
+            .clone();
+        let quote = QuoteTick::new(
+            required.instrument_id,
+            Price::from("100.00"),
+            Price::from("100.01"),
+            Quantity::from("1"),
+            Quantity::from("1"),
+            1_u64.into(),
+            1_u64.into(),
+        );
+
+        handle.record_quote(&quote, 2);
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            handle.wait_for_all_required_quotes(),
+        )
+        .await
+        .expect("pre-observed quote must not be lost before wait starts");
+    }
+
     #[test]
     fn live_node_config_maps_trader_id_and_environment_from_v3_root() {
         let loaded = fixture_loaded_config();

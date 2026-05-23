@@ -50,8 +50,12 @@ python3 scripts/developer_tool_storage_hygiene.py preflight \
   --policy ci/developer-tool-storage-hygiene.toml \
   --home-root "$HOME" \
   --repo-root "$PWD" \
+  --available-disk-bytes 10737418240 \
   --json
 ```
+
+If `--available-disk-bytes` is omitted, preflight reads free bytes from `--home-root`.
+Preflight exits 0 for `status=ok` and `status=warning`, exits 1 for `status=error`, and exits 2 for policy or usage errors.
 
 Apply requires a saved dry-run report and revalidates policy plus candidate state before mutation:
 

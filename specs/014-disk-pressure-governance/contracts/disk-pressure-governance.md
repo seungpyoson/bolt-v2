@@ -11,7 +11,7 @@
 | #125 | Claude task-output incident anchor | bolt-v2-side anchor only; implementation belongs to `seungpyoson/claude-config#597` |
 | #286 | Managed Rust cache retention | Complete: PR #404 merged into main at `400dac8acc8ec04fc7b4aefc41bab10390d6404f`; residual wrapper inventory belongs to #374 |
 | #374 | Wrapper hardening | One implementation PR after Phase 1 cargo-path enumeration is pinned |
-| #375 | Developer-tool hygiene | One implementation PR after Phase 1 developer-tool enumeration is pinned |
+| #375 | Developer-tool hygiene | Current implementation PR: `specs/024-developer-tool-storage-hygiene/`, `ci/developer-tool-storage-hygiene.toml`, `scripts/developer_tool_storage_hygiene.py`, and `docs/ops/developer-tool-storage-hygiene.md`; merge still requires exact-head review gates |
 | #376 | Uncovered surface inventory | One investigation/doc PR; follow-up implementation issue created from inventory |
 | #377 | Unknown-class detection | One implementation PR after Phase 1 detection-surface enumeration is pinned |
 

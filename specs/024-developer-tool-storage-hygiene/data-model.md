@@ -5,20 +5,21 @@
 Represents a developer-tool path family.
 
 Fields:
-- `id`: stable identifier such as `codex_tui_log`.
+- `id`: stable identifier such as `codex.log`.
 - `category`: AI agent, version manager, build tool, package manager, IDE/editor, cloud CLI, browser tooling, MCP/plugin, or Python tooling.
 - `path_family`: path template such as `~/.codex/sessions/**/*.jsonl`.
 - `growth_shape`: `single_file`, `many_files`, `tree`, or `sqlite_with_wal`.
 - `native_policy`: `yes`, `partial`, `none_found`, or `not_applicable`.
-- `owner`: `this_issue`, `tracked_elsewhere`, `out_of_repo`, or `report_only`.
+- `owner`: `owned`, `report_only`, or `out_of_scope`.
 - `native_guidance`: optional native configuration key family for report-only surfaces such as Codex history.
-- `cleanup_mode`: `rotate`, `ttl_prune`, `toolchain_retention`, `preflight_only`, or `none`.
+- `cleanup_mode`: `rotate`, `ttl_prune`, `toolchain_retention`, or `none`.
 - `protected`: boolean derived from policy and current state.
 - `active_writer_processes`: explicit configured process names that block apply for mutable Codex and Factory surfaces.
 
 Validation:
-- `owner=this_issue` requires `cleanup_mode` other than `none`.
-- `owner=report_only` forbids destructive apply actions.
+- Only `owner=owned` surfaces may use mutating cleanup modes.
+- `owner=report_only` and `owner=out_of_scope` require `cleanup_mode=none`.
+- Adjacent-context entries cannot use `owner=owned`.
 - `path_family` must be selected from config, not inferred from arbitrary substrings.
 - Enumerated candidates must remain under configured path-family roots after normalization and must not follow symlinks.
 
@@ -45,7 +46,7 @@ Fields:
 - `preflight.free_disk_error_bytes`
 - `preflight.owned_storage_warning_bytes`
 - `preflight.owned_storage_error_bytes`
-- `report_only_surfaces`
+- `adjacent`
 
 Validation:
 - Size and day values must be non-negative integers.
@@ -54,7 +55,7 @@ Validation:
 - Active, default, and repository-root project-pinned rustup protections are unconditional and cannot be disabled by TOML.
 - Free-disk error threshold must be less than or equal to free-disk warning threshold.
 - Owned-storage error threshold must be greater than or equal to owned-storage warning threshold.
-- Report-only surfaces and native-guidance values cannot have apply actions.
+- Report-only, out-of-scope, adjacent, and native-guidance values cannot have apply actions.
 
 ## ToolchainState
 
@@ -94,11 +95,11 @@ Represents one dry-run or apply action.
 Fields:
 - `surface_id`
 - `path`
-- `action`: `rotate`, `delete_file`, `remove_toolchain`, or `report`
-- `bytes_estimate`
+- `action`: `rotate`, `delete`, `remove_tree`, or `refuse`
+- `bytes`
+- `estimated_reclaim_bytes`
 - `reason`
-- `mode`: `dry_run` or `apply`
-- `pre_apply_scan_id`: scan identity captured immediately before mutation in apply mode.
+- `state_token`: filesystem identity used by apply revalidation for mutating candidates.
 
 Validation:
 - `apply` requires immediate policy validation and filesystem re-scan before mutation and must not target report-only or protected items.
@@ -110,16 +111,19 @@ Validation:
 Represents read-only storage status.
 
 Fields:
-- `total_owned_bytes`
+- `owned_storage_bytes`
 - `available_disk_bytes`
-- `warning`
-- `error`
-- `surfaces`
+- `warnings`
+- `errors`
+- `status`
+- `surface_measurements`
 - `candidates`
-- `protected_items`
-- `report_only_items`
-- `out_of_scope_items`
+- `protected`
+- `report_only`
+- `adjacent_context`
+- `owned_storage_measurement_errors`
+- `follow_up_classes`
 
 Validation:
 - Preflight must not mutate files.
-- Error status must be fail-closed for heavy local verification recommendations.
+- Status is `error` if configured free-disk, owned-storage, or owned-measurement checks fail; otherwise `warning` if warning thresholds trigger, else `ok`.

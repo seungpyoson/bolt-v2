@@ -349,3 +349,26 @@ Fourteenth no-mistakes run `01KS9YRAJTWMGCRPMS92M5ZB48` started on head `f959916
 | Stale numeric sidecars were still discovered only when the active log itself exceeded `max_bytes`, so `.3+` sidecars could remain when the active log was below cap or missing. | Accepted no-mistakes auto-fix `0b0c2778`; it added regressions for small/missing active logs and discovers stale sidecar cleanup independently of active-log oversize rotation. |
 
 The follow-up no-mistakes review continuation exceeded 15 minutes without reaching a terminal result after the second auto-fix. The auto-fix was adopted locally and a fresh exact-head no-mistakes run must be started after this evidence commit is pushed.
+
+Fifteenth no-mistakes continuation `01KSA083R5FPFYJ9D2JRTC3NW9` reviewed the adopted head `9eb8ea1b`, auto-fixed to `33cab09d`, auto-fixed again to `d32d661e`, then failed while attempting the final auto-fix because the Codex-backed fixer exited with `401 Unauthorized: Missing bearer or basic authentication in header` against `https://api.openai.com/v1/responses`:
+
+| Finding | Remediation |
+|---|---|
+| Log rotation could follow a symlinked path-family parent, so `~/.codex/log` or `~/.factory/logs` could redirect mutation through a symlink. | Accepted no-mistakes auto-fix `33cab09d`; it added path-family symlink refusals before log sidecar enumeration and rotation. |
+| Fixed report-only paths could omit symlink refusals instead of reporting native-guidance status. | Accepted no-mistakes auto-fix `33cab09d`; fixed report-only paths now use the same no-follow refusal handling as glob path families. |
+| Glob cleanup families could follow intermediate symlink ancestors such as `~/.codex` or `~/.rustup`. | Accepted no-mistakes auto-fix `d32d661e`; glob-owned cleanup now refuses path-family symlink ancestors before globbing or iterating. |
+| Rotation staging could overwrite a concurrently recreated sidecar destination. | Accepted no-mistakes auto-fix `d32d661e`; staged rotation now fails instead of replacing unexpected destination paths. |
+| Preflight did not promote every owned ancestor refusal into owned-storage errors. | Accepted no-mistakes auto-fix `d32d661e`; owned path-family ancestor refusals now fail preflight instead of undercounting owned storage. |
+| Apply re-scanned the full candidate tree for each candidate, making high-cardinality session cleanup quadratic. | Accepted no-mistakes auto-fix `d32d661e`; apply keeps the initial full-set comparison and revalidates only the current candidate before mutation. |
+| `build_preflight` only promoted owned root refusals emitted as cleanup candidates, so an owned surface with `cleanup_mode = "none"` could pass preflight despite a symlinked or outside-root owned path. | Added `test_preflight_fails_closed_when_owned_cleanup_none_path_is_refused` and committed manual fix `7c010efa`; preflight now probes owned path-family roots independently of cleanup candidate generation and deduplicates refusal errors. |
+
+Manual verification after `7c010efa`:
+
+| Command | Result | Notes |
+|---|---|---|
+| `python3 -m unittest scripts.test_developer_tool_storage_hygiene.DeveloperToolStorageHygieneTests.test_preflight_fails_closed_when_owned_cleanup_none_path_is_refused` | Pass | Regression for the manual no-mistakes warning. |
+| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 66 tests in 4.222s | Scratch fixtures only; no real home-directory mutation. |
+| `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py` | Pass | Syntax check after manual no-mistakes remediation. |
+| `git diff --check` | Pass | Whitespace check after manual no-mistakes remediation. |
+
+Final no-mistakes must be rerun on exact head `7c010efa` after this evidence commit is pushed.

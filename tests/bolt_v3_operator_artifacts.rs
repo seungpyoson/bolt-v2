@@ -2564,6 +2564,13 @@ fn strategy_input_writer_reports_market_selection_source_read_as_read_error() {
         !message.contains(missing_ref.path.to_string_lossy().as_ref()),
         "missing market-selection source diagnostic must not print source path: {message}"
     );
+    let source_message = std::error::Error::source(&error)
+        .expect("read diagnostic should preserve source error")
+        .to_string();
+    assert!(
+        !source_message.contains(missing_ref.path.to_string_lossy().as_ref()),
+        "missing market-selection source error chain must not print source path: {source_message}"
+    );
     assert!(
         !output_path.exists(),
         "read failure must not leave strategy-input artifact"
@@ -2605,6 +2612,13 @@ fn strategy_input_writer_reports_market_selection_source_json_as_parse_error() {
     assert!(
         !message.contains(invalid_ref.path.to_string_lossy().as_ref()),
         "invalid market-selection source diagnostic must not print source path: {message}"
+    );
+    let source_message = std::error::Error::source(&error)
+        .expect("parse diagnostic should preserve source error")
+        .to_string();
+    assert!(
+        !source_message.contains(invalid_ref.path.to_string_lossy().as_ref()),
+        "invalid market-selection source error chain must not print source path: {source_message}"
     );
     assert!(
         !output_path.exists(),
@@ -2651,6 +2665,19 @@ fn strategy_input_writer_rejects_symlinked_market_selection_source_before_artifa
                 .as_ref()
         ),
         "symlinked market-selection source diagnostic must not print source path: {message}"
+    );
+    let source_message = std::error::Error::source(&error)
+        .expect("symlink diagnostic should preserve source error")
+        .to_string();
+    assert!(
+        !source_message.contains(
+            fixture
+                .market_selection_source_ref
+                .path
+                .to_string_lossy()
+                .as_ref()
+        ),
+        "symlinked market-selection source error chain must not print source path: {source_message}"
     );
     assert!(
         !output_path.exists(),

@@ -300,22 +300,13 @@ pub fn read_latest_entry_decision_evidence_chain(
     max_bytes: u64,
 ) -> Result<BoltV3EntryDecisionEvidenceChain> {
     let path = path.as_ref();
-    let mut file = fs::File::open(path).with_context(|| {
-        format!(
-            "failed to open bolt-v3 decision evidence file `{}`",
-            path.display()
-        )
-    })?;
+    let mut file = open_regular_decision_evidence_file(path)
+        .context("failed to open regular file bolt-v3 decision evidence")?;
     let mut bytes = Vec::new();
     Read::by_ref(&mut file)
         .take(max_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
-        .with_context(|| {
-            format!(
-                "failed to read bolt-v3 decision evidence file `{}`",
-                path.display()
-            )
-        })?;
+        .context("failed to read bolt-v3 decision evidence file")?;
     if bytes.len() as u64 > max_bytes {
         return Err(anyhow!(
             "bolt-v3 decision evidence file exceeds max_bytes={max_bytes}"
@@ -393,6 +384,68 @@ pub fn read_latest_entry_decision_evidence_chain(
         }
     }
     latest.ok_or_else(|| anyhow!("bolt-v3 decision evidence has no complete entry decision chain"))
+}
+
+fn open_regular_decision_evidence_file(path: &Path) -> std::io::Result<fs::File> {
+    let pre_open_metadata = fs::symlink_metadata(path)?;
+    validate_decision_evidence_regular_file(&pre_open_metadata)?;
+    let file = open_decision_evidence_file_no_follow(path)?;
+    let opened_metadata = file.metadata()?;
+    validate_decision_evidence_regular_file(&opened_metadata)?;
+    validate_same_decision_evidence_file(&pre_open_metadata, &opened_metadata)?;
+    let post_open_metadata = fs::symlink_metadata(path)?;
+    validate_decision_evidence_regular_file(&post_open_metadata)?;
+    validate_same_decision_evidence_file(&opened_metadata, &post_open_metadata)?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_decision_evidence_file_no_follow(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_decision_evidence_file_no_follow(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new().read(true).open(path)
+}
+
+fn validate_decision_evidence_regular_file(metadata: &fs::Metadata) -> std::io::Result<()> {
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "bolt-v3 decision evidence path is not a regular file",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_same_decision_evidence_file(
+    left: &fs::Metadata,
+    right: &fs::Metadata,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    if left.dev() != right.dev() || left.ino() != right.ino() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid bolt-v3 decision evidence file identity during open",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_same_decision_evidence_file(
+    _left: &fs::Metadata,
+    _right: &fs::Metadata,
+) -> std::io::Result<()> {
+    Ok(())
 }
 
 fn validate_entry_decision_chain(

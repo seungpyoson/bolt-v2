@@ -128,6 +128,36 @@ fn latest_entry_decision_evidence_chain_rejects_oversized_file_before_parse() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn latest_entry_decision_evidence_chain_rejects_symlinked_file_before_parse() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let real_path = temp.path().join("real-decision-evidence.jsonl");
+    let lines = sample_entry_decision_evidence_lines();
+    write_decision_evidence_lines(&real_path, &lines);
+    std::os::unix::fs::symlink(&real_path, &evidence_path)
+        .expect("decision evidence symlink should create");
+
+    let error = read_latest_entry_decision_evidence_chain(&evidence_path, 100_000)
+        .expect_err("symlinked decision evidence must fail before parse");
+    let message = error.to_string();
+    let chain = format!("{error:#}");
+
+    assert!(
+        message.contains("regular file"),
+        "symlinked decision evidence should cite regular-file policy: {message}"
+    );
+    assert!(
+        !message.contains(evidence_path.to_string_lossy().as_ref()),
+        "symlinked decision evidence diagnostic must not print source path: {message}"
+    );
+    assert!(
+        !chain.contains(evidence_path.to_string_lossy().as_ref()),
+        "symlinked decision evidence error chain must not print source path: {chain}"
+    );
+}
+
 #[test]
 fn latest_entry_decision_evidence_chain_rejects_cross_record_field_mismatches() {
     let cases: [(&str, fn(&mut [serde_json::Value; 3])); 7] = [

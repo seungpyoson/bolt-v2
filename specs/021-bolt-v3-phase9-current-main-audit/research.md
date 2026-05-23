@@ -19,15 +19,15 @@ Commands used for the current P9 sync:
 
 ### Decision 1: P9 Cannot Certify Live Readiness
 
-P7 and P8 source-review gates are closed for PR #331, but live evidence remains unrun. `specs/001-thin-live-canary-path/tasks.md` leaves T038 unchecked for the real SSM/venue no-submit run and T046 unchecked for the tiny-capital canary run.
+P7 and P8 source-review gates are closed for PR #331, but live readiness remains blocked. A 2026-05-21 approved no-submit operator attempt ran with relative path `config/live.local.toml` and wrote a redacted report, but the later two-config audit means that attempt is retained only as failed-connect history, not config-identity proof. Its report failed `controlled_connect` after the Binance reference data quote probe did not observe configured live quote evidence; `reference_readiness` was skipped, and `specs/001-thin-live-canary-path/tasks.md` still leaves T038 unchecked. A follow-up non-secret probe at head `d69b43c22ce22d018bc1c39006bbd2e7d642c372` ruled out empty configured SSM values and malformed Ed25519 private-key shape in that probe, then got Binance HTTP `401` / code `-2015` on signed read-only account auth. A 2026-05-21 metadata audit executed at pre-doc-commit head `7dcda025f987d80f261500ca3094fb42ab9ce9de` showed the configured Binance SSM path hashes match across the two local configs, but the API-key SecureString is version `1` last modified `2026-04-19T18:47:41.113000+09:00` while the API-secret SecureString is version `2` last modified `2026-05-20T09:12:33.893000+09:00`; this makes key-secret pairing/state the lead hypothesis, not proven root cause. A later non-secret probe executed at pre-doc-commit head `dfd60bd5d10779ec6ea48c39a7a066b2cf382a48` derived only the configured Ed25519 public-key fingerprint and still received HTTP `401` / Binance code `-2015` on signed read-only `/api/v3/account`; this supports the auth-state blocker but is not readiness evidence. A 2026-05-21 approved current-head T038 rerun at `c4f65cdc3f68f23668c8be37da7270df8bc4f167` pinned absolute config path, raw config SHA, config bundle checksum, executable identity, and report hash, but still failed `controlled_connect` after Binance SBE rejected the WebSocket handshake with `Invalid X-MBX-APIKEY header`; `reference_readiness` was skipped, so this is fresh blocker evidence rather than a satisfied no-submit report. The remaining T038 blocker is wrong configured SSM parameter target, key pairing/state, IP whitelist, permission, account, environment configuration, or Binance-side key state; it is not closed by source review. T046 remains unchecked for the tiny-capital canary run.
 
 ### Decision 2: P9 Source Review Can Proceed After Artifact Sync
 
 P9 is reviewing the audit artifacts and source-backed claim boundaries. It can close PR #331 source-review obligations only after current artifacts are clean, pushed, CI is green, and six external reviewers return no unresolved blockers. This does not close no-submit live readiness or tiny-canary readiness.
 
-### Decision 3: No Active Operator Config Is Present
+### Decision 3: Ignored Operator Config Is Present But Not Passing Evidence
 
-The checkout has tracked root/strategy example TOML files, but no active operator root TOML is present. Tracked examples are not approval evidence and are not a substitute for a configured, checksummed operator run.
+The checkout has tracked root/strategy example TOML files and an ignored local `config/live.local.toml`. The ignored operator config was used for the failed 2026-05-21 T038 attempt, and a later non-secret auth probe narrowed the reference-data blocker to configured SSM target, API-key/IP/permission/account/environment state. The failed controlled-connect report is not approval evidence for no-submit readiness.
 
 ### Decision 4: Self-Referential SHA Is Avoided
 
@@ -47,6 +47,6 @@ The source-grounded status map marks current source coverage implemented for sev
 
 ## Alternatives Rejected
 
-- Treat P7/P8 source reviews as live readiness: rejected because T038 and T046 are still unrun.
+- Treat P7/P8 source reviews as live readiness: rejected because T038 has only a failed approved controlled-connect no-submit attempt and T046 is still unrun.
 - Store final external review disposition only in a committed file: rejected because adding exact-head review results would create a new head and stale the review evidence. PR comments are the exact-head evidence surface.
 - Continue PR #392 work inside PR #331: rejected because PR #392 has a separate declared scope and must remain downstream.

@@ -42,9 +42,9 @@ rg -n "T038|T046" specs/001-thin-live-canary-path/tasks.md
 
 Expected:
 
-- live-local operator config paths absent
+- ignored `config/live.local.toml` may be present locally; `config/live.local.example.toml` is absent
 - tracked root/strategy examples present only as examples
-- real no-submit operator run T038 remains unchecked unless explicit operator approval and evidence are present
+- real no-submit operator run T038 remains unchecked until explicit operator approval produces a satisfied report; the 2026-05-21 approved attempt failed `controlled_connect` and skipped `reference_readiness`, and a later non-secret probe narrowed the blocker to configured SSM target/API-key/IP/permission/account/environment state
 - tiny-canary operator run T046 remains unchecked unless explicit operator approval and evidence are present
 
 ## Artifact Checks

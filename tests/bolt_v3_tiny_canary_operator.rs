@@ -1,10 +1,13 @@
+mod support;
+
 use bolt_v2::{
-    bolt_v3_config::load_bolt_v3_config,
+    bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_tiny_canary_evidence::{
         PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
-        Phase8EvidenceRef, Phase8LiveCanaryResultRefs, Phase8LiveOrderRef,
-        Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef, Phase8StrategyInputSafetyAudit,
+        Phase8EvidenceRef, Phase8FinancialEnvelopeEvidenceFile, Phase8LiveCanaryResultRefs,
+        Phase8LiveOrderRef, Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef,
+        Phase8StrategyInputSafetyAudit, Phase8StrategyInputSafetyInputs,
         evaluate_phase8_canary_preflight, phase8_required_env, phase8_sha256_text,
     },
     nt_runtime_capture::spool_root_for_instance,
@@ -16,10 +19,17 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
+const PHASE8_VALIDATION_HEAD_SHA: &str = "expected-head";
+const PHASE8_VALIDATION_ROOT_TOML_SHA256: &str = "expected-config-hash";
+const PHASE8_TEST_APPROVAL_ENVELOPE_SHA256: &str =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const PHASE8_OPERATOR_APPROVAL_ID: &str = "operator-approved-canary-001";
+const PHASE8_VALIDATION_UNIX_SECS: i64 = 1_500;
+
 #[test]
 fn phase8_operator_harness_is_ignored_and_uses_production_runner_shape() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
 
     assert!(source.contains("#[ignore]"));
     assert!(source.contains("Phase8OperatorApprovalEnvelope::from_env"));
@@ -42,8 +52,7 @@ fn phase8_operator_harness_is_ignored_and_uses_production_runner_shape() {
 
 #[test]
 fn phase8_operator_harness_does_not_block_before_production_runner() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
 
     assert!(!source.contains(&format!("{}{}", "LiveProof", "CaptureUnavailable")));
     assert!(!source.contains(&format!(
@@ -54,8 +63,7 @@ fn phase8_operator_harness_does_not_block_before_production_runner() {
 
 #[test]
 fn phase8_operator_harness_derives_strategy_audit_from_evidence_file() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
 
     assert!(source.contains("envelope.approved_price_to_beat_source()?"));
     assert!(source.contains("Phase8StrategyInputSafetyAudit::from_evidence_file"));
@@ -86,8 +94,7 @@ fn phase8_operator_harness_derives_strategy_audit_from_evidence_file() {
 
 #[test]
 fn phase8_operator_harness_prevalidates_success_evidence_before_runner() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
     let start = source
         .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
         .expect("operator harness start should exist");
@@ -113,8 +120,7 @@ fn phase8_operator_harness_prevalidates_success_evidence_before_runner() {
 
 #[test]
 fn phase8_operator_harness_consumes_approval_after_entry_validation() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
     let start = source
         .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
         .expect("operator harness start should exist");
@@ -152,8 +158,7 @@ fn phase8_operator_harness_consumes_approval_after_entry_validation() {
 
 #[test]
 fn phase8_operator_harness_binds_live_proof_to_runtime_admission_and_spool() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
 
     assert!(source.contains("admitted_order_count()"));
     assert!(source.contains("spool_root_for_instance"));
@@ -168,12 +173,13 @@ fn phase8_operator_harness_binds_live_proof_to_runtime_admission_and_spool() {
         "BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH",
         "\")?"
     )));
+    assert!(!source.contains(&format!("{}{}", "BOLT_V3_PHASE8_CLIENT_", "ORDER_ID_HASH")));
+    assert!(!source.contains(&format!("{}{}", "BOLT_V3_PHASE8_VENUE_", "ORDER_ID_HASH")));
 }
 
 #[test]
 fn phase8_operator_harness_waits_for_post_run_proofs_after_runner() {
-    let source = std::fs::read_to_string("tests/bolt_v3_tiny_canary_operator.rs")
-        .expect("operator harness source should be readable");
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
     let start = source
         .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
         .expect("operator harness start should exist");
@@ -196,6 +202,467 @@ fn phase8_operator_harness_waits_for_post_run_proofs_after_runner() {
 }
 
 #[test]
+fn phase8_operator_envelope_rejects_unopened_approval_window() {
+    let fixture = Phase8OperatorEnvelopeFixture::new();
+
+    fixture.assert_valid_baseline();
+    let error = fixture
+        .validate(&fixture.envelope, 999)
+        .expect_err("approval before not_before should fail closed");
+
+    assert_error_contains(&error, "not yet valid");
+    fixture.assert_not_consumed();
+}
+
+#[test]
+fn phase8_operator_envelope_rejects_nonce_hash_mismatch() {
+    assert_invalid_phase8_operator_envelope(
+        |envelope| {
+            envelope.approval_nonce_sha256 = wrong_sha256();
+        },
+        "nonce sha256",
+    );
+}
+
+#[test]
+fn phase8_operator_envelope_rejects_ssm_manifest_hash_mismatch() {
+    assert_invalid_phase8_operator_envelope(
+        |envelope| {
+            envelope.ssm_manifest_sha256 = wrong_sha256();
+        },
+        "ssm_manifest_sha256",
+    );
+}
+
+#[test]
+fn phase8_operator_envelope_rejects_strategy_input_hash_mismatch() {
+    assert_invalid_phase8_operator_envelope(
+        |envelope| {
+            envelope.strategy_input_evidence_sha256 = wrong_sha256();
+        },
+        "strategy_input_evidence_sha256",
+    );
+}
+
+#[test]
+fn phase8_operator_envelope_rejects_financial_envelope_hash_mismatch() {
+    assert_invalid_phase8_operator_envelope(
+        |envelope| {
+            envelope.financial_envelope_sha256 = wrong_sha256();
+        },
+        "financial_envelope_sha256",
+    );
+}
+
+#[test]
+fn phase8_operator_envelope_rejects_pre_run_state_hash_mismatch() {
+    assert_invalid_phase8_operator_envelope(
+        |envelope| {
+            envelope.pre_run_state_sha256 = wrong_sha256();
+        },
+        "pre_run_state_sha256",
+    );
+}
+
+#[test]
+fn phase8_operator_envelope_rejects_approval_consumption_path_drift() {
+    let fixture = Phase8OperatorEnvelopeFixture::new();
+    fixture.assert_valid_baseline();
+
+    let mut envelope = fixture.envelope.clone();
+    envelope.approval_consumption_path = fixture
+        ._temp
+        .path()
+        .join("phase8-drifted-approval-consumed.json")
+        .to_string_lossy()
+        .to_string();
+
+    let error = fixture
+        .validate(&envelope, PHASE8_VALIDATION_UNIX_SECS)
+        .expect_err("approval consumption env/TOML path drift must fail closed");
+
+    assert_error_contains(&error, "approval_consumption_path");
+    fixture.assert_not_consumed();
+}
+
+#[test]
+fn phase8_operator_envelope_rejects_canary_evidence_path_drift() {
+    let fixture = Phase8OperatorEnvelopeFixture::new();
+    fixture.assert_valid_baseline();
+
+    let mut envelope = fixture.envelope.clone();
+    envelope.canary_evidence_path = fixture
+        ._temp
+        .path()
+        .join("phase8-drifted-canary-evidence.json")
+        .to_string_lossy()
+        .to_string();
+
+    let error = fixture
+        .validate(&envelope, PHASE8_VALIDATION_UNIX_SECS)
+        .expect_err("canary evidence env/TOML path drift must fail closed");
+
+    assert_error_contains(&error, "canary_evidence_path");
+    fixture.assert_not_consumed();
+}
+
+fn assert_invalid_phase8_operator_envelope(
+    mutate: impl FnOnce(&mut Phase8OperatorApprovalEnvelope),
+    expected_error: &str,
+) {
+    let fixture = Phase8OperatorEnvelopeFixture::new();
+    fixture.assert_valid_baseline();
+
+    let mut envelope = fixture.envelope.clone();
+    mutate(&mut envelope);
+    let error = fixture
+        .validate(&envelope, PHASE8_VALIDATION_UNIX_SECS)
+        .expect_err("invalid operator envelope should fail closed");
+
+    assert_error_contains(&error, expected_error);
+    fixture.assert_not_consumed();
+}
+
+fn assert_error_contains(error: &anyhow::Error, expected: &str) {
+    assert!(
+        error.to_string().contains(expected),
+        "error should mention `{expected}`: {error}"
+    );
+}
+
+struct Phase8OperatorEnvelopeFixture {
+    _temp: tempfile::TempDir,
+    loaded: LoadedBoltV3Config,
+    envelope: Phase8OperatorApprovalEnvelope,
+}
+
+impl Phase8OperatorEnvelopeFixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let manifest_path = temp.path().join("phase8-ssm-manifest.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{"ssm_paths":["/bolt-v3/test/private-key"]}"#,
+        )
+        .expect("manifest should write");
+        let manifest_hash = Phase8OperatorApprovalEnvelope::sha256_file(&manifest_path)
+            .expect("manifest hash should compute");
+
+        let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+        write_phase8_operator_strategy_input(&strategy_input_path);
+        let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+            .expect("strategy input evidence hash should compute");
+
+        let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+        let canary_evidence_path = temp.path().join("phase8-canary-evidence.json");
+        let root_toml_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+        let mut loaded = phase8_loaded_with_operator_canary("reports/no-submit-readiness.json");
+        let operator_evidence = loaded
+            .root
+            .live_canary
+            .as_mut()
+            .and_then(|block| block.operator_evidence.as_mut())
+            .expect("fixture should include operator evidence");
+        operator_evidence.approval_consumption_path =
+            approval_consumption_path.to_string_lossy().to_string();
+        operator_evidence.canary_evidence_path = canary_evidence_path.to_string_lossy().to_string();
+
+        let financial_envelope_path = temp.path().join("phase8-financial-envelope.json");
+        write_phase8_operator_financial_envelope(&financial_envelope_path, &loaded);
+        let financial_envelope_hash =
+            Phase8OperatorApprovalEnvelope::sha256_file(&financial_envelope_path)
+                .expect("financial envelope hash should compute");
+
+        let pre_run_state_path = temp.path().join("phase8-pre-run-state.json");
+        write_phase8_operator_pre_run_state(&pre_run_state_path);
+        let pre_run_state_hash = Phase8OperatorApprovalEnvelope::sha256_file(&pre_run_state_path)
+            .expect("pre-run state hash should compute");
+
+        let abort_plan_path = temp.path().join("phase8-abort-plan.json");
+        write_phase8_operator_abort_plan(&abort_plan_path);
+        let abort_plan_hash = Phase8OperatorApprovalEnvelope::sha256_file(&abort_plan_path)
+            .expect("abort plan hash should compute");
+
+        let approval_nonce_path = temp.path().join("phase8-approval-nonce.json");
+        std::fs::write(
+            &approval_nonce_path,
+            r#"{"record_kind":"phase8_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+        )
+        .expect("approval nonce should write");
+        let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
+            .expect("approval nonce hash should compute");
+
+        Self {
+            envelope: Phase8OperatorApprovalEnvelope {
+                head_sha: PHASE8_VALIDATION_HEAD_SHA.to_string(),
+                root_toml_path: root_toml_path.to_string_lossy().to_string(),
+                root_toml_sha256: PHASE8_VALIDATION_ROOT_TOML_SHA256.to_string(),
+                approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
+                ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
+                ssm_manifest_sha256: manifest_hash,
+                strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
+                strategy_input_evidence_sha256: strategy_input_hash,
+                financial_envelope_path: financial_envelope_path.to_string_lossy().to_string(),
+                financial_envelope_sha256: financial_envelope_hash,
+                pre_run_state_path: pre_run_state_path.to_string_lossy().to_string(),
+                pre_run_state_sha256: pre_run_state_hash,
+                abort_plan_path: abort_plan_path.to_string_lossy().to_string(),
+                abort_plan_sha256: abort_plan_hash,
+                operator_approval_id: PHASE8_OPERATOR_APPROVAL_ID.to_string(),
+                approval_not_before_unix_secs: 1_000,
+                approval_not_after_unix_secs: 2_000,
+                approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
+                approval_nonce_sha256: approval_nonce_hash,
+                approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
+                canary_evidence_path: canary_evidence_path.to_string_lossy().to_string(),
+                strategy_cancel_path: phase8_live_canary_strategy_cancel_path(&loaded),
+            },
+            loaded,
+            _temp: temp,
+        }
+    }
+
+    fn validate(
+        &self,
+        envelope: &Phase8OperatorApprovalEnvelope,
+        current_unix_secs: i64,
+    ) -> anyhow::Result<()> {
+        envelope.validate_approved_evidence_against(
+            PHASE8_VALIDATION_HEAD_SHA,
+            PHASE8_VALIDATION_ROOT_TOML_SHA256,
+            PHASE8_OPERATOR_APPROVAL_ID,
+            &self.loaded,
+            current_unix_secs,
+        )
+    }
+
+    fn assert_valid_baseline(&self) {
+        self.validate(&self.envelope, PHASE8_VALIDATION_UNIX_SECS)
+            .expect("valid operator envelope fixture should pass full validation");
+    }
+
+    fn assert_not_consumed(&self) {
+        assert!(
+            !Path::new(&self.envelope.approval_consumption_path).exists(),
+            "rejected envelope validation must not create consumption evidence"
+        );
+    }
+}
+
+fn phase8_loaded_with_operator_canary(report_path: &str) -> LoadedBoltV3Config {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.live_canary = Some(LiveCanaryBlock {
+        approval_id: PHASE8_OPERATOR_APPROVAL_ID.to_string(),
+        no_submit_readiness_report_path: report_path.to_string(),
+        max_no_submit_readiness_report_bytes: 4096,
+        readiness_report_max_age_seconds: 60,
+        reference_quote_max_age_seconds: 10,
+        reference_quote_wait_timeout_seconds: 10,
+        reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+        reference_quote_probe_log_events: true,
+        reference_quote_probe_log_commands: true,
+        operator_evidence: Some(support::valid_live_canary_operator_evidence()),
+        max_live_order_count: 1,
+        max_notional_per_order: "0.25".to_string(),
+    });
+    loaded
+}
+
+fn phase8_approved_strategy_audit() -> Phase8StrategyInputSafetyAudit {
+    Phase8StrategyInputSafetyAudit::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
+        realized_volatility: Decimal::new(1, 0),
+        seconds_to_market_end: 60,
+        spot_price: Decimal::new(1, 0),
+        price_to_beat_value: Decimal::new(1, 0),
+        expected_edge_basis_points: Decimal::new(1, 0),
+        worst_case_edge_basis_points: Decimal::new(1, 0),
+        theta_scaled_min_edge_bps: Decimal::new(1, 0),
+        fee_rate_basis_points: Decimal::ZERO,
+        price_to_beat_source: PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+        expected_price_to_beat_source: PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+        reference_quote_ts_event: 1,
+        pricing_kurtosis: Decimal::ZERO,
+        theta_decay_factor: Decimal::ZERO,
+    })
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn phase8_preflight_accepts_valid_gate_inputs_before_approval_consumption() {
+    let loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(1, Decimal::new(25, 2));
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+        .expect("fixture should include operator evidence");
+    std::fs::remove_file(&operator_evidence.approval_consumption_path)
+        .expect("fixture should start with removable approval consumption proof");
+
+    let preflight = evaluate_phase8_canary_preflight(
+        &loaded,
+        option_env!("BOLT_V3_BUILD_HEAD_SHA").expect("build head should be embedded"),
+        phase8_approved_strategy_audit(),
+    )
+    .await;
+
+    assert!(
+        preflight.can_enter_live_runner(),
+        "valid pre-consumption inputs should enter live runner preflight: {preflight:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn phase8_preflight_rejects_invalid_report_before_approval_consumption() {
+    let loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(1, Decimal::new(25, 2));
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should include live canary config");
+    let operator_evidence = live_canary
+        .operator_evidence
+        .as_ref()
+        .expect("fixture should include operator evidence");
+    std::fs::remove_file(&operator_evidence.approval_consumption_path)
+        .expect("fixture should start with removable approval consumption proof");
+    std::fs::write(&live_canary.no_submit_readiness_report_path, "{}")
+        .expect("fixture readiness report should be writable");
+
+    let preflight = evaluate_phase8_canary_preflight(
+        &loaded,
+        option_env!("BOLT_V3_BUILD_HEAD_SHA").expect("build head should be embedded"),
+        phase8_approved_strategy_audit(),
+    )
+    .await;
+
+    assert!(
+        !preflight.can_enter_live_runner(),
+        "invalid report must still block pre-consumption preflight"
+    );
+    assert!(
+        preflight.block_reasons.contains(
+            &bolt_v2::bolt_v3_tiny_canary_evidence::Phase8CanaryBlockReason::LiveCanaryGateRejected,
+        ),
+        "invalid report should reject through the live canary gate: {preflight:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn phase8_preflight_rejects_existing_approval_consumption_before_runner_entry() {
+    let loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(1, Decimal::new(25, 2));
+
+    let preflight = evaluate_phase8_canary_preflight(
+        &loaded,
+        option_env!("BOLT_V3_BUILD_HEAD_SHA").expect("build head should be embedded"),
+        phase8_approved_strategy_audit(),
+    )
+    .await;
+
+    assert!(
+        !preflight.can_enter_live_runner(),
+        "pre-consumption preflight must reject an already consumed approval: {preflight:?}"
+    );
+    assert!(
+        preflight.block_reasons.contains(
+            &bolt_v2::bolt_v3_tiny_canary_evidence::Phase8CanaryBlockReason::LiveCanaryGateRejected,
+        ),
+        "existing consumption proof should reject through the live canary gate: {preflight:?}"
+    );
+}
+
+fn phase8_live_canary_strategy_cancel_path(loaded: &LoadedBoltV3Config) -> Option<String> {
+    loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+        .and_then(|operator_evidence| operator_evidence.strategy_cancel_path.clone())
+}
+
+fn write_phase8_operator_strategy_input(path: &Path) {
+    std::fs::write(
+        path,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+    )
+    .expect("strategy input evidence should write");
+}
+
+fn write_phase8_operator_financial_envelope(path: &Path, loaded: &LoadedBoltV3Config) {
+    let strategy_instance_id = loaded.strategies[0].config.strategy_instance_id.as_str();
+    let json =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .expect("financial envelope fixture should derive from loaded config");
+    std::fs::write(
+        path,
+        serde_json::to_vec(&json).expect("financial envelope should serialize"),
+    )
+    .expect("financial envelope should write");
+}
+
+fn write_phase8_operator_pre_run_state(path: &Path) {
+    let evidence_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let json = serde_json::json!({
+        "execution_client_id": "polymarket_main",
+        "configured_target_id": "btc_updown_5m",
+        "host_clock_skew_within_bound": true,
+        "host_clock_skew_evidence_hash": evidence_hash,
+        "conflicting_open_orders_absent": true,
+        "preexisting_position_absent": true,
+        "venue_account_state_evidence_hash": evidence_hash,
+        "market_state_approved": true,
+        "market_window_approved": true,
+        "market_state_evidence_hash": evidence_hash,
+        "funding_margin_covers_max_notional_plus_fees": true,
+        "funding_margin_evidence_hash": evidence_hash,
+        "single_runner_lock_acquired": true,
+        "single_runner_lock_evidence_hash": evidence_hash,
+        "egress_identity_approved": true,
+        "egress_identity_evidence_hash": evidence_hash,
+        "clob_v2_adapter_signing_verified": true,
+        "clob_v2_adapter_signing_evidence_hash": evidence_hash,
+        "clob_v2_collateral_accounting_verified": true,
+        "clob_v2_collateral_accounting_evidence_hash": evidence_hash,
+        "clob_v2_fee_behavior_verified": true,
+        "clob_v2_fee_behavior_evidence_hash": evidence_hash,
+        "release_manifest_clob_signing_version": "clob_v2",
+        "release_manifest_nt_revision_matches_compiled_pin": true,
+        "release_manifest_evidence_hash": evidence_hash
+    });
+    std::fs::write(
+        path,
+        serde_json::to_vec(&json).expect("pre-run state should serialize"),
+    )
+    .expect("pre-run state should write");
+}
+
+fn write_phase8_operator_abort_plan(path: &Path) {
+    let json = serde_json::json!({
+        "execution_client_id": "polymarket_main",
+        "configured_target_id": "btc_updown_5m",
+        "cancel_if_open_defined": true,
+        "cancel_if_open_evidence_hash": phase8_sha256_text("cancel-if-open-proof"),
+        "nt_accepted_venue_pending_abort_defined": true,
+        "nt_accepted_venue_pending_abort_evidence_hash": phase8_sha256_text("nt-accepted-venue-pending-proof"),
+        "partial_fill_abort_defined": true,
+        "partial_fill_abort_evidence_hash": phase8_sha256_text("partial-fill-proof"),
+        "network_partition_during_submit_abort_defined": true,
+        "network_partition_during_submit_abort_evidence_hash": phase8_sha256_text("network-partition-proof"),
+        "panic_gate_trip_abort_defined": true,
+        "panic_gate_trip_abort_evidence_hash": phase8_sha256_text("panic-gate-service-policy-proof")
+    });
+    std::fs::write(
+        path,
+        serde_json::to_vec(&json).expect("abort plan should serialize"),
+    )
+    .expect("abort plan should write");
+}
+
+fn wrong_sha256() -> String {
+    "e".repeat(64)
+}
+
+#[test]
 fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let run_id = "phase8-live-run-001";
@@ -210,8 +677,6 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
     let post_hygiene_path = temp.path().join("post-hygiene.json");
     let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
-        client_order_id_hash: client_order_id_hash.clone(),
-        venue_order_id_hash: venue_order_id_hash.clone(),
         nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
         venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
         strategy_cancel_path: None,
@@ -257,7 +722,8 @@ fn live_result_paths_reject_stale_restart_reconciliation_evidence() {
             "record_kind": "nt_submit_event",
             "run_id": run_id,
             "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
-            "client_order_id_hash": client_order_id_hash
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
         }),
     );
     write_json_proof(
@@ -308,8 +774,6 @@ fn live_result_paths_reject_restart_reconciliation_outside_runtime_capture() {
             .join("decision.json")
             .to_string_lossy()
             .to_string(),
-        client_order_id_hash: "c".repeat(64),
-        venue_order_id_hash: "d".repeat(64),
         nt_submit_event_path: spool_root
             .join("nt-submit.json")
             .to_string_lossy()
@@ -349,8 +813,6 @@ fn live_result_paths_reject_decision_evidence_outside_runtime_capture() {
             .join("decision.json")
             .to_string_lossy()
             .to_string(),
-        client_order_id_hash: "c".repeat(64),
-        venue_order_id_hash: "d".repeat(64),
         nt_submit_event_path: spool_root
             .join("nt-submit.json")
             .to_string_lossy()
@@ -395,8 +857,6 @@ fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
     let post_hygiene_path = temp.path().join("post-hygiene.json");
     let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
-        client_order_id_hash: client_order_id_hash.clone(),
-        venue_order_id_hash: venue_order_id_hash.clone(),
         nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
         venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
         strategy_cancel_path: None,
@@ -431,7 +891,8 @@ fn live_result_paths_require_strategy_cancel_when_venue_order_remains_open() {
             "record_kind": "nt_submit_event",
             "run_id": run_id,
             "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
-            "client_order_id_hash": client_order_id_hash
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
         }),
     );
     write_json_proof(
@@ -502,8 +963,6 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
     let post_hygiene_path = temp.path().join("post-hygiene.json");
     let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
-        client_order_id_hash: client_order_id_hash.clone(),
-        venue_order_id_hash: venue_order_id_hash.clone(),
         nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
         venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
         strategy_cancel_path: Some(cancel_path.to_string_lossy().to_string()),
@@ -539,7 +998,8 @@ fn live_result_paths_reject_terminal_venue_outcome_marked_open() {
             "record_kind": "nt_submit_event",
             "run_id": run_id,
             "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
-            "client_order_id_hash": client_order_id_hash
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
         }),
     );
     write_json_proof(
@@ -619,8 +1079,6 @@ fn live_result_paths_reject_open_restart_reconciliation() {
     let post_hygiene_path = temp.path().join("post-hygiene.json");
     let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
-        client_order_id_hash: client_order_id_hash.clone(),
-        venue_order_id_hash: venue_order_id_hash.clone(),
         nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
         venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
         strategy_cancel_path: None,
@@ -655,7 +1113,8 @@ fn live_result_paths_reject_open_restart_reconciliation() {
             "record_kind": "nt_submit_event",
             "run_id": run_id,
             "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
-            "client_order_id_hash": client_order_id_hash
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
         }),
     );
     write_json_proof(
@@ -722,6 +1181,198 @@ fn write_json_proof(path: &Path, value: serde_json::Value) {
     .expect("proof should write");
 }
 
+fn write_terminal_live_result_proofs(
+    paths: &Phase8OperatorLiveResultPaths,
+    run_id: &str,
+    strategy_instance_id_hash: &str,
+    client_order_id_hash: &str,
+    nt_submit_venue_order_id_hash: &str,
+    venue_order_id_hash: &str,
+) {
+    let scanned_hash = phase8_sha256_text("phase8-secret-scan");
+    let retention_hash = phase8_sha256_text("phase8-retention-purge");
+    write_json_proof(
+        Path::new(&paths.decision_evidence_path),
+        serde_json::json!({
+            "record_kind": "decision_evidence",
+            "run_id": run_id,
+            "strategy_instance_id_hash": strategy_instance_id_hash,
+            "client_order_id_hash": client_order_id_hash
+        }),
+    );
+    write_json_proof(
+        Path::new(&paths.nt_submit_event_path),
+        serde_json::json!({
+            "record_kind": "nt_submit_event",
+            "run_id": run_id,
+            "strategy_instance_id_hash": strategy_instance_id_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": nt_submit_venue_order_id_hash
+        }),
+    );
+    write_json_proof(
+        Path::new(&paths.venue_order_state_path),
+        serde_json::json!({
+            "record_kind": "venue_order_state",
+            "run_id": run_id,
+            "strategy_instance_id_hash": strategy_instance_id_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        }),
+    );
+    write_json_proof(
+        Path::new(&paths.restart_reconciliation_path),
+        serde_json::json!({
+            "record_kind": "restart_reconciliation",
+            "source_run_id": run_id,
+            "strategy_instance_id_hash": strategy_instance_id_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        }),
+    );
+    write_json_proof(
+        Path::new(&paths.post_run_hygiene_path),
+        serde_json::json!({
+            "record_kind": "post_run_hygiene",
+            "run_id": run_id,
+            "strategy_instance_id_hash": strategy_instance_id_hash,
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash,
+            "raw_secret_residue_absent": true,
+            "scanned_artifact_hashes": [scanned_hash],
+            "retention_purge_path_hash": retention_hash
+        }),
+    );
+}
+
+#[test]
+fn live_result_paths_accept_complete_terminal_post_run_proofs() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let run_id = "phase8-live-run-001";
+    let approved_strategy_hash = phase8_sha256_text("bitcoin_updown_main");
+    let client_order_id_hash = "c".repeat(64);
+    let venue_order_id_hash = "d".repeat(64);
+    let paths = Phase8OperatorLiveResultPaths {
+        decision_evidence_path: temp
+            .path()
+            .join("decision.json")
+            .to_string_lossy()
+            .to_string(),
+        nt_submit_event_path: temp
+            .path()
+            .join("nt-submit.json")
+            .to_string_lossy()
+            .to_string(),
+        venue_order_state_path: temp
+            .path()
+            .join("venue-state.json")
+            .to_string_lossy()
+            .to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: temp
+            .path()
+            .join("restart.json")
+            .to_string_lossy()
+            .to_string(),
+        post_run_hygiene_path: temp
+            .path()
+            .join("post-hygiene.json")
+            .to_string_lossy()
+            .to_string(),
+    };
+    let snapshot = paths
+        .snapshot_before_run()
+        .expect("empty pre-run snapshot should be captured");
+    write_terminal_live_result_proofs(
+        &paths,
+        run_id,
+        &approved_strategy_hash,
+        &client_order_id_hash,
+        &venue_order_id_hash,
+        &venue_order_id_hash,
+    );
+
+    let (decision_ref, live_order_ref, result_refs) = paths
+        .to_refs(&snapshot, run_id, &approved_strategy_hash)
+        .expect("complete terminal post-run proofs should convert to refs");
+
+    assert_eq!(
+        live_order_ref.strategy_instance_id_hash,
+        approved_strategy_hash
+    );
+    assert_eq!(live_order_ref.client_order_id_hash, client_order_id_hash);
+    assert_eq!(live_order_ref.venue_order_id_hash, venue_order_id_hash);
+    assert_eq!(decision_ref.path_hash.len(), 64);
+    assert_eq!(result_refs.nt_submit_event_ref.path_hash.len(), 64);
+    assert_eq!(result_refs.venue_order_state_ref.path_hash.len(), 64);
+    assert!(result_refs.strategy_cancel_ref.is_none());
+    assert_eq!(result_refs.restart_reconciliation_ref.path_hash.len(), 64);
+    assert_eq!(result_refs.post_run_hygiene_ref.path_hash.len(), 64);
+}
+
+#[test]
+fn live_result_paths_reject_nt_submit_venue_order_mismatch() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let run_id = "phase8-live-run-001";
+    let approved_strategy_hash = phase8_sha256_text("bitcoin_updown_main");
+    let client_order_id_hash = "c".repeat(64);
+    let venue_order_id_hash = "d".repeat(64);
+    let stale_venue_order_id_hash = "e".repeat(64);
+    let paths = Phase8OperatorLiveResultPaths {
+        decision_evidence_path: temp
+            .path()
+            .join("decision.json")
+            .to_string_lossy()
+            .to_string(),
+        nt_submit_event_path: temp
+            .path()
+            .join("nt-submit.json")
+            .to_string_lossy()
+            .to_string(),
+        venue_order_state_path: temp
+            .path()
+            .join("venue-state.json")
+            .to_string_lossy()
+            .to_string(),
+        strategy_cancel_path: None,
+        restart_reconciliation_path: temp
+            .path()
+            .join("restart.json")
+            .to_string_lossy()
+            .to_string(),
+        post_run_hygiene_path: temp
+            .path()
+            .join("post-hygiene.json")
+            .to_string_lossy()
+            .to_string(),
+    };
+    let snapshot = paths
+        .snapshot_before_run()
+        .expect("empty pre-run snapshot should be captured");
+    write_terminal_live_result_proofs(
+        &paths,
+        run_id,
+        &approved_strategy_hash,
+        &client_order_id_hash,
+        &stale_venue_order_id_hash,
+        &venue_order_id_hash,
+    );
+
+    let error = paths
+        .to_refs(&snapshot, run_id, &approved_strategy_hash)
+        .expect_err("nt submit event venue order id must match venue state");
+
+    assert!(
+        error.to_string().contains("nt_submit_event")
+            && error.to_string().contains("venue_order_id_hash"),
+        "error should mention nt submit venue-order mismatch: {error}"
+    );
+}
+
 #[test]
 fn live_result_paths_reject_unapproved_post_run_hygiene_strategy_hash() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -739,8 +1390,6 @@ fn live_result_paths_reject_unapproved_post_run_hygiene_strategy_hash() {
     let post_hygiene_path = temp.path().join("post-hygiene.json");
     let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
-        client_order_id_hash: client_order_id_hash.clone(),
-        venue_order_id_hash: venue_order_id_hash.clone(),
         nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
         venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
         strategy_cancel_path: None,
@@ -775,7 +1424,8 @@ fn live_result_paths_reject_unapproved_post_run_hygiene_strategy_hash() {
             "record_kind": "nt_submit_event",
             "run_id": run_id,
             "strategy_instance_id_hash": approved_strategy_hash,
-            "client_order_id_hash": client_order_id_hash
+            "client_order_id_hash": client_order_id_hash,
+            "venue_order_id_hash": venue_order_id_hash
         }),
     );
     write_json_proof(
@@ -843,8 +1493,6 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
     let post_hygiene_path = temp.path().join("post-hygiene.json");
     let paths = Phase8OperatorLiveResultPaths {
         decision_evidence_path: decision_path.to_string_lossy().to_string(),
-        client_order_id_hash: client_order_id_hash.clone(),
-        venue_order_id_hash: venue_order_id_hash.clone(),
         nt_submit_event_path: nt_submit_path.to_string_lossy().to_string(),
         venue_order_state_path: venue_state_path.to_string_lossy().to_string(),
         strategy_cancel_path: None,
@@ -869,7 +1517,6 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "decision_evidence",
             "run_id": run_id,
-            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "strategy_instance_id_hash": unapproved_strategy_hash,
             "client_order_id_hash": client_order_id_hash
         }),
@@ -879,7 +1526,6 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "nt_submit_event",
             "run_id": run_id,
-            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "strategy_instance_id_hash": unapproved_strategy_hash,
             "client_order_id_hash": client_order_id_hash
         }),
@@ -889,7 +1535,6 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "venue_order_state",
             "run_id": run_id,
-            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "strategy_instance_id_hash": unapproved_strategy_hash,
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
@@ -902,7 +1547,6 @@ fn live_result_paths_reject_unapproved_strategy_hash() {
         serde_json::json!({
             "record_kind": "restart_reconciliation",
             "source_run_id": run_id,
-            "strategy_instance_id_hash": phase8_sha256_text("bitcoin_updown_main"),
             "strategy_instance_id_hash": unapproved_strategy_hash,
             "client_order_id_hash": client_order_id_hash,
             "venue_order_id_hash": venue_order_id_hash,
@@ -1104,6 +1748,7 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
             let pre_run_snapshot = result_paths.snapshot_before_run()?;
             let live_runner_entry_unix_secs = phase8_current_unix_secs()?;
             envelope.consume_approval_after_live_runner_entry_validation(
+                &loaded,
                 live_runner_entry_unix_secs,
             )?;
             run_bolt_v3_live_node(&mut node, &loaded)
@@ -1230,8 +1875,6 @@ fn phase8_optional_env(name: &str) -> anyhow::Result<Option<String>> {
 
 struct Phase8OperatorLiveResultPaths {
     decision_evidence_path: String,
-    client_order_id_hash: String,
-    venue_order_id_hash: String,
     nt_submit_event_path: String,
     venue_order_state_path: String,
     strategy_cancel_path: Option<String>,
@@ -1282,10 +1925,6 @@ impl Phase8OperatorLiveResultPaths {
     fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
             decision_evidence_path: phase8_required_env("BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH")?,
-            client_order_id_hash: phase8_required_sha256_env(
-                "BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH",
-            )?,
-            venue_order_id_hash: phase8_required_sha256_env("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH")?,
             nt_submit_event_path: phase8_required_env("BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH")?,
             venue_order_state_path: phase8_required_env("BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH")?,
             strategy_cancel_path: phase8_optional_env("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH")?,
@@ -1398,14 +2037,11 @@ impl Phase8OperatorLiveResultPaths {
         Phase8LiveCanaryResultRefs,
     )> {
         self.assert_changed_after_run(snapshot)?;
-        self.assert_proof_content(run_id, expected_strategy_instance_id_hash)?;
+        let live_order_ref =
+            self.assert_proof_content(run_id, expected_strategy_instance_id_hash)?;
         Ok((
             phase8_operator_evidence_ref(&self.decision_evidence_path)?,
-            Phase8LiveOrderRef {
-                strategy_instance_id_hash: expected_strategy_instance_id_hash.to_string(),
-                client_order_id_hash: self.client_order_id_hash.clone(),
-                venue_order_id_hash: self.venue_order_id_hash.clone(),
-            },
+            live_order_ref,
             Phase8LiveCanaryResultRefs {
                 nt_submit_event_ref: phase8_operator_evidence_ref(&self.nt_submit_event_path)?,
                 venue_order_state_ref: phase8_operator_evidence_ref(&self.venue_order_state_path)?,
@@ -1464,14 +2100,28 @@ impl Phase8OperatorLiveResultPaths {
         &self,
         run_id: &str,
         expected_strategy_instance_id_hash: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Phase8LiveOrderRef> {
+        let decision_proof =
+            phase8_read_operator_evidence_proof(&self.decision_evidence_path, "decision_evidence")?;
+        let client_order_id_hash = phase8_required_proof_sha256(
+            decision_proof.client_order_id_hash.as_deref(),
+            "decision_evidence",
+            "client_order_id_hash",
+        )?;
+        let venue_state_proof =
+            phase8_read_operator_evidence_proof(&self.venue_order_state_path, "venue_order_state")?;
+        let venue_order_id_hash = phase8_required_proof_sha256(
+            venue_state_proof.venue_order_id_hash.as_deref(),
+            "venue_order_state",
+            "venue_order_id_hash",
+        )?;
         phase8_assert_operator_evidence_proof(
             &self.decision_evidence_path,
             "decision_evidence",
             Some(run_id),
             None,
             Some(expected_strategy_instance_id_hash),
-            Some(&self.client_order_id_hash),
+            Some(&client_order_id_hash),
             None,
         )?;
         phase8_assert_operator_evidence_proof(
@@ -1480,8 +2130,8 @@ impl Phase8OperatorLiveResultPaths {
             Some(run_id),
             None,
             Some(expected_strategy_instance_id_hash),
-            Some(&self.client_order_id_hash),
-            None,
+            Some(&client_order_id_hash),
+            Some(&venue_order_id_hash),
         )?;
         phase8_assert_operator_evidence_proof(
             &self.venue_order_state_path,
@@ -1489,8 +2139,8 @@ impl Phase8OperatorLiveResultPaths {
             Some(run_id),
             None,
             Some(expected_strategy_instance_id_hash),
-            Some(&self.client_order_id_hash),
-            Some(&self.venue_order_id_hash),
+            Some(&client_order_id_hash),
+            Some(&venue_order_id_hash),
         )?;
         phase8_assert_venue_order_state_proof(
             &self.venue_order_state_path,
@@ -1503,8 +2153,8 @@ impl Phase8OperatorLiveResultPaths {
                 Some(run_id),
                 None,
                 Some(expected_strategy_instance_id_hash),
-                Some(&self.client_order_id_hash),
-                Some(&self.venue_order_id_hash),
+                Some(&client_order_id_hash),
+                Some(&venue_order_id_hash),
             )?;
         }
         phase8_assert_operator_evidence_proof(
@@ -1513,18 +2163,38 @@ impl Phase8OperatorLiveResultPaths {
             None,
             Some(run_id),
             Some(expected_strategy_instance_id_hash),
-            Some(&self.client_order_id_hash),
-            Some(&self.venue_order_id_hash),
+            Some(&client_order_id_hash),
+            Some(&venue_order_id_hash),
         )?;
         phase8_assert_restart_reconciliation_proof(&self.restart_reconciliation_path)?;
         phase8_assert_post_run_hygiene_proof(
             &self.post_run_hygiene_path,
             run_id,
             expected_strategy_instance_id_hash,
-            &self.client_order_id_hash,
-            &self.venue_order_id_hash,
-        )
+            &client_order_id_hash,
+            &venue_order_id_hash,
+        )?;
+        Ok(Phase8LiveOrderRef {
+            strategy_instance_id_hash: expected_strategy_instance_id_hash.to_string(),
+            client_order_id_hash,
+            venue_order_id_hash,
+        })
     }
+}
+
+fn phase8_required_proof_sha256(
+    value: Option<&str>,
+    expected_kind: &str,
+    field: &str,
+) -> anyhow::Result<String> {
+    let value =
+        value.ok_or_else(|| anyhow::anyhow!("phase8 {expected_kind} proof {field} is missing"))?;
+    if !phase8_is_sha256_hex(value) {
+        return Err(anyhow::anyhow!(
+            "phase8 {expected_kind} proof {field} must be a sha256 hash"
+        ));
+    }
+    Ok(value.to_string())
 }
 
 fn phase8_assert_venue_order_state_proof(
@@ -1590,18 +2260,16 @@ fn phase8_operator_evidence_ref(path: &str) -> anyhow::Result<Phase8EvidenceRef>
     })
 }
 
-fn phase8_required_sha256_env(name: &str) -> anyhow::Result<String> {
-    let value = phase8_required_env(name)?;
-    if !phase8_is_sha256_hex(&value) {
-        return Err(anyhow::anyhow!(
-            "required phase8 env `{name}` must be a sha256 hex digest"
-        ));
-    }
-    Ok(value)
+#[test]
+fn phase8_sha256_shape_rejects_uppercase_hex() {
+    assert!(!phase8_is_sha256_hex(&"A".repeat(64)));
 }
 
 fn phase8_is_sha256_hex(value: &str) -> bool {
-    value.len() == 64 && value.chars().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn phase8_assert_path_starts_with(path: &str, base: &str, label: &str) -> anyhow::Result<()> {

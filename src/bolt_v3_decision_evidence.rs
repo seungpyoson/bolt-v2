@@ -1,34 +1,51 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     sync::Mutex,
 };
 
 use anyhow::{Context, Result, anyhow};
 use nautilus_model::orders::{Order, OrderAny};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_config::LoadedBoltV3Config;
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 4;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 5;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
+pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID: &str = "bolt_v3.strategy_input_snapshot";
+pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
+pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
 
 pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
+    fn record_strategy_input_snapshot(
+        &self,
+        snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> Result<()>;
+
     fn record_order_intent(&self, intent: &BoltV3OrderIntentEvidence) -> Result<()>;
     fn record_admission_decision(&self, decision: &BoltV3AdmissionDecisionEvidence) -> Result<()>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3OrderIntentKind {
     Entry,
     Exit,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3SubmitIntentKind {
+    Entry,
+    RiskReducingExit,
+    ReplaceSubmit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoltV3OrderIntentEvidence {
     pub strategy_id: String,
     pub intent_kind: BoltV3OrderIntentKind,
@@ -81,7 +98,7 @@ impl BoltV3OrderIntentEvidence {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoltV3OrderIntentOrderFields {
     pub order_type: String,
     pub time_in_force: String,
@@ -128,22 +145,63 @@ impl BoltV3OrderIntentOrderFields {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3StrategyInputEvidenceSnapshot {
+    pub strategy_id: String,
+    pub configured_target_id: String,
+    pub market_selection_ruleset_id: String,
+    pub market_selection_outcome: String,
+    pub market_id: Option<String>,
+    pub polymarket_condition_id: Option<String>,
+    pub polymarket_market_slug: Option<String>,
+    pub polymarket_question_id: Option<String>,
+    pub up_instrument_id: Option<String>,
+    pub down_instrument_id: Option<String>,
+    pub market_selection_timestamp_ms: Option<u64>,
+    pub selected_market_observed_timestamp_ms: Option<u64>,
+    pub polymarket_market_start_timestamp_ms: Option<u64>,
+    pub polymarket_market_end_timestamp_ms: Option<u64>,
+    pub price_to_beat_source: String,
+    pub price_to_beat_value: String,
+    pub reference_quote_ts_event: u64,
+    pub spot_price: String,
+    pub reference_fair_value: Option<String>,
+    pub realized_volatility: String,
+    pub seconds_to_market_end: u64,
+    pub pricing_kurtosis: String,
+    pub theta_decay_factor: String,
+    pub theta_scaled_min_edge_bps: String,
+    pub fair_probability_up: String,
+    pub uncertainty_band_probability: String,
+    pub expected_edge_basis_points: String,
+    pub worst_case_edge_basis_points: String,
+    pub fee_rate_basis_points: String,
+    pub selected_side: Option<String>,
+    pub submission_instrument_id: String,
+    pub submission_order_side: String,
+    pub submission_price: String,
+    pub submission_quantity: String,
+    pub client_order_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3AdmissionOutcome {
     Admitted,
     RejectedNotArmed,
+    RejectedSubmitLifecycleDisallowed,
     RejectedNonPositiveNotional,
     RejectedNotionalCapExceeded,
     RejectedCountCapExhausted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoltV3AdmissionDecisionEvidence {
     pub strategy_id: String,
     pub client_order_id: String,
     pub instrument_id: String,
     pub notional: String,
+    pub intent_kind: BoltV3SubmitIntentKind,
     pub outcome: BoltV3AdmissionOutcome,
 }
 
@@ -189,6 +247,14 @@ impl JsonlBoltV3DecisionEvidenceWriter {
 }
 
 impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> Result<()> {
+        let line = encode_strategy_input_snapshot_line(snapshot)?;
+        self.append_line(&line)
+    }
+
     fn record_order_intent(&self, intent: &BoltV3OrderIntentEvidence) -> Result<()> {
         let line = encode_order_intent_line(intent)?;
         self.append_line(&line)
@@ -222,6 +288,295 @@ pub fn decision_evidence_path(loaded: &LoadedBoltV3Config) -> Result<PathBuf> {
     Ok(Path::new(&loaded.root.persistence.catalog_directory).join(relative))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3EntryDecisionEvidenceChain {
+    pub snapshot: BoltV3StrategyInputEvidenceSnapshot,
+    pub intent: BoltV3OrderIntentEvidence,
+    pub admission: BoltV3AdmissionDecisionEvidence,
+}
+
+pub fn read_latest_entry_decision_evidence_chain(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+) -> Result<BoltV3EntryDecisionEvidenceChain> {
+    let path = path.as_ref();
+    let mut file = open_regular_decision_evidence_file(path)
+        .context("failed to open regular file bolt-v3 decision evidence")?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .context("failed to read bolt-v3 decision evidence file")?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(anyhow!(
+            "bolt-v3 decision evidence file exceeds max_bytes={max_bytes}"
+        ));
+    }
+
+    let mut snapshots = BTreeMap::<String, BoltV3StrategyInputEvidenceSnapshot>::new();
+    let mut intents = BTreeMap::<String, BoltV3OrderIntentEvidence>::new();
+    let mut admissions = BTreeMap::<String, BoltV3AdmissionDecisionEvidence>::new();
+    let mut latest = None;
+    for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let header: DecisionEvidenceEnvelopeHeader =
+            serde_json::from_slice(line).with_context(|| {
+                format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
+            })?;
+        match header.kind.as_str() {
+            "strategy_input_snapshot" => {
+                let decoded: StrategyInputSnapshotLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 strategy input snapshot line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    "strategy_input_snapshot",
+                    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+                    index,
+                )?;
+                snapshots.insert(decoded.snapshot.client_order_id.clone(), decoded.snapshot);
+            }
+            "order_intent" => {
+                let decoded: OrderIntentLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 order intent line at index {index}")
+                    })?;
+                decoded.validate_header("order_intent", BOLT_V3_ORDER_INTENT_GATE_ID, index)?;
+                if decoded.intent.intent_kind == BoltV3OrderIntentKind::Entry {
+                    intents.insert(decoded.intent.client_order_id.clone(), decoded.intent);
+                }
+            }
+            "admission_decision" => {
+                let decoded: AdmissionDecisionLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!("failed to parse bolt-v3 admission decision line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    "admission_decision",
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                if decoded.decision.intent_kind == BoltV3SubmitIntentKind::Entry {
+                    let client_order_id = decoded.decision.client_order_id.clone();
+                    admissions.insert(client_order_id.clone(), decoded.decision);
+                    if let (Some(snapshot), Some(intent), Some(admission)) = (
+                        snapshots.get(&client_order_id),
+                        intents.get(&client_order_id),
+                        admissions.get(&client_order_id),
+                    ) {
+                        latest = Some(validate_entry_decision_chain(
+                            snapshot.clone(),
+                            intent.clone(),
+                            admission.clone(),
+                        )?);
+                    }
+                }
+            }
+            other => {
+                return Err(anyhow!(
+                    "unsupported bolt-v3 decision evidence kind `{other}` at line index {index}"
+                ));
+            }
+        }
+    }
+    latest.ok_or_else(|| anyhow!("bolt-v3 decision evidence has no complete entry decision chain"))
+}
+
+fn open_regular_decision_evidence_file(path: &Path) -> std::io::Result<fs::File> {
+    let pre_open_metadata = fs::symlink_metadata(path)?;
+    validate_decision_evidence_regular_file(&pre_open_metadata)?;
+    let file = open_decision_evidence_file_no_follow(path)?;
+    let opened_metadata = file.metadata()?;
+    validate_decision_evidence_regular_file(&opened_metadata)?;
+    validate_same_decision_evidence_file(&pre_open_metadata, &opened_metadata)?;
+    let post_open_metadata = fs::symlink_metadata(path)?;
+    validate_decision_evidence_regular_file(&post_open_metadata)?;
+    validate_same_decision_evidence_file(&opened_metadata, &post_open_metadata)?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_decision_evidence_file_no_follow(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_decision_evidence_file_no_follow(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new().read(true).open(path)
+}
+
+fn validate_decision_evidence_regular_file(metadata: &fs::Metadata) -> std::io::Result<()> {
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "bolt-v3 decision evidence path is not a regular file",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_same_decision_evidence_file(
+    left: &fs::Metadata,
+    right: &fs::Metadata,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    if left.dev() != right.dev() || left.ino() != right.ino() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid bolt-v3 decision evidence file identity during open",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_same_decision_evidence_file(
+    _left: &fs::Metadata,
+    _right: &fs::Metadata,
+) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn validate_entry_decision_chain(
+    snapshot: BoltV3StrategyInputEvidenceSnapshot,
+    intent: BoltV3OrderIntentEvidence,
+    admission: BoltV3AdmissionDecisionEvidence,
+) -> Result<BoltV3EntryDecisionEvidenceChain> {
+    if snapshot.strategy_id != intent.strategy_id || snapshot.strategy_id != admission.strategy_id {
+        return Err(anyhow!(
+            "bolt-v3 entry decision evidence strategy_id mismatch"
+        ));
+    }
+    if snapshot.submission_instrument_id != intent.instrument_id
+        || snapshot.submission_instrument_id != admission.instrument_id
+    {
+        return Err(anyhow!(
+            "bolt-v3 entry decision evidence instrument_id mismatch"
+        ));
+    }
+    if snapshot.submission_order_side != intent.order_side {
+        return Err(anyhow!(
+            "bolt-v3 entry decision evidence order_side mismatch"
+        ));
+    }
+    if snapshot.submission_price != intent.price {
+        return Err(anyhow!("bolt-v3 entry decision evidence price mismatch"));
+    }
+    if snapshot.submission_quantity != intent.quantity {
+        return Err(anyhow!("bolt-v3 entry decision evidence quantity mismatch"));
+    }
+    Ok(BoltV3EntryDecisionEvidenceChain {
+        snapshot,
+        intent,
+        admission,
+    })
+}
+
+#[derive(Deserialize)]
+struct DecisionEvidenceEnvelopeHeader {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: String,
+    gate_version: String,
+    kind: String,
+}
+
+impl DecisionEvidenceEnvelopeHeader {
+    fn validate(&self, expected_kind: &str, expected_gate_id: &str, index: usize) -> Result<()> {
+        if self.schema_version != BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION {
+            return Err(anyhow!(
+                "bolt-v3 decision evidence schema_version mismatch at line index {index}"
+            ));
+        }
+        if self.recorded_at_utc_ns <= 0 {
+            return Err(anyhow!(
+                "bolt-v3 decision evidence recorded_at_utc_ns must be positive at line index {index}"
+            ));
+        }
+        if self.gate_id != expected_gate_id {
+            return Err(anyhow!(
+                "bolt-v3 decision evidence gate_id mismatch at line index {index}"
+            ));
+        }
+        if self.gate_version != BOLT_V3_DECISION_EVIDENCE_GATE_VERSION {
+            return Err(anyhow!(
+                "bolt-v3 decision evidence gate_version mismatch at line index {index}"
+            ));
+        }
+        if self.kind != expected_kind {
+            return Err(anyhow!(
+                "bolt-v3 decision evidence kind mismatch at line index {index}"
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct StrategyInputSnapshotLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    snapshot: BoltV3StrategyInputEvidenceSnapshot,
+}
+
+impl StrategyInputSnapshotLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+#[derive(Deserialize)]
+struct OrderIntentLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    intent: BoltV3OrderIntentEvidence,
+}
+
+impl OrderIntentLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+#[derive(Deserialize)]
+struct AdmissionDecisionLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    decision: BoltV3AdmissionDecisionEvidence,
+}
+
+impl AdmissionDecisionLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
 #[derive(Serialize)]
 struct OrderIntentLine<'a> {
     schema_version: u32,
@@ -230,6 +585,16 @@ struct OrderIntentLine<'a> {
     gate_version: &'static str,
     kind: &'static str,
     intent: &'a BoltV3OrderIntentEvidence,
+}
+
+#[derive(Serialize)]
+struct StrategyInputSnapshotLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    snapshot: &'a BoltV3StrategyInputEvidenceSnapshot,
 }
 
 #[derive(Serialize)]
@@ -259,6 +624,23 @@ fn encode_order_intent_line(intent: &BoltV3OrderIntentEvidence) -> Result<Vec<u8
     };
     let mut line = serde_json::to_vec(&envelope)
         .context("failed to serialize order intent decision evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+fn encode_strategy_input_snapshot_line(
+    snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+) -> Result<Vec<u8>> {
+    let envelope = StrategyInputSnapshotLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: "strategy_input_snapshot",
+        snapshot,
+    };
+    let mut line = serde_json::to_vec(&envelope)
+        .context("failed to serialize strategy input evidence snapshot")?;
     line.extend_from_slice(b"\n");
     Ok(line)
 }
@@ -457,10 +839,79 @@ mod tests {
     }
 
     #[test]
+    fn encode_strategy_input_snapshot_line_wraps_snapshot_with_full_gate_metadata() {
+        let snapshot = BoltV3StrategyInputEvidenceSnapshot {
+            strategy_id: "strategy-one".to_string(),
+            configured_target_id: "target-one".to_string(),
+            market_selection_ruleset_id: "target-one".to_string(),
+            market_selection_outcome: "current".to_string(),
+            market_id: Some("market-one".to_string()),
+            polymarket_condition_id: Some("condition-one".to_string()),
+            polymarket_market_slug: Some("market-slug-one".to_string()),
+            polymarket_question_id: Some("question-one".to_string()),
+            up_instrument_id: Some("instrument-up".to_string()),
+            down_instrument_id: Some("instrument-down".to_string()),
+            market_selection_timestamp_ms: Some(1000),
+            selected_market_observed_timestamp_ms: Some(1000),
+            polymarket_market_start_timestamp_ms: Some(1000),
+            polymarket_market_end_timestamp_ms: Some(301000),
+            price_to_beat_source: "source-one".to_string(),
+            price_to_beat_value: "3100".to_string(),
+            reference_quote_ts_event: 1200,
+            spot_price: "3100.5".to_string(),
+            reference_fair_value: Some("3100.5".to_string()),
+            realized_volatility: "1.5".to_string(),
+            seconds_to_market_end: 300,
+            pricing_kurtosis: "0".to_string(),
+            theta_decay_factor: "0".to_string(),
+            theta_scaled_min_edge_bps: "1".to_string(),
+            fair_probability_up: "0.6".to_string(),
+            uncertainty_band_probability: "0.01".to_string(),
+            expected_edge_basis_points: "10".to_string(),
+            worst_case_edge_basis_points: "10".to_string(),
+            fee_rate_basis_points: "0".to_string(),
+            selected_side: Some("up".to_string()),
+            submission_instrument_id: "instrument-up".to_string(),
+            submission_order_side: "Buy".to_string(),
+            submission_price: "0.50".to_string(),
+            submission_quantity: "1".to_string(),
+            client_order_id: "client-order-one".to_string(),
+        };
+
+        let line = encode_strategy_input_snapshot_line(&snapshot).expect("snapshot should encode");
+        let decoded = parse_line(&line);
+
+        assert_eq!(
+            decoded["schema_version"],
+            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+        );
+        assert_eq!(decoded["gate_id"], BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID);
+        assert_eq!(
+            decoded["gate_version"],
+            BOLT_V3_DECISION_EVIDENCE_GATE_VERSION
+        );
+        assert_eq!(decoded["kind"], "strategy_input_snapshot");
+        assert!(
+            decoded["recorded_at_utc_ns"]
+                .as_i64()
+                .map(|ns| ns > 0)
+                .unwrap_or(false),
+            "recorded_at_utc_ns must be a positive i64; got {:?}",
+            decoded["recorded_at_utc_ns"]
+        );
+        let snapshot_field = &decoded["snapshot"];
+        assert_eq!(snapshot_field["strategy_id"], "strategy-one");
+        assert_eq!(snapshot_field["price_to_beat_source"], "source-one");
+        assert_eq!(snapshot_field["reference_quote_ts_event"], 1200);
+        assert_eq!(snapshot_field["client_order_id"], "client-order-one");
+    }
+
+    #[test]
     fn encode_admission_decision_line_wraps_decision_with_full_gate_metadata() {
         for outcome in [
             BoltV3AdmissionOutcome::Admitted,
             BoltV3AdmissionOutcome::RejectedNotArmed,
+            BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed,
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
@@ -470,6 +921,7 @@ mod tests {
                 client_order_id: "client-order-one".to_string(),
                 instrument_id: "instrument-one".to_string(),
                 notional: "1.0".to_string(),
+                intent_kind: BoltV3SubmitIntentKind::Entry,
                 outcome: outcome.clone(),
             };
 
@@ -497,9 +949,13 @@ mod tests {
             let decision_field = &decoded["decision"];
             assert_eq!(decision_field["strategy_id"], "strategy-one");
             assert_eq!(decision_field["notional"], "1.0");
+            assert_eq!(decision_field["intent_kind"], "entry");
             let expected_outcome = match outcome {
                 BoltV3AdmissionOutcome::Admitted => "admitted",
                 BoltV3AdmissionOutcome::RejectedNotArmed => "rejected_not_armed",
+                BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
+                    "rejected_submit_lifecycle_disallowed"
+                }
                 BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
                     "rejected_non_positive_notional"
                 }

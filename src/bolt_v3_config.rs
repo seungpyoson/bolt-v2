@@ -182,6 +182,12 @@ pub struct LiveCanaryBlock {
     pub approval_id: String,
     pub no_submit_readiness_report_path: String,
     pub max_no_submit_readiness_report_bytes: u64,
+    pub readiness_report_max_age_seconds: u64,
+    pub reference_quote_max_age_seconds: u64,
+    pub reference_quote_wait_timeout_seconds: u64,
+    pub reference_quote_probe_actor_id: String,
+    pub reference_quote_probe_log_events: bool,
+    pub reference_quote_probe_log_commands: bool,
     pub max_live_order_count: u32,
     pub max_notional_per_order: String,
     pub operator_evidence: Option<LiveCanaryOperatorEvidenceBlock>,
@@ -190,7 +196,11 @@ pub struct LiveCanaryBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LiveCanaryOperatorEvidenceBlock {
+    pub head_sha: String,
+    pub max_operator_evidence_file_bytes: u64,
+    pub approval_consumption_max_age_seconds: u64,
     pub approval_envelope_path: String,
+    pub approval_envelope_sha256: String,
     pub ssm_manifest_path: String,
     pub ssm_manifest_sha256: String,
     pub strategy_input_evidence_path: String,
@@ -208,8 +218,6 @@ pub struct LiveCanaryOperatorEvidenceBlock {
     pub approval_nonce_sha256: String,
     pub approval_consumption_path: String,
     pub decision_evidence_path: String,
-    pub client_order_id_hash: String,
-    pub venue_order_id_hash: String,
     pub nt_submit_event_path: String,
     pub venue_order_state_path: String,
     pub strategy_cancel_path: Option<String>,

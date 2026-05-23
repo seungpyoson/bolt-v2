@@ -5,6 +5,8 @@ use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
 use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
+pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
+
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionState {
     inner: Mutex<BoltV3SubmitAdmissionInner>,
@@ -15,6 +17,8 @@ pub struct BoltV3SubmitAdmissionState {
 struct BoltV3SubmitAdmissionInner {
     gate_report: Option<BoltV3LiveCanaryGateReport>,
     admitted_order_count: u32,
+    admitted_entry_order_count: u32,
+    admitted_risk_reducing_exit_order_count: u32,
 }
 
 impl BoltV3SubmitAdmissionState {
@@ -23,6 +27,8 @@ impl BoltV3SubmitAdmissionState {
             inner: Mutex::new(BoltV3SubmitAdmissionInner {
                 gate_report: None,
                 admitted_order_count: 0,
+                admitted_entry_order_count: 0,
+                admitted_risk_reducing_exit_order_count: 0,
             }),
             decision_evidence,
         }
@@ -41,6 +47,8 @@ impl BoltV3SubmitAdmissionState {
         }
         inner.gate_report = Some(report);
         inner.admitted_order_count = 0;
+        inner.admitted_entry_order_count = 0;
+        inner.admitted_risk_reducing_exit_order_count = 0;
         Ok(())
     }
 
@@ -58,6 +66,7 @@ impl BoltV3SubmitAdmissionState {
             client_order_id: request.client_order_id.clone(),
             instrument_id: request.instrument_id.clone(),
             notional: request.notional.to_string(),
+            intent_kind: request.intent_kind,
             outcome: outcome.clone(),
         };
         self.decision_evidence
@@ -68,9 +77,23 @@ impl BoltV3SubmitAdmissionState {
         match outcome {
             BoltV3AdmissionOutcome::Admitted => {
                 inner.admitted_order_count += 1;
+                match request.intent_kind {
+                    BoltV3SubmitIntentKind::Entry => {
+                        inner.admitted_entry_order_count += 1;
+                    }
+                    BoltV3SubmitIntentKind::RiskReducingExit => {
+                        inner.admitted_risk_reducing_exit_order_count += 1;
+                    }
+                    BoltV3SubmitIntentKind::ReplaceSubmit => {}
+                }
                 Ok(BoltV3SubmitAdmissionPermit(()))
             }
             BoltV3AdmissionOutcome::RejectedNotArmed => Err(BoltV3SubmitAdmissionError::NotArmed),
+            BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
+                Err(BoltV3SubmitAdmissionError::SubmitLifecycleDisallowed {
+                    intent: request.intent_kind,
+                })
+            }
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
                 Err(BoltV3SubmitAdmissionError::NonPositiveNotional)
             }
@@ -90,6 +113,9 @@ impl BoltV3SubmitAdmissionState {
         let Some(report) = inner.gate_report.as_ref() else {
             return BoltV3AdmissionOutcome::RejectedNotArmed;
         };
+        if !request.lifecycle_policy.allows(request.intent_kind) {
+            return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;
+        }
         if request.notional <= Decimal::ZERO {
             return BoltV3AdmissionOutcome::RejectedNonPositiveNotional;
         }
@@ -113,12 +139,57 @@ impl BoltV3SubmitAdmissionState {
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionPermit(());
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum BoltV3OrderLifecycleIntent {
+    Entry,
+    RiskReducingExit,
+    ReplaceSubmit,
+    PlainCancel,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct BoltV3SubmitLifecyclePolicy {
+    replace_submit: bool,
+}
+
+impl BoltV3SubmitLifecyclePolicy {
+    pub fn new(replace_submit: bool) -> Self {
+        Self { replace_submit }
+    }
+
+    pub fn submit_intent_for(
+        &self,
+        intent: BoltV3OrderLifecycleIntent,
+    ) -> Result<Option<BoltV3SubmitIntentKind>, BoltV3SubmitAdmissionError> {
+        match intent {
+            BoltV3OrderLifecycleIntent::Entry => Ok(Some(BoltV3SubmitIntentKind::Entry)),
+            BoltV3OrderLifecycleIntent::RiskReducingExit => {
+                Ok(Some(BoltV3SubmitIntentKind::RiskReducingExit))
+            }
+            BoltV3OrderLifecycleIntent::ReplaceSubmit if self.replace_submit => {
+                Ok(Some(BoltV3SubmitIntentKind::ReplaceSubmit))
+            }
+            BoltV3OrderLifecycleIntent::ReplaceSubmit => Ok(None),
+            BoltV3OrderLifecycleIntent::PlainCancel => Ok(None),
+        }
+    }
+
+    fn allows(&self, intent: BoltV3SubmitIntentKind) -> bool {
+        match intent {
+            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit => true,
+            BoltV3SubmitIntentKind::ReplaceSubmit => self.replace_submit,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionRequest {
     pub strategy_id: String,
     pub client_order_id: String,
     pub instrument_id: String,
     pub notional: Decimal,
+    pub intent_kind: BoltV3SubmitIntentKind,
+    pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -167,6 +238,7 @@ pub fn conservative_quote_quantity_admission_notional(
 pub enum BoltV3SubmitAdmissionError {
     NotArmed,
     AlreadyArmed,
+    SubmitLifecycleDisallowed { intent: BoltV3SubmitIntentKind },
     CountCapExhausted,
     NonPositiveNotional,
     NotionalCapExceeded,
@@ -178,6 +250,10 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
         match self {
             Self::NotArmed => write!(f, "bolt-v3 submit admission is not armed"),
             Self::AlreadyArmed => write!(f, "bolt-v3 submit admission is already armed"),
+            Self::SubmitLifecycleDisallowed { intent } => write!(
+                f,
+                "bolt-v3 submit admission lifecycle policy disallows {intent:?} submit"
+            ),
             Self::CountCapExhausted => {
                 write!(f, "bolt-v3 submit admission order count cap is exhausted")
             }

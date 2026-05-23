@@ -69,9 +69,10 @@ Entry `is_quote_quantity = true` is supported by sizing the entry quantity as qu
 Exit `is_quote_quantity = true` is rejected because exits are sized from held base position quantity.
 Forced-flat exits use the configured `forced_exit_order` template.
 When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders.
-Decision-evidence JSONL records use `schema_version = 4` for `order_intent` and `admission_decision` envelopes.
-Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent` or `decision`.
+Decision-evidence JSONL records use `schema_version = 5` for `order_intent`, `admission_decision`, and `strategy_input_snapshot` envelopes.
+Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent`, `decision`, or `snapshot`.
 The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.
+`strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
 
 ### `[parameters]`
 """
@@ -624,7 +625,7 @@ def test_validate_docs_requires_all_enabled_and_factory_gap_order_types() -> Non
 
 
 def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> None:
-    stale_schema = CURRENT_SCHEMA.replace("schema_version = 4", "schema_version = 3")
+    stale_schema = CURRENT_SCHEMA.replace("schema_version = 5", "schema_version = 4")
     stale_runtime_contracts = CURRENT_RUNTIME_CONTRACTS.replace("`activation_price`, ", "")
     stale_status_map = CURRENT_STATUS_MAP.replace("forced_exit_order", "exit_order")
     stale_maker_contract = (
@@ -647,7 +648,7 @@ def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> 
     )
 
     expected_fragments = [
-        "schema missing decision-evidence JSONL schema v4 contract",
+        "schema missing decision-evidence JSONL schema v5 contract",
         "runtime contracts missing order-template evidence field",
         "status map missing current phrase: Order construction uses",
         "maker scope contract still contains stale phrase",

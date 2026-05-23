@@ -417,6 +417,12 @@ mod tests {
         Ok(Arc::new(FakeProviderSecrets))
     }
 
+    fn configured_fake_provider_secret_paths(
+        _context: ProviderSecretResolveContext<'_>,
+    ) -> Result<Vec<crate::bolt_v3_providers::ProviderSsmPathReference>, BoltV3SecretError> {
+        Ok(Vec::new())
+    }
+
     fn map_fake_provider_adapters(
         context: ProviderAdapterMapContext<'_>,
     ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
@@ -452,6 +458,7 @@ mod tests {
         credential_log_modules: &[],
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
+        configured_secret_paths: configured_fake_provider_secret_paths,
         map_adapters: map_fake_provider_adapters,
         build_fee_provider: None,
     };
@@ -465,6 +472,7 @@ mod tests {
         credential_log_modules: &[],
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
+        configured_secret_paths: configured_fake_provider_secret_paths,
         map_adapters: map_fake_provider_adapters,
         build_fee_provider: None,
     };
@@ -478,6 +486,7 @@ mod tests {
         credential_log_modules: &[],
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
+        configured_secret_paths: configured_fake_provider_secret_paths,
         map_adapters: map_fake_no_target_provider_adapters,
         build_fee_provider: None,
     };
@@ -792,7 +801,7 @@ mod tests {
         );
         assert_eq!(
             data.base_url_ws.as_deref(),
-            Some("wss://stream.binance.com:9443/ws")
+            Some("wss://stream-sbe.binance.com/ws")
         );
         assert_eq!(data.api_key.as_deref(), Some("fixture-binance-api-key"));
         assert_eq!(

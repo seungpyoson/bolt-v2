@@ -27,15 +27,21 @@
 use std::{any::Any, sync::Arc};
 
 use nautilus_binance::{
-    common::credential::Ed25519Credential,
-    common::enums::{
-        BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
+    common::{
+        consts::BINANCE_SPOT_WS_URL,
+        credential::Ed25519Credential,
+        enums::{
+            BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
+        },
     },
     config::BinanceDataClientConfig,
     factories::BinanceDataClientFactory,
 };
+use nautilus_core::string::secret::REDACTED;
 use nautilus_network::websocket::TransportBackend;
 use serde::Deserialize;
+use url::Url;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
     bolt_v3_adapters::{
@@ -44,8 +50,8 @@ use crate::{
     bolt_v3_config::ClientBlock,
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
-        ProviderSecretRequirement, ProviderSecretResolveContext, ResolvedClientSecrets,
-        SsmSecretResolver,
+        ProviderSecretRequirement, ProviderSecretResolveContext, ProviderSsmPathReference,
+        ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
 };
@@ -103,26 +109,17 @@ pub struct BinanceSecretsConfig {
     pub api_secret_ssm_path: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct ResolvedBoltV3BinanceSecrets {
     pub api_key: String,
     pub api_secret: String,
 }
 
-struct RedactedDebug;
-
-impl std::fmt::Debug for RedactedDebug {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("[REDACTED]")
-    }
-}
-
 impl std::fmt::Debug for ResolvedBoltV3BinanceSecrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let redacted = RedactedDebug;
         f.debug_struct("ResolvedBoltV3BinanceSecrets")
-            .field("api_key", &redacted)
-            .field("api_secret", &redacted)
+            .field("api_key", &REDACTED)
+            .field("api_secret", &REDACTED)
             .finish()
     }
 }
@@ -182,6 +179,12 @@ fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
             ));
         }
     }
+    if !data.base_url_ws.trim().is_empty() {
+        errors.extend(validate_not_known_spot_json_websocket_endpoint(
+            key,
+            data.base_url_ws.as_str(),
+        ));
+    }
     // The bolt-v3 schema deliberately rejects `0` rather than treating
     // it as "polling disabled": NT's `BinanceDataClientConfig` consumes
     // this as a poll interval and a missing/zero value would leave NT
@@ -190,6 +193,41 @@ fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
     if data.instrument_status_poll_secs == 0 {
         errors.push(format!(
             "clients.{key}.data.instrument_status_poll_secs must be a positive integer"
+        ));
+    }
+    errors
+}
+
+fn validate_not_known_spot_json_websocket_endpoint(key: &str, value: &str) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Ok(configured) = Url::parse(value) else {
+        errors.push(format!(
+            "clients.{key}.data.base_url_ws must be a valid Binance Spot WebSocket URL for NT subscribe_quotes"
+        ));
+        return errors;
+    };
+    if !matches!(configured.scheme(), "ws" | "wss") {
+        errors.push(format!(
+            "clients.{key}.data.base_url_ws must be a valid Binance Spot WebSocket URL for NT subscribe_quotes"
+        ));
+        return errors;
+    }
+    if !value[configured.scheme().len()..].starts_with("://") || !configured.has_host() {
+        errors.push(format!(
+            "clients.{key}.data.base_url_ws must be a valid Binance Spot WebSocket URL for NT subscribe_quotes"
+        ));
+        return errors;
+    }
+    let Ok(json_endpoint) = Url::parse(BINANCE_SPOT_WS_URL) else {
+        errors.push(
+            "nautilus_binance Spot JSON WebSocket URL constant failed URL parsing".to_string(),
+        );
+        return errors;
+    };
+
+    if configured.host_str() == json_endpoint.host_str() {
+        errors.push(format!(
+            "clients.{key}.data.base_url_ws must not use the Binance Spot JSON WebSocket host for NT subscribe_quotes (<symbol>@bestBidAsk); configure a Binance Spot SBE WebSocket endpoint or compatible SBE proxy so no-submit reference quote readiness can observe QuoteTick data"
         ));
     }
     errors
@@ -213,26 +251,7 @@ pub fn resolve_secrets(
     context: ProviderSecretResolveContext<'_>,
     resolver: &mut dyn SsmSecretResolver,
 ) -> Result<ResolvedClientSecrets, BoltV3SecretError> {
-    let secrets_value = context
-        .client
-        .secrets
-        .as_ref()
-        .ok_or_else(|| BoltV3SecretError {
-            client_key: context.client_key.to_string(),
-            field: "secrets".to_string(),
-            ssm_path: String::new(),
-            source: "missing [secrets] block".to_string(),
-        })?;
-    let secrets: BinanceSecretsConfig =
-        secrets_value
-            .clone()
-            .try_into()
-            .map_err(|error: toml::de::Error| BoltV3SecretError {
-                client_key: context.client_key.to_string(),
-                field: KEY.to_string(),
-                ssm_path: String::new(),
-                source: format!("invalid binance secrets schema: {error}"),
-            })?;
+    let secrets = parse_secrets_config(&context)?;
     let api_secret = resolve_field(
         context.client_key,
         "api_secret_ssm_path",
@@ -243,7 +262,6 @@ pub fn resolve_secrets(
     validate_binance_api_secret_shape(&api_secret).map_err(|_| BoltV3SecretError {
         client_key: context.client_key.to_string(),
         field: "api_secret_ssm_path".to_string(),
-        ssm_path: secrets.api_secret_ssm_path.clone(),
         source: "resolved binance api_secret is not valid Ed25519 PKCS8 base64 key material accepted by the NautilusTrader binance adapter".to_string(),
     })?;
     let api_key = resolve_field(
@@ -257,6 +275,44 @@ pub fn resolve_secrets(
         api_key,
         api_secret,
     }))
+}
+
+pub fn configured_secret_paths(
+    context: ProviderSecretResolveContext<'_>,
+) -> Result<Vec<ProviderSsmPathReference>, BoltV3SecretError> {
+    let secrets = parse_secrets_config(&context)?;
+    Ok(vec![
+        ProviderSsmPathReference {
+            field_name: "api_key_ssm_path",
+            ssm_path: secrets.api_key_ssm_path,
+        },
+        ProviderSsmPathReference {
+            field_name: "api_secret_ssm_path",
+            ssm_path: secrets.api_secret_ssm_path,
+        },
+    ])
+}
+
+fn parse_secrets_config(
+    context: &ProviderSecretResolveContext<'_>,
+) -> Result<BinanceSecretsConfig, BoltV3SecretError> {
+    let secrets_value = context
+        .client
+        .secrets
+        .as_ref()
+        .ok_or_else(|| BoltV3SecretError {
+            client_key: context.client_key.to_string(),
+            field: "secrets".to_string(),
+            source: "missing [secrets] block".to_string(),
+        })?;
+    secrets_value
+        .clone()
+        .try_into()
+        .map_err(|error: toml::de::Error| BoltV3SecretError {
+            client_key: context.client_key.to_string(),
+            field: KEY.to_string(),
+            source: format!("invalid binance secrets schema: {error}"),
+        })
 }
 
 fn validate_binance_api_secret_shape(api_secret: &str) -> Result<(), String> {

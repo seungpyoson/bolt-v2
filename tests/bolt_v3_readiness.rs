@@ -212,8 +212,9 @@ fn startup_check_reports_forbidden_env_failure_and_skips_downstream() {
 fn startup_check_reports_secret_resolution_failure_and_skips_downstream() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let raw_private_key_path = "/bolt/polymarket_main/private_key";
     let bad_resolver = |region: &str, path: &str| -> Result<String, &'static str> {
-        if path == "/bolt/polymarket_main/private_key" {
+        if path == raw_private_key_path {
             Err("simulated SSM permissions denied for private key")
         } else {
             support::fake_bolt_v3_resolver(region, path)
@@ -229,7 +230,11 @@ fn startup_check_reports_secret_resolution_failure_and_skips_downstream() {
     );
     let text = report_text(&report);
     assert!(text.contains("clients.polymarket_main.secrets.private_key"));
-    assert!(text.contains("/bolt/polymarket_main/private_key"));
+    assert!(text.contains("simulated SSM permissions denied for private key"));
+    assert!(
+        !text.contains(raw_private_key_path),
+        "startup check report must not expose raw SSM path: {text}"
+    );
     assert_no_resolved_secret_values(&text);
     assert_eq!(
         skipped_stages(&report),

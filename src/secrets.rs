@@ -28,6 +28,13 @@ impl SecretError {
     }
 }
 
+fn redact_configured_ssm_path(message: &str, configured_path: &str) -> String {
+    if configured_path.is_empty() {
+        return message.to_string();
+    }
+    message.replace(configured_path, "[configured-ssm-parameter]")
+}
+
 /// Venue-provider-neutral AWS Systems Manager resolver for synchronous
 /// Bolt startup. The AWS SDK is the SSM client; the resolver itself
 /// carries no venue-provider-specific knowledge and is keyed only by
@@ -135,19 +142,25 @@ impl SsmResolverSession {
                 .send()
                 .await
                 .map_err(|error| {
-                    SecretError(format!(
-                        "AWS SSM GetParameter failed for {ssm_path_owned}: {}",
-                        aws_sdk_ssm::error::DisplayErrorContext(&error),
-                    ))
+                    let source = redact_configured_ssm_path(
+                        &aws_sdk_ssm::error::DisplayErrorContext(&error).to_string(),
+                        &ssm_path_owned,
+                    );
+                    let mut message =
+                        "AWS SSM GetParameter failed for configured parameter".to_string();
+                    message.push_str(": ");
+                    message.push_str(&source);
+                    SecretError(message)
                 })?;
             response
                 .parameter()
                 .and_then(|parameter| parameter.value())
                 .map(|raw| raw.to_string())
                 .ok_or_else(|| {
-                    SecretError(format!(
-                        "AWS SSM GetParameter returned no value for {ssm_path_owned}"
-                    ))
+                    SecretError(
+                        "AWS SSM GetParameter returned no value for configured parameter"
+                            .to_string(),
+                    )
                 })
         })
     }
@@ -231,6 +244,17 @@ mod tests {
         {
         }
         _assert_signature(super::SsmResolverSession::resolve);
+    }
+
+    #[test]
+    fn ssm_resolver_diagnostic_redacts_configured_parameter_path() {
+        let diagnostic = super::redact_configured_ssm_path(
+            "AWS said /configured/path could not be loaded",
+            "/configured/path",
+        );
+
+        assert!(!diagnostic.contains("/configured/path"));
+        assert!(diagnostic.contains("[configured-ssm-parameter]"));
     }
 
     #[test]

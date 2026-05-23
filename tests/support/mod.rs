@@ -16,6 +16,10 @@ use std::{
 };
 
 use async_trait::async_trait;
+use bolt_v2::bolt_v3_config::LiveCanaryOperatorEvidenceBlock;
+use bolt_v2::bolt_v3_no_submit_readiness_schema::{
+    APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
+};
 use nautilus_common::enums::Environment;
 use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_common::{
@@ -78,6 +82,13 @@ impl RecordingDecisionEvidenceWriter {
 impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     for RecordingDecisionEvidenceWriter
 {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &bolt_v2::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn record_order_intent(
         &self,
         intent: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
@@ -153,23 +164,207 @@ impl TempCaseDir {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    pub fn persist(self) -> PathBuf {
+        let path = self.path.clone();
+        std::mem::forget(self);
+        path
+    }
 }
 
 pub fn repo_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
-pub fn validated_bolt_v3_live_canary_gate_report(
+pub fn repo_text(relative: &str) -> String {
+    fs::read_to_string(repo_path(relative))
+        .unwrap_or_else(|error| panic!("repo text `{relative}` should read: {error}"))
+}
+
+pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock {
+    let case_dir = live_canary_operator_evidence_case_dir();
+    let now = current_unix_seconds() as i64;
+    let approval_not_before_unix_seconds = now - 60;
+    let approval_not_after_unix_seconds = now + 3600;
+    let ssm_manifest_path = write_dummy_json(
+        &case_dir,
+        "ssm-manifest.json",
+        serde_json::json!({"record_kind": "test_ssm_manifest"}),
+    );
+    let strategy_input_evidence_path = write_dummy_json(
+        &case_dir,
+        "strategy-input.json",
+        serde_json::json!({"record_kind": "test_strategy_input"}),
+    );
+    let financial_envelope_path = write_dummy_json(
+        &case_dir,
+        "financial-envelope.json",
+        serde_json::json!({"record_kind": "test_financial_envelope"}),
+    );
+    let pre_run_state_path = write_dummy_json(
+        &case_dir,
+        "pre-run-state.json",
+        serde_json::json!({"record_kind": "test_pre_run_state"}),
+    );
+    let abort_plan_path = write_dummy_json(
+        &case_dir,
+        "abort-plan.json",
+        serde_json::json!({"record_kind": "test_abort_plan"}),
+    );
+    let canary_evidence_path = case_dir.join("canary-evidence.json");
+    let approval_nonce_path = write_dummy_json(
+        &case_dir,
+        "approval-nonce.json",
+        serde_json::json!({"record_kind": "test_approval_nonce"}),
+    );
+    let approval_consumption_path = case_dir.join("approval-consumption.json");
+    let ssm_manifest_sha256 = sha256_file(&ssm_manifest_path);
+    let strategy_input_evidence_sha256 = sha256_file(&strategy_input_evidence_path);
+    let financial_envelope_sha256 = sha256_file(&financial_envelope_path);
+    let pre_run_state_sha256 = sha256_file(&pre_run_state_path);
+    let abort_plan_sha256 = sha256_file(&abort_plan_path);
+    let approval_nonce_sha256 = sha256_file(&approval_nonce_path);
+    let canary_evidence_path = canary_evidence_path.to_string_lossy().to_string();
+    let strategy_cancel_path = case_dir
+        .join("strategy-cancel.json")
+        .to_string_lossy()
+        .to_string();
+    let root_toml_sha256 = sha256_file(&repo_path("tests/fixtures/bolt_v3/root.toml"));
+    let head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA").unwrap_or_else(|| {
+        panic!(
+            "BOLT_V3_BUILD_HEAD_SHA is not compiled in; \
+             run tests from a git repository so build.rs can emit the SHA"
+        )
+    });
+    let approval_envelope_path = write_dummy_json(
+        &case_dir,
+        "approval-envelope.json",
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "phase8_operator_approval_envelope",
+            "head_sha": head_sha,
+            "ssm_manifest_sha256": ssm_manifest_sha256,
+            "strategy_input_evidence_sha256": strategy_input_evidence_sha256,
+            "financial_envelope_sha256": financial_envelope_sha256,
+            "pre_run_state_sha256": pre_run_state_sha256,
+            "abort_plan_sha256": abort_plan_sha256,
+            "approval_id_hash": sha256_hex("operator-approved-canary-001".as_bytes()),
+            "approval_nonce_sha256": approval_nonce_sha256,
+            "approval_not_before_unix_secs": approval_not_before_unix_seconds,
+            "approval_not_after_unix_secs": approval_not_after_unix_seconds,
+            "canary_evidence_path_hash": sha256_hex(canary_evidence_path.as_bytes()),
+            "strategy_cancel_path_hash": sha256_hex(strategy_cancel_path.as_bytes()),
+        }),
+    );
+    let approval_envelope_sha256 = sha256_file(&approval_envelope_path);
+    let approval_consumption_proof = serde_json::json!({
+        "schema_version": APPROVAL_CONSUMPTION_SCHEMA_VERSION,
+        "record_kind": APPROVAL_CONSUMPTION_RECORD_KIND,
+        "head_sha": head_sha,
+        "root_toml_sha256": root_toml_sha256,
+        "approval_envelope_sha256": approval_envelope_sha256,
+        "ssm_manifest_sha256": ssm_manifest_sha256,
+        "strategy_input_evidence_sha256": strategy_input_evidence_sha256,
+        "financial_envelope_sha256": financial_envelope_sha256,
+        "pre_run_state_sha256": pre_run_state_sha256,
+        "abort_plan_sha256": abort_plan_sha256,
+        "approval_id_hash": sha256_hex("operator-approved-canary-001".as_bytes()),
+        "approval_nonce_sha256": approval_nonce_sha256,
+        "approval_not_before_unix_secs": approval_not_before_unix_seconds,
+        "approval_not_after_unix_secs": approval_not_after_unix_seconds,
+        "canary_evidence_path_hash": sha256_hex(canary_evidence_path.as_bytes()),
+        "strategy_cancel_path_hash": sha256_hex(strategy_cancel_path.as_bytes()),
+        "consumed_unix_secs": now,
+    });
+    fs::write(
+        &approval_consumption_path,
+        serde_json::to_vec(&approval_consumption_proof)
+            .expect("approval consumption proof JSON should encode"),
+    )
+    .expect("approval consumption proof should be written");
+
+    LiveCanaryOperatorEvidenceBlock {
+        head_sha: head_sha.to_string(),
+        max_operator_evidence_file_bytes: 4096,
+        approval_consumption_max_age_seconds: 300,
+        approval_envelope_path: approval_envelope_path.to_string_lossy().to_string(),
+        approval_envelope_sha256,
+        ssm_manifest_path: ssm_manifest_path.to_string_lossy().to_string(),
+        ssm_manifest_sha256,
+        strategy_input_evidence_path: strategy_input_evidence_path.to_string_lossy().to_string(),
+        strategy_input_evidence_sha256,
+        financial_envelope_path: financial_envelope_path.to_string_lossy().to_string(),
+        financial_envelope_sha256,
+        pre_run_state_path: pre_run_state_path.to_string_lossy().to_string(),
+        pre_run_state_sha256,
+        abort_plan_path: abort_plan_path.to_string_lossy().to_string(),
+        abort_plan_sha256,
+        canary_evidence_path,
+        approval_not_before_unix_seconds,
+        approval_not_after_unix_seconds,
+        approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
+        approval_nonce_sha256,
+        approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
+        decision_evidence_path: case_dir
+            .join("decision-evidence.jsonl")
+            .to_string_lossy()
+            .to_string(),
+        nt_submit_event_path: case_dir
+            .join("nt-submit-event.json")
+            .to_string_lossy()
+            .to_string(),
+        venue_order_state_path: case_dir
+            .join("venue-order-state.json")
+            .to_string_lossy()
+            .to_string(),
+        strategy_cancel_path: Some(strategy_cancel_path),
+        restart_reconciliation_path: case_dir
+            .join("restart-reconciliation.json")
+            .to_string_lossy()
+            .to_string(),
+        post_run_hygiene_path: case_dir
+            .join("post-run-hygiene.json")
+            .to_string_lossy()
+            .to_string(),
+    }
+}
+
+fn live_canary_operator_evidence_case_dir() -> PathBuf {
+    static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
+    let root = ROOT
+        .get_or_init(|| tempfile::tempdir().expect("operator evidence tempdir should be created"));
+    let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let case_dir = root.path().join(format!("operator-evidence-{counter}"));
+    fs::create_dir_all(&case_dir).expect("operator evidence case dir should be created");
+    case_dir
+}
+
+fn write_dummy_json(dir: &Path, filename: &str, value: serde_json::Value) -> PathBuf {
+    let path = dir.join(filename);
+    fs::write(
+        &path,
+        serde_json::to_vec(&value).expect("dummy operator evidence JSON should encode"),
+    )
+    .expect("dummy operator evidence JSON should be written");
+    path
+}
+
+fn sha256_file(path: &Path) -> String {
+    sha256_hex(&fs::read(path).expect("dummy operator evidence should be readable"))
+}
+
+pub fn loaded_bolt_v3_live_canary_with_satisfied_report(
     max_live_order_count: u32,
     max_notional_per_order: rust_decimal::Decimal,
-) -> bolt_v2::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport {
+) -> bolt_v2::bolt_v3_config::LoadedBoltV3Config {
     let root_path = repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded =
         bolt_v2::bolt_v3_config::load_bolt_v3_config(&root_path).expect("fixture should load");
     let temp = TempCaseDir::new("bolt-v3-validated-gate-report");
-    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    let temp_path = temp.persist();
+    loaded.root.persistence.catalog_directory = temp_path.to_string_lossy().to_string();
     loaded.root.risk.default_max_notional_per_order = max_notional_per_order.to_string();
-    let report_path = temp.path().join("no-submit-readiness.json");
+    let report_path = temp_path.join("no-submit-readiness.json");
     write_satisfied_no_submit_readiness_report(&report_path, &loaded.config_bundle_checksum);
     loaded.root.live_canary = Some(bolt_v2::bolt_v3_config::LiveCanaryBlock {
         approval_id: "operator-approved-canary-001".to_string(),
@@ -177,8 +372,25 @@ pub fn validated_bolt_v3_live_canary_gate_report(
         max_live_order_count,
         max_notional_per_order: max_notional_per_order.to_string(),
         max_no_submit_readiness_report_bytes: 4096,
-        operator_evidence: None,
+        readiness_report_max_age_seconds: 60,
+        reference_quote_max_age_seconds: 10,
+        reference_quote_wait_timeout_seconds: 10,
+        reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+        reference_quote_probe_log_events: true,
+        reference_quote_probe_log_commands: true,
+        operator_evidence: Some(valid_live_canary_operator_evidence()),
     });
+    loaded
+}
+
+pub fn validated_bolt_v3_live_canary_gate_report(
+    max_live_order_count: u32,
+    max_notional_per_order: rust_decimal::Decimal,
+) -> bolt_v2::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport {
+    let loaded = loaded_bolt_v3_live_canary_with_satisfied_report(
+        max_live_order_count,
+        max_notional_per_order,
+    );
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -191,9 +403,9 @@ pub fn validated_bolt_v3_live_canary_gate_report(
 
 fn write_satisfied_no_submit_readiness_report(path: &Path, config_bundle_checksum: &str) {
     use bolt_v2::bolt_v3_no_submit_readiness_schema::{
-        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, LIVE_NODE_BUILD_STAGE,
-        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
-        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
+        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, GENERATED_AT_UNIX_SECONDS_KEY,
+        LIVE_NODE_BUILD_STAGE, NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE,
+        REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
     };
 
     let report = serde_json::json!({
@@ -201,6 +413,7 @@ fn write_satisfied_no_submit_readiness_report(path: &Path, config_bundle_checksu
         "approval_id_hash": sha256_hex("operator-approved-canary-001".as_bytes()),
         "executable_identity": current_executable_identity(),
         "config_bundle_checksum": config_bundle_checksum,
+        GENERATED_AT_UNIX_SECONDS_KEY: current_unix_seconds(),
         "stages": [
             { "stage": OPERATOR_APPROVAL_STAGE, "status": "satisfied" },
             { "stage": SECRET_RESOLUTION_STAGE, "status": "satisfied" },
@@ -216,6 +429,13 @@ fn write_satisfied_no_submit_readiness_report(path: &Path, config_bundle_checksu
         serde_json::to_vec(&report).expect("report JSON should encode"),
     )
     .expect("readiness report should be written");
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test system clock should be after UNIX_EPOCH")
+        .as_secs()
 }
 
 fn current_executable_identity() -> String {

@@ -7,10 +7,17 @@ evidence gates. It is not approval to run live capital.
 
 ## Scope
 
-Issue #360 tiny-canary readiness is the proof for one explicitly approved,
-capped live order attempt. Production-grade live trading is a separate claim and
-stays blocked until the production level below is satisfied or explicitly
-waived by the operator in a tracked issue or PR.
+The tiny-canary readiness path requires proof for one explicitly approved,
+capped live order attempt. Issue #360 is a closed historical tracker for that
+gap, but issue closure is not evidence that T046 has completed. T046 requires a
+redacted canary artifact tied to the exact reviewed head and config checksum.
+Production-grade live trading is a separate claim and stays blocked until the
+production level below is satisfied or explicitly waived by the operator in a
+tracked issue or PR.
+
+Issue #409 tracks PortfolioSnapshot observability. Source-level capture and
+verifier coverage can support that issue ledger, but they are not no-submit,
+tiny-canary, staged-live, or production-live readiness evidence by themselves.
 
 The active readiness authority remains:
 
@@ -124,6 +131,8 @@ Production-grade claims are blocked if any of these is true:
 - a run used a different binary, root TOML, SSM manifest, host, approval id, or
   NT pin than the evidence package records
 - the issue or PR says a broader level is satisfied than the evidence supports
+- a closed issue, including #360, is cited as proof without the required
+  redacted artifact package for the claimed level
 - any required source-grounded status-map blocker remains open without an
   explicit operator waiver
 

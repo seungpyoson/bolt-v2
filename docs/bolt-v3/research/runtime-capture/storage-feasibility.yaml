@@ -95,7 +95,7 @@ types:
     serde_supported: true
     feather_supported: false
     recommended_storage: jsonl
-    reason: derive(Serialize, Deserialize) present and CatalogPathPrefix("portfolio_snapshot") exists, but no EncodeToRecordBatch impl was found in pinned NT; direct JSONL capture is feasible. The stream is exposed by subscribe_portfolio_snapshot (crates/common/src/msgbus/api.rs:470) and published on events.portfolio.{account_id} by Portfolio snapshot timers (crates/portfolio/src/portfolio.rs:2597). Bolt does not capture it yet.
+    reason: derive(Serialize, Deserialize) present and CatalogPathPrefix("portfolio_snapshot") exists, but no EncodeToRecordBatch impl was found in pinned NT; direct JSONL capture is feasible. The stream is exposed by subscribe_portfolio_snapshot (crates/common/src/msgbus/api.rs:470), published on events.portfolio.{account_id} by Portfolio snapshot timers (crates/portfolio/src/portfolio.rs:2597), and Bolt now writes JSONL capture (portfolio_snapshot/snapshots.jsonl).
 
   - message_type: OrderEventAny
     nt_path: crates/model/src/events/order/any.rs:36-53

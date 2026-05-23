@@ -90,6 +90,8 @@ Current `updown` readiness gates:
 - if the Chainlink Data Streams report is missing, non-numeric, non-positive, or ambiguous, live validation fails for order readiness
 - no readiness check may use broad Gamma polling, standalone market-selection services, midpoint/spot/question/threshold fallback, or strategy-side discovery HTTP
 
+Implementation status: this Chainlink anchor is the runtime contract target, not current production-readiness proof. The current bolt-v3 provider binding surface registers Polymarket and Binance only; Chainlink data-feed binding and real no-submit evidence remain required before any Chainlink-dependent live readiness claim.
+
 Market-selection validation result classes:
 
 - no currently selectable `active_or_next` market is a live operational warning
@@ -275,13 +277,14 @@ Current `updown` slug derivation rule:
 
 - slug format: `"{underlying_asset_lowercase}-updown-{cadence_slug_token}-{period_start_unix_secs}"`
 - `cadence_slug_token` is a runtime-contract-defined token for `cadence_secs`
-- currently defined mappings:
+- currently defined explicit contract mappings:
   - `60` -> `1m`
   - `300` -> `5m`
   - `900` -> `15m`
   - `3600` -> `1h`
   - `14400` -> `4h`
 - any other `cadence_secs` value is unsupported until this runtime contract defines its slug token
+- this table is the accepted updown contract surface, not a fallback or discovery path; runtime must reject values absent from it
 - `now_unix_secs` comes from the NautilusTrader node clock
 - `current_period_start_unix_secs = floor(now_unix_secs / cadence_secs) * cadence_secs`
 - `next_period_start_unix_secs = current_period_start_unix_secs + cadence_secs`
@@ -832,14 +835,15 @@ Definitions:
   - the exact deployed release directory name selected by deploy automation
   - current deployment rule: release directory names are the git commit SHA string for the built artifact
 - `config_hash`
-  - SHA-256 of the concatenation of:
-    1. root-file bytes with line endings normalized to LF
-    2. each listed strategy-file bytes in root `strategy_files` order, with line endings normalized to LF
-  - if a file starts with a UTF-8 byte order mark, strip it before hashing
-  - each normalized file byte sequence is hashed as if it ends with exactly one LF
-  - files are concatenated with no separator
-  - the emitted digest is lowercase hexadecimal
-  - file paths are not included
+  - when emitted by bolt-v3 decision evidence, this must equal the loaded config bundle checksum used by no-submit readiness and live-canary gate linkage
+  - SHA-256 over the exact loaded TOML text bytes after UTF-8 decoding, with no line-ending normalization, BOM stripping, path rewriting, or separator-free concatenation
+  - hash framing:
+    1. domain separator bytes `bolt-v3.config-bundle.v1\n`
+    2. big-endian `u32` entry count, equal to root entry plus strategy-file entries
+    3. root entry with kind byte `0`, key `root`, key length as big-endian `u32`, content length as big-endian `u64`, then root TOML bytes
+    4. strategy entries sorted by configured relative path string, each with kind byte `1`, relative-path key, key length as big-endian `u32`, content length as big-endian `u64`, then strategy TOML bytes
+  - emitted digest is lowercase hexadecimal
+  - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
   - current value: `7c2aafb30fb143069c915a3f2057bb12174405f6`
@@ -1411,13 +1415,17 @@ The built `LiveNode` is discarded after the build fact is recorded. The check mu
 
 The bolt-v3 live canary gate is the fail-closed admission boundary before `run_bolt_v3_live_node` enters NT's `LiveNode::run` runner loop. Production code must call `run_bolt_v3_live_node` instead of calling `LiveNode::run` directly for the bolt-v3 path.
 
-The gate validates only operator approval and prior no-submit readiness evidence. It checks that `[live_canary]` is present, `approval_id` is non-empty, `max_no_submit_readiness_report_bytes` is positive, `max_live_order_count` is positive, `max_notional_per_order` is a positive decimal, and `max_notional_per_order` is less than or equal to `risk.default_max_notional_per_order`.
+The gate validates only operator approval and prior no-submit readiness evidence. It checks that `[live_canary]` is present, `approval_id` is non-empty, `max_no_submit_readiness_report_bytes` is positive, `readiness_report_max_age_seconds` is positive, `reference_quote_max_age_seconds` is positive, `reference_quote_wait_timeout_seconds` is positive, `reference_quote_probe_actor_id` is a non-empty valid NT actor identifier without surrounding whitespace, `max_live_order_count` is positive, `max_notional_per_order` is a positive decimal, and `max_notional_per_order` is less than or equal to `risk.default_max_notional_per_order`. When `[live_canary]` is present, `[live_canary.operator_evidence]` is also required with a 40-character lowercase `head_sha`, positive `max_operator_evidence_file_bytes`, and positive `approval_consumption_max_age_seconds`. The configured `head_sha` must match the build-owned head captured at compile time; if the build-owned head is unavailable or invalid, the gate fails closed.
 
 The gate reads at most the configured `max_no_submit_readiness_report_bytes` from `no_submit_readiness_report_path` and requires a JSON object with a non-empty `stages` array. Each stage must expose `stage` and `status = "satisfied"` case-insensitively. Missing, unreadable, oversized, unparsable, non-array, empty, or unsatisfied reports reject the run before NT's runner loop is entered.
 
+The gate also bounds `approval_envelope_path`, sha256-bound pre-run artifact reads, and `approval_consumption_path` by `max_operator_evidence_file_bytes`, rejects non-regular files before hashing or parsing, and validates the approval-consumption proof against `schema_version = 1`, `record_kind`, TOML-owned and build-owned `head_sha`, the current root TOML sha256 computed from the loaded root path, configured evidence sha256s, `approval_id_hash`, approval window, `canary_evidence_path_hash`, optional `strategy_cancel_path_hash` when `strategy_cancel_path` is configured, and `consumed_unix_secs`. Proof consumption must be inside the approval window, not in the future, and no older than `approval_consumption_max_age_seconds` at first gate observation. Live order id hashes are unknown before submit and are bound by post-run live-result proof. The remaining configured output/result paths are required non-empty binding strings and are validated by later operator evidence, not read by this admission gate.
+
 The gate is read-only. It does not connect clients, subscribe to data, register strategies, select markets, construct orders, submit orders, cancel orders, or mutate NT state. The built `LiveNode` may already exist when the gate runs, but a gate rejection must occur before `LiveNode::run`.
 
-The gate validates canary bounds before the runner starts; it does not itself count orders or enforce per-order notional at submit time. Submit-admission code must independently consume the validated `BoltV3LiveCanaryGateReport` bounds before any live canary order is allowed.
+The gate validates canary bounds before the runner starts; it does not itself count orders or enforce per-order notional at submit time. Submit-admission code must independently consume the validated `BoltV3LiveCanaryGateReport` bounds before any live canary order is allowed. The report carries the TOML-owned no-submit readiness report byte and report freshness caps so downstream evidence can reference the exact admitted bounds without reparsing `[live_canary]`. No-submit readiness separately consumes `reference_quote_max_age_seconds`, `reference_quote_wait_timeout_seconds`, `reference_quote_probe_actor_id`, `reference_quote_probe_log_events`, and `reference_quote_probe_log_commands`; cache-only reference membership is not enough for a satisfied `reference_readiness` stage.
+
+No-submit quote evidence requires every configured `reference_data` `instrument_id` to map to one `data_client_id` only. NautilusTrader `QuoteTick` does not carry the producing data-client identifier, so validation rejects same-instrument reference data split across distinct data clients before the probe can turn one quote into ambiguous multi-client evidence.
 
 ## 12. Panic Gate: Issue `#239`
 

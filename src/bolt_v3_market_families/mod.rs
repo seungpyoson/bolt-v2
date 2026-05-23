@@ -47,6 +47,11 @@ pub struct MarketFamilyValidationBinding {
         fn(&toml::Value) -> Result<TargetRuntimeFields, InstrumentFilterError>,
     pub select_binary_option_market:
         fn(MarketSelectionTarget<'_>, &[InstrumentAny], u64) -> Option<SelectedBinaryOptionMarket>,
+    pub market_selection_candidate_windows:
+        fn(
+            MarketSelectionTarget<'_>,
+            u64,
+        ) -> Result<Vec<MarketSelectionCandidateWindow>, InstrumentFilterError>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,8 +68,31 @@ pub struct SelectedBinaryOptionMarket {
     pub instrument_id: InstrumentId,
     pub up_instrument_id: InstrumentId,
     pub down_instrument_id: InstrumentId,
+    pub selection_outcome: MarketSelectionOutcome,
     pub start_timestamp_milliseconds: u64,
+    pub expiration_timestamp_milliseconds: u64,
     pub seconds_to_end: u64,
+    pub source_identity: SelectedMarketSourceIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedMarketSourceIdentity {
+    pub condition_id: String,
+    pub market_slug: String,
+    pub question_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarketSelectionOutcome {
+    Current,
+    Next,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarketSelectionCandidateWindow {
+    pub outcome: MarketSelectionOutcome,
+    pub market_slug: String,
+    pub start_timestamp_milliseconds: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,6 +182,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[MarketFamilyVali
     instrument_filter_target_for_strategy: updown::instrument_filter_target_for_strategy,
     target_runtime_fields: updown::target_runtime_fields,
     select_binary_option_market: updown::select_binary_option_market,
+    market_selection_candidate_windows: updown::market_selection_candidate_windows,
 }];
 
 pub fn validation_bindings() -> &'static [MarketFamilyValidationBinding] {
@@ -259,6 +288,33 @@ pub fn select_binary_option_market_from_target_with_bindings(
         })
 }
 
+pub fn market_selection_candidate_windows_from_target(
+    target: MarketSelectionTarget<'_>,
+    now_milliseconds: u64,
+) -> Result<Vec<MarketSelectionCandidateWindow>, InstrumentFilterError> {
+    market_selection_candidate_windows_from_target_with_bindings(
+        target,
+        now_milliseconds,
+        validation_bindings(),
+    )
+}
+
+pub fn market_selection_candidate_windows_from_target_with_bindings(
+    target: MarketSelectionTarget<'_>,
+    now_milliseconds: u64,
+    bindings: &[MarketFamilyValidationBinding],
+) -> Result<Vec<MarketSelectionCandidateWindow>, InstrumentFilterError> {
+    bindings
+        .iter()
+        .find(|binding| binding.key == target.family_key)
+        .ok_or_else(|| InstrumentFilterError::UnsupportedFamily {
+            context: None,
+            family_key: target.family_key.to_string(),
+            supported: bindings.iter().map(|b| b.key).collect(),
+        })
+        .and_then(|binding| (binding.market_selection_candidate_windows)(target, now_milliseconds))
+}
+
 impl From<updown::BoltV3InstrumentFilterError> for InstrumentFilterError {
     fn from(error: updown::BoltV3InstrumentFilterError) -> Self {
         match error {
@@ -353,6 +409,7 @@ mod tests {
             instrument_filter_target_for_strategy: fake_instrument_filter_target_for_strategy,
             target_runtime_fields: fake_target_runtime_fields,
             select_binary_option_market: fake_select_binary_option_market,
+            market_selection_candidate_windows: fake_market_selection_candidate_windows,
         }];
 
     fn fake_instrument_filter_target_for_strategy(
@@ -384,9 +441,27 @@ mod tests {
             instrument_id: InstrumentId::from("fixture-market.FIXTURE"),
             up_instrument_id: InstrumentId::from("fixture-up.FIXTURE"),
             down_instrument_id: InstrumentId::from("fixture-down.FIXTURE"),
+            selection_outcome: MarketSelectionOutcome::Current,
             start_timestamp_milliseconds: 1_000,
+            expiration_timestamp_milliseconds: 61_000,
             seconds_to_end: 60,
+            source_identity: SelectedMarketSourceIdentity {
+                condition_id: "fixture-condition".to_string(),
+                market_slug: "fixture-market".to_string(),
+                question_id: "fixture-question".to_string(),
+            },
         })
+    }
+
+    fn fake_market_selection_candidate_windows(
+        _target: MarketSelectionTarget<'_>,
+        _now_milliseconds: u64,
+    ) -> Result<Vec<MarketSelectionCandidateWindow>, InstrumentFilterError> {
+        Ok(vec![MarketSelectionCandidateWindow {
+            outcome: MarketSelectionOutcome::Current,
+            market_slug: "fixture-market".to_string(),
+            start_timestamp_milliseconds: 1_000,
+        }])
     }
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {

@@ -189,9 +189,45 @@ rotation_kind = "none"
 [live_canary]
 approval_id = "operator-approved-canary-001"
 no_submit_readiness_report_path = "reports/no-submit-readiness.json"
-max_no_submit_readiness_report_bytes = 4096
+max_no_submit_readiness_report_bytes = 65536
+readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 10
+reference_quote_wait_timeout_seconds = 20
+reference_quote_probe_actor_id = "no-submit-reference-quote-probe"
+reference_quote_probe_log_events = true
+reference_quote_probe_log_commands = true
 max_live_order_count = 1
 max_notional_per_order = "1.00"
+
+[live_canary.operator_evidence]
+head_sha = "0123456789abcdef0123456789abcdef01234567"
+max_operator_evidence_file_bytes = 65536
+approval_consumption_max_age_seconds = 60
+approval_envelope_path = "operator-evidence/approval-envelope.json"
+approval_envelope_sha256 = "9999999999999999999999999999999999999999999999999999999999999999"
+ssm_manifest_path = "operator-evidence/ssm-manifest.json"
+ssm_manifest_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+strategy_input_evidence_path = "operator-evidence/strategy-input.json"
+strategy_input_evidence_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+financial_envelope_path = "operator-evidence/financial-envelope.json"
+financial_envelope_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+pre_run_state_path = "operator-evidence/pre-run-state.json"
+pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+abort_plan_path = "operator-evidence/abort-plan.json"
+abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+canary_evidence_path = "operator-evidence/canary-evidence.json"
+# Set this window immediately before an approved canary run. It must cover two
+# operator-evidence validation rounds plus report read, parse, and validation.
+approval_not_before_unix_seconds = 1893456000
+approval_not_after_unix_seconds = 1893456300
+approval_nonce_path = "operator-evidence/approval-nonce.json"
+approval_nonce_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+approval_consumption_path = "operator-evidence/approval-consumed.json"
+decision_evidence_path = "operator-evidence/decision-evidence.jsonl"
+nt_submit_event_path = "operator-evidence/nt-submit-event.json"
+venue_order_state_path = "operator-evidence/venue-order-state.json"
+restart_reconciliation_path = "operator-evidence/restart-reconciliation.json"
+post_run_hygiene_path = "operator-evidence/post-run-hygiene.json"
 
 [aws]
 region = "eu-west-1"
@@ -241,7 +277,7 @@ venue = "BINANCE"
 product_types = ["spot"] # NT: nautilus_binance::config::BinanceDataClientConfig.product_types
 environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
-base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
+base_url_ws = "wss://stream-sbe.binance.com/ws" # NT: BinanceDataClientConfig.base_url_ws
 instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 transport_backend = "sockudo" # NT: BinanceDataClientConfig.transport_backend
 
@@ -572,11 +608,12 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - local decision-evidence JSONL path under `catalog_directory`
 - must remain relative so a root catalog move changes only one config location
 
-Decision-evidence JSONL records use `schema_version = 4` for `order_intent` and `admission_decision` envelopes.
-Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent` or `decision`.
+Decision-evidence JSONL records use `schema_version = 5` for `order_intent`, `admission_decision`, and `strategy_input_snapshot` envelopes.
+Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent`, `decision`, or `snapshot`.
 The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.
 `order_intent` payloads carry the configured strategy/order identity plus compiled NT order semantics under `order_fields`.
 `admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id`.
+`strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
 
 `order_intent.order_fields` fields:
 
@@ -654,6 +691,47 @@ This section is optional for parse/build-only checks and required before `run_bo
 - maximum no-submit readiness JSON report size read by the fail-closed gate
 - reports larger than this bound reject before JSON parsing
 
+#### `readiness_report_max_age_seconds`
+
+- type: positive integer
+- required: yes when `[live_canary]` is present
+- maximum accepted age for the referenced no-submit readiness report at late gate evaluation time, after report read and parse
+- reports older than this bound reject before live canary admission can arm
+- operators must leave headroom for report I/O and parse latency; effective headroom is lower than the raw cap by that latency
+
+#### `reference_quote_max_age_seconds`
+
+- type: positive integer
+- required: yes when `[live_canary]` is present
+- maximum accepted age for each configured no-submit reference quote at readiness evaluation time
+- cache-only instrument-ID membership is not accepted as freshness evidence
+
+#### `reference_quote_wait_timeout_seconds`
+
+- type: positive integer
+- required: yes when `[live_canary]` is present
+- maximum time the no-submit readiness runner waits for quote evidence from configured reference-data subscriptions before it stops the runner and fails closed
+- this timeout does not authorize order submission, cancellation, or broader market-data subscriptions
+
+#### `reference_quote_probe_actor_id`
+
+- type: non-empty ASCII actor identifier string without surrounding whitespace
+- required: yes when `[live_canary]` is present
+- NT `DataActorConfig.actor_id` used by the no-submit reference quote probe
+- this is an operator-visible runtime identifier and must be TOML-owned
+
+#### `reference_quote_probe_log_events`
+
+- type: boolean
+- required: yes when `[live_canary]` is present
+- NT `DataActorConfig.log_events` value used by the no-submit reference quote probe
+
+#### `reference_quote_probe_log_commands`
+
+- type: boolean
+- required: yes when `[live_canary]` is present
+- NT `DataActorConfig.log_commands` value used by the no-submit reference quote probe
+
 #### `max_live_order_count`
 
 - type: positive integer
@@ -675,11 +753,24 @@ The `[live_canary]` TOML block is necessary but not sufficient for the one tiny-
 
 These environment names belong to the ignored operator harness, not the production `src/bolt_v3_*` runtime literal audit. The production runtime literal verifier intentionally scans only production bolt-v3 sources.
 
+### `[live_canary.operator_evidence]`
+
+This section is required when `[live_canary]` is present. The production live canary gate treats `approval_envelope_path`, the sha256-bound pre-run artifacts, and `approval_consumption_path` as read-only operator evidence and rejects non-regular files, symlinks, directories, unreadable files, or files larger than `max_operator_evidence_file_bytes` before hashing or parsing. Relative paths resolve from the root TOML directory. Remaining output/result paths are required non-empty binding strings; `strategy_cancel_path` is additionally bound by `strategy_cancel_path_hash` in approval-consumption proof when configured, and later operator evidence validates produced contents.
+
+Required control fields:
+
+- `head_sha`: 40-character lowercase commit SHA for the exact approved head; it must match the build-owned head captured at compile time, and the approval-consumption proof must carry the same `head_sha`
+- `max_operator_evidence_file_bytes`: positive integer cap applied to every operator evidence file read by the gate: `approval_envelope_path`, sha256-bound pre-run artifacts, and `approval_consumption_path`
+- `approval_consumption_max_age_seconds`: positive integer maximum age between `consumed_unix_secs` and gate evaluation time
+
+The static operator-artifact manifest is an input to packet assembly, not the final provenance authority. `assemble_operator_packet_from_static_manifest` refuses a manifest with non-empty `blockers`, a `config_bundle_checksum` that differs from the currently loaded TOML bundle, missing required artifact refs, configured path/hash drift, or artifact-file SHA drift. When those checks pass, the assembler writes `approval-envelope.json` using the same non-circular schema parsed by the live canary gate and writes an `operator-evidence-packet.json` containing the `[live_canary.operator_evidence]` path/SHA fields to copy into TOML. The approval-envelope JSON includes `schema_version = 1`, `record_kind = "phase8_operator_approval_envelope"`, `head_sha`, `ssm_manifest_sha256`, `strategy_input_evidence_sha256`, `financial_envelope_sha256`, `pre_run_state_sha256`, `abort_plan_sha256`, `approval_id_hash`, `approval_nonce_sha256`, `approval_not_before_unix_secs`, `approval_not_after_unix_secs`, `canary_evidence_path_hash`, and optional `strategy_cancel_path_hash`. It must not contain `root_toml_sha256`, `approval_envelope_sha256`, `config_bundle_checksum`, raw approval id, raw nonce material, raw SSM paths, or secret values.
+
+The approval-consumption JSON at `approval_consumption_path` must be a JSON object with `schema_version = 1`, `record_kind = "phase8_operator_approval_consumption"`, `head_sha`, `root_toml_sha256`, all configured evidence sha256 fields including `approval_envelope_sha256`, `approval_id_hash`, `approval_not_before_unix_secs`, `approval_not_after_unix_secs`, `canary_evidence_path_hash`, optional `strategy_cancel_path_hash` when `strategy_cancel_path` is configured, and `consumed_unix_secs`. The gate compares `head_sha` to both TOML operator evidence and the build-owned head captured at compile time. The gate computes `root_toml_sha256` from the loaded root TOML path at evaluation time and compares it to the proof; this value is not configured in TOML because hashing the file into itself would be circular.
+
 #### Approval and preflight fields
 
 - `BOLT_V3_PHASE8_HEAD_SHA`: exact commit SHA approved for the attempt
-- `BOLT_V3_PHASE8_ROOT_TOML_PATH`: approved root TOML path
-- `BOLT_V3_PHASE8_ROOT_TOML_SHA256`: sha256 of the approved root TOML
+- `BOLT_V3_PHASE8_ROOT_TOML_PATH`: approved root TOML path; the harness computes its sha256 from this file and reads `approval_envelope_sha256` from `[live_canary.operator_evidence]`
 - `BOLT_V3_PHASE8_SSM_MANIFEST_PATH`: redacted SSM path manifest evidence
 - `BOLT_V3_PHASE8_SSM_MANIFEST_SHA256`: sha256 of the redacted SSM manifest evidence
 - `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH`: strategy-input safety evidence path
@@ -704,13 +795,12 @@ These environment names belong to the ignored operator harness, not the producti
 #### Live-result fields
 
 - `BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH`: persisted decision evidence proof path under the NT runtime capture spool
-- `BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH`: client order identifier hash
-- `BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH`: venue order identifier hash
 - `BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH`: NT submit-event evidence path
 - `BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH`: venue accept/fill/reject evidence path
 - `BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH`: optional strategy-driven cancel evidence path when an order remains open
 - `BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH`: restart reconciliation evidence path
 - `BOLT_V3_PHASE8_POST_RUN_HYGIENE_PATH`: post-run raw-secret residue scan and retention/purge evidence path
+- Live client and venue order hashes are derived from post-run proof files, not from pre-run operator-provided values.
 
 #### Phase 8 artifact JSON schemas
 
@@ -782,6 +872,7 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 
 - `execution_client_id`, `configured_target_id`: strings matching the financial envelope
 - `cancel_if_open_defined`, `nt_accepted_venue_pending_abort_defined`, `partial_fill_abort_defined`, `network_partition_during_submit_abort_defined`, `panic_gate_trip_abort_defined`: booleans, all must be `true`
+- `cancel_if_open_evidence_hash`, `nt_accepted_venue_pending_abort_evidence_hash`, `partial_fill_abort_evidence_hash`, `network_partition_during_submit_abort_evidence_hash`, `panic_gate_trip_abort_evidence_hash`: sha256 bindings to operator-held evidence proving each abort path
 
 Live-result proof JSON files:
 
@@ -1044,6 +1135,7 @@ For current Binance reference-data use:
 - required: yes
 - maps to Nautilus `BinanceDataClientConfig.base_url_ws`
 - explicit TOML ownership prevents NautilusTrader from falling back to its compiled-in Binance WebSocket URL
+- must not use NautilusTrader's Binance Spot JSON WebSocket host; the bolt-v3 reference quote probe requires an SBE endpoint or compatible SBE proxy so NT `subscribe_quotes` can emit `QuoteTick` data
 
 ##### `instrument_status_poll_secs`
 
@@ -1318,6 +1410,7 @@ If present:
 
 - each block references a root client that includes `[data]`
 - each block declares the exact NautilusTrader `instrument_id` the strategy subscribes to
+- the same `instrument_id` must not be declared under more than one `data_client_id`, because NautilusTrader `QuoteTick` carries the instrument but not the producing data-client identifier and no-submit quote evidence must remain source-disambiguated
 - for the current `binary_oracle_edge_taker`, the required role name is `primary`
 
 Fields:
@@ -1586,6 +1679,7 @@ Must fail if:
 - `target.cadence_secs` is not positive or is not divisible by `60`
 - `target.cadence_secs` does not have a runtime-contract-defined slug-token mapping
 - a field appears under `[clients.<identifier>.data]` or `[clients.<identifier>.execution]` that is not allowed for that client's `venue`
+- a Binance reference-data `base_url_ws` uses NautilusTrader's Binance Spot JSON WebSocket host instead of an SBE endpoint or compatible SBE proxy
 - archetype-specific parameter sections contain fields not allowed for the declared `strategy_archetype`
 - archetype-specific order parameters contain any combination not explicitly allowed for that archetype
 - `order_notional_target` exceeds `root risk.default_max_notional_per_order`
@@ -1713,9 +1807,45 @@ rotation_kind = "none"
 [live_canary]
 approval_id = "operator-approved-canary-001"
 no_submit_readiness_report_path = "reports/no-submit-readiness.json"
-max_no_submit_readiness_report_bytes = 4096
+max_no_submit_readiness_report_bytes = 65536
+readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 10
+reference_quote_wait_timeout_seconds = 20
+reference_quote_probe_actor_id = "no-submit-reference-quote-probe"
+reference_quote_probe_log_events = true
+reference_quote_probe_log_commands = true
 max_live_order_count = 1
 max_notional_per_order = "1.00"
+
+[live_canary.operator_evidence]
+head_sha = "0123456789abcdef0123456789abcdef01234567"
+max_operator_evidence_file_bytes = 65536
+approval_consumption_max_age_seconds = 60
+approval_envelope_path = "operator-evidence/approval-envelope.json"
+approval_envelope_sha256 = "9999999999999999999999999999999999999999999999999999999999999999"
+ssm_manifest_path = "operator-evidence/ssm-manifest.json"
+ssm_manifest_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+strategy_input_evidence_path = "operator-evidence/strategy-input.json"
+strategy_input_evidence_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+financial_envelope_path = "operator-evidence/financial-envelope.json"
+financial_envelope_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+pre_run_state_path = "operator-evidence/pre-run-state.json"
+pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+abort_plan_path = "operator-evidence/abort-plan.json"
+abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+canary_evidence_path = "operator-evidence/canary-evidence.json"
+# Set this window immediately before an approved canary run. It must cover two
+# operator-evidence validation rounds plus report read, parse, and validation.
+approval_not_before_unix_seconds = 1893456000
+approval_not_after_unix_seconds = 1893456300
+approval_nonce_path = "operator-evidence/approval-nonce.json"
+approval_nonce_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+approval_consumption_path = "operator-evidence/approval-consumed.json"
+decision_evidence_path = "operator-evidence/decision-evidence.jsonl"
+nt_submit_event_path = "operator-evidence/nt-submit-event.json"
+venue_order_state_path = "operator-evidence/venue-order-state.json"
+restart_reconciliation_path = "operator-evidence/restart-reconciliation.json"
+post_run_hygiene_path = "operator-evidence/post-run-hygiene.json"
 
 [aws]
 region = "eu-west-1"
@@ -1765,7 +1895,7 @@ venue = "BINANCE"
 product_types = ["spot"] # NT: nautilus_binance::config::BinanceDataClientConfig.product_types
 environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
-base_url_ws = "wss://stream.binance.com:9443/ws" # NT: BinanceDataClientConfig.base_url_ws
+base_url_ws = "wss://stream-sbe.binance.com/ws" # NT: BinanceDataClientConfig.base_url_ws
 instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 transport_backend = "sockudo" # NT: BinanceDataClientConfig.transport_backend
 

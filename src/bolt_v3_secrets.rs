@@ -13,9 +13,11 @@
 //! using `[aws].region` as the resolver region. Resolved values are held
 //! behind provider-owned handles whose Debug output redacts every secret field; the
 //! resolved error type carries client key, secret-config field, and SSM
-//! path context, but never the resolved secret value itself.
+//! field context, but never the resolved secret value or raw SSM path itself.
 
 use std::collections::BTreeMap;
+
+use zeroize::Zeroizing;
 
 use crate::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
@@ -121,16 +123,16 @@ impl ResolvedBoltV3Secrets {
             .and_then(|secrets| secrets.as_any().downcast_ref())
     }
 
-    pub fn redaction_values(&self) -> Vec<String> {
+    pub fn redaction_values(&self) -> Vec<Zeroizing<String>> {
         let mut values = self
             .clients
             .values()
             .flat_map(|secrets| secrets.redaction_values())
             .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
+            .map(|value| Zeroizing::new(value.to_string()))
             .collect::<Vec<_>>();
-        values.sort();
-        values.dedup();
+        values.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        values.dedup_by(|left, right| left.as_str() == right.as_str());
         values
     }
 }
@@ -143,34 +145,31 @@ impl std::fmt::Debug for ResolvedBoltV3Secrets {
     }
 }
 
-#[derive(Debug)]
 pub struct BoltV3SecretError {
     pub client_key: String,
     pub field: String,
-    pub ssm_path: String,
     pub source: String,
 }
 
 impl std::fmt::Display for BoltV3SecretError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.ssm_path.is_empty() {
-            write!(
-                f,
-                "clients.{client_key}.secrets.{field}: {source}",
-                client_key = self.client_key,
-                field = self.field,
-                source = self.source,
-            )
-        } else {
-            write!(
-                f,
-                "clients.{client_key}.secrets.{field} (path={path}): {source}",
-                client_key = self.client_key,
-                field = self.field,
-                path = self.ssm_path,
-                source = self.source,
-            )
-        }
+        write!(
+            f,
+            "clients.{client_key}.secrets.{field}: {source}",
+            client_key = self.client_key,
+            field = self.field,
+            source = self.source,
+        )
+    }
+}
+
+impl std::fmt::Debug for BoltV3SecretError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoltV3SecretError")
+            .field("client_key", &self.client_key)
+            .field("field", &self.field)
+            .field("source", &self.source)
+            .finish()
     }
 }
 
@@ -219,7 +218,6 @@ where
             return Err(BoltV3SecretError {
                 client_key: client_key.clone(),
                 field: "venue".to_string(),
-                ssm_path: String::new(),
                 source: format!(
                     "venue `{}` is not supported by this build",
                     client.venue.as_str()
@@ -252,14 +250,12 @@ pub fn resolve_field(
         .map_err(|error| BoltV3SecretError {
             client_key: client_key.to_string(),
             field: field.to_string(),
-            ssm_path: ssm_path.to_string(),
             source: error,
         })?;
     if value.trim().is_empty() {
         return Err(BoltV3SecretError {
             client_key: client_key.to_string(),
             field: field.to_string(),
-            ssm_path: ssm_path.to_string(),
             source: "resolved SSM value is empty or whitespace-only".to_string(),
         });
     }
@@ -267,7 +263,6 @@ pub fn resolve_field(
         return Err(BoltV3SecretError {
             client_key: client_key.to_string(),
             field: field.to_string(),
-            ssm_path: ssm_path.to_string(),
             source: "resolved SSM value has leading or trailing whitespace".to_string(),
         });
     }
@@ -275,7 +270,6 @@ pub fn resolve_field(
         return Err(BoltV3SecretError {
             client_key: client_key.to_string(),
             field: field.to_string(),
-            ssm_path: ssm_path.to_string(),
             source: "resolved SSM value contains embedded whitespace".to_string(),
         });
     }
@@ -450,7 +444,6 @@ mod tests {
 
         assert_eq!(error.client_key, "polymarket_main");
         assert_eq!(error.field, "api_key_ssm_path");
-        assert_eq!(error.ssm_path, "/bolt/polymarket_main/api_key");
         assert_eq!(
             error.source,
             "resolved SSM value is empty or whitespace-only"
@@ -472,7 +465,6 @@ mod tests {
 
         assert_eq!(error.client_key, "polymarket_main");
         assert_eq!(error.field, "private_key_ssm_path");
-        assert_eq!(error.ssm_path, "/bolt/polymarket_main/private_key");
         assert!(
             error.source.contains(
                 "resolved polymarket private_key is not valid EVM private key material accepted by the NautilusTrader polymarket adapter:"
@@ -571,7 +563,6 @@ mod tests {
 
         assert_eq!(error.client_key, "polymarket_main");
         assert_eq!(error.field, "api_secret_ssm_path");
-        assert_eq!(error.ssm_path, "/bolt/polymarket_main/api_secret");
         assert_eq!(
             error.source,
             "resolved SSM value has leading or trailing whitespace"
@@ -593,7 +584,6 @@ mod tests {
 
         assert_eq!(error.client_key, "polymarket_main");
         assert_eq!(error.field, "api_key_ssm_path");
-        assert_eq!(error.ssm_path, "/bolt/polymarket_main/api_key");
         assert_eq!(
             error.source,
             "resolved SSM value contains embedded whitespace"
@@ -627,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn ssm_failure_reports_bolt_v3_client_field_and_path() {
+    fn ssm_failure_reports_bolt_v3_client_field_without_path() {
         let loaded = fixture_loaded_config();
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
@@ -638,6 +628,7 @@ mod tests {
             }
         })
         .expect_err("SSM failure should abort resolution");
+        let raw_path = "/bolt/binance_reference/api_secret";
         let message = error.to_string();
 
         assert!(
@@ -645,12 +636,29 @@ mod tests {
             "expected field context in error: {message}"
         );
         assert!(
-            message.contains("/bolt/binance_reference/api_secret"),
-            "expected SSM path in error: {message}"
+            !message.contains(&raw_path),
+            "SSM failure message must not expose raw path: {message}"
         );
         assert!(
             message.contains("simulated ssm failure"),
             "expected resolver error in message: {message}"
+        );
+
+        let debug = format!("{error:?}");
+        assert!(
+            !debug.contains(&raw_path),
+            "SSM failure Debug output must not expose raw path: {debug}"
+        );
+    }
+
+    #[test]
+    fn bolt_v3_secret_error_does_not_expose_raw_ssm_path_as_public_api() {
+        let source = include_str!("bolt_v3_secrets.rs");
+        let forbidden = format!("{} {}", "pub", "ssm_path:");
+
+        assert!(
+            !source.contains(&forbidden),
+            "BoltV3SecretError must not expose raw SSM paths as a public field"
         );
     }
 

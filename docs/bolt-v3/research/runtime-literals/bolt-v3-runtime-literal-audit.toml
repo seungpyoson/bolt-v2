@@ -647,10 +647,10 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''4'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 4;'''
+literal = '''5'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 5;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v4 adds compiled NT trigger_instrument_id to order-intent evidence; it is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v5 combines compiled NT order-field evidence with strategy-input snapshot evidence; it is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -687,10 +687,42 @@ reason = "This is the stable gate identifier stamped on each submit-admission ev
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
+literal = '''"bolt_v3.strategy_input_snapshot"'''
+context = '''pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID: &str = "bolt_v3.strategy_input_snapshot";'''
+classification = "decision_evidence_gate_id"
+reason = "This is the stable gate identifier stamped on each strategy-input snapshot evidence record so operators can correlate JSONL records back to the recording gate. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"current"'''
+context = '''pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";'''
+classification = "strategy_evidence_market_selection_outcome"
+reason = "This is a stable evidence label for the already-selected current market window in the strategy-input snapshot. It records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"next"'''
+context = '''pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";'''
+classification = "strategy_evidence_market_selection_outcome"
+reason = "This is a stable evidence label for the already-selected next market window in the strategy-input snapshot. It records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
 literal = '''"order_intent"'''
 context = '''kind: "order_intent",'''
 classification = "decision_evidence_envelope_kind"
 reason = "This is the JSONL envelope discriminator naming the order-intent payload shape. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"strategy_input_snapshot"'''
+context = '''kind: "strategy_input_snapshot",'''
+classification = "decision_evidence_envelope_kind"
+reason = "This is the JSONL envelope discriminator naming the strategy-input snapshot payload shape. It is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -838,6 +870,655 @@ classification = "live_canary_gate_diagnostic_template"
 reason = "This diagnostic distinguishes an empty no-submit readiness report from a malformed or unsatisfied report."
 
 [[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"bolt-v3 live canary `[live_canary].operator_evidence.{field}` is empty"'''
+context = '''"bolt-v3 live canary `[live_canary].operator_evidence.{field}` is empty"'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"bolt-v3 live canary approval consumption proof {} is malformed: {reason}"'''
+context = '''"bolt-v3 live canary approval consumption proof {} is malformed: {reason}",'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"bolt-v3 live canary approval consumption proof {} is stale: consumed_unix_secs={consumed_unix_secs}, current_unix_seconds={current_unix_seconds}, approval window [{approval_not_before_unix_seconds}, {approval_not_after_unix_seconds}], approval_consumption_max_age_seconds={approval_consumption_max_age_seconds}"'''
+context = '''"bolt-v3 live canary approval consumption proof {} is stale: consumed_unix_secs={consumed_unix_secs}, current_unix_seconds={current_unix_seconds}, approval window [{approval_not_before_unix_seconds}, {approval_not_after_unix_seconds}], approval_consumption_max_age_seconds={approval_consumption_max_age_seconds}",'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"schema_version"'''
+context = '''"schema_version",'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "number"
+literal = "1"
+context = '''pub const APPROVAL_CONSUMPTION_SCHEMA_VERSION: i64 = 1;'''
+classification = "phase8_approval_consumption_schema_version"
+reason = "This is the shared fixed schema version for Phase 8 approval-consumption evidence; values are validated against the evidence protocol, not used as an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"record_kind"'''
+context = '''"record_kind",'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"phase8_operator_approval_consumption"'''
+context = '''pub const APPROVAL_CONSUMPTION_RECORD_KIND: &str = "phase8_operator_approval_consumption";'''
+classification = "phase8_approval_consumption_record_kind"
+reason = "This shared schema label identifies the Phase 8 approval-consumption evidence record that binds operator approval to a single canary attempt."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"head_sha"'''
+context = '''("head_sha", evidence.head_sha.as_str()),'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"root_toml_sha256"'''
+context = '''("root_toml_sha256", root_toml_sha256.as_str()),'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_envelope_sha256"'''
+context = '''"approval_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"ssm_manifest_sha256"'''
+context = '''("ssm_manifest_sha256", evidence.ssm_manifest_sha256.as_str()),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_sha256"'''
+context = '''"strategy_input_evidence_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"financial_envelope_sha256"'''
+context = '''"financial_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"pre_run_state_sha256"'''
+context = '''"pre_run_state_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"abort_plan_sha256"'''
+context = '''("abort_plan_sha256", evidence.abort_plan_sha256.as_str()),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_nonce_sha256"'''
+context = '''"approval_nonce_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_id_hash"'''
+context = '''("approval_id_hash", approval_id_hash.as_str()),'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"canary_evidence_path_hash"'''
+context = '''"canary_evidence_path_hash",'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"strategy_cancel_path_hash"'''
+context = '''"strategy_cancel_path_hash",'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names an approval-consumption proof field required when a strategy cancel artifact path is configured."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_not_before_unix_secs"'''
+context = '''"approval_not_before_unix_secs",'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_not_after_unix_secs"'''
+context = '''"approval_not_after_unix_secs",'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"consumed_unix_secs"'''
+context = '''let consumed_unix_secs = consumption_i64_field(&path, object, "consumed_unix_secs")?;'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "0_u64"
+context = '''let mut observed = 0_u64;'''
+classification = "operator_evidence_bounded_read_buffer"
+reason = "This is bounded-read implementation state for enforcing the TOML-owned operator evidence byte cap during I/O."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "0_u8"
+context = '''let mut buffer = [0_u8; 8192];'''
+classification = "operator_evidence_bounded_read_buffer"
+reason = "This is bounded-read implementation state for enforcing the TOML-owned operator evidence byte cap during I/O."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "8192"
+context = '''let mut buffer = [0_u8; 8192];'''
+classification = "operator_evidence_bounded_read_buffer"
+reason = "This is bounded-read implementation state for enforcing the TOML-owned operator evidence byte cap during I/O."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "1"
+context = '''let remaining_to_detect = max_bytes.saturating_sub(observed).saturating_add(1);'''
+classification = "bounded_read_sentinel"
+reason = "The gate reads one byte beyond the configured cap to detect oversized operator evidence without unbounded reads."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"{} exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"'''
+context = '''"{} exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})",'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "22"
+context = ''') -> [(&'static str, &str); 22] {'''
+classification = "operator_evidence_required_field_count"
+reason = "This is the compile-time size of the required operator evidence field table; field values are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"no_submit_readiness_report_path"'''
+context = '''"no_submit_readiness_report_path",'''
+classification = "live_canary_config_path_field"
+reason = "This names the TOML-owned no-submit readiness report path while validating configured path shape; the path value remains config-owned and is rejected fail-closed if it contains parent-directory traversal."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"strategy_cancel_path"'''
+context = '''validate_configured_path_shape("strategy_cancel_path", strategy_cancel_path)?;'''
+classification = "operator_evidence_schema_field"
+reason = "This names an optional TOML-owned operator evidence path while validating configured path shape; the path value remains config-owned and is rejected fail-closed if it contains parent-directory traversal."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "1"
+context = "pub const APPROVAL_ENVELOPE_SCHEMA_VERSION: i64 = 1;"
+classification = "approval_envelope_schema_version"
+reason = "This is the structural JSON schema version required for the non-circular approval-envelope file, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"phase8_operator_approval_envelope"'''
+context = '''pub const APPROVAL_ENVELOPE_RECORD_KIND: &str = "phase8_operator_approval_envelope";'''
+classification = "approval_envelope_record_kind"
+reason = "This is the structural approval-envelope record-kind discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "14"
+context = ''') -> [(&'static str, &str); 14] {'''
+classification = "operator_evidence_path_field_count"
+reason = "This is the compile-time size of the operator evidence path field table; path values are TOML-owned and validated fail-closed before resolution."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_envelope_path"'''
+context = '''"approval_envelope_path",'''
+classification = "approval_envelope_schema_field"
+reason = "This names the TOML-owned approval-envelope path while resolving and validating the configured evidence file; the path value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"head_sha"'''
+context = '''"head_sha",'''
+classification = "approval_envelope_schema_field"
+reason = "This names a required approval-envelope JSON field whose value must match TOML-owned operator evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"ssm_manifest_sha256"'''
+context = '''"ssm_manifest_sha256",'''
+classification = "approval_envelope_schema_field"
+reason = "This names a required approval-envelope JSON field whose value must match TOML-owned operator evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"abort_plan_sha256"'''
+context = '''"abort_plan_sha256",'''
+classification = "approval_envelope_schema_field"
+reason = "This names a required approval-envelope JSON field whose value must match TOML-owned operator evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_id_hash"'''
+context = '''"approval_id_hash",'''
+classification = "approval_envelope_schema_field"
+reason = "This names a required approval-envelope JSON field derived from the configured approval id."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"head_sha"'''
+context = '''("head_sha", &evidence.head_sha),'''
+classification = "phase8_approval_consumption_schema_field"
+reason = "This names a required approval-consumption proof field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_envelope_path"'''
+context = '''("approval_envelope_path", &evidence.approval_envelope_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"ssm_manifest_path"'''
+context = '''("ssm_manifest_path", &evidence.ssm_manifest_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"ssm_manifest_sha256"'''
+context = '''("ssm_manifest_sha256", &evidence.ssm_manifest_sha256),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_path"'''
+context = '''"strategy_input_evidence_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_sha256"'''
+context = '''"strategy_input_evidence_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"financial_envelope_path"'''
+context = '''("financial_envelope_path", &evidence.financial_envelope_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"financial_envelope_sha256"'''
+context = '''"financial_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"pre_run_state_path"'''
+context = '''("pre_run_state_path", &evidence.pre_run_state_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"pre_run_state_sha256"'''
+context = '''("pre_run_state_sha256", &evidence.pre_run_state_sha256),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"abort_plan_path"'''
+context = '''("abort_plan_path", &evidence.abort_plan_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"abort_plan_sha256"'''
+context = '''("abort_plan_sha256", &evidence.abort_plan_sha256),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"canary_evidence_path"'''
+context = '''("canary_evidence_path", &evidence.canary_evidence_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_nonce_path"'''
+context = '''("approval_nonce_path", &evidence.approval_nonce_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_nonce_sha256"'''
+context = '''("approval_nonce_sha256", &evidence.approval_nonce_sha256),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_consumption_path"'''
+context = '''"approval_consumption_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"decision_evidence_path"'''
+context = '''("decision_evidence_path", &evidence.decision_evidence_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"nt_submit_event_path"'''
+context = '''("nt_submit_event_path", &evidence.nt_submit_event_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"venue_order_state_path"'''
+context = '''("venue_order_state_path", &evidence.venue_order_state_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"restart_reconciliation_path"'''
+context = '''"restart_reconciliation_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"post_run_hygiene_path"'''
+context = '''("post_run_hygiene_path", &evidence.post_run_hygiene_path),'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "7"
+context = ''') -> [(&'static str, &str); 7] {'''
+classification = "operator_evidence_hash_field_count"
+reason = "This is the compile-time size of the operator evidence hash field table; hash values are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "7"
+context = ''') -> [OperatorEvidenceFileHashBinding<'_>; 7] {'''
+classification = "operator_evidence_file_hash_binding_count"
+reason = "This is the compile-time size of the sha256-bound pre-run artifact table; paths and hashes are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_envelope_path"'''
+context = '''path_field: "approval_envelope_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"ssm_manifest_path"'''
+context = '''path_field: "ssm_manifest_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_path"'''
+context = '''path_field: "strategy_input_evidence_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"financial_envelope_path"'''
+context = '''path_field: "financial_envelope_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"pre_run_state_path"'''
+context = '''path_field: "pre_run_state_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"abort_plan_path"'''
+context = '''path_field: "abort_plan_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_nonce_path"'''
+context = '''path_field: "approval_nonce_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_envelope_sha256"'''
+context = '''hash_field: "approval_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"ssm_manifest_sha256"'''
+context = '''hash_field: "ssm_manifest_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_sha256"'''
+context = '''hash_field: "strategy_input_evidence_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"financial_envelope_sha256"'''
+context = '''hash_field: "financial_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"pre_run_state_sha256"'''
+context = '''hash_field: "pre_run_state_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"abort_plan_sha256"'''
+context = '''hash_field: "abort_plan_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_nonce_sha256"'''
+context = '''hash_field: "approval_nonce_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "64"
+context = '''value.len() == 64'''
+classification = "sha256_hex_shape_bound"
+reason = "This validates lowercase sha256 hex string shape for configured evidence hashes."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"BOLT_V3_BUILD_HEAD_SHA"'''
+context = '''option_env!("BOLT_V3_BUILD_HEAD_SHA").filter(|value| is_git_head_sha(value))'''
+classification = "build_head_env_name"
+reason = "This is a compile-time Cargo environment variable emitted by build.rs to bind operator approval to the built source head."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = "40"
+context = '''value.len() == 40'''
+classification = "git_head_sha_shape_bound"
+reason = "This validates lowercase git commit SHA shape for build/operator head binding."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"{GENERATED_AT_UNIX_SECONDS_KEY} is in the future ({generated_at_unix_seconds} > {current_unix_seconds})"'''
+context = '''"{GENERATED_AT_UNIX_SECONDS_KEY} is in the future ({generated_at_unix_seconds} > {current_unix_seconds})"'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"{GENERATED_AT_UNIX_SECONDS_KEY} expired: age_seconds={age_seconds} exceeds \
+             [live_canary].readiness_report_max_age_seconds={readiness_report_max_age_seconds}"'''
+context = '''"{GENERATED_AT_UNIX_SECONDS_KEY} expired: age_seconds={age_seconds} exceeds \'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This is fail-closed diagnostic text; compared values come from TOML, build metadata, or validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness_schema.rs"
+kind = "string"
+literal = '''"generated_at_unix_seconds"'''
+context = '''pub const GENERATED_AT_UNIX_SECONDS_KEY: &str = "generated_at_unix_seconds";'''
+classification = "no_submit_readiness_report_schema_field"
+reason = "This is a no-submit readiness report schema field used for freshness validation."
+
+[[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "number"
 literal = "0"
@@ -852,6 +1533,32 @@ literal = "0"
 context = "(value != 0).then_some(value)"
 classification = "toml_zero_as_none_encoding"
 reason = "Schema documents zero as the TOML encoding for NT None on selected optional u32 fields."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"bolt-v3 no-submit controlled-start timeout sum overflowed \
+                 config-owned nautilus timeout fields"'''
+context = '''"bolt-v3 no-submit controlled-start timeout sum overflowed \'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "This is fail-closed diagnostic text emitted when config-owned no-submit start timeout fields overflow during checked addition."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"bolt-v3 no-submit controlled-stop timeout sum overflowed \
+                 config-owned nautilus timeout fields"'''
+context = '''"bolt-v3 no-submit controlled-stop timeout sum overflowed \'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "This is fail-closed diagnostic text emitted when config-owned no-submit stop timeout fields overflow during checked addition."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''", "'''
+context = '''client_venues.join(", ")'''
+classification = "diagnostic_separator"
+reason = "This joins configured client venues for a fail-closed setup diagnostic; the venue values themselves come from TOML config."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/mod.rs"
@@ -998,6 +1705,30 @@ classification = "nt_binary_option_metadata_key"
 reason = "The updown market-family module owns the NautilusTrader BinaryOption metadata key used to match the TOML-derived market slug; strategy code must not read this key directly."
 
 [[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"market_slug\""
+context = "market_slug: info.get_str(\"market_slug\")?.to_string(),"
+classification = "nt_binary_option_metadata_key"
+reason = "The updown market-family module owns the NautilusTrader BinaryOption metadata key copied into source-bound market-selection identity evidence; strategy/operator code must not read this key directly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"condition_id\""
+context = "condition_id: info.get_str(\"condition_id\")?.to_string(),"
+classification = "nt_binary_option_metadata_key"
+reason = "The updown market-family module owns this NautilusTrader BinaryOption metadata key for source-bound market-selection identity evidence; strategy/operator code must not read this key directly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = "\"question_id\""
+context = "question_id: info.get_str(\"question_id\")?.to_string(),"
+classification = "nt_binary_option_metadata_key"
+reason = "The updown market-family module owns this NautilusTrader BinaryOption metadata key for source-bound market-selection identity evidence; strategy/operator code must not read this key directly."
+
+[[allowed]]
 path = '''src/bolt_v3_market_families/updown.rs'''
 kind = '''string'''
 literal = '''"target.cadence_secs"'''
@@ -1084,6 +1815,78 @@ literal = '''"{} reference_data.{role} instrument_id `{instrument_id}`"'''
 context = '''"{} reference_data.{role} instrument_id `{instrument_id}`",'''
 classification = "no_submit_readiness_diagnostic_template"
 reason = "This diagnostic identifies a configured strategy reference instrument missing from NT cache readiness evidence."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "number"
+literal = '''0usize'''
+context = '''let mut required_count = 0usize;'''
+classification = "no_submit_readiness_counter_initial_value"
+reason = "This initializes an internal count of configured reference-data requirements; the requirements themselves come from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "number"
+literal = '''1'''
+context = '''required_count += 1;'''
+classification = "no_submit_readiness_counter_increment"
+reason = "This increments the internal count for each configured reference-data requirement discovered from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "number"
+literal = '''1_000_000_000'''
+context = '''const NANOS_PER_SECOND: u64 = 1_000_000_000;'''
+classification = "time_unit_conversion"
+reason = "This converts config-owned seconds into nanoseconds for quote freshness comparison."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"; "'''
+context = '''Err(failures.join("; "))'''
+classification = "diagnostic_separator"
+reason = "This joins multiple no-submit reference-readiness diagnostics for display only."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"[live_canary].reference_quote_max_age_seconds overflows nanoseconds"'''
+context = '''"[live_canary].reference_quote_max_age_seconds overflows nanoseconds".to_string()'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This fail-closed diagnostic reports overflow while converting the TOML-owned quote freshness bound."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"live quote evidence for {label} has future ts_event_unix_nanos {} > observed_at_unix_nanos {observed_at_unix_nanos}"'''
+context = '''"live quote evidence for {label} has future ts_event_unix_nanos {} > observed_at_unix_nanos {observed_at_unix_nanos}",'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This fail-closed diagnostic reports quote evidence whose timestamp is later than the readiness observation time."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"live quote evidence for {label} is stale: age_nanos={age_nanos} > max_age_nanos={max_age_nanos} ([live_canary].reference_quote_max_age_seconds={max_age_seconds})"'''
+context = '''"live quote evidence for {label} is stale: age_nanos={age_nanos} > max_age_nanos={max_age_nanos} ([live_canary].reference_quote_max_age_seconds={max_age_seconds})"'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This fail-closed diagnostic reports quote evidence older than the TOML-owned quote freshness bound."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"no configured reference_data requirements found"'''
+context = '''failures.push("no configured reference_data requirements found".to_string());'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This fail-closed diagnostic reports that no configured strategy reference data exists to prove no-submit freshness."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"{} reference_data.{role} data_client_id `{data_client_id}` instrument_id `{instrument_id}`"'''
+context = '''"{} reference_data.{role} data_client_id `{data_client_id}` instrument_id `{instrument_id}`",'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This diagnostic identifies the configured strategy reference-data source whose live quote evidence is missing or stale."
 
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness_schema.rs"
@@ -1292,6 +2095,30 @@ literal = "\"base_url_ws\""
 context = "(\"base_url_ws\", data.base_url_ws.as_str()),"
 classification = "validation_field_label"
 reason = "This label names the Binance data config URL field being validated for non-empty input."
+
+[[allowed]]
+path = '''src/bolt_v3_providers/binance.rs'''
+kind = '''string'''
+literal = '''"ws"'''
+context = '''if !matches!(configured.scheme(), "ws" | "wss") {'''
+classification = '''websocket_url_scheme_protocol'''
+reason = '''This is the URL scheme token required to recognize WebSocket config URLs before NT mapping, not an operator-owned endpoint, venue, id, quantity, timeout, or path value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/binance.rs'''
+kind = '''string'''
+literal = '''"wss"'''
+context = '''if !matches!(configured.scheme(), "ws" | "wss") {'''
+classification = '''websocket_url_scheme_protocol'''
+reason = '''This is the TLS WebSocket URL scheme token required to recognize WebSocket config URLs before NT mapping, not an operator-owned endpoint, venue, id, quantity, timeout, or path value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/binance.rs'''
+kind = '''string'''
+literal = '''"://"'''
+context = '''if !value[configured.scheme().len()..].starts_with("://") || !configured.has_host() {'''
+classification = '''url_authority_separator_protocol'''
+reason = '''This is the URL authority separator required to reject hostless WebSocket config URLs before NT mapping, not an operator-owned endpoint, venue, id, quantity, timeout, or path value.'''
 
 [[allowed]]
 path = "src/bolt_v3_providers/binance.rs"
@@ -1584,14 +2411,6 @@ reason = "This template renders the client-registration fact with client key and
 [[allowed]]
 path = "src/bolt_v3_secrets.rs"
 kind = "string"
-literal = "\"clients.{client_key}.secrets.{field} (path={path}): {source}\""
-context = "\"clients.{client_key}.secrets.{field} (path={path}): {source}\","
-classification = "diagnostic_template"
-reason = "This is an error-display template for a failed SSM secret resolution with a redacted path context, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_secrets.rs"
-kind = "string"
 literal = "\"clients.{client_key}.secrets.{field}: {source}\""
 context = "\"clients.{client_key}.secrets.{field}: {source}\","
 classification = "diagnostic_template"
@@ -1609,9 +2428,41 @@ reason = "The submit admission counter starts empty for each fresh unarmed runti
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = "0"
+context = "admitted_entry_order_count: 0,"
+classification = "submit_admission_counter_identity"
+reason = "The exposure-opening admission counter starts empty for each fresh unarmed runtime state; the operator-provided cap comes from the validated live canary gate report."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = "admitted_risk_reducing_exit_order_count: 0,"
+classification = "submit_admission_counter_identity"
+reason = "The risk-reducing exit admission counter starts empty for each fresh unarmed runtime state; it is used only to enforce the explicit lifecycle policy."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
 context = "inner.admitted_order_count = 0;"
 classification = "submit_admission_counter_identity"
 reason = "Arming a fresh admission state resets the in-memory count to empty while preserving operator-provided caps from the validated gate report."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = "inner.admitted_entry_order_count = 0;"
+classification = "submit_admission_counter_identity"
+reason = "Arming a fresh admission state resets the exposure-opening count to empty while preserving operator-provided caps from the validated gate report."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = "inner.admitted_risk_reducing_exit_order_count = 0;"
+classification = "submit_admission_counter_identity"
+reason = "Arming a fresh admission state resets the risk-reducing exit count to empty so lifecycle policy starts from the validated report boundary."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -1620,6 +2471,30 @@ literal = "1"
 context = "inner.admitted_order_count += 1;"
 classification = "submit_admission_counter_increment"
 reason = "Each admitted live submit consumes exactly one order-count slot from the operator-provided gate cap."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = "inner.admitted_entry_order_count += 1;"
+classification = "submit_admission_counter_increment"
+reason = "Each admitted entry or replace-submit increments the exposure-opening counter used by the explicit lifecycle policy."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = "inner.admitted_risk_reducing_exit_order_count += 1;"
+classification = "submit_admission_counter_increment"
+reason = "Each admitted risk-reducing exit increments the lifecycle counter so one configured exit cannot be reused indefinitely."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt-v3 submit admission lifecycle policy disallows {intent:?} submit"'''
+context = '''"bolt-v3 submit admission lifecycle policy disallows {intent:?} submit"'''
+classification = "diagnostic_template"
+reason = "This is an error-display template for a submit lifecycle policy rejection; the rejected intent is computed from typed admission state, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
@@ -1644,14 +2519,6 @@ literal = "0"
 context = "let mut buffer = [0; PHASE8_SHA256_BUFFER_BYTES];"
 classification = "phase8_sha256_stream_buffer_initialization"
 reason = "This zero-initializes the fixed checksum scratch buffer before each bounded-memory read and is not a runtime operator value."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "number"
-literal = "1"
-context = "const PHASE8_APPROVAL_CONSUMPTION_SCHEMA_VERSION: u32 = 1;"
-classification = "phase8_approval_consumption_schema_version"
-reason = "This is the structural JSON evidence schema version for Phase 8 approval consumption proof files, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
@@ -1689,7 +2556,7 @@ reason = "This is an internal fixed memory buffer size for streaming checksum ca
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"BOLT_V3_PHASE8_ABORT_PLAN_PATH"'''
-context = '''abort_plan_path: required_env("BOLT_V3_PHASE8_ABORT_PLAN_PATH")?,'''
+context = '''abort_plan_path: required_path_env("BOLT_V3_PHASE8_ABORT_PLAN_PATH")?,'''
 classification = "phase8_canary_operator_envelope_env_name"
 reason = "This names the non-secret operator envelope field pointing to abort plan evidence for checksum validation."
 
@@ -1705,7 +2572,7 @@ reason = "This names the non-secret operator envelope field containing the abort
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH"'''
-context = '''approval_consumption_path: required_env("BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH")?,'''
+context = '''"BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH",'''
 classification = "phase8_canary_operator_envelope_env_name"
 reason = "This names the non-secret operator envelope field where the one-shot approval consumption proof is atomically created."
 
@@ -1713,7 +2580,7 @@ reason = "This names the non-secret operator envelope field where the one-shot a
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"BOLT_V3_PHASE8_APPROVAL_NONCE_PATH"'''
-context = '''approval_nonce_path: required_env("BOLT_V3_PHASE8_APPROVAL_NONCE_PATH")?,'''
+context = '''approval_nonce_path: required_path_env("BOLT_V3_PHASE8_APPROVAL_NONCE_PATH")?,'''
 classification = "phase8_canary_operator_envelope_env_name"
 reason = "This names the non-secret operator envelope field pointing to the nonce evidence for checksum validation."
 
@@ -1745,7 +2612,7 @@ reason = "This names the non-secret operator envelope field containing the appro
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"BOLT_V3_PHASE8_EVIDENCE_PATH"'''
-context = '''canary_evidence_path: required_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,'''
+context = '''canary_evidence_path: required_path_env("BOLT_V3_PHASE8_EVIDENCE_PATH")?,'''
 classification = "phase8_canary_operator_envelope_env_name"
 reason = "This names the non-secret operator envelope field where the Phase 8 canary evidence JSON is written."
 
@@ -1753,7 +2620,7 @@ reason = "This names the non-secret operator envelope field where the Phase 8 ca
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH"'''
-context = '''financial_envelope_path: required_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH")?,'''
+context = '''financial_envelope_path: required_path_env("BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH")?,'''
 classification = "phase8_canary_operator_envelope_env_name"
 reason = "This names the non-secret operator envelope field pointing to the financial envelope evidence for checksum validation."
 
@@ -1785,7 +2652,7 @@ reason = "This names the non-secret operator approval id field used only for exa
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"BOLT_V3_PHASE8_PRE_RUN_STATE_PATH"'''
-context = '''pre_run_state_path: required_env("BOLT_V3_PHASE8_PRE_RUN_STATE_PATH")?,'''
+context = '''pre_run_state_path: required_path_env("BOLT_V3_PHASE8_PRE_RUN_STATE_PATH")?,'''
 classification = "phase8_canary_operator_envelope_env_name"
 reason = "This names the non-secret operator envelope field pointing to pre-run state evidence for checksum validation."
 
@@ -1801,23 +2668,15 @@ reason = "This names the non-secret operator envelope field containing the pre-r
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"BOLT_V3_PHASE8_ROOT_TOML_PATH"'''
-context = '''root_toml_path: required_env("BOLT_V3_PHASE8_ROOT_TOML_PATH")?,'''
+context = '''let root_toml_path = required_path_env("BOLT_V3_PHASE8_ROOT_TOML_PATH")?;'''
 classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field that points to the reviewed root TOML for checksum validation."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
-literal = '''"BOLT_V3_PHASE8_ROOT_TOML_SHA256"'''
-context = '''root_toml_sha256: required_env("BOLT_V3_PHASE8_ROOT_TOML_SHA256")?,'''
-classification = "phase8_canary_operator_envelope_env_name"
-reason = "This names the non-secret operator envelope field containing the reviewed root TOML checksum."
+reason = "This names the non-secret operator envelope field that points to the reviewed root TOML; the harness derives the checksum from the file instead of accepting a separate hash env var."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"BOLT_V3_PHASE8_SSM_MANIFEST_PATH"'''
-context = '''ssm_manifest_path: required_env("BOLT_V3_PHASE8_SSM_MANIFEST_PATH")?,'''
+context = '''ssm_manifest_path: required_path_env("BOLT_V3_PHASE8_SSM_MANIFEST_PATH")?,'''
 classification = "phase8_canary_operator_envelope_env_name"
 reason = "This names the non-secret operator envelope field pointing to the redacted SSM manifest for checksum validation."
 
@@ -1848,6 +2707,14 @@ reason = "This names the non-secret operator envelope field containing the strat
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
+literal = '''"BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH"'''
+context = '''strategy_cancel_path: optional_path_env("BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH")?,'''
+classification = "phase8_canary_operator_envelope_env_name"
+reason = "This names the optional non-secret operator envelope field whose path hash is bound when a strategy cancel artifact is expected."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
 literal = '''"accepted"'''
 context = '''const SUBMIT_ADMISSION_STATUS_ACCEPTED: &str = "accepted";'''
 classification = "phase8_canary_submit_admission_status"
@@ -1873,7 +2740,7 @@ reason = "This labels the fail-closed Phase 8 evidence outcome when pre-submit g
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"current"'''
-context = '''const PHASE8_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";'''
+context = '''pub const PHASE8_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";'''
 classification = "phase8_strategy_input_market_selection_contract"
 reason = "This is an accepted Phase 8 strategy-input evidence outcome for the current live-entry market selection, not an operator runtime value."
 
@@ -1889,7 +2756,7 @@ reason = "This label names the source-bound market-selection evidence path in tr
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"market_selection_result"'''
-context = '''const PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND: &str = "market_selection_result";'''
+context = '''pub const PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND: &str = "market_selection_result";'''
 classification = "phase8_strategy_input_market_selection_source_contract"
 reason = "This is the record_kind expected for the source-bound Phase 8 market-selection evidence artifact, not an operator runtime value."
 
@@ -1897,7 +2764,7 @@ reason = "This is the record_kind expected for the source-bound Phase 8 market-s
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"next"'''
-context = '''const PHASE8_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";'''
+context = '''pub const PHASE8_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";'''
 classification = "phase8_strategy_input_market_selection_contract"
 reason = "This is an accepted Phase 8 strategy-input evidence outcome for the next live-entry market selection, not an operator runtime value."
 
@@ -1913,7 +2780,7 @@ reason = "This labels the Phase 8 evidence outcome proving the NT adapter submit
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"nt_runtime_selection_snapshot"'''
-context = '''const PHASE8_MARKET_SELECTION_SOURCE: &str = "nt_runtime_selection_snapshot";'''
+context = '''pub const PHASE8_MARKET_SELECTION_SOURCE: &str = "nt_runtime_selection_snapshot";'''
 classification = "phase8_strategy_input_market_selection_source_contract"
 reason = "This is the Phase 8 source identifier for NT runtime-selection snapshot evidence, not an operator runtime value."
 
@@ -1940,6 +2807,38 @@ literal = '''"phase8 financial envelope"'''
 context = '''"phase8 financial envelope",'''
 classification = "phase8_approval_bound_artifact_label"
 reason = "This label names the approval-bound financial envelope artifact in checksum diagnostics; the artifact path and checksum come from the operator envelope."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"`[live_canary].operator_evidence.approval_consumption_path`"'''
+context = '''"`[live_canary].operator_evidence.approval_consumption_path`",'''
+classification = "phase8_canary_operator_envelope_diagnostic"
+reason = "This labels the TOML approval-consumption path in fail-closed drift diagnostics; the path value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"operator approval approval_consumption_path"'''
+context = '''"operator approval approval_consumption_path",'''
+classification = "phase8_canary_operator_envelope_diagnostic"
+reason = "This labels the operator envelope approval-consumption path in fail-closed drift diagnostics; the path value remains evidence-owned and is compared against TOML."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"`[live_canary].operator_evidence.canary_evidence_path`"'''
+context = '''"`[live_canary].operator_evidence.canary_evidence_path`",'''
+classification = "phase8_canary_operator_envelope_diagnostic"
+reason = "This labels the TOML canary-evidence path in fail-closed drift diagnostics; the path value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"operator approval canary_evidence_path"'''
+context = '''"operator approval canary_evidence_path",'''
+classification = "phase8_canary_operator_envelope_diagnostic"
+reason = "This labels the operator envelope canary-evidence path in fail-closed drift diagnostics; the path value remains evidence-owned and is compared against TOML."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
@@ -1980,14 +2879,6 @@ literal = '''"phase8-blocked-before-live-runner"'''
 context = '''pub const PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID: &str = "phase8-blocked-before-live-runner";'''
 classification = "phase8_blocked_run_id_label"
 reason = "This is a structural evidence label used only when Phase 8 blocks before a runtime capture instance exists; successful live-capital proof uses the NT runtime instance id."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
-literal = '''"phase8_operator_approval_consumption"'''
-context = '''const PHASE8_APPROVAL_CONSUMPTION_RECORD_KIND: &str = "phase8_operator_approval_consumption";'''
-classification = "phase8_approval_consumption_record_kind"
-reason = "This labels the Phase 8 approval-consumption evidence record used to prevent replay before a live runner attempt."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
@@ -2512,6 +3403,14 @@ reason = "This is a stable NautilusTrader msgbus pattern for account-state captu
 [[allowed]]
 path = "src/nt_runtime_capture.rs"
 kind = "string"
+literal = '''"events.portfolio.*"'''
+context = '''const PORTFOLIO_SNAPSHOTS_PATTERN: &str = "events.portfolio.*";'''
+classification = "nt_msgbus_subscription_pattern"
+reason = "This is a stable NautilusTrader msgbus pattern for portfolio-snapshot capture, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
 literal = '''"events.order.*"'''
 context = '''const ORDER_EVENTS_PATTERN: &str = "events.order.*";'''
 classification = "nt_msgbus_subscription_pattern"
@@ -2544,6 +3443,14 @@ reason = "This is a stable runtime-capture sidecar filename consumed by lake con
 [[allowed]]
 path = "src/nt_runtime_capture.rs"
 kind = "string"
+literal = '''"snapshots.jsonl"'''
+context = '''const SNAPSHOTS_FILE: &str = "snapshots.jsonl";'''
+classification = "runtime_capture_sidecar_schema"
+reason = "This is a stable runtime-capture sidecar filename consumed by lake conversion, not an operator runtime value."
+
+[[allowed]]
+path = "src/nt_runtime_capture.rs"
+kind = "string"
 literal = '''"trading_state_changed.jsonl"'''
 context = '''const TRADING_STATE_CHANGED_FILE: &str = "trading_state_changed.jsonl";'''
 classification = "runtime_capture_sidecar_schema"
@@ -2568,10 +3475,26 @@ reason = "This is the JSONL record separator required by the file format, not an
 [[allowed]]
 path = "src/secrets.rs"
 kind = "string"
-literal = '''"AWS SSM GetParameter returned no value for {ssm_path_owned}"'''
-context = '''"AWS SSM GetParameter returned no value for {ssm_path_owned}"'''
+literal = '''": "'''
+context = '''message.push_str(": ");'''
+classification = "ssm_resolver_diagnostic_separator"
+reason = "This separator joins a redacted SSM failure diagnostic prefix to sanitized AWS source context; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/secrets.rs"
+kind = "string"
+literal = '''"AWS SSM GetParameter returned no value for configured parameter"'''
+context = '''"AWS SSM GetParameter returned no value for configured parameter"'''
 classification = "ssm_resolver_diagnostic_template"
-reason = "This fail-closed diagnostic reports an empty AWS SSM response, not an operator runtime value."
+reason = "This fail-closed diagnostic reports an empty AWS SSM response without exposing a raw configured SSM path; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/secrets.rs"
+kind = "string"
+literal = '''"[configured-ssm-parameter]"'''
+context = '''message.replace(configured_path, "[configured-ssm-parameter]")'''
+classification = "ssm_resolver_redaction_token"
+reason = "This token replaces a configured SSM parameter path in diagnostics; it is redaction text, not an operator runtime value."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
@@ -2812,6 +3735,22 @@ literal = '''"derived_from_lead_gap_jitter_time_and_fee"'''
 context = '''"derived_from_lead_gap_jitter_time_and_fee";'''
 classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code describing computed uncertainty-band provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"down"'''
+context = '''OutcomeSide::Down => "down",'''
+classification = "strategy_evidence_outcome_side_label"
+reason = "This is a stable evidence label for the binary outcome side already selected by strategy logic; it records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"up"'''
+context = '''OutcomeSide::Up => "up",'''
+classification = "strategy_evidence_outcome_side_label"
+reason = "This is a stable evidence label for the binary outcome side already selected by strategy logic; it records provenance and does not configure trading behavior."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
@@ -3364,3 +4303,1659 @@ literal = '''"warn_optional_absent"'''
 context = '''Self::WarnOptionalAbsent => "warn_optional_absent",'''
 classification = "completeness_report_schema_value"
 reason = "This is the stable serialized completeness report status for an optional stream absent from spool data, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const REDACTED_SSM_MANIFEST_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the redacted SSM manifest artifact schema version emitted by the static operator-artifact helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.redacted_ssm_manifest.v1"'''
+context = '''const REDACTED_SSM_MANIFEST_RECORD_KIND: &str = "bolt_v3.redacted_ssm_manifest.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for the redacted SSM manifest artifact, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const APPROVAL_NONCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the approval nonce artifact schema version emitted by the static operator-artifact helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.operator_approval_nonce.v1"'''
+context = '''const APPROVAL_NONCE_RECORD_KIND: &str = "bolt_v3.operator_approval_nonce.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for the approval nonce artifact, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''32'''
+context = '''const APPROVAL_NONCE_BYTES: usize = 32;'''
+classification = "operator_artifact_nonce_entropy_width"
+reason = "This fixes the helper-owned CSPRNG nonce entropy width for one-shot approval evidence and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const STATIC_ARTIFACTS_MANIFEST_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the static operator-artifacts manifest schema version emitted by the helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.static_operator_artifacts_manifest.v1"'''
+context = '''const STATIC_ARTIFACTS_MANIFEST_RECORD_KIND: &str = "bolt_v3.static_operator_artifacts_manifest.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for the static operator-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_RELEASE_MANIFEST_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the release-manifest source-proof artifact schema version emitted by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_release_manifest_source_proof.v1"'''
+context = '''"bolt_v3.pre_run_release_manifest_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for release-manifest source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the market/window source-proof artifact schema version emitted by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_market_window_source_proof.v1"'''
+context = '''"bolt_v3.pre_run_market_window_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for market/window source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_selection_source_path"'''
+context = '''.get("market_selection_source_path")'''
+classification = "operator_artifact_json_field_name"
+reason = "This names the strategy-input evidence JSON field that points to the market-selection source artifact for validation; it is not an operator runtime path."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_selection_source_path"'''
+context = '''validate_market_window_source_path("market_selection_source_path", source_path)?;'''
+classification = "operator_artifact_json_field_name"
+reason = "This reuses the strategy-input evidence JSON field name for pre-read source-path policy validation; it is not an operator runtime path."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_selection_source_sha256"'''
+context = '''.get("market_selection_source_sha256")'''
+classification = "operator_artifact_json_field_name"
+reason = "This names the strategy-input evidence JSON field that binds the market-selection source artifact hash; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"../Cargo.toml"'''
+context = '''const BUILD_CARGO_TOML: &str = include_str!("../Cargo.toml");'''
+classification = "release_manifest_build_source_path"
+reason = "This embeds the package Cargo.toml at build time so release-manifest proof can compare candidate NT revision against the compiled build pin; it is not an operator runtime path."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"cargo_toml_utf8"'''
+context = '''let cargo_toml_text = release_manifest_utf8(&cargo_toml_bytes, "cargo_toml_utf8")?;'''
+classification = "release_manifest_source_parser_field"
+reason = "This names the Cargo.toml UTF-8 parse proof field for diagnostics; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"cargo_lock_utf8"'''
+context = '''let cargo_lock_text = release_manifest_utf8(&cargo_lock_bytes, "cargo_lock_utf8")?;'''
+classification = "release_manifest_source_parser_field"
+reason = "This names the Cargo.lock UTF-8 parse proof field for diagnostics; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_signing_source_utf8"'''
+context = '''let clob_signing_text = release_manifest_utf8(&clob_signing_bytes, "clob_signing_source_utf8")?;'''
+classification = "release_manifest_source_parser_field"
+reason = "This names the CLOB signing source UTF-8 parse proof field for diagnostics; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"dependencies"'''
+context = '''collect_nautilus_revisions_from_dependency_table(&value, "dependencies", &mut revisions)?;'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.toml dependency table name parsed to derive the pinned NT revision; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"dev-dependencies"'''
+context = '''collect_nautilus_revisions_from_dependency_table(&value, "dev-dependencies", &mut revisions)?;'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.toml dev-dependency table name parsed to derive the pinned NT revision; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"build-dependencies"'''
+context = '''collect_nautilus_revisions_from_dependency_table(&value, "build-dependencies", &mut revisions)?;'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.toml build-dependency table name parsed to derive the pinned NT revision; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"nautilus-"'''
+context = '''if !name.starts_with("nautilus-") {'''
+classification = "release_manifest_source_parser_prefix"
+reason = "This filters Cargo dependency/package names to NT crates so the release manifest proves the compiled NT pin; it is not a runtime venue or market value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"git"'''
+context = '''.get("git")'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.toml git-source field name used to derive the pinned NT revision; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"https://github.com/nautechsystems/nautilus_trader.git"'''
+context = '''const NAUTILUS_TRADER_GIT_URL: &str = "https://github.com/nautechsystems/nautilus_trader.git";'''
+classification = "release_manifest_source_parser_identity"
+reason = "This exact upstream NT git URL is required for Cargo.toml pin verification; it is not a trading venue, market, or operator policy value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"rev"'''
+context = '''.get("rev")'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.toml git revision field name used to derive the pinned NT revision; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"package"'''
+context = '''let Some(packages) = value.get("package").and_then(toml::Value::as_array) else {'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.lock package array field name used to verify lockfile/source agreement; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"name"'''
+context = '''let Some(name) = package_table.get("name").and_then(toml::Value::as_str) else {'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.lock package name field used to identify NT crates; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"source"'''
+context = '''.get("source")'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.lock source field name used to verify NT git revision agreement; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"git+https://github.com/nautechsystems/nautilus_trader.git"'''
+context = '''"git+https://github.com/nautechsystems/nautilus_trader.git";'''
+classification = "release_manifest_source_parser_identity"
+reason = "This exact upstream NT Cargo.lock source origin is required for lockfile pin verification; it is not a trading venue, market, or operator policy value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"rev="'''
+context = '''.any(|part| part.strip_prefix("rev=") == Some(expected_revision))'''
+classification = "release_manifest_source_parser_field"
+reason = "This parses the Cargo.lock git-source query revision marker; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"const DOMAIN_VERSION"'''
+context = '''let Some(after_const) = line.strip_prefix("const DOMAIN_VERSION") else {'''
+classification = "release_manifest_source_parser_field"
+reason = "This parses NT's CLOB signing domain-version constant from pinned source; it derives evidence rather than configuring trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"ssm-manifest"'''
+context = '''const SSM_MANIFEST_ARTIFACT_NAME: &str = "ssm-manifest";'''
+classification = "operator_artifact_manifest_key"
+reason = "This is a helper-owned artifact identifier in the redacted static-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"financial-envelope"'''
+context = '''const FINANCIAL_ENVELOPE_ARTIFACT_NAME: &str = "financial-envelope";'''
+classification = "operator_artifact_manifest_key"
+reason = "This is a helper-owned artifact identifier in the redacted static-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy-input"'''
+context = '''const STRATEGY_INPUT_ARTIFACT_NAME: &str = "strategy-input";'''
+classification = "operator_artifact_manifest_key"
+reason = "This is a helper-owned artifact identifier for strategy-input evidence in the redacted static-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"pre-run-state"'''
+context = '''const PRE_RUN_STATE_ARTIFACT_NAME: &str = "pre-run-state";'''
+classification = "operator_artifact_manifest_key"
+reason = "This is a helper-owned artifact identifier for pre-run state evidence in the redacted static-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"abort-plan"'''
+context = '''const ABORT_PLAN_ARTIFACT_NAME: &str = "abort-plan";'''
+classification = "operator_artifact_manifest_key"
+reason = "This is a helper-owned artifact identifier in the redacted static-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval-nonce"'''
+context = '''const APPROVAL_NONCE_ARTIFACT_NAME: &str = "approval-nonce";'''
+classification = "operator_artifact_manifest_key"
+reason = "This is a helper-owned artifact identifier in the redacted static-artifacts manifest, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"ssm-manifest.json"'''
+context = '''const SSM_MANIFEST_FILE_NAME: &str = "ssm-manifest.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name for redacted SSM manifest evidence under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"financial-envelope.json"'''
+context = '''const FINANCIAL_ENVELOPE_FILE_NAME: &str = "financial-envelope.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name for financial envelope evidence under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy-input.json"'''
+context = '''const STRATEGY_INPUT_FILE_NAME: &str = "strategy-input.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name reserved for strategy-input evidence under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"pre-run-state.json"'''
+context = '''const PRE_RUN_STATE_FILE_NAME: &str = "pre-run-state.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name reserved for pre-run state evidence under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"abort-plan.json"'''
+context = '''const ABORT_PLAN_FILE_NAME: &str = "abort-plan.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name for abort-plan evidence under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval-nonce.json"'''
+context = '''const APPROVAL_NONCE_FILE_NAME: &str = "approval-nonce.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name for approval nonce evidence under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"static-artifacts-manifest.json"'''
+context = '''const STATIC_ARTIFACTS_MANIFEST_FILE_NAME: &str = "static-artifacts-manifest.json";'''
+classification = "operator_artifact_file_name"
+reason = "This is the helper-owned output file name for the redacted static-artifacts manifest under the operator-selected output directory, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const OPERATOR_EVIDENCE_PACKET_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the operator-evidence packet schema version emitted by the packet assembler, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.operator_evidence_packet.v1"'''
+context = '''const OPERATOR_EVIDENCE_PACKET_RECORD_KIND: &str = "bolt_v3.operator_evidence_packet.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for the path/SHA-only operator evidence packet, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval-envelope"'''
+context = '''final_packet_summary_artifact("approval-envelope", &self.approval_envelope.sha256),'''
+classification = "operator_artifact_summary_label"
+reason = "This labels a redacted final-packet verification summary entry; the runtime path is not printed and the value is not operator-tunable."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"operator-evidence-packet"'''
+context = '''"operator-evidence-packet",'''
+classification = "operator_artifact_summary_label"
+reason = "This labels a redacted final-packet verification summary entry; the runtime path is not printed and the value is not operator-tunable."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"static-artifacts-manifest"'''
+context = '''"static-artifacts-manifest",'''
+classification = "operator_artifact_summary_label"
+reason = "This labels a redacted final-packet verification summary entry; the runtime path is not printed and the value is not operator-tunable."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"panic gate and service policy"'''
+context = '''prerequisite: "panic gate and service policy",'''
+classification = "operator_artifact_blocker_label"
+reason = "This names the documented missing abort-plan prerequisite used in fail-closed diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"T121 remains blocked: T046 source-bound pre-run state evidence is unproven"'''
+context = '''prerequisite: "T121 remains blocked: T046 source-bound pre-run state evidence is unproven",'''
+classification = "operator_artifact_blocker_label"
+reason = "This names the T121 fail-closed pre-run state evidence blocker and links it to unproven T046 source-bound evidence; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"refusing to write successful strategy-input evidence because {prerequisite}"'''
+context = '''"refusing to write successful strategy-input evidence because {prerequisite}"'''
+classification = "operator_artifact_error_template"
+reason = "This is a fail-closed diagnostic template for missing strategy-input evidence prerequisites, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"refusing to write successful pre-run state evidence because {prerequisite}"'''
+context = '''"refusing to write successful pre-run state evidence because {prerequisite}"'''
+classification = "operator_artifact_error_template"
+reason = "This is a fail-closed diagnostic template for missing pre-run state evidence prerequisites, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"refusing to write market selection source evidence because {prerequisite}"'''
+context = '''"refusing to write market selection source evidence because {prerequisite}"'''
+classification = "operator_artifact_error_template"
+reason = "This is a fail-closed diagnostic template for missing market-selection evidence prerequisites, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"refusing to assemble operator packet because static manifest blockers are present: {count}"'''
+context = '''"refusing to assemble operator packet because static manifest blockers are present: {count}"'''
+classification = "operator_artifact_error_template"
+reason = "This is a fail-closed redacted diagnostic template for refusing packet assembly when the static manifest records blockers; it prints only the blocker count, not blocker text, and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"ssm_manifest_sha256"'''
+context = '''"ssm_manifest_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned redacted SSM manifest SHA field while validating packet assembly; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_sha256"'''
+context = '''"strategy_input_evidence_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned strategy-input evidence SHA field while validating packet assembly; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"financial_envelope_sha256"'''
+context = '''"financial_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned financial-envelope SHA field while validating packet assembly; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"pre_run_state_sha256"'''
+context = '''"pre_run_state_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned pre-run-state SHA field while validating packet assembly; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"abort_plan_sha256"'''
+context = '''"abort_plan_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned abort-plan SHA field while validating packet assembly; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_nonce_sha256"'''
+context = '''"approval_nonce_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned approval-nonce SHA field while validating packet assembly; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"static_manifest_sha256"'''
+context = '''"static_manifest_sha256",'''
+classification = "operator_packet_schema_field"
+reason = "This names the operator-packet static-manifest SHA field while validating final-packet linkage; the value remains evidence-owned and is checked against file content."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"head_sha"'''
+context = '''"head_sha",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the operator-evidence build-head field while validating final-packet linkage; the value remains build/config evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_envelope_sha256"'''
+context = '''"approval_envelope_sha256",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned approval-envelope SHA field while validating final-packet linkage; the value remains config/artifact owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"ssm_manifest_path"'''
+context = '''"ssm_manifest_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned redacted SSM manifest artifact path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_path"'''
+context = '''"strategy_input_evidence_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned strategy-input evidence artifact path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"financial_envelope_path"'''
+context = '''"financial_envelope_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned financial-envelope artifact path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"pre_run_state_path"'''
+context = '''"pre_run_state_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned pre-run-state artifact path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"abort_plan_path"'''
+context = '''"abort_plan_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned abort-plan artifact path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path"'''
+context = '''"canary_evidence_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned canary evidence path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_nonce_path"'''
+context = '''"approval_nonce_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned approval-nonce artifact path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path"'''
+context = '''"approval_consumption_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned approval-consumption proof path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"decision_evidence_path"'''
+context = '''"decision_evidence_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned decision-evidence path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"nt_submit_event_path"'''
+context = '''"nt_submit_event_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned NT submit-event proof path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"venue_order_state_path"'''
+context = '''"venue_order_state_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned venue-order-state proof path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"restart_reconciliation_path"'''
+context = '''"restart_reconciliation_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned restart-reconciliation proof path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"post_run_hygiene_path"'''
+context = '''"post_run_hygiene_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This names the TOML-owned post-run-hygiene proof path field while validating final-packet linkage; the path value remains config/evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_id_hash"'''
+context = '''"approval_id_hash",'''
+classification = "operator_approval_envelope_schema_field"
+reason = "This names the approval-envelope approval-id hash field while validating final-packet linkage; the raw approval id remains hashed evidence."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path_hash"'''
+context = '''"canary_evidence_path_hash",'''
+classification = "operator_approval_envelope_schema_field"
+reason = "This names the approval-envelope canary evidence path hash field while validating final-packet linkage; the raw path remains compared through its hash."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"static_manifest.generated_artifacts.sha256"'''
+context = '''"static_manifest.generated_artifacts.sha256",'''
+classification = "operator_artifact_schema_field"
+reason = "This names the static manifest artifact-ref SHA field while validating lowercase sha256 shape, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_envelope_path"'''
+context = '''"approval_envelope_path",'''
+classification = "operator_artifact_output_path_field"
+reason = "This names the TOML-owned approval-envelope output path while validating path shape before packet assembly writes, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_envelope_path"'''
+context = '''validate_output_parent("approval_envelope_path", &approval_envelope_path)?;'''
+classification = "operator_artifact_output_path_field"
+reason = "This names the TOML-owned approval-envelope output path while validating output parent state before packet assembly writes, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"operator_packet_path"'''
+context = '''validate_output_path_components("operator_packet_path", operator_packet_path)?;'''
+classification = "operator_artifact_output_path_field"
+reason = "This names the assembler output packet path while validating path shape before packet assembly writes, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"operator_packet_path"'''
+context = '''validate_output_parent("operator_packet_path", &operator_packet_path)?;'''
+classification = "operator_artifact_output_path_field"
+reason = "This names the assembler output packet path while validating output parent state before packet assembly writes, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''.take(max_bytes.saturating_add(1))'''
+classification = "bounded_read_oversize_probe"
+reason = "This reads one extra byte beyond the config-owned operator evidence file cap to detect oversize artifacts; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"'''
+context = '''"operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"'''
+classification = "operator_artifact_error_template"
+reason = "This is a fail-closed diagnostic template for bounded operator-artifact reads using the config-owned cap, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"operator artifact path changed during open"'''
+context = '''"operator artifact path changed during open",'''
+classification = "operator_artifact_error_template"
+reason = "This is a fail-closed diagnostic template for operator-artifact read identity drift, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''0o600'''
+context = '''options.mode(0o600).custom_flags(libc::O_NOFOLLOW);'''
+classification = "operator_artifact_file_permission"
+reason = "This is the private file mode for generated operator-evidence artifacts on Unix; it constrains artifact exposure and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''64'''
+context = '''value.len() == 64'''
+classification = "sha256_hex_width"
+reason = "This is the structural length of a SHA-256 hex digest used to validate operator evidence hashes, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''40'''
+context = '''value.len() == 40'''
+classification = "git_head_sha_width"
+reason = "This is the structural length of a git commit SHA used to validate NT revision evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''0_u8'''
+context = '''let mut nonce = [0_u8; APPROVAL_NONCE_BYTES];'''
+classification = "operator_artifact_nonce_buffer_initialization"
+reason = "This initializes a nonce byte buffer before OS CSPRNG fill and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"accepted"'''
+context = '''"accepted",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.abort_plan_sha256"'''
+context = '''"approval_consumption_path.abort_plan_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.approval_envelope_sha256"'''
+context = '''"approval_consumption_path.approval_envelope_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.approval_id_hash"'''
+context = '''"approval_consumption_path.approval_id_hash",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.approval_nonce_sha256"'''
+context = '''"approval_consumption_path.approval_nonce_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.approval_not_after_unix_secs"'''
+context = '''"approval_consumption_path.approval_not_after_unix_secs",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.approval_not_before_unix_secs"'''
+context = '''"approval_consumption_path.approval_not_before_unix_secs",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.canary_evidence_path_hash"'''
+context = '''"approval_consumption_path.canary_evidence_path_hash",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.consumed_unix_secs"'''
+context = '''expect_final_i64(approval, "approval_consumption_path.consumed_unix_secs")?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.financial_envelope_sha256"'''
+context = '''"approval_consumption_path.financial_envelope_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.head_sha"'''
+context = '''"approval_consumption_path.head_sha",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.pre_run_state_sha256"'''
+context = '''"approval_consumption_path.pre_run_state_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.record_kind"'''
+context = '''"approval_consumption_path.record_kind",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.schema_version"'''
+context = '''let schema_version = expect_final_i64(approval, "approval_consumption_path.schema_version")?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.ssm_manifest_sha256"'''
+context = '''"approval_consumption_path.ssm_manifest_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.strategy_input_evidence_sha256"'''
+context = '''"approval_consumption_path.strategy_input_evidence_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"block_reasons"'''
+context = '''.get("block_reasons")'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.approval_id_hash"'''
+context = '''"canary_evidence_path.approval_id_hash",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.head_sha"'''
+context = '''"canary_evidence_path.head_sha",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.max_live_order_count"'''
+context = '''let reported_count = expect_final_u64(canary, "canary_evidence_path.max_live_order_count")?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.max_notional_per_order"'''
+context = '''"canary_evidence_path.max_notional_per_order",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.outcome"'''
+context = '''"canary_evidence_path.outcome",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.schema_version"'''
+context = '''let schema_version = expect_final_u64(canary, "canary_evidence_path.schema_version")?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.ssm_manifest_sha256"'''
+context = '''"canary_evidence_path.ssm_manifest_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.submit_admission_ref.admitted_order_count"'''
+context = '''"canary_evidence_path.submit_admission_ref.admitted_order_count",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"canary_evidence_path.submit_admission_ref.status"'''
+context = '''"canary_evidence_path.submit_admission_ref.status",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"decision_evidence_ref"'''
+context = '''"decision_evidence_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"live_canary_proof"'''
+context = '''"live_canary_proof",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"max_notional_per_order"'''
+context = '''"max_notional_per_order",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"nt_submit_event_ref"'''
+context = '''"nt_submit_event_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"outcome"'''
+context = '''"outcome",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"path_hash"'''
+context = '''"path_hash",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"phase8_operator_approval_consumption"'''
+context = '''"phase8_operator_approval_consumption",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"post_run_hygiene_ref"'''
+context = '''"post_run_hygiene_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"record_hash"'''
+context = '''expect_final_string_equals(evidence_ref, "record_hash", ref_field, configured_sha256)'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"record_hash"'''
+context = '''let record_hash = expect_final_string(evidence_ref, "record_hash", ref_field)?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"record_hash"'''
+context = '''let record_hash = expect_final_string(value, "record_hash", "strategy_cancel_ref")?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"record_kind"'''
+context = '''"record_kind",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"root_toml_sha256"'''
+context = '''"root_toml_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field used only to bind approval consumption proof to the loaded root TOML; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_consumption_path.root_toml_sha256"'''
+context = '''"approval_consumption_path.root_toml_sha256",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet verifier error field for the approval consumption root TOML hash; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"restart_reconciliation_ref"'''
+context = '''"restart_reconciliation_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"ssm_manifest_ref"'''
+context = '''"ssm_manifest_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"status"'''
+context = '''"status",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_cancel_path"'''
+context = '''"strategy_cancel_path",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_cancel_path_hash"'''
+context = '''approval.get("strategy_cancel_path_hash"),'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_cancel_ref"'''
+context = '''"strategy_cancel_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_cancel_ref"'''
+context = '''canary.get("strategy_cancel_ref"),'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_cancel_ref"'''
+context = '''let record_hash = expect_final_string(value, "record_hash", "strategy_cancel_ref")?;'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_ref"'''
+context = '''"strategy_input_evidence_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"submit_admission_ref"'''
+context = '''let submit_ref = canary.get("submit_admission_ref").ok_or('''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"venue_order_state_ref"'''
+context = '''"venue_order_state_ref",'''
+classification = "final_operator_packet_evidence_schema"
+reason = "This is a stable final operator-packet evidence schema field, record kind, or expected enum value used only to verify approved evidence artifacts; it is not operator runtime policy."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"{}"'''
+context = '''"{}",'''
+classification = "operator_artifact_cli_format"
+reason = "This is the stdout format token for the redacted static-artifacts summary JSON, not an operator runtime value."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"; "'''
+context = '''return Err(std::io::Error::other(outcome.blockers.join("; ")).into());'''
+classification = "operator_artifact_cli_format"
+reason = "This is the diagnostic separator for multiple fail-closed operator-artifact blockers, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = '''1'''
+context = '''.take(max_bytes.saturating_add(1))'''
+classification = "decision_evidence_bounded_read_oversize_probe"
+reason = "This reads one extra byte beyond the caller-owned decision evidence byte cap to detect oversize evidence; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 decision evidence file exceeds max_bytes={max_bytes}"'''
+context = '''"bolt-v3 decision evidence file exceeds max_bytes={max_bytes}"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic template for bounded decision-evidence reads using a caller-owned cap, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"strategy_input_snapshot"'''
+context = '''"strategy_input_snapshot" => {'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL decision-evidence record kind emitted by the strategy runtime, not a venue, market, quantity, timeout, path, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_intent"'''
+context = '''"order_intent" => {'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL decision-evidence record kind emitted by the strategy runtime, not a venue, market, quantity, timeout, path, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"admission_decision"'''
+context = '''"admission_decision" => {'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL decision-evidence record kind emitted by the submit-admission path, not a venue, market, quantity, timeout, path, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"strategy_input_snapshot"'''
+context = '''"strategy_input_snapshot",'''
+classification = "decision_evidence_record_kind_validation"
+reason = "This is the expected JSONL envelope discriminator used when validating runtime decision-evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_intent"'''
+context = '''decoded.validate_header("order_intent", BOLT_V3_ORDER_INTENT_GATE_ID, index)?;'''
+classification = "decision_evidence_record_kind_validation"
+reason = "This is the expected JSONL envelope discriminator used when validating runtime decision-evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"admission_decision"'''
+context = '''"admission_decision",'''
+classification = "decision_evidence_record_kind_validation"
+reason = "This is the expected JSONL envelope discriminator used when validating runtime decision-evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 decision evidence schema_version mismatch at line index {index}"'''
+context = '''"bolt-v3 decision evidence schema_version mismatch at line index {index}"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision-evidence envelope provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 decision evidence gate_id mismatch at line index {index}"'''
+context = '''"bolt-v3 decision evidence gate_id mismatch at line index {index}"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision-evidence envelope provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 decision evidence gate_version mismatch at line index {index}"'''
+context = '''"bolt-v3 decision evidence gate_version mismatch at line index {index}"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision-evidence envelope provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 decision evidence kind mismatch at line index {index}"'''
+context = '''"bolt-v3 decision evidence kind mismatch at line index {index}"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision-evidence envelope provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 entry decision evidence strategy_id mismatch"'''
+context = '''"bolt-v3 entry decision evidence strategy_id mismatch"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 entry decision evidence instrument_id mismatch"'''
+context = '''"bolt-v3 entry decision evidence instrument_id mismatch"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 entry decision evidence order_side mismatch"'''
+context = '''"bolt-v3 entry decision evidence order_side mismatch"'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 entry decision evidence price mismatch"'''
+context = '''return Err(anyhow!("bolt-v3 entry decision evidence price mismatch"));'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 entry decision evidence quantity mismatch"'''
+context = '''return Err(anyhow!("bolt-v3 entry decision evidence quantity mismatch"));'''
+classification = "decision_evidence_error_template"
+reason = "This is a fail-closed diagnostic for mismatched decision evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"polymarket_condition_id"'''
+context = '''"polymarket_condition_id",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names a required source-identity field in the Phase 8 strategy-input evidence schema, not a concrete market id or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"polymarket_market_slug"'''
+context = '''"polymarket_market_slug",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names a required source-identity field in the Phase 8 strategy-input evidence schema, not a concrete market slug or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"polymarket_question_id"'''
+context = '''"polymarket_question_id",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names a required source-identity field in the Phase 8 strategy-input evidence schema, not a concrete question id or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"up_instrument_id"'''
+context = '''"up_instrument_id",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names a required source-bound instrument field in the Phase 8 strategy-input evidence schema, not a concrete instrument id or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_STATE_SOURCE_PROOF_BUNDLE_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_source_bundle_schema_version"
+reason = "This is the pre-run-state source-proof bundle schema version parsed by the operator-artifact helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_state_source_proof_bundle.v1"'''
+context = '''"bolt_v3.pre_run_state_source_proof_bundle.v1";'''
+classification = "operator_source_bundle_record_kind"
+reason = "This is the stable pre-run-state source-proof bundle record-kind discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const ABORT_PLAN_SOURCE_PROOF_BUNDLE_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_source_bundle_schema_version"
+reason = "This is the abort-plan source-proof bundle schema version parsed by the operator-artifact helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.abort_plan_source_proof_bundle.v1"'''
+context = '''"bolt_v3.abort_plan_source_proof_bundle.v1";'''
+classification = "operator_source_bundle_record_kind"
+reason = "This is the stable abort-plan source-proof bundle record-kind discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"cancel_if_open_defined"'''
+context = '''"cancel_if_open_defined",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"nt_accepted_venue_pending_abort_defined"'''
+context = '''"nt_accepted_venue_pending_abort_defined",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_abort_defined"'''
+context = '''"partial_fill_abort_defined",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"network_partition_during_submit_abort_defined"'''
+context = '''"network_partition_during_submit_abort_defined",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"panic_gate_trip_abort_defined"'''
+context = '''"panic_gate_trip_abort_defined",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"cancel_if_open_evidence"'''
+context = '''"cancel_if_open_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"nt_accepted_venue_pending_abort_evidence"'''
+context = '''"nt_accepted_venue_pending_abort_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_abort_evidence"'''
+context = '''"partial_fill_abort_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"network_partition_during_submit_abort_evidence"'''
+context = '''"network_partition_during_submit_abort_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"panic_gate_trip_abort_evidence"'''
+context = '''"panic_gate_trip_abort_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names an abort-plan source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"host_clock_skew_within_bound"'''
+context = '''"host_clock_skew_within_bound",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"conflicting_open_orders_absent"'''
+context = '''"conflicting_open_orders_absent",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"preexisting_position_absent"'''
+context = '''"preexisting_position_absent",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_state_approved"'''
+context = '''require_pre_run_source_bundle_bool("market_state_approved", self.market_state_approved)?;'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_window_approved"'''
+context = '''require_pre_run_source_bundle_bool("market_window_approved", self.market_window_approved)?;'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_state_evidence_hash"'''
+context = '''"market_state_evidence_hash",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle hash field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"funding_margin_covers_max_notional_plus_fees"'''
+context = '''"funding_margin_covers_max_notional_plus_fees",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"single_runner_lock_acquired"'''
+context = '''"single_runner_lock_acquired",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"egress_identity_approved"'''
+context = '''"egress_identity_approved",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_v2_adapter_signing_verified"'''
+context = '''"clob_v2_adapter_signing_verified",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_v2_collateral_accounting_verified"'''
+context = '''"clob_v2_collateral_accounting_verified",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_v2_fee_behavior_verified"'''
+context = '''"clob_v2_fee_behavior_verified",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"release_manifest_nt_revision_matches_compiled_pin"'''
+context = '''"release_manifest_nt_revision_matches_compiled_pin",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle boolean field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"release_manifest_evidence_hash"'''
+context = '''"release_manifest_evidence_hash",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle hash field; the value remains source evidence owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"host_clock_evidence"'''
+context = '''"host_clock_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"venue_account_state_evidence"'''
+context = '''"venue_account_state_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"funding_margin_evidence"'''
+context = '''"funding_margin_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"single_runner_lock_evidence"'''
+context = '''"single_runner_lock_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"egress_identity_evidence"'''
+context = '''"egress_identity_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_v2_adapter_signing_evidence"'''
+context = '''"clob_v2_adapter_signing_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_v2_collateral_accounting_evidence"'''
+context = '''"clob_v2_collateral_accounting_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_v2_fee_behavior_evidence"'''
+context = '''"clob_v2_fee_behavior_evidence",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names a pre-run-state source-proof bundle evidence field; the value is hashed before artifact emission."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"approval_envelope"'''
+context = '''"approval_envelope": written_operator_artifact_json(&outcome.approval_envelope),'''
+classification = "operator_artifact_cli_summary_field"
+reason = "This names a CLI JSON summary field for the generated approval-envelope artifact; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"operator_packet"'''
+context = '''"operator_packet": written_operator_artifact_json(&outcome.operator_packet),'''
+classification = "operator_artifact_cli_summary_field"
+reason = "This names a CLI JSON summary field for the generated operator packet artifact; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"static_manifest"'''
+context = '''"static_manifest": written_operator_artifact_json(&outcome.static_manifest),'''
+classification = "operator_artifact_cli_summary_field"
+reason = "This names a CLI JSON summary field for the static manifest consumed by final assembly; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"path"'''
+context = '''"path": &written.path,'''
+classification = "operator_artifact_cli_summary_field"
+reason = "This names the CLI JSON summary path field for generated artifacts; the value is evidence output metadata."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"sha256"'''
+context = '''"sha256": &written.sha256,'''
+classification = "operator_artifact_cli_summary_field"
+reason = "This names the CLI JSON summary SHA-256 field for generated artifacts; the value is evidence output metadata."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"down_instrument_id"'''
+context = '''"down_instrument_id",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names a required source-bound instrument field in the Phase 8 strategy-input evidence schema, not a concrete instrument id or operator runtime value."

@@ -44,7 +44,8 @@ use crate::{
     bolt_v3_instrument_filters::{InstrumentFilterError, InstrumentFilterTarget},
     bolt_v3_market_families::{
         MarketFamilyValidationBinding, MarketIdentityPlan, MarketIdentityTarget,
-        MarketSelectionTarget, SelectedBinaryOptionMarket, TargetRuntimeFields,
+        MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget,
+        SelectedBinaryOptionMarket, SelectedMarketSourceIdentity, TargetRuntimeFields,
     },
 };
 
@@ -57,6 +58,7 @@ pub fn validation_binding() -> MarketFamilyValidationBinding {
         instrument_filter_target_for_strategy,
         target_runtime_fields,
         select_binary_option_market,
+        market_selection_candidate_windows,
     }
 }
 
@@ -295,8 +297,11 @@ pub struct SelectedUpdownMarket {
     pub instrument_id: InstrumentId,
     pub up_instrument_id: InstrumentId,
     pub down_instrument_id: InstrumentId,
+    pub selection_outcome: MarketSelectionOutcome,
     pub start_timestamp_milliseconds: u64,
+    pub expiration_timestamp_milliseconds: u64,
     pub seconds_to_end: u64,
+    pub source_identity: SelectedMarketSourceIdentity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,6 +314,9 @@ enum UpdownOutcomeSide {
 struct UpdownOutcomeInstrument {
     side: UpdownOutcomeSide,
     market_id: String,
+    condition_id: String,
+    market_slug: String,
+    question_id: String,
     instrument_id: InstrumentId,
     activation_milliseconds: u64,
     expiration_milliseconds: u64,
@@ -728,9 +736,22 @@ pub fn select_market_from_instruments(
         next_start,
     );
 
-    candidate_market_for_slug(instruments, &current_slug, current_start, now_milliseconds).or_else(
-        || candidate_market_for_slug(instruments, &next_slug, next_start, now_milliseconds),
+    candidate_market_for_slug(
+        instruments,
+        &current_slug,
+        current_start,
+        MarketSelectionOutcome::Current,
+        now_milliseconds,
     )
+    .or_else(|| {
+        candidate_market_for_slug(
+            instruments,
+            &next_slug,
+            next_start,
+            MarketSelectionOutcome::Next,
+            now_milliseconds,
+        )
+    })
 }
 
 pub fn select_binary_option_market(
@@ -752,15 +773,111 @@ pub fn select_binary_option_market(
         instrument_id: market.instrument_id,
         up_instrument_id: market.up_instrument_id,
         down_instrument_id: market.down_instrument_id,
+        selection_outcome: market.selection_outcome,
         start_timestamp_milliseconds: market.start_timestamp_milliseconds,
+        expiration_timestamp_milliseconds: market.expiration_timestamp_milliseconds,
         seconds_to_end: market.seconds_to_end,
+        source_identity: market.source_identity,
     })
+}
+
+pub fn market_selection_candidate_windows(
+    target: MarketSelectionTarget<'_>,
+    now_milliseconds: u64,
+) -> Result<Vec<MarketSelectionCandidateWindow>, InstrumentFilterError> {
+    let now_unix_secs =
+        i64::try_from(Duration::from_millis(now_milliseconds).as_secs()).map_err(|_| {
+            InstrumentFilterError::PeriodPairOverflow {
+                now_unix_seconds: i64::MAX,
+                cadence_seconds: target.cadence_seconds,
+            }
+        })?;
+    let (current_start, next_start) = updown_period_pair(target.cadence_seconds, now_unix_secs)
+        .map_err(market_identity_error_to_instrument_filter_error)?;
+    Ok(vec![
+        MarketSelectionCandidateWindow {
+            outcome: MarketSelectionOutcome::Current,
+            market_slug: updown_market_slug(
+                target.underlying_asset,
+                target.cadence_slug_token,
+                current_start,
+            ),
+            start_timestamp_milliseconds: period_start_milliseconds(
+                current_start,
+                target.cadence_seconds,
+            )?,
+        },
+        MarketSelectionCandidateWindow {
+            outcome: MarketSelectionOutcome::Next,
+            market_slug: updown_market_slug(
+                target.underlying_asset,
+                target.cadence_slug_token,
+                next_start,
+            ),
+            start_timestamp_milliseconds: period_start_milliseconds(
+                next_start,
+                target.cadence_seconds,
+            )?,
+        },
+    ])
+}
+
+fn period_start_milliseconds(
+    period_start_seconds: i64,
+    cadence_seconds: i64,
+) -> Result<u64, InstrumentFilterError> {
+    let seconds = u64::try_from(period_start_seconds).map_err(|_| {
+        InstrumentFilterError::NegativeNowUnixSeconds {
+            now_unix_seconds: period_start_seconds,
+        }
+    })?;
+    u64::try_from(Duration::from_secs(seconds).as_millis()).map_err(|_| {
+        InstrumentFilterError::PeriodPairOverflow {
+            now_unix_seconds: period_start_seconds,
+            cadence_seconds,
+        }
+    })
+}
+
+fn market_identity_error_to_instrument_filter_error(
+    error: BoltV3MarketIdentityError,
+) -> InstrumentFilterError {
+    match error {
+        BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
+            strategy_instance_id,
+            configured_target_id,
+            cadence_secs,
+        } => InstrumentFilterError::NonPositiveCadenceSeconds {
+            strategy_instance_id,
+            configured_target_id,
+            cadence_seconds: cadence_secs,
+        },
+        BoltV3MarketIdentityError::NegativeNowUnixSeconds { now_unix_secs } => {
+            InstrumentFilterError::NegativeNowUnixSeconds {
+                now_unix_seconds: now_unix_secs,
+            }
+        }
+        BoltV3MarketIdentityError::PeriodPairOverflow {
+            now_unix_secs,
+            cadence_secs,
+        } => InstrumentFilterError::PeriodPairOverflow {
+            now_unix_seconds: now_unix_secs,
+            cadence_seconds: cadence_secs,
+        },
+        BoltV3MarketIdentityError::UnsupportedCadenceSeconds { .. }
+        | BoltV3MarketIdentityError::TargetParseFailed { .. } => {
+            InstrumentFilterError::TargetValidationFailure {
+                message: error.to_string(),
+            }
+        }
+    }
 }
 
 fn candidate_market_for_slug(
     instruments: &[InstrumentAny],
     market_slug: &str,
     period_start_unix_secs: i64,
+    selection_outcome: MarketSelectionOutcome,
     now_milliseconds: u64,
 ) -> Option<SelectedUpdownMarket> {
     let mut pair = UpdownOutcomePair::empty();
@@ -777,7 +894,11 @@ fn candidate_market_for_slug(
 
     let up = pair.up?;
     let down = pair.down?;
-    if up.market_id != down.market_id {
+    if up.market_id != down.market_id
+        || up.condition_id != down.condition_id
+        || up.market_slug != down.market_slug
+        || up.question_id != down.question_id
+    {
         return None;
     }
 
@@ -797,10 +918,17 @@ fn candidate_market_for_slug(
 
     Some(SelectedUpdownMarket {
         market_id: up.market_id,
+        source_identity: SelectedMarketSourceIdentity {
+            condition_id: up.condition_id,
+            market_slug: up.market_slug,
+            question_id: up.question_id,
+        },
         instrument_id: up.instrument_id,
         up_instrument_id: up.instrument_id,
         down_instrument_id: down.instrument_id,
+        selection_outcome,
         start_timestamp_milliseconds,
+        expiration_timestamp_milliseconds: expiration_milliseconds,
         seconds_to_end: Duration::from_millis(
             expiration_milliseconds.saturating_sub(now_milliseconds),
         )
@@ -827,6 +955,9 @@ fn updown_outcome_instrument(
     Some(UpdownOutcomeInstrument {
         side,
         market_id: info.get_str("market_id")?.to_string(),
+        condition_id: info.get_str("condition_id")?.to_string(),
+        market_slug: info.get_str("market_slug")?.to_string(),
+        question_id: info.get_str("question_id")?.to_string(),
         instrument_id: binary.id,
         activation_milliseconds: u64::try_from(
             Duration::from_nanos(binary.activation_ns.as_u64()).as_millis(),

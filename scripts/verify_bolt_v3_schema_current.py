@@ -74,8 +74,8 @@ ORDER_TEMPLATE_FIELDS = (
     "trailing_offset_type",
 )
 DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE = (
-    "Decision-evidence JSONL records use `schema_version = 4` for `order_intent` "
-    "and `admission_decision` envelopes."
+    "Decision-evidence JSONL records use `schema_version = 5` for `order_intent`, "
+    "`admission_decision`, and `strategy_input_snapshot` envelopes."
 )
 STATUS_MAP_FORCED_EXIT_BUILDER_PHRASE = (
     "Order construction uses the shared `src/bolt_v3_order_intent.rs` builder for "
@@ -106,7 +106,7 @@ REQUIRED_SCHEMA_PHRASES = (
     "When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders",
     "`trigger_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TriggerType::Default`",
     "`trailing_offset_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TrailingOffsetType::Price`",
-    "Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent` or `decision`.",
+    "Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent`, `decision`, or `snapshot`.",
     "The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.",
 )
 STALE_STATUS_MAP_PHRASES = (
@@ -390,7 +390,7 @@ def validate_docs(
             findings.append(f"schema missing current phrase: {phrase}")
 
     if DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE not in schema:
-        findings.append("schema missing decision-evidence JSONL schema v4 contract")
+        findings.append("schema missing decision-evidence JSONL schema v5 contract")
 
     if runtime_contracts:
         for field in ORDER_TEMPLATE_FIELDS:

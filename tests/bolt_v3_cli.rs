@@ -58,6 +58,352 @@ fn bolt_v3_cli_exposes_no_submit_readiness_operator_command() {
 }
 
 #[test]
+fn bolt_v3_cli_exposes_static_operator_artifacts_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args(["operator-artifacts", "generate-static", "--help"])
+        .output()
+        .expect("bolt-v3 static operator artifacts help should run");
+
+    assert!(
+        output.status.success(),
+        "expected operator-artifacts generate-static help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--output-dir"));
+    assert!(stdout.contains("--strategy-instance-id"));
+}
+
+#[test]
+fn bolt_v3_cli_exposes_final_operator_packet_verifier_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args(["operator-artifacts", "verify-final", "--help"])
+        .output()
+        .expect("bolt-v3 final operator packet verifier help should run");
+
+    assert!(
+        output.status.success(),
+        "expected operator-artifacts verify-final help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--operator-packet"));
+}
+
+#[test]
+fn bolt_v3_cli_exposes_final_operator_packet_assembly_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args(["operator-artifacts", "assemble-final", "--help"])
+        .output()
+        .expect("bolt-v3 final operator packet assembler help should run");
+
+    assert!(
+        output.status.success(),
+        "expected operator-artifacts assemble-final help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--static-manifest"));
+    assert!(stdout.contains("--operator-packet"));
+}
+
+#[test]
+fn bolt_v3_cli_exposes_static_manifest_from_operator_evidence_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "write-manifest-from-operator-evidence",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 operator-evidence manifest help should run");
+
+    assert!(
+        output.status.success(),
+        "expected manifest-from-operator-evidence help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--output"));
+}
+
+#[test]
+fn bolt_v3_cli_exposes_source_bundle_artifact_commands() {
+    for command in [
+        "generate-pre-run-state-from-source-bundle",
+        "generate-abort-plan-from-source-bundle",
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+            .args(["operator-artifacts", command, "--help"])
+            .output()
+            .unwrap_or_else(|error| panic!("bolt-v3 {command} help should run: {error}"));
+
+        assert!(
+            output.status.success(),
+            "expected operator-artifacts {command} help to pass, stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("--config"), "{stdout}");
+        assert!(stdout.contains("--strategy-instance-id"), "{stdout}");
+        assert!(stdout.contains("--source-bundle"), "{stdout}");
+        assert!(stdout.contains("--output"), "{stdout}");
+        assert!(stdout.contains("--max-source-bundle-bytes"), "{stdout}");
+    }
+}
+
+#[test]
+fn bolt_v3_cli_exposes_strategy_input_decision_evidence_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-strategy-input-from-decision-evidence",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 strategy-input decision-evidence help should run");
+
+    assert!(
+        output.status.success(),
+        "expected strategy-input decision-evidence help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--strategy-instance-id"));
+    assert!(stdout.contains("--decision-evidence"));
+    assert!(stdout.contains("--max-decision-evidence-bytes"));
+    assert!(stdout.contains("--market-selection-source"));
+    assert!(stdout.contains("--market-selection-source-sha256"));
+    assert!(stdout.contains("--candidate-market-start-timestamp-ms"));
+    assert!(stdout.contains("--output"));
+}
+
+#[test]
+fn bolt_v3_cli_exposes_market_selection_decision_evidence_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-market-selection-from-decision-evidence",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 market-selection decision-evidence help should run");
+
+    assert!(
+        output.status.success(),
+        "expected market-selection decision-evidence help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--strategy-instance-id"));
+    assert!(stdout.contains("--decision-evidence"));
+    assert!(stdout.contains("--max-decision-evidence-bytes"));
+    assert!(stdout.contains("--instrument-source"));
+    assert!(stdout.contains("--max-instrument-source-bytes"));
+    assert!(stdout.contains("--output"));
+}
+
+#[test]
+fn bolt_v3_static_operator_artifacts_command_fails_closed_on_abort_blocker() {
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!(
+            "{root}\n{}",
+            r#"
+[live_canary]
+approval_id = "test-operator-approval"
+no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+max_no_submit_readiness_report_bytes = 1000000
+readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 30
+reference_quote_wait_timeout_seconds = 5
+reference_quote_probe_actor_id = "test-reference-probe"
+reference_quote_probe_log_events = false
+reference_quote_probe_log_commands = false
+max_live_order_count = 1
+max_notional_per_order = "10.00"
+"#
+        )
+    });
+    let output_dir = tempdir().expect("tempdir should create").keep();
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-static",
+            "--config",
+            config_path.to_str().expect("fixture path should be utf-8"),
+            "--output-dir",
+            output_dir.to_str().expect("output path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+        ])
+        .output()
+        .expect("bolt-v3 static operator artifacts command should run");
+
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("panic gate and service policy"),
+        "expected real abort blocker, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("T046 remains blocked"),
+        "expected explicit T046 strategy-input blocker, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("pre-run state"),
+        "expected explicit pre-run state blocker, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("T121 remains blocked"),
+        "expected explicit T121 pre-run state blocker, got: {stderr}"
+    );
+    for artifact_name in [
+        "ssm-manifest.json",
+        "financial-envelope.json",
+        "approval-nonce.json",
+        "static-artifacts-manifest.json",
+    ] {
+        assert!(
+            output_dir.join(artifact_name).exists(),
+            "fail-closed command should still write accepted static artifact {artifact_name}"
+        );
+        assert!(
+            stdout.contains(artifact_name),
+            "stdout should report generated artifact {artifact_name}: {stdout}"
+        );
+    }
+    for forbidden in [
+        "/bolt/polymarket_main/private_key",
+        "/bolt/polymarket_main/api_key",
+        "/bolt/polymarket_main/api_secret",
+        "/bolt/polymarket_main/passphrase",
+        "/bolt/binance_reference/api_key",
+        "/bolt/binance_reference/api_secret",
+        "nonce_bytes",
+        "nonce_material",
+    ] {
+        assert!(
+            !stdout.contains(forbidden),
+            "stdout must not expose raw secret path or nonce material {forbidden}"
+        );
+    }
+    assert!(
+        !output_dir.join("strategy-input.json").exists(),
+        "strategy-input artifact must not be written without source-bound strategy decision evidence"
+    );
+    assert!(
+        !output_dir.join("pre-run-state.json").exists(),
+        "pre-run state artifact must not be written without source-bound pre-run evidence"
+    );
+    assert!(
+        !output_dir.join("market-selection-source.json").exists(),
+        "market-selection artifact must not be written without source-bound price-to-beat strategy decision evidence"
+    );
+    let manifest_path = output_dir.join("static-artifacts-manifest.json");
+    let stdout_json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout summary should be JSON");
+    let stdout_summary = stdout_json
+        .as_object()
+        .expect("stdout summary should be an object");
+    assert_eq!(
+        stdout_summary
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["generated_artifacts", "manifest_artifact"]
+    );
+    for artifact in stdout_json["generated_artifacts"]
+        .as_array()
+        .expect("stdout generated artifacts should be an array")
+        .iter()
+        .chain(std::iter::once(&stdout_json["manifest_artifact"]))
+    {
+        let artifact = artifact
+            .as_object()
+            .expect("stdout artifact ref should be an object");
+        assert_eq!(
+            artifact.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["path", "sha256"]
+        );
+    }
+    let manifest_json: serde_json::Value = serde_json::from_slice(
+        &fs::read(&manifest_path).expect("static artifact manifest should read"),
+    )
+    .expect("static artifact manifest should parse");
+    assert_eq!(
+        manifest_json["record_kind"],
+        "bolt_v3.static_operator_artifacts_manifest.v1"
+    );
+    let generated = manifest_json["generated_artifacts"]
+        .as_array()
+        .expect("generated artifacts should be an array");
+    for artifact_name in ["ssm-manifest", "financial-envelope", "approval-nonce"] {
+        let artifact = generated
+            .iter()
+            .find(|artifact| artifact["name"] == artifact_name)
+            .unwrap_or_else(|| panic!("manifest should list {artifact_name}"));
+        assert_eq!(
+            artifact["sha256"]
+                .as_str()
+                .expect("artifact sha should be a string")
+                .len(),
+            64
+        );
+    }
+    let blockers = manifest_json["blockers"]
+        .as_array()
+        .expect("blockers should be an array");
+    assert!(
+        blockers
+            .iter()
+            .any(|blocker| blocker == "panic gate and service policy"),
+        "manifest should record abort blocker: {manifest_json}"
+    );
+    assert!(
+        blockers.iter().any(|blocker| blocker
+            .as_str()
+            .is_some_and(|blocker| blocker.contains("market-selection"))),
+        "manifest should record explicit market-selection blocker: {manifest_json}"
+    );
+    assert!(
+        blockers.iter().any(|blocker| blocker
+            .as_str()
+            .is_some_and(|blocker| blocker.contains("T046 remains blocked"))),
+        "manifest should record explicit strategy-input blocker: {manifest_json}"
+    );
+    assert!(
+        blockers.iter().any(|blocker| blocker
+            .as_str()
+            .is_some_and(|blocker| blocker.contains("pre-run state"))),
+        "manifest should record explicit pre-run state blocker: {manifest_json}"
+    );
+    assert!(
+        blockers.iter().any(|blocker| blocker
+            .as_str()
+            .is_some_and(|blocker| blocker.contains("T121 remains blocked"))),
+        "manifest should record explicit T121 blocker: {manifest_json}"
+    );
+    assert!(
+        !output_dir.join("abort-plan.json").exists(),
+        "fail-closed command must not write successful abort plan"
+    );
+}
+
+#[test]
 fn bolt_v3_secrets_check_rejects_missing_provider_secret_field() {
     let config_path = write_bolt_v3_fixture_root(|root| {
         root.replace(
@@ -113,8 +459,8 @@ fn bolt_v3_secrets_resolve_surfaces_ssm_failure() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("/bolt/binance_reference/api_secret"),
-        "expected failing Binance SSM path in stderr, got: {stderr}"
+        !stderr.contains("/bolt/binance_reference/api_secret"),
+        "stderr must not expose failing SSM path, got: {stderr}"
     );
     assert!(
         stderr.contains("AWS SSM GetParameter failed"),

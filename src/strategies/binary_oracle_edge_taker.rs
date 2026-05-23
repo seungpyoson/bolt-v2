@@ -32,9 +32,13 @@ use toml::Value;
 
 use crate::{
     bolt_v3_decision_evidence::{
-        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, compiled_order_price_source,
+        BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
+        BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT, BoltV3OrderIntentEvidence,
+        BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot, compiled_order_price_source,
     },
-    bolt_v3_market_families::{self, MarketSelectionTarget},
+    bolt_v3_market_families::{
+        self, MarketSelectionOutcome, MarketSelectionTarget, SelectedMarketSourceIdentity,
+    },
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
@@ -42,8 +46,8 @@ use crate::{
     },
     bolt_v3_submit_admission::{
         BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderKind,
-        BoltV3QuoteQuantityOrderSide, BoltV3SubmitAdmissionRequest,
-        conservative_quote_quantity_admission_notional,
+        BoltV3QuoteQuantityOrderSide, BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind,
+        BoltV3SubmitLifecyclePolicy, conservative_quote_quantity_admission_notional,
     },
     strategies::registry::{
         BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
@@ -388,8 +392,11 @@ struct CandidateMarket {
     instrument_id: String,
     up: CandidateOutcome,
     down: CandidateOutcome,
+    source_identity: SelectedMarketSourceIdentity,
+    selection_outcome: MarketSelectionOutcome,
     price_to_beat: Option<f64>,
     start_ts_ms: u64,
+    expiration_ts_ms: u64,
     seconds_to_end: u64,
 }
 
@@ -728,10 +735,13 @@ impl OutcomePreparedBooks {
 struct ActiveMarketState {
     phase: SelectionPhase,
     market_id: Option<String>,
+    source_identity: Option<SelectedMarketSourceIdentity>,
     instrument_id: Option<InstrumentId>,
     outcome_fees: OutcomeFeeState,
     price_to_beat: Option<f64>,
+    market_selection_outcome: MarketSelectionOutcome,
     interval_start_ms: Option<u64>,
+    interval_end_ms: Option<u64>,
     selection_published_at_ms: Option<u64>,
     seconds_to_expiry_at_selection: Option<u64>,
     interval_open: Option<f64>,
@@ -1665,10 +1675,13 @@ impl ActiveMarketState {
         Self {
             phase: SelectionPhase::Idle,
             market_id: None,
+            source_identity: None,
             instrument_id: None,
             outcome_fees: OutcomeFeeState::empty(),
             price_to_beat: None,
+            market_selection_outcome: MarketSelectionOutcome::Current,
             interval_start_ms: None,
+            interval_end_ms: None,
             selection_published_at_ms: None,
             seconds_to_expiry_at_selection: None,
             interval_open: None,
@@ -1707,10 +1720,13 @@ impl ActiveMarketState {
         Self {
             phase,
             market_id: Some(market.market_id.clone()),
+            source_identity: Some(market.source_identity.clone()),
             instrument_id: Some(InstrumentId::from(market.instrument_id.as_str())),
             outcome_fees: OutcomeFeeState::from_market(market),
             price_to_beat: market.price_to_beat,
+            market_selection_outcome: market.selection_outcome,
             interval_start_ms: Some(market.start_ts_ms),
+            interval_end_ms: Some(market.expiration_ts_ms),
             selection_published_at_ms: None,
             seconds_to_expiry_at_selection: Some(market.seconds_to_end),
             interval_open: None,
@@ -1727,7 +1743,9 @@ impl ActiveMarketState {
         self.phase == other.phase
             && self.market_id == other.market_id
             && self.instrument_id == other.instrument_id
+            && self.market_selection_outcome == other.market_selection_outcome
             && self.interval_start_ms == other.interval_start_ms
+            && self.interval_end_ms == other.interval_end_ms
     }
 
     fn warmup_complete(&self) -> bool {
@@ -1738,15 +1756,21 @@ impl ActiveMarketState {
         match &snapshot.decision.state {
             SelectionState::Active { market } => {
                 self.selection_published_at_ms = Some(snapshot.published_at_ms);
+                self.market_selection_outcome = market.selection_outcome;
+                self.interval_end_ms = Some(market.expiration_ts_ms);
                 self.seconds_to_expiry_at_selection = Some(market.seconds_to_end);
             }
             #[cfg(test)]
             SelectionState::Freeze { market, .. } => {
                 self.selection_published_at_ms = Some(snapshot.published_at_ms);
+                self.market_selection_outcome = market.selection_outcome;
+                self.interval_end_ms = Some(market.expiration_ts_ms);
                 self.seconds_to_expiry_at_selection = Some(market.seconds_to_end);
             }
             SelectionState::Idle { .. } => {
                 self.selection_published_at_ms = None;
+                self.market_selection_outcome = MarketSelectionOutcome::Current;
+                self.interval_end_ms = None;
                 self.seconds_to_expiry_at_selection = None;
             }
         }
@@ -1766,7 +1790,10 @@ impl ActiveMarketState {
         let Some(interval_start_ms) = self.interval_start_ms else {
             return;
         };
-        let Some(anchor_price) = self.price_to_beat.or(Some(quote.price)) else {
+        let Some(anchor_price) = self
+            .price_to_beat
+            .filter(|value| is_positive_finite(*value))
+        else {
             return;
         };
         if quote.observed_ts_ms < interval_start_ms {
@@ -1796,8 +1823,7 @@ impl ActiveMarketState {
         };
         let Some(anchor_price) = self
             .price_to_beat
-            .or_else(|| best_healthy_oracle_price(snapshot))
-            .or(snapshot.fair_value)
+            .filter(|value| is_positive_finite(*value))
         else {
             return;
         };
@@ -3803,6 +3829,11 @@ impl BinaryOracleEdgeTaker {
             client_order_id,
             instrument_id: order.instrument_id().to_string(),
             notional,
+            intent_kind: match intent.intent_kind {
+                BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
+                BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
+            },
+            lifecycle_policy: self.submit_lifecycle_policy(),
         })
     }
 
@@ -3899,6 +3930,184 @@ impl BinaryOracleEdgeTaker {
             OrderSide::Sell => last_px.max(quote_tick.bid_price),
             _ => last_px,
         }
+    }
+
+    fn entry_strategy_input_evidence_snapshot_at(
+        &self,
+        now_ms: u64,
+        decision: &EntrySubmissionDecision,
+        client_order_id: ClientOrderId,
+        price: &Price,
+        quantity: &Quantity,
+    ) -> Result<BoltV3StrategyInputEvidenceSnapshot> {
+        let price_to_beat = self
+            .active
+            .price_to_beat
+            .filter(|value| is_positive_finite(*value))
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires source-bound price_to_beat")
+            })?;
+        let interval_open = self
+            .active
+            .interval_open
+            .filter(|value| is_positive_finite(*value))
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires positive interval_open")
+            })?;
+        if (interval_open - price_to_beat).abs() > f64::EPSILON {
+            anyhow::bail!(
+                "entry strategy input evidence requires interval_open to match source-bound price_to_beat"
+            );
+        }
+        let reference_quote_ts_event = self.active.last_reference_ts_ms.ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires reference quote timestamp")
+        })?;
+        let spot_price = self
+            .pricing
+            .spot_price()
+            .filter(|value| is_positive_finite(*value))
+            .ok_or_else(|| anyhow::anyhow!("entry strategy input evidence requires spot price"))?;
+        let realized_volatility = self
+            .current_realized_vol_at(now_ms)
+            .filter(|value| is_positive_finite(*value))
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires realized volatility")
+            })?;
+        let seconds_to_market_end = self.current_seconds_to_expiry_at(now_ms).ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires seconds to market end")
+        })?;
+        let selected_side = decision.evaluation.selected_side.ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires selected side")
+        })?;
+        let fee_rate_basis_points = self
+            .outcome_fee_bps(selected_side)
+            .filter(|value| is_non_negative_finite(*value))
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires selected outcome fee")
+            })?;
+        let theta_scaled_min_edge_bps = decision
+            .evaluation
+            .min_worst_case_ev_bps
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires theta-scaled minimum edge")
+            })?;
+        let fair_probability_up = decision
+            .evaluation
+            .fair_probability_up
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires fair probability")
+            })?;
+        let uncertainty_band_probability = decision
+            .evaluation
+            .uncertainty_band_probability
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires uncertainty band")
+            })?;
+        let expected_edge_basis_points = decision
+            .evaluation
+            .expected_ev_per_notional
+            .filter(|value| value.is_finite())
+            .map(|value| value * BPS_DENOMINATOR)
+            .ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires expected edge")
+            })?;
+        let worst_case_edge_basis_points = match selected_side {
+            OutcomeSide::Up => decision.evaluation.up_worst_case_ev_bps,
+            OutcomeSide::Down => decision.evaluation.down_worst_case_ev_bps,
+        }
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires selected worst-case edge")
+        })?;
+        let market_start_timestamp_ms = self.active.interval_start_ms.ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires market start timestamp")
+        })?;
+        let market_selection_timestamp_ms =
+            self.active.selection_published_at_ms.ok_or_else(|| {
+                anyhow::anyhow!("entry strategy input evidence requires market selection timestamp")
+            })?;
+        let market_end_timestamp_ms = self.active.interval_end_ms.ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires market end timestamp")
+        })?;
+        let market_selection_outcome =
+            strategy_input_market_selection_outcome(self.active.market_selection_outcome);
+        let instrument_id = decision.instrument_id.ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires submission instrument id")
+        })?;
+        let order_side = decision.order_side.ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires submission order side")
+        })?;
+
+        Ok(BoltV3StrategyInputEvidenceSnapshot {
+            strategy_id: self.config.strategy_id.clone(),
+            configured_target_id: self.config.configured_target_id.clone(),
+            market_selection_ruleset_id: self.config.configured_target_id.clone(),
+            market_selection_outcome: market_selection_outcome.to_string(),
+            market_id: self.active.market_id.clone(),
+            polymarket_condition_id: self
+                .active
+                .source_identity
+                .as_ref()
+                .map(|identity| identity.condition_id.clone()),
+            polymarket_market_slug: self
+                .active
+                .source_identity
+                .as_ref()
+                .map(|identity| identity.market_slug.clone()),
+            polymarket_question_id: self
+                .active
+                .source_identity
+                .as_ref()
+                .map(|identity| identity.question_id.clone()),
+            up_instrument_id: self
+                .active
+                .books
+                .up
+                .instrument_id
+                .map(|instrument_id| instrument_id.to_string()),
+            down_instrument_id: self
+                .active
+                .books
+                .down
+                .instrument_id
+                .map(|instrument_id| instrument_id.to_string()),
+            market_selection_timestamp_ms: Some(market_selection_timestamp_ms),
+            selected_market_observed_timestamp_ms: Some(market_selection_timestamp_ms),
+            polymarket_market_start_timestamp_ms: Some(market_start_timestamp_ms),
+            polymarket_market_end_timestamp_ms: Some(market_end_timestamp_ms),
+            price_to_beat_source: self.config.price_to_beat_source.clone(),
+            price_to_beat_value: evidence_number(price_to_beat),
+            reference_quote_ts_event,
+            spot_price: evidence_number(spot_price),
+            reference_fair_value: self.pricing.last_reference_fair_value.map(evidence_number),
+            realized_volatility: evidence_number(realized_volatility),
+            seconds_to_market_end,
+            pricing_kurtosis: evidence_number(self.config.pricing_kurtosis),
+            theta_decay_factor: evidence_number(self.config.theta_decay_factor),
+            theta_scaled_min_edge_bps: evidence_number(theta_scaled_min_edge_bps),
+            fair_probability_up: evidence_number(fair_probability_up),
+            uncertainty_band_probability: evidence_number(uncertainty_band_probability),
+            expected_edge_basis_points: evidence_number(expected_edge_basis_points),
+            worst_case_edge_basis_points: evidence_number(worst_case_edge_basis_points),
+            fee_rate_basis_points: evidence_number(fee_rate_basis_points),
+            selected_side: Some(outcome_side_evidence_label(selected_side).to_string()),
+            submission_instrument_id: instrument_id.to_string(),
+            submission_order_side: order_side.to_string(),
+            submission_price: price.to_string(),
+            submission_quantity: quantity.to_string(),
+            client_order_id: client_order_id.to_string(),
+        })
+    }
+
+    fn submit_lifecycle_policy(&self) -> BoltV3SubmitLifecyclePolicy {
+        BoltV3SubmitLifecyclePolicy::new(
+            self.config.manage_contingent_orders
+                || self.config.manage_gtd_expiry
+                || self.config.manage_stop,
+        )
     }
 
     fn build_configured_entry_order(
@@ -4277,6 +4486,13 @@ impl BinaryOracleEdgeTaker {
             price,
             client_order_id,
         )?;
+        let strategy_input_snapshot = self.entry_strategy_input_evidence_snapshot_at(
+            now_ms,
+            &decision,
+            client_order_id,
+            &price,
+            &quantity,
+        )?;
 
         let client_id = ClientId::from(self.config.client_id.as_str());
         self.exposure = ExposureState::PendingEntry(PendingEntryState {
@@ -4320,11 +4536,18 @@ impl BinaryOracleEdgeTaker {
             &order,
         );
 
-        if let Err(error) = self.submit_order_with_decision_evidence(
-            intent,
-            order,
-            SubmitContext::with_client_id(client_id),
-        ) {
+        if let Err(error) = self
+            .context
+            .decision_evidence()
+            .record_strategy_input_snapshot(&strategy_input_snapshot)
+            .and_then(|()| {
+                self.submit_order_with_decision_evidence(
+                    intent,
+                    order,
+                    SubmitContext::with_client_id(client_id),
+                )
+            })
+        {
             self.clear_pending_entry_state();
             return Err(error);
         }
@@ -5089,6 +5312,8 @@ fn apply_selection_snapshot_to_active(
     if same_market_transition(active, &next) {
         active.phase = next.phase;
         active.forced_flat = next.forced_flat;
+        active.market_selection_outcome = next.market_selection_outcome;
+        active.interval_end_ms = next.interval_end_ms;
         return;
     }
     *active = next;
@@ -5101,7 +5326,9 @@ fn same_market_transition(current: &ActiveMarketState, next: &ActiveMarketState)
     current.market_id.is_some()
         && current.market_id == next.market_id
         && current.instrument_id == next.instrument_id
+        && current.market_selection_outcome == next.market_selection_outcome
         && current.interval_start_ms == next.interval_start_ms
+        && current.interval_end_ms == next.interval_end_ms
 }
 
 fn same_market_interval_rollover(current: &ActiveMarketState, next: &ActiveMarketState) -> bool {
@@ -5186,10 +5413,20 @@ fn select_configured_market_from_instruments(
         down: CandidateOutcome {
             instrument_id: market.down_instrument_id.to_string(),
         },
+        source_identity: market.source_identity,
+        selection_outcome: market.selection_outcome,
         price_to_beat: None,
         start_ts_ms: market.start_timestamp_milliseconds,
+        expiration_ts_ms: market.expiration_timestamp_milliseconds,
         seconds_to_end: market.seconds_to_end,
     })
+}
+
+fn strategy_input_market_selection_outcome(outcome: MarketSelectionOutcome) -> &'static str {
+    match outcome {
+        MarketSelectionOutcome::Current => BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
+        MarketSelectionOutcome::Next => BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT,
+    }
 }
 
 fn should_replace_book_subscriptions(
@@ -5489,6 +5726,17 @@ fn clamp_probability(value: f64) -> f64 {
 enum OutcomeSide {
     Up,
     Down,
+}
+
+fn outcome_side_evidence_label(side: OutcomeSide) -> &'static str {
+    match side {
+        OutcomeSide::Up => "up",
+        OutcomeSide::Down => "down",
+    }
+}
+
+fn evidence_number(value: f64) -> String {
+    value.to_string()
 }
 
 #[cfg(test)]
@@ -6215,6 +6463,11 @@ fn submit_admission_request_from_order(
         client_order_id,
         instrument_id: order.instrument_id().to_string(),
         notional,
+        intent_kind: match intent.intent_kind {
+            BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
+            BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
+        },
+        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
     })
 }
 
@@ -6245,7 +6498,10 @@ mod tests {
     use rust_decimal::Decimal;
 
     use super::*;
-    use crate::strategies::{production_strategy_registry, registry::StrategyBuilder};
+    use crate::{
+        bolt_v3_submit_admission::BoltV3OrderLifecycleIntent,
+        strategies::{production_strategy_registry, registry::StrategyBuilder},
+    };
 
     fn find_error<'a>(
         errors: &'a [ValidationError],
@@ -6386,6 +6642,13 @@ mod tests {
     impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         for RecordingDecisionEvidenceWriter
     {
+        fn record_strategy_input_snapshot(
+            &self,
+            _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+        ) -> Result<()> {
+            Ok(())
+        }
+
         fn record_order_intent(
             &self,
             _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
@@ -6407,6 +6670,13 @@ mod tests {
     impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         for FailingDecisionEvidenceWriter
     {
+        fn record_strategy_input_snapshot(
+            &self,
+            _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+        ) -> Result<()> {
+            anyhow::bail!("strategy input snapshot write failed")
+        }
+
         fn record_order_intent(
             &self,
             _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
@@ -6419,6 +6689,68 @@ mod tests {
             _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
         ) -> Result<()> {
             anyhow::bail!("admission decision write failed")
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum RecordedDecisionEvidenceEvent {
+        StrategyInput(crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot),
+        OrderIntent(crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence),
+        AdmissionDecision(crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence),
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingSequencedDecisionEvidenceWriter {
+        events: Mutex<Vec<RecordedDecisionEvidenceEvent>>,
+    }
+
+    impl RecordingSequencedDecisionEvidenceWriter {
+        fn events(&self) -> Vec<RecordedDecisionEvidenceEvent> {
+            self.events
+                .lock()
+                .expect("recording evidence writer mutex poisoned")
+                .clone()
+        }
+    }
+
+    impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
+        for RecordingSequencedDecisionEvidenceWriter
+    {
+        fn record_strategy_input_snapshot(
+            &self,
+            snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+        ) -> Result<()> {
+            self.events
+                .lock()
+                .expect("recording evidence writer mutex poisoned")
+                .push(RecordedDecisionEvidenceEvent::StrategyInput(
+                    snapshot.clone(),
+                ));
+            Ok(())
+        }
+
+        fn record_order_intent(
+            &self,
+            intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
+        ) -> Result<()> {
+            self.events
+                .lock()
+                .expect("recording evidence writer mutex poisoned")
+                .push(RecordedDecisionEvidenceEvent::OrderIntent(intent.clone()));
+            Ok(())
+        }
+
+        fn record_admission_decision(
+            &self,
+            decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
+        ) -> Result<()> {
+            self.events
+                .lock()
+                .expect("recording evidence writer mutex poisoned")
+                .push(RecordedDecisionEvidenceEvent::AdmissionDecision(
+                    decision.clone(),
+                ));
+            Ok(())
         }
     }
 
@@ -6631,6 +6963,35 @@ mod tests {
 
         assert_eq!(strategy.core.config.order_id_tag.as_deref(), Some("001"));
         assert_eq!(strategy.core.config.oms_type, Some(NtOmsType::Netting));
+    }
+
+    #[test]
+    fn submit_lifecycle_policy_is_derived_from_strategy_config() {
+        let mut strategy = test_strategy();
+        strategy.config.forced_exit_order.is_reduce_only = false;
+        strategy.config.manage_contingent_orders = false;
+        strategy.config.manage_gtd_expiry = false;
+        strategy.config.manage_stop = false;
+        let disabled = strategy.submit_lifecycle_policy();
+
+        assert_eq!(disabled, BoltV3SubmitLifecyclePolicy::new(false));
+        assert_eq!(
+            disabled.submit_intent_for(BoltV3OrderLifecycleIntent::RiskReducingExit),
+            Ok(Some(BoltV3SubmitIntentKind::RiskReducingExit))
+        );
+        assert_eq!(
+            disabled.submit_intent_for(BoltV3OrderLifecycleIntent::ReplaceSubmit),
+            Ok(None)
+        );
+
+        strategy.config.forced_exit_order.is_reduce_only = true;
+        strategy.config.manage_contingent_orders = true;
+        let enabled = strategy.submit_lifecycle_policy();
+        assert_eq!(enabled, BoltV3SubmitLifecyclePolicy::new(true));
+        assert_eq!(
+            enabled.submit_intent_for(BoltV3OrderLifecycleIntent::ReplaceSubmit),
+            Ok(Some(BoltV3SubmitIntentKind::ReplaceSubmit))
+        );
     }
 
     #[test]
@@ -7691,6 +8052,9 @@ mod tests {
                     client_order_id: "client-order-0".to_string(),
                     instrument_id: "instrument-0".to_string(),
                     notional: Decimal::new(50, 2),
+                    intent_kind: crate::bolt_v3_submit_admission::BoltV3SubmitIntentKind::Entry,
+                    lifecycle_policy:
+                        crate::bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy::new(true),
                 },
             )
             .expect("first admission should consume the only slot");
@@ -7760,6 +8124,7 @@ mod tests {
         let mut strategy = test_strategy();
         strategy.config.warmup_tick_count = 2;
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+        strategy.active.price_to_beat = Some(3_100.0);
         strategy.active.interval_open = Some(3_100.0);
         strategy.active.warmup_count = 2;
         strategy.active.last_reference_ts_ms = Some(1_200);
@@ -7826,6 +8191,7 @@ mod tests {
         let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
         strategy.config.warmup_tick_count = 2;
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+        strategy.active.price_to_beat = Some(3_100.0);
         strategy.active.interval_open = Some(3_100.0);
         strategy.active.warmup_count = 2;
         strategy.active.last_reference_ts_ms = Some(1_200);
@@ -7871,6 +8237,19 @@ mod tests {
         strategy.pricing.last_lead_gap_probability = Some(0.0);
         strategy.pricing.last_jitter_penalty_probability = Some(0.0);
         (strategy, fee_provider)
+    }
+
+    fn ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+        submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
+    ) -> BinaryOracleEdgeTaker {
+        let (mut strategy, fee_provider) =
+            ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.context =
+            StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission);
+        strategy.config.edge_threshold_basis_points = 1;
+        strategy.active.price_to_beat = Some(3_100.0);
+        strategy
     }
 
     fn selected_entry_side(strategy: &BinaryOracleEdgeTaker) -> OutcomeSide {
@@ -8209,8 +8588,15 @@ mod tests {
             down: CandidateOutcome {
                 instrument_id: down_instrument_id,
             },
+            source_identity: SelectedMarketSourceIdentity {
+                condition_id,
+                market_slug: format!("slug-{market_id}"),
+                question_id: format!("question-{market_id}"),
+            },
+            selection_outcome: MarketSelectionOutcome::Current,
             price_to_beat: None,
             start_ts_ms: interval_start_ms,
+            expiration_ts_ms: interval_start_ms.saturating_add(300 * MILLIS_PER_SECOND_U64),
             seconds_to_end: 300,
         }
     }
@@ -8231,6 +8617,14 @@ mod tests {
         info.insert(
             "market_id".to_string(),
             serde_json::Value::String(market_id.to_string()),
+        );
+        info.insert(
+            "condition_id".to_string(),
+            serde_json::Value::String(format!("condition-{market_id}")),
+        );
+        info.insert(
+            "question_id".to_string(),
+            serde_json::Value::String(format!("question-{market_id}")),
         );
         InstrumentAny::BinaryOption(BinaryOption::new(
             InstrumentId::from(instrument_id),
@@ -12591,19 +12985,36 @@ mod tests {
     }
 
     #[test]
-    fn interval_open_captures_first_reference_tick_at_or_after_market_start() {
+    fn interval_open_captures_source_bound_price_to_beat_at_or_after_market_start() {
         let mut strategy = test_strategy();
-        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+        let mut snapshot = active_snapshot_with_start("MKT-1", 1_000);
+        let SelectionState::Active { market } = &mut snapshot.decision.state else {
+            panic!("expected active snapshot");
+        };
+        market.price_to_beat = Some(3_099.0);
+        strategy.apply_selection_snapshot(snapshot);
 
         strategy.observe_reference_snapshot(&reference_tick(900, 3_100.0));
         assert!(strategy.active.interval_open.is_none());
 
         strategy.observe_reference_snapshot(&reference_tick(1_000, 3_101.0));
-        assert_eq!(strategy.active.interval_open, Some(3_101.0));
+        assert_eq!(strategy.active.interval_open, Some(3_099.0));
     }
 
     #[test]
-    fn interval_open_uses_raw_reference_price_not_fused_reference_value() {
+    fn interval_open_requires_source_bound_price_to_beat_before_reference_quote_warms_market() {
+        let mut strategy = test_strategy();
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+
+        strategy.observe_reference_quote(&fast_spot("reference", 3_101.0, 1_000));
+
+        assert_eq!(strategy.active.interval_open, None);
+        assert_eq!(strategy.active.last_reference_ts_ms, None);
+        assert_eq!(strategy.active.warmup_count, INITIAL_COUNTER_U64);
+    }
+
+    #[test]
+    fn interval_open_does_not_use_reference_price_without_source_bound_price_to_beat() {
         let mut strategy = test_strategy();
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
 
@@ -12618,11 +13029,13 @@ mod tests {
             ],
         });
 
-        assert_eq!(strategy.active.interval_open, Some(3_100.0));
+        assert_eq!(strategy.active.interval_open, None);
+        assert_eq!(strategy.active.last_reference_ts_ms, None);
+        assert_eq!(strategy.active.warmup_count, INITIAL_COUNTER_U64);
     }
 
     #[test]
-    fn interval_open_prefers_polymarket_price_to_beat_over_reference() {
+    fn interval_open_uses_source_bound_price_to_beat_over_reference() {
         let mut strategy = test_strategy();
         let mut snapshot = active_snapshot_with_start("MKT-1", 1_000);
         let SelectionState::Active { market } = &mut snapshot.decision.state else {
@@ -12646,7 +13059,7 @@ mod tests {
     }
 
     #[test]
-    fn interval_open_falls_back_to_fused_reference_when_no_polymarket_or_oracle_anchor_exists() {
+    fn interval_open_does_not_use_fused_reference_without_source_bound_price_to_beat() {
         let mut strategy = test_strategy();
         strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
 
@@ -12658,7 +13071,9 @@ mod tests {
             venues: vec![],
         });
 
-        assert_eq!(strategy.active.interval_open, Some(3_107.0));
+        assert_eq!(strategy.active.interval_open, None);
+        assert_eq!(strategy.active.last_reference_ts_ms, None);
+        assert_eq!(strategy.active.warmup_count, INITIAL_COUNTER_U64);
     }
 
     #[test]
@@ -12815,7 +13230,12 @@ mod tests {
     fn freeze_continues_reference_preparation_without_opening_entries() {
         let mut strategy = test_strategy();
         strategy.config.warmup_tick_count = 2;
-        strategy.apply_selection_snapshot(freeze_snapshot_with_start("MKT-1", 1_000));
+        let mut snapshot = freeze_snapshot_with_start("MKT-1", 1_000);
+        let SelectionState::Freeze { market, .. } = &mut snapshot.decision.state else {
+            panic!("expected freeze snapshot");
+        };
+        market.price_to_beat = Some(3_100.0);
+        strategy.apply_selection_snapshot(snapshot);
 
         strategy.observe_reference_snapshot(&reference_tick(900, 3_099.0));
         assert!(strategy.active.interval_open.is_none());
@@ -12834,6 +13254,11 @@ mod tests {
         assert_eq!(strategy.active.warmup_count, 2);
         assert!(strategy.active.warmup_complete());
         assert!(strategy.active.forced_flat);
+        let gate = strategy.entry_gate_decision_at(1_100);
+        assert!(
+            gate.blocked_by
+                .contains(&EntryBlockReason::ForcedFlat(ForcedFlatReason::Freeze))
+        );
     }
 
     #[test]
@@ -12964,10 +13389,64 @@ mod tests {
     }
 
     #[test]
+    fn strategy_selects_next_updown_target_outcome_from_nt_binary_option_metadata() {
+        let strategy = test_strategy();
+        let current_start = 1_746_000_000_i64;
+        let next_start = current_start + strategy.config.cadence_seconds as i64;
+        let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+            &strategy.config.underlying_asset,
+            &strategy.config.cadence_slug_token,
+            next_start,
+        );
+        let instruments = vec![
+            updown_binary_option(
+                "token-up.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Up",
+                next_start as u64 * MILLIS_PER_SECOND_U64,
+                next_start as u64 * MILLIS_PER_SECOND_U64
+                    + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64,
+            ),
+            updown_binary_option(
+                "token-down.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Down",
+                next_start as u64 * MILLIS_PER_SECOND_U64,
+                next_start as u64 * MILLIS_PER_SECOND_U64
+                    + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64,
+            ),
+        ];
+
+        let snapshot = selection_snapshot_from_instruments(
+            &strategy.config,
+            &instruments,
+            current_start as u64 * MILLIS_PER_SECOND_U64 + 1,
+        );
+
+        let SelectionState::Active { market } = snapshot.decision.state else {
+            panic!("configured target should select next market: {snapshot:?}");
+        };
+        assert_eq!(market.market_id, "market-next");
+        assert_eq!(market.selection_outcome, MarketSelectionOutcome::Next);
+        assert_eq!(
+            market.expiration_ts_ms,
+            next_start as u64 * MILLIS_PER_SECOND_U64
+                + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64
+        );
+    }
+
+    #[test]
     fn warmup_requires_consecutive_fresh_ticks() {
         let mut strategy = test_strategy();
         strategy.config.warmup_tick_count = 3;
-        strategy.apply_selection_snapshot(active_snapshot("MKT-1"));
+        let mut snapshot = active_snapshot("MKT-1");
+        let SelectionState::Active { market } = &mut snapshot.decision.state else {
+            panic!("expected active snapshot");
+        };
+        market.price_to_beat = Some(3_100.0);
+        strategy.apply_selection_snapshot(snapshot);
 
         strategy.observe_reference_snapshot(&reference_tick(1_000, 3_100.0));
         strategy.observe_reference_snapshot(&reference_tick(1_100, 3_101.0));
@@ -13814,6 +14293,168 @@ mod tests {
         );
         assert!(fields.sized_notional.is_some_and(|value| value > 0.0));
         assert!(!fields.final_fee_amount_known);
+    }
+
+    #[test]
+    fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_intent() {
+        let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
+                evidence.clone(),
+            ),
+        );
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            evidence.clone(),
+            submit_admission,
+        );
+        register_test_strategy_with_active_instruments(&mut strategy);
+
+        let error = strategy
+            .try_submit_entry_order(1_200)
+            .expect_err("unarmed submit admission should reject after evidence capture");
+        assert!(
+            error.to_string().contains("submit admission is not armed"),
+            "{error:#}"
+        );
+
+        let events = evidence.events();
+        let [
+            RecordedDecisionEvidenceEvent::StrategyInput(snapshot),
+            RecordedDecisionEvidenceEvent::OrderIntent(intent),
+            RecordedDecisionEvidenceEvent::AdmissionDecision(admission),
+        ] = events.as_slice()
+        else {
+            panic!("expected strategy input, order intent, admission sequence; got {events:#?}");
+        };
+
+        assert_eq!(snapshot.strategy_id, strategy.config.strategy_id);
+        assert_eq!(
+            snapshot.price_to_beat_source,
+            strategy.config.price_to_beat_source
+        );
+        assert_eq!(snapshot.price_to_beat_value, "3100");
+        assert_eq!(snapshot.reference_quote_ts_event, 1_200);
+        assert_eq!(snapshot.spot_price, "3100.5");
+        assert_eq!(snapshot.realized_volatility, "1.5");
+        assert_eq!(snapshot.seconds_to_market_end, 300);
+        assert_eq!(snapshot.market_id.as_deref(), Some("MKT-1"));
+        assert_eq!(
+            snapshot.polymarket_condition_id.as_deref(),
+            Some("condition-MKT-1")
+        );
+        assert_eq!(
+            snapshot.polymarket_market_slug.as_deref(),
+            Some("slug-MKT-1")
+        );
+        assert_eq!(
+            snapshot.polymarket_question_id.as_deref(),
+            Some("question-MKT-1")
+        );
+        assert_eq!(
+            snapshot.up_instrument_id.as_deref(),
+            Some("condition-MKT-1-MKT-1-UP.POLYMARKET")
+        );
+        assert_eq!(
+            snapshot.down_instrument_id.as_deref(),
+            Some("condition-MKT-1-MKT-1-DOWN.POLYMARKET")
+        );
+        assert_eq!(snapshot.selected_side.as_deref(), Some("up"));
+        assert_eq!(snapshot.submission_instrument_id, intent.instrument_id);
+        assert_eq!(snapshot.submission_order_side, intent.order_side);
+        assert_eq!(snapshot.submission_price, intent.price);
+        assert_eq!(snapshot.submission_quantity, intent.quantity);
+        assert_eq!(snapshot.client_order_id, intent.client_order_id);
+        assert_eq!(admission.client_order_id, intent.client_order_id);
+    }
+
+    #[test]
+    fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_seconds() {
+        let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
+                evidence.clone(),
+            ),
+        );
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            evidence.clone(),
+            submit_admission,
+        );
+        register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.active.interval_end_ms = Some(301_999);
+
+        strategy
+            .try_submit_entry_order(2_000)
+            .expect_err("unarmed submit admission should reject after evidence capture");
+
+        let events = evidence.events();
+        let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
+            panic!("expected first evidence event to be strategy input; got {events:#?}");
+        };
+
+        assert_eq!(snapshot.seconds_to_market_end, 299);
+        assert_eq!(snapshot.market_selection_timestamp_ms, Some(1_000));
+        assert_eq!(snapshot.polymarket_market_start_timestamp_ms, Some(1_000));
+        assert_eq!(
+            snapshot.polymarket_market_end_timestamp_ms,
+            Some(301_999),
+            "market end must bind to selected expiration without seconds rounding"
+        );
+    }
+
+    #[test]
+    fn strategy_input_evidence_records_next_market_selection_outcome() {
+        let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
+                evidence.clone(),
+            ),
+        );
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            evidence.clone(),
+            submit_admission,
+        );
+        register_test_strategy_with_active_instruments(&mut strategy);
+        strategy.active.market_selection_outcome = MarketSelectionOutcome::Next;
+
+        strategy
+            .try_submit_entry_order(2_000)
+            .expect_err("unarmed submit admission should reject after evidence capture");
+
+        let events = evidence.events();
+        let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
+            panic!("expected first evidence event to be strategy input; got {events:#?}");
+        };
+
+        assert_eq!(snapshot.market_selection_outcome, "next");
+    }
+
+    #[test]
+    fn same_market_transition_replaces_changed_selection_metadata() {
+        let mut active =
+            ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+        assert_eq!(
+            active.market_selection_outcome,
+            MarketSelectionOutcome::Current
+        );
+        assert_eq!(active.interval_end_ms, Some(301_000));
+
+        let mut next_market = candidate_market("MKT-1", 1_000);
+        next_market.selection_outcome = MarketSelectionOutcome::Next;
+        next_market.expiration_ts_ms = 301_999;
+        let next = selection_snapshot(
+            1_000,
+            SelectionState::Active {
+                market: next_market,
+            },
+        );
+
+        apply_selection_snapshot_to_active(&mut active, &next, 0);
+
+        assert_eq!(
+            active.market_selection_outcome,
+            MarketSelectionOutcome::Next
+        );
+        assert_eq!(active.interval_end_ms, Some(301_999));
     }
 
     #[test]

@@ -78,6 +78,7 @@ Fields:
 - approval id
 - no-submit readiness report path
 - max no-submit readiness report bytes: byte cap used before reading and parsing the readiness report
+- readiness report max age seconds: freshness cap used to admit the readiness report
 - max live order count: the canary-local order-count budget from `[live_canary]`
 - max notional per order: the canary-local per-order cap from `[live_canary]`
 - root max notional per order: the root risk ceiling from `[risk]`
@@ -88,6 +89,7 @@ Rules:
 - not a substitute for submit-time counters
 - current source is `check_bolt_v3_live_canary_gate`; submit admission must not reparse `[live_canary]`
 - readiness report read is bounded by `max_no_submit_readiness_report_bytes` before JSON parse
+- readiness report freshness is bounded by `readiness_report_max_age_seconds`
 - canary-local notional must be less than or equal to the root risk ceiling
 - prose field names map one-to-one to the existing `BoltV3LiveCanaryGateReport` values exposed by read-only accessors
 - `max notional per order` is the canary-specific cap; `root max notional per order` is the global `[risk]` cap that bounds every canary cap
@@ -103,6 +105,8 @@ Fields:
 - per-order cap copied from `BoltV3LiveCanaryGateReport.max_notional_per_order`
 - strategy/order/instrument labels for diagnostics
 - strategy-supplied positive order notional
+- explicit submit intent kind: entry, risk-reducing exit, or replace-submit
+- strategy config-derived lifecycle policy for risk-reducing exit and replace-submit admission
 
 Rules:
 - initialized only from a valid `BoltV3LiveCanaryGateReport`
@@ -110,14 +114,16 @@ Rules:
 - rejects admission while unarmed with a distinct `NotArmed` error
 - rejects a second arm attempt so validated bounds cannot change under a running canary
 - stale-arm means any arm attempt after one successful arm, including a different report; it rejects and does not mutate caps or count
-- rejects when order count is exhausted
+- rejects entry and replace-submit candidates when order count is exhausted
+- admits a risk-reducing exit after a prior admitted exposure-opening submit only when the strategy config-derived lifecycle policy explicitly permits it
 - rejects when proposed order notional exceeds cap; notional equal to cap admits
 - rejects non-positive proposed notional
 - decision evidence persistence must succeed before admission consumes order budget
 - must execute before NT submit
 - admitted order count means submit attempts accepted by admission, not venue accepts or fills
 - the budget is global across all registered strategies, with no per-strategy partition
-- entry submits, exit submits, and replace-submit paths consume the same count and notional budget
+- entry and replace-submit paths consume the configured count and notional budget
+- risk-reducing exit paths consume the configured notional budget and may exceed the count budget only under the explicit lifecycle policy above
 - plain cancel requests are not submits and do not consume admission budget
 - admission budget is consumed before NT submit and is not refunded on NT submit error unless a later reviewed requirement changes this fail-closed rule
 - decision evidence captures strategy intent before admission; an admission rejection can leave an intent record with no NT submit evidence

@@ -230,7 +230,7 @@ fn binance_data_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     );
     assert_eq!(
         data.base_url_ws.as_deref(),
-        Some("wss://stream.binance.com:9443/ws")
+        Some("wss://stream-sbe.binance.com/ws")
     );
     assert_eq!(
         data.api_key.as_deref(),

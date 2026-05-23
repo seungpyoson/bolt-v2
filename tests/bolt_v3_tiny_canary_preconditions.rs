@@ -2,12 +2,13 @@ mod support;
 
 use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_live_canary_gate::check_bolt_v3_live_canary_gate,
     bolt_v3_no_submit_readiness_schema::{
-        APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
-        CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY, LIVE_NODE_BUILD_STAGE,
-        NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
-        REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
-        STATUS_KEY, STATUS_SATISFIED,
+        APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY,
+        CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY,
+        GENERATED_AT_UNIX_SECONDS_KEY, LIVE_NODE_BUILD_STAGE, NO_SUBMIT_READINESS_SCHEMA_VERSION,
+        OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY,
+        SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
     },
     bolt_v3_tiny_canary_evidence::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryOutcome,
@@ -21,14 +22,15 @@ use nautilus_model::enums::OmsType;
 use rust_decimal::Decimal;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::path::Path;
 
 const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
-
-fn phase8_required_operator_artifact_terms() -> [&'static str; 27] {
+const PHASE8_TEST_APPROVAL_ENVELOPE_SHA256: &str =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+fn phase8_required_operator_artifact_terms() -> [&'static str; 24] {
     [
         "BOLT_V3_PHASE8_HEAD_SHA",
         "BOLT_V3_PHASE8_ROOT_TOML_PATH",
-        "BOLT_V3_PHASE8_ROOT_TOML_SHA256",
         "BOLT_V3_PHASE8_SSM_MANIFEST_PATH",
         "BOLT_V3_PHASE8_SSM_MANIFEST_SHA256",
         "BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH",
@@ -47,8 +49,6 @@ fn phase8_required_operator_artifact_terms() -> [&'static str; 27] {
         "BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH",
         "BOLT_V3_PHASE8_EVIDENCE_PATH",
         "BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH",
-        "BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH",
-        "BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH",
         "BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH",
         "BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH",
         "BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH",
@@ -67,6 +67,82 @@ fn strategy_audit_from_evidence_file(
     )
 }
 
+fn write_current_market_selection_source(
+    dir: &Path,
+) -> anyhow::Result<(std::path::PathBuf, String)> {
+    let source_path = dir.join("current-market-selection-source.json");
+    std::fs::write(
+        &source_path,
+        serde_json::to_vec(&serde_json::json!({
+            "record_kind": "market_selection_result",
+            "source": "nt_runtime_selection_snapshot",
+            "market_selection_timestamp_ms": 1234567890_u64,
+            "candidate_market_start_timestamps_ms": [1234567000_u64],
+            "market_selection_outcome": "current",
+            "polymarket_condition_id": "condition-1",
+            "polymarket_market_slug": "btc-updown-5m",
+            "polymarket_question_id": "question-1",
+            "up_instrument_id": "condition-1-UP.POLYMARKET",
+            "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+            "selected_market_observed_timestamp_ms": 1234567890_u64,
+            "polymarket_market_start_timestamp_ms": 1234567000_u64,
+            "polymarket_market_end_timestamp_ms": 1234867000_u64
+        }))?,
+    )?;
+    let source_hash = Phase8OperatorApprovalEnvelope::sha256_file(&source_path)?;
+    Ok((source_path, source_hash))
+}
+
+fn current_strategy_input_evidence_json(
+    price_to_beat_source: &str,
+    market_selection_source_path: &Path,
+    market_selection_source_sha256: &str,
+) -> Value {
+    serde_json::json!({
+        "realized_volatility": "2.5",
+        "seconds_to_market_end": 300_u64,
+        "spot_price": "100000.0",
+        "price_to_beat_value": "100000.0",
+        "expected_edge_basis_points": "12.5",
+        "worst_case_edge_basis_points": "12.5",
+        "fee_rate_basis_points": "0",
+        "price_to_beat_source": price_to_beat_source,
+        "reference_quote_ts_event": 1234567890_u64,
+        "pricing_kurtosis": "0",
+        "theta_decay_factor": "0",
+        "theta_scaled_min_edge_bps": "12.5",
+        "market_selection_timestamp_ms": 1234567890_u64,
+        "market_selection_source_path": market_selection_source_path.to_string_lossy(),
+        "market_selection_source_sha256": market_selection_source_sha256,
+        "market_selection_outcome": "current",
+        "polymarket_condition_id": "condition-1",
+        "polymarket_market_slug": "btc-updown-5m",
+        "polymarket_question_id": "question-1",
+        "up_instrument_id": "condition-1-UP.POLYMARKET",
+        "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+        "selected_market_observed_timestamp_ms": 1234567890_u64,
+        "polymarket_market_start_timestamp_ms": 1234567000_u64,
+        "polymarket_market_end_timestamp_ms": 1234867000_u64
+    })
+}
+
+fn write_current_strategy_input_evidence(
+    path: &Path,
+    price_to_beat_source: &str,
+    market_selection_source_path: &Path,
+    market_selection_source_sha256: &str,
+) -> anyhow::Result<()> {
+    std::fs::write(
+        path,
+        serde_json::to_vec(&current_strategy_input_evidence_json(
+            price_to_beat_source,
+            market_selection_source_path,
+            market_selection_source_sha256,
+        ))?,
+    )?;
+    Ok(())
+}
+
 #[test]
 fn tiny_canary_quickstart_names_required_operator_artifacts() {
     let quickstart = include_str!("../specs/001-thin-live-canary-path/quickstart.md");
@@ -77,6 +153,10 @@ fn tiny_canary_quickstart_names_required_operator_artifacts() {
             "phase8 quickstart must name required operator artifact `{term}`"
         );
     }
+    assert!(!quickstart.contains("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH"));
+    assert!(!quickstart.contains("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH"));
+    assert!(!quickstart.contains("BOLT_V3_PHASE8_ROOT_TOML_SHA256"));
+    assert!(!quickstart.contains("BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256"));
 }
 
 #[test]
@@ -89,6 +169,58 @@ fn tiny_canary_schema_doc_names_required_operator_artifacts() {
             "phase8 schema doc must name required operator artifact `{term}`"
         );
     }
+    assert!(!schema_doc.contains("BOLT_V3_PHASE8_CLIENT_ORDER_ID_HASH"));
+    assert!(!schema_doc.contains("BOLT_V3_PHASE8_VENUE_ORDER_ID_HASH"));
+    assert!(!schema_doc.contains("BOLT_V3_PHASE8_ROOT_TOML_SHA256"));
+    assert!(!schema_doc.contains("BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256"));
+}
+
+#[test]
+fn operator_approval_env_does_not_require_circular_hash_env_vars() {
+    let source = support::repo_text("src/bolt_v3_tiny_canary_evidence.rs");
+    let from_env = source
+        .split("pub fn from_env() -> Result<Self>")
+        .nth(1)
+        .and_then(|tail| tail.split("pub fn validate_against").next())
+        .expect("Phase8OperatorApprovalEnvelope::from_env source should be present");
+
+    assert!(
+        !from_env.contains("BOLT_V3_PHASE8_ROOT_TOML_SHA256"),
+        "from_env must compute root_toml_sha256 from BOLT_V3_PHASE8_ROOT_TOML_PATH"
+    );
+    assert!(
+        !from_env.contains("BOLT_V3_PHASE8_APPROVAL_ENVELOPE_SHA256"),
+        "from_env must read approval_envelope_sha256 from loaded TOML"
+    );
+    assert!(
+        from_env.contains("root_toml_sha256: Self::sha256_file(&root_toml_path)?"),
+        "from_env must compute the root TOML hash internally"
+    );
+    assert!(
+        from_env.contains(
+            "approval_envelope_sha256: operator_evidence.approval_envelope_sha256.clone()"
+        ),
+        "from_env must source approval_envelope_sha256 from `[live_canary].operator_evidence`"
+    );
+}
+
+#[test]
+fn tiny_canary_runtime_contract_does_not_prebind_live_order_ids() {
+    let runtime_contract = include_str!("../docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md");
+    let gate_section = runtime_contract
+        .split("### 11.8 Live canary gate boundary")
+        .nth(1)
+        .and_then(|section| section.split("## 12. Panic Gate").next())
+        .expect("runtime contract must contain live canary gate boundary section");
+
+    assert!(
+        !gate_section.contains("client_order_id_hash"),
+        "live canary gate boundary must not require pre-run client order id hash"
+    );
+    assert!(
+        !gate_section.contains("venue_order_id_hash"),
+        "live canary gate boundary must not require pre-run venue order id hash"
+    );
 }
 
 #[test]
@@ -103,7 +235,10 @@ fn tiny_canary_quickstart_names_conditional_strategy_cancel_artifact() {
 
 #[tokio::test]
 async fn preflight_blocks_missing_phase7_report_before_build() {
-    let loaded = loaded_with_live_canary("reports/missing-no-submit-readiness.json");
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+    let mut loaded = loaded_with_live_canary("reports/missing-no-submit-readiness.json");
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
     let audit = Phase8StrategyInputSafetyAudit::approved();
 
     let report = evaluate_phase8_canary_preflight(
@@ -129,8 +264,10 @@ async fn preflight_blocks_missing_phase7_report_before_build() {
 async fn preflight_blocks_strategy_input_safety_audit_before_build() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let report_path = temp.path().join("no-submit-readiness.json");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
     write_satisfied_no_submit_readiness_report(&report_path);
-    let loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
+    let mut loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
 
     let report = evaluate_phase8_canary_preflight(
         &loaded,
@@ -157,8 +294,10 @@ async fn preflight_blocks_strategy_input_safety_audit_before_build() {
 async fn preflight_blocks_live_order_count_above_one_before_build() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let report_path = temp.path().join("no-submit-readiness.json");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
     write_satisfied_no_submit_readiness_report(&report_path);
     let mut loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
     loaded
         .root
         .live_canary
@@ -265,9 +404,13 @@ fn strategy_audit_blocks_zero_time_to_market_end() {
 fn strategy_audit_binds_price_to_beat_source_to_approved_source() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("strategy-input.json");
-    std::fs::write(
+    let (source_path, source_hash) =
+        write_current_market_selection_source(temp.path()).expect("source should write");
+    write_current_strategy_input_evidence(
         &evidence_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"operator_configured_source","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        "operator_configured_source",
+        &source_path,
+        &source_hash,
     )
     .expect("strategy input evidence should write");
     let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
@@ -298,8 +441,16 @@ fn strategy_audit_binds_price_to_beat_source_to_approved_source() {
 fn strategy_audit_uses_market_end_field_name_for_time_remaining() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("strategy-input.json");
-    let current_evidence = r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#;
-    std::fs::write(&evidence_path, current_evidence).expect("strategy input evidence should write");
+    let (source_path, source_hash) =
+        write_current_market_selection_source(temp.path()).expect("source should write");
+    let current_evidence = serde_json::to_string(&current_strategy_input_evidence_json(
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+        &source_path,
+        &source_hash,
+    ))
+    .expect("strategy input evidence should serialize");
+    std::fs::write(&evidence_path, &current_evidence)
+        .expect("strategy input evidence should write");
     let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
         .expect("strategy evidence should hash");
 
@@ -325,8 +476,16 @@ fn strategy_audit_uses_market_end_field_name_for_time_remaining() {
 fn strategy_audit_uses_unit_suffixed_selected_market_observation_timestamp() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("strategy-input.json");
-    let current_evidence = r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#;
-    std::fs::write(&evidence_path, current_evidence).expect("strategy input evidence should write");
+    let (source_path, source_hash) =
+        write_current_market_selection_source(temp.path()).expect("source should write");
+    let current_evidence = serde_json::to_string(&current_strategy_input_evidence_json(
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+        &source_path,
+        &source_hash,
+    ))
+    .expect("strategy input evidence should serialize");
+    std::fs::write(&evidence_path, &current_evidence)
+        .expect("strategy input evidence should write");
     let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
         .expect("strategy evidence should hash");
 
@@ -758,6 +917,29 @@ fn strategy_audit_requires_nearest_next_market_selection() {
 }
 
 #[test]
+fn strategy_audit_requires_source_bound_current_market_selection() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
+    std::fs::write(
+        &strategy_input_path,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+    )
+    .expect("strategy input evidence should write");
+    let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
+        .expect("strategy input evidence hash should compute");
+
+    let audit = strategy_audit_from_evidence_file(&strategy_input_path, strategy_input_hash)
+        .expect("current strategy input evidence should parse");
+
+    assert!(!audit.is_approved());
+    assert!(
+        audit
+            .block_reasons()
+            .contains(&Phase8CanaryBlockReason::InvalidMarketSelectionBinding)
+    );
+}
+
+#[test]
 fn strategy_audit_rejects_next_market_without_source_bound_candidates() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
@@ -948,9 +1130,13 @@ fn strategy_audit_rejects_unknown_input_evidence_fields() {
 fn strategy_audit_verifies_input_evidence_hash_before_approving() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("strategy-input-evidence.json");
-    std::fs::write(
+    let (source_path, source_hash) =
+        write_current_market_selection_source(temp.path()).expect("source should write");
+    write_current_strategy_input_evidence(
         &evidence_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+        &source_path,
+        &source_hash,
     )
     .expect("strategy input evidence should write");
     let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
@@ -1732,6 +1918,7 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: "phase8-ssm-manifest.json".to_string(),
         ssm_manifest_sha256: "expected-ssm-hash".to_string(),
         strategy_input_evidence_path: "phase8-strategy-input-evidence.json".to_string(),
@@ -1749,6 +1936,7 @@ fn operator_approval_envelope_rejects_head_or_checksum_mismatch() {
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
         approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        strategy_cancel_path: None,
     };
 
     let error = envelope
@@ -1807,11 +1995,13 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     let abort_plan_hash = Phase8OperatorApprovalEnvelope::sha256_file(&abort_plan_path)
         .expect("abort plan hash should compute");
     let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
-    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -1828,7 +2018,8 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        canary_evidence_path: live_canary_canary_evidence_path(&loaded),
+        strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
     };
 
     let too_early_error = envelope
@@ -1871,6 +2062,8 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     );
 
     let zero_window_consumption_path = temp.path().join("phase8-zero-window-consumed.json");
+    let mut zero_window_loaded = loaded.clone();
+    bind_loaded_approval_consumption_path(&mut zero_window_loaded, &zero_window_consumption_path);
     let mut zero_window_envelope = envelope.clone();
     zero_window_envelope.approval_not_before_unix_secs = 1_500;
     zero_window_envelope.approval_not_after_unix_secs = 1_500;
@@ -1881,7 +2074,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
-            &loaded,
+            &zero_window_loaded,
             1_500,
         )
         .expect_err("zero-length approval window should fail closed");
@@ -1898,6 +2091,11 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
 
     let expired_with_drift_consumption_path =
         temp.path().join("phase8-expired-with-drift-consumed.json");
+    let mut expired_with_drift_loaded = loaded.clone();
+    bind_loaded_approval_consumption_path(
+        &mut expired_with_drift_loaded,
+        &expired_with_drift_consumption_path,
+    );
     let mut expired_with_drift_envelope = envelope.clone();
     expired_with_drift_envelope.financial_envelope_sha256 =
         "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
@@ -1909,7 +2107,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
-            &loaded,
+            &expired_with_drift_loaded,
             2_001,
         )
         .expect_err("expired approval with drifted evidence should fail closed");
@@ -1943,13 +2141,16 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     );
     let consumption: Value =
         serde_json::from_str(&consumption_json).expect("consumption should parse as json");
-    assert_eq!(
-        consumption["record_kind"],
-        "phase8_operator_approval_consumption"
-    );
+    assert_eq!(consumption["record_kind"], APPROVAL_CONSUMPTION_RECORD_KIND);
     assert_eq!(consumption["approval_not_before_unix_secs"], 1_000);
     assert_eq!(consumption["approval_not_after_unix_secs"], 2_000);
     assert_eq!(consumption["consumed_unix_secs"], 1_500);
+    assert_eq!(
+        consumption["approval_envelope_sha256"],
+        PHASE8_TEST_APPROVAL_ENVELOPE_SHA256
+    );
+    assert!(consumption.get("client_order_id_hash").is_none());
+    assert!(consumption.get("venue_order_id_hash").is_none());
 
     let expired_after_consumption_error = envelope
         .validate_and_consume_against(
@@ -1983,6 +2184,146 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     );
 }
 
+#[tokio::test]
+async fn operator_approval_consumption_writer_output_is_accepted_by_live_gate() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let report_path = temp.path().join("no-submit-readiness.json");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+    write_satisfied_no_submit_readiness_report(&report_path);
+
+    let mut loaded = loaded_with_live_canary(&report_path.to_string_lossy());
+    let root_toml_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(&loaded.root_path)
+        .expect("root TOML hash should compute");
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("operator evidence should exist");
+    operator_evidence.approval_consumption_path =
+        approval_consumption_path.to_string_lossy().to_string();
+
+    let envelope = Phase8OperatorApprovalEnvelope {
+        head_sha: operator_evidence.head_sha.clone(),
+        root_toml_path: loaded.root_path.to_string_lossy().to_string(),
+        root_toml_sha256,
+        approval_envelope_sha256: operator_evidence.approval_envelope_sha256.clone(),
+        ssm_manifest_path: operator_evidence.ssm_manifest_path.clone(),
+        ssm_manifest_sha256: operator_evidence.ssm_manifest_sha256.clone(),
+        strategy_input_evidence_path: operator_evidence.strategy_input_evidence_path.clone(),
+        strategy_input_evidence_sha256: operator_evidence.strategy_input_evidence_sha256.clone(),
+        financial_envelope_path: operator_evidence.financial_envelope_path.clone(),
+        financial_envelope_sha256: operator_evidence.financial_envelope_sha256.clone(),
+        pre_run_state_path: operator_evidence.pre_run_state_path.clone(),
+        pre_run_state_sha256: operator_evidence.pre_run_state_sha256.clone(),
+        abort_plan_path: operator_evidence.abort_plan_path.clone(),
+        abort_plan_sha256: operator_evidence.abort_plan_sha256.clone(),
+        operator_approval_id: "operator-approved-canary-001".to_string(),
+        approval_not_before_unix_secs: operator_evidence.approval_not_before_unix_seconds,
+        approval_not_after_unix_secs: operator_evidence.approval_not_after_unix_seconds,
+        approval_nonce_path: operator_evidence.approval_nonce_path.clone(),
+        approval_nonce_sha256: operator_evidence.approval_nonce_sha256.clone(),
+        approval_consumption_path: operator_evidence.approval_consumption_path.clone(),
+        canary_evidence_path: operator_evidence.canary_evidence_path.clone(),
+        strategy_cancel_path: operator_evidence.strategy_cancel_path.clone(),
+    };
+
+    envelope
+        .consume_approval_after_live_runner_entry_validation(
+            &loaded,
+            current_unix_seconds_for_test() as i64,
+        )
+        .expect("writer-created approval consumption proof should persist");
+
+    check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("live gate should accept writer-created approval consumption proof");
+}
+
+#[test]
+fn operator_approval_consumption_rejects_strategy_cancel_path_drift_before_spend() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let report_path = temp.path().join("no-submit-readiness.json");
+
+    let mut loaded = loaded_with_live_canary(&report_path.to_string_lossy());
+    let root_toml_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(&loaded.root_path)
+        .expect("root TOML hash should compute");
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("operator evidence should exist");
+    assert!(
+        operator_evidence.strategy_cancel_path.is_some(),
+        "fixture must configure strategy_cancel_path to prove env/TOML drift"
+    );
+
+    let base_envelope = Phase8OperatorApprovalEnvelope {
+        head_sha: operator_evidence.head_sha.clone(),
+        root_toml_path: loaded.root_path.to_string_lossy().to_string(),
+        root_toml_sha256,
+        approval_envelope_sha256: operator_evidence.approval_envelope_sha256.clone(),
+        ssm_manifest_path: operator_evidence.ssm_manifest_path.clone(),
+        ssm_manifest_sha256: operator_evidence.ssm_manifest_sha256.clone(),
+        strategy_input_evidence_path: operator_evidence.strategy_input_evidence_path.clone(),
+        strategy_input_evidence_sha256: operator_evidence.strategy_input_evidence_sha256.clone(),
+        financial_envelope_path: operator_evidence.financial_envelope_path.clone(),
+        financial_envelope_sha256: operator_evidence.financial_envelope_sha256.clone(),
+        pre_run_state_path: operator_evidence.pre_run_state_path.clone(),
+        pre_run_state_sha256: operator_evidence.pre_run_state_sha256.clone(),
+        abort_plan_path: operator_evidence.abort_plan_path.clone(),
+        abort_plan_sha256: operator_evidence.abort_plan_sha256.clone(),
+        operator_approval_id: "operator-approved-canary-001".to_string(),
+        approval_not_before_unix_secs: operator_evidence.approval_not_before_unix_seconds,
+        approval_not_after_unix_secs: operator_evidence.approval_not_after_unix_seconds,
+        approval_nonce_path: operator_evidence.approval_nonce_path.clone(),
+        approval_nonce_sha256: operator_evidence.approval_nonce_sha256.clone(),
+        approval_consumption_path: String::new(),
+        canary_evidence_path: operator_evidence.canary_evidence_path.clone(),
+        strategy_cancel_path: operator_evidence.strategy_cancel_path.clone(),
+    };
+
+    for (case, strategy_cancel_path) in [
+        ("missing", None),
+        (
+            "wrong",
+            Some(
+                temp.path()
+                    .join("wrong-strategy-cancel.json")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+        ),
+    ] {
+        let approval_consumption_path = temp
+            .path()
+            .join(format!("phase8-approval-consumed-{case}.json"));
+        let mut envelope = base_envelope.clone();
+        envelope.approval_consumption_path =
+            approval_consumption_path.to_string_lossy().to_string();
+        envelope.strategy_cancel_path = strategy_cancel_path;
+        let mut loaded_for_case = loaded.clone();
+        bind_loaded_approval_consumption_path(&mut loaded_for_case, &approval_consumption_path);
+
+        let error = envelope
+            .consume_approval_after_live_runner_entry_validation(
+                &loaded_for_case,
+                current_unix_seconds_for_test() as i64,
+            )
+            .expect_err("strategy_cancel_path drift must fail before spending approval");
+
+        assert!(
+            error.to_string().contains("strategy_cancel_path"),
+            "error should mention strategy_cancel_path drift: {error}"
+        );
+        assert!(
+            !approval_consumption_path.exists(),
+            "strategy_cancel_path drift must not create approval consumption evidence"
+        );
+    }
+}
+
 #[test]
 fn operator_approval_envelope_verifies_ssm_manifest_hash() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -2006,6 +2347,7 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -2023,6 +2365,7 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
         approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        strategy_cancel_path: None,
     };
 
     envelope
@@ -2071,6 +2414,7 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -2088,6 +2432,7 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
         approval_nonce_sha256: "expected-approval-nonce-hash".to_string(),
         approval_consumption_path: "phase8-approval-consumed.json".to_string(),
         canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        strategy_cancel_path: None,
     };
 
     envelope
@@ -2207,10 +2552,19 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
     let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should exist")
+        .max_notional_per_order = "5.00".to_string();
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -2227,7 +2581,8 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        canary_evidence_path: live_canary_canary_evidence_path(&loaded),
+        strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
     };
 
     let mut wrong_hash_envelope = envelope.clone();
@@ -2582,6 +2937,10 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     let mut mismatched_forced_exit_order_envelope = envelope.clone();
     mismatched_forced_exit_order_envelope.approval_consumption_path =
         forced_exit_consumption_path.to_string_lossy().to_string();
+    bind_loaded_approval_consumption_path(
+        &mut mismatched_forced_exit_order_loaded,
+        &forced_exit_consumption_path,
+    );
     let mismatched_forced_exit_order_error = mismatched_forced_exit_order_envelope
         .validate_and_consume_against(
             "expected-head",
@@ -2629,6 +2988,10 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         let mut mismatched_forced_exit_required_envelope = envelope.clone();
         mismatched_forced_exit_required_envelope.approval_consumption_path =
             consumption_path.to_string_lossy().to_string();
+        bind_loaded_approval_consumption_path(
+            &mut mismatched_forced_exit_required_loaded,
+            &consumption_path,
+        );
         let mismatched_forced_exit_required_error = mismatched_forced_exit_required_envelope
             .validate_and_consume_against(
                 "expected-head",
@@ -2795,6 +3158,10 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         let mut mismatched_optional_order_field_envelope = envelope.clone();
         mismatched_optional_order_field_envelope.approval_consumption_path =
             consumption_path.to_string_lossy().to_string();
+        bind_loaded_approval_consumption_path(
+            &mut mismatched_optional_order_field_loaded,
+            &consumption_path,
+        );
         let mismatched_optional_order_field_error = mismatched_optional_order_field_envelope
             .validate_and_consume_against(
                 "expected-head",
@@ -2845,6 +3212,10 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         let mut mismatched_required_order_field_envelope = envelope.clone();
         mismatched_required_order_field_envelope.approval_consumption_path =
             consumption_path.to_string_lossy().to_string();
+        bind_loaded_approval_consumption_path(
+            &mut mismatched_required_order_field_loaded,
+            &consumption_path,
+        );
         let mismatched_required_order_field_error = mismatched_required_order_field_envelope
             .validate_and_consume_against(
                 "expected-head",
@@ -2901,12 +3272,17 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     uppercase_oms_envelope.financial_envelope_sha256 = uppercase_oms_financial_envelope_hash;
     uppercase_oms_envelope.approval_consumption_path =
         uppercase_oms_consumption_path.to_string_lossy().to_string();
+    let mut uppercase_oms_loaded = loaded.clone();
+    bind_loaded_approval_consumption_path(
+        &mut uppercase_oms_loaded,
+        &uppercase_oms_consumption_path,
+    );
     uppercase_oms_envelope
         .validate_and_consume_against(
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
-            &loaded,
+            &uppercase_oms_loaded,
             1_500,
         )
         .expect("financial envelope should canonicalize OMS through NT parsing");
@@ -3008,12 +3384,17 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         uppercase_order_enums_consumption_path
             .to_string_lossy()
             .to_string();
+    let mut uppercase_order_enums_loaded = loaded.clone();
+    bind_loaded_approval_consumption_path(
+        &mut uppercase_order_enums_loaded,
+        &uppercase_order_enums_consumption_path,
+    );
     uppercase_order_enums_envelope
         .validate_and_consume_against(
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
-            &loaded,
+            &uppercase_order_enums_loaded,
             1_500,
         )
         .expect("financial envelope should canonicalize NT order enum spellings");
@@ -3087,6 +3468,10 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         uppercase_loaded_order_enums_consumption_path
             .to_string_lossy()
             .to_string();
+    bind_loaded_approval_consumption_path(
+        &mut uppercase_order_enums_loaded,
+        &uppercase_loaded_order_enums_consumption_path,
+    );
     uppercase_loaded_order_enums_envelope
         .validate_and_consume_against(
             "expected-head",
@@ -3148,12 +3533,17 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     invalid_order_enum_envelope.approval_consumption_path = invalid_order_enum_consumption_path
         .to_string_lossy()
         .to_string();
+    let mut invalid_order_enum_loaded = loaded.clone();
+    bind_loaded_approval_consumption_path(
+        &mut invalid_order_enum_loaded,
+        &invalid_order_enum_consumption_path,
+    );
     let invalid_order_enum_error = invalid_order_enum_envelope
         .validate_and_consume_against(
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
-            &loaded,
+            &invalid_order_enum_loaded,
             1_500,
         )
         .expect_err("unparseable financial envelope order enum should fail closed");
@@ -3202,12 +3592,14 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     invalid_oms_envelope.financial_envelope_sha256 = invalid_oms_financial_envelope_hash;
     invalid_oms_envelope.approval_consumption_path =
         invalid_oms_consumption_path.to_string_lossy().to_string();
+    let mut invalid_oms_loaded = loaded.clone();
+    bind_loaded_approval_consumption_path(&mut invalid_oms_loaded, &invalid_oms_consumption_path);
     let invalid_oms_error = invalid_oms_envelope
         .validate_and_consume_against(
             "expected-head",
             "expected-config-hash",
             "operator-approved-canary-001",
-            &loaded,
+            &invalid_oms_loaded,
             1_500,
         )
         .expect_err("unparseable financial envelope OMS should fail closed");
@@ -3233,6 +3625,10 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     multi_strategy_envelope.approval_consumption_path = multi_strategy_consumption_path
         .to_string_lossy()
         .to_string();
+    bind_loaded_approval_consumption_path(
+        &mut multi_strategy_loaded,
+        &multi_strategy_consumption_path,
+    );
     multi_strategy_envelope
         .validate_and_consume_against(
             "expected-head",
@@ -3307,11 +3703,13 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
     let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
     let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
-    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -3328,7 +3726,8 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        canary_evidence_path: live_canary_canary_evidence_path(&loaded),
+        strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
     };
 
     let mut wrong_hash_envelope = envelope.clone();
@@ -3483,11 +3882,13 @@ fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
     let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
     let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
-    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -3504,7 +3905,8 @@ fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        canary_evidence_path: live_canary_canary_evidence_path(&loaded),
+        strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
     };
 
     let error = envelope
@@ -3567,11 +3969,13 @@ fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
     let approval_nonce_hash = Phase8OperatorApprovalEnvelope::sha256_file(&approval_nonce_path)
         .expect("approval nonce hash should compute");
     let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
-    let loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    let mut loaded = loaded_with_live_canary("reports/no-submit-readiness.json");
+    bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: "expected-head".to_string(),
         root_toml_path: "config/live.local.toml".to_string(),
         root_toml_sha256: "expected-config-hash".to_string(),
+        approval_envelope_sha256: PHASE8_TEST_APPROVAL_ENVELOPE_SHA256.to_string(),
         ssm_manifest_path: manifest_path.to_string_lossy().to_string(),
         ssm_manifest_sha256: manifest_hash,
         strategy_input_evidence_path: strategy_input_path.to_string_lossy().to_string(),
@@ -3588,7 +3992,8 @@ fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256: approval_nonce_hash,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        canary_evidence_path: "phase8-canary-evidence.json".to_string(),
+        canary_evidence_path: live_canary_canary_evidence_path(&loaded),
+        strategy_cancel_path: live_canary_strategy_cancel_path(&loaded),
     };
 
     let mut wrong_hash_envelope = envelope.clone();
@@ -3660,11 +4065,49 @@ fn loaded_with_live_canary(report_path: &str) -> LoadedBoltV3Config {
         approval_id: "operator-approved-canary-001".to_string(),
         no_submit_readiness_report_path: report_path.to_string(),
         max_no_submit_readiness_report_bytes: 4096,
-        operator_evidence: None,
+        readiness_report_max_age_seconds: 60,
+        reference_quote_max_age_seconds: 10,
+        reference_quote_wait_timeout_seconds: 10,
+        reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+        reference_quote_probe_log_events: true,
+        reference_quote_probe_log_commands: true,
+        operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         max_live_order_count: 1,
         max_notional_per_order: "0.25".to_string(),
     });
     loaded
+}
+
+fn bind_loaded_approval_consumption_path(
+    loaded: &mut LoadedBoltV3Config,
+    approval_consumption_path: &Path,
+) {
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("live canary operator evidence should exist")
+        .approval_consumption_path = approval_consumption_path.to_string_lossy().to_string();
+}
+
+fn live_canary_strategy_cancel_path(loaded: &LoadedBoltV3Config) -> Option<String> {
+    loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+        .and_then(|operator_evidence| operator_evidence.strategy_cancel_path.clone())
+}
+
+fn live_canary_canary_evidence_path(loaded: &LoadedBoltV3Config) -> String {
+    loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+        .map(|operator_evidence| operator_evidence.canary_evidence_path.clone())
+        .expect("live canary operator evidence should configure canary_evidence_path")
 }
 
 fn alternate_oms_type(approved: OmsType) -> OmsType {
@@ -3693,6 +4136,7 @@ fn write_satisfied_no_submit_readiness_report(path: &std::path::Path) {
         APPROVAL_ID_HASH_KEY: sha256_hex("operator-approved-canary-001".as_bytes()),
         EXECUTABLE_IDENTITY_KEY: current_executable_identity(),
         CONFIG_BUNDLE_CHECKSUM_KEY: loaded.config_bundle_checksum,
+        GENERATED_AT_UNIX_SECONDS_KEY: current_unix_seconds_for_test(),
         STAGES_KEY: [
             {STAGE_KEY: OPERATOR_APPROVAL_STAGE, STATUS_KEY: STATUS_SATISFIED},
             {STAGE_KEY: SECRET_RESOLUTION_STAGE, STATUS_KEY: STATUS_SATISFIED},
@@ -3717,8 +4161,19 @@ fn current_executable_identity() -> String {
     sha256_hex(&std::fs::read(path).expect("current test executable should be readable"))
 }
 
+fn current_unix_seconds_for_test() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("test system clock should be after UNIX_EPOCH")
+        .as_secs()
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn sha256_text_for_test(value: &str) -> String {
+    sha256_hex(value.as_bytes())
 }
 
 fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_order: &str) {
@@ -3821,10 +4276,15 @@ fn write_phase8_abort_plan(path: &std::path::Path, panic_policy_missing: bool) {
         "execution_client_id": "polymarket_main",
         "configured_target_id": "btc_updown_5m",
         "cancel_if_open_defined": true,
+        "cancel_if_open_evidence_hash": sha256_text_for_test("cancel-if-open-proof"),
         "nt_accepted_venue_pending_abort_defined": true,
+        "nt_accepted_venue_pending_abort_evidence_hash": sha256_text_for_test("nt-accepted-venue-pending-proof"),
         "partial_fill_abort_defined": true,
+        "partial_fill_abort_evidence_hash": sha256_text_for_test("partial-fill-proof"),
         "network_partition_during_submit_abort_defined": true,
-        "panic_gate_trip_abort_defined": !panic_policy_missing
+        "network_partition_during_submit_abort_evidence_hash": sha256_text_for_test("network-partition-proof"),
+        "panic_gate_trip_abort_defined": !panic_policy_missing,
+        "panic_gate_trip_abort_evidence_hash": sha256_text_for_test("panic-gate-service-policy-proof")
     });
     std::fs::write(
         path,

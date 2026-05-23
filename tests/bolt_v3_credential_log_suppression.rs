@@ -33,9 +33,15 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::io::AsRawFd;
 
 use bolt_v2::{
-    bolt_v3_config::load_bolt_v3_config, bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
+    bolt_v3_config::load_bolt_v3_config,
+    bolt_v3_live_node::build_bolt_v3_live_node_with_summary,
+    bolt_v3_providers::{
+        binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
+    },
 };
+use nautilus_core::string::secret::REDACTED;
 use tempfile::tempfile;
+use zeroize::ZeroizeOnDrop;
 
 const FORBIDDEN_CREDENTIAL_MARKERS: &[&str] = &[
     // nautilus_polymarket::common::credential::Credentials::resolve
@@ -44,6 +50,47 @@ const FORBIDDEN_CREDENTIAL_MARKERS: &[&str] = &[
     "Auto-detected Ed25519 API key",
     "Using HMAC SHA256 API key",
 ];
+
+fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+
+#[test]
+fn resolved_provider_secret_debug_redacts_and_zeroizes_on_drop() {
+    assert_zeroize_on_drop::<ResolvedBoltV3PolymarketSecrets>();
+    assert_zeroize_on_drop::<ResolvedBoltV3BinanceSecrets>();
+
+    let polymarket = ResolvedBoltV3PolymarketSecrets {
+        private_key: "poly-private-sentinel".to_string(),
+        api_key: "poly-api-key-sentinel".to_string(),
+        api_secret: "poly-api-secret-sentinel".to_string(),
+        passphrase: "poly-passphrase-sentinel".to_string(),
+    };
+    let polymarket_debug = format!("{polymarket:?}");
+    assert!(polymarket_debug.contains(REDACTED));
+    for secret in [
+        "poly-private-sentinel",
+        "poly-api-key-sentinel",
+        "poly-api-secret-sentinel",
+        "poly-passphrase-sentinel",
+    ] {
+        assert!(
+            !polymarket_debug.contains(secret),
+            "Polymarket resolved-secret Debug leaked `{secret}`: {polymarket_debug}"
+        );
+    }
+
+    let binance = ResolvedBoltV3BinanceSecrets {
+        api_key: "binance-api-key-sentinel".to_string(),
+        api_secret: "binance-api-secret-sentinel".to_string(),
+    };
+    let binance_debug = format!("{binance:?}");
+    assert!(binance_debug.contains(REDACTED));
+    for secret in ["binance-api-key-sentinel", "binance-api-secret-sentinel"] {
+        assert!(
+            !binance_debug.contains(secret),
+            "Binance resolved-secret Debug leaked `{secret}`: {binance_debug}"
+        );
+    }
+}
 
 #[test]
 fn v3_livenode_build_does_not_emit_nt_credential_info_logs_to_standard_streams() {

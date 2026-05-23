@@ -14,10 +14,11 @@ use nautilus_common::msgbus::{
     MStr, ShareableMessageHandler, TypedHandler, subscribe_account_state, subscribe_any,
     subscribe_book_deltas, subscribe_book_depth10, subscribe_funding_rates, subscribe_index_prices,
     subscribe_instrument_close, subscribe_instruments, subscribe_mark_prices,
-    subscribe_order_events, subscribe_position_events, subscribe_quotes, subscribe_trades,
-    unsubscribe_account_state, unsubscribe_any, unsubscribe_book_deltas, unsubscribe_book_depth10,
-    unsubscribe_funding_rates, unsubscribe_index_prices, unsubscribe_instrument_close,
-    unsubscribe_instruments, unsubscribe_mark_prices, unsubscribe_order_events,
+    subscribe_order_events, subscribe_portfolio_snapshot, subscribe_position_events,
+    subscribe_quotes, subscribe_trades, unsubscribe_account_state, unsubscribe_any,
+    unsubscribe_book_deltas, unsubscribe_book_depth10, unsubscribe_funding_rates,
+    unsubscribe_index_prices, unsubscribe_instrument_close, unsubscribe_instruments,
+    unsubscribe_mark_prices, unsubscribe_order_events, unsubscribe_portfolio_snapshot,
     unsubscribe_position_events, unsubscribe_quotes, unsubscribe_trades,
 };
 use nautilus_live::node::{LiveNode, LiveNodeHandle};
@@ -26,7 +27,7 @@ use nautilus_model::{
         FundingRateUpdate, IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate, OrderBookDeltas,
         OrderBookDepth10, QuoteTick, TradeTick, close::InstrumentClose,
     },
-    events::{AccountState, OrderEventAny, PositionEvent},
+    events::{AccountState, OrderEventAny, PortfolioSnapshot, PositionEvent},
     instruments::InstrumentAny,
 };
 use nautilus_persistence::{
@@ -62,16 +63,19 @@ const INSTRUMENT_STATUSES_PATTERN: &str = "data.status.*.*";
 const ORDER_EVENTS_PATTERN: &str = "events.order.*";
 const POSITION_EVENTS_PATTERN: &str = "events.position.*";
 const ACCOUNT_STATES_PATTERN: &str = "events.account.*";
+const PORTFOLIO_SNAPSHOTS_PATTERN: &str = "events.portfolio.*";
 const TRADING_STATE_CHANGED_PATTERN: &str = "events.risk";
 const LOCAL_URI_MARKER: &str = "://";
 
 const INSTRUMENTS_STREAM_CLASS: &str = stringify!(instruments);
 const STATUS_DIR: &str = stringify!(status);
 const ACCOUNTS_DIR: &str = stringify!(accounts);
+const PORTFOLIO_SNAPSHOT_DIR: &str = stringify!(portfolio_snapshot);
 const FUNDING_RATES_DIR: &str = stringify!(funding_rates);
 const RISK_DIR: &str = stringify!(risk);
 const INSTRUMENT_STATUS_FILE: &str = "instrument_status.jsonl";
 const ACCOUNT_STATE_FILE: &str = "account_state.jsonl";
+const SNAPSHOTS_FILE: &str = "snapshots.jsonl";
 const UPDATES_FILE: &str = "updates.jsonl";
 const TRADING_STATE_CHANGED_FILE: &str = "trading_state_changed.jsonl";
 
@@ -85,6 +89,7 @@ const FUNDING_RATE_UPDATE_TYPE: &str = stringify!(FundingRateUpdate);
 const ORDER_EVENT_ANY_TYPE: &str = stringify!(OrderEventAny);
 const POSITION_EVENT_TYPE: &str = stringify!(PositionEvent);
 const ACCOUNT_STATE_TYPE: &str = stringify!(AccountState);
+const PORTFOLIO_SNAPSHOT_TYPE: &str = stringify!(PortfolioSnapshot);
 const INSTRUMENT_ANY_TYPE: &str = stringify!(InstrumentAny);
 const INSTRUMENT_CLOSE_TYPE: &str = stringify!(InstrumentClose);
 const INSTRUMENT_STATUS_TYPE: &str = stringify!(InstrumentStatus);
@@ -101,6 +106,7 @@ struct TypedHandlers {
     order_events: TypedHandler<OrderEventAny>,
     position_events: TypedHandler<PositionEvent>,
     account_states: TypedHandler<AccountState>,
+    portfolio_snapshots: TypedHandler<PortfolioSnapshot>,
 }
 
 struct AnyHandlers {
@@ -116,6 +122,7 @@ struct JsonlCapturePaths {
     funding_rates: PathBuf,
     order_events: PathBuf,
     position_events: PathBuf,
+    portfolio_snapshots: PathBuf,
     trading_state_changed: PathBuf,
 }
 
@@ -125,6 +132,7 @@ struct JsonlCaptureWriters {
     funding_rates: JsonlAppender,
     order_events: JsonlAppender,
     position_events: JsonlAppender,
+    portfolio_snapshots: JsonlAppender,
     trading_state_changed: JsonlAppender,
 }
 
@@ -204,6 +212,7 @@ enum CaptureMessage {
     OrderEvent(Box<OrderEventAny>),
     PositionEvent(Box<PositionEvent>),
     AccountState(Box<AccountState>),
+    PortfolioSnapshot(Box<PortfolioSnapshot>),
     TradingStateChanged(Box<TradingStateChanged>),
 }
 
@@ -259,6 +268,10 @@ impl NtRuntimeCaptureGuards {
             unsubscribe_order_events(order_events_pattern(), &typed.order_events);
             unsubscribe_position_events(position_events_pattern(), &typed.position_events);
             unsubscribe_account_state(account_states_pattern(), &typed.account_states);
+            unsubscribe_portfolio_snapshot(
+                portfolio_snapshots_pattern(),
+                &typed.portfolio_snapshots,
+            );
         }
 
         if let Some(any) = self.any_handlers.take() {
@@ -342,6 +355,10 @@ fn position_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
 
 fn account_states_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern(ACCOUNT_STATES_PATTERN)
+}
+
+fn portfolio_snapshots_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
+    MStr::pattern(PORTFOLIO_SNAPSHOTS_PATTERN)
 }
 
 fn trading_state_changed_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
@@ -563,6 +580,16 @@ async fn run_capture_worker(
         }
     }
 
+    if let Err(error) = jsonl_writers.portfolio_snapshots.close() {
+        let close_error = anyhow!("Failed to close PortfolioSnapshot JSONL writer: {error}");
+        if primary_error.is_none() {
+            failure_state.record_failure(close_error.to_string());
+            primary_error = Some(close_error);
+        } else {
+            log::error!("{close_error}");
+        }
+    }
+
     if let Err(error) = jsonl_writers.trading_state_changed.close() {
         let close_error = anyhow!("Failed to close TradingStateChanged JSONL writer: {error}");
         if primary_error.is_none() {
@@ -652,6 +679,10 @@ async fn write_capture_message(
             .account_states
             .append(&jsonl_paths.account_states, &state)
             .map_err(|e| anyhow!("AccountState JSONL write failed: {e}")),
+        CaptureMessage::PortfolioSnapshot(snapshot) => jsonl_writers
+            .portfolio_snapshots
+            .append(&jsonl_paths.portfolio_snapshots, &snapshot)
+            .map_err(|e| anyhow!("PortfolioSnapshot JSONL write failed: {e}")),
         CaptureMessage::TradingStateChanged(event) => jsonl_writers
             .trading_state_changed
             .append(&jsonl_paths.trading_state_changed, &event)
@@ -687,6 +718,9 @@ pub fn wire_nt_runtime_capture(
             .join(STATUS_DIR)
             .join(INSTRUMENT_STATUS_FILE),
         account_states: spool_root_path.join(ACCOUNTS_DIR).join(ACCOUNT_STATE_FILE),
+        portfolio_snapshots: spool_root_path
+            .join(PORTFOLIO_SNAPSHOT_DIR)
+            .join(SNAPSHOTS_FILE),
         funding_rates: spool_root_path.join(FUNDING_RATES_DIR).join(UPDATES_FILE),
         order_events: execution_state::order_events_path(&spool_root_path),
         position_events: execution_state::position_events_path(&spool_root_path),
@@ -716,6 +750,7 @@ pub fn wire_nt_runtime_capture(
         JsonlCaptureWriters {
             status: JsonlAppender::new(),
             account_states: JsonlAppender::new(),
+            portfolio_snapshots: JsonlAppender::new(),
             funding_rates: JsonlAppender::new(),
             order_events: JsonlAppender::new(),
             position_events: JsonlAppender::new(),
@@ -861,6 +896,22 @@ pub fn wire_nt_runtime_capture(
     });
     subscribe_account_state(account_states_pattern(), account_states.clone(), None);
 
+    let portfolio_sender = sender.clone();
+    let portfolio_failure_state = failure_state.clone();
+    let portfolio_snapshots = TypedHandler::from(move |snapshot: &PortfolioSnapshot| {
+        send_capture_message(
+            &portfolio_sender,
+            CaptureMessage::PortfolioSnapshot(Box::new(snapshot.clone())),
+            PORTFOLIO_SNAPSHOT_TYPE,
+            &portfolio_failure_state,
+        );
+    });
+    subscribe_portfolio_snapshot(
+        portfolio_snapshots_pattern(),
+        portfolio_snapshots.clone(),
+        None,
+    );
+
     let instrument_sender = sender.clone();
     let instrument_failure_state = failure_state.clone();
     let instruments = TypedHandler::from(move |instrument: &InstrumentAny| {
@@ -940,6 +991,7 @@ pub fn wire_nt_runtime_capture(
             order_events,
             position_events,
             account_states,
+            portfolio_snapshots,
         }),
         any_handlers: Some(AnyHandlers {
             instruments,

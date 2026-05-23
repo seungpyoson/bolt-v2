@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import stat as stat_module
 import sys
@@ -263,7 +264,8 @@ def _candidate_for_rotating_log(surface: PolicySurface, home_root: Path) -> dict
         "reason": "size_exceeds_max_bytes",
         "bytes": stat.st_size,
         "max_bytes": max_bytes,
-        "estimated_reclaim_bytes": stat.st_size - max_bytes,
+        "estimated_reclaim_bytes": 0,
+        "state_token": _state_token(candidate_path),
     }
 
 
@@ -323,6 +325,7 @@ def _candidates_for_sessions(surface: PolicySurface, home_root: Path) -> list[di
                 "bytes": stat.st_size,
                 "ttl_days": ttl_days,
                 "estimated_reclaim_bytes": stat.st_size,
+                "state_token": _state_token(candidate_path),
             }
         )
     return candidates
@@ -344,6 +347,26 @@ def _safe_measured_bytes(path: Path) -> int:
         return _measured_bytes(path)
     except OSError:
         return 0
+
+
+def _state_token(path: Path) -> str:
+    digest = hashlib.sha256()
+
+    def add_stat(label: str, stat_result: os.stat_result) -> None:
+        digest.update(label.encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0")
+        digest.update(
+            f"{stat_result.st_dev}:{stat_result.st_ino}:{stat_result.st_mode}:"
+            f"{stat_result.st_size}:{stat_result.st_mtime_ns}".encode("ascii")
+        )
+        digest.update(b"\0")
+
+    root_stat = path.lstat()
+    add_stat(".", root_stat)
+    if stat_module.S_ISDIR(root_stat.st_mode) and not stat_module.S_ISLNK(root_stat.st_mode):
+        for child in sorted(path.rglob("*")):
+            add_stat(str(child.relative_to(path)), child.lstat())
+    return digest.hexdigest()
 
 
 def _project_pinned_channels(repo_root: Path, *, required: bool = False) -> tuple[str, ...]:
@@ -447,6 +470,7 @@ def _rustup_entries(
                 "reason": "exact_name_remove_policy",
                 "bytes": measured_bytes,
                 "estimated_reclaim_bytes": measured_bytes,
+                "state_token": _state_token(path),
             }
         )
 
@@ -717,6 +741,7 @@ def _candidate_signature(candidate: dict[str, Any]) -> tuple[Any, ...]:
         candidate.get("reason"),
         candidate.get("bytes"),
         candidate.get("estimated_reclaim_bytes"),
+        candidate.get("state_token"),
     )
 
 

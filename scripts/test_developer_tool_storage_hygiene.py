@@ -246,10 +246,10 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
 
         self.assertEqual(candidates[("codex.log", "codex-tui.log")]["action"], "rotate")
         self.assertEqual(candidates[("codex.log", "codex-tui.log")]["reason"], "size_exceeds_max_bytes")
-        self.assertEqual(candidates[("codex.log", "codex-tui.log")]["estimated_reclaim_bytes"], 6)
+        self.assertEqual(candidates[("codex.log", "codex-tui.log")]["estimated_reclaim_bytes"], 0)
         self.assertEqual(candidates[("factory.log", "droid-log-single.log")]["action"], "rotate")
         self.assertEqual(candidates[("factory.log", "droid-log-single.log")]["reason"], "size_exceeds_max_bytes")
-        self.assertEqual(candidates[("factory.log", "droid-log-single.log")]["estimated_reclaim_bytes"], 8)
+        self.assertEqual(candidates[("factory.log", "droid-log-single.log")]["estimated_reclaim_bytes"], 0)
 
     def test_dry_run_honors_cleanup_mode_none_for_configured_surface(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1191,6 +1191,47 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(payload["reason"], "candidate_state_changed")
         self.assertEqual(payload["actions_taken"], [])
 
+    def test_apply_rescans_and_aborts_when_same_size_candidate_state_changed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            original = b"same-size-log-a"
+            changed = b"same-size-log-b"
+            self.assertEqual(len(original), len(changed))
+            codex_log.write_bytes(original)
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            time.sleep(0.01)
+            codex_log.write_bytes(changed)
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report), "--process-snapshot-empty"],
+            )
+            after = codex_log.read_bytes()
+            rotated_exists = codex_log.with_name("codex-tui.log.1").exists()
+
+        self.assertEqual(result.returncode, 1, (result.stdout, result.stderr))
+        self.assertEqual(after, changed)
+        self.assertFalse(rotated_exists)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "aborted")
+        self.assertEqual(payload["reason"], "candidate_state_changed")
+        self.assertEqual(payload["actions_taken"], [])
+
     def test_apply_aborts_when_policy_changes_after_dry_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -1314,7 +1355,7 @@ class DeveloperToolStorageHygieneTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
         payload = json.loads(result.stdout)
         self.assertEqual(payload["status"], "applied")
-        self.assertGreater(payload["bytes_reclaimed"], 0)
+        self.assertEqual(payload["bytes_reclaimed"], 0)
         self.assertEqual(payload["actions_taken"][0]["action"], "rotate")
         self.assertEqual(payload["refusal_reasons"][0]["reason"], "symlink_not_followed")
         protected = {entry["reason"] for entry in payload["skipped_protected"]}

@@ -4330,6 +4330,158 @@ reason = "This is the stable record-kind discriminator for the static operator-a
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_RELEASE_MANIFEST_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the release-manifest source-proof artifact schema version emitted by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_release_manifest_source_proof.v1"'''
+context = '''"bolt_v3.pre_run_release_manifest_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for release-manifest source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"../Cargo.toml"'''
+context = '''const BUILD_CARGO_TOML: &str = include_str!("../Cargo.toml");'''
+classification = "release_manifest_build_source_path"
+reason = "This embeds the package Cargo.toml at build time so release-manifest proof can compare candidate NT revision against the compiled build pin; it is not an operator runtime path."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"cargo_toml_utf8"'''
+context = '''let cargo_toml_text = release_manifest_utf8(&cargo_toml_bytes, "cargo_toml_utf8")?;'''
+classification = "release_manifest_source_parser_field"
+reason = "This names the Cargo.toml UTF-8 parse proof field for diagnostics; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"cargo_lock_utf8"'''
+context = '''let cargo_lock_text = release_manifest_utf8(&cargo_lock_bytes, "cargo_lock_utf8")?;'''
+classification = "release_manifest_source_parser_field"
+reason = "This names the Cargo.lock UTF-8 parse proof field for diagnostics; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"clob_signing_source_utf8"'''
+context = '''let clob_signing_text = release_manifest_utf8(&clob_signing_bytes, "clob_signing_source_utf8")?;'''
+classification = "release_manifest_source_parser_field"
+reason = "This names the CLOB signing source UTF-8 parse proof field for diagnostics; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"dependencies"'''
+context = '''collect_nautilus_revisions_from_dependency_table(&value, "dependencies", &mut revisions)?;'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.toml dependency table name parsed to derive the pinned NT revision; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"dev-dependencies"'''
+context = '''collect_nautilus_revisions_from_dependency_table(&value, "dev-dependencies", &mut revisions)?;'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.toml dev-dependency table name parsed to derive the pinned NT revision; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"build-dependencies"'''
+context = '''collect_nautilus_revisions_from_dependency_table(&value, "build-dependencies", &mut revisions)?;'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.toml build-dependency table name parsed to derive the pinned NT revision; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"nautilus-"'''
+context = '''if !name.starts_with("nautilus-") {'''
+classification = "release_manifest_source_parser_prefix"
+reason = "This filters Cargo dependency/package names to NT crates so the release manifest proves the compiled NT pin; it is not a runtime venue or market value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"git"'''
+context = '''.get("git")'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.toml git-source field name used to derive the pinned NT revision; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"https://github.com/nautechsystems/nautilus_trader.git"'''
+context = '''const NAUTILUS_TRADER_GIT_URL: &str = "https://github.com/nautechsystems/nautilus_trader.git";'''
+classification = "release_manifest_source_parser_identity"
+reason = "This exact upstream NT git URL is required for Cargo.toml pin verification; it is not a trading venue, market, or operator policy value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"rev"'''
+context = '''.get("rev")'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.toml git revision field name used to derive the pinned NT revision; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"package"'''
+context = '''let Some(packages) = value.get("package").and_then(toml::Value::as_array) else {'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.lock package array field name used to verify lockfile/source agreement; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"name"'''
+context = '''let Some(name) = package_table.get("name").and_then(toml::Value::as_str) else {'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.lock package name field used to identify NT crates; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"source"'''
+context = '''.get("source")'''
+classification = "release_manifest_source_parser_field"
+reason = "This is the Cargo.lock source field name used to verify NT git revision agreement; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"git+https://github.com/nautechsystems/nautilus_trader.git"'''
+context = '''"git+https://github.com/nautechsystems/nautilus_trader.git";'''
+classification = "release_manifest_source_parser_identity"
+reason = "This exact upstream NT Cargo.lock source origin is required for lockfile pin verification; it is not a trading venue, market, or operator policy value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"rev="'''
+context = '''.any(|part| part.strip_prefix("rev=") == Some(expected_revision))'''
+classification = "release_manifest_source_parser_field"
+reason = "This parses the Cargo.lock git-source query revision marker; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"const DOMAIN_VERSION"'''
+context = '''let Some(after_const) = line.strip_prefix("const DOMAIN_VERSION") else {'''
+classification = "release_manifest_source_parser_field"
+reason = "This parses NT's CLOB signing domain-version constant from pinned source; it derives evidence rather than configuring trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"ssm-manifest"'''
 context = '''const SSM_MANIFEST_ARTIFACT_NAME: &str = "ssm-manifest";'''
@@ -4791,6 +4943,14 @@ literal = '''64'''
 context = '''value.len() == 64'''
 classification = "sha256_hex_width"
 reason = "This is the structural length of a SHA-256 hex digest used to validate operator evidence hashes, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''40'''
+context = '''value.len() == 40'''
+classification = "git_head_sha_width"
+reason = "This is the structural length of a git commit SHA used to validate NT revision evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

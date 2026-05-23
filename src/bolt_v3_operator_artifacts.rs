@@ -54,6 +54,13 @@ const APPROVAL_NONCE_FILE_NAME: &str = "approval-nonce.json";
 const STATIC_ARTIFACTS_MANIFEST_FILE_NAME: &str = "static-artifacts-manifest.json";
 const OPERATOR_EVIDENCE_PACKET_SCHEMA_VERSION: u32 = 1;
 const OPERATOR_EVIDENCE_PACKET_RECORD_KIND: &str = "bolt_v3.operator_evidence_packet.v1";
+const PRE_RUN_RELEASE_MANIFEST_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_RELEASE_MANIFEST_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.pre_run_release_manifest_source_proof.v1";
+const BUILD_CARGO_TOML: &str = include_str!("../Cargo.toml");
+const NAUTILUS_TRADER_GIT_URL: &str = "https://github.com/nautechsystems/nautilus_trader.git";
+const NAUTILUS_TRADER_CARGO_LOCK_SOURCE_PREFIX: &str =
+    "git+https://github.com/nautechsystems/nautilus_trader.git";
 const MARKET_SELECTION_SOURCE_BLOCKER: &str = "market-selection remains blocked: T046 missing source-bound price-to-beat strategy decision input";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -205,6 +212,17 @@ pub struct WrittenOperatorArtifact {
     pub sha256: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8PreRunReleaseManifestSourceProof {
+    pub nt_revision: String,
+    pub clob_signing_version: String,
+    pub nt_revision_matches_compiled_pin: bool,
+    pub cargo_toml_sha256: String,
+    pub cargo_lock_sha256: String,
+    pub clob_signing_source_sha256: String,
+    pub evidence_hash: String,
+}
+
 impl fmt::Debug for WrittenOperatorArtifact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WrittenOperatorArtifact")
@@ -238,6 +256,13 @@ pub enum BoltV3OperatorArtifactError {
     },
     PreRunStatePrerequisiteUnproven {
         prerequisite: &'static str,
+    },
+    PreRunReleaseManifestSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    PreRunReleaseManifestSourceInvalid {
+        field: &'static str,
     },
     AbortPrerequisiteUnproven {
         prerequisite: &'static str,
@@ -378,6 +403,13 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::PreRunStatePrerequisiteUnproven { prerequisite } => write!(
                 f,
                 "refusing to write successful pre-run state evidence because {prerequisite}"
+            ),
+            Self::PreRunReleaseManifestSourceRead { source, .. } => {
+                write!(f, "failed to read release manifest source input: {source}")
+            }
+            Self::PreRunReleaseManifestSourceInvalid { field } => write!(
+                f,
+                "release manifest source field `{field}` is invalid or unproven"
             ),
             Self::AbortPrerequisiteUnproven { prerequisite } => write!(
                 f,
@@ -533,6 +565,7 @@ impl Error for BoltV3OperatorArtifactError {
             Self::MarketSelection(error) => Some(error.as_ref()),
             Self::MarketSelectionSourceRead { source, .. } => Some(source),
             Self::MarketSelectionSourceParse { source, .. } => Some(source),
+            Self::PreRunReleaseManifestSourceRead { source, .. } => Some(source),
             Self::StaticManifestRead { source, .. } => Some(source),
             Self::StaticManifestParse { source, .. } => Some(source),
             Self::StaticManifestArtifactFileRead { source, .. } => Some(source),
@@ -924,6 +957,275 @@ pub fn write_pre_run_state_artifact_from_source_proofs(
     )
     .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
     write_json_artifact_create_new(path, &artifact)
+}
+
+pub fn collect_pre_run_release_manifest_source_proof(
+    cargo_toml_path: &Path,
+    cargo_lock_path: &Path,
+    clob_signing_source_path: &Path,
+    max_source_bytes: u64,
+) -> Result<Phase8PreRunReleaseManifestSourceProof, BoltV3OperatorArtifactError> {
+    let cargo_toml_bytes = read_release_manifest_source_file(cargo_toml_path, max_source_bytes)?;
+    let cargo_lock_bytes = read_release_manifest_source_file(cargo_lock_path, max_source_bytes)?;
+    let clob_signing_bytes =
+        read_release_manifest_source_file(clob_signing_source_path, max_source_bytes)?;
+    let cargo_toml_sha256 = hex::encode(Sha256::digest(&cargo_toml_bytes));
+    let cargo_lock_sha256 = hex::encode(Sha256::digest(&cargo_lock_bytes));
+    let clob_signing_source_sha256 = hex::encode(Sha256::digest(&clob_signing_bytes));
+    let cargo_toml_text = release_manifest_utf8(&cargo_toml_bytes, "cargo_toml_utf8")?;
+    let cargo_lock_text = release_manifest_utf8(&cargo_lock_bytes, "cargo_lock_utf8")?;
+    let clob_signing_text = release_manifest_utf8(&clob_signing_bytes, "clob_signing_source_utf8")?;
+    let nt_revision = nautilus_revision_from_cargo_toml(cargo_toml_text)?;
+    let compiled_nt_revision = compiled_nautilus_revision_from_build_manifest()?;
+    if nt_revision != compiled_nt_revision {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+                field: "compiled_nautilus_revision",
+            },
+        );
+    }
+    require_cargo_lock_matches_nautilus_revision(cargo_lock_text, nt_revision.as_str())?;
+    let clob_signing_version = clob_domain_version_from_source(clob_signing_text)?;
+    let proof_input = Phase8PreRunReleaseManifestSourceProofHashInput {
+        schema_version: PRE_RUN_RELEASE_MANIFEST_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: PRE_RUN_RELEASE_MANIFEST_SOURCE_PROOF_RECORD_KIND,
+        nt_revision: nt_revision.as_str(),
+        clob_signing_version: clob_signing_version.as_str(),
+        cargo_toml_sha256: cargo_toml_sha256.as_str(),
+        cargo_lock_sha256: cargo_lock_sha256.as_str(),
+        clob_signing_source_sha256: clob_signing_source_sha256.as_str(),
+    };
+    let evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8PreRunReleaseManifestSourceProof {
+        nt_revision,
+        clob_signing_version,
+        nt_revision_matches_compiled_pin: true,
+        cargo_toml_sha256,
+        cargo_lock_sha256,
+        clob_signing_source_sha256,
+        evidence_hash,
+    })
+}
+
+#[derive(Serialize)]
+struct Phase8PreRunReleaseManifestSourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    nt_revision: &'a str,
+    clob_signing_version: &'a str,
+    cargo_toml_sha256: &'a str,
+    cargo_lock_sha256: &'a str,
+    clob_signing_source_sha256: &'a str,
+}
+
+fn read_release_manifest_source_file(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<Vec<u8>, BoltV3OperatorArtifactError> {
+    read_file_bounded(path, max_bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::PreRunReleaseManifestSourceRead {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
+}
+
+fn release_manifest_utf8<'a>(
+    bytes: &'a [u8],
+    field: &'static str,
+) -> Result<&'a str, BoltV3OperatorArtifactError> {
+    std::str::from_utf8(bytes)
+        .map_err(|_| BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid { field })
+}
+
+fn nautilus_revision_from_cargo_toml(
+    cargo_toml_text: &str,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    let value: toml::Value = toml::from_str(cargo_toml_text).map_err(|_| {
+        BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+            field: "cargo_toml",
+        }
+    })?;
+    let mut revisions = Vec::new();
+    collect_nautilus_revisions_from_dependency_table(&value, "dependencies", &mut revisions)?;
+    collect_nautilus_revisions_from_dependency_table(&value, "dev-dependencies", &mut revisions)?;
+    collect_nautilus_revisions_from_dependency_table(&value, "build-dependencies", &mut revisions)?;
+    revisions.sort();
+    revisions.dedup();
+    match revisions.as_slice() {
+        [revision] => Ok(revision.clone()),
+        _ => Err(
+            BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+                field: "nautilus_revision",
+            },
+        ),
+    }
+}
+
+fn compiled_nautilus_revision_from_build_manifest() -> Result<String, BoltV3OperatorArtifactError> {
+    nautilus_revision_from_cargo_toml(BUILD_CARGO_TOML).map_err(|_| {
+        BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+            field: "compiled_nautilus_revision",
+        }
+    })
+}
+
+fn collect_nautilus_revisions_from_dependency_table(
+    value: &toml::Value,
+    table_name: &'static str,
+    revisions: &mut Vec<String>,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let Some(table) = value.get(table_name).and_then(toml::Value::as_table) else {
+        return Ok(());
+    };
+    for (name, dependency) in table {
+        if !name.starts_with("nautilus-") {
+            continue;
+        }
+        let dependency_table = dependency.as_table().ok_or(
+            BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+                field: "nautilus_dependency_source",
+            },
+        )?;
+        let git = dependency_table
+            .get("git")
+            .and_then(toml::Value::as_str)
+            .ok_or(
+                BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+                    field: "nautilus_dependency_source",
+                },
+            )?;
+        if git != NAUTILUS_TRADER_GIT_URL {
+            return Err(
+                BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+                    field: "nautilus_dependency_source",
+                },
+            );
+        }
+        let Some(revision) = dependency_table
+            .get("rev")
+            .and_then(toml::Value::as_str)
+            .filter(|value| is_git_head_sha(value))
+        else {
+            return Err(
+                BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+                    field: "nautilus_revision",
+                },
+            );
+        };
+        revisions.push(revision.to_string());
+    }
+    Ok(())
+}
+
+fn require_cargo_lock_matches_nautilus_revision(
+    cargo_lock_text: &str,
+    expected_revision: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let value: toml::Value = toml::from_str(cargo_lock_text).map_err(|_| {
+        BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+            field: "cargo_lock",
+        }
+    })?;
+    let Some(packages) = value.get("package").and_then(toml::Value::as_array) else {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+                field: "cargo_lock",
+            },
+        );
+    };
+    let mut saw_nautilus_source = false;
+    for package in packages {
+        let Some(package_table) = package.as_table() else {
+            continue;
+        };
+        let Some(name) = package_table.get("name").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        if !name.starts_with("nautilus-") {
+            continue;
+        }
+        let source = package_table
+            .get("source")
+            .and_then(toml::Value::as_str)
+            .ok_or(
+                BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+                    field: "nautilus_revision",
+                },
+            )?;
+        saw_nautilus_source = true;
+        if !cargo_lock_source_matches_revision(source, expected_revision) {
+            return Err(
+                BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+                    field: "nautilus_revision",
+                },
+            );
+        }
+    }
+    if saw_nautilus_source {
+        Ok(())
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+                field: "nautilus_revision",
+            },
+        )
+    }
+}
+
+fn cargo_lock_source_matches_revision(source: &str, expected_revision: &str) -> bool {
+    let Some((source_before_fragment, fragment)) = source.rsplit_once('#') else {
+        return false;
+    };
+    let Some((source_origin, query)) = source_before_fragment.split_once('?') else {
+        return false;
+    };
+    fragment == expected_revision
+        && source_origin == NAUTILUS_TRADER_CARGO_LOCK_SOURCE_PREFIX
+        && query
+            .split('&')
+            .any(|part| part.strip_prefix("rev=") == Some(expected_revision))
+}
+
+fn clob_domain_version_from_source(source: &str) -> Result<String, BoltV3OperatorArtifactError> {
+    for line in source.lines().map(str::trim) {
+        let Some(after_const) = line.strip_prefix("const DOMAIN_VERSION") else {
+            continue;
+        };
+        let Some(after_type_marker) = after_const.trim_start().strip_prefix(':') else {
+            continue;
+        };
+        let Some(after_equals) = after_type_marker
+            .split_once('=')
+            .map(|(_, value)| value.trim())
+        else {
+            continue;
+        };
+        let Some(after_open_quote) = after_equals.strip_prefix('"') else {
+            continue;
+        };
+        let Some((version, _)) = after_open_quote.split_once('"') else {
+            continue;
+        };
+        let version = version.trim();
+        if version.is_empty() {
+            break;
+        }
+        return Ok(version.to_string());
+    }
+    Err(
+        BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
+            field: "clob_signing_version",
+        },
+    )
+}
+
+fn is_git_head_sha(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 pub fn write_static_operator_artifacts(

@@ -557,6 +557,328 @@ fn pre_run_state_writer_rejects_each_unsatisfied_source_proof_without_artifact()
 }
 
 #[test]
+fn pre_run_release_manifest_source_proof_derives_source_owned_values() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let cargo_toml_path = repo_path("Cargo.toml");
+    let cargo_lock_path = repo_path("Cargo.lock");
+    let eip712_path = temp.path().join("eip712.rs");
+    std::fs::write(
+        &eip712_path,
+        r#"
+const CLOB_AUTH_DOMAIN_VERSION: &str = "1";
+const DOMAIN_VERSION: &str = "2";
+"#,
+    )
+    .expect("eip712 fixture should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_release_manifest_source_proof(
+        &cargo_toml_path,
+        &cargo_lock_path,
+        &eip712_path,
+        1024 * 1024,
+    )
+    .expect("source-owned release manifest proof should build");
+
+    assert_eq!(proof.clob_signing_version, "2");
+    assert!(proof.nt_revision_matches_compiled_pin);
+    assert_eq!(proof.cargo_toml_sha256, sha256_file(&cargo_toml_path));
+    assert_eq!(proof.cargo_lock_sha256, sha256_file(&cargo_lock_path));
+    assert_eq!(proof.clob_signing_source_sha256, sha256_file(&eip712_path));
+    assert_eq!(proof.evidence_hash.len(), 64);
+    assert!(
+        proof
+            .evidence_hash
+            .chars()
+            .all(|value| value.is_ascii_hexdigit() && !value.is_ascii_uppercase()),
+        "release manifest evidence hash must be lowercase sha256"
+    );
+}
+
+#[test]
+fn pre_run_release_manifest_source_proof_rejects_compiled_nt_revision_drift() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let cargo_toml_path = temp.path().join("Cargo.toml");
+    let cargo_lock_path = temp.path().join("Cargo.lock");
+    let eip712_path = temp.path().join("eip712.rs");
+    let agreed_but_uncompiled_revision = "1111111111111111111111111111111111111111";
+
+    std::fs::write(
+        &cargo_toml_path,
+        format!(
+            r#"
+[dependencies]
+nautilus-polymarket = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{agreed_but_uncompiled_revision}" }}
+"#
+        ),
+    )
+    .expect("Cargo.toml fixture should write");
+    std::fs::write(
+        &cargo_lock_path,
+        format!(
+            r#"
+[[package]]
+name = "nautilus-polymarket"
+version = "0.0.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev={agreed_but_uncompiled_revision}#{agreed_but_uncompiled_revision}"
+"#
+        ),
+    )
+    .expect("Cargo.lock fixture should write");
+    std::fs::write(&eip712_path, r#"const DOMAIN_VERSION: &str = "2";"#)
+        .expect("eip712 fixture should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_release_manifest_source_proof(
+        &cargo_toml_path,
+        &cargo_lock_path,
+        &eip712_path,
+        1024 * 1024,
+    )
+    .expect_err("release manifest proof must reject NT revision drift from compiled build pin");
+
+    assert!(
+        error.to_string().contains("release manifest"),
+        "release manifest compiled-pin drift error should identify proof surface: {error}"
+    );
+    assert!(
+        error.to_string().contains("nautilus"),
+        "release manifest compiled-pin drift error should identify NT revision drift: {error}"
+    );
+}
+
+#[test]
+fn pre_run_release_manifest_source_proof_rejects_nt_revision_drift() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let cargo_toml_path = temp.path().join("Cargo.toml");
+    let cargo_lock_path = temp.path().join("Cargo.lock");
+    let eip712_path = temp.path().join("eip712.rs");
+    let cargo_toml_revision = "1111111111111111111111111111111111111111";
+    let cargo_lock_revision = "2222222222222222222222222222222222222222";
+
+    std::fs::write(
+        &cargo_toml_path,
+        format!(
+            r#"
+[dependencies]
+nautilus-polymarket = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{cargo_toml_revision}" }}
+"#
+        ),
+    )
+    .expect("Cargo.toml fixture should write");
+    std::fs::write(
+        &cargo_lock_path,
+        format!(
+            r#"
+[[package]]
+name = "nautilus-polymarket"
+version = "0.0.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev={cargo_lock_revision}#{cargo_lock_revision}"
+"#
+        ),
+    )
+    .expect("Cargo.lock fixture should write");
+    std::fs::write(&eip712_path, r#"const DOMAIN_VERSION: &str = "2";"#)
+        .expect("eip712 fixture should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_release_manifest_source_proof(
+        &cargo_toml_path,
+        &cargo_lock_path,
+        &eip712_path,
+        1024 * 1024,
+    )
+    .expect_err("release manifest proof must reject Cargo.toml/Cargo.lock NT drift");
+
+    assert!(
+        error.to_string().contains("release manifest"),
+        "release manifest drift error should identify proof surface: {error}"
+    );
+    assert!(
+        error.to_string().contains("nautilus"),
+        "release manifest drift error should identify NT revision drift: {error}"
+    );
+}
+
+#[test]
+fn pre_run_release_manifest_source_proof_rejects_malformed_nautilus_toml_dependency() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let nt_revision = current_fixture_nt_revision();
+    let (cargo_toml_path, cargo_lock_path, eip712_path) = write_release_manifest_source_files(
+        temp.path(),
+        format!(
+            r#"
+[dependencies]
+nautilus-polymarket = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{nt_revision}" }}
+nautilus-model = {{ path = "../local-nautilus-model" }}
+"#
+        ),
+        format!(
+            r#"
+[[package]]
+name = "nautilus-polymarket"
+version = "0.0.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev={nt_revision}#{nt_revision}"
+"#
+        ),
+        r#"const DOMAIN_VERSION: &str = "2";"#,
+    );
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_release_manifest_source_proof(
+        &cargo_toml_path,
+        &cargo_lock_path,
+        &eip712_path,
+        1024 * 1024,
+    )
+    .expect_err("release manifest proof must reject non-upstream nautilus Cargo.toml dependency");
+
+    assert!(
+        error.to_string().contains("nautilus"),
+        "malformed nautilus dependency error should identify NT dependency proof: {error}"
+    );
+}
+
+#[test]
+fn pre_run_release_manifest_source_proof_rejects_malformed_nautilus_lock_package() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let nt_revision = current_fixture_nt_revision();
+    let (cargo_toml_path, cargo_lock_path, eip712_path) = write_release_manifest_source_files(
+        temp.path(),
+        format!(
+            r#"
+[dependencies]
+nautilus-polymarket = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{nt_revision}" }}
+nautilus-model = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{nt_revision}" }}
+"#
+        ),
+        format!(
+            r#"
+[[package]]
+name = "nautilus-polymarket"
+version = "0.0.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev={nt_revision}#{nt_revision}"
+
+[[package]]
+name = "nautilus-model"
+version = "0.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#
+        ),
+        r#"const DOMAIN_VERSION: &str = "2";"#,
+    );
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_release_manifest_source_proof(
+        &cargo_toml_path,
+        &cargo_lock_path,
+        &eip712_path,
+        16 * 1024,
+    )
+    .expect_err("release manifest proof must reject non-upstream nautilus Cargo.lock package");
+
+    assert!(
+        error.to_string().contains("nautilus"),
+        "malformed nautilus package error should identify NT lock proof: {error}"
+    );
+}
+
+#[test]
+fn pre_run_release_manifest_source_proof_rejects_lookalike_nautilus_toml_git_url() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let nt_revision = current_fixture_nt_revision();
+    let (cargo_toml_path, cargo_lock_path, eip712_path) = write_release_manifest_source_files(
+        temp.path(),
+        format!(
+            r#"
+[dependencies]
+nautilus-polymarket = {{ git = "https://github.com/not-nautechsystems/nautilus_trader.git", rev = "{nt_revision}" }}
+"#
+        ),
+        format!(
+            r#"
+[[package]]
+name = "nautilus-polymarket"
+version = "0.0.0"
+source = "git+https://github.com/nautechsystems/nautilus_trader.git?rev={nt_revision}#{nt_revision}"
+"#
+        ),
+        r#"const DOMAIN_VERSION: &str = "2";"#,
+    );
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_release_manifest_source_proof(
+        &cargo_toml_path,
+        &cargo_lock_path,
+        &eip712_path,
+        16 * 1024,
+    )
+    .expect_err("release manifest proof must reject lookalike NT Cargo.toml git URLs");
+
+    assert!(
+        error.to_string().contains("nautilus"),
+        "lookalike Cargo.toml git URL error should identify NT source proof: {error}"
+    );
+}
+
+#[test]
+fn pre_run_release_manifest_source_proof_rejects_lookalike_nautilus_lock_source() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let nt_revision = current_fixture_nt_revision();
+    let (cargo_toml_path, cargo_lock_path, eip712_path) = write_release_manifest_source_files(
+        temp.path(),
+        format!(
+            r#"
+[dependencies]
+nautilus-polymarket = {{ git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "{nt_revision}" }}
+"#
+        ),
+        format!(
+            r#"
+[[package]]
+name = "nautilus-polymarket"
+version = "0.0.0"
+source = "git+https://github.com/not-nautechsystems/nautilus_trader.git?rev={nt_revision}#{nt_revision}"
+"#
+        ),
+        r#"const DOMAIN_VERSION: &str = "2";"#,
+    );
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_release_manifest_source_proof(
+        &cargo_toml_path,
+        &cargo_lock_path,
+        &eip712_path,
+        16 * 1024,
+    )
+    .expect_err("release manifest proof must reject lookalike NT Cargo.lock sources");
+
+    assert!(
+        error.to_string().contains("nautilus"),
+        "lookalike Cargo.lock source error should identify NT source proof: {error}"
+    );
+}
+
+#[test]
+fn pre_run_release_manifest_source_proof_ignores_prefixed_domain_version_names() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let cargo_toml_path = repo_path("Cargo.toml");
+    let cargo_lock_path = repo_path("Cargo.lock");
+    let eip712_path = temp.path().join("eip712.rs");
+    std::fs::write(
+        &eip712_path,
+        r#"
+const DOMAIN_VERSION_FAKE: &str = "not-the-domain";
+const DOMAIN_VERSION: &str = "2";
+"#,
+    )
+    .expect("eip712 fixture should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_release_manifest_source_proof(
+        &cargo_toml_path,
+        &cargo_lock_path,
+        &eip712_path,
+        1024 * 1024,
+    )
+    .expect("release manifest proof should parse exact DOMAIN_VERSION identifier");
+
+    assert_eq!(proof.clob_signing_version, "2");
+}
+
+#[test]
 fn static_operator_artifacts_report_market_selection_blocker_until_runtime_proof_exists() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded
@@ -3544,6 +3866,37 @@ fn write_static_artifacts_manifest_for_test(
 
 fn sha256_bytes(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn sha256_file(path: &std::path::Path) -> String {
+    sha256_bytes(&std::fs::read(path).expect("sha256 fixture input should read"))
+}
+
+fn current_fixture_nt_revision() -> String {
+    let cargo_toml =
+        std::fs::read_to_string(repo_path("Cargo.toml")).expect("repo Cargo.toml should read");
+    let marker = "rev = \"";
+    let revision = cargo_toml
+        .split(marker)
+        .nth(1)
+        .and_then(|value| value.split('"').next())
+        .expect("repo Cargo.toml should pin NT git revision");
+    revision.to_string()
+}
+
+fn write_release_manifest_source_files(
+    dir: &std::path::Path,
+    cargo_toml: impl AsRef<str>,
+    cargo_lock: impl AsRef<str>,
+    eip712: impl AsRef<str>,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let cargo_toml_path = dir.join("Cargo.toml");
+    let cargo_lock_path = dir.join("Cargo.lock");
+    let eip712_path = dir.join("eip712.rs");
+    std::fs::write(&cargo_toml_path, cargo_toml.as_ref()).expect("Cargo.toml fixture should write");
+    std::fs::write(&cargo_lock_path, cargo_lock.as_ref()).expect("Cargo.lock fixture should write");
+    std::fs::write(&eip712_path, eip712.as_ref()).expect("eip712 fixture should write");
+    (cargo_toml_path, cargo_lock_path, eip712_path)
 }
 
 fn sha256_text(value: &str) -> String {

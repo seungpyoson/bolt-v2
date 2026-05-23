@@ -614,6 +614,92 @@ fn static_operator_artifacts_validate_financial_envelope_before_first_write() {
 }
 
 #[test]
+fn static_operator_artifacts_remove_prior_outputs_when_later_write_fails() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_nonce_path = temp.path().join("approval-nonce.json");
+    std::fs::create_dir(&approval_nonce_path).expect("blocking directory should create");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_static_operator_artifacts(
+        &loaded,
+        strategy_instance_id,
+        temp.path(),
+    )
+    .expect_err("approval nonce write failure should fail static artifact generation");
+
+    assert!(
+        error.to_string().contains("write"),
+        "static artifact write failure should surface as write error: {error}"
+    );
+    assert!(
+        !temp.path().join("ssm-manifest.json").exists(),
+        "later write failure must remove prior SSM manifest"
+    );
+    assert!(
+        !temp.path().join("financial-envelope.json").exists(),
+        "later write failure must remove prior financial envelope"
+    );
+    assert!(
+        approval_nonce_path.is_dir(),
+        "cleanup must not remove pre-existing output-directory entry"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn approval_nonce_writer_creates_private_mode_artifact() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("approval-nonce.json");
+
+    bolt_v2::bolt_v3_operator_artifacts::write_approval_nonce_artifact(&path)
+        .expect("approval nonce should write");
+
+    let mode = std::fs::metadata(&path)
+        .expect("approval nonce metadata should read")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "operator artifact files should be private by default"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn approval_nonce_writer_rejects_broken_symlink_output_path() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let target = temp.path().join("unexpected-target.json");
+    let link = temp.path().join("approval-nonce-link.json");
+    std::os::unix::fs::symlink(&target, &link).expect("broken symlink should create");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_approval_nonce_artifact(&link)
+        .expect_err("artifact writer should reject symlink output path");
+
+    assert!(
+        error.to_string().contains("write"),
+        "symlink rejection should surface as write failure: {error}"
+    );
+    assert!(
+        !target.exists(),
+        "artifact writer must not follow broken symlink and create target"
+    );
+    assert!(
+        std::fs::symlink_metadata(&link).is_ok(),
+        "failed symlink write must leave the original symlink untouched"
+    );
+}
+
+#[test]
 fn approval_packet_assembly_refuses_static_manifest_with_blockers() {
     let mut loaded = load_fixture_with_live_canary();
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -2218,6 +2304,17 @@ fn static_artifact_reader_uses_no_follow_identity_verified_open() {
     assert!(
         source.contains("MetadataExt"),
         "operator artifact reads must compare opened file identity on Unix"
+    );
+}
+
+#[test]
+fn approval_nonce_builder_zeroizes_raw_nonce_after_hashing() {
+    let source = std::fs::read_to_string(repo_path("src/bolt_v3_operator_artifacts.rs"))
+        .expect("operator artifacts source should read");
+
+    assert!(
+        source.contains("nonce.zeroize()"),
+        "approval nonce builder must clear raw nonce bytes after hashing"
     );
 }
 

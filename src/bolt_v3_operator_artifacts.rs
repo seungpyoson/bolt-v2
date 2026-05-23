@@ -9,6 +9,7 @@ use anyhow::anyhow;
 use nautilus_model::instruments::InstrumentAny;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 use crate::{
     bolt_v3_config::{LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
@@ -1626,7 +1627,10 @@ fn build_approval_nonce_artifact()
 -> Result<BoltV3ApprovalNonceArtifact, BoltV3OperatorArtifactError> {
     let mut nonce = [0_u8; APPROVAL_NONCE_BYTES];
     getrandom::fill(&mut nonce).map_err(BoltV3OperatorArtifactError::Random)?;
-    let nonce_sha256 = hex::encode(Sha256::digest(nonce));
+    let mut hasher = Sha256::new();
+    hasher.update(&nonce[..]);
+    let nonce_sha256 = hex::encode(hasher.finalize());
+    nonce.zeroize();
     Ok(BoltV3ApprovalNonceArtifact {
         schema_version: APPROVAL_NONCE_SCHEMA_VERSION,
         record_kind: APPROVAL_NONCE_RECORD_KIND,
@@ -1648,9 +1652,10 @@ fn write_json_artifact_create_new<T: Serialize>(
         })?;
     }
     let bytes = serde_json::to_vec_pretty(value).map_err(BoltV3OperatorArtifactError::Serialize)?;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    configure_private_artifact_create_options(&mut options);
+    let mut file = options
         .open(path)
         .map_err(|source| BoltV3OperatorArtifactError::Write {
             path: path.to_path_buf(),
@@ -1668,6 +1673,16 @@ fn write_json_artifact_create_new<T: Serialize>(
         sha256: hex::encode(Sha256::digest(bytes)),
     })
 }
+
+#[cfg(unix)]
+fn configure_private_artifact_create_options(options: &mut fs::OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+}
+
+#[cfg(not(unix))]
+fn configure_private_artifact_create_options(_options: &mut fs::OpenOptions) {}
 
 fn ensure_output_path_absent(path: &Path) -> Result<(), BoltV3OperatorArtifactError> {
     if path.exists() {

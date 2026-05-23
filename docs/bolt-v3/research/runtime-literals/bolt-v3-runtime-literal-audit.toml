@@ -4779,6 +4779,14 @@ reason = "This is a fail-closed diagnostic template for operator-artifact read i
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
+literal = '''0o600'''
+context = '''options.mode(0o600).custom_flags(libc::O_NOFOLLOW);'''
+classification = "operator_artifact_file_permission"
+reason = "This is the private file mode for generated operator-evidence artifacts on Unix; it constrains artifact exposure and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
 literal = '''64'''
 context = '''value.len() == 64'''
 classification = "sha256_hex_width"

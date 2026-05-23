@@ -154,3 +154,61 @@ Future enablement requirement:
 - The #375 implementation must expose deterministic status/preflight data before cleanup.
 - Cleanup candidates must be config-driven, dry-run first, and protected by explicit exclusions for pinned/active toolchains and unsafe Codex database families.
 - Any operator-facing new cleanup command or changed command semantics requires explicit operator approval before implementation.
+
+## Pre-Implementation Review Gate
+
+Exact reviewed head: `ecaea9720f18575fc8524195b11e60a65e798a51`
+Base: `7a700fbf8129b04b7c94488880322a1f0df82fc6`
+
+| Reviewer | Model/runtime | Scope | Verdict | Blockers |
+|---|---|---|---|---|
+| Claude | `claude-opus-4-7`, subscription OAuth route | Plan/spec/tasks selected branch-diff artifacts | Approve | None. Output could not independently confirm unselected tree scope, but selected artifacts covered the branch-diff planning surface. |
+| Gemini | `gemini-3.1-pro-preview` | Plan/spec/tasks selected branch-diff artifacts | Approve | None. |
+| GLM | `glm-5.1` | Plan/spec/tasks selected branch-diff artifacts | Approve | None. |
+| DeepSeek | `deepseek-v4-pro` | Plan/spec/tasks selected branch-diff artifacts | Approve | None. |
+
+Operator approval for the T012 command surface was recorded by the operator's `continue` response after the explicit approval question for status/dry-run/preflight/apply and process-snapshot inputs.
+
+## Implementation Evidence
+
+| File | Purpose |
+|---|---|
+| `ci/developer-tool-storage-hygiene.toml` | TOML authority for #375 path families, thresholds, active-writer process names, exact rustup retention/removal lists, report-only surfaces, and adjacent context. |
+| `scripts/developer_tool_storage_hygiene.py` | Status, dry-run, preflight, and apply implementation. Apply requires a saved dry-run report, revalidates policy, re-scans candidates, refuses active writers from explicit process-name snapshots, and mutates only revalidated scratch/configured candidates. |
+| `scripts/test_developer_tool_storage_hygiene.py` | Scratch-only end-to-end tests for policy inventory, log rotation candidates, session TTL candidates, report-only Codex surfaces, rustup exact-name protections, preflight thresholds, adjacent context, apply mutation, policy revalidation, stale-candidate refusal, active-writer refusal, and apply summary output. |
+| `docs/ops/developer-tool-storage-hygiene.md` | Operator-facing ownership map, command contract, native Codex guidance, and apply safety contract. |
+
+## Verification Log
+
+| Command | Result | Notes |
+|---|---|---|
+| `python3 scripts/test_developer_tool_storage_hygiene.py` | Pass: 20 tests in 1.231s | Scratch fixtures only; no real home-directory mutation. |
+| `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py` | Pass | Syntax check for the new script and test. |
+| `git diff --check` | Pass | Whitespace check. |
+| `git diff --check origin/main...HEAD` | Pass | Exact local branch diff whitespace check. |
+| `rg -n "104857600\|10737418240\|5368709120\|21474836480\|~/.codex\|~/.factory\|~/.rustup\|codex-tui.log\|droid-log-single.log\|history.jsonl\|logs_2.sqlite\|archived_sessions" scripts/developer_tool_storage_hygiene.py` | Pass with one schema-id hit: `codex.archived_sessions` | Runtime paths, caps, thresholds, TTLs, and tool path families remain TOML-owned. |
+| `rg -n "TODO\|FIXME\|TBD\|XXX\|PLACEHOLDER\|REPLACEME\|not implemented" specs/024-developer-tool-storage-hygiene ci/developer-tool-storage-hygiene.toml docs/ops/developer-tool-storage-hygiene.md scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py` | Pass: no matches | Changed #375 surfaces only. |
+| `rg -n "API_KEY\|SECRET\|TOKEN\|PASSWORD\|PRIVATE KEY\|BEGIN .*KEY" ci/developer-tool-storage-hygiene.toml docs/ops/developer-tool-storage-hygiene.md scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py specs/024-developer-tool-storage-hygiene/evidence.md` | Pass: no matches | No credentials or secret-looking literals in changed #375 files. |
+
+Rust verification relevance: no Rust source, Cargo manifest, workflow, or verifier runtime file is changed by the implementation. The only executable change is a standalone developer-ops Python script plus its scratch-only test and TOML/docs. Full Rust verification is therefore recorded as source-backed N/A for this #375 slice unless CI or no-mistakes requires a broader repo run.
+
+## AI Slop Cleanup Report
+
+Scope: `scripts/developer_tool_storage_hygiene.py`, `scripts/test_developer_tool_storage_hygiene.py`, `ci/developer-tool-storage-hygiene.toml`, `docs/ops/developer-tool-storage-hygiene.md`, `specs/024-developer-tool-storage-hygiene/evidence.md`, and `specs/024-developer-tool-storage-hygiene/tasks.md`.
+
+Behavior lock: `python3 scripts/test_developer_tool_storage_hygiene.py` was green before cleanup.
+
+Passes completed:
+
+1. Dead code deletion: no dead code found in the changed-file scan.
+2. Duplicate removal: removed a duplicated rustup directory measurement call.
+3. Naming/error handling cleanup: fixed `PREFLIGHT_SECTION` naming and added fail-closed preflight threshold ordering validation under a new regression test.
+4. Test reinforcement: added `test_policy_validation_fails_closed_when_threshold_ordering_is_invalid`.
+
+Quality gates:
+
+- Regression tests: pass, 20 tests.
+- Type/syntax check: pass via `python3 -m py_compile`.
+- Static literal/unresolved-marker scan: pass for changed #375 files.
+
+Remaining risk: the script intentionally does not collect the host process table; apply active-writer refusal depends on explicit `--process-name` snapshot inputs.

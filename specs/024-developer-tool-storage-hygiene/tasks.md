@@ -9,9 +9,9 @@
 
 **Purpose**: Make #375 the active Speckit package and verify branch/base hygiene.
 
-- [ ] T001 Verify `.specify/feature.json`, `AGENTS.md`, and `CLAUDE.md` point to `specs/024-developer-tool-storage-hygiene/plan.md`.
-- [ ] T002 Verify branch `codex/375-developer-tool-storage-hygiene` is based on current `origin/main` and record the SHA in `specs/024-developer-tool-storage-hygiene/evidence.md`.
-- [ ] T003 Run placeholder and non-ASCII checks over `specs/024-developer-tool-storage-hygiene/` before external review.
+- [x] T001 Verify `.specify/feature.json`, `AGENTS.md`, and `CLAUDE.md` point to `specs/024-developer-tool-storage-hygiene/plan.md`.
+- [x] T002 Verify branch `codex/375-developer-tool-storage-hygiene` is based on current `origin/main` and record the SHA in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [x] T003 Run placeholder and non-ASCII checks over `specs/024-developer-tool-storage-hygiene/` before external review.
 
 ---
 
@@ -19,15 +19,15 @@
 
 **Purpose**: Complete all planning and review gates before implementation.
 
-- [ ] T004 Validate Phase 1 developer-tool enumeration coverage in `specs/024-developer-tool-storage-hygiene/evidence.md` against issue #375's required dimensions.
-- [ ] T005 Generate and validate this task list in `specs/024-developer-tool-storage-hygiene/tasks.md`.
-- [ ] T006 Request Claude plan/spec/tasks adversarial review for `specs/024-developer-tool-storage-hygiene/`.
-- [ ] T007 Request Gemini plan/spec/tasks adversarial review for `specs/024-developer-tool-storage-hygiene/`.
-- [ ] T008 Request GLM plan/spec/tasks adversarial review for `specs/024-developer-tool-storage-hygiene/`.
-- [ ] T009 Request DeepSeek plan/spec/tasks adversarial review for `specs/024-developer-tool-storage-hygiene/`.
-- [ ] T010 Record model, head SHA, scope, verdict, blockers, and skipped reviewers in `specs/024-developer-tool-storage-hygiene/evidence.md`.
-- [ ] T011 Resolve or explicitly classify every source-proven planning blocker in `specs/024-developer-tool-storage-hygiene/`.
-- [ ] T012 If implementation exposes or changes any operator-facing cleanup/status/dry-run/apply command surface or host process-table collection, obtain explicit operator approval before adding that interface; scratch-only tests, policy loading, and report construction remain allowed without new command semantics.
+- [x] T004 Validate Phase 1 developer-tool enumeration coverage in `specs/024-developer-tool-storage-hygiene/evidence.md` against issue #375's required dimensions.
+- [x] T005 Generate and validate this task list in `specs/024-developer-tool-storage-hygiene/tasks.md`.
+- [x] T006 Request Claude plan/spec/tasks adversarial review for `specs/024-developer-tool-storage-hygiene/`.
+- [x] T007 Request Gemini plan/spec/tasks adversarial review for `specs/024-developer-tool-storage-hygiene/`.
+- [x] T008 Request GLM plan/spec/tasks adversarial review for `specs/024-developer-tool-storage-hygiene/`.
+- [x] T009 Request DeepSeek plan/spec/tasks adversarial review for `specs/024-developer-tool-storage-hygiene/`.
+- [x] T010 Record model, head SHA, scope, verdict, blockers, and skipped reviewers in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [x] T011 Resolve or explicitly classify every source-proven planning blocker in `specs/024-developer-tool-storage-hygiene/`.
+- [x] T012 If implementation exposes or changes any operator-facing cleanup/status/dry-run/apply command surface or host process-table collection, obtain explicit operator approval before adding that interface; scratch-only tests, policy loading, and report construction remain allowed without new command semantics.
 
 **Checkpoint**: No implementation starts until T006 through T012 are complete.
 
@@ -41,14 +41,14 @@
 
 ### Tests for User Story 1
 
-- [ ] T013 [US1] Add a source-shape self-check in `scripts/test_developer_tool_storage_hygiene.py` that fails until required enumeration owner classes are represented by policy fixtures.
+- [x] T013 [US1] Add a source-shape self-check in `scripts/test_developer_tool_storage_hygiene.py` that fails until required enumeration owner classes are represented by policy fixtures.
 
 ### Implementation for User Story 1
 
-- [ ] T014 [US1] Add `ci/developer-tool-storage-hygiene.toml` with explicit surface IDs for Codex logs, Codex sessions, Codex history native guidance, Codex sqlite and archived-session report-only files, Factory log, rustup toolchains, adjacent report-only classes, and active-writer process lists for mutable Codex and Factory surfaces.
-- [ ] T015 [US1] Add the minimal policy loader and surface model in `scripts/developer_tool_storage_hygiene.py` to satisfy T013.
-- [ ] T016 [US1] Update `docs/ops/developer-tool-storage-hygiene.md` with the #375 ownership map and native Codex/rustup capability evidence.
-- [ ] T017 [US1] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` and record the green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [x] T014 [US1] Add `ci/developer-tool-storage-hygiene.toml` with explicit surface IDs for Codex logs, Codex sessions, Codex history native guidance, Codex sqlite and archived-session report-only files, Factory log, rustup toolchains, adjacent report-only classes, and active-writer process lists for mutable Codex and Factory surfaces.
+- [x] T015 [US1] Add the minimal policy loader and surface model in `scripts/developer_tool_storage_hygiene.py` to satisfy T013.
+- [x] T016 [US1] Update `docs/ops/developer-tool-storage-hygiene.md` with the #375 ownership map and native Codex/rustup capability evidence.
+- [x] T017 [US1] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` and record the green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
 
 **Checkpoint**: User Story 1 is complete when the enumeration is machine-checked against the policy source.
 
@@ -62,24 +62,24 @@
 
 ### Tests for User Story 2
 
-- [ ] T018 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for oversized Codex and Factory log rotation candidates.
-- [ ] T019 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for stale Codex session TTL prune candidates.
-- [ ] T020 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex sqlite db/WAL files are report-only.
-- [ ] T021 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex `history.jsonl` is report-only and mapped to native config guidance.
-- [ ] T022 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex archived sessions are report-only.
-- [ ] T023 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for exact-name rustup removal classification plus active, default, repository-root project-pinned, and exact-retained protection, proving age/mtime alone does not create rustup candidates.
-- [ ] T024 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for malformed, incomplete, or missing-required-key policy fail-closed validation.
-- [ ] T025 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving dry-run output includes policy path, evaluated root, per-surface bytes/eligibility, candidate actions/reasons/estimated bytes, Codex history native-config status, report-only archived sessions, protected rustup toolchains, exact-name rustup removal candidates, path-handling refusals for symlink or outside-root entries, report-only large surfaces, out-of-scope adjacent surfaces, and leaves the scratch filesystem unchanged.
+- [x] T018 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for oversized Codex and Factory log rotation candidates.
+- [x] T019 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for stale Codex session TTL prune candidates.
+- [x] T020 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex sqlite db/WAL files are report-only.
+- [x] T021 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex `history.jsonl` is report-only and mapped to native config guidance.
+- [x] T022 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving Codex archived sessions are report-only.
+- [x] T023 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for exact-name rustup removal classification plus active, default, repository-root project-pinned, and exact-retained protection, proving age/mtime alone does not create rustup candidates.
+- [x] T024 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` for malformed, incomplete, or missing-required-key policy fail-closed validation.
+- [x] T025 [US2] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving dry-run output includes policy path, evaluated root, per-surface bytes/eligibility, candidate actions/reasons/estimated bytes, Codex history native-config status, report-only archived sessions, protected rustup toolchains, exact-name rustup removal candidates, path-handling refusals for symlink or outside-root entries, report-only large surfaces, out-of-scope adjacent surfaces, and leaves the scratch filesystem unchanged.
 
 ### Implementation for User Story 2
 
-- [ ] T026 [US2] Implement log rotation candidate classification in `scripts/developer_tool_storage_hygiene.py`.
-- [ ] T027 [US2] Implement Codex session TTL candidate classification in `scripts/developer_tool_storage_hygiene.py`.
-- [ ] T028 [US2] Implement report-only surface handling for Codex sqlite, Codex history native-guidance, and Codex archived-session surfaces in `scripts/developer_tool_storage_hygiene.py`.
-- [ ] T029 [US2] Implement exact-name rustup toolchain retention/removal classification in `scripts/developer_tool_storage_hygiene.py`.
-- [ ] T030 [US2] Implement malformed, incomplete, or missing-required-key policy fail-closed validation in `scripts/developer_tool_storage_hygiene.py`.
-- [ ] T031 [US2] Implement contract-complete dry-run report construction in `scripts/developer_tool_storage_hygiene.py`.
-- [ ] T032 [US2] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` after each RED/GREEN slice and record final green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [x] T026 [US2] Implement log rotation candidate classification in `scripts/developer_tool_storage_hygiene.py`.
+- [x] T027 [US2] Implement Codex session TTL candidate classification in `scripts/developer_tool_storage_hygiene.py`.
+- [x] T028 [US2] Implement report-only surface handling for Codex sqlite, Codex history native-guidance, and Codex archived-session surfaces in `scripts/developer_tool_storage_hygiene.py`.
+- [x] T029 [US2] Implement exact-name rustup toolchain retention/removal classification in `scripts/developer_tool_storage_hygiene.py`.
+- [x] T030 [US2] Implement malformed, incomplete, or missing-required-key policy fail-closed validation in `scripts/developer_tool_storage_hygiene.py`.
+- [x] T031 [US2] Implement contract-complete dry-run report construction in `scripts/developer_tool_storage_hygiene.py`.
+- [x] T032 [US2] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` after each RED/GREEN slice and record final green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
 
 **Checkpoint**: User Story 2 is complete when dry-run classification is deterministic over scratch fixtures.
 
@@ -93,14 +93,14 @@
 
 ### Tests for User Story 3
 
-- [ ] T033 [US3] Add RED preflight free-disk and owned-storage warning/error threshold tests in `scripts/test_developer_tool_storage_hygiene.py`, including a no-mutation assertion over scratch fixtures.
-- [ ] T034 [US3] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving out-of-repo browser and package-manager caches are reported but not owned.
+- [x] T033 [US3] Add RED preflight free-disk and owned-storage warning/error threshold tests in `scripts/test_developer_tool_storage_hygiene.py`, including a no-mutation assertion over scratch fixtures.
+- [x] T034 [US3] Add RED test in `scripts/test_developer_tool_storage_hygiene.py` proving out-of-repo browser and package-manager caches are reported but not owned.
 
 ### Implementation for User Story 3
 
-- [ ] T035 [US3] Implement read-only preflight report construction with exact follow-up classes in `scripts/developer_tool_storage_hygiene.py`.
-- [ ] T036 [US3] Update `docs/ops/developer-tool-storage-hygiene.md` with preflight interpretation and out-of-scope handling.
-- [ ] T037 [US3] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` and record final green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [x] T035 [US3] Implement read-only preflight report construction with exact follow-up classes in `scripts/developer_tool_storage_hygiene.py`.
+- [x] T036 [US3] Update `docs/ops/developer-tool-storage-hygiene.md` with preflight interpretation and out-of-scope handling.
+- [x] T037 [US3] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` and record final green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
 
 **Checkpoint**: User Story 3 is complete when preflight is read-only and fail-closed under configured thresholds.
 
@@ -114,20 +114,20 @@
 
 ### Tests for User Story 4
 
-- [ ] T038 [US4] Add RED scratch apply test for log rotation in `scripts/test_developer_tool_storage_hygiene.py`.
-- [ ] T039 [US4] Add RED scratch apply test for session TTL pruning in `scripts/test_developer_tool_storage_hygiene.py`.
-- [ ] T040 [US4] Add RED scratch apply test proving protected rustup toolchains remain untouched even when their exact names appear in removal config in `scripts/test_developer_tool_storage_hygiene.py`.
-- [ ] T041 [US4] Add RED scratch apply test proving report-only Codex sqlite, Codex history, and Codex archived-session files remain untouched in `scripts/test_developer_tool_storage_hygiene.py`.
-- [ ] T042 [US4] Add RED scratch apply test proving apply revalidates policy immediately before mutation and fails closed if policy becomes malformed or incomplete.
-- [ ] T043 [US4] Add RED scratch apply test proving apply re-scans immediately before mutation and fails closed if candidate state changed after dry-run.
-- [ ] T044 [US4] Add RED scratch apply test proving configured active writer processes from synthetic process snapshots refuse mutable Codex and Factory actions before mutation.
-- [ ] T045 [US4] Add RED scratch apply test proving successful apply emits a post-apply summary with actions taken, bytes reclaimed, skipped protected/report-only targets, and refusal reasons.
+- [x] T038 [US4] Add RED scratch apply test for log rotation in `scripts/test_developer_tool_storage_hygiene.py`.
+- [x] T039 [US4] Add RED scratch apply test for session TTL pruning in `scripts/test_developer_tool_storage_hygiene.py`.
+- [x] T040 [US4] Add RED scratch apply test proving protected rustup toolchains remain untouched even when their exact names appear in removal config in `scripts/test_developer_tool_storage_hygiene.py`.
+- [x] T041 [US4] Add RED scratch apply test proving report-only Codex sqlite, Codex history, and Codex archived-session files remain untouched in `scripts/test_developer_tool_storage_hygiene.py`.
+- [x] T042 [US4] Add RED scratch apply test proving apply revalidates policy immediately before mutation and fails closed if policy becomes malformed or incomplete.
+- [x] T043 [US4] Add RED scratch apply test proving apply re-scans immediately before mutation and fails closed if candidate state changed after dry-run.
+- [x] T044 [US4] Add RED scratch apply test proving configured active writer processes from synthetic process snapshots refuse mutable Codex and Factory actions before mutation.
+- [x] T045 [US4] Add RED scratch apply test proving successful apply emits a post-apply summary with actions taken, bytes reclaimed, skipped protected/report-only targets, and refusal reasons.
 
 ### Implementation for User Story 4
 
-- [ ] T046 [US4] Implement apply behavior over scratch/configured roots with immediate policy revalidation, filesystem re-scan, process-snapshot active-writer refusal, and post-apply summary output in `scripts/developer_tool_storage_hygiene.py` only if T012 approval permits the command surface.
-- [ ] T047 [US4] Update `docs/ops/developer-tool-storage-hygiene.md` with dry-run/apply safety contract and native macOS config guidance.
-- [ ] T048 [US4] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` and record final green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [x] T046 [US4] Implement apply behavior over scratch/configured roots with immediate policy revalidation, filesystem re-scan, process-snapshot active-writer refusal, and post-apply summary output in `scripts/developer_tool_storage_hygiene.py` only if T012 approval permits the command surface.
+- [x] T047 [US4] Update `docs/ops/developer-tool-storage-hygiene.md` with dry-run/apply safety contract and native macOS config guidance.
+- [x] T048 [US4] Re-run `python3 scripts/test_developer_tool_storage_hygiene.py` and record final green result in `specs/024-developer-tool-storage-hygiene/evidence.md`.
 
 **Checkpoint**: User Story 4 is complete when apply behavior is proven safe on scratch fixtures or explicitly scoped out by operator decision.
 
@@ -137,12 +137,12 @@
 
 **Purpose**: Make the #375 branch review-ready without merging and without starting #454.
 
-- [ ] T049 Run `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py`.
-- [ ] T050 Run `git diff --check origin/main...HEAD`.
-- [ ] T051 Run relevant full Rust verification or record source-backed N/A in `specs/024-developer-tool-storage-hygiene/evidence.md`.
-- [ ] T052 Run source-fence/schema/runtime literal checks if touched and record results in `specs/024-developer-tool-storage-hygiene/evidence.md`.
-- [ ] T053 Run `$ai-slop-cleaner` on changed files and record the cleanup report in `specs/024-developer-tool-storage-hygiene/evidence.md`.
-- [ ] T054 Run unresolved-marker scan over `specs/024-developer-tool-storage-hygiene/`, `ci/`, `scripts/`, and `docs/ops/` after #375 edits.
+- [x] T049 Run `python3 -m py_compile scripts/developer_tool_storage_hygiene.py scripts/test_developer_tool_storage_hygiene.py`.
+- [x] T050 Run `git diff --check origin/main...HEAD`.
+- [x] T051 Run relevant full Rust verification or record source-backed N/A in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [x] T052 Run source-fence/schema/runtime literal checks if touched and record results in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [x] T053 Run `$ai-slop-cleaner` on changed files and record the cleanup report in `specs/024-developer-tool-storage-hygiene/evidence.md`.
+- [x] T054 Run unresolved-marker scan over `specs/024-developer-tool-storage-hygiene/`, `ci/`, `scripts/`, and `docs/ops/` after #375 edits.
 - [ ] T055 Commit and push branch `codex/375-developer-tool-storage-hygiene`.
 - [ ] T056 Open the #375 PR and include issue scope, exact head SHA, evidence map, Speckit paths, tests, review status, no-mistakes status, remaining risk, and stop-before-merge note in the PR body.
 - [ ] T057 Run no-mistakes on the exact PR head and verify the no-mistakes head equals the PR head.

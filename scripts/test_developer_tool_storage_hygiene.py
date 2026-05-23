@@ -1,0 +1,966 @@
+#!/usr/bin/env python3
+"""Self-tests for developer-tool storage hygiene policy."""
+
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
+import textwrap
+import time
+import unittest
+
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+SCRIPT = REPO_ROOT / "scripts" / "developer_tool_storage_hygiene.py"
+POLICY = REPO_ROOT / "ci" / "developer-tool-storage-hygiene.toml"
+
+
+class DeveloperToolStorageHygieneTests(unittest.TestCase):
+    def run_tool(
+        self,
+        command: str,
+        home_root: pathlib.Path,
+        repo_root: pathlib.Path,
+        policy: pathlib.Path = POLICY,
+        extra_args: list[str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                command,
+                "--policy",
+                str(policy),
+                "--home-root",
+                str(home_root),
+                "--repo-root",
+                str(repo_root),
+                "--json",
+                *(extra_args or []),
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    def write_policy_fixture(
+        self,
+        policy: pathlib.Path,
+        *,
+        codex_log_max_bytes: int = 8,
+        factory_log_max_bytes: int = 8,
+        sessions_ttl_days: int = 14,
+        retain_exact_names: list[str] | None = None,
+        remove_exact_names: list[str] | None = None,
+    ) -> None:
+        retained = retain_exact_names or ["1.95.0-aarch64-apple-darwin"]
+        removed = remove_exact_names or []
+        policy.write_text(
+            textwrap.dedent(
+                f"""\
+                schema_version = 1
+
+                [codex.log]
+                path_family = "~/.codex/log/codex-tui.log"
+                category = "AI agent"
+                growth_shape = "single_file"
+                owner = "owned"
+                native_policy = "partial"
+                cleanup_mode = "rotate"
+                max_bytes = {codex_log_max_bytes}
+                retained_rotations = 2
+                active_writer_processes = ["codex", "codex-tui"]
+
+                [codex.sessions]
+                path_family = "~/.codex/sessions/**/*.jsonl"
+                category = "AI agent"
+                growth_shape = "many_files"
+                owner = "owned"
+                native_policy = "none_found"
+                cleanup_mode = "ttl_prune"
+                ttl_days = {sessions_ttl_days}
+                active_writer_processes = ["codex", "codex-tui"]
+
+                [codex.sqlite]
+                path_family = "~/.codex/logs_2.sqlite*"
+                category = "AI agent"
+                growth_shape = "sqlite_with_wal"
+                owner = "report_only"
+                native_policy = "none_found"
+                cleanup_mode = "none"
+
+                [codex.archived_sessions]
+                path_family = "~/.codex/archived_sessions/**"
+                category = "AI agent"
+                growth_shape = "tree"
+                owner = "report_only"
+                native_policy = "none_found"
+                cleanup_mode = "none"
+
+                [native_guidance.codex_history]
+                path_family = "~/.codex/history.jsonl"
+                category = "AI agent"
+                growth_shape = "single_file"
+                owner = "report_only"
+                native_policy = "yes"
+                cleanup_mode = "none"
+                max_bytes = 10
+                persistence = "save-all"
+
+                [factory.log]
+                path_family = "~/.factory/logs/droid-log-single.log"
+                category = "AI agent"
+                growth_shape = "single_file"
+                owner = "owned"
+                native_policy = "none_found"
+                cleanup_mode = "rotate"
+                max_bytes = {factory_log_max_bytes}
+                retained_rotations = 2
+                active_writer_processes = ["factory", "droid"]
+
+                [rustup.toolchains]
+                path_family = "~/.rustup/toolchains/*"
+                category = "version manager"
+                growth_shape = "tree"
+                owner = "owned"
+                native_policy = "yes"
+                cleanup_mode = "toolchain_retention"
+                retain_exact_names = {json.dumps(retained)}
+                remove_exact_names = {json.dumps(removed)}
+
+                [preflight]
+                free_disk_warning_bytes = 100
+                free_disk_error_bytes = 50
+                owned_storage_warning_bytes = 100
+                owned_storage_error_bytes = 200
+
+                [adjacent.browser_cache]
+                id = "browser.cache"
+                path_family = "~/Library/Caches"
+                category = "browser tooling"
+                growth_shape = "tree"
+                owner = "out_of_scope"
+                native_policy = "not_applicable"
+                cleanup_mode = "none"
+
+                [adjacent.codex_plugins]
+                id = "codex.plugins"
+                path_family = "~/.codex/plugins"
+                category = "MCP/plugin"
+                growth_shape = "tree"
+                owner = "out_of_scope"
+                native_policy = "not_applicable"
+                cleanup_mode = "none"
+
+                [adjacent.package_manager_cache]
+                id = "package_manager.cache"
+                path_family = "~/.npm"
+                category = "package manager"
+                growth_shape = "tree"
+                owner = "out_of_scope"
+                native_policy = "not_applicable"
+                cleanup_mode = "none"
+                """
+            ),
+            encoding="utf-8",
+        )
+
+    def test_status_reports_required_policy_surfaces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            home_root.mkdir()
+            repo_root.mkdir()
+
+            result = self.run_tool("status", home_root, repo_root)
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        surface_ids = {entry["id"] for entry in payload["surfaces"]}
+        adjacent_ids = {entry["id"] for entry in payload["adjacent_surfaces"]}
+
+        self.assertTrue(
+            {
+                "codex.log",
+                "codex.sessions",
+                "native_guidance.codex_history",
+                "codex.sqlite",
+                "codex.archived_sessions",
+                "factory.log",
+                "rustup.toolchains",
+            }
+            <= surface_ids
+        )
+        self.assertTrue({"browser.cache", "codex.plugins", "package_manager.cache"} <= adjacent_ids)
+
+        mutable = {
+            entry["id"]: entry["active_writer_processes"]
+            for entry in payload["surfaces"]
+            if entry["cleanup_mode"] in {"rotate", "ttl_prune"}
+        }
+        self.assertEqual(mutable["codex.log"], ["codex", "codex-tui"])
+        self.assertEqual(mutable["codex.sessions"], ["codex", "codex-tui"])
+        self.assertEqual(mutable["factory.log"], ["factory", "droid"])
+
+    def test_dry_run_reports_oversized_log_rotation_candidates_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            factory_log = home_root / ".factory" / "logs" / "droid-log-single.log"
+            codex_log.parent.mkdir(parents=True)
+            factory_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex-log-data")
+            factory_log.write_bytes(b"factory-log-data")
+            repo_root.mkdir()
+
+            before = {codex_log: codex_log.read_bytes(), factory_log: factory_log.read_bytes()}
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+            after = {codex_log: codex_log.read_bytes(), factory_log: factory_log.read_bytes()}
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertEqual(after, before)
+        payload = json.loads(result.stdout)
+        candidates = {(entry["surface_id"], pathlib.Path(entry["path"]).name): entry for entry in payload["candidates"]}
+
+        self.assertEqual(candidates[("codex.log", "codex-tui.log")]["action"], "rotate")
+        self.assertEqual(candidates[("codex.log", "codex-tui.log")]["reason"], "size_exceeds_max_bytes")
+        self.assertEqual(candidates[("codex.log", "codex-tui.log")]["estimated_reclaim_bytes"], 6)
+        self.assertEqual(candidates[("factory.log", "droid-log-single.log")]["action"], "rotate")
+        self.assertEqual(candidates[("factory.log", "droid-log-single.log")]["reason"], "size_exceeds_max_bytes")
+        self.assertEqual(candidates[("factory.log", "droid-log-single.log")]["estimated_reclaim_bytes"], 8)
+
+    def test_dry_run_reports_only_stale_codex_session_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy, sessions_ttl_days=1)
+
+            sessions = home_root / ".codex" / "sessions"
+            old_session = sessions / "2026" / "05" / "old.jsonl"
+            new_session = sessions / "2026" / "05" / "new.jsonl"
+            old_session.parent.mkdir(parents=True)
+            old_session.write_bytes(b"old session")
+            new_session.write_bytes(b"new session")
+            repo_root.mkdir()
+
+            old_mtime = time.time() - (2 * 24 * 60 * 60)
+            os.utime(old_session, (old_mtime, old_mtime))
+            before = {old_session: old_session.read_bytes(), new_session: new_session.read_bytes()}
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+            after = {old_session: old_session.read_bytes(), new_session: new_session.read_bytes()}
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertEqual(after, before)
+        payload = json.loads(result.stdout)
+        sessions_by_name = {
+            pathlib.Path(entry["path"]).name: entry
+            for entry in payload["candidates"]
+            if entry["surface_id"] == "codex.sessions"
+        }
+
+        self.assertEqual(set(sessions_by_name), {"old.jsonl"})
+        self.assertEqual(sessions_by_name["old.jsonl"]["action"], "delete")
+        self.assertEqual(sessions_by_name["old.jsonl"]["reason"], "older_than_ttl_days")
+        self.assertEqual(sessions_by_name["old.jsonl"]["estimated_reclaim_bytes"], len(b"old session"))
+
+    def test_dry_run_reports_codex_sqlite_files_as_report_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            sqlite = home_root / ".codex" / "logs_2.sqlite"
+            sqlite_wal = home_root / ".codex" / "logs_2.sqlite-wal"
+            sqlite.parent.mkdir(parents=True)
+            sqlite.write_bytes(b"sqlite")
+            sqlite_wal.write_bytes(b"sqlite-wal")
+            repo_root.mkdir()
+
+            before = {sqlite: sqlite.read_bytes(), sqlite_wal: sqlite_wal.read_bytes()}
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+            after = {sqlite: sqlite.read_bytes(), sqlite_wal: sqlite_wal.read_bytes()}
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertEqual(after, before)
+        payload = json.loads(result.stdout)
+        sqlite_candidates = [
+            entry for entry in payload["candidates"] if entry["surface_id"] == "codex.sqlite"
+        ]
+        report_only = {
+            pathlib.Path(entry["path"]).name: entry
+            for entry in payload["report_only"]
+            if entry["surface_id"] == "codex.sqlite"
+        }
+
+        self.assertEqual(sqlite_candidates, [])
+        self.assertEqual(set(report_only), {"logs_2.sqlite", "logs_2.sqlite-wal"})
+        self.assertEqual(report_only["logs_2.sqlite"]["reason"], "report_only_policy")
+        self.assertEqual(report_only["logs_2.sqlite-wal"]["reason"], "report_only_policy")
+
+    def test_dry_run_reports_codex_history_native_guidance_as_report_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            history = home_root / ".codex" / "history.jsonl"
+            history.parent.mkdir(parents=True)
+            history.write_bytes(b"history rows that exceed the native guidance cap")
+            repo_root.mkdir()
+
+            before = history.read_bytes()
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+            after = history.read_bytes()
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertEqual(after, before)
+        payload = json.loads(result.stdout)
+        history_candidates = [
+            entry for entry in payload["candidates"] if entry["surface_id"] == "native_guidance.codex_history"
+        ]
+        history_reports = [
+            entry for entry in payload["report_only"] if entry["surface_id"] == "native_guidance.codex_history"
+        ]
+
+        self.assertEqual(history_candidates, [])
+        self.assertEqual(len(history_reports), 1)
+        self.assertEqual(history_reports[0]["reason"], "native_guidance_report_only")
+        self.assertEqual(
+            history_reports[0]["native_config"],
+            {"max_bytes": 10, "persistence": "save-all"},
+        )
+
+    def test_dry_run_reports_archived_sessions_tree_as_report_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            archive_root = home_root / ".codex" / "archived_sessions"
+            transcript = archive_root / "2026" / "05" / "transcript.jsonl"
+            transcript.parent.mkdir(parents=True)
+            transcript.write_bytes(b"archived transcript")
+            repo_root.mkdir()
+
+            before = transcript.read_bytes()
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+            after = transcript.read_bytes()
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertEqual(after, before)
+        payload = json.loads(result.stdout)
+        archive_candidates = [
+            entry for entry in payload["candidates"] if entry["surface_id"] == "codex.archived_sessions"
+        ]
+        archive_reports = [
+            entry for entry in payload["report_only"] if entry["surface_id"] == "codex.archived_sessions"
+        ]
+
+        self.assertEqual(archive_candidates, [])
+        self.assertEqual(len(archive_reports), 1)
+        self.assertEqual(pathlib.Path(archive_reports[0]["path"]).name, "archived_sessions")
+        self.assertEqual(archive_reports[0]["reason"], "report_only_policy")
+        self.assertGreaterEqual(archive_reports[0]["bytes"], len(b"archived transcript"))
+
+    def test_dry_run_rustup_candidates_are_exact_name_removals_with_protections(self) -> None:
+        active = "active-aarch64-apple-darwin"
+        default = "default-aarch64-apple-darwin"
+        pinned = "1.95.0-aarch64-apple-darwin"
+        retained = "retained-aarch64-apple-darwin"
+        removable = "old-aarch64-apple-darwin"
+        unlisted = "unlisted-aarch64-apple-darwin"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(
+                policy,
+                retain_exact_names=[pinned, retained],
+                remove_exact_names=[active, default, pinned, retained, removable],
+            )
+
+            toolchains = home_root / ".rustup" / "toolchains"
+            for name in (active, default, pinned, retained, removable, unlisted):
+                toolchain_dir = toolchains / name
+                toolchain_dir.mkdir(parents=True)
+                (toolchain_dir / "marker").write_bytes(name.encode("utf-8"))
+            repo_root.mkdir()
+            (repo_root / "rust-toolchain.toml").write_text(
+                textwrap.dedent(
+                    """\
+                    [toolchain]
+                    channel = "1.95.0"
+                    """
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.run_tool(
+                "dry-run",
+                home_root,
+                repo_root,
+                policy,
+                [
+                    "--active-rustup-toolchain",
+                    active,
+                    "--default-rustup-toolchain",
+                    default,
+                ],
+            )
+            remaining_after_dry_run = sorted(path.name for path in toolchains.iterdir())
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertEqual(remaining_after_dry_run, sorted([active, default, pinned, retained, removable, unlisted]))
+        payload = json.loads(result.stdout)
+        rustup_candidates = [
+            entry for entry in payload["candidates"] if entry["surface_id"] == "rustup.toolchains"
+        ]
+        protected = {
+            pathlib.Path(entry["path"]).name: entry["reason"]
+            for entry in payload["protected"]
+            if entry["surface_id"] == "rustup.toolchains"
+        }
+
+        self.assertEqual([pathlib.Path(entry["path"]).name for entry in rustup_candidates], [removable])
+        self.assertEqual(rustup_candidates[0]["action"], "remove_tree")
+        self.assertEqual(rustup_candidates[0]["reason"], "exact_name_remove_policy")
+        self.assertGreater(rustup_candidates[0]["estimated_reclaim_bytes"], 0)
+        self.assertEqual(protected[active], "active_toolchain")
+        self.assertEqual(protected[default], "default_toolchain")
+        self.assertEqual(protected[pinned], "project_pinned_toolchain")
+        self.assertEqual(protected[retained], "exact_name_retain_policy")
+        self.assertEqual(protected[unlisted], "not_in_remove_exact_names")
+
+    def test_policy_validation_fails_closed_when_mutable_active_writers_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            home_root.mkdir()
+            repo_root.mkdir()
+            self.write_policy_fixture(policy)
+            policy.write_text(
+                policy.read_text(encoding="utf-8").replace(
+                    'active_writer_processes = ["codex", "codex-tui"]\n\n[codex.sessions]',
+                    "\n[codex.sessions]",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.run_tool("status", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+        self.assertIn("codex.log.active_writer_processes", result.stderr)
+
+    def test_policy_validation_fails_closed_when_threshold_ordering_is_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            home_root.mkdir()
+            repo_root.mkdir()
+            self.write_policy_fixture(policy)
+            policy.write_text(
+                policy.read_text(encoding="utf-8").replace(
+                    "free_disk_warning_bytes = 100\nfree_disk_error_bytes = 50",
+                    "free_disk_warning_bytes = 50\nfree_disk_error_bytes = 100",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.run_tool("status", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+        self.assertIn("free_disk_error_bytes", result.stderr)
+
+    def test_dry_run_output_includes_measurements_refusals_and_adjacent_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy, sessions_ttl_days=1)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"large codex log")
+
+            outside_target = tmp_path / "outside-session.jsonl"
+            outside_target.write_bytes(b"outside")
+            session_link = home_root / ".codex" / "sessions" / "link.jsonl"
+            session_link.parent.mkdir(parents=True)
+            session_link.symlink_to(outside_target)
+
+            browser_cache = home_root / "Library" / "Caches" / "browser-cache"
+            codex_plugin = home_root / ".codex" / "plugins" / "plugin-cache"
+            npm_cache = home_root / ".npm" / "cache-entry"
+            for path in (browser_cache, codex_plugin, npm_cache):
+                path.parent.mkdir(parents=True)
+                path.write_bytes(path.name.encode("utf-8"))
+            repo_root.mkdir()
+
+            result = self.run_tool("dry-run", home_root, repo_root, policy)
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["policy_path"], str(policy))
+        self.assertEqual(payload["evaluated_root"], str(home_root))
+
+        measurements = {entry["surface_id"]: entry for entry in payload["surface_measurements"]}
+        self.assertGreaterEqual(measurements["codex.log"]["bytes"], len(b"large codex log"))
+        self.assertTrue(measurements["codex.log"]["cleanup_eligible"])
+        self.assertFalse(measurements["codex.sqlite"]["cleanup_eligible"])
+
+        refusals = {
+            pathlib.Path(entry["path"]).name: entry
+            for entry in payload["candidates"]
+            if entry["action"] == "refuse"
+        }
+        self.assertEqual(refusals["link.jsonl"]["reason"], "symlink_not_followed")
+        self.assertEqual(refusals["link.jsonl"]["estimated_reclaim_bytes"], 0)
+
+        adjacent = {entry["surface_id"]: entry for entry in payload["adjacent_context"]}
+        self.assertEqual(set(adjacent), {"browser.cache", "codex.plugins", "package_manager.cache"})
+        self.assertEqual(adjacent["browser.cache"]["owner"], "out_of_scope")
+        self.assertGreater(adjacent["codex.plugins"]["bytes"], 0)
+
+    def test_preflight_reports_threshold_errors_and_warnings_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"x" * 120)
+            repo_root.mkdir()
+
+            before = codex_log.read_bytes()
+            result = self.run_tool(
+                "preflight",
+                home_root,
+                repo_root,
+                policy,
+                ["--available-disk-bytes", "40"],
+            )
+            after = codex_log.read_bytes()
+
+        self.assertEqual(result.returncode, 1, (result.stdout, result.stderr))
+        self.assertEqual(after, before)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["read_only"])
+        self.assertEqual(payload["mode"], "preflight")
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("free_disk_below_error", payload["errors"])
+        self.assertIn("owned_storage_above_warning", payload["warnings"])
+        self.assertEqual(payload["available_disk_bytes"], 40)
+        self.assertGreaterEqual(payload["owned_storage_bytes"], 120)
+
+    def test_preflight_reports_adjacent_caches_without_counting_them_as_owned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            browser_cache = home_root / "Library" / "Caches" / "browser-cache"
+            package_cache = home_root / ".npm" / "cache-entry"
+            for path in (browser_cache, package_cache):
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"x" * 256)
+            repo_root.mkdir()
+
+            result = self.run_tool(
+                "preflight",
+                home_root,
+                repo_root,
+                policy,
+                ["--available-disk-bytes", "1000"],
+            )
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["owned_storage_bytes"], 0)
+        adjacent = {entry["surface_id"]: entry for entry in payload["adjacent_context"]}
+        self.assertGreater(adjacent["browser.cache"]["bytes"], 0)
+        self.assertGreater(adjacent["package_manager.cache"]["bytes"], 0)
+        self.assertEqual(set(payload["follow_up_classes"]), {"browser.cache", "package_manager.cache"})
+
+    def test_apply_rotates_log_candidate_from_matching_dry_run_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            original = b"codex log requiring rotation"
+            codex_log.write_bytes(original)
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report)],
+            )
+            current_after = codex_log.read_bytes()
+            rotated_after = codex_log.with_name("codex-tui.log.1").read_bytes()
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertEqual(current_after, b"")
+        self.assertEqual(rotated_after, original)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "applied")
+        self.assertEqual(payload["actions_taken"][0]["action"], "rotate")
+        self.assertEqual(payload["actions_taken"][0]["surface_id"], "codex.log")
+
+    def test_apply_deletes_stale_session_candidate_from_matching_dry_run_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy, sessions_ttl_days=1)
+
+            session = home_root / ".codex" / "sessions" / "old.jsonl"
+            session.parent.mkdir(parents=True)
+            session.write_bytes(b"old session")
+            old_mtime = time.time() - (2 * 24 * 60 * 60)
+            os.utime(session, (old_mtime, old_mtime))
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report)],
+            )
+            exists_after = session.exists()
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertFalse(exists_after)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "applied")
+        self.assertEqual(payload["actions_taken"][0]["action"], "delete")
+        self.assertEqual(payload["actions_taken"][0]["surface_id"], "codex.sessions")
+
+    def test_apply_removes_only_unprotected_exact_name_rustup_candidate(self) -> None:
+        active = "active-aarch64-apple-darwin"
+        default = "default-aarch64-apple-darwin"
+        pinned = "1.95.0-aarch64-apple-darwin"
+        retained = "retained-aarch64-apple-darwin"
+        removable = "old-aarch64-apple-darwin"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(
+                policy,
+                retain_exact_names=[pinned, retained],
+                remove_exact_names=[active, default, pinned, retained, removable],
+            )
+
+            toolchains = home_root / ".rustup" / "toolchains"
+            for name in (active, default, pinned, retained, removable):
+                toolchain_dir = toolchains / name
+                toolchain_dir.mkdir(parents=True)
+                (toolchain_dir / "marker").write_bytes(name.encode("utf-8"))
+            repo_root.mkdir()
+            (repo_root / "rust-toolchain.toml").write_text(
+                textwrap.dedent(
+                    """\
+                    [toolchain]
+                    channel = "1.95.0"
+                    """
+                ),
+                encoding="utf-8",
+            )
+            rustup_args = [
+                "--active-rustup-toolchain",
+                active,
+                "--default-rustup-toolchain",
+                default,
+            ]
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy, rustup_args)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report), *rustup_args],
+            )
+            remaining_after_apply = sorted(path.name for path in toolchains.iterdir())
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertEqual(remaining_after_apply, sorted([active, default, pinned, retained]))
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "applied")
+        self.assertEqual(payload["actions_taken"][0]["action"], "remove_tree")
+        self.assertEqual(payload["actions_taken"][0]["surface_id"], "rustup.toolchains")
+
+    def test_apply_preserves_and_reports_report_only_codex_surfaces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            sqlite = home_root / ".codex" / "logs_2.sqlite"
+            history = home_root / ".codex" / "history.jsonl"
+            archived = home_root / ".codex" / "archived_sessions" / "session.jsonl"
+            codex_log.parent.mkdir(parents=True)
+            sqlite.parent.mkdir(parents=True, exist_ok=True)
+            archived.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex log requiring rotation")
+            sqlite.write_bytes(b"sqlite")
+            history.write_bytes(b"history")
+            archived.write_bytes(b"archived")
+            repo_root.mkdir()
+
+            before = {sqlite: sqlite.read_bytes(), history: history.read_bytes(), archived: archived.read_bytes()}
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report)],
+            )
+            after = {sqlite: sqlite.read_bytes(), history: history.read_bytes(), archived: archived.read_bytes()}
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.assertEqual(after, before)
+        payload = json.loads(result.stdout)
+        skipped = {entry["surface_id"] for entry in payload["skipped_report_only"]}
+        self.assertTrue(
+            {
+                "codex.sqlite",
+                "native_guidance.codex_history",
+                "codex.archived_sessions",
+            }
+            <= skipped
+        )
+
+    def test_apply_revalidates_policy_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            original = b"codex log requiring rotation"
+            codex_log.write_bytes(original)
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+            policy.write_text(
+                policy.read_text(encoding="utf-8").replace(
+                    'active_writer_processes = ["codex", "codex-tui"]\n\n[codex.sessions]',
+                    "\n[codex.sessions]",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report)],
+            )
+            after = codex_log.read_bytes()
+
+        self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+        self.assertEqual(after, original)
+        self.assertIn("codex.log.active_writer_processes", result.stderr)
+
+    def test_apply_rescans_and_aborts_when_candidate_state_changed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex log requiring rotation")
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            changed = b"changed codex log requiring rotation"
+            codex_log.write_bytes(changed)
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report)],
+            )
+            after = codex_log.read_bytes()
+            rotated_exists = codex_log.with_name("codex-tui.log.1").exists()
+
+        self.assertEqual(result.returncode, 1, (result.stdout, result.stderr))
+        self.assertEqual(after, changed)
+        self.assertFalse(rotated_exists)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "aborted")
+        self.assertEqual(payload["reason"], "candidate_state_changed")
+        self.assertEqual(payload["actions_taken"], [])
+
+    def test_apply_refuses_mutable_actions_when_configured_active_writer_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            self.write_policy_fixture(policy)
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            original = b"codex log requiring rotation"
+            codex_log.write_bytes(original)
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report), "--process-name", "codex"],
+            )
+            after = codex_log.read_bytes()
+            rotated_exists = codex_log.with_name("codex-tui.log.1").exists()
+
+        self.assertEqual(result.returncode, 1, (result.stdout, result.stderr))
+        self.assertEqual(after, original)
+        self.assertFalse(rotated_exists)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "refused")
+        self.assertEqual(payload["reason"], "active_writer_detected")
+        self.assertEqual(payload["actions_taken"], [])
+        self.assertEqual(payload["active_writer_refusals"][0]["process_names"], ["codex"])
+
+    def test_successful_apply_summary_includes_actions_skips_and_refusal_reasons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            policy = tmp_path / "policy.toml"
+            report = tmp_path / "dry-run.json"
+            home_root = tmp_path / "home"
+            repo_root = tmp_path / "repo"
+            retained = "1.95.0-aarch64-apple-darwin"
+            self.write_policy_fixture(policy, retain_exact_names=[retained])
+
+            codex_log = home_root / ".codex" / "log" / "codex-tui.log"
+            codex_log.parent.mkdir(parents=True)
+            codex_log.write_bytes(b"codex log requiring rotation")
+
+            outside_target = tmp_path / "outside-session.jsonl"
+            outside_target.write_bytes(b"outside")
+            session_link = home_root / ".codex" / "sessions" / "link.jsonl"
+            session_link.parent.mkdir(parents=True)
+            session_link.symlink_to(outside_target)
+
+            retained_toolchain = home_root / ".rustup" / "toolchains" / retained
+            retained_toolchain.mkdir(parents=True)
+            (retained_toolchain / "marker").write_bytes(b"retained")
+            repo_root.mkdir()
+
+            dry_run = self.run_tool("dry-run", home_root, repo_root, policy)
+            self.assertEqual(dry_run.returncode, 0, (dry_run.stdout, dry_run.stderr))
+            report.write_text(dry_run.stdout, encoding="utf-8")
+
+            result = self.run_tool(
+                "apply",
+                home_root,
+                repo_root,
+                policy,
+                ["--dry-run-report", str(report)],
+            )
+
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "applied")
+        self.assertGreater(payload["bytes_reclaimed"], 0)
+        self.assertEqual(payload["actions_taken"][0]["action"], "rotate")
+        self.assertEqual(payload["refusal_reasons"][0]["reason"], "symlink_not_followed")
+        protected = {entry["reason"] for entry in payload["skipped_protected"]}
+        self.assertIn("exact_name_retain_policy", protected)
+
+
+if __name__ == "__main__":
+    unittest.main()

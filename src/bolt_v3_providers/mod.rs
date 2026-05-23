@@ -22,9 +22,10 @@ use std::{any::Any, fmt, sync::Arc};
 
 use crate::{
     bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3MarketClockFn},
-    bolt_v3_config::{BoltV3RootConfig, ClientBlock},
+    bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config},
     bolt_v3_market_families::MarketIdentityPlan,
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
+    strategies::registry::FeeProvider,
 };
 
 pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
@@ -65,6 +66,12 @@ pub struct ProviderAdapterMapContext<'a> {
     pub plan: &'a MarketIdentityPlan,
     pub clock: BoltV3MarketClockFn,
 }
+
+type FeeProviderBuilder = fn(
+    &str,
+    &ClientBlock,
+    &ResolvedBoltV3Secrets,
+) -> Result<Arc<dyn FeeProvider>, BoltV3AdapterMappingError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderCredentialedBlock {
@@ -110,6 +117,7 @@ pub struct ProviderBinding {
         ProviderAdapterMapContext<'a>,
     )
         -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError>,
+    pub build_fee_provider: Option<FeeProviderBuilder>,
 }
 
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
@@ -123,6 +131,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: polymarket::FORBIDDEN_ENV_VARS,
         resolve_secrets: polymarket::resolve_secrets,
         map_adapters: polymarket::map_adapters,
+        build_fee_provider: Some(polymarket::build_fee_provider),
     },
     ProviderBinding {
         key: binance::KEY,
@@ -134,6 +143,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: binance::FORBIDDEN_ENV_VARS,
         resolve_secrets: binance::resolve_secrets,
         map_adapters: binance::map_adapters,
+        build_fee_provider: None,
     },
 ];
 
@@ -179,6 +189,104 @@ pub fn validate_client_block(key: &str, client: &ClientBlock) -> Vec<String> {
     }
 }
 
+#[derive(Debug)]
+pub enum FeeProviderResolutionError {
+    MissingExecutionClient {
+        execution_client_id: String,
+    },
+    UnsupportedProvider {
+        client_key: String,
+        provider_key: String,
+    },
+    ProviderWithoutFeeBinding {
+        client_key: String,
+        provider_key: String,
+    },
+    ProviderBuild {
+        client_key: String,
+        provider_key: String,
+        source: BoltV3AdapterMappingError,
+    },
+}
+
+impl std::fmt::Display for FeeProviderResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingExecutionClient {
+                execution_client_id,
+            } => write!(
+                f,
+                "strategy execution_client_id `{execution_client_id}` is not present in loaded clients",
+            ),
+            Self::UnsupportedProvider {
+                client_key,
+                provider_key,
+            } => write!(
+                f,
+                "clients.{client_key}.venue `{provider_key}` has no registered provider binding",
+            ),
+            Self::ProviderWithoutFeeBinding {
+                client_key,
+                provider_key,
+            } => write!(
+                f,
+                "clients.{client_key}.venue `{provider_key}` has no registered fee-provider binding",
+            ),
+            Self::ProviderBuild {
+                client_key,
+                provider_key,
+                source,
+            } => write!(
+                f,
+                "clients.{client_key}.venue `{provider_key}` fee-provider construction failed: {source}",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FeeProviderResolutionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ProviderBuild { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+pub fn resolve_fee_provider(
+    loaded: &LoadedBoltV3Config,
+    execution_client_id: &str,
+    resolved: &ResolvedBoltV3Secrets,
+) -> Result<Arc<dyn FeeProvider>, FeeProviderResolutionError> {
+    let client = loaded
+        .root
+        .clients
+        .get(execution_client_id)
+        .ok_or_else(|| FeeProviderResolutionError::MissingExecutionClient {
+            execution_client_id: execution_client_id.to_string(),
+        })?;
+    let provider_key = client.venue.as_str();
+    let binding = binding_for_provider_key(provider_key).ok_or_else(|| {
+        FeeProviderResolutionError::UnsupportedProvider {
+            client_key: execution_client_id.to_string(),
+            provider_key: provider_key.to_string(),
+        }
+    })?;
+    let build_fee_provider = binding.build_fee_provider.ok_or_else(|| {
+        FeeProviderResolutionError::ProviderWithoutFeeBinding {
+            client_key: execution_client_id.to_string(),
+            provider_key: provider_key.to_string(),
+        }
+    })?;
+    build_fee_provider(execution_client_id, client, resolved).map_err(|source| {
+        FeeProviderResolutionError::ProviderBuild {
+            client_key: execution_client_id.to_string(),
+            provider_key: provider_key.to_string(),
+            source,
+        }
+    })
+}
+
 fn validate_required_secret_blocks(
     key: &str,
     provider_key: &str,
@@ -205,9 +313,94 @@ fn validate_required_secret_blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        bolt_v3_config::LoadedBoltV3Config,
+        bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, resolve_bolt_v3_secrets_with},
+    };
+    use std::{collections::BTreeMap, path::PathBuf};
 
     fn client_from_toml(text: &str) -> ClientBlock {
         toml::from_str(text).expect("test client should parse")
+    }
+
+    fn fixture_loaded_config() -> LoadedBoltV3Config {
+        LoadedBoltV3Config {
+            root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: "test-config-bundle-checksum".to_string(),
+            root: toml::from_str(include_str!("../../tests/fixtures/bolt_v3/root.toml"))
+                .expect("fixture root should parse"),
+            strategies: Vec::new(),
+        }
+    }
+
+    fn fake_secret_value(path: &str) -> String {
+        match path {
+            "/bolt/polymarket_main/private_key" => {
+                "0x1111111111111111111111111111111111111111111111111111111111111111".to_string()
+            }
+            "/bolt/polymarket_main/api_key" => "poly-api-key".to_string(),
+            "/bolt/polymarket_main/api_secret" => "YWJj".to_string(),
+            "/bolt/polymarket_main/passphrase" => "poly-passphrase".to_string(),
+            _ => panic!("unexpected test SSM path {path}"),
+        }
+    }
+
+    fn resolved_polymarket_secrets() -> ResolvedBoltV3Secrets {
+        let mut loaded = fixture_loaded_config();
+        loaded
+            .root
+            .clients
+            .retain(|client_key, _| client_key == "polymarket_main");
+        resolve_bolt_v3_secrets_with(&loaded, |_region, path| {
+            Ok::<_, String>(fake_secret_value(path))
+        })
+        .expect("fixture polymarket secrets should resolve")
+    }
+
+    fn set_polymarket_execution_field(
+        loaded: &mut LoadedBoltV3Config,
+        field: &'static str,
+        value: toml::Value,
+    ) {
+        let execution = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .and_then(|client| client.execution.as_mut())
+            .expect("fixture should include polymarket execution block");
+        let table = execution
+            .as_table_mut()
+            .expect("polymarket execution should be a table");
+        table.insert(field.to_string(), value);
+    }
+
+    fn expect_resolution_error(
+        result: Result<Arc<dyn FeeProvider>, FeeProviderResolutionError>,
+        message: &'static str,
+    ) -> FeeProviderResolutionError {
+        match result {
+            Ok(_) => panic!("{message}"),
+            Err(error) => error,
+        }
+    }
+
+    #[derive(Debug)]
+    struct SentinelSecrets {
+        value: String,
+    }
+
+    impl ProviderResolvedSecrets for SentinelSecrets {
+        fn provider_key(&self) -> &'static str {
+            "SENTINEL"
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn redaction_values(&self) -> Vec<&str> {
+            vec![self.value.as_str()]
+        }
     }
 
     #[test]
@@ -265,5 +458,222 @@ mod tests {
             validate_required_secret_blocks("fake_client", "FAKE", &client, &[requirement]);
 
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn fee_provider_resolution_uses_provider_binding_registry() {
+        let loaded = fixture_loaded_config();
+        let resolved = resolved_polymarket_secrets();
+
+        let provider = resolve_fee_provider(&loaded, "polymarket_main", &resolved)
+            .expect("polymarket fee provider should resolve through provider binding");
+
+        assert!(
+            binding_for_provider_key(polymarket::KEY)
+                .expect("polymarket binding should exist")
+                .build_fee_provider
+                .is_some(),
+            "polymarket binding should expose a fee-provider capability"
+        );
+        assert!(
+            provider
+                .fee_bps("condition-token.POLYMARKET".into())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn fee_provider_resolution_rejects_missing_execution_client_id() {
+        let loaded = fixture_loaded_config();
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+
+        let error = expect_resolution_error(
+            resolve_fee_provider(&loaded, "missing_execution_client", &resolved),
+            "missing execution client id must fail at resolver boundary",
+        );
+
+        assert!(matches!(
+            error,
+            FeeProviderResolutionError::MissingExecutionClient { .. }
+        ));
+        assert!(error.to_string().contains("missing_execution_client"));
+    }
+
+    #[test]
+    fn fee_provider_resolution_rejects_unsupported_provider_kind() {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.clients.insert(
+            "fake_execution".to_string(),
+            client_from_toml(
+                r#"
+                venue = "FAKE"
+                "#,
+            ),
+        );
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+
+        let error = expect_resolution_error(
+            resolve_fee_provider(&loaded, "fake_execution", &resolved),
+            "unsupported provider key must fail at resolver boundary",
+        );
+
+        assert!(matches!(
+            error,
+            FeeProviderResolutionError::UnsupportedProvider { .. }
+        ));
+        assert!(error.to_string().contains("FAKE"));
+    }
+
+    #[test]
+    fn fee_provider_resolution_rejects_provider_without_fee_binding() {
+        let loaded = fixture_loaded_config();
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+
+        let error = expect_resolution_error(
+            resolve_fee_provider(&loaded, "binance_reference", &resolved),
+            "provider without fee binding must fail at resolver boundary",
+        );
+
+        assert!(matches!(
+            error,
+            FeeProviderResolutionError::ProviderWithoutFeeBinding { .. }
+        ));
+        assert!(error.to_string().contains("BINANCE"));
+    }
+
+    #[test]
+    fn fee_provider_resolution_reports_provider_config_parse_failure() {
+        let mut loaded = fixture_loaded_config();
+        set_polymarket_execution_field(
+            &mut loaded,
+            "fee_cache_ttl_secs",
+            toml::Value::String("not-an-integer".to_string()),
+        );
+        let resolved = resolved_polymarket_secrets();
+
+        let error = expect_resolution_error(
+            resolve_fee_provider(&loaded, "polymarket_main", &resolved),
+            "provider config parse failure must surface through resolver",
+        );
+
+        assert!(matches!(
+            error,
+            FeeProviderResolutionError::ProviderBuild {
+                source: BoltV3AdapterMappingError::SchemaParse { .. },
+                ..
+            }
+        ));
+        assert!(error.to_string().contains("failed to deserialize"));
+    }
+
+    #[test]
+    fn fee_provider_resolution_rejects_invalid_secret_binding() {
+        let loaded = fixture_loaded_config();
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+
+        let error = expect_resolution_error(
+            resolve_fee_provider(&loaded, "polymarket_main", &resolved),
+            "missing resolved secret binding must fail at resolver boundary",
+        );
+
+        assert!(matches!(
+            error,
+            FeeProviderResolutionError::ProviderBuild {
+                source: BoltV3AdapterMappingError::MissingResolvedSecrets { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn fee_provider_resolution_reports_provider_client_construction_failure() {
+        let mut loaded = fixture_loaded_config();
+        set_polymarket_execution_field(
+            &mut loaded,
+            "base_url_http",
+            toml::Value::String("not a url".to_string()),
+        );
+        let resolved = resolved_polymarket_secrets();
+
+        let error = expect_resolution_error(
+            resolve_fee_provider(&loaded, "polymarket_main", &resolved),
+            "provider client construction failure must surface through resolver",
+        );
+
+        assert!(matches!(
+            error,
+            FeeProviderResolutionError::ProviderBuild {
+                source: BoltV3AdapterMappingError::ValidationInvariant { .. },
+                ..
+            }
+        ));
+        assert!(
+            error
+                .to_string()
+                .contains("failed to create Polymarket fee HTTP client")
+        );
+    }
+
+    #[test]
+    fn fee_provider_resolution_error_display_debug_redacts_sentinel_secret() {
+        let loaded = fixture_loaded_config();
+        let sentinel = "sentinel-secret-value-453";
+        let mut clients = BTreeMap::new();
+        clients.insert(
+            "polymarket_main".to_string(),
+            Arc::new(SentinelSecrets {
+                value: sentinel.to_string(),
+            }) as ResolvedBoltV3ClientSecrets,
+        );
+        let resolved = ResolvedBoltV3Secrets { clients };
+
+        let error = expect_resolution_error(
+            resolve_fee_provider(&loaded, "polymarket_main", &resolved),
+            "sentinel secret provider mismatch must fail without leaking secret value",
+        );
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+
+        assert!(!display.contains(sentinel), "{display}");
+        assert!(!debug.contains(sentinel), "{debug}");
+    }
+
+    #[test]
+    fn fee_provider_resolution_redacts_provider_build_secret_errors() {
+        let loaded = fixture_loaded_config();
+        let sentinel = "sentinel-secret-value-453";
+        let mut clients = BTreeMap::new();
+        clients.insert(
+            "polymarket_main".to_string(),
+            Arc::new(polymarket::ResolvedBoltV3PolymarketSecrets {
+                private_key: sentinel.to_string(),
+                api_key: "poly-api-key".to_string(),
+                api_secret: "YWJj".to_string(),
+                passphrase: "poly-passphrase".to_string(),
+            }) as ResolvedBoltV3ClientSecrets,
+        );
+        let resolved = ResolvedBoltV3Secrets { clients };
+
+        let error = expect_resolution_error(
+            resolve_fee_provider(&loaded, "polymarket_main", &resolved),
+            "provider build failure must not leak malformed resolved secret values",
+        );
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+
+        assert!(matches!(
+            error,
+            FeeProviderResolutionError::ProviderBuild { .. }
+        ));
+        assert!(!display.contains(sentinel), "{display}");
+        assert!(!debug.contains(sentinel), "{debug}");
     }
 }

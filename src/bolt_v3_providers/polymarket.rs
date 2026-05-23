@@ -538,6 +538,14 @@ pub fn build_fee_provider(
         field: "execution",
         message: format!("failed to resolve Polymarket fee credentials: {error}"),
     })?;
+    if !cfg.base_url_http.starts_with("http://") && !cfg.base_url_http.starts_with("https://") {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "execution.base_url_http",
+            message: "failed to create Polymarket fee HTTP client: base_url_http must start with http:// or https://"
+                .to_string(),
+        });
+    }
     let client = PolymarketClobHttpClient::new(
         secrets.credential,
         secrets.address,

@@ -1318,6 +1318,22 @@ classification = "provider_secret_requirement_block_label"
 reason = "This label renders the provider credentialed-block enum variant in validation diagnostics."
 
 [[allowed]]
+path = "src/bolt_v3_providers/mod.rs"
+kind = "string"
+literal = '''"clients.{client_key}.venue `{provider_key}` has no registered fee-provider binding"'''
+context = '''"clients.{client_key}.venue `{provider_key}` has no registered fee-provider binding",'''
+classification = "provider_fee_binding_diagnostic"
+reason = "This diagnostic identifies a provider binding that intentionally lacks fee-provider capability; the runtime provider choice remains TOML-owned through clients.<id>.venue."
+
+[[allowed]]
+path = "src/bolt_v3_providers/mod.rs"
+kind = "string"
+literal = '''"clients.{client_key}.venue `{provider_key}` has no registered provider binding"'''
+context = '''"clients.{client_key}.venue `{provider_key}` has no registered provider binding",'''
+classification = "provider_binding_diagnostic"
+reason = "This diagnostic identifies an unsupported provider key selected by TOML-owned clients.<id>.venue; it is not a hidden provider default."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "number"
 literal = "4"
@@ -1436,6 +1452,22 @@ literal = "\"http_timeout_secs\""
 context = "(\"http_timeout_secs\", execution.http_timeout_secs),"
 classification = "validation_field_label"
 reason = "This label names the Polymarket execution config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"http://"'''
+context = '''if !cfg.base_url_http.starts_with("http://") && !cfg.base_url_http.starts_with("https://") {'''
+classification = "url_scheme_validation_literal"
+reason = "This is the accepted HTTP URL scheme prefix used to fail closed on malformed TOML-owned Polymarket fee-provider URLs before NT client construction."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"https://"'''
+context = '''if !cfg.base_url_http.starts_with("http://") && !cfg.base_url_http.starts_with("https://") {'''
+classification = "url_scheme_validation_literal"
+reason = "This is the accepted HTTPS URL scheme prefix used to fail closed on malformed TOML-owned Polymarket fee-provider URLs before NT client construction."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"

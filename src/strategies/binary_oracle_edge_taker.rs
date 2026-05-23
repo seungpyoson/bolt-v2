@@ -4104,7 +4104,6 @@ impl BinaryOracleEdgeTaker {
 
     fn submit_lifecycle_policy(&self) -> BoltV3SubmitLifecyclePolicy {
         BoltV3SubmitLifecyclePolicy::new(
-            self.config.forced_exit_order.is_reduce_only,
             self.config.manage_contingent_orders
                 || self.config.manage_gtd_expiry
                 || self.config.manage_stop,
@@ -6468,7 +6467,7 @@ fn submit_admission_request_from_order(
             BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
             BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
         },
-        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true, true),
+        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
     })
 }
 
@@ -6975,7 +6974,7 @@ mod tests {
         strategy.config.manage_stop = false;
         let disabled = strategy.submit_lifecycle_policy();
 
-        assert_eq!(disabled, BoltV3SubmitLifecyclePolicy::new(false, false));
+        assert_eq!(disabled, BoltV3SubmitLifecyclePolicy::new(false));
         assert_eq!(
             disabled.submit_intent_for(BoltV3OrderLifecycleIntent::RiskReducingExit),
             Ok(Some(BoltV3SubmitIntentKind::RiskReducingExit))
@@ -6988,7 +6987,7 @@ mod tests {
         strategy.config.forced_exit_order.is_reduce_only = true;
         strategy.config.manage_contingent_orders = true;
         let enabled = strategy.submit_lifecycle_policy();
-        assert_eq!(enabled, BoltV3SubmitLifecyclePolicy::new(true, true));
+        assert_eq!(enabled, BoltV3SubmitLifecyclePolicy::new(true));
         assert_eq!(
             enabled.submit_intent_for(BoltV3OrderLifecycleIntent::ReplaceSubmit),
             Ok(Some(BoltV3SubmitIntentKind::ReplaceSubmit))
@@ -8055,9 +8054,7 @@ mod tests {
                     notional: Decimal::new(50, 2),
                     intent_kind: crate::bolt_v3_submit_admission::BoltV3SubmitIntentKind::Entry,
                     lifecycle_policy:
-                        crate::bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy::new(
-                            true, true,
-                        ),
+                        crate::bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy::new(true),
                 },
             )
             .expect("first admission should consume the only slot");

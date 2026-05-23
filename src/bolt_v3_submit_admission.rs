@@ -149,16 +149,12 @@ pub enum BoltV3OrderLifecycleIntent {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct BoltV3SubmitLifecyclePolicy {
-    _risk_reducing_exit_after_entry: bool,
     replace_submit: bool,
 }
 
 impl BoltV3SubmitLifecyclePolicy {
-    pub fn new(risk_reducing_exit_after_entry: bool, replace_submit: bool) -> Self {
-        Self {
-            _risk_reducing_exit_after_entry: risk_reducing_exit_after_entry,
-            replace_submit,
-        }
+    pub fn new(replace_submit: bool) -> Self {
+        Self { replace_submit }
     }
 
     pub fn submit_intent_for(

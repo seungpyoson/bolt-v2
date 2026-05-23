@@ -150,7 +150,7 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         instrument_id: "instrument-1".to_string(),
         notional,
         intent_kind: BoltV3SubmitIntentKind::Entry,
-        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true, true),
+        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
     }
 }
 

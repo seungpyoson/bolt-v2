@@ -410,7 +410,7 @@ fn submit_request_with_kind(
     submit_request_with_kind_and_policy(
         notional,
         intent_kind,
-        BoltV3SubmitLifecyclePolicy::new(true, true),
+        BoltV3SubmitLifecyclePolicy::new(true),
     )
 }
 
@@ -567,7 +567,7 @@ fn admit_records_admission_decision_evidence_on_admit_outcome() {
 
 #[test]
 fn entry_replace_and_exit_submit_intents_are_classified_before_admission() {
-    let policy = BoltV3SubmitLifecyclePolicy::new(true, false);
+    let policy = BoltV3SubmitLifecyclePolicy::new(false);
 
     assert_eq!(
         policy.submit_intent_for(BoltV3OrderLifecycleIntent::Entry),
@@ -584,7 +584,21 @@ fn entry_replace_and_exit_submit_intents_are_classified_before_admission() {
 }
 
 #[test]
-fn risk_reducing_exit_after_entry_is_admitted_within_operator_count_cap() {
+fn submit_lifecycle_policy_source_removes_dead_risk_reducing_exit_flag() {
+    let source = include_str!("../src/bolt_v3_submit_admission.rs");
+
+    assert!(
+        !source.contains("_risk_reducing_exit_after_entry"),
+        "strict count-cap enforcement must not retain a dead underscore-prefixed policy field"
+    );
+    assert!(
+        !source.contains("risk_reducing_exit_after_entry: bool"),
+        "strict count-cap enforcement must not retain a dead constructor parameter"
+    );
+}
+
+#[test]
+fn risk_reducing_exit_is_admitted_within_operator_count_cap() {
     let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
     ));
@@ -718,7 +732,7 @@ fn replace_submit_consumes_operator_count_budget_before_risk_reducing_exit() {
 }
 
 #[test]
-fn risk_reducing_exit_after_entry_rejects_when_policy_disables_count_carveout() {
+fn strict_count_cap_rejects_second_submit_risk_reducing_exit() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
     admission
@@ -739,9 +753,9 @@ fn risk_reducing_exit_after_entry_rejects_when_policy_disables_count_carveout() 
         .admit(&submit_request_with_kind_and_policy(
             Decimal::new(1, 1),
             BoltV3SubmitIntentKind::RiskReducingExit,
-            BoltV3SubmitLifecyclePolicy::new(false, true),
+            BoltV3SubmitLifecyclePolicy::new(true),
         ))
-        .expect_err("disabled lifecycle policy must not bypass exhausted count");
+        .expect_err("risk-reducing exit must not bypass exhausted count");
 
     assert!(matches!(
         exit,
@@ -777,7 +791,7 @@ fn replace_submit_rejects_when_lifecycle_policy_disables_replace() {
         .admit(&submit_request_with_kind_and_policy(
             Decimal::new(1, 1),
             BoltV3SubmitIntentKind::ReplaceSubmit,
-            BoltV3SubmitLifecyclePolicy::new(true, false),
+            BoltV3SubmitLifecyclePolicy::new(false),
         ))
         .expect_err("disabled lifecycle policy must reject replace-submit");
 
@@ -802,7 +816,7 @@ fn replace_submit_rejects_when_lifecycle_policy_disables_replace() {
 
 #[test]
 fn plain_cancel_lifecycle_intent_is_not_a_submit_candidate() {
-    let policy = BoltV3SubmitLifecyclePolicy::new(true, true);
+    let policy = BoltV3SubmitLifecyclePolicy::new(true);
 
     assert_eq!(
         policy.submit_intent_for(BoltV3OrderLifecycleIntent::PlainCancel),

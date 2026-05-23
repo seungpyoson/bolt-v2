@@ -138,6 +138,7 @@ struct BoltV3NoSubmitReferenceQuoteProbeHandle {
     required: Vec<NoSubmitReferenceQuoteSubscription>,
     ambiguous_instrument_ids: BTreeSet<String>,
     quotes: Rc<RefCell<Vec<BoltV3NoSubmitReferenceQuote>>>,
+    quote_notify: Rc<tokio::sync::Notify>,
 }
 
 impl BoltV3NoSubmitReferenceQuoteProbeHandle {
@@ -148,6 +149,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             required,
             ambiguous_instrument_ids,
             quotes: Rc::new(RefCell::new(Vec::new())),
+            quote_notify: Rc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -185,9 +187,11 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         if self.ambiguous_instrument_ids.contains(&quote_instrument_id) {
             return;
         }
+        let mut matched_required = false;
         let mut quotes = self.quotes.borrow_mut();
         for required in &self.required {
             if quote.instrument_id == required.instrument_id {
+                matched_required = true;
                 quotes.push(BoltV3NoSubmitReferenceQuote {
                     data_client_id: required.data_client_id.to_string(),
                     instrument_id: required.instrument_id.to_string(),
@@ -196,6 +200,16 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
                     captured_at_unix_nanos,
                 });
             }
+        }
+        drop(quotes);
+        if matched_required && self.has_all_required_quotes() {
+            self.quote_notify.notify_one();
+        }
+    }
+
+    async fn wait_for_all_required_quotes(&self) {
+        while !self.has_all_required_quotes() {
+            self.quote_notify.notified().await;
         }
     }
 }
@@ -864,7 +878,7 @@ async fn run_bolt_v3_no_submit_readiness_until_observed(
         }
         result = tokio::time::timeout(
             Duration::from_secs(timeout_secs),
-            await_no_submit_running(&node_handle),
+            await_no_submit_running(&node_handle, loaded),
         ) => {
             match result {
                 Ok(()) => Ok(()),
@@ -975,9 +989,7 @@ async fn await_no_submit_reference_quote_probe(
         );
     }
     tokio::time::timeout(Duration::from_secs(timeout_secs), async {
-        while !probe.has_all_required_quotes() {
-            tokio::task::yield_now().await;
-        }
+        probe.wait_for_all_required_quotes().await;
     })
     .await
     .map_err(|_| {
@@ -987,9 +999,15 @@ async fn await_no_submit_reference_quote_probe(
     })
 }
 
-async fn await_no_submit_running(node_handle: &LiveNodeHandle) {
+async fn await_no_submit_running(node_handle: &LiveNodeHandle, loaded: &LoadedBoltV3Config) {
+    let poll_interval = Duration::from_millis(
+        loaded
+            .root
+            .persistence
+            .runtime_capture_start_poll_interval_ms,
+    );
     while node_handle.state() != NodeState::Running {
-        tokio::task::yield_now().await;
+        tokio::time::sleep(poll_interval).await;
     }
 }
 

@@ -1668,6 +1668,13 @@ fn write_json_artifact_create_new<T: Serialize>(
             source,
         });
     }
+    if let Err(source) = file.sync_all() {
+        let _ = fs::remove_file(path);
+        return Err(BoltV3OperatorArtifactError::Write {
+            path: path.to_path_buf(),
+            source,
+        });
+    }
     Ok(WrittenOperatorArtifact {
         path: path.to_path_buf(),
         sha256: hex::encode(Sha256::digest(bytes)),

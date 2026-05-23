@@ -2027,6 +2027,33 @@ fn final_packet_verifier_rejects_unknown_packet_runtime_policy_fields() {
 }
 
 #[test]
+fn operator_artifact_writer_syncs_create_new_file_before_reporting_hash() {
+    let source = support::repo_text("src/bolt_v3_operator_artifacts.rs");
+    let writer_body = source
+        .split("fn write_json_artifact_create_new")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("fn configure_private_artifact_create_options")
+                .next()
+        })
+        .expect("operator artifact writer should be present");
+    let write_pos = writer_body
+        .find("file.write_all(&bytes)")
+        .expect("operator artifact writer should write bytes");
+    let sync_pos = writer_body
+        .find("file.sync_all()")
+        .expect("operator artifact writer should sync bytes before reporting hash");
+    let returned_artifact_pos = writer_body
+        .find("Ok(WrittenOperatorArtifact")
+        .expect("operator artifact writer should return written artifact metadata");
+
+    assert!(
+        write_pos < sync_pos && sync_pos < returned_artifact_pos,
+        "operator artifact writer must sync create-new artifacts before reporting path and sha"
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn final_packet_verifier_rejects_symlinked_operator_packet_before_parsing() {
     let fixture = assembled_final_packet_fixture();

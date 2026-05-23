@@ -361,6 +361,12 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
             block.catalog_directory
         ));
     }
+    if block.runtime_capture_start_poll_interval_ms == 0 {
+        errors.push(
+            "persistence.runtime_capture_start_poll_interval_ms must be a positive integer"
+                .to_string(),
+        );
+    }
     if block.streaming.flush_interval_ms == 0 {
         errors
             .push("persistence.streaming.flush_interval_ms must be a positive integer".to_string());

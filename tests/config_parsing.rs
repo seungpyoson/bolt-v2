@@ -3576,6 +3576,27 @@ fn rejects_zero_explicit_nt_exec_runtime_values() {
 }
 
 #[test]
+fn rejects_zero_runtime_capture_start_poll_interval() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "runtime_capture_start_poll_interval_ms = 50",
+        "runtime_capture_start_poll_interval_ms = 0",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("zero runtime-capture poll fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|m| {
+            m.contains("persistence.runtime_capture_start_poll_interval_ms")
+                && m.contains("must be a positive integer")
+        }),
+        "expected positive-integer runtime-capture poll validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_invalid_nt_data_engine_values() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

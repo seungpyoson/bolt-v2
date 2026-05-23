@@ -75,13 +75,14 @@ python3 scripts/developer_tool_storage_hygiene.py apply \
   --json
 ```
 
-If `rustup.toolchains.remove_exact_names` is non-empty, dry-run/apply also require exact active and default rustup snapshots. The script does not infer these values because protecting active/default toolchains is a fail-closed safety requirement:
+If `rustup.toolchains.remove_exact_names` is non-empty, dry-run, preflight, and apply also require exact active and default rustup snapshots. The script does not infer these values because protecting active/default toolchains is a fail-closed safety requirement. The same snapshot flags are accepted by all three commands:
 
 ```sh
-python3 scripts/developer_tool_storage_hygiene.py dry-run \
+python3 scripts/developer_tool_storage_hygiene.py preflight \
   --policy ci/developer-tool-storage-hygiene.toml \
   --home-root "$HOME" \
   --repo-root "$PWD" \
+  --available-disk-bytes 10737418240 \
   --active-rustup-toolchain 1.95.0-aarch64-apple-darwin \
   --default-rustup-toolchain 1.94.1-aarch64-apple-darwin \
   --json

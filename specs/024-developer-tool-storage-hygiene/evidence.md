@@ -221,7 +221,7 @@ Initial no-mistakes run `01KS9K6A3H83RCKGENHXXM2EZB` on head `56efab79` reported
 
 | Finding | Remediation |
 |---|---|
-| Rustup active/default protections were not fail-closed when `remove_exact_names` was non-empty and no active/default snapshots were supplied. | Added `test_dry_run_fails_closed_for_rustup_removals_without_active_default_snapshots`; dry-run/apply now reject rustup removals unless exact active and default snapshots are supplied. |
+| Rustup active/default protections were not fail-closed when `remove_exact_names` was non-empty and no active/default snapshots were supplied. | Added `test_dry_run_fails_closed_for_rustup_removals_without_active_default_snapshots`; dry-run, preflight, and apply now reject rustup removals unless exact active and default snapshots are supplied. |
 | Preflight thresholds accepted TOML booleans and negative ints. | Added `test_policy_validation_fails_closed_when_threshold_values_are_negative_or_bool`; preflight thresholds now require real non-negative integers. |
 | Session files disappearing between glob and stat could crash scanning. | Added `test_dry_run_reports_session_that_disappears_during_scan_as_refusal`; session scan now reports `path_disappeared_during_scan` refusals and measurement tolerates disappearing paths. |
 
@@ -292,5 +292,13 @@ Eighth no-mistakes run `01KS9RDM7886S72R3SP6VA77FH` started on head `2319bad7` a
 |---|---|
 | Policy load accepted unsupported integer `schema_version` values. | Added `test_load_policy_rejects_unsupported_schema_version`; policy load now requires `schema_version == 1`. |
 | Log rotation could delete the oldest retained sidecar before later rotation steps succeeded. | Added `test_apply_rotation_failure_preserves_oldest_sidecar`; rotation now stages moves and rolls back on mutation failure. |
+
+Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.
+
+Ninth no-mistakes run `01KS9S5TNDATHE9BG962YTX0HB` on head `b14f7438` reported one documentation gap before PR opening:
+
+| Finding | Remediation |
+|---|---|
+| Operator docs said only dry-run/apply require rustup active/default snapshots when removals are configured, but preflight also calls dry-run candidate construction and fails closed without those snapshots. | Updated `docs/ops/developer-tool-storage-hygiene.md` so dry-run, preflight, and apply all document the same rustup snapshot requirement and preflight example. |
 
 Final no-mistakes must be rerun on the remediated exact PR head after this follow-up commit is pushed.

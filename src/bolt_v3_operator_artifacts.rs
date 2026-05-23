@@ -2,6 +2,7 @@ use std::{
     error::Error,
     fmt, fs,
     io::{self, Read, Write},
+    ops::Range,
     path::{Path, PathBuf},
 };
 
@@ -1839,36 +1840,26 @@ struct Phase8AbortPlanCancelIfOpenSourceProofHashInput<'a> {
 fn require_abort_plan_cancel_if_open_contract(
     strategy_source: &str,
 ) -> Result<(), BoltV3OperatorArtifactError> {
-    let forced_flat_index = abort_plan_cancel_if_open_marker_index(
-        strategy_source,
-        ABORT_PLAN_CANCEL_IF_OPEN_FORCED_FLAT_MARKER,
-        "forced_flat_reasons",
-    )?;
-    let pending_entry_index = abort_plan_cancel_if_open_marker_index(
-        strategy_source,
-        ABORT_PLAN_CANCEL_IF_OPEN_PENDING_ENTRY_MARKER,
-        "pending_entry",
-    )?;
-    let cancel_order_index = abort_plan_cancel_if_open_marker_index(
-        strategy_source,
-        ABORT_PLAN_CANCEL_IF_OPEN_CANCEL_ORDER_MARKER,
-        "cancel_order",
-    )?;
-    let context_index = abort_plan_cancel_if_open_marker_index(
-        strategy_source,
-        ABORT_PLAN_CANCEL_IF_OPEN_CONTEXT_MARKER,
-        "cancel_order_context",
-    )?;
-    let exit_pending_index = abort_plan_cancel_if_open_marker_index(
-        strategy_source,
-        ABORT_PLAN_CANCEL_IF_OPEN_EXIT_PENDING_MARKER,
-        "exit_pending",
-    )?;
+    let mut candidate_indexes = Vec::new();
+    for function_scope in abort_plan_cancel_if_open_function_scopes(strategy_source) {
+        let scoped_source = &strategy_source[function_scope];
+        if let Some(indexes) = abort_plan_cancel_if_open_scoped_marker_indexes(scoped_source)? {
+            candidate_indexes.push(indexes);
+        }
+    }
 
-    if forced_flat_index < pending_entry_index
-        && pending_entry_index < cancel_order_index
-        && cancel_order_index < context_index
-        && context_index < exit_pending_index
+    let [indexes] = candidate_indexes.as_slice() else {
+        return Err(
+            BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid {
+                field: "forced_flat_function_scope",
+            },
+        );
+    };
+
+    if indexes.forced_flat < indexes.pending_entry
+        && indexes.pending_entry < indexes.cancel_order
+        && indexes.cancel_order < indexes.context
+        && indexes.context < indexes.exit_pending
     {
         Ok(())
     } else {
@@ -1880,14 +1871,100 @@ fn require_abort_plan_cancel_if_open_contract(
     }
 }
 
-fn abort_plan_cancel_if_open_marker_index(
+#[derive(Debug)]
+struct AbortPlanCancelIfOpenMarkerIndexes {
+    forced_flat: usize,
+    pending_entry: usize,
+    cancel_order: usize,
+    context: usize,
+    exit_pending: usize,
+}
+
+fn abort_plan_cancel_if_open_function_scopes(strategy_source: &str) -> Vec<Range<usize>> {
+    let mut function_starts = Vec::new();
+    let mut line_offset = function_starts.len();
+    for line in strategy_source.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if matches!(trimmed.as_bytes(), [b'f', b'n', b' ', ..]) {
+            function_starts.push(line_offset + line.len() - trimmed.len());
+        }
+        line_offset += line.len();
+    }
+
+    let mut scopes = Vec::new();
+    let mut starts = function_starts.iter().copied().peekable();
+    while let Some(start) = starts.next() {
+        let end = starts.peek().copied().unwrap_or(strategy_source.len());
+        scopes.push(start..end);
+    }
+    scopes
+}
+
+fn abort_plan_cancel_if_open_scoped_marker_indexes(
+    strategy_source: &str,
+) -> Result<Option<AbortPlanCancelIfOpenMarkerIndexes>, BoltV3OperatorArtifactError> {
+    let forced_flat = abort_plan_cancel_if_open_scoped_marker_index(
+        strategy_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_FORCED_FLAT_MARKER,
+        "forced_flat_reasons",
+    )?;
+    let pending_entry = abort_plan_cancel_if_open_scoped_marker_index(
+        strategy_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_PENDING_ENTRY_MARKER,
+        "pending_entry",
+    )?;
+    let cancel_order = abort_plan_cancel_if_open_scoped_marker_index(
+        strategy_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_CANCEL_ORDER_MARKER,
+        "cancel_order",
+    )?;
+    let context = abort_plan_cancel_if_open_scoped_marker_index(
+        strategy_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_CONTEXT_MARKER,
+        "cancel_order_context",
+    )?;
+    let exit_pending = abort_plan_cancel_if_open_scoped_marker_index(
+        strategy_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_EXIT_PENDING_MARKER,
+        "exit_pending",
+    )?;
+
+    match (
+        forced_flat,
+        pending_entry,
+        cancel_order,
+        context,
+        exit_pending,
+    ) {
+        (
+            Some(forced_flat),
+            Some(pending_entry),
+            Some(cancel_order),
+            Some(context),
+            Some(exit_pending),
+        ) => Ok(Some(AbortPlanCancelIfOpenMarkerIndexes {
+            forced_flat,
+            pending_entry,
+            cancel_order,
+            context,
+            exit_pending,
+        })),
+        _ => Ok(None),
+    }
+}
+
+fn abort_plan_cancel_if_open_scoped_marker_index(
     strategy_source: &str,
     marker: &str,
     field: &'static str,
-) -> Result<usize, BoltV3OperatorArtifactError> {
-    strategy_source
-        .find(marker)
-        .ok_or(BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid { field })
+) -> Result<Option<usize>, BoltV3OperatorArtifactError> {
+    let Some(index) = strategy_source.find(marker) else {
+        return Ok(None);
+    };
+    if strategy_source[index + marker.len()..].contains(marker) {
+        return Err(BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid { field });
+    }
+    Ok(Some(index))
 }
 
 fn read_release_manifest_source_file(

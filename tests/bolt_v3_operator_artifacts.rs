@@ -515,6 +515,49 @@ fn forced_flat_exit() {
 }
 
 #[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_disconnected_marker_sequence() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn unrelated_forced_flat(decision: Decision) {
+    let _ = !decision.forced_flat_reasons.is_empty();
+}
+
+fn unrelated_pending(managed_position: ManagedPosition) {
+    let _ = managed_position.pending_entry.as_ref();
+}
+
+fn unrelated_cancel() {
+    self.cancel_order(pending_entry.client_order_id, Some(client_id), None);
+}
+
+fn unrelated_context() {
+    let _ = "forced-flat exit could not cancel pending entry client_order_id={}";
+}
+
+fn unrelated_exit_pending() {
+    self.exposure = ExposureState::ExitPending(ExitPendingState {});
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("disconnected markers should not prove cancel-if-open abort path");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "disconnected marker error should identify function-scoped proof: {error}"
+    );
+}
+
+#[test]
 fn pre_run_state_writer_fails_closed_when_source_evidence_is_unproven() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded

@@ -14,6 +14,7 @@
 - [x] T003 Run baseline `python3 scripts/test_rust_verification_cache_retention.py` and record result in `specs/454-decompose-disk-governance-verifiers/evidence.md`.
 - [x] T004 Run baseline `python3 scripts/test_verify_ci_workflow_hygiene.py` and record result in `specs/454-decompose-disk-governance-verifiers/evidence.md`.
 - [x] T005 Generate #454 Speckit `spec.md`, `plan.md`, `research.md`, `data-model.md`, `contracts/command-understanding.md`, `quickstart.md`, `evidence.md`, and this `tasks.md`.
+- [x] T006 Record initial helper-candidate equivalence findings in `specs/454-decompose-disk-governance-verifiers/evidence.md` and `research.md`.
 
 ---
 
@@ -21,14 +22,16 @@
 
 **Purpose**: Complete planning review before implementation.
 
-- [x] T006 Run unresolved-marker scan over #454 Speckit docs and verify `AGENTS.md` points at `specs/454-decompose-disk-governance-verifiers/plan.md`.
-- [x] T007 Run `git diff --check` on the planning changes.
-- [ ] T008 Request Claude adversarial planning review for `specs/454-decompose-disk-governance-verifiers/` and record verdict in `evidence.md`.
-- [ ] T009 Request Gemini adversarial planning review for `specs/454-decompose-disk-governance-verifiers/` and record verdict in `evidence.md`.
-- [ ] T010 Request GLM or DeepSeek adversarial planning review for `specs/454-decompose-disk-governance-verifiers/` and record verdict in `evidence.md`.
-- [ ] T011 Resolve or explicitly classify every source-proven planning blocker in `specs/454-decompose-disk-governance-verifiers/`.
+- [x] T007 Run unresolved-marker scan over #454 Speckit docs and verify `AGENTS.md` points at `specs/454-decompose-disk-governance-verifiers/plan.md`.
+- [x] T008 Run `git diff --check` on the initial planning changes.
+- [x] T009 Request Claude adversarial planning review for `specs/454-decompose-disk-governance-verifiers/` and record verdict in `evidence.md`.
+- [x] T010 Request Kimi adversarial planning review for `specs/454-decompose-disk-governance-verifiers/` and record verdict in `evidence.md`.
+- [x] T011 Request GLM adversarial planning review for `specs/454-decompose-disk-governance-verifiers/` and record verdict in `evidence.md`.
+- [x] T012 Request DeepSeek adversarial planning review for `specs/454-decompose-disk-governance-verifiers/` and record verdict in `evidence.md`.
+- [x] T013 Resolve or explicitly classify every source-proven planning blocker in `specs/454-decompose-disk-governance-verifiers/`.
+- [ ] T014 Re-run exact-head adversarial planning review for every prior REQUEST_CHANGES slot and record that no blocking findings remain before implementation.
 
-**Checkpoint**: No implementation starts until T006 through T011 are complete.
+**Checkpoint**: No implementation starts until T007 through T014 are complete.
 
 ---
 
@@ -40,13 +43,14 @@
 
 ### Tests for User Story 1
 
-- [ ] T012 [P] [US1] Add RED characterization tests for `command_tokens`, shell command boundaries, command substitutions, and Python inline command payloads in `scripts/test_command_understanding.py`.
-- [ ] T013 [P] [US1] Add RED characterization tests for renamed cargo/rustc executable detection and cargo target-routing scan cases in `scripts/test_command_understanding.py`.
+- [ ] T015 [US1] Add pre-extraction comparison tests or evidence cases that classify each candidate helper family as equivalent, divergent, or deferred before `scripts/command_understanding.py` exists.
+- [ ] T016 [P] [US1] Add RED characterization tests for `command_tokens`, shell command boundaries, command substitutions, and Python inline command payloads in `scripts/test_command_understanding.py`.
+- [ ] T017 [P] [US1] Add RED characterization tests for renamed cargo/rustc executable detection, current wrapper handling, cargo subcommand scanning, and target-routing scan cases in `scripts/test_command_understanding.py`.
 
 ### Implementation for User Story 1
 
-- [ ] T014 [US1] Add `scripts/command_understanding.py` with mechanically copied current helper behavior needed by T012 and T013.
-- [ ] T015 [US1] Run `python3 scripts/test_command_understanding.py` and record RED/GREEN evidence in `specs/454-decompose-disk-governance-verifiers/evidence.md`.
+- [ ] T018 [US1] Add `scripts/command_understanding.py` with mechanically copied current helper behavior only for candidates classified equivalent by T015 through T017.
+- [ ] T019 [US1] Run `python3 scripts/test_command_understanding.py` and record RED/GREEN evidence in `specs/454-decompose-disk-governance-verifiers/evidence.md`.
 
 **Checkpoint**: User Story 1 is complete when shared-module characterization tests pass and prove the current baseline behavior.
 
@@ -60,15 +64,15 @@
 
 ### Tests for User Story 2
 
-- [ ] T016 [P] [US2] Add parity tests in `scripts/test_command_understanding.py` proving both verifier clients classify representative samples consistently through the shared helper path.
-- [ ] T017 [P] [US2] Add drift-guard tests in `scripts/test_command_understanding.py` for representative raw-cargo/storage override and active-process command samples.
+- [ ] T020 [P] [US2] Add parity tests in `scripts/test_command_understanding.py` proving both verifier clients classify representative samples consistently through the shared helper path for extracted equivalent helpers.
+- [ ] T021 [P] [US2] Add drift-guard tests in `scripts/test_command_understanding.py` for representative raw-cargo/storage override and active-process command samples.
 
 ### Implementation for User Story 2
 
-- [ ] T018 [US2] Rewire `scripts/rust_verification.py` to import extracted helpers from `scripts/command_understanding.py`.
-- [ ] T019 [US2] Rewire `scripts/verify_ci_workflow_hygiene.py` to import extracted helpers from `scripts/command_understanding.py`.
-- [ ] T020 [US2] Remove duplicate local helper definitions only after both clients import the shared path and tests pass.
-- [ ] T021 [US2] Run `python3 scripts/test_command_understanding.py`, `python3 scripts/test_rust_verification_cache_retention.py`, and `python3 scripts/test_verify_ci_workflow_hygiene.py`; record results in `evidence.md`.
+- [ ] T022 [US2] Rewire `scripts/rust_verification.py` to import extracted equivalent helpers from `scripts/command_understanding.py`.
+- [ ] T023 [US2] Rewire `scripts/verify_ci_workflow_hygiene.py` to import extracted equivalent helpers from `scripts/command_understanding.py`.
+- [ ] T024 [US2] Remove duplicate local helper definitions only after both clients import the shared path and tests pass; leave divergent helpers local.
+- [ ] T025 [US2] Run `python3 scripts/test_command_understanding.py`, `python3 scripts/test_rust_verification_cache_retention.py`, and `python3 scripts/test_verify_ci_workflow_hygiene.py`; record results in `evidence.md`.
 
 **Checkpoint**: User Story 2 is complete when both verifier clients use the shared path with no accepted behavior drift.
 
@@ -82,12 +86,12 @@
 
 ### Tests for User Story 3
 
-- [ ] T022 [US3] Add or update evidence checks in `scripts/test_command_understanding.py` only if a mechanical test split is made.
+- [ ] T026 [US3] Add or update evidence checks in `scripts/test_command_understanding.py` only if a mechanical test split is made.
 
 ### Implementation for User Story 3
 
-- [ ] T023 [US3] Update `specs/454-decompose-disk-governance-verifiers/evidence.md` with extracted helper families, remaining oversized surfaces, and deferred non-goals.
-- [ ] T024 [US3] Split any moved characterization tests only if the split is mechanical and reviewable; otherwise record the deferral in `evidence.md`.
+- [ ] T027 [US3] Update `specs/454-decompose-disk-governance-verifiers/evidence.md` with extracted helper families, divergent candidates, line-count deltas, remaining oversized surfaces, and deferred non-goals.
+- [ ] T028 [US3] Split any moved characterization tests only if the split is mechanical and reviewable; otherwise record the deferral in `evidence.md`.
 
 **Checkpoint**: User Story 3 is complete when remaining risk is explicit and no cosmetic broad split is hidden in the PR.
 
@@ -97,33 +101,33 @@
 
 **Purpose**: Make #454 review-ready without merging.
 
-- [ ] T025 Run `python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py`.
-- [ ] T026 Run `git diff --check`.
-- [ ] T027 Run unresolved-marker scan over changed docs and scripts.
-- [ ] T028 Commit and push branch `codex/454-decompose-disk-governance-verifiers`.
-- [ ] T029 Open the #454 PR with scope, non-goals, evidence map, tests, review status, skipped slots, remaining risk, and stop-before-merge note.
-- [ ] T030 Confirm exact-head GitHub CI is green for the #454 PR.
-- [ ] T031 Request exact-PR-head external adversarial review and record all verdicts or skipped slots in `evidence.md`.
-- [ ] T032 Stop for operator approval before merge.
+- [ ] T029 Run `python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py`.
+- [ ] T030 Run `git diff --check`.
+- [ ] T031 Run unresolved-marker scan over changed docs and scripts.
+- [ ] T032 Commit and push branch `codex/454-decompose-disk-governance-verifiers`.
+- [ ] T033 Open the #454 PR with scope, non-goals, evidence map, tests, review status, skipped slots, remaining risk, and stop-before-merge note.
+- [ ] T034 Confirm exact-head GitHub CI is green for the #454 PR.
+- [ ] T035 Request exact-PR-head external adversarial review and record all verdicts or skipped slots in `evidence.md`.
+- [ ] T036 Stop for operator approval before merge.
 
 ## Dependencies & Execution Order
 
 - Phase 1 must complete before Phase 2.
-- Phase 2 must complete before implementation.
+- Phase 2 must complete with current-head no-blocker review before implementation.
 - User Story 1 must complete before User Story 2.
 - User Story 2 must complete before User Story 3.
 - Final Phase must complete before #454 is considered review-ready.
 
 ## Parallel Opportunities
 
-- T012 and T013 can be drafted independently because they cover separate characterization families.
-- T016 and T017 can be drafted independently after T014/T015.
+- T016 and T017 can be drafted independently after T015 classification scope is set.
+- T020 and T021 can be drafted independently after T018/T019.
 - No implementation phase should run in parallel with another branch or issue.
 
 ## Implementation Strategy
 
-1. Finish Phase 2 planning gates and adversarial review.
-2. Implement User Story 1 with RED shared-module tests.
-3. Mechanically extract helper families and rewire both verifier clients for User Story 2.
+1. Finish Phase 2 planning gates and current-head adversarial review.
+2. Implement User Story 1 with RED shared-module tests and helper equivalence classification.
+3. Mechanically extract only equivalent helper families and rewire both verifier clients for User Story 2.
 4. Update evidence and remaining risk for User Story 3.
 5. Complete local verification, open PR, wait for exact-head CI, request external review, and stop before merge.

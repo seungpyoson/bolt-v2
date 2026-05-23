@@ -5,7 +5,7 @@
 
 ## Summary
 
-#454 reduces maintenance risk created by duplicated command-understanding logic across the runtime Rust verification owner and the static CI/no-mistakes workflow hygiene verifier. The plan is characterization-first: capture current accepted classifications, then mechanically extract shared parser/scanner logic into one repo-local Python module used by both surfaces. The PR must not add new shell semantics, wrapper families, policy behavior, or unrelated verifier redesign.
+#454 reduces maintenance risk created by overlapping command-understanding logic across the runtime Rust verification owner and the static CI/no-mistakes workflow hygiene verifier. The plan is characterization-first: capture current accepted classifications, classify each candidate helper as equivalent or divergent, then mechanically extract only proven-equivalent parser/scanner logic into one repo-local Python module used by both surfaces. The PR must not add new shell semantics, wrapper families, policy behavior, or unrelated verifier redesign.
 
 ## Technical Context
 
@@ -16,8 +16,8 @@
 **Target Platform**: macOS developer workstation for local verification; GitHub Actions Linux runners for exact-head CI.  
 **Project Type**: Developer tooling governance; no product runtime behavior.  
 **Performance Goals**: Preserve current test practicality; shared parsing must avoid adding subprocess or filesystem work to static classification paths.  
-**Constraints**: One #454 PR; no #375 follow-up work; no no-mistakes unless explicitly requested; no new command semantics; no broad verifier redesign; external reviewer slots over 15 minutes are skipped and recorded.  
-**Scale/Scope**: Current oversized surfaces are `scripts/rust_verification.py` (2738 lines), `scripts/verify_ci_workflow_hygiene.py` (6175 lines), `scripts/test_rust_verification_cache_retention.py` (3175 lines), and `scripts/test_verify_ci_workflow_hygiene.py` (5102 lines). This slice targets duplicated parser/scanner logic, not every oversized function.
+**Constraints**: One #454 PR; no #375 follow-up work; no no-mistakes unless explicitly requested; no new command semantics; no broad verifier redesign; external reviewer slots over 15 minutes are skipped and recorded. Extraction eligibility requires pre-extraction function-body and representative-behavior comparison.
+**Scale/Scope**: Current oversized surfaces are `scripts/rust_verification.py` (2738 lines), `scripts/verify_ci_workflow_hygiene.py` (6175 lines), `scripts/test_rust_verification_cache_retention.py` (3175 lines), and `scripts/test_verify_ci_workflow_hygiene.py` (5102 lines). This slice targets proven-equivalent parser/scanner logic and characterization of divergent candidates, not every oversized function.
 
 ## Constitution Check
 
@@ -29,11 +29,11 @@
 | Generic core, concrete edges | Pass | No provider, venue, market, wallet, or strategy branches are added. |
 | Single path and config-controlled runtime | Pass | Product runtime config and secret paths are untouched. The shared tooling parser reduces dual paths in verifier code. |
 | Test-first safety gates | Pass | Tasks require RED shared-module/parity tests before moving parser code. |
-| Evidence before claims | Pass | `evidence.md` records exact base SHA, issue state, baseline commands, line counts, and duplicated helper locations. |
+| Evidence before claims | Pass | `evidence.md` records exact base SHA, issue state, baseline commands, line counts, candidate helper locations, and current equivalence classification. |
 | Minimal slice discipline | Pass | Scope is exactly #454. #375 is closed; no no-mistakes or broad redesign is included. |
 | Pure Rust binary / SSM / TOML runtime | Pass | No production Rust binary, SSM, or runtime TOML behavior changes are planned. |
 
-Pre-implementation gate: adversarial plan/spec/tasks review must complete before implementation. Claude/Gemini/GLM/DeepSeek slots may be used; any slot exceeding 15 minutes is recorded as skipped, not approved.
+Pre-implementation gate: adversarial plan/spec/tasks review must complete before implementation. Claude/Kimi/GLM/DeepSeek slots are requested for this plan. Any slot exceeding 15 minutes is recorded as skipped, not approved. Implementation may start only after at least one non-skipped approval and no unresolved blocking findings on the current head.
 
 ## Project Structure
 
@@ -66,13 +66,13 @@ scripts/
 `-- test_verify_ci_workflow_hygiene.py        # existing static verifier tests
 ```
 
-**Structure Decision**: Add one shared Python module under `scripts/` and one focused characterization test file. Existing verifier scripts become clients of that module for the extracted helper families. Product `src/`, CI workflow policy, and #375 files are not in scope unless direct import fallout requires a mechanical path update.
+**Structure Decision**: Add one shared Python module under `scripts/` and one focused characterization test file. Existing verifier scripts become clients of that module only for helper families proven equivalent by the pre-extraction comparison. Product `src/`, CI workflow policy, and #375 files are not in scope unless direct import fallout requires a mechanical path update.
 
 ## Complexity Tracking
 
 | Violation | Why Needed | Simpler Alternative Rejected Because |
 |-----------|------------|-------------------------------------|
-| Shared tooling module | Both verifier surfaces need one command-understanding path to prevent drift | Leaving helper copies in each oversized verifier preserves the #454 risk. |
+| Shared tooling module | Both verifier surfaces need one command-understanding path for proven-equivalent behavior to prevent drift | Leaving equivalent helper copies in each oversized verifier preserves the #454 risk; forcing divergent helpers into one body would create behavior drift. |
 
 ## Phase 0 Research
 
@@ -88,7 +88,7 @@ Outputs: `data-model.md`, `contracts/command-understanding.md`, `quickstart.md`
 |---|---|---|
 | NT-first thin layer | Pass | Design changes only Python developer-tooling surfaces. |
 | Generic core, concrete edges | Pass | No trading/provider-specific branch is introduced. |
-| Single path and config-controlled runtime | Pass | The design consolidates duplicate verifier parser paths while leaving runtime config untouched. |
+| Single path and config-controlled runtime | Pass | The design consolidates proven-equivalent verifier parser paths while leaving runtime config untouched and divergent verifier behavior surface-specific. |
 | Test-first safety gates | Pass | `tasks.md` starts implementation with RED shared-module/parity tests. |
 | Evidence before claims | Pass | Evidence map and quickstart name the exact verification commands and current baseline. |
 | Minimal slice discipline | Pass | #454 excludes no-mistakes, #375 follow-up, new semantics, and broad redesign. |

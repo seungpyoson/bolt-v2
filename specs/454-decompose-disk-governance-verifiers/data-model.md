@@ -12,6 +12,18 @@ Represents one current-behavior assertion used to prevent parser drift.
 | `expected` | Current accepted classification | Must be derived from current main before extraction |
 | `reason` | Why the case matters | Must cite the helper family or risk it protects |
 
+## Extraction Candidate
+
+Represents one helper family considered for shared-module extraction.
+
+| Field | Meaning | Validation |
+|---|---|---|
+| `helper_family` | Candidate helper or helper group | Must cite source line evidence in both surfaces or state why one surface is analogous only |
+| `runtime_source` | Runtime verifier location | Exact file and line, or `N/A` with rationale |
+| `static_source` | Static verifier location | Exact file and line, or `N/A` with rationale |
+| `classification` | Equivalent, divergent, or deferred | Must be decided before implementation extraction |
+| `decision` | Extract, characterize only, or defer | Divergent candidates cannot be extracted without operator-approved semantic-change evidence |
+
 ## Shared Command Understanding Path
 
 Represents the shared parser/scanner module used by both verifier clients.
@@ -19,7 +31,7 @@ Represents the shared parser/scanner module used by both verifier clients.
 | Field | Meaning | Validation |
 |---|---|---|
 | `module_path` | Proposed source path | `scripts/command_understanding.py` |
-| `helper_family` | Extracted behavior group | Existing behavior only; no new semantics |
+| `helper_family` | Extracted behavior group | Must be classified as equivalent before extraction |
 | `clients` | Verifier scripts importing the helper | Must include both relevant verifier surfaces when a duplicated family is extracted |
 | `compatibility_guard` | Tests proving behavior preservation | Must include characterization/parity tests and existing suite coverage |
 

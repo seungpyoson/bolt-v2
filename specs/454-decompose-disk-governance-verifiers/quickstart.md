@@ -28,11 +28,12 @@ Both commands passed before planning on the fresh #454 branch.
 ## Planning Artifact Checks
 
 ```bash
-rg -n "PLACEHOLDER_MARKER" specs/454-decompose-disk-governance-verifiers/spec.md specs/454-decompose-disk-governance-verifiers/plan.md specs/454-decompose-disk-governance-verifiers/research.md specs/454-decompose-disk-governance-verifiers/data-model.md specs/454-decompose-disk-governance-verifiers/evidence.md specs/454-decompose-disk-governance-verifiers/tasks.md specs/454-decompose-disk-governance-verifiers/contracts
+marker_pattern='NEEDS'' CLARIFICATION|\[FEA''TURE|\[#''##|ACTION'' REQUIRED|TO''DO|fix'' later'
+rg -n "$marker_pattern" specs/454-decompose-disk-governance-verifiers/spec.md specs/454-decompose-disk-governance-verifiers/plan.md specs/454-decompose-disk-governance-verifiers/research.md specs/454-decompose-disk-governance-verifiers/data-model.md specs/454-decompose-disk-governance-verifiers/evidence.md specs/454-decompose-disk-governance-verifiers/tasks.md specs/454-decompose-disk-governance-verifiers/contracts
 git diff --check
 ```
 
-Replace `PLACEHOLDER_MARKER` with the unresolved-template pattern being checked. Expected: no unresolved template markers or whitespace errors.
+Expected: no unresolved template markers or whitespace errors.
 
 ## Implementation Verification
 
@@ -52,7 +53,8 @@ Before review-ready handoff:
 
 ```bash
 git status --short --branch
-gh pr checks <PR> --repo seungpyoson/bolt-v2
+pr_number=$(gh pr view --json number --jq .number)
+gh pr checks "$pr_number" --repo seungpyoson/bolt-v2
 ```
 
 Then request external exact-head review. no-mistakes is intentionally not run unless the operator explicitly requests it.

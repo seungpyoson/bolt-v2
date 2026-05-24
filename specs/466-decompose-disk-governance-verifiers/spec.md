@@ -1,7 +1,7 @@
 # Feature Specification: #466 Disk-Governance Verifier Decomposition
 
-**Feature Branch**: `goal/466-disk-governance-verifier-decomposition`  
-**Created**: 2026-05-24  
+**Feature Branch**: `goal/466-disk-governance-verifier-decomposition`
+**Created**: 2026-05-24
 **Status**: Plan Review
 **Input**: User description: "Complete issue #466 end to end: continue disk-governance verifier decomposition after cargo scanner extraction until every remaining #466 scope item is resolved."
 

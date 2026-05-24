@@ -9,14 +9,14 @@
 
 ## Technical Context
 
-**Language/Version**: Python 3 standard-library verifier scripts plus Rust repository context; no Rust runtime behavior is planned for the first decomposition slices.  
-**Primary Dependencies**: Python standard library, GitHub CLI for issue/PR state, Spec Kit docs, existing `just ci-lint-workflow` lane.  
-**Storage**: Markdown evidence/spec artifacts under `specs/466-decompose-disk-governance-verifiers/`; no runtime data storage.  
-**Testing**: `python3 scripts/test_command_understanding.py`, `python3 scripts/test_rust_verification_cache_retention.py`, `python3 scripts/test_verify_ci_workflow_hygiene.py`, `python3 -m scripts.test_command_understanding` when import setup changes, targeted `py_compile`, `git diff --check`, `just ci-lint-workflow` when verifier/CI hygiene paths are touched.  
-**Target Platform**: Repository verifier/CI hygiene tooling on macOS/Linux-compatible Python standard library surfaces.  
-**Project Type**: Internal verifier/decomposition and governance docs; possible Python helper/test refactors.  
-**Performance Goals**: Preserve verifier behavior and keep file splits mechanical; no new hot-path runtime work.  
-**Constraints**: Fresh `origin/main` only; no stale branch proof; no new shell/cargo/wrapper semantics without explicit operator approval; no implementation before ledger, plan/tasks, and required external plan review; no merge/issue closure without explicit operator approval.  
+**Language/Version**: Python 3 standard-library verifier scripts plus Rust repository context; no Rust runtime behavior is planned for the first decomposition slices.
+**Primary Dependencies**: Python standard library, GitHub CLI for issue/PR state, Spec Kit docs, existing `just ci-lint-workflow` lane.
+**Storage**: Markdown evidence/spec artifacts under `specs/466-decompose-disk-governance-verifiers/`; no runtime data storage.
+**Testing**: `python3 scripts/test_command_understanding.py`, `python3 scripts/test_rust_verification_cache_retention.py`, `python3 scripts/test_verify_ci_workflow_hygiene.py`, `python3 -m scripts.test_command_understanding` when import setup changes, targeted `py_compile`, `git diff --check`, `just ci-lint-workflow` when verifier/CI hygiene paths are touched.
+**Target Platform**: Repository verifier/CI hygiene tooling on macOS/Linux-compatible Python standard library surfaces.
+**Project Type**: Internal verifier/decomposition and governance docs; possible Python helper/test refactors.
+**Performance Goals**: Preserve verifier behavior and keep file splits mechanical; no new hot-path runtime work.
+**Constraints**: Fresh `origin/main` only; no stale branch proof; no new shell/cargo/wrapper semantics without explicit operator approval; no implementation before ledger, plan/tasks, and required external plan review; no merge/issue closure without explicit operator approval.
 **Scale/Scope**: Eight #466 ledger items, likely multiple PR slices, final whole-issue verification and external review.
 
 ## Constitution Check

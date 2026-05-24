@@ -1303,7 +1303,7 @@ fn approval_packet_assembly_rejects_unbound_approval_envelope_hash_before_writes
     let temp = tempfile::tempdir().expect("tempdir should create");
     let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
     operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
-        .expect("build head sha should be compiled for packet assembly tests")
+        .unwrap_or_else(|| panic!("build head sha should be compiled for packet assembly tests"))
         .to_string();
     operator_evidence.approval_envelope_sha256 = "0".repeat(64);
     let approval_envelope_path = operator_evidence.approval_envelope_path.clone();
@@ -1671,7 +1671,9 @@ fn approval_packet_assembly_binds_relative_static_manifest_to_config_root() {
     std::fs::write(&loaded.root_path, "fixture root").expect("root fixture should write");
     let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
     operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
-        .expect("build head sha should be compiled for relative manifest verifier test")
+        .unwrap_or_else(|| {
+            panic!("build head sha should be compiled for relative manifest verifier test")
+        })
         .to_string();
     let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
     loaded
@@ -3208,11 +3210,11 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
         .expect("decision evidence should write");
 
     let written = bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_decision_evidence_file(
-        &loaded,
+        loaded,
         strategy_instance_id,
         &decision_evidence_path,
         100_000,
-        &market_selection_source_ref,
+        market_selection_source_ref,
         &[TEST_MARKET_SELECTION_START_MS],
         &strategy_input_path,
     )
@@ -3289,11 +3291,11 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
         .expect("wrong strategy decision evidence should write");
 
     let error = bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_decision_evidence_file(
-        &loaded,
+        loaded,
         strategy_instance_id,
         &wrong_decision_evidence_path,
         100_000,
-        &market_selection_source_ref,
+        market_selection_source_ref,
         &[TEST_MARKET_SELECTION_START_MS],
         &wrong_strategy_input_path,
     )
@@ -3305,6 +3307,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
 }
 
 #[test]
+#[allow(clippy::type_complexity)]
 fn strategy_input_writer_rejects_runtime_snapshot_target_source_and_hash_mismatches() {
     let cases: [(
         &str,
@@ -4080,7 +4083,9 @@ fn assembled_final_packet_fixture() -> FinalPacketFixture {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
     operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
-        .expect("build head sha should be compiled for final-packet verifier tests")
+        .unwrap_or_else(|| {
+            panic!("build head sha should be compiled for final-packet verifier tests")
+        })
         .to_string();
     let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
     let manifest_path = temp.path().join("static-artifacts-manifest.json");
@@ -4385,6 +4390,7 @@ where
     write_json_value_and_hash(path, &value);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn updown_binary_option(
     instrument_id: &str,
     market_slug: &str,

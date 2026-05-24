@@ -3619,51 +3619,6 @@ fn ensure_output_path_absent(path: &Path) -> Result<(), BoltV3OperatorArtifactEr
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct SyncFailingArtifactFile {
-        file: fs::File,
-    }
-
-    impl ArtifactFile for SyncFailingArtifactFile {
-        fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
-            std::io::Write::write_all(&mut self.file, bytes)
-        }
-
-        fn sync_all(&self) -> io::Result<()> {
-            Err(io::Error::other("forced sync failure"))
-        }
-    }
-
-    #[test]
-    fn json_artifact_writer_removes_create_new_output_when_sync_fails() {
-        let temp = tempfile::tempdir().expect("tempdir should create");
-        let path = temp.path().join("approval-nonce.json");
-        let artifact = BoltV3ApprovalNonceArtifact {
-            schema_version: APPROVAL_NONCE_SCHEMA_VERSION,
-            record_kind: APPROVAL_NONCE_RECORD_KIND,
-            nonce_sha256: "0".repeat(64),
-        };
-
-        let error = write_json_artifact_create_new_with_file(&path, &artifact, |path| {
-            fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-                .map(|file| SyncFailingArtifactFile { file })
-        })
-        .expect_err("sync failure must fail the artifact write");
-
-        assert!(matches!(error, BoltV3OperatorArtifactError::Write { .. }));
-        assert!(
-            !path.exists(),
-            "sync failure must remove the partially-written final artifact path"
-        );
-    }
-}
-
 fn validate_output_parent(
     field: &'static str,
     path: &Path,
@@ -3914,5 +3869,50 @@ fn final_packet_summary_artifact(
     BoltV3FinalOperatorPacketVerificationArtifactSummary {
         name,
         sha256: sha256.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct SyncFailingArtifactFile {
+        file: fs::File,
+    }
+
+    impl ArtifactFile for SyncFailingArtifactFile {
+        fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+            std::io::Write::write_all(&mut self.file, bytes)
+        }
+
+        fn sync_all(&self) -> io::Result<()> {
+            Err(io::Error::other("forced sync failure"))
+        }
+    }
+
+    #[test]
+    fn json_artifact_writer_removes_create_new_output_when_sync_fails() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let path = temp.path().join("approval-nonce.json");
+        let artifact = BoltV3ApprovalNonceArtifact {
+            schema_version: APPROVAL_NONCE_SCHEMA_VERSION,
+            record_kind: APPROVAL_NONCE_RECORD_KIND,
+            nonce_sha256: "0".repeat(64),
+        };
+
+        let error = write_json_artifact_create_new_with_file(&path, &artifact, |path| {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map(|file| SyncFailingArtifactFile { file })
+        })
+        .expect_err("sync failure must fail the artifact write");
+
+        assert!(matches!(error, BoltV3OperatorArtifactError::Write { .. }));
+        assert!(
+            !path.exists(),
+            "sync failure must remove the partially-written final artifact path"
+        );
     }
 }

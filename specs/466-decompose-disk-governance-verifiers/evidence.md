@@ -103,6 +103,9 @@ Post-implementation review must target the current pushed PR head after exact-he
 |---|---|
 | `python3 scripts/test_command_understanding.py` after RED import-setup guard only | Expected fail: `AssertionError: test import sys.path setup must be encapsulated in a helper`. |
 | `python3 scripts/test_command_understanding.py` after encapsulating setup | Pass: `OK: command understanding self-tests passed.` |
+| PR #470 Greptile and Gemini review comments on `825ea636` | Finding accepted: the first guard only rejected top-level `if` statements containing `sys.path` and missed bare top-level calls such as `sys.path.insert(...)`. |
+| `python3 scripts/test_command_understanding.py` after adding bare top-level mutation regression only | Expected fail: `AssertionError: bare top-level sys.path setup must be rejected`. |
+| `python3 scripts/test_command_understanding.py` after widening the guard | Pass: `OK: command understanding self-tests passed.` |
 | `python3 -m scripts.test_command_understanding` | Pass: `OK: command understanding self-tests passed.` |
 | `python3 -m py_compile scripts/test_command_understanding.py` | Pass. |
 | `python3 scripts/test_verify_ci_workflow_hygiene.py` | Pass: `OK: CI workflow hygiene verifier self-tests passed.` |

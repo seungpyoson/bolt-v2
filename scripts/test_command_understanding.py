@@ -51,10 +51,35 @@ def load_shared_module() -> object:
 def assert_test_import_setup_is_encapsulated() -> None:
     tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
     for node in tree.body:
-        if not isinstance(node, ast.If):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
         if "sys.path" in ast.unparse(node):
             raise AssertionError("test import sys.path setup must be encapsulated in a helper")
+
+
+def assert_import_setup_rejects_bare_top_level_sys_path_mutation() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        candidate = pathlib.Path(tmp) / "candidate.py"
+        candidate.write_text(
+            "import sys\n"
+            "sys.path.insert(0, 'scripts')\n"
+            "\n"
+            "def helper() -> None:\n"
+            "    sys.path.insert(0, 'scripts')\n",
+            encoding="utf-8",
+        )
+        original_file = globals()["__file__"]
+        globals()["__file__"] = str(candidate)
+        try:
+            try:
+                assert_test_import_setup_is_encapsulated()
+            except AssertionError as exc:
+                if "test import sys.path setup" not in str(exc):
+                    raise
+            else:
+                raise AssertionError("bare top-level sys.path setup must be rejected")
+        finally:
+            globals()["__file__"] = original_file
 
 
 def expression(source: str) -> ast.AST:
@@ -455,6 +480,7 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
 
 def main() -> int:
     assert_test_import_setup_is_encapsulated()
+    assert_import_setup_rejects_bare_top_level_sys_path_mutation()
     assert_verifier_modules_import_from_repo_root()
     assert_load_module_caches_verifier_modules()
     assert_python_ast_helpers_match_current_verifiers()

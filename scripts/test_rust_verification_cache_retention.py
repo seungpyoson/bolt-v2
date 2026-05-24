@@ -1298,6 +1298,108 @@ printf '123 cache-prune-sentinel %s\\n' "$REPO_PATH"
             raise AssertionError("cache-prune deleted after active process appeared")
 
 
+def assert_cache_prune_apply_rechecks_active_process_before_each_removal() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        owner = load_owner_module()
+        target = tmp_path / "rust-root" / "bolt-v2" / "target"
+        candidates = [
+            {
+                "bytes": 1,
+                "class": "debug",
+                "latest_mtime": 0,
+                "path": str(target / "debug"),
+                "relative_path": "debug",
+                "skipped_special_entries": 0,
+            },
+            {
+                "bytes": 1,
+                "class": "release",
+                "latest_mtime": 0,
+                "path": str(target / "release"),
+                "relative_path": "release",
+                "skipped_special_entries": 0,
+            },
+        ]
+        removed: list[str] = []
+        active_checks: list[pathlib.Path] = []
+        originals = {
+            "load_policy": owner.load_policy,
+            "cache_lock": owner.cache_lock,
+            "cache_status_payload": owner.cache_status_payload,
+            "active_process_refusal_payload": owner.active_process_refusal_payload,
+            "is_prune_candidate": owner.is_prune_candidate,
+            "remove_cache_candidate": owner.remove_cache_candidate,
+        }
+        try:
+            owner.load_policy = lambda _repo: {
+                "cache": {
+                    "active_process_patterns": ["cargo"],
+                    "min_free_bytes": 0,
+                    "retention": {
+                        "debug": {"prunable": True, "prune_after_days": 1},
+                        "release": {"prunable": True, "prune_after_days": 1},
+                        "cross-target": {"prunable": True, "prune_after_days": 1},
+                        "tmp": {"prunable": True, "prune_after_days": 1},
+                        "other": {"prunable": False},
+                    },
+                    "soft_limit_bytes": 100,
+                },
+                "target_namespace": "bolt-v2",
+            }
+            owner.cache_lock = lambda _policy, *, exclusive: contextlib.nullcontext()
+            owner.cache_status_payload = lambda _repo: {
+                "filesystem": {"free_bytes": 0, "total_bytes": 1, "used_bytes": 1},
+                "pressure": True,
+                "pressure_reasons": ["test"],
+                "status": "ok",
+                "subtrees": candidates,
+                "target_dir": str(target),
+                "thresholds": {"min_free_bytes": 0, "soft_limit_bytes": 100},
+                "total_bytes": 2,
+            }
+            owner.is_prune_candidate = lambda _subtree, _policy, *, now, pressure: (True, "test")
+
+            def fake_refusal(
+                _repo: pathlib.Path,
+                checked_target: pathlib.Path,
+                _policy: dict[str, object],
+                *,
+                extra_scopes: tuple[pathlib.Path, ...] = (),
+            ) -> dict[str, object] | None:
+                active_checks.append(checked_target)
+                if len(active_checks) < 5:
+                    return None
+                return {
+                    "candidates": [],
+                    "dry_run": False,
+                    "reclaimable_bytes": 0,
+                    "refusal_code": "active_process",
+                    "refusal_reason": "target became active during prune",
+                    "refused": True,
+                    "target_dir": str(checked_target),
+                }
+
+            owner.active_process_refusal_payload = fake_refusal
+            owner.remove_cache_candidate = lambda entry, _target: removed.append(str(entry["path"]))
+            payload = owner.cache_prune_payload(repo, dry_run=False)
+        finally:
+            for name, value in originals.items():
+                setattr(owner, name, value)
+        if (
+            payload.get("refusal_code") != "active_process"
+            or removed != [str(target / "debug")]
+            or payload.get("removed") != [{**candidates[0], "reason": "test"}]
+            or len(active_checks) != 5
+        ):
+            raise AssertionError(
+                "cache-prune apply must re-check before each child removal and report partial removals: "
+                f"payload={payload!r} removed={removed!r} active_checks={active_checks!r}"
+            )
+
+
 def assert_cache_prune_apply_fails_closed_when_process_visibility_missing() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -4519,6 +4621,7 @@ def main() -> int:
     assert_cache_prune_apply_waits_for_managed_run_lock()
     assert_cache_prune_apply_checks_active_process_before_scan()
     assert_cache_prune_apply_rechecks_active_process_before_delete()
+    assert_cache_prune_apply_rechecks_active_process_before_each_removal()
     assert_cache_prune_apply_fails_closed_when_process_visibility_missing()
     assert_cache_prune_apply_fails_closed_when_matching_process_scope_unknown()
     assert_cache_prune_apply_fails_closed_when_policy_missing()

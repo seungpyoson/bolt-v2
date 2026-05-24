@@ -2042,6 +2042,7 @@ def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
     with lock_context:
         if not dry_run:
             target = target_dir(repo, policy)
+            validate_managed_target_path(target, policy)
             refusal = active_process_refusal_payload(repo, target, policy)
             if refusal is not None:
                 return refusal
@@ -2068,6 +2069,9 @@ def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
             if refusal is not None:
                 return refusal
             for entry in candidates:
+                refusal = active_process_refusal_payload(repo, target, policy)
+                if refusal is not None:
+                    return refusal_with_removed(refusal, removed)
                 remove_cache_candidate(entry, target)
                 removed.append(entry)
         return {

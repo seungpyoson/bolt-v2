@@ -3449,6 +3449,22 @@ fn final_packet_verifier_rejects_strategy_input_candidate_list_not_replayable_fr
 }
 
 #[test]
+fn final_packet_verifier_accepts_strategy_input_relative_market_source_path_in_artifact_dir() {
+    let fixture = assembled_final_packet_fixture_with_strategy_input_mutation(|strategy_input| {
+        strategy_input["market_selection_source_path"] =
+            serde_json::json!(TEST_MARKET_SELECTION_SOURCE_FILE);
+    });
+
+    bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect(
+        "relative market-selection source path should resolve from strategy-input artifact dir",
+    );
+}
+
+#[test]
 fn final_packet_verifier_rejects_approval_consumption_root_toml_drift() {
     let fixture = assembled_final_packet_fixture();
     let evidence = fixture.operator_evidence();

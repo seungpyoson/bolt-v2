@@ -2509,7 +2509,13 @@ fn approval_packet_assembly_binds_relative_static_manifest_to_config_root() {
             panic!("build head sha should be compiled for relative manifest verifier test")
         })
         .to_string();
-    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    let mut refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    write_replayable_strategy_input_artifacts_for_test(
+        &loaded,
+        temp.path(),
+        &mut operator_evidence,
+        &mut refs,
+    );
     loaded
         .root
         .live_canary
@@ -3384,6 +3390,61 @@ fn final_packet_verifier_rejects_canary_static_evidence_ref_drift() {
     assert!(
         error.to_string().contains("strategy_input_evidence_ref"),
         "static canary evidence ref drift should name the drifted ref: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_strategy_input_not_replayable_from_decision_evidence() {
+    let fixture = assembled_final_packet_fixture();
+    let operator_evidence = fixture.operator_evidence();
+    let mut wrong_snapshot = strategy_input_runtime_fixture().snapshot;
+    wrong_snapshot.price_to_beat_value = "3200".to_string();
+    let decision_evidence_path =
+        write_entry_decision_evidence_chain(&fixture.temp, &wrong_snapshot);
+    assert_eq!(
+        decision_evidence_path,
+        std::path::PathBuf::from(&operator_evidence.decision_evidence_path),
+        "test should replace the configured decision evidence path"
+    );
+    let decision_evidence_sha256 = sha256_file(&decision_evidence_path);
+    let canary_path = std::path::PathBuf::from(&operator_evidence.canary_evidence_path);
+    let mut canary = read_json_value(&canary_path);
+    canary["decision_evidence_ref"] = final_evidence_ref_for_test(
+        &operator_evidence.decision_evidence_path,
+        &decision_evidence_sha256,
+    );
+    write_json_value_and_hash(&canary_path, &canary);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err(
+        "final packet verifier must reject strategy input that cannot replay from decision evidence",
+    );
+
+    assert!(
+        error.to_string().contains("strategy_input_replay"),
+        "strategy-input replay failure should be redacted and specific: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_strategy_input_candidate_list_not_replayable_from_market_source() {
+    let fixture = assembled_final_packet_fixture_with_strategy_input_mutation(|strategy_input| {
+        strategy_input["candidate_market_start_timestamps_ms"] =
+            serde_json::json!([TEST_MARKET_SELECTION_START_MS + 1]);
+    });
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("final packet verifier must reject candidate list drift from market source");
+
+    assert!(
+        error.to_string().contains("strategy_input_replay"),
+        "candidate list replay failure should be redacted and specific: {error}"
     );
 }
 
@@ -5003,6 +5064,15 @@ fn write_entry_decision_evidence_chain(
     temp: &tempfile::TempDir,
     snapshot: &BoltV3StrategyInputEvidenceSnapshot,
 ) -> std::path::PathBuf {
+    let decision_evidence_path = temp.path().join("decision-evidence.jsonl");
+    write_entry_decision_evidence_chain_at(&decision_evidence_path, snapshot);
+    decision_evidence_path
+}
+
+fn write_entry_decision_evidence_chain_at(
+    decision_evidence_path: &std::path::Path,
+    snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+) {
     let intent = BoltV3OrderIntentEvidence {
         strategy_id: snapshot.strategy_id.clone(),
         intent_kind: BoltV3OrderIntentKind::Entry,
@@ -5035,7 +5105,6 @@ fn write_entry_decision_evidence_chain(
         intent_kind: BoltV3SubmitIntentKind::Entry,
         outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
     };
-    let decision_evidence_path = temp.path().join("decision-evidence.jsonl");
     let mut decision_evidence = String::new();
     for line in [
         serde_json::json!({
@@ -5070,7 +5139,6 @@ fn write_entry_decision_evidence_chain(
     }
     std::fs::write(&decision_evidence_path, decision_evidence)
         .expect("decision evidence should write");
-    decision_evidence_path
 }
 
 fn market_selection_instruments_for_slug(market_slug: &str) -> [InstrumentAny; 2] {
@@ -5137,6 +5205,15 @@ impl FinalPacketFixture {
 }
 
 fn assembled_final_packet_fixture() -> FinalPacketFixture {
+    assembled_final_packet_fixture_with_strategy_input_mutation(|_| {})
+}
+
+fn assembled_final_packet_fixture_with_strategy_input_mutation<F>(
+    mutate_strategy_input: F,
+) -> FinalPacketFixture
+where
+    F: FnOnce(&mut serde_json::Value),
+{
     let mut loaded = load_fixture_with_live_canary();
     loaded.config_bundle_checksum = sha256_text("final-packet-config-bundle");
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -5146,7 +5223,20 @@ fn assembled_final_packet_fixture() -> FinalPacketFixture {
             panic!("build head sha should be compiled for final-packet verifier tests")
         })
         .to_string();
-    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    let mut refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    write_replayable_strategy_input_artifacts_for_test(
+        &loaded,
+        temp.path(),
+        &mut operator_evidence,
+        &mut refs,
+    );
+    let strategy_input_path =
+        std::path::PathBuf::from(&operator_evidence.strategy_input_evidence_path);
+    let mut strategy_input = read_json_value(&strategy_input_path);
+    mutate_strategy_input(&mut strategy_input);
+    let strategy_input_sha256 = write_json_value_and_hash(&strategy_input_path, &strategy_input);
+    operator_evidence.strategy_input_evidence_sha256 = strategy_input_sha256.clone();
+    replace_static_artifact_ref_sha256(&mut refs, "strategy-input", &strategy_input_sha256);
     let manifest_path = temp.path().join("static-artifacts-manifest.json");
     write_static_artifacts_manifest_for_test(
         &manifest_path,
@@ -5215,10 +5305,15 @@ fn write_final_live_evidence_artifacts_for_test(
     loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
     operator_evidence: &LiveCanaryOperatorEvidenceBlock,
 ) {
-    let decision_hash = write_final_bytes_for_test(
-        &operator_evidence.decision_evidence_path,
-        b"{\"kind\":\"admission_decision\",\"outcome\":\"admitted\"}\n",
-    );
+    let decision_evidence_path = std::path::Path::new(&operator_evidence.decision_evidence_path);
+    let decision_hash = if decision_evidence_path.exists() {
+        sha256_file(decision_evidence_path)
+    } else {
+        write_final_bytes_for_test(
+            &operator_evidence.decision_evidence_path,
+            b"{\"kind\":\"admission_decision\",\"outcome\":\"admitted\"}\n",
+        )
+    };
     let nt_submit_hash = write_json_value_and_hash(
         std::path::Path::new(&operator_evidence.nt_submit_event_path),
         &serde_json::json!({"record_kind": "phase8.nt_submit_event.v1"}),
@@ -5694,7 +5789,7 @@ fn test_operator_evidence_packet_bindings(
 ) -> LiveCanaryOperatorEvidenceBlock {
     LiveCanaryOperatorEvidenceBlock {
         head_sha: "1234567890abcdef1234567890abcdef12345678".to_string(),
-        max_operator_evidence_file_bytes: 4096,
+        max_operator_evidence_file_bytes: 100_000,
         approval_consumption_max_age_seconds: 60,
         approval_envelope_path: dir
             .join("approval-envelope.json")
@@ -5832,6 +5927,63 @@ fn write_required_static_artifacts_for_test(
         }
     }
     refs
+}
+
+fn write_replayable_strategy_input_artifacts_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    dir: &std::path::Path,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+) {
+    let runtime = strategy_input_runtime_fixture();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    assert_eq!(
+        runtime.strategy_instance_id, strategy_instance_id,
+        "runtime strategy fixture must match final packet config"
+    );
+    let market_selection_source_path = dir.join(TEST_MARKET_SELECTION_SOURCE_FILE);
+    std::fs::copy(
+        &runtime.market_selection_source_ref.path,
+        &market_selection_source_path,
+    )
+    .expect("market selection source should copy into final packet fixture");
+    let market_selection_source_ref = WrittenOperatorArtifact {
+        path: market_selection_source_path.clone(),
+        sha256: sha256_file(&market_selection_source_path),
+    };
+    let decision_evidence_path =
+        std::path::PathBuf::from(&operator_evidence.decision_evidence_path);
+    write_entry_decision_evidence_chain_at(&decision_evidence_path, &runtime.snapshot);
+    let strategy_input_path =
+        std::path::PathBuf::from(&operator_evidence.strategy_input_evidence_path);
+    std::fs::remove_file(&strategy_input_path)
+        .expect("initial strategy input should be removed before replayable rewrite");
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_decision_evidence_file(
+        loaded,
+        strategy_instance_id,
+        &decision_evidence_path,
+        operator_evidence.max_operator_evidence_file_bytes,
+        &market_selection_source_ref,
+        &runtime.candidate_market_start_timestamps_ms,
+        &strategy_input_path,
+    )
+    .expect("final packet fixture should write replayable strategy input evidence");
+    operator_evidence.strategy_input_evidence_sha256 = written.sha256.clone();
+    replace_static_artifact_ref_sha256(refs, "strategy-input", &written.sha256);
+}
+
+fn replace_static_artifact_ref_sha256(refs: &mut [serde_json::Value], name: &str, sha256: &str) {
+    let artifact = refs
+        .iter_mut()
+        .find(|artifact| artifact["name"] == name)
+        .expect("static artifact ref should exist");
+    artifact["sha256"] = serde_json::json!(sha256);
 }
 
 fn write_static_artifacts_manifest_for_test(

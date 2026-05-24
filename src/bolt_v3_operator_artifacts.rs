@@ -465,6 +465,9 @@ pub enum BoltV3OperatorArtifactError {
     OperatorPacketHashShape {
         field: &'static str,
     },
+    StrategyInputReplayInvalid {
+        field: &'static str,
+    },
     ApprovalEnvelopeRead {
         path: PathBuf,
         source: std::io::Error,
@@ -728,6 +731,10 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                     "operator packet field `{field}` must be a lowercase sha256 hex string"
                 )
             }
+            Self::StrategyInputReplayInvalid { field } => write!(
+                f,
+                "strategy_input_replay field `{field}` is invalid or not bound to decision evidence"
+            ),
             Self::ApprovalEnvelopeRead { source, .. } => {
                 write!(f, "failed to read approval envelope: {source}")
             }
@@ -1312,7 +1319,7 @@ pub fn write_strategy_input_evidence_artifact_from_runtime_snapshot(
     snapshot: &BoltV3StrategyInputEvidenceSnapshot,
     market_selection_source_ref: &WrittenOperatorArtifact,
     max_market_selection_source_bytes: u64,
-    candidate_market_start_timestamps_ms: &[u64],
+    _candidate_market_start_timestamps_ms: &[u64],
     path: &Path,
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
     let financial_envelope =
@@ -1365,7 +1372,7 @@ pub fn write_strategy_input_evidence_artifact_from_runtime_snapshot(
             &market_selection_source,
             market_selection_source_ref.path.to_string_lossy(),
             &market_selection_source_ref.sha256,
-            candidate_market_start_timestamps_ms,
+            market_selection_source.candidate_market_start_timestamps_ms(),
         )
         .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
     write_json_artifact_create_new(path, &artifact)
@@ -3320,6 +3327,7 @@ pub fn verify_final_operator_packet(
         static_manifest,
         operator_evidence,
     )?;
+    verify_strategy_input_replay_binding(loaded, operator_evidence)?;
     let approval_envelope = verify_operator_approval_envelope(
         loaded,
         operator_evidence,
@@ -3446,6 +3454,123 @@ fn validate_required_operator_evidence_static_artifacts(
         "approval_nonce_sha256",
         operator_evidence.max_operator_evidence_file_bytes,
     )
+}
+
+fn verify_strategy_input_replay_binding(
+    loaded: &LoadedBoltV3Config,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let strategy_input_path =
+        resolve_loaded_config_path(loaded, &operator_evidence.strategy_input_evidence_path);
+    let strategy_input_bytes = read_file_bounded(
+        &strategy_input_path,
+        operator_evidence.max_operator_evidence_file_bytes,
+    )
+    .map_err(|source| BoltV3OperatorArtifactError::FinalEvidenceRead {
+        field: "strategy_input_replay.strategy_input_evidence_path",
+        path: strategy_input_path.clone(),
+        source,
+    })?;
+    if hex::encode(Sha256::digest(&strategy_input_bytes))
+        != operator_evidence.strategy_input_evidence_sha256
+    {
+        return Err(BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.strategy_input_evidence_sha256",
+        });
+    }
+    let actual_strategy_input: Phase8StrategyInputEvidenceFile =
+        serde_json::from_slice(&strategy_input_bytes).map_err(|_| {
+            BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+                field: "strategy_input_replay.strategy_input_evidence",
+            }
+        })?;
+    let strategy_input_json: serde_json::Value = serde_json::from_slice(&strategy_input_bytes)
+        .map_err(
+            |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+                field: "strategy_input_replay.strategy_input_evidence",
+            },
+        )?;
+    let strategy_instance_id =
+        strategy_input_replay_required_str(&strategy_input_json, "strategy_instance_id")?;
+    let market_selection_source_path =
+        strategy_input_replay_required_str(&strategy_input_json, "market_selection_source_path")?;
+    let market_selection_source_sha256 =
+        strategy_input_replay_required_str(&strategy_input_json, "market_selection_source_sha256")?;
+    if !is_lowercase_sha256(market_selection_source_sha256) {
+        return Err(BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.market_selection_source_sha256",
+        });
+    }
+    let market_selection_source_path = Path::new(market_selection_source_path);
+    validate_market_window_source_path(
+        "strategy_input_replay.market_selection_source_path",
+        market_selection_source_path,
+    )?;
+    let market_selection_source_bytes = read_file_bounded(
+        market_selection_source_path,
+        operator_evidence.max_operator_evidence_file_bytes,
+    )
+    .map_err(
+        |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.market_selection_source_path",
+        },
+    )?;
+    if hex::encode(Sha256::digest(&market_selection_source_bytes)) != market_selection_source_sha256
+    {
+        return Err(BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.market_selection_source_sha256",
+        });
+    }
+    let market_selection_source: Phase8MarketSelectionSourceEvidenceFile =
+        serde_json::from_slice(&market_selection_source_bytes).map_err(|_| {
+            BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+                field: "strategy_input_replay.market_selection_source",
+            }
+        })?;
+    let decision_evidence_path =
+        resolve_loaded_config_path(loaded, &operator_evidence.decision_evidence_path);
+    let decision_chain = read_latest_entry_decision_evidence_chain(
+        &decision_evidence_path,
+        operator_evidence.max_operator_evidence_file_bytes,
+    )
+    .map_err(
+        |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.decision_evidence_path",
+        },
+    )?;
+    let expected_strategy_input =
+        Phase8StrategyInputEvidenceFile::from_runtime_snapshot_and_market_selection_source(
+            &decision_chain.snapshot,
+            strategy_instance_id,
+            &market_selection_source,
+            market_selection_source_path.to_string_lossy(),
+            market_selection_source_sha256,
+            market_selection_source.candidate_market_start_timestamps_ms(),
+        )
+        .map_err(
+            |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+                field: "strategy_input_replay.expected_strategy_input",
+            },
+        )?;
+    if actual_strategy_input != expected_strategy_input {
+        return Err(BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.strategy_input_evidence",
+        });
+    }
+
+    Ok(())
+}
+
+fn strategy_input_replay_required_str<'a>(
+    value: &'a serde_json::Value,
+    field: &'static str,
+) -> Result<&'a str, BoltV3OperatorArtifactError> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(BoltV3OperatorArtifactError::StrategyInputReplayInvalid { field })
 }
 
 fn validate_required_static_manifest_artifact(

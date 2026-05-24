@@ -4571,6 +4571,38 @@ reason = "This names the strategy-input evidence JSON field that binds the marke
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"strategy_instance_id"'''
+context = '''strategy_input_replay_required_str(&strategy_input_json, "strategy_instance_id")?;'''
+classification = "operator_artifact_json_field_name"
+reason = "This names the strategy-input evidence JSON field used to replay-bind the artifact to decision evidence; the value remains artifact-owned, not hardcoded."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_selection_source_path"'''
+context = '''strategy_input_replay_required_str(&strategy_input_json, "market_selection_source_path")?;'''
+classification = "operator_artifact_json_field_name"
+reason = "This names the strategy-input evidence JSON field used to locate the already hash-bound market-selection source during replay verification; it is not a runtime path literal."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_selection_source_sha256"'''
+context = '''strategy_input_replay_required_str(&strategy_input_json, "market_selection_source_sha256")?;'''
+classification = "operator_artifact_json_field_name"
+reason = "This names the strategy-input evidence JSON field used to replay-bind the market-selection source hash; the runtime value is read from the artifact."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_input_replay.market_selection_source_path"'''
+context = '''"strategy_input_replay.market_selection_source_path",'''
+classification = "operator_artifact_diagnostic_field"
+reason = "This is a redacted verifier diagnostic field name for market-selection source path validation, not an operator runtime path."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"../Cargo.toml"'''
 context = '''const BUILD_CARGO_TOML: &str = include_str!("../Cargo.toml");'''
 classification = "release_manifest_build_source_path"

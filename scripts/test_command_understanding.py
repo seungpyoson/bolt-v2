@@ -440,6 +440,7 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
 
     non_exports = [
         "command_tokens",
+        "command_tokens_with_line_boundaries",
         "shell_command_substitution_payloads",
         "shell_command_substitution_at",
         "path_name_looks_like_renamed_cargo",
@@ -533,6 +534,8 @@ def assert_command_tokenization_and_line_boundaries_are_characterized() -> None:
 
     if hasattr(runtime, "command_tokens_with_line_boundaries"):
         raise AssertionError("runtime command_tokens_with_line_boundaries peer requires fresh review")
+    if not hasattr(static, "command_tokens_with_line_boundaries"):
+        raise AssertionError("static command_tokens_with_line_boundaries helper is required")
 
     cases = [
         (

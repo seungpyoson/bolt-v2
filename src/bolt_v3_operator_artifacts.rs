@@ -4594,7 +4594,7 @@ where
         path: path.to_path_buf(),
         source,
     })?;
-    if let Err(source) = file.write_all(&bytes) {
+    if let Err(source) = file.write_all(bytes) {
         let _ = fs::remove_file(path);
         return Err(BoltV3OperatorArtifactError::Write {
             path: path.to_path_buf(),

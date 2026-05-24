@@ -456,37 +456,6 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
     if leaked:
         raise AssertionError("unproven helpers must not be shared exports: " + ", ".join(leaked))
 
-    if runtime.path_name_looks_like_renamed_cargo("rustup") is not True:
-        raise AssertionError("runtime rustup-as-cargo path-name classification changed")
-    if static.path_name_looks_like_renamed_cargo("rustup") is not False:
-        raise AssertionError("static rustup-as-cargo path-name classification changed")
-
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = pathlib.Path(tmp)
-        cargo_target = tmp_path / "cargo"
-        cargo_target.write_text("", encoding="utf-8")
-        cargo_link = tmp_path / "tool"
-        cargo_link.symlink_to(cargo_target)
-        runtime_cargo = runtime.path_executable_looks_like_cargo(str(cargo_link))
-        static_cargo = static.path_executable_looks_like_cargo(str(cargo_link))
-        if runtime_cargo is not True or static_cargo is not False:
-            raise AssertionError(
-                "cargo symlink executable classification changed: "
-                f"runtime={runtime_cargo!r} static={static_cargo!r}"
-            )
-
-        rustc_target = tmp_path / "rustc"
-        rustc_target.write_text("", encoding="utf-8")
-        rustc_link = tmp_path / "compiler"
-        rustc_link.symlink_to(rustc_target)
-        runtime_rustc = runtime.path_executable_looks_like_rustc(str(rustc_link))
-        static_rustc = static.path_executable_looks_like_rustc(str(rustc_link))
-        if runtime_rustc is not True or static_rustc is not False:
-            raise AssertionError(
-                "rustc symlink executable classification changed: "
-                f"runtime={runtime_rustc!r} static={static_rustc!r}"
-            )
-
     cargo_args = ["--manifest-path", "Cargo.toml", "test", "--", "--target-dir", "/tmp/raw"]
     if runtime.cargo_subcommand_with_index(cargo_args) != (2, "test"):
         raise AssertionError("runtime cargo_subcommand_with_index changed")
@@ -560,6 +529,82 @@ def assert_command_tokenization_and_line_boundaries_are_characterized() -> None:
             )
 
 
+def assert_renamed_cargo_and_rustc_detection_is_characterized() -> None:
+    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_renamed_tools_under_test")
+    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_renamed_tools_under_test")
+
+    name_cases = [
+        ("rustup", True, False, False, False),
+        ("mycargo", True, True, False, False),
+        ("my_cargo", False, False, False, False),
+        ("cargo.sh", False, False, False, False),
+        ("rustc", True, True, True, True),
+        ("myrustc", False, False, True, True),
+        ("my_rustc", False, False, False, False),
+        ("r", False, False, True, True),
+    ]
+    for name, expected_runtime_cargo, expected_static_cargo, expected_runtime_rustc, expected_static_rustc in name_cases:
+        runtime_cargo = runtime.path_name_looks_like_renamed_cargo(name)
+        static_cargo = static.path_name_looks_like_renamed_cargo(name)
+        runtime_rustc = runtime.path_name_looks_like_renamed_rustc(name)
+        static_rustc = static.path_name_looks_like_renamed_rustc(name)
+        if runtime_cargo is not expected_runtime_cargo:
+            raise AssertionError(f"runtime cargo path-name classifier changed for {name!r}: {runtime_cargo!r}")
+        if static_cargo is not expected_static_cargo:
+            raise AssertionError(f"static cargo path-name classifier changed for {name!r}: {static_cargo!r}")
+        if runtime_rustc is not expected_runtime_rustc:
+            raise AssertionError(f"runtime rustc path-name classifier changed for {name!r}: {runtime_rustc!r}")
+        if static_rustc is not expected_static_rustc:
+            raise AssertionError(f"static rustc path-name classifier changed for {name!r}: {static_rustc!r}")
+
+    path_cases = [
+        ("mycargo", False, False, False, False),
+        ("/tmp/mycargo", True, True, False, False),
+        ("/tmp/my_cargo", False, False, False, False),
+        ("/tmp/myrustc", False, False, True, True),
+        ("/tmp/my_rustc", False, False, False, False),
+    ]
+    for token, expected_runtime_cargo, expected_static_cargo, expected_runtime_rustc, expected_static_rustc in path_cases:
+        runtime_cargo = runtime.path_executable_looks_like_cargo(token)
+        static_cargo = static.path_executable_looks_like_cargo(token)
+        runtime_rustc = runtime.path_executable_looks_like_rustc(token)
+        static_rustc = static.path_executable_looks_like_rustc(token)
+        if runtime_cargo is not expected_runtime_cargo:
+            raise AssertionError(f"runtime cargo path classifier changed for {token!r}: {runtime_cargo!r}")
+        if static_cargo is not expected_static_cargo:
+            raise AssertionError(f"static cargo path classifier changed for {token!r}: {static_cargo!r}")
+        if runtime_rustc is not expected_runtime_rustc:
+            raise AssertionError(f"runtime rustc path classifier changed for {token!r}: {runtime_rustc!r}")
+        if static_rustc is not expected_static_rustc:
+            raise AssertionError(f"static rustc path classifier changed for {token!r}: {static_rustc!r}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        cargo_target = tmp_path / "cargo"
+        cargo_target.write_text("", encoding="utf-8")
+        cargo_link = tmp_path / "tool"
+        cargo_link.symlink_to(cargo_target)
+        runtime_cargo = runtime.path_executable_looks_like_cargo(str(cargo_link))
+        static_cargo = static.path_executable_looks_like_cargo(str(cargo_link))
+        if runtime_cargo is not True or static_cargo is not False:
+            raise AssertionError(
+                "cargo symlink executable classification changed: "
+                f"runtime={runtime_cargo!r} static={static_cargo!r}"
+            )
+
+        rustc_target = tmp_path / "rustc"
+        rustc_target.write_text("", encoding="utf-8")
+        rustc_link = tmp_path / "compiler"
+        rustc_link.symlink_to(rustc_target)
+        runtime_rustc = runtime.path_executable_looks_like_rustc(str(rustc_link))
+        static_rustc = static.path_executable_looks_like_rustc(str(rustc_link))
+        if runtime_rustc is not True or static_rustc is not False:
+            raise AssertionError(
+                "rustc symlink executable classification changed: "
+                f"runtime={runtime_rustc!r} static={static_rustc!r}"
+            )
+
+
 def assert_shell_command_substitution_parsing_is_characterized() -> None:
     runtime = load_module(RUNTIME_VERIFIER, "rust_verification_shell_substitution_under_test")
     static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_shell_substitution_under_test")
@@ -624,6 +669,7 @@ def main() -> int:
     assert_shared_cargo_scanner_helpers_match_current_verifiers()
     assert_command_tokenization_and_line_boundaries_are_characterized()
     assert_shell_command_substitution_parsing_is_characterized()
+    assert_renamed_cargo_and_rustc_detection_is_characterized()
     assert_non_exported_candidate_helpers_are_characterized()
     print("OK: command understanding self-tests passed.")
     return 0

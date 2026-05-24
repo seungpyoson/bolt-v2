@@ -2070,6 +2070,9 @@ pub fn write_pre_run_state_artifact_from_source_collectors(
     inputs: PreRunStateSourceCollectorInputs<'_>,
     path: &Path,
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let financial_envelope =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
     let release_manifest = collect_pre_run_release_manifest_source_proof(
         inputs.cargo_toml_path,
         inputs.cargo_lock_path,
@@ -2084,6 +2087,8 @@ pub fn write_pre_run_state_artifact_from_source_collectors(
     let venue_account = collect_pre_run_venue_account_state_source_proof(
         inputs.venue_account_state_source_path,
         inputs.max_source_bytes,
+        financial_envelope.execution_client_id(),
+        financial_envelope.configured_target_id(),
     )?;
     let market_window = collect_pre_run_market_window_source_proof(
         inputs.strategy_input_evidence_path,
@@ -2558,6 +2563,8 @@ pub fn collect_pre_run_host_clock_source_proof(
 pub fn collect_pre_run_venue_account_state_source_proof(
     venue_account_state_source_path: &Path,
     max_source_bytes: u64,
+    expected_execution_client_id: &str,
+    expected_configured_target_id: &str,
 ) -> Result<Phase8PreRunVenueAccountStateSourceProof, BoltV3OperatorArtifactError> {
     let venue_account_state_source_bytes =
         read_file_bounded(venue_account_state_source_path, max_source_bytes).map_err(|source| {
@@ -2589,6 +2596,20 @@ pub fn collect_pre_run_venue_account_state_source_proof(
             },
         );
     }
+    if source.execution_client_id != expected_execution_client_id {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+                field: "execution_client_id",
+            },
+        );
+    }
+    if source.configured_target_id != expected_configured_target_id {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+                field: "configured_target_id",
+            },
+        );
+    }
     if !is_lowercase_sha256(&source.account_state_snapshot_sha256) {
         return Err(
             BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
@@ -2613,6 +2634,8 @@ pub fn collect_pre_run_venue_account_state_source_proof(
     let proof_input = Phase8PreRunVenueAccountStateSourceProofHashInput {
         schema_version: PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_PROOF_SCHEMA_VERSION,
         record_kind: PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_PROOF_RECORD_KIND,
+        execution_client_id: &source.execution_client_id,
+        configured_target_id: &source.configured_target_id,
         open_order_count: source.open_order_count,
         open_position_count: source.open_position_count,
         account_state_snapshot_sha256: &source.account_state_snapshot_sha256,
@@ -3219,6 +3242,8 @@ struct Phase8PreRunHostClockSourceEvidence {
 struct Phase8PreRunVenueAccountStateSourceEvidence {
     schema_version: u32,
     record_kind: String,
+    execution_client_id: String,
+    configured_target_id: String,
     open_order_count: u64,
     open_position_count: u64,
     account_state_snapshot_sha256: String,
@@ -3310,6 +3335,8 @@ struct Phase8PreRunHostClockSourceProofHashInput<'a> {
 struct Phase8PreRunVenueAccountStateSourceProofHashInput<'a> {
     schema_version: u32,
     record_kind: &'static str,
+    execution_client_id: &'a str,
+    configured_target_id: &'a str,
     open_order_count: u64,
     open_position_count: u64,
     account_state_snapshot_sha256: &'a str,

@@ -42,6 +42,8 @@ const TEST_UP_OUTCOME: &str = "Up";
 const TEST_DOWN_OUTCOME: &str = "Down";
 const TEST_BINARY_OPTION_PRICE_INCREMENT: &str = "0.001";
 const TEST_BINARY_OPTION_SIZE_INCREMENT: &str = "0.01";
+const TEST_EXECUTION_CLIENT_ID: &str = "polymarket_main";
+const TEST_CONFIGURED_TARGET_ID: &str = "btc_updown_5m";
 
 #[test]
 fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
@@ -1572,7 +1574,13 @@ const DOMAIN_VERSION: &str = "2";
     let venue_account_state_source_path = temp.join("venue-account-state-source.json");
     std::fs::write(
         &venue_account_state_source_path,
-        venue_account_state_source_fixture(0, 0, &sha256_text("venue-account-state")),
+        venue_account_state_source_fixture(
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
+            0,
+            0,
+            &sha256_text("venue-account-state"),
+        ),
     )
     .expect("venue account state source fixture should write");
     let funding_margin_source_path = temp.join("funding-margin-source.json");
@@ -1649,6 +1657,8 @@ const DOMAIN_VERSION: &str = "2";
         bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
             &venue_account_state_source_path,
             1_000_000,
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
         )
         .expect("venue account state source proof should collect");
     let market = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_market_window_source_proof(
@@ -5053,6 +5063,8 @@ fn egress_identity_source_fixture(egress_identity_sha256: &str) -> String {
 }
 
 fn venue_account_state_source_fixture(
+    execution_client_id: &str,
+    configured_target_id: &str,
     open_order_count: u64,
     open_position_count: u64,
     account_state_snapshot_sha256: &str,
@@ -5061,6 +5073,8 @@ fn venue_account_state_source_fixture(
         r#"{{
   "schema_version": 1,
   "record_kind": "bolt_v3.pre_run_venue_account_state_source.v1",
+  "execution_client_id": "{execution_client_id}",
+  "configured_target_id": "{configured_target_id}",
   "open_order_count": {open_order_count},
   "open_position_count": {open_position_count},
   "account_state_snapshot_sha256": "{account_state_snapshot_sha256}"
@@ -5202,7 +5216,13 @@ fn pre_run_venue_account_state_source_proof_derives_source_owned_absence() {
     let account_state_snapshot_sha256 = sha256_text(raw_order_id);
     std::fs::write(
         &venue_account_source_path,
-        venue_account_state_source_fixture(0, 0, &account_state_snapshot_sha256),
+        venue_account_state_source_fixture(
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
+            0,
+            0,
+            &account_state_snapshot_sha256,
+        ),
     )
     .expect("venue account fixture should write");
 
@@ -5210,6 +5230,8 @@ fn pre_run_venue_account_state_source_proof_derives_source_owned_absence() {
         bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
             &venue_account_source_path,
             4096,
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
         )
         .expect("source-owned venue account state proof should collect");
 
@@ -5259,6 +5281,8 @@ fn pre_run_venue_account_state_source_proof_rejects_present_orders_or_positions(
         std::fs::write(
             &venue_account_source_path,
             venue_account_state_source_fixture(
+                TEST_EXECUTION_CLIENT_ID,
+                TEST_CONFIGURED_TARGET_ID,
                 open_order_count,
                 open_position_count,
                 snapshot_hash,
@@ -5270,6 +5294,8 @@ fn pre_run_venue_account_state_source_proof_rejects_present_orders_or_positions(
             bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
                 &venue_account_source_path,
                 4096,
+                TEST_EXECUTION_CLIENT_ID,
+                TEST_CONFIGURED_TARGET_ID,
             )
             .expect_err("present orders or positions must fail closed");
         let message = error.to_string();
@@ -5297,6 +5323,8 @@ fn pre_run_venue_account_state_source_proof_rejects_invalid_source_shape() {
                 r#"{{
   "schema_version": 2,
   "record_kind": "bolt_v3.pre_run_venue_account_state_source.v1",
+  "execution_client_id": "{TEST_EXECUTION_CLIENT_ID}",
+  "configured_target_id": "{TEST_CONFIGURED_TARGET_ID}",
   "open_order_count": 0,
   "open_position_count": 0,
   "account_state_snapshot_sha256": "{account_state_snapshot_sha256}"
@@ -5310,6 +5338,8 @@ fn pre_run_venue_account_state_source_proof_rejects_invalid_source_shape() {
                 r#"{{
   "schema_version": 1,
   "record_kind": "bolt_v3.pre_run_venue_account_state_source.v2",
+  "execution_client_id": "{TEST_EXECUTION_CLIENT_ID}",
+  "configured_target_id": "{TEST_CONFIGURED_TARGET_ID}",
   "open_order_count": 0,
   "open_position_count": 0,
   "account_state_snapshot_sha256": "{account_state_snapshot_sha256}"
@@ -5323,6 +5353,8 @@ fn pre_run_venue_account_state_source_proof_rejects_invalid_source_shape() {
                 r#"{{
   "schema_version": 1,
   "record_kind": "bolt_v3.pre_run_venue_account_state_source.v1",
+  "execution_client_id": "{TEST_EXECUTION_CLIENT_ID}",
+  "configured_target_id": "{TEST_CONFIGURED_TARGET_ID}",
   "open_order_count": 0,
   "open_position_count": 0,
   "account_state_snapshot_sha256": "{account_state_snapshot_sha256}",
@@ -5351,6 +5383,8 @@ fn pre_run_venue_account_state_source_proof_rejects_invalid_source_shape() {
             bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
                 &venue_account_source_path,
                 4096,
+                TEST_EXECUTION_CLIENT_ID,
+                TEST_CONFIGURED_TARGET_ID,
             )
             .expect_err("invalid venue account state source must not approve pre-run proof");
         let message = error.to_string();
@@ -5371,6 +5405,60 @@ fn pre_run_venue_account_state_source_proof_rejects_invalid_source_shape() {
 }
 
 #[test]
+fn pre_run_venue_account_state_source_proof_rejects_mismatched_config_identity() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let account_state_snapshot_sha256 = sha256_text("venue-account-state-snapshot");
+    let cases = [
+        (
+            "execution_client_id",
+            "other-client",
+            TEST_CONFIGURED_TARGET_ID,
+            "execution_client_id",
+        ),
+        (
+            "configured_target_id",
+            TEST_EXECUTION_CLIENT_ID,
+            "other-target",
+            "configured_target_id",
+        ),
+    ];
+
+    for (name, execution_client_id, configured_target_id, expected) in cases {
+        let venue_account_source_path = temp.path().join(format!("{name}.json"));
+        std::fs::write(
+            &venue_account_source_path,
+            venue_account_state_source_fixture(
+                execution_client_id,
+                configured_target_id,
+                0,
+                0,
+                &account_state_snapshot_sha256,
+            ),
+        )
+        .expect("venue account fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
+                &venue_account_source_path,
+                4096,
+                TEST_EXECUTION_CLIENT_ID,
+                TEST_CONFIGURED_TARGET_ID,
+            )
+            .expect_err("wrong-account venue state must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} mismatch should identify {expected}: {message}"
+        );
+        assert!(
+            !message.contains("other-client") && !message.contains("other-target"),
+            "{name} diagnostic must not echo mismatched account identity: {message}"
+        );
+    }
+}
+
+#[test]
 fn pre_run_venue_account_state_source_proof_rejects_oversized_source_before_parse() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let venue_account_source_path = temp.path().join("venue-account-state-source.json");
@@ -5378,7 +5466,13 @@ fn pre_run_venue_account_state_source_proof_rejects_oversized_source_before_pars
     let account_state_snapshot_sha256 = sha256_text("venue-account-state-snapshot");
     std::fs::write(
         &venue_account_source_path,
-        venue_account_state_source_fixture(0, 0, &account_state_snapshot_sha256),
+        venue_account_state_source_fixture(
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
+            0,
+            0,
+            &account_state_snapshot_sha256,
+        ),
     )
     .expect("venue account fixture should write");
 
@@ -5386,6 +5480,8 @@ fn pre_run_venue_account_state_source_proof_rejects_oversized_source_before_pars
         bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
             &venue_account_source_path,
             1,
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
         )
         .expect_err("oversized venue account source must not approve pre-run proof");
     let message = error.to_string();

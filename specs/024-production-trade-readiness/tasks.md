@@ -51,6 +51,7 @@
 - [x] T022 [US3] Implement CLOB V2 adapter signing, collateral accounting, and fee behavior collectors in `src/bolt_v3_operator_artifacts.rs`.
 - [x] T023 [US3] Bind all T126 collector outputs into source-owned pre-run-state artifact generation and CLI wiring; final `config/live.local.toml` `pre_run_state_path`/`pre_run_state_sha256` binding remains T037.
 - [x] T024 [US3] Run focused T126 tests plus runtime-literal verification and record evidence in `specs/024-production-trade-readiness/evidence.md`.
+- [x] T024A [US3] Add TDD repair proving venue-account state sources must match the configured execution client and target identity before zero-order/zero-position evidence can satisfy T126.
 
 ## Phase 5: User Story 4 - Abort-Plan Collectors
 

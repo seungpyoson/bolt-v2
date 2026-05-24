@@ -176,6 +176,24 @@ The collectors are non-live and source-owned: they read bounded local JSON sourc
 
 T126 no longer depends on a caller-supplied pre-run source bundle for local artifact generation. `write_pre_run_state_artifact_from_source_collectors` and the `operator-artifacts generate-pre-run-state-from-source-collectors` CLI path collect release-manifest, host-clock, venue-account-state, market/window, funding/margin, single-runner-lock, egress-identity, CLOB V2 adapter-signing, CLOB V2 collateral-accounting, and CLOB V2 fee-behavior proofs from bounded local source inputs, then write the final `pre-run-state.json`. The schema-level operator evidence config still binds the final artifact by `pre_run_state_path` and `pre_run_state_sha256`; the approved root TOML update remains T037 with the full final packet.
 
+## T024A Venue-Account Identity Binding Repair Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts pre_run_venue_account_state_source_proof_rejects_mismatched_config_identity -- --nocapture` failed with `E0061` because `collect_pre_run_venue_account_state_source_proof` accepted only the source path and byte cap, with no expected execution-client or target identity.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts pre_run_venue_account_state_source_proof_rejects_mismatched_config_identity -- --nocapture` passed: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts pre_run_venue_account_state_source_proof -- --nocapture`: 5 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts pre_run_state_writer_emits_artifact_from_source_owned_collectors -- --nocapture`: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts pre_run_ -- --nocapture`: 53 passed, 0 failed.
+- `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_pre_run_state_source_collector_command -- --nocapture`: 1 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+- `python3 -B scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `python3 -B scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `just fmt-check`: passed.
+- `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+- `just clippy`: passed.
+
+The venue-account source proof now requires `execution_client_id` and `configured_target_id` fields and includes them in the source-proof hash input. `write_pre_run_state_artifact_from_source_collectors` derives the expected values from the loaded strategy's financial envelope before collecting venue-account proof. A zero open-order/open-position snapshot from another account or target now fails closed before it can satisfy T126. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T024A.
+
 ## T025/T026 NT-Accepted Venue-Pending Abort Collector Evidence
 
 - RED: `cargo test --test bolt_v3_operator_artifacts abort_plan_nt_accepted_venue_pending -- --nocapture` failed with `E0425`/`E0422` because `collect_abort_plan_nt_accepted_venue_pending_source_proof` and `Phase8AbortPlanNtAcceptedVenuePendingSourceProof` did not exist.

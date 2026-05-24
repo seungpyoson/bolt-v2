@@ -2140,6 +2140,10 @@ pub struct Phase8FinancialEnvelopeEvidenceFile {
 }
 
 impl Phase8FinancialEnvelopeEvidenceFile {
+    pub fn execution_client_id(&self) -> &str {
+        &self.execution_client_id
+    }
+
     pub fn strategy_instance_id(&self) -> &str {
         &self.strategy_instance_id
     }

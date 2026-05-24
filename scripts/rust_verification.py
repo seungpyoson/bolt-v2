@@ -2168,10 +2168,11 @@ def registered_worktree_paths(repo: pathlib.Path) -> set[pathlib.Path]:
     for line in result.stdout.splitlines():
         if not line.startswith("worktree "):
             continue
+        raw_path = line.removeprefix("worktree ")
         try:
-            paths.add(pathlib.Path(line.removeprefix("worktree ")).resolve())
-        except (OSError, RuntimeError):
-            continue
+            paths.add(pathlib.Path(raw_path).resolve(strict=True))
+        except (OSError, RuntimeError) as exc:
+            raise PolicyError(f"unable to resolve registered worktree path {raw_path}: {exc}") from exc
     return paths
 
 
@@ -2250,10 +2251,10 @@ def cleanup_tmp_bundle_candidates(
             resolved = child
         if resolved in registered:
             continue
-        age_seconds = now - child_lstat.st_mtime
-        if age_seconds < prune_after_seconds:
-            continue
         child_bytes, latest_mtime, skipped = scan_cache_tree(child)
+        age_seconds = now - latest_mtime
+        if skipped or age_seconds < prune_after_seconds:
+            continue
         candidates.append(
             {
                 "bytes": child_bytes,

@@ -3398,6 +3398,17 @@ fn strategy_input_writer_rejects_oversized_market_selection_source_before_artifa
     );
 }
 
+fn host_clock_source_fixture(host_unix_millis: u64, reference_unix_millis: u64) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_host_clock_source.v1",
+  "host_unix_millis": {host_unix_millis},
+  "reference_unix_millis": {reference_unix_millis}
+}}"#
+    )
+}
+
 #[test]
 fn pre_run_host_clock_source_proof_derives_source_owned_skew_bound() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -3405,12 +3416,7 @@ fn pre_run_host_clock_source_proof_derives_source_owned_skew_bound() {
     let pre_run_state_path = temp.path().join("pre-run-state.json");
     std::fs::write(
         &host_clock_source_path,
-        r#"{
-  "schema_version": 1,
-  "record_kind": "bolt_v3.pre_run_host_clock_source.v1",
-  "host_unix_millis": 1716510000125,
-  "reference_unix_millis": 1716510000000
-}"#,
+        host_clock_source_fixture(1716510000125, 1716510000000),
     )
     .expect("host clock fixture should write");
 
@@ -3443,18 +3449,35 @@ fn pre_run_host_clock_source_proof_derives_source_owned_skew_bound() {
 }
 
 #[test]
+fn pre_run_host_clock_source_proof_accepts_exact_bound_and_reverse_skew() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_source_path = temp.path().join("host-clock-source.json");
+    std::fs::write(
+        &host_clock_source_path,
+        host_clock_source_fixture(1716510000000, 1716510000250),
+    )
+    .expect("host clock fixture should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_source_path,
+        4096,
+        250,
+    )
+    .expect("exact-bound reverse host clock skew should collect");
+
+    assert!(proof.host_clock_skew_within_bound);
+    assert_eq!(proof.host_clock_skew_millis, 250);
+    assert_eq!(proof.max_host_clock_skew_millis, 250);
+}
+
+#[test]
 fn pre_run_host_clock_source_proof_rejects_out_of_bound_skew() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let host_clock_source_path = temp.path().join("host-clock-source.json");
     let pre_run_state_path = temp.path().join("pre-run-state.json");
     std::fs::write(
         &host_clock_source_path,
-        r#"{
-  "schema_version": 1,
-  "record_kind": "bolt_v3.pre_run_host_clock_source.v1",
-  "host_unix_millis": 1716510001000,
-  "reference_unix_millis": 1716510000000
-}"#,
+        host_clock_source_fixture(1716510001000, 1716510000000),
     )
     .expect("host clock fixture should write");
 
@@ -3472,6 +3495,103 @@ fn pre_run_host_clock_source_proof_rejects_out_of_bound_skew() {
     assert!(
         !pre_run_state_path.exists(),
         "failed host clock proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_rejects_invalid_source_shape() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let cases = [
+        (
+            "schema_version",
+            r#"{
+  "schema_version": 2,
+  "record_kind": "bolt_v3.pre_run_host_clock_source.v1",
+  "host_unix_millis": 1716510000000,
+  "reference_unix_millis": 1716510000000
+}"#,
+            "schema_version",
+        ),
+        (
+            "record_kind",
+            r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_host_clock_source.v2",
+  "host_unix_millis": 1716510000000,
+  "reference_unix_millis": 1716510000000
+}"#,
+            "record_kind",
+        ),
+        (
+            "unknown_field",
+            r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_host_clock_source.v1",
+  "host_unix_millis": 1716510000000,
+  "reference_unix_millis": 1716510000000,
+  "operator_override": true
+}"#,
+            "failed to parse host-clock source input",
+        ),
+        (
+            "malformed_json",
+            r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_host_clock_source.v1""#,
+            "failed to parse host-clock source input",
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let host_clock_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(&host_clock_source_path, source).expect("host clock fixture should write");
+
+        let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+            &host_clock_source_path,
+            4096,
+            250,
+        )
+        .expect_err("invalid host clock source must not approve pre-run proof");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed host clock proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_rejects_oversized_source_before_parse() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_source_path = temp.path().join("host-clock-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    std::fs::write(
+        &host_clock_source_path,
+        host_clock_source_fixture(1716510000000, 1716510000000),
+    )
+    .expect("host clock fixture should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_source_path,
+        1,
+        250,
+    )
+    .expect_err("oversized host clock source must not approve pre-run proof");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("failed to read host-clock source input"),
+        "oversized source should be a read diagnostic: {message}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "oversized host clock proof collection must not write pre-run-state.json"
     );
 }
 

@@ -696,6 +696,133 @@ fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
 }
 
 #[test]
+fn abort_plan_panic_gate_service_policy_source_proof_derives_from_strategy_and_admission_sources() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let abort_plan_path = temp.path().join("abort-plan.json");
+    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+    let submit_admission_source_path = repo_path("src/bolt_v3_submit_admission.rs");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_panic_gate_service_policy_source_proof(
+        &strategy_source_path,
+        &submit_admission_source_path,
+        1_000_000,
+    )
+    .expect("strategy and admission sources should prove panic-gate / service-policy abort lifecycle");
+    let bolt_v2::bolt_v3_operator_artifacts::Phase8AbortPlanPanicGateServicePolicySourceProof {
+        panic_gate_trip_abort_evidence_hash,
+    } = proof;
+
+    assert_eq!(panic_gate_trip_abort_evidence_hash.len(), 64);
+    assert!(
+        panic_gate_trip_abort_evidence_hash
+            .chars()
+            .all(|char| char.is_ascii_hexdigit() && !char.is_ascii_uppercase()),
+        "panic-gate/service-policy proof hash should be lowercase sha256"
+    );
+    assert!(
+        !abort_plan_path.exists(),
+        "collector must not write final abort-plan artifact"
+    );
+}
+
+#[test]
+fn abort_plan_panic_gate_service_policy_source_proof_rejects_unguarded_service_submit() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    let submit_admission_source_path = temp.path().join("submit_admission.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn bootstrap_recovery_from_cache(&mut self) {
+    let cached_positions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        self.cache().positions_open(None, None, None, None, None)
+    }));
+    let cached_positions = match cached_positions {
+        Ok(cached_positions) => cached_positions,
+        Err(_) => {
+            self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::CacheProbeFailed,
+            });
+            return;
+        }
+    };
+}
+
+fn enforce_one_position_invariant(&self) -> Result<()> {
+    let Some(occupancy) = self.exposure_occupancy() else {
+        return Ok(());
+    };
+    let message = format!("one-position invariant occupied by {occupancy:?}");
+    if cfg!(debug_assertions) {
+        panic!("{message}");
+    }
+    self.report_one_position_invariant_violation(occupancy);
+    anyhow::bail!("{message}");
+}
+
+fn submit_lifecycle_policy(&self) -> BoltV3SubmitLifecyclePolicy {
+    BoltV3SubmitLifecyclePolicy::new(
+        self.config.manage_contingent_orders
+            || self.config.manage_gtd_expiry
+            || self.config.manage_stop,
+    )
+}
+"#,
+    )
+    .expect("test strategy source should write");
+    std::fs::write(
+        &submit_admission_source_path,
+        r#"
+fn evaluate(
+    inner: &BoltV3SubmitAdmissionInner,
+    request: &BoltV3SubmitAdmissionRequest,
+) -> BoltV3AdmissionOutcome {
+    BoltV3AdmissionOutcome::Admitted
+}
+
+pub fn submit_intent_for(
+    &self,
+    intent: BoltV3OrderLifecycleIntent,
+) -> Result<Option<BoltV3SubmitIntentKind>, BoltV3SubmitAdmissionError> {
+    match intent {
+        BoltV3OrderLifecycleIntent::Entry => Ok(Some(BoltV3SubmitIntentKind::Entry)),
+        BoltV3OrderLifecycleIntent::RiskReducingExit => {
+            Ok(Some(BoltV3SubmitIntentKind::RiskReducingExit))
+        }
+        BoltV3OrderLifecycleIntent::ReplaceSubmit if self.replace_submit => {
+            Ok(Some(BoltV3SubmitIntentKind::ReplaceSubmit))
+        }
+        BoltV3OrderLifecycleIntent::ReplaceSubmit => Ok(None),
+        BoltV3OrderLifecycleIntent::PlainCancel => Ok(None),
+    }
+}
+
+fn allows(&self, intent: BoltV3SubmitIntentKind) -> bool {
+    match intent {
+        BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit => true,
+        BoltV3SubmitIntentKind::ReplaceSubmit => true,
+    }
+}
+"#,
+    )
+    .expect("test admission source should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_panic_gate_service_policy_source_proof(
+        &strategy_source_path,
+        &submit_admission_source_path,
+        10_000,
+    )
+    .expect_err("service submit must be gated by arm state and lifecycle policy");
+
+    assert!(
+        error
+            .to_string()
+            .contains("submit_admission_rejects_unarmed_and_disallowed_lifecycle"),
+        "unguarded service submit should identify service-policy proof: {error}"
+    );
+}
+
+#[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_cancel_after_exit_pending() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let strategy_source_path = temp.path().join("strategy.rs");

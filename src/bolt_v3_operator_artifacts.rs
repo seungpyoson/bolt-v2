@@ -156,6 +156,53 @@ const ABORT_PLAN_PARTIAL_FILL_SOURCE_PROOF_RECORD_KIND: &str =
 const ABORT_PLAN_NETWORK_PARTITION_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const ABORT_PLAN_NETWORK_PARTITION_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.abort_plan_network_partition_source_proof.v1";
+const ABORT_PLAN_PANIC_GATE_SERVICE_POLICY_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const ABORT_PLAN_PANIC_GATE_SERVICE_POLICY_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.abort_plan_panic_gate_service_policy_source_proof.v1";
+const ABORT_PLAN_PANIC_BOOTSTRAP_RECOVERY_FUNCTION_NAME: &str = "bootstrap_recovery_from_cache";
+const ABORT_PLAN_PANIC_ONE_POSITION_INVARIANT_FUNCTION_NAME: &str =
+    "enforce_one_position_invariant";
+const ABORT_PLAN_SERVICE_SUBMIT_LIFECYCLE_POLICY_FUNCTION_NAME: &str = "submit_lifecycle_policy";
+const ABORT_PLAN_SERVICE_ADMISSION_EVALUATE_FUNCTION_NAME: &str = "evaluate";
+const ABORT_PLAN_SERVICE_SUBMIT_INTENT_FUNCTION_NAME: &str = "submit_intent_for";
+const ABORT_PLAN_SERVICE_ALLOWS_FUNCTION_NAME: &str = "allows";
+const ABORT_PLAN_PANIC_CATCH_UNWIND_MARKER: &str =
+    "std::panic::catch_unwind(std::panic::AssertUnwindSafe(||";
+const ABORT_PLAN_PANIC_BLIND_RECOVERY_MARKER: &str =
+    "self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {";
+const ABORT_PLAN_PANIC_CACHE_PROBE_FAILED_MARKER: &str =
+    "reason: BlindRecoveryReason::CacheProbeFailed";
+const ABORT_PLAN_PANIC_RETURN_MARKER: &str = "return;";
+const ABORT_PLAN_PANIC_DEBUG_ASSERTIONS_MARKER: &str = "if cfg!(debug_assertions)";
+const ABORT_PLAN_PANIC_DEBUG_PANIC_MARKER: &str = "panic!(";
+const ABORT_PLAN_PANIC_REPORT_MARKER: &str =
+    "self.report_one_position_invariant_violation(occupancy);";
+const ABORT_PLAN_PANIC_RELEASE_BAIL_MARKER: &str = "anyhow::bail!(";
+const ABORT_PLAN_SERVICE_POLICY_NEW_MARKER: &str = "BoltV3SubmitLifecyclePolicy::new(";
+const ABORT_PLAN_SERVICE_POLICY_CONTINGENT_MARKER: &str = "self.config.manage_contingent_orders";
+const ABORT_PLAN_SERVICE_POLICY_GTD_MARKER: &str = "self.config.manage_gtd_expiry";
+const ABORT_PLAN_SERVICE_POLICY_STOP_MARKER: &str = "self.config.manage_stop";
+const ABORT_PLAN_SERVICE_ADMISSION_UNARMED_MARKER: &str =
+    "let Some(report) = inner.gate_report.as_ref() else";
+const ABORT_PLAN_SERVICE_ADMISSION_REJECT_NOT_ARMED_MARKER: &str =
+    "return BoltV3AdmissionOutcome::RejectedNotArmed;";
+const ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_CHECK_MARKER: &str =
+    "!request.lifecycle_policy.allows(request.intent_kind)";
+const ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_REJECT_MARKER: &str =
+    "return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;";
+const ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER: &str = "BoltV3AdmissionOutcome::Admitted";
+const ABORT_PLAN_SERVICE_REPLACE_ALLOWED_MARKER: &str =
+    "BoltV3OrderLifecycleIntent::ReplaceSubmit if self.replace_submit";
+const ABORT_PLAN_SERVICE_REPLACE_SUBMIT_MARKER: &str =
+    "Ok(Some(BoltV3SubmitIntentKind::ReplaceSubmit))";
+const ABORT_PLAN_SERVICE_REPLACE_NONE_MARKER: &str =
+    "BoltV3OrderLifecycleIntent::ReplaceSubmit => Ok(None)";
+const ABORT_PLAN_SERVICE_CANCEL_NONE_MARKER: &str =
+    "BoltV3OrderLifecycleIntent::PlainCancel => Ok(None)";
+const ABORT_PLAN_SERVICE_ENTRY_EXIT_ALLOWED_MARKER: &str =
+    "BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit => true";
+const ABORT_PLAN_SERVICE_REPLACE_ALLOWED_FLAG_MARKER: &str =
+    "BoltV3SubmitIntentKind::ReplaceSubmit => self.replace_submit";
 const ABORT_PLAN_PARTIAL_FILL_ON_ORDER_FILLED_FUNCTION_NAME: &str = "on_order_filled";
 const ABORT_PLAN_PARTIAL_FILL_ON_POSITION_CLOSED_FUNCTION_NAME: &str = "on_position_closed";
 const ABORT_PLAN_PARTIAL_FILL_MATERIALIZE_FUNCTION_NAME: &str = "materialize_position_from_event";
@@ -439,6 +486,11 @@ pub struct Phase8AbortPlanNetworkPartitionSourceProof {
     pub network_partition_during_submit_abort_evidence_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8AbortPlanPanicGateServicePolicySourceProof {
+    pub panic_gate_trip_abort_evidence_hash: String,
+}
+
 impl fmt::Debug for WrittenOperatorArtifact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WrittenOperatorArtifact")
@@ -596,6 +648,13 @@ pub enum BoltV3OperatorArtifactError {
         source: std::io::Error,
     },
     AbortPlanNetworkPartitionSourceInvalid {
+        field: &'static str,
+    },
+    AbortPlanPanicGateServicePolicySourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    AbortPlanPanicGateServicePolicySourceInvalid {
         field: &'static str,
     },
     AbortPlanSourceBundleRead {
@@ -904,6 +963,14 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "abort plan network-partition source field `{field}` is invalid or unproven"
             ),
+            Self::AbortPlanPanicGateServicePolicySourceRead { source, .. } => write!(
+                f,
+                "failed to read abort plan panic-gate/service-policy source: {source}"
+            ),
+            Self::AbortPlanPanicGateServicePolicySourceInvalid { field } => write!(
+                f,
+                "abort plan panic-gate/service-policy source field `{field}` is invalid or unproven"
+            ),
             Self::AbortPlanSourceBundleRead { source, .. } => {
                 write!(f, "failed to read abort plan source bundle: {source}")
             }
@@ -1106,6 +1173,7 @@ impl Error for BoltV3OperatorArtifactError {
             Self::AbortPlanNtAcceptedVenuePendingSourceRead { source, .. } => Some(source),
             Self::AbortPlanPartialFillSourceRead { source, .. } => Some(source),
             Self::AbortPlanNetworkPartitionSourceRead { source, .. } => Some(source),
+            Self::AbortPlanPanicGateServicePolicySourceRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleParse { source, .. } => Some(source),
             Self::StaticManifestRead { source, .. } => Some(source),
@@ -1692,6 +1760,68 @@ pub fn collect_abort_plan_network_partition_source_proof(
 
     Ok(Phase8AbortPlanNetworkPartitionSourceProof {
         network_partition_during_submit_abort_evidence_hash,
+    })
+}
+
+pub fn collect_abort_plan_panic_gate_service_policy_source_proof(
+    strategy_source_path: &Path,
+    submit_admission_source_path: &Path,
+    max_source_bytes: u64,
+) -> Result<Phase8AbortPlanPanicGateServicePolicySourceProof, BoltV3OperatorArtifactError> {
+    let strategy_source_bytes =
+        read_abort_plan_panic_gate_service_policy_source(strategy_source_path, max_source_bytes)?;
+    let submit_admission_source_bytes = read_abort_plan_panic_gate_service_policy_source(
+        submit_admission_source_path,
+        max_source_bytes,
+    )?;
+    let strategy_source_sha256 = hex::encode(Sha256::digest(&strategy_source_bytes));
+    let submit_admission_source_sha256 =
+        hex::encode(Sha256::digest(&submit_admission_source_bytes));
+    let strategy_source = std::str::from_utf8(&strategy_source_bytes).map_err(|_| {
+        BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceInvalid {
+            field: "strategy_source_utf8",
+        }
+    })?;
+    let submit_admission_source =
+        std::str::from_utf8(&submit_admission_source_bytes).map_err(|_| {
+            BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceInvalid {
+                field: "submit_admission_source_utf8",
+            }
+        })?;
+    let contract = require_abort_plan_panic_gate_service_policy_contract(
+        strategy_source,
+        submit_admission_source,
+    )?;
+
+    let proof_input = Phase8AbortPlanPanicGateServicePolicySourceProofHashInput {
+        schema_version: ABORT_PLAN_PANIC_GATE_SERVICE_POLICY_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: ABORT_PLAN_PANIC_GATE_SERVICE_POLICY_SOURCE_PROOF_RECORD_KIND,
+        strategy_source_sha256: strategy_source_sha256.as_str(),
+        submit_admission_source_sha256: submit_admission_source_sha256.as_str(),
+        panic_recovery_enters_blind_recovery: contract.panic_recovery_enters_blind_recovery,
+        release_invariant_returns_error: contract.release_invariant_returns_error,
+        submit_lifecycle_policy_from_config: contract.submit_lifecycle_policy_from_config,
+        submit_admission_rejects_unarmed_and_disallowed_lifecycle: contract
+            .submit_admission_rejects_unarmed_and_disallowed_lifecycle,
+        replace_submit_policy_gates_service_submit: contract
+            .replace_submit_policy_gates_service_submit,
+    };
+    let panic_gate_trip_abort_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8AbortPlanPanicGateServicePolicySourceProof {
+        panic_gate_trip_abort_evidence_hash,
+    })
+}
+
+fn read_abort_plan_panic_gate_service_policy_source(
+    source_path: &Path,
+    max_source_bytes: u64,
+) -> Result<Vec<u8>, BoltV3OperatorArtifactError> {
+    read_file_bounded(source_path, max_source_bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceRead {
+            path: source_path.to_path_buf(),
+            source,
+        }
     })
 }
 
@@ -3110,6 +3240,19 @@ struct Phase8AbortPlanNetworkPartitionSourceProofHashInput<'a> {
     submit_error_restores_managed_position: bool,
 }
 
+#[derive(Serialize)]
+struct Phase8AbortPlanPanicGateServicePolicySourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    strategy_source_sha256: &'a str,
+    submit_admission_source_sha256: &'a str,
+    panic_recovery_enters_blind_recovery: bool,
+    release_invariant_returns_error: bool,
+    submit_lifecycle_policy_from_config: bool,
+    submit_admission_rejects_unarmed_and_disallowed_lifecycle: bool,
+    replace_submit_policy_gates_service_submit: bool,
+}
+
 struct AbortPlanCancelIfOpenContract {
     forced_flat_cancel_before_exit_pending: bool,
 }
@@ -3129,6 +3272,14 @@ struct AbortPlanPartialFillContract {
 
 struct AbortPlanNetworkPartitionContract {
     submit_error_restores_managed_position: bool,
+}
+
+struct AbortPlanPanicGateServicePolicyContract {
+    panic_recovery_enters_blind_recovery: bool,
+    release_invariant_returns_error: bool,
+    submit_lifecycle_policy_from_config: bool,
+    submit_admission_rejects_unarmed_and_disallowed_lifecycle: bool,
+    replace_submit_policy_gates_service_submit: bool,
 }
 
 fn require_abort_plan_cancel_if_open_contract(
@@ -3331,6 +3482,36 @@ fn require_abort_plan_network_partition_contract(
             },
         )
     }
+}
+
+fn require_abort_plan_panic_gate_service_policy_contract(
+    strategy_source: &str,
+    submit_admission_source: &str,
+) -> Result<AbortPlanPanicGateServicePolicyContract, BoltV3OperatorArtifactError> {
+    let strategy_comment_masked_source =
+        abort_plan_cancel_if_open_comment_masked_source(strategy_source);
+    let strategy_code_source =
+        abort_plan_cancel_if_open_string_masked_source(&strategy_comment_masked_source);
+    let admission_comment_masked_source =
+        abort_plan_cancel_if_open_comment_masked_source(submit_admission_source);
+    let admission_code_source =
+        abort_plan_cancel_if_open_string_masked_source(&admission_comment_masked_source);
+
+    require_abort_plan_panic_recovery_enters_blind_recovery(&strategy_code_source)?;
+    require_abort_plan_release_invariant_returns_error(&strategy_code_source)?;
+    require_abort_plan_submit_lifecycle_policy_from_config(&strategy_code_source)?;
+    require_abort_plan_submit_admission_rejects_unarmed_and_disallowed_lifecycle(
+        &admission_code_source,
+    )?;
+    require_abort_plan_replace_submit_policy_gates_service_submit(&admission_code_source)?;
+
+    Ok(AbortPlanPanicGateServicePolicyContract {
+        panic_recovery_enters_blind_recovery: true,
+        release_invariant_returns_error: true,
+        submit_lifecycle_policy_from_config: true,
+        submit_admission_rejects_unarmed_and_disallowed_lifecycle: true,
+        replace_submit_policy_gates_service_submit: true,
+    })
 }
 
 #[derive(Debug)]
@@ -3740,6 +3921,247 @@ fn require_abort_plan_partial_fill_terminal_without_flat_preserves_managed(
     }
 }
 
+fn require_abort_plan_panic_recovery_enters_blind_recovery(
+    code_source: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let scope = abort_plan_panic_gate_service_policy_single_function_scope(
+        code_source,
+        ABORT_PLAN_PANIC_BOOTSTRAP_RECOVERY_FUNCTION_NAME,
+        "panic_recovery_scope",
+    )?;
+    let catch_unwind = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_PANIC_CATCH_UNWIND_MARKER,
+        "panic_recovery_enters_blind_recovery",
+    )?;
+    let cache_probe_failed = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_PANIC_CACHE_PROBE_FAILED_MARKER,
+        "panic_recovery_enters_blind_recovery",
+    )?;
+    let blind_recovery = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        scope,
+        ABORT_PLAN_PANIC_BLIND_RECOVERY_MARKER,
+    )
+    .into_iter()
+    .find(|index| *index < cache_probe_failed)
+    .ok_or(
+        BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceInvalid {
+            field: "panic_recovery_enters_blind_recovery",
+        },
+    )?;
+    let return_after_recovery =
+        abort_plan_cancel_if_open_scoped_marker_occurrences(scope, ABORT_PLAN_PANIC_RETURN_MARKER)
+            .into_iter()
+            .find(|index| *index > cache_probe_failed)
+            .ok_or(
+                BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceInvalid {
+                    field: "panic_recovery_enters_blind_recovery",
+                },
+            )?;
+
+    if catch_unwind < blind_recovery
+        && blind_recovery < cache_probe_failed
+        && cache_probe_failed < return_after_recovery
+    {
+        Ok(())
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceInvalid {
+                field: "panic_recovery_enters_blind_recovery",
+            },
+        )
+    }
+}
+
+fn require_abort_plan_release_invariant_returns_error(
+    code_source: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let scope = abort_plan_panic_gate_service_policy_single_function_scope(
+        code_source,
+        ABORT_PLAN_PANIC_ONE_POSITION_INVARIANT_FUNCTION_NAME,
+        "release_invariant_scope",
+    )?;
+    let debug_assertions = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_PANIC_DEBUG_ASSERTIONS_MARKER,
+        "release_invariant_returns_error",
+    )?;
+    let debug_panic = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_PANIC_DEBUG_PANIC_MARKER,
+        "release_invariant_returns_error",
+    )?;
+    let report = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_PANIC_REPORT_MARKER,
+        "release_invariant_returns_error",
+    )?;
+    let bail = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_PANIC_RELEASE_BAIL_MARKER,
+        "release_invariant_returns_error",
+    )?;
+
+    if debug_assertions < debug_panic && debug_panic < report && report < bail {
+        Ok(())
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceInvalid {
+                field: "release_invariant_returns_error",
+            },
+        )
+    }
+}
+
+fn require_abort_plan_submit_lifecycle_policy_from_config(
+    code_source: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let scope = abort_plan_panic_gate_service_policy_single_function_scope(
+        code_source,
+        ABORT_PLAN_SERVICE_SUBMIT_LIFECYCLE_POLICY_FUNCTION_NAME,
+        "submit_lifecycle_policy_scope",
+    )?;
+    let policy_new = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_SERVICE_POLICY_NEW_MARKER,
+        "submit_lifecycle_policy_from_config",
+    )?;
+    let contingent = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_SERVICE_POLICY_CONTINGENT_MARKER,
+        "submit_lifecycle_policy_from_config",
+    )?;
+    let gtd = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_SERVICE_POLICY_GTD_MARKER,
+        "submit_lifecycle_policy_from_config",
+    )?;
+    let stop = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_SERVICE_POLICY_STOP_MARKER,
+        "submit_lifecycle_policy_from_config",
+    )?;
+
+    if policy_new < contingent && contingent < gtd && gtd < stop {
+        Ok(())
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceInvalid {
+                field: "submit_lifecycle_policy_from_config",
+            },
+        )
+    }
+}
+
+fn require_abort_plan_submit_admission_rejects_unarmed_and_disallowed_lifecycle(
+    code_source: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let scope = abort_plan_panic_gate_service_policy_single_function_scope(
+        code_source,
+        ABORT_PLAN_SERVICE_ADMISSION_EVALUATE_FUNCTION_NAME,
+        "submit_admission_evaluate_scope",
+    )?;
+    let unarmed = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_SERVICE_ADMISSION_UNARMED_MARKER,
+        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+    )?;
+    let reject_unarmed = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_SERVICE_ADMISSION_REJECT_NOT_ARMED_MARKER,
+        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+    )?;
+    let lifecycle_check = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_CHECK_MARKER,
+        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+    )?;
+    let lifecycle_reject = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_REJECT_MARKER,
+        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+    )?;
+    let admitted = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER,
+        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+    )?;
+
+    if unarmed < reject_unarmed
+        && reject_unarmed < lifecycle_check
+        && lifecycle_check < lifecycle_reject
+        && lifecycle_reject < admitted
+    {
+        Ok(())
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceInvalid {
+                field: "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+            },
+        )
+    }
+}
+
+fn require_abort_plan_replace_submit_policy_gates_service_submit(
+    code_source: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let submit_intent_scope = abort_plan_panic_gate_service_policy_single_function_scope(
+        code_source,
+        ABORT_PLAN_SERVICE_SUBMIT_INTENT_FUNCTION_NAME,
+        "submit_intent_for_scope",
+    )?;
+    let replace_allowed = abort_plan_panic_gate_service_policy_single_marker_index(
+        submit_intent_scope,
+        ABORT_PLAN_SERVICE_REPLACE_ALLOWED_MARKER,
+        "replace_submit_policy_gates_service_submit",
+    )?;
+    let replace_submit = abort_plan_panic_gate_service_policy_single_marker_index(
+        submit_intent_scope,
+        ABORT_PLAN_SERVICE_REPLACE_SUBMIT_MARKER,
+        "replace_submit_policy_gates_service_submit",
+    )?;
+    let replace_none = abort_plan_panic_gate_service_policy_single_marker_index(
+        submit_intent_scope,
+        ABORT_PLAN_SERVICE_REPLACE_NONE_MARKER,
+        "replace_submit_policy_gates_service_submit",
+    )?;
+    let cancel_none = abort_plan_panic_gate_service_policy_single_marker_index(
+        submit_intent_scope,
+        ABORT_PLAN_SERVICE_CANCEL_NONE_MARKER,
+        "replace_submit_policy_gates_service_submit",
+    )?;
+    let allows_scope = abort_plan_panic_gate_service_policy_single_function_scope(
+        code_source,
+        ABORT_PLAN_SERVICE_ALLOWS_FUNCTION_NAME,
+        "submit_policy_allows_scope",
+    )?;
+    let entry_exit_allowed = abort_plan_panic_gate_service_policy_single_marker_index(
+        allows_scope,
+        ABORT_PLAN_SERVICE_ENTRY_EXIT_ALLOWED_MARKER,
+        "replace_submit_policy_gates_service_submit",
+    )?;
+    let replace_allowed_flag = abort_plan_panic_gate_service_policy_single_marker_index(
+        allows_scope,
+        ABORT_PLAN_SERVICE_REPLACE_ALLOWED_FLAG_MARKER,
+        "replace_submit_policy_gates_service_submit",
+    )?;
+
+    if replace_allowed < replace_submit
+        && replace_submit < replace_none
+        && replace_none < cancel_none
+        && entry_exit_allowed < replace_allowed_flag
+    {
+        Ok(())
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceInvalid {
+                field: "replace_submit_policy_gates_service_submit",
+            },
+        )
+    }
+}
+
 fn abort_plan_cancel_if_open_scoped_marker_occurrences(
     strategy_source: &str,
     marker: &str,
@@ -3818,6 +4240,39 @@ fn abort_plan_network_partition_single_marker_index(
     let indexes = abort_plan_cancel_if_open_scoped_marker_occurrences(source, marker);
     let [index] = indexes.as_slice() else {
         return Err(BoltV3OperatorArtifactError::AbortPlanNetworkPartitionSourceInvalid { field });
+    };
+    Ok(*index)
+}
+
+fn abort_plan_panic_gate_service_policy_single_function_scope<'a>(
+    code_source: &'a str,
+    function_name: &'static str,
+    field: &'static str,
+) -> Result<&'a str, BoltV3OperatorArtifactError> {
+    let mut scopes = abort_plan_cancel_if_open_function_scopes(code_source)
+        .into_iter()
+        .filter(|scope| {
+            abort_plan_source_scope_matches_function(&code_source[scope.clone()], function_name)
+        })
+        .collect::<Vec<_>>();
+    let [scope] = scopes.as_mut_slice() else {
+        return Err(
+            BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceInvalid { field },
+        );
+    };
+    Ok(&code_source[scope.clone()])
+}
+
+fn abort_plan_panic_gate_service_policy_single_marker_index(
+    source: &str,
+    marker: &str,
+    field: &'static str,
+) -> Result<usize, BoltV3OperatorArtifactError> {
+    let indexes = abort_plan_cancel_if_open_scoped_marker_occurrences(source, marker);
+    let [index] = indexes.as_slice() else {
+        return Err(
+            BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceInvalid { field },
+        );
     };
     Ok(*index)
 }

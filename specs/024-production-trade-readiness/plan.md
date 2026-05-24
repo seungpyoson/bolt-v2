@@ -25,7 +25,7 @@ The current investigation found:
 - T038 no-submit evidence is historically satisfied only for no-submit; final-packet T131/T122 remains unproven.
 - The old `t038-operator-config-snapshot` branch has unique commits, but current source contains later no-submit/SBE work and recorded EC2/EIP no-submit proof. It must not be ported wholesale.
 - The active readiness branch currently has source collectors for release manifest, host clock, market window, single-runner lock, and cancel-if-open.
-- The active readiness branch now exposes collector functions for venue account/open orders/positions, funding/margin, egress identity, CLOB V2 signing/collateral/fee behavior, NT accepted/venue pending, partial fill, and network partition. It still does not expose collector functions for panic/service policy.
+- The active readiness branch now exposes collector functions for venue account/open orders/positions, funding/margin, egress identity, CLOB V2 signing/collateral/fee behavior, NT accepted/venue pending, partial fill, network partition, and panic/service policy.
 
 See `specs/024-production-trade-readiness/evidence.md` for commands and exact outputs summarized.
 

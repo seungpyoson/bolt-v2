@@ -6863,3 +6863,323 @@ literal = '''"down_instrument_id"'''
 context = '''"down_instrument_id",'''
 classification = "phase8_strategy_input_schema_field"
 reason = "This names a required source-bound instrument field in the Phase 8 strategy-input evidence schema, not a concrete instrument id or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const ABORT_PLAN_PANIC_GATE_SERVICE_POLICY_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the panic-gate/service-policy source-proof artifact schema version emitted by the abort-plan evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.abort_plan_panic_gate_service_policy_source_proof.v1"'''
+context = '''"bolt_v3.abort_plan_panic_gate_service_policy_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for panic-gate/service-policy source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bootstrap_recovery_from_cache"'''
+context = '''const ABORT_PLAN_PANIC_BOOTSTRAP_RECOVERY_FUNCTION_NAME: &str = "bootstrap_recovery_from_cache";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker pins the panic-gate source proof to the production cache-recovery bootstrap function; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"enforce_one_position_invariant"'''
+context = '''"enforce_one_position_invariant";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker pins the panic-gate source proof to the production one-position invariant function; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"submit_lifecycle_policy"'''
+context = '''const ABORT_PLAN_SERVICE_SUBMIT_LIFECYCLE_POLICY_FUNCTION_NAME: &str = "submit_lifecycle_policy";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker pins the service-policy proof to the production lifecycle-policy function; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"evaluate"'''
+context = '''const ABORT_PLAN_SERVICE_ADMISSION_EVALUATE_FUNCTION_NAME: &str = "evaluate";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker pins the service-policy proof to the production submit-admission evaluator; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"submit_intent_for"'''
+context = '''const ABORT_PLAN_SERVICE_SUBMIT_INTENT_FUNCTION_NAME: &str = "submit_intent_for";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker pins the service-policy proof to the production lifecycle intent mapper; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"allows"'''
+context = '''const ABORT_PLAN_SERVICE_ALLOWS_FUNCTION_NAME: &str = "allows";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker pins the service-policy proof to the production lifecycle allowlist function; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"std::panic::catch_unwind(std::panic::AssertUnwindSafe(||"'''
+context = '''"std::panic::catch_unwind(std::panic::AssertUnwindSafe(||";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies panic containment during cache recovery; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {"'''
+context = '''"self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies fail-closed blind recovery after a cache-probe panic; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"reason: BlindRecoveryReason::CacheProbeFailed"'''
+context = '''"reason: BlindRecoveryReason::CacheProbeFailed";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the cache-probe panic reason in blind recovery; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"return;"'''
+context = '''const ABORT_PLAN_PANIC_RETURN_MARKER: &str = "return;";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies recovery exits after entering fail-closed state; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"if cfg!(debug_assertions)"'''
+context = '''const ABORT_PLAN_PANIC_DEBUG_ASSERTIONS_MARKER: &str = "if cfg!(debug_assertions)";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies invariant panics are debug-gated; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.report_one_position_invariant_violation(occupancy);"'''
+context = '''"self.report_one_position_invariant_violation(occupancy);";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies release-mode invariant violations are reported before error return; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"BoltV3SubmitLifecyclePolicy::new("'''
+context = '''const ABORT_PLAN_SERVICE_POLICY_NEW_MARKER: &str = "BoltV3SubmitLifecyclePolicy::new(";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the service submit lifecycle policy is built from strategy config; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.config.manage_contingent_orders"'''
+context = '''const ABORT_PLAN_SERVICE_POLICY_CONTINGENT_MARKER: &str = "self.config.manage_contingent_orders";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies contingent-order config gates service submit lifecycle policy; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.config.manage_gtd_expiry"'''
+context = '''const ABORT_PLAN_SERVICE_POLICY_GTD_MARKER: &str = "self.config.manage_gtd_expiry";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies GTD-expiry config gates service submit lifecycle policy; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.config.manage_stop"'''
+context = '''const ABORT_PLAN_SERVICE_POLICY_STOP_MARKER: &str = "self.config.manage_stop";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies stop-management config gates service submit lifecycle policy; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"let Some(report) = inner.gate_report.as_ref() else"'''
+context = '''"let Some(report) = inner.gate_report.as_ref() else";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies submit admission checks live-canary arming before admitting orders; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"return BoltV3AdmissionOutcome::RejectedNotArmed;"'''
+context = '''"return BoltV3AdmissionOutcome::RejectedNotArmed;";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies unarmed submit admission rejects orders; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"!request.lifecycle_policy.allows(request.intent_kind)"'''
+context = '''"!request.lifecycle_policy.allows(request.intent_kind)";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies submit admission evaluates lifecycle policy before admitting service submits; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;"'''
+context = '''"return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies disallowed lifecycle submissions fail closed; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"BoltV3AdmissionOutcome::Admitted"'''
+context = '''const ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER: &str = "BoltV3AdmissionOutcome::Admitted";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies service-policy rejections occur before the admitted outcome; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"BoltV3OrderLifecycleIntent::ReplaceSubmit if self.replace_submit"'''
+context = '''"BoltV3OrderLifecycleIntent::ReplaceSubmit if self.replace_submit";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies replace submits are allowed only when the lifecycle policy enables them; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"Ok(Some(BoltV3SubmitIntentKind::ReplaceSubmit))"'''
+context = '''"Ok(Some(BoltV3SubmitIntentKind::ReplaceSubmit))";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies enabled replace-submit lifecycle intents map to submit admission; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"BoltV3OrderLifecycleIntent::ReplaceSubmit => Ok(None)"'''
+context = '''"BoltV3OrderLifecycleIntent::ReplaceSubmit => Ok(None)";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies disabled replace-submit lifecycle intents are not submitted; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"BoltV3OrderLifecycleIntent::PlainCancel => Ok(None)"'''
+context = '''"BoltV3OrderLifecycleIntent::PlainCancel => Ok(None)";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies plain cancel is not treated as a submit admission path; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit => true"'''
+context = '''"BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit => true";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies entry and risk-reducing exit submits remain explicitly allowed; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"BoltV3SubmitIntentKind::ReplaceSubmit => self.replace_submit"'''
+context = '''"BoltV3SubmitIntentKind::ReplaceSubmit => self.replace_submit";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies replace-submit admission is gated by the lifecycle policy flag; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"panic_recovery_scope"'''
+context = '''"panic_recovery_scope",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the panic-recovery function-scope diagnostic for source proof validation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"panic_recovery_enters_blind_recovery"'''
+context = '''"panic_recovery_enters_blind_recovery",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the panic-recovery fail-closed proof diagnostic, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"release_invariant_scope"'''
+context = '''"release_invariant_scope",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the release invariant function-scope diagnostic for source proof validation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"release_invariant_returns_error"'''
+context = '''"release_invariant_returns_error",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the release invariant fail-closed proof diagnostic, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"submit_lifecycle_policy_scope"'''
+context = '''"submit_lifecycle_policy_scope",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the submit lifecycle policy function-scope diagnostic for source proof validation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"submit_lifecycle_policy_from_config"'''
+context = '''"submit_lifecycle_policy_from_config",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the config-derived submit lifecycle policy proof diagnostic, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"submit_admission_evaluate_scope"'''
+context = '''"submit_admission_evaluate_scope",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the submit-admission evaluator function-scope diagnostic for source proof validation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"submit_admission_rejects_unarmed_and_disallowed_lifecycle"'''
+context = '''"submit_admission_rejects_unarmed_and_disallowed_lifecycle",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the submit-admission unarmed and lifecycle rejection proof diagnostic, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"submit_intent_for_scope"'''
+context = '''"submit_intent_for_scope",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the submit-intent mapper function-scope diagnostic for source proof validation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"replace_submit_policy_gates_service_submit"'''
+context = '''"replace_submit_policy_gates_service_submit",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the replace-submit service-policy proof diagnostic, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"submit_policy_allows_scope"'''
+context = '''"submit_policy_allows_scope",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the submit-policy allowlist function-scope diagnostic for source proof validation, not an operator runtime value."

@@ -60,10 +60,12 @@ This file is a source-inspection baseline, not a self-validating exact-head proo
 - `collect_pre_run_market_window_source_proof`
 - `collect_pre_run_single_runner_lock_source_proof`
 - `collect_pre_run_egress_identity_source_proof`
+- `collect_abort_plan_nt_accepted_venue_pending_source_proof`
+- `collect_abort_plan_partial_fill_source_proof`
+- `collect_abort_plan_network_partition_source_proof`
+- `collect_abort_plan_panic_gate_service_policy_source_proof`
 
-The same search found no `pub fn collect_abort_plan_nt...`, `collect_abort_plan_partial...`, `collect_abort_plan_network...`, or `collect_abort_plan_panic...` functions.
-
-Implication: the active readiness branch now has source-owned collector functions for the planned T126 pre-run proof fields, while T023/T024 still need binding and focused T126 verification. T127 abort-plan fields are still satisfied only by caller-supplied proof bundles or fixtures.
+Implication: the active readiness branch now has source-owned collector functions for the planned T126 pre-run proof fields and T127 abort-plan proof fields. T023/T024 still need T126 binding and focused verification; T033/T034 still need T127 binding and focused verification.
 
 ## T038 Branch Evidence
 
@@ -195,3 +197,17 @@ The collector is non-live and source-owned: it reads bounded local Rust source, 
 - `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 The collector is non-live and source-owned: it reads bounded local Rust source, validates that `try_submit_exit_order` calls `submit_order_with_decision_evidence`, validates submit-error restoration to `Managed`, validates the submit error is returned instead of swallowed, returns only a source-proof hash, and does not write `abort-plan.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T029/T030.
+
+## T031/T032 Panic-Gate And Service-Policy Abort Collector Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts abort_plan_panic_gate_service_policy -- --nocapture` failed with `E0425`/`E0422` because `collect_abort_plan_panic_gate_service_policy_source_proof` and `Phase8AbortPlanPanicGateServicePolicySourceProof` did not exist.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts abort_plan_panic_gate_service_policy -- --nocapture` passed: 2 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts abort_plan_ -- --nocapture`: 27 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `python3 -B scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `python3 -B scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `git diff --check`: passed.
+- `just fmt-check`: passed.
+- `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+The collector is non-live and source-owned: it reads bounded local Rust source for the strategy and submit-admission modules, validates cache-probe panic containment into `BlindRecovery`, validates debug-only invariant panic with release-mode report/error return, validates service-submit lifecycle policy derives from the strategy config, validates submit admission rejects unarmed and lifecycle-disallowed submits before admission, validates replace-submit is gated by policy while entry/risk-reducing exits remain allowed, returns only a source-proof hash, and does not write `abort-plan.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T031/T032.

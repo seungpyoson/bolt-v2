@@ -198,6 +198,81 @@ fn bolt_v3_cli_computes_approval_envelope_sha256_without_printing_operator_paths
 }
 
 #[test]
+fn bolt_v3_cli_updates_operator_evidence_toml_without_printing_evidence_values() {
+    let operator_evidence = valid_live_canary_operator_evidence();
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!("{root}\n{}", live_canary_toml_without_operator_evidence())
+    });
+    let operator_evidence_json_path = config_path
+        .parent()
+        .expect("fixture root should have parent")
+        .join("operator-evidence.json");
+    fs::write(
+        &operator_evidence_json_path,
+        serde_json::to_vec_pretty(&operator_evidence)
+            .expect("operator evidence JSON should encode"),
+    )
+    .expect("operator evidence JSON should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "update-operator-evidence-toml",
+            "--config",
+            config_path.to_str().expect("fixture path should be utf-8"),
+            "--operator-evidence-json",
+            operator_evidence_json_path
+                .to_str()
+                .expect("operator evidence JSON path should be utf-8"),
+            "--max-operator-evidence-json-bytes",
+            "100000",
+        ])
+        .output()
+        .expect("bolt-v3 operator-evidence TOML update command should run");
+
+    assert!(
+        output.status.success(),
+        "expected operator-evidence TOML update to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout_json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
+    let stdout_object = stdout_json
+        .as_object()
+        .expect("stdout should be a JSON object");
+    assert_eq!(
+        stdout_object.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["root_toml_sha256"]
+    );
+
+    let loaded = load_bolt_v3_config(&config_path).expect("patched fixture root should load");
+    let patched_operator_evidence = loaded
+        .root
+        .live_canary
+        .expect("live canary should remain configured")
+        .operator_evidence
+        .expect("operator evidence should be patched");
+    assert_eq!(patched_operator_evidence, operator_evidence);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for forbidden in [
+        operator_evidence.ssm_manifest_path.as_str(),
+        operator_evidence.strategy_input_evidence_path.as_str(),
+        operator_evidence.financial_envelope_path.as_str(),
+        operator_evidence.pre_run_state_path.as_str(),
+        operator_evidence.abort_plan_path.as_str(),
+        operator_evidence.approval_nonce_path.as_str(),
+        operator_evidence.approval_consumption_path.as_str(),
+        "operator-approved-canary-001",
+    ] {
+        assert!(
+            !stdout.contains(forbidden),
+            "stdout must not expose operator evidence values or approval id {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn bolt_v3_cli_exposes_source_bundle_artifact_commands() {
     for command in [
         "generate-pre-run-state-from-source-bundle",
@@ -657,6 +732,23 @@ where
     )
     .expect("root fixture should write");
     root_path
+}
+
+fn live_canary_toml_without_operator_evidence() -> &'static str {
+    r#"
+[live_canary]
+approval_id = "operator-approved-canary-001"
+no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+max_no_submit_readiness_report_bytes = 1000000
+readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 30
+reference_quote_wait_timeout_seconds = 5
+reference_quote_probe_actor_id = "test-reference-probe"
+reference_quote_probe_log_events = false
+reference_quote_probe_log_commands = false
+max_live_order_count = 1
+max_notional_per_order = "10.00"
+"#
 }
 
 fn live_canary_with_operator_evidence_toml(evidence: &LiveCanaryOperatorEvidenceBlock) -> String {

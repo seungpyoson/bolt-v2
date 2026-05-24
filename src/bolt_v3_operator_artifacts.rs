@@ -16,7 +16,7 @@ use zeroize::Zeroize;
 
 use crate::{
     bolt_v3_archetypes::binary_oracle_edge_taker::raw_taker_config,
-    bolt_v3_config::{LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
+    bolt_v3_config::{BoltV3RootConfig, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
     bolt_v3_decision_evidence::{
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
         decision_evidence_path, read_latest_entry_decision_evidence_chain,
@@ -698,6 +698,31 @@ pub enum BoltV3OperatorArtifactError {
     },
     MissingLiveCanary,
     MissingOperatorEvidence,
+    OperatorEvidenceJsonRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    OperatorEvidenceJsonParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    OperatorEvidenceTomlRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    OperatorEvidenceTomlParse {
+        source: toml::de::Error,
+    },
+    OperatorEvidenceTomlSerialize {
+        source: toml::ser::Error,
+    },
+    OperatorEvidenceTomlWrite {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    OperatorEvidenceTomlInvalid {
+        field: &'static str,
+    },
     BuildHeadShaUnavailable,
     OperatorEvidenceHeadShaMismatch,
     StaticManifestRead {
@@ -1032,6 +1057,34 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "refusing to assemble operator packet because `[live_canary.operator_evidence]` is missing"
             ),
+            Self::OperatorEvidenceJsonRead { source, .. } => {
+                write!(f, "failed to read operator evidence JSON: {source}")
+            }
+            Self::OperatorEvidenceJsonParse { source, .. } => {
+                write!(f, "failed to parse operator evidence JSON: {source}")
+            }
+            Self::OperatorEvidenceTomlRead { source, .. } => {
+                write!(f, "failed to read operator evidence TOML: {source}")
+            }
+            Self::OperatorEvidenceTomlParse { source } => {
+                write!(
+                    f,
+                    "failed to parse patched operator evidence TOML: {source}"
+                )
+            }
+            Self::OperatorEvidenceTomlSerialize { source } => {
+                write!(f, "failed to render operator evidence TOML: {source}")
+            }
+            Self::OperatorEvidenceTomlWrite { source, .. } => {
+                write!(
+                    f,
+                    "failed to write patched operator evidence TOML: {source}"
+                )
+            }
+            Self::OperatorEvidenceTomlInvalid { field } => write!(
+                f,
+                "operator evidence TOML field `{field}` is invalid or unproven"
+            ),
             Self::BuildHeadShaUnavailable => write!(
                 f,
                 "bolt-v3 operator packet build head_sha is unavailable or invalid"
@@ -1222,6 +1275,12 @@ impl Error for BoltV3OperatorArtifactError {
             Self::AbortPlanPanicGateServicePolicySourceRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleParse { source, .. } => Some(source),
+            Self::OperatorEvidenceJsonRead { source, .. } => Some(source),
+            Self::OperatorEvidenceJsonParse { source, .. } => Some(source),
+            Self::OperatorEvidenceTomlRead { source, .. } => Some(source),
+            Self::OperatorEvidenceTomlParse { source } => Some(source),
+            Self::OperatorEvidenceTomlSerialize { source } => Some(source),
+            Self::OperatorEvidenceTomlWrite { source, .. } => Some(source),
             Self::StaticManifestRead { source, .. } => Some(source),
             Self::StaticManifestParse { source, .. } => Some(source),
             Self::StaticManifestArtifactFileRead { source, .. } => Some(source),
@@ -5450,6 +5509,67 @@ pub fn write_static_artifacts_manifest_from_operator_evidence(
     write_json_artifact_create_new(path, &manifest)
 }
 
+pub fn update_live_canary_operator_evidence_toml_from_json_file(
+    config_path: &Path,
+    operator_evidence_json_path: &Path,
+    max_operator_evidence_json_bytes: u64,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    if max_operator_evidence_json_bytes == 0 {
+        return Err(BoltV3OperatorArtifactError::OperatorEvidenceTomlInvalid {
+            field: "max_operator_evidence_json_bytes",
+        });
+    }
+    let operator_evidence_bytes = read_file_bounded(
+        operator_evidence_json_path,
+        max_operator_evidence_json_bytes,
+    )
+    .map_err(
+        |source| BoltV3OperatorArtifactError::OperatorEvidenceJsonRead {
+            path: operator_evidence_json_path.to_path_buf(),
+            source,
+        },
+    )?;
+    let operator_evidence: LiveCanaryOperatorEvidenceBlock =
+        serde_json::from_slice(&operator_evidence_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::OperatorEvidenceJsonParse {
+                path: operator_evidence_json_path.to_path_buf(),
+                source,
+            }
+        })?;
+    validate_live_canary_operator_evidence_toml_patch(&operator_evidence)?;
+
+    let root_text = fs::read_to_string(config_path).map_err(|source| {
+        BoltV3OperatorArtifactError::OperatorEvidenceTomlRead {
+            path: config_path.to_path_buf(),
+            source,
+        }
+    })?;
+    let patched_text = patch_live_canary_operator_evidence_toml(&root_text, &operator_evidence)?;
+    let parsed: BoltV3RootConfig = toml::from_str(&patched_text)
+        .map_err(|source| BoltV3OperatorArtifactError::OperatorEvidenceTomlParse { source })?;
+    let patched_operator_evidence = parsed
+        .live_canary
+        .ok_or(BoltV3OperatorArtifactError::MissingLiveCanary)?
+        .operator_evidence
+        .ok_or(BoltV3OperatorArtifactError::MissingOperatorEvidence)?;
+    if patched_operator_evidence != operator_evidence {
+        return Err(BoltV3OperatorArtifactError::OperatorEvidenceTomlInvalid {
+            field: "live_canary.operator_evidence",
+        });
+    }
+
+    fs::write(config_path, patched_text.as_bytes()).map_err(|source| {
+        BoltV3OperatorArtifactError::OperatorEvidenceTomlWrite {
+            path: config_path.to_path_buf(),
+            source,
+        }
+    })?;
+    Ok(WrittenOperatorArtifact {
+        path: config_path.to_path_buf(),
+        sha256: hex::encode(Sha256::digest(patched_text.as_bytes())),
+    })
+}
+
 fn static_artifact_ref_from_operator_evidence(
     loaded: &LoadedBoltV3Config,
     name: &'static str,
@@ -7386,6 +7506,115 @@ fn validate_operator_evidence_sha256(
     }
 }
 
+fn validate_live_canary_operator_evidence_toml_patch(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    validate_operator_evidence_build_head(evidence)?;
+    if evidence.max_operator_evidence_file_bytes == 0 {
+        return Err(BoltV3OperatorArtifactError::OperatorEvidenceTomlInvalid {
+            field: "max_operator_evidence_file_bytes",
+        });
+    }
+    if evidence.approval_consumption_max_age_seconds == 0 {
+        return Err(BoltV3OperatorArtifactError::OperatorEvidenceTomlInvalid {
+            field: "approval_consumption_max_age_seconds",
+        });
+    }
+    if evidence.approval_not_after_unix_seconds <= evidence.approval_not_before_unix_seconds {
+        return Err(BoltV3OperatorArtifactError::OperatorEvidenceTomlInvalid {
+            field: "approval_not_after_unix_seconds",
+        });
+    }
+    for (field, value) in [
+        (
+            "approval_envelope_sha256",
+            evidence.approval_envelope_sha256.as_str(),
+        ),
+        ("ssm_manifest_sha256", evidence.ssm_manifest_sha256.as_str()),
+        (
+            "strategy_input_evidence_sha256",
+            evidence.strategy_input_evidence_sha256.as_str(),
+        ),
+        (
+            "financial_envelope_sha256",
+            evidence.financial_envelope_sha256.as_str(),
+        ),
+        (
+            "pre_run_state_sha256",
+            evidence.pre_run_state_sha256.as_str(),
+        ),
+        ("abort_plan_sha256", evidence.abort_plan_sha256.as_str()),
+        (
+            "approval_nonce_sha256",
+            evidence.approval_nonce_sha256.as_str(),
+        ),
+    ] {
+        validate_operator_evidence_sha256(field, value)?;
+    }
+    for (field, value) in [
+        (
+            "approval_envelope_path",
+            evidence.approval_envelope_path.as_str(),
+        ),
+        ("ssm_manifest_path", evidence.ssm_manifest_path.as_str()),
+        (
+            "strategy_input_evidence_path",
+            evidence.strategy_input_evidence_path.as_str(),
+        ),
+        (
+            "financial_envelope_path",
+            evidence.financial_envelope_path.as_str(),
+        ),
+        ("pre_run_state_path", evidence.pre_run_state_path.as_str()),
+        ("abort_plan_path", evidence.abort_plan_path.as_str()),
+        (
+            "canary_evidence_path",
+            evidence.canary_evidence_path.as_str(),
+        ),
+        ("approval_nonce_path", evidence.approval_nonce_path.as_str()),
+        (
+            "approval_consumption_path",
+            evidence.approval_consumption_path.as_str(),
+        ),
+        (
+            "decision_evidence_path",
+            evidence.decision_evidence_path.as_str(),
+        ),
+        (
+            "nt_submit_event_path",
+            evidence.nt_submit_event_path.as_str(),
+        ),
+        (
+            "venue_order_state_path",
+            evidence.venue_order_state_path.as_str(),
+        ),
+        (
+            "restart_reconciliation_path",
+            evidence.restart_reconciliation_path.as_str(),
+        ),
+        (
+            "post_run_hygiene_path",
+            evidence.post_run_hygiene_path.as_str(),
+        ),
+    ] {
+        validate_operator_evidence_toml_path(field, value)?;
+    }
+    if let Some(strategy_cancel_path) = evidence.strategy_cancel_path.as_deref() {
+        validate_operator_evidence_toml_path("strategy_cancel_path", strategy_cancel_path)?;
+    }
+    Ok(())
+}
+
+fn validate_operator_evidence_toml_path(
+    field: &'static str,
+    value: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if value.trim().is_empty() {
+        return Err(BoltV3OperatorArtifactError::InvalidOutputPath { field });
+    }
+    validate_output_path_shape(field, value)
+}
+
 fn is_lowercase_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -7411,6 +7640,98 @@ fn validate_output_path_components(
         return Err(BoltV3OperatorArtifactError::InvalidOutputPath { field });
     }
     Ok(())
+}
+
+fn patch_live_canary_operator_evidence_toml(
+    root_text: &str,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    if !root_text
+        .lines()
+        .any(|line| toml_table_header(line) == Some("[live_canary]"))
+    {
+        return Err(BoltV3OperatorArtifactError::MissingLiveCanary);
+    }
+    let rendered = render_live_canary_operator_evidence_toml(evidence)?;
+    Ok(replace_or_append_toml_table(
+        root_text,
+        "[live_canary.operator_evidence]",
+        rendered.as_str(),
+    ))
+}
+
+fn replace_or_append_toml_table(
+    root_text: &str,
+    table_header: &'static str,
+    rendered_table: &str,
+) -> String {
+    let mut line_starts = vec![0usize];
+    for (index, char) in root_text.char_indices() {
+        if char == '\n' {
+            line_starts.push(index + 1);
+        }
+    }
+    let table_start = line_starts
+        .iter()
+        .enumerate()
+        .find_map(|(line_index, start)| {
+            let end = line_end(root_text, &line_starts, line_index);
+            (toml_table_header(&root_text[*start..end]) == Some(table_header)).then_some(line_index)
+        });
+
+    let Some(start_line) = table_start else {
+        let mut patched = root_text.to_string();
+        if !patched.ends_with('\n') {
+            patched.push('\n');
+        }
+        patched.push_str(rendered_table);
+        return patched;
+    };
+
+    let mut end_line = line_starts.len();
+    for line_index in (start_line + 1)..line_starts.len() {
+        let start = line_starts[line_index];
+        let end = line_end(root_text, &line_starts, line_index);
+        if toml_table_header(&root_text[start..end]).is_some() {
+            end_line = line_index;
+            break;
+        }
+    }
+    let start_byte = line_starts[start_line];
+    let end_byte = if end_line < line_starts.len() {
+        line_starts[end_line]
+    } else {
+        root_text.len()
+    };
+    let mut patched = String::with_capacity(root_text.len() + rendered_table.len());
+    patched.push_str(&root_text[..start_byte]);
+    patched.push_str(rendered_table);
+    patched.push_str(&root_text[end_byte..]);
+    patched
+}
+
+fn line_end(root_text: &str, line_starts: &[usize], line_index: usize) -> usize {
+    line_starts
+        .get(line_index + 1)
+        .copied()
+        .unwrap_or(root_text.len())
+}
+
+fn toml_table_header(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let before_comment = trimmed
+        .split_once('#')
+        .map(|(value, _)| value.trim())
+        .unwrap_or(trimmed);
+    (before_comment.starts_with('[') && before_comment.ends_with(']')).then_some(before_comment)
+}
+
+fn render_live_canary_operator_evidence_toml(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    let body = toml::to_string(evidence)
+        .map_err(|source| BoltV3OperatorArtifactError::OperatorEvidenceTomlSerialize { source })?;
+    Ok(format!("[live_canary.operator_evidence]\n{body}"))
 }
 
 fn resolve_loaded_config_path(loaded: &LoadedBoltV3Config, configured_path: &str) -> PathBuf {

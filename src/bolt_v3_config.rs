@@ -17,7 +17,7 @@ use nautilus_model::{
     enums::OmsType,
     identifiers::{ClientId, InstrumentId, TraderId, Venue},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
@@ -193,7 +193,7 @@ pub struct LiveCanaryBlock {
     pub operator_evidence: Option<LiveCanaryOperatorEvidenceBlock>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LiveCanaryOperatorEvidenceBlock {
     pub head_sha: String,

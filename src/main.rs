@@ -8,8 +8,9 @@ use bolt_v2::{
     bolt_v3_operator_artifacts::{
         FinalOperatorPacketVerificationScope, PreRunStateSourceCollectorInputs,
         WrittenOperatorArtifact, assemble_operator_packet_from_static_manifest,
-        compute_operator_approval_envelope_sha256, verify_final_operator_packet_with_scope,
-        write_abort_plan_artifact_from_source_bundle_file,
+        compute_operator_approval_envelope_sha256,
+        update_live_canary_operator_evidence_toml_from_json_file,
+        verify_final_operator_packet_with_scope, write_abort_plan_artifact_from_source_bundle_file,
         write_abort_plan_artifact_from_source_collectors,
         write_entry_decision_evidence_from_source_file,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
@@ -95,6 +96,14 @@ enum OperatorArtifactsCommand {
     ComputeApprovalEnvelopeSha256 {
         #[arg(short, long)]
         config: PathBuf,
+    },
+    UpdateOperatorEvidenceToml {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        operator_evidence_json: PathBuf,
+        #[arg(long)]
+        max_operator_evidence_json_bytes: u64,
     },
     GeneratePreRunStateFromSourceBundle {
         #[arg(short, long)]
@@ -333,6 +342,24 @@ fn run_operator_artifacts_command(
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({ "sha256": sha256 }))?
+            );
+            Ok(())
+        }
+        OperatorArtifactsCommand::UpdateOperatorEvidenceToml {
+            config,
+            operator_evidence_json,
+            max_operator_evidence_json_bytes,
+        } => {
+            let written = update_live_canary_operator_evidence_toml_from_json_file(
+                &config,
+                &operator_evidence_json,
+                max_operator_evidence_json_bytes,
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({ "root_toml_sha256": written.sha256 })
+                )?
             );
             Ok(())
         }

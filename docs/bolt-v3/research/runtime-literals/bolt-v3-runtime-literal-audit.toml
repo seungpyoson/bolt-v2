@@ -7231,3 +7231,115 @@ literal = '''"submit_policy_allows_scope"'''
 context = '''"submit_policy_allows_scope",'''
 classification = "operator_source_proof_diagnostic_field"
 reason = "This field names the submit-policy allowlist function-scope diagnostic for source proof validation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"ssm_manifest_sha256"'''
+context = '''("ssm_manifest_sha256", evidence.ssm_manifest_sha256.as_str()),'''
+classification = "operator_evidence_schema_field"
+reason = "This names a TOML-owned operator evidence hash field while validating a bounded operator-evidence JSON block before patching root TOML."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"abort_plan_sha256"'''
+context = '''("abort_plan_sha256", evidence.abort_plan_sha256.as_str()),'''
+classification = "operator_evidence_schema_field"
+reason = "This names a TOML-owned operator evidence hash field while validating a bounded operator-evidence JSON block before patching root TOML."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"ssm_manifest_path"'''
+context = '''("ssm_manifest_path", evidence.ssm_manifest_path.as_str()),'''
+classification = "operator_evidence_schema_field"
+reason = "This names a TOML-owned operator evidence path field while validating path shape before patching root TOML."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"pre_run_state_path"'''
+context = '''("pre_run_state_path", evidence.pre_run_state_path.as_str()),'''
+classification = "operator_evidence_schema_field"
+reason = "This names a TOML-owned operator evidence path field while validating path shape before patching root TOML."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"abort_plan_path"'''
+context = '''("abort_plan_path", evidence.abort_plan_path.as_str()),'''
+classification = "operator_evidence_schema_field"
+reason = "This names a TOML-owned operator evidence path field while validating path shape before patching root TOML."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"approval_nonce_path"'''
+context = '''("approval_nonce_path", evidence.approval_nonce_path.as_str()),'''
+classification = "operator_evidence_schema_field"
+reason = "This names a TOML-owned operator evidence path field while validating path shape before patching root TOML."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_cancel_path"'''
+context = '''validate_operator_evidence_toml_path("strategy_cancel_path", strategy_cancel_path)?;'''
+classification = "operator_evidence_schema_field"
+reason = "This names the optional TOML-owned strategy-cancel path while validating path shape before patching root TOML."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"[live_canary]"'''
+context = '''.any(|line| toml_table_header(line) == Some("[live_canary]"))'''
+classification = "operator_evidence_toml_table_header"
+reason = "This is the root TOML table header required before patching the operator-evidence child table; runtime values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"[live_canary.operator_evidence]"'''
+context = '''"[live_canary.operator_evidence]",'''
+classification = "operator_evidence_toml_table_header"
+reason = "This is the root TOML child table header for the operator-evidence block; it is schema syntax, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "0usize"
+context = '''let mut line_starts = vec![0usize];'''
+classification = "operator_evidence_toml_patch_offset"
+reason = "This is the first byte offset used while replacing a TOML table in memory; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "1"
+context = '''line_starts.push(index + 1);'''
+classification = "operator_evidence_toml_patch_offset"
+reason = "This advances from a newline byte to the next line start while replacing a TOML table in memory; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "1"
+context = '''for line_index in (start_line + 1)..line_starts.len() {'''
+classification = "operator_evidence_toml_patch_offset"
+reason = "This starts scanning after the current TOML table header while replacing the operator-evidence block; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "1"
+context = '''.get(line_index + 1)'''
+classification = "operator_evidence_toml_patch_offset"
+reason = "This reads the next stored line offset while replacing a TOML table in memory; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"root_toml_sha256"'''
+context = '''&serde_json::json!({ "root_toml_sha256": written.sha256 })'''
+classification = "operator_evidence_toml_patch_output_schema"
+reason = "This is the redacted CLI output field name for the patched root TOML hash; the hash value is computed from the written TOML."

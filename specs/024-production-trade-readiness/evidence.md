@@ -363,3 +363,22 @@ The final-packet verifier now parses and validates the financial envelope, pre-r
 `operator-artifacts verify-final` now has an explicit `--verification-stage pre-run|post-run` stage. The default remains post-run and still requires the final live/no-submit evidence files. The pre-run stage verifies the operator packet, static manifest, approval envelope, source-owned static readiness artifacts, and strategy-input replay binding before T043/T044 produce result evidence. This is non-live verification only; no AWS, SSM, no-submit, venue connection, order submit/cancel, or `config/live.local.toml` mutation was run.
 
 T036 remains open. The final packet is not assembled until real source inputs exist, the configured market-selection/strategy-input/pre-run/abort/approval artifacts are written together, `config/live.local.toml` is updated in T037, and `operator-artifacts verify-final` passes in T038.
+
+## T035D T037 Operator-Evidence TOML Patch Command
+
+- RED: `cargo test --test bolt_v3_operator_artifacts operator_evidence_toml_patcher_updates_only_operator_evidence_block_from_json -- --nocapture` failed with `E0425` because `update_live_canary_operator_evidence_toml_from_json_file` did not exist.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts operator_evidence_toml_patcher_updates_only_operator_evidence_block_from_json -- --nocapture` passed: 1 passed, 0 failed.
+- RED: `cargo test --test bolt_v3_cli bolt_v3_cli_updates_operator_evidence_toml_without_printing_evidence_values -- --nocapture` failed because `update-operator-evidence-toml` was not a recognized subcommand.
+- GREEN: `cargo test --test bolt_v3_cli bolt_v3_cli_updates_operator_evidence_toml_without_printing_evidence_values -- --nocapture` passed: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_cli operator_artifacts -- --nocapture`: 2 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts final_packet -- --nocapture`: 32 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+- `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `just clippy`: passed.
+- `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+`operator-artifacts update-operator-evidence-toml --config <root.toml> --operator-evidence-json <json> --max-operator-evidence-json-bytes <bytes>` now reads a bounded JSON `LiveCanaryOperatorEvidenceBlock`, validates the current build head, validates configured hashes and path shape, patches only `[live_canary.operator_evidence]`, re-parses the full root TOML, writes the root TOML, and prints only `{ "root_toml_sha256": "..." }`. It does not read AWS/SSM, run no-submit, connect to a venue, submit/cancel orders, mutate live systems, or print approval IDs, artifact paths, nonce material, or secrets.
+
+T037 remains open. This command enables the approved root TOML patch after T036 produces the real final artifact paths/hashes; it did not patch `config/live.local.toml` in this slice.

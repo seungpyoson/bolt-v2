@@ -2,7 +2,8 @@ use sha2::{Digest, Sha256};
 
 use bolt_v2::{
     bolt_v3_config::{
-        LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, load_bolt_v3_config,
+        BoltV3RootConfig, LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config,
+        load_bolt_v3_config,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3OrderIntentEvidence,
@@ -3802,6 +3803,56 @@ fn final_packet_pre_run_verifier_accepts_packet_before_live_result_evidence_exis
 
     assert_eq!(outcome.operator_packet.path, fixture.operator_packet_path);
     assert_eq!(outcome.static_manifest.path, fixture.static_manifest_path);
+}
+
+#[test]
+fn operator_evidence_toml_patcher_updates_only_operator_evidence_block_from_json() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let config_path = temp.path().join("root.toml");
+    let root_without_operator_evidence = format!(
+        "{}\n# readiness sentinel: keep local-only root TOML context\n{}",
+        include_str!("fixtures/bolt_v3/root.toml"),
+        minimal_live_canary_toml()
+    );
+    std::fs::write(&config_path, root_without_operator_evidence)
+        .expect("root TOML fixture should write");
+
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
+        .expect("build head should be available")
+        .to_string();
+    write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    operator_evidence.approval_envelope_sha256 = sha256_text("approval-envelope");
+    operator_evidence.strategy_cancel_path = None;
+    let operator_evidence_json_path = temp.path().join("operator-evidence.json");
+    std::fs::write(
+        &operator_evidence_json_path,
+        serde_json::to_vec_pretty(&operator_evidence)
+            .expect("operator evidence JSON should serialize"),
+    )
+    .expect("operator evidence JSON should write");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::update_live_canary_operator_evidence_toml_from_json_file(
+        &config_path,
+        &operator_evidence_json_path,
+        100_000,
+    )
+    .expect("operator evidence TOML patch should succeed");
+
+    let patched = std::fs::read_to_string(&config_path).expect("patched TOML should read");
+    assert!(patched.contains("# readiness sentinel: keep local-only root TOML context"));
+    assert!(patched.contains("[live_canary.operator_evidence]"));
+    assert!(!patched.contains("strategy_cancel_path"));
+    assert_eq!(written.path, config_path);
+    assert_eq!(written.sha256, sha256_file(&written.path));
+
+    let parsed: BoltV3RootConfig = toml::from_str(&patched).expect("patched TOML should parse");
+    let patched_operator_evidence = parsed
+        .live_canary
+        .expect("live canary should remain configured")
+        .operator_evidence
+        .expect("operator evidence should be patched");
+    assert_eq!(patched_operator_evidence, operator_evidence);
 }
 
 #[test]
@@ -8401,6 +8452,23 @@ fn test_operator_evidence_packet_bindings(
             .to_string_lossy()
             .to_string(),
     }
+}
+
+fn minimal_live_canary_toml() -> &'static str {
+    r#"
+[live_canary]
+approval_id = "operator-approved-canary-001"
+no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+max_no_submit_readiness_report_bytes = 1000000
+readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 30
+reference_quote_wait_timeout_seconds = 5
+reference_quote_probe_actor_id = "test-reference-probe"
+reference_quote_probe_log_events = false
+reference_quote_probe_log_commands = false
+max_live_order_count = 1
+max_notional_per_order = "10.00"
+"#
 }
 
 fn write_required_static_artifacts_for_test(

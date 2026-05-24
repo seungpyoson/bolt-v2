@@ -71,6 +71,9 @@ const PRE_RUN_HOST_CLOCK_SOURCE_PROOF_RECORD_KIND: &str = "bolt_v3.pre_run_host_
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_market_window_source_proof.v1";
+const PRE_RUN_SINGLE_RUNNER_LOCK_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+#[rustfmt::skip]
+const PRE_RUN_SINGLE_RUNNER_LOCK_SOURCE_PROOF_RECORD_KIND: &str = "bolt_v3.pre_run_single_runner_lock_source_proof.v1";
 const BUILD_CARGO_TOML: &str = include_str!("../Cargo.toml");
 const NAUTILUS_TRADER_GIT_URL: &str = "https://github.com/nautechsystems/nautilus_trader.git";
 const NAUTILUS_TRADER_CARGO_LOCK_SOURCE_PREFIX: &str =
@@ -253,6 +256,12 @@ pub struct Phase8PreRunMarketWindowSourceProof {
     pub market_state_evidence_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8PreRunSingleRunnerLockSourceProof {
+    pub single_runner_lock_acquired: bool,
+    pub single_runner_lock_evidence_hash: String,
+}
+
 impl fmt::Debug for WrittenOperatorArtifact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WrittenOperatorArtifact")
@@ -321,6 +330,9 @@ pub enum BoltV3OperatorArtifactError {
         source: std::io::Error,
     },
     PreRunMarketWindowSourceInvalid {
+        field: &'static str,
+    },
+    PreRunSingleRunnerLockSourceInvalid {
         field: &'static str,
     },
     PreRunStateSourceBundleRead {
@@ -543,6 +555,10 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::PreRunMarketWindowSourceInvalid { field } => write!(
                 f,
                 "market/window source field `{field}` is invalid or unproven"
+            ),
+            Self::PreRunSingleRunnerLockSourceInvalid { field } => write!(
+                f,
+                "single-runner lock source field `{field}` is invalid or unproven"
             ),
             Self::PreRunStateSourceBundleRead { source, .. } => {
                 write!(f, "failed to read pre-run state source bundle: {source}")
@@ -1776,6 +1792,58 @@ pub fn collect_pre_run_market_window_source_proof(
         market_window_approved: true,
         market_state_evidence_hash,
     })
+}
+
+pub fn collect_pre_run_single_runner_lock_source_proof(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    lock_path: &Path,
+    max_lock_file_bytes: u64,
+) -> Result<Phase8PreRunSingleRunnerLockSourceProof, BoltV3OperatorArtifactError> {
+    let _ =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    validate_output_path_components("single_runner_lock_path", lock_path)?;
+    let resolved_lock_path = resolve_loaded_config_path_from_path(loaded, lock_path);
+    if resolved_lock_path.exists() {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunSingleRunnerLockSourceInvalid {
+                field: "single_runner_lock_acquired",
+            },
+        );
+    }
+
+    let artifact = Phase8PreRunSingleRunnerLockEvidenceFile {
+        schema_version: PRE_RUN_SINGLE_RUNNER_LOCK_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: PRE_RUN_SINGLE_RUNNER_LOCK_SOURCE_PROOF_RECORD_KIND,
+        config_bundle_checksum: loaded.config_bundle_checksum.as_str(),
+        strategy_instance_id,
+        lock_path_sha256: sha256_text(&resolved_lock_path.to_string_lossy()),
+    };
+    let bytes =
+        serde_json::to_vec_pretty(&artifact).map_err(BoltV3OperatorArtifactError::Serialize)?;
+    if bytes.len() as u64 > max_lock_file_bytes {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunSingleRunnerLockSourceInvalid {
+                field: "single_runner_lock_evidence_size",
+            },
+        );
+    }
+
+    let written = write_json_artifact_create_new(&resolved_lock_path, &artifact)?;
+    Ok(Phase8PreRunSingleRunnerLockSourceProof {
+        single_runner_lock_acquired: true,
+        single_runner_lock_evidence_hash: written.sha256,
+    })
+}
+
+#[derive(Serialize)]
+struct Phase8PreRunSingleRunnerLockEvidenceFile<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    config_bundle_checksum: &'a str,
+    strategy_instance_id: &'a str,
+    lock_path_sha256: String,
 }
 
 fn read_strategy_input_market_selection_source_bytes(

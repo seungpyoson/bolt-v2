@@ -464,15 +464,6 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
     if static.cargo_subcommand_with_index(["cargo", *cargo_args], start=1) != (3, "test"):
         raise AssertionError("static cargo_subcommand_with_index start-offset behavior changed")
 
-    if runtime.cargo_target_routing_override(["test", "--target-dir", "/tmp/raw"]) != "--target-dir":
-        raise AssertionError("runtime target-routing override detection changed")
-    if static.tokens_have_target_routing_override(["cargo", "test", "--target-dir", "/tmp/raw"]) is not True:
-        raise AssertionError("static target-routing override detection changed")
-    if runtime.cargo_target_routing_override(["test", "--", "--target-dir", "/tmp/raw"]) is not None:
-        raise AssertionError("runtime post-separator target-routing handling changed")
-    if static.tokens_have_target_routing_override(["cargo", "test", "--", "--target-dir", "/tmp/raw"]) is not False:
-        raise AssertionError("static post-separator target-routing handling changed")
-
 
 def assert_command_tokenization_and_line_boundaries_are_characterized() -> None:
     runtime = load_module(RUNTIME_VERIFIER, "rust_verification_tokenization_under_test")
@@ -635,6 +626,98 @@ def assert_wrapper_handling_is_characterized() -> None:
             raise AssertionError(f"static wrapper_inner_tokens({tokens!r}) changed: {static_inner!r}")
 
 
+def assert_target_routing_policy_is_characterized() -> None:
+    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_target_routing_under_test")
+    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_target_routing_under_test")
+
+    runtime_cases = [
+        (["test", "--target-dir", "/tmp/raw"], "--target-dir"),
+        (["test", "--target-dir=/tmp/raw"], "--target-dir"),
+        (["test", "--", "--target-dir", "/tmp/raw"], None),
+        (["bench", "--", "--artifact-dir", "/tmp/raw"], None),
+        (["run", "--", "--out-dir", "/tmp/raw"], None),
+        (["build", "--", "--target-dir", "/tmp/raw"], "--target-dir"),
+        (["test", "--config", "build.target-dir=/tmp/raw"], "--config build.target-dir"),
+        (
+            ["test", "--config=build.rustflags=[\"--out-dir\",\"/tmp/raw\"]"],
+            "--config=build.rustflags",
+        ),
+        (["test", "--config", "/tmp/config.toml"], "--config config-file"),
+    ]
+    for cargo_args, expected in runtime_cases:
+        actual = runtime.cargo_target_routing_override(cargo_args)
+        if actual != expected:
+            raise AssertionError(
+                f"runtime cargo_target_routing_override({cargo_args!r}) "
+                f"changed: {actual!r}"
+            )
+
+    static_cases = [
+        (["cargo", "test", "--target-dir", "/tmp/raw"], True, ["test", "--target-dir", "/tmp/raw"]),
+        (["cargo", "test", "--target-dir=/tmp/raw"], True, ["test", "--target-dir=/tmp/raw"]),
+        (
+            ["cargo", "test", "--", "--target-dir", "/tmp/raw"],
+            False,
+            ["test", "--", "--target-dir", "/tmp/raw"],
+        ),
+        (
+            ["cargo", "build", "--", "--target-dir", "/tmp/raw"],
+            True,
+            ["build", "--", "--target-dir", "/tmp/raw"],
+        ),
+        (["CARGO_TARGET_DIR=/tmp/raw", "cargo", "test"], True, None),
+        (["RUSTFLAGS=--out-dir /tmp/raw", "cargo", "check"], True, None),
+        (
+            ["cargo", "test", "--config", "build.target-dir=/tmp/raw"],
+            True,
+            ["test", "--config", "build.target-dir=/tmp/raw"],
+        ),
+        (
+            ["cargo", "test", "--config=build.rustflags=[\"--out-dir\",\"/tmp/raw\"]"],
+            True,
+            ["test", "--config=build.rustflags=[\"--out-dir\",\"/tmp/raw\"]"],
+        ),
+        (
+            ["cargo", "test", "--config", "/tmp/config.toml"],
+            True,
+            ["test", "--config", "/tmp/config.toml"],
+        ),
+        (
+            [
+                "python3",
+                "scripts/rust_verification.py",
+                "cargo",
+                "--repo",
+                ".",
+                "--",
+                "test",
+                "--target-dir",
+                "/tmp/raw",
+            ],
+            True,
+            ["test", "--target-dir", "/tmp/raw"],
+        ),
+        (
+            ["python3", "scripts/rust_verification.py", "test-binary", "--", "--target-dir", "/tmp/raw"],
+            False,
+            None,
+        ),
+    ]
+    for tokens, expected_override, expected_args in static_cases:
+        actual_override = static.tokens_have_target_routing_override(tokens)
+        actual_args = static.target_routing_cargo_args(tokens)
+        if actual_override is not expected_override:
+            raise AssertionError(
+                f"static tokens_have_target_routing_override({tokens!r}) "
+                f"changed: {actual_override!r}"
+            )
+        if actual_args != expected_args:
+            raise AssertionError(
+                f"static target_routing_cargo_args({tokens!r}) "
+                f"changed: {actual_args!r}"
+            )
+
+
 def assert_shell_command_substitution_parsing_is_characterized() -> None:
     runtime = load_module(RUNTIME_VERIFIER, "rust_verification_shell_substitution_under_test")
     static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_shell_substitution_under_test")
@@ -701,6 +784,7 @@ def main() -> int:
     assert_shell_command_substitution_parsing_is_characterized()
     assert_renamed_cargo_and_rustc_detection_is_characterized()
     assert_wrapper_handling_is_characterized()
+    assert_target_routing_policy_is_characterized()
     assert_non_exported_candidate_helpers_are_characterized()
     print("OK: command understanding self-tests passed.")
     return 0

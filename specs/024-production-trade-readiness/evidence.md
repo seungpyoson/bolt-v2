@@ -4,10 +4,10 @@ Date: 2026-05-25
 Worktree: `/Users/spson/Projects/Claude/bolt-v2/.worktrees/024-production-trade-readiness`
 Branch: `goal/024-production-trade-readiness`
 
-This file is a source-inspection baseline, not a self-validating exact-head proof. A commit that refreshes this file necessarily changes `HEAD`, so external-review audit manifests and `gh pr view` output are authoritative for the current review head. The source-inspection baseline below was refreshed against PR #480 before this evidence update at:
+This file is a source-inspection baseline, not a self-validating exact-head proof. A commit that refreshes this file necessarily changes `HEAD`, so external-review audit manifests and `gh pr view 480` output are authoritative for the current review head. Do not treat any historical commit hash in this file as proof that the current head is approved.
 
 - PR base: `main` at `3a444a57cfdcdc31d58cbfe8d22857eb86f8bad9`
-- PR head before evidence-refresh commit: `e8db9598883efb14932fdd179627acb6c9ac6fcd`
+- PR head: read from `gh pr view 480 --json headRefOid` or the external-review audit manifest for the exact review run.
 - Active branch: `goal/024-production-trade-readiness`
 
 ## Git And PR State
@@ -22,7 +22,7 @@ This file is a source-inspection baseline, not a self-validating exact-head proo
 - `gh pr view 480 --json number,title,state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid,url` showed:
   - #480 `Production trade-readiness consolidation`, draft, active readiness PR.
   - base `main` at `3a444a57cfdcdc31d58cbfe8d22857eb86f8bad9`.
-  - head `goal/024-production-trade-readiness` at `e8db9598883efb14932fdd179627acb6c9ac6fcd` before this evidence-refresh commit.
+  - head `goal/024-production-trade-readiness`; exact head is intentionally read from `gh pr view 480 --json headRefOid` at review time.
 - `gh pr list --state open` showed exactly two open PRs:
   - #480 `Production trade-readiness consolidation`, draft, active readiness PR, base `main`.
   - #478 is historical/closed after the branch rename.

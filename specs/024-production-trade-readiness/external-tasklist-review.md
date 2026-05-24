@@ -2,7 +2,7 @@
 
 Scope: task-list packet only; no production code was approved by this review round.
 
-Reviewed files:
+Reviewed task-packet files:
 
 - `.specify/feature.json`
 - `AGENTS.md`
@@ -10,8 +10,9 @@ Reviewed files:
 - `specs/024-production-trade-readiness/plan.md`
 - `specs/024-production-trade-readiness/tasks.md`
 - `specs/024-production-trade-readiness/evidence.md`
-- `specs/024-production-trade-readiness/external-tasklist-review.md`
 - `specs/024-production-trade-readiness/scope-resolution.md`
+
+This file is the review audit log and is not part of the task packet being approved. Including it in its own approval scope creates a self-referential moving-head loop because every verdict update changes the reviewed commit.
 
 ## Round 1
 
@@ -32,7 +33,7 @@ Reviewed files:
 
 ## Current Gate
 
-Unanimous task-list approval is not yet achieved. Round 3 must include the corrected packet and produce six valid approvals, unless the operator explicitly waives a reviewer with exact failure evidence.
+Unanimous task-list approval is not yet achieved. Round 4 must include the corrected task packet and produce six valid approvals, unless the operator explicitly waives a reviewer with exact failure evidence.
 
 ## Round 2
 
@@ -54,3 +55,23 @@ Reviewed packet head: `e8db9598883efb14932fdd179627acb6c9ac6fcd`.
 - #409 criteria, T038 audit method, and parallel config-write coordination remain nonblocking execution-hygiene items because they are tracked by T007, T006, and T023/T033/T037 respectively.
 
 Round 2 does not unblock implementation because Grok requested changes, Claude failed before source transmission, and Kimi produced no verdict. Round 3 is required.
+
+## Round 3
+
+Reviewed packet head: `23b5117273e082c01d91f4d90c478b668b9043b1`.
+
+- Claude doctor: FAILED before review with `oauth_inference_rejected` / HTTP 401; no source was sent and no valid verdict was produced.
+- Gemini job `beac3cda-b7f4-465b-aabc-b201da78b46f`: APPROVE.
+- Grok job `job_657ac5e6-ac73-4e05-9fdf-cabe2573eb51`: REQUEST_CHANGES. Blocking finding: including this audit log in the reviewed packet kept the exact-head evidence self-referential; every verdict update changed the head that the packet was trying to prove.
+- DeepSeek job `job_c0bb462c-48b7-412f-9b09-52e1a01ba6f6`: APPROVE. Nonblocking findings: waiver recording should be explicit, evidence traceability can improve after the review round, and parallel write risk remains execution hygiene.
+- GLM job `job_eca7cdf8-f5b7-4dfa-a159-09f5e465ac8f`: APPROVE. Nonblocking findings: Kimi reliability risk, evidence disclaimer readability, parallel merge risk, T006 audit specificity, and T007 #409 acceptance criteria.
+- Kimi job `2f8dce25-07f1-4ac9-839c-b8c06a958b7f`: CANCELLED after Grok invalidated the packet; source was sent but no valid verdict was produced.
+
+## Round 3 Disposition
+
+- Self-referential review packet: fixed by removing `external-tasklist-review.md` from the reviewed task-packet scope in T004. This file remains the audit log where verdicts are recorded.
+- Exact-head wording: fixed by removing stale PR-head hashes from `evidence.md` and making `gh pr view 480 --json headRefOid` or the external-review audit manifest the explicit authoritative source for exact review head.
+- Claude remains unavailable due OAuth 401 and still requires a valid verdict or explicit operator waiver before T004/T005 can be completed.
+- Kimi remains without a valid verdict and still requires a valid verdict or explicit operator waiver before T004/T005 can be completed.
+
+Round 3 does not unblock implementation because Grok requested changes, Claude failed before source transmission, and Kimi produced no verdict. Round 4 is required.

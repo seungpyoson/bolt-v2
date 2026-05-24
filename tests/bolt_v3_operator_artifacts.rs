@@ -1059,6 +1059,12 @@ fn pre_run_single_runner_lock_source_proof_rejects_existing_lock_without_artifac
         )
         .expect_err("existing single-runner lock must fail closed");
 
+    assert!(matches!(
+        error,
+        bolt_v2::bolt_v3_operator_artifacts::BoltV3OperatorArtifactError::PreRunSingleRunnerLockSourceInvalid {
+            field: "single_runner_lock_acquired"
+        }
+    ));
     assert!(
         error.to_string().contains("single_runner_lock"),
         "single-runner lock failure should identify the source proof field: {error}"
@@ -1130,9 +1136,15 @@ fn pre_run_single_runner_lock_source_proof_rejects_symlink_lock_path_without_tar
         )
         .expect_err("symlinked single-runner lock path must fail closed");
 
+    assert!(matches!(
+        error,
+        bolt_v2::bolt_v3_operator_artifacts::BoltV3OperatorArtifactError::PreRunSingleRunnerLockSourceInvalid {
+            field: "single_runner_lock_acquired"
+        }
+    ));
     assert!(
-        error.to_string().contains("write"),
-        "symlink lock path rejection should surface as write failure: {error}"
+        error.to_string().contains("single_runner_lock"),
+        "symlink lock path rejection should surface as lock acquisition failure: {error}"
     );
     assert!(
         !target.exists(),

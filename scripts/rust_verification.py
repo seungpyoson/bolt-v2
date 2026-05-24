@@ -16,7 +16,7 @@ import stat
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -254,8 +254,17 @@ def target_dir(repo: pathlib.Path, policy: dict[str, Any] | None = None) -> path
 
 
 def validate_managed_target_path(target: pathlib.Path, policy: dict[str, Any]) -> None:
-    if target.is_symlink():
-        raise PolicyError("managed target directory is a symlink")
+    try:
+        target_mode = target.lstat().st_mode
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise PolicyError(f"unable to inspect managed target directory: {exc}") from exc
+    else:
+        if stat.S_ISLNK(target_mode):
+            raise PolicyError("managed target directory is a symlink")
+        if not stat.S_ISDIR(target_mode):
+            raise PolicyError("managed target path exists but is not a directory")
     namespace_root = root_base() / policy["target_namespace"]
     resolved_namespace = namespace_root.resolve(strict=False)
     resolved_target = target.resolve(strict=False)
@@ -2348,10 +2357,68 @@ def cleanup_candidate_refusal_payload(
     policy: dict[str, Any],
 ) -> dict[str, Any] | None:
     path = pathlib.Path(str(entry["path"]))
+    if entry.get("class") == "tmp_bundle":
+        refusal = tmp_bundle_registered_refusal_payload(repo, entry, path)
+        if refusal is not None:
+            return refusal
     extra_scopes: tuple[pathlib.Path, ...] = ()
     if entry.get("class") == "worktree_target":
         extra_scopes = (pathlib.Path(str(entry.get("worktree", path.parent))),)
     return active_process_refusal_payload(repo, path, policy, extra_scopes=extra_scopes)
+
+
+def tmp_bundle_registered_refusal_payload(
+    repo: pathlib.Path,
+    entry: dict[str, Any],
+    path: pathlib.Path,
+) -> dict[str, Any] | None:
+    try:
+        resolved_path = path.resolve(strict=True)
+        registered = registered_worktree_paths(repo)
+    except (OSError, RuntimeError, PolicyError) as exc:
+        return {
+            "candidates": [entry],
+            "dry_run": False,
+            "reclaimable_bytes": int(entry.get("bytes") or 0),
+            "refusal_code": "worktree_inventory_unavailable",
+            "refusal_reason": f"unable to revalidate tmp bundle worktree registration: {exc}",
+            "refused": True,
+            "target_dir": str(path),
+        }
+    if resolved_path not in registered:
+        return None
+    return {
+        "candidates": [entry],
+        "dry_run": False,
+        "reclaimable_bytes": int(entry.get("bytes") or 0),
+        "refusal_code": "registered_worktree",
+        "refusal_reason": "cleanup candidate became a registered worktree before deletion",
+        "refused": True,
+        "target_dir": str(path),
+    }
+
+
+def cleanup_candidate_refusal(
+    repo: pathlib.Path,
+    target: pathlib.Path,
+    policy: dict[str, Any],
+    entry: dict[str, Any],
+) -> dict[str, Any] | None:
+    validate_managed_target_path(target, policy)
+    return cleanup_candidate_refusal_payload(repo, entry, policy)
+
+
+def first_cleanup_candidate_refusal(
+    repo: pathlib.Path,
+    target: pathlib.Path,
+    policy: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    for entry in candidates:
+        refusal = cleanup_candidate_refusal(repo, target, policy, entry)
+        if refusal is not None:
+            return refusal
+    return None
 
 
 def cleanup_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
@@ -2376,14 +2443,11 @@ def cleanup_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
             refusal = incomplete_scan_refusal_payload(candidates, dry_run=dry_run, target=str(target))
             if refusal is not None:
                 return refusal
+            refusal = first_cleanup_candidate_refusal(repo, target, policy, candidates)
+            if refusal is not None:
+                return refusal
             for entry in candidates:
-                validate_managed_target_path(target, policy)
-                refusal = cleanup_candidate_refusal_payload(repo, entry, policy)
-                if refusal is not None:
-                    return refusal
-            for entry in candidates:
-                validate_managed_target_path(target, policy)
-                refusal = cleanup_candidate_refusal_payload(repo, entry, policy)
+                refusal = cleanup_candidate_refusal(repo, target, policy, entry)
                 if refusal is not None:
                     return refusal_with_removed(refusal, removed)
                 remove_cleanup_candidate(entry)
@@ -2821,14 +2885,19 @@ def cmd_cache_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_cache_prune(args: argparse.Namespace) -> int:
+def run_json_payload_command(
+    args: argparse.Namespace,
+    *,
+    command_name: str,
+    payload_fn: Callable[..., dict[str, Any]],
+) -> int:
     if not args.json:
-        print("--json is required for cache-prune", file=sys.stderr)
+        print(f"--json is required for {command_name}", file=sys.stderr)
         return 2
     repo = repo_path(args.repo)
     dry_run = not args.apply
     try:
-        payload = cache_prune_payload(repo, dry_run=dry_run)
+        payload = payload_fn(repo, dry_run=dry_run)
         print(json.dumps(payload, sort_keys=True))
     except FileNotFoundError as exc:
         expected_policy = policy_path(repo)
@@ -2848,64 +2917,18 @@ def cmd_cache_prune(args: argparse.Namespace) -> int:
     if payload.get("refused"):
         return 2
     return 0
+
+
+def cmd_cache_prune(args: argparse.Namespace) -> int:
+    return run_json_payload_command(args, command_name="cache-prune", payload_fn=cache_prune_payload)
 
 
 def cmd_cache_reset(args: argparse.Namespace) -> int:
-    if not args.json:
-        print("--json is required for cache-reset", file=sys.stderr)
-        return 2
-    repo = repo_path(args.repo)
-    dry_run = not args.apply
-    try:
-        payload = cache_reset_payload(repo, dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-    except FileNotFoundError as exc:
-        expected_policy = policy_path(repo)
-        missing = pathlib.Path(getattr(exc, "filename", "") or exc.args[0])
-        code = "missing_policy" if missing == expected_policy else "operation_failed"
-        payload = refusal_payload(code=code, reason=str(exc), dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-        return 2
-    except PolicyError as exc:
-        payload = refusal_payload(code="invalid_policy", reason=str(exc), dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-        return 2
-    except OSError as exc:
-        payload = refusal_payload(code="operation_failed", reason=str(exc), dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-        return 2
-    if payload.get("refused"):
-        return 2
-    return 0
+    return run_json_payload_command(args, command_name="cache-reset", payload_fn=cache_reset_payload)
 
 
 def cmd_cleanup(args: argparse.Namespace) -> int:
-    if not args.json:
-        print("--json is required for cleanup", file=sys.stderr)
-        return 2
-    repo = repo_path(args.repo)
-    dry_run = not args.apply
-    try:
-        payload = cleanup_payload(repo, dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-    except FileNotFoundError as exc:
-        expected_policy = policy_path(repo)
-        missing = pathlib.Path(getattr(exc, "filename", "") or exc.args[0])
-        code = "missing_policy" if missing == expected_policy else "operation_failed"
-        payload = refusal_payload(code=code, reason=str(exc), dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-        return 2
-    except PolicyError as exc:
-        payload = refusal_payload(code="invalid_policy", reason=str(exc), dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-        return 2
-    except OSError as exc:
-        payload = refusal_payload(code="operation_failed", reason=str(exc), dry_run=dry_run)
-        print(json.dumps(payload, sort_keys=True))
-        return 2
-    if payload.get("refused"):
-        return 2
-    return 0
+    return run_json_payload_command(args, command_name="cleanup", payload_fn=cleanup_payload)
 
 
 def build_parser() -> argparse.ArgumentParser:

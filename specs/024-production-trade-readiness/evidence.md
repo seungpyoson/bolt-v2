@@ -1,18 +1,28 @@
 # Production Trade Readiness Evidence Baseline
 
 Date: 2026-05-25
-Worktree: `/Users/spson/Projects/Claude/bolt-v2/.worktrees/466-command-tokenization-characterization`
+Worktree: `/Users/spson/Projects/Claude/bolt-v2/.worktrees/024-production-trade-readiness`
 Branch: `goal/024-production-trade-readiness`
-Head: `aee45c97108219e82034bb2730aa4f1ddf7da5e8`
+
+This file is a source-inspection baseline, not a self-validating exact-head proof. A commit that refreshes this file necessarily changes `HEAD`, so external-review audit manifests and `gh pr view` output are authoritative for the current review head. The source-inspection baseline below was refreshed against PR #480 before this evidence update at:
+
+- PR base: `main` at `3a444a57cfdcdc31d58cbfe8d22857eb86f8bad9`
+- PR head before evidence-refresh commit: `e8db9598883efb14932fdd179627acb6c9ac6fcd`
+- Active branch: `goal/024-production-trade-readiness`
 
 ## Git And PR State
 
 - `git status --short --branch` in main: `## main...origin/main`.
-- `git status --short --branch` in #478 worktree before branch rename: `## goal/466-command-tokenization-characterization...origin/goal/466-command-tokenization-characterization`.
+- `git status --short --branch` in active readiness worktree after rename: `## goal/024-production-trade-readiness...origin/goal/024-production-trade-readiness`.
+- Historical note: the previous local worktree directory and branch name contained `466-command-tokenization-characterization`; both are no longer active readiness identifiers.
 - The old PR #478 branch was renamed in GitHub and locally to `goal/024-production-trade-readiness`.
 - GitHub closed PR #478 after the branch rename and would not reopen it because the old head branch no longer exists.
 - PR #480 was opened from `goal/024-production-trade-readiness` as the active single production-readiness PR.
 - PR #480 title/body identify `specs/024-production-trade-readiness/` as the active task packet, exclude order-intent and #466 work, and record the six-reviewer task-list gate.
+- `gh pr view 480 --json number,title,state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid,url` showed:
+  - #480 `Production trade-readiness consolidation`, draft, active readiness PR.
+  - base `main` at `3a444a57cfdcdc31d58cbfe8d22857eb86f8bad9`.
+  - head `goal/024-production-trade-readiness` at `e8db9598883efb14932fdd179627acb6c9ac6fcd` before this evidence-refresh commit.
 - `gh pr list --state open` showed exactly two open PRs:
   - #480 `Production trade-readiness consolidation`, draft, active readiness PR, base `main`.
   - #478 is historical/closed after the branch rename.

@@ -124,6 +124,32 @@ const ABORT_PLAN_CANCEL_IF_OPEN_CONTEXT_MARKER: &str =
     "forced-flat exit could not cancel pending entry client_order_id={}";
 const ABORT_PLAN_CANCEL_IF_OPEN_EXIT_PENDING_MARKER: &str =
     "self.exposure = ExposureState::ExitPending";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.abort_plan_nt_accepted_venue_pending_source_proof.v1";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_EXIT_PENDING_MARKER: &str =
+    "self.exposure = ExposureState::ExitPending(ExitPendingState {";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_PENDING_EXIT_MARKER: &str =
+    "pending_exit: PendingExitState {";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_FILL_FALSE_MARKER: &str = "fill_received: false";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_CLOSE_FALSE_MARKER: &str = "close_received: false";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_FALSE_MARKER: &str = "terminal_received: false";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_SUBMIT_MARKER: &str =
+    "self.submit_order_with_decision_evidence(";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_RESTORE_MANAGED_MARKER: &str =
+    "self.exposure = ExposureState::Managed(managed_position);";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_RETURN_ERROR_MARKER: &str = "return Err(error);";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_OK_MARKER: &str = "Ok(Some(client_order_id))";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_FUNCTION_MARKER: &str =
+    "fn mark_exit_order_terminal(&mut self, client_order_id: ClientOrderId)";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_CLIENT_MATCH_MARKER: &str =
+    "exit_pending.pending_exit.client_order_id != client_order_id";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_RECEIVED_MARKER: &str =
+    "exit_pending.pending_exit.terminal_received = true";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_STATE_UPDATE_MARKER: &str =
+    "self.exposure = exit_pending.into_state_after_exit_update();";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_HANDLER_MARKER: &str =
+    "self.mark_exit_order_terminal(event.client_order_id);";
 const ABORT_PLAN_CANCEL_IF_OPEN_FUNCTION_KEYWORD_WIDTH: usize = [b'f', b'n', b' '].len();
 const ABORT_PLAN_CANCEL_IF_OPEN_ATTRIBUTE_MARKER_WIDTH: usize = [b'#', b'['].len();
 const ABORT_PLAN_CANCEL_IF_OPEN_COMMENT_MARKER_WIDTH: usize = [b'/', b'/'].len();
@@ -366,6 +392,11 @@ pub struct Phase8AbortPlanCancelIfOpenSourceProof {
     pub cancel_if_open_evidence_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8AbortPlanNtAcceptedVenuePendingSourceProof {
+    pub nt_accepted_venue_pending_abort_evidence_hash: String,
+}
+
 impl fmt::Debug for WrittenOperatorArtifact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WrittenOperatorArtifact")
@@ -502,6 +533,13 @@ pub enum BoltV3OperatorArtifactError {
         source: std::io::Error,
     },
     AbortPlanCancelIfOpenSourceInvalid {
+        field: &'static str,
+    },
+    AbortPlanNtAcceptedVenuePendingSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    AbortPlanNtAcceptedVenuePendingSourceInvalid {
         field: &'static str,
     },
     AbortPlanSourceBundleRead {
@@ -787,6 +825,14 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "abort plan cancel-if-open source field `{field}` is invalid or unproven"
             ),
+            Self::AbortPlanNtAcceptedVenuePendingSourceRead { source, .. } => write!(
+                f,
+                "failed to read abort plan NT-accepted venue-pending source: {source}"
+            ),
+            Self::AbortPlanNtAcceptedVenuePendingSourceInvalid { field } => write!(
+                f,
+                "abort plan NT-accepted venue-pending source field `{field}` is invalid or unproven"
+            ),
             Self::AbortPlanSourceBundleRead { source, .. } => {
                 write!(f, "failed to read abort plan source bundle: {source}")
             }
@@ -986,6 +1032,7 @@ impl Error for BoltV3OperatorArtifactError {
             Self::PreRunStateSourceBundleRead { source, .. } => Some(source),
             Self::PreRunStateSourceBundleParse { source, .. } => Some(source),
             Self::AbortPlanCancelIfOpenSourceRead { source, .. } => Some(source),
+            Self::AbortPlanNtAcceptedVenuePendingSourceRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleParse { source, .. } => Some(source),
             Self::StaticManifestRead { source, .. } => Some(source),
@@ -1470,6 +1517,41 @@ pub fn collect_abort_plan_cancel_if_open_source_proof(
 
     Ok(Phase8AbortPlanCancelIfOpenSourceProof {
         cancel_if_open_evidence_hash,
+    })
+}
+
+pub fn collect_abort_plan_nt_accepted_venue_pending_source_proof(
+    strategy_source_path: &Path,
+    max_strategy_source_bytes: u64,
+) -> Result<Phase8AbortPlanNtAcceptedVenuePendingSourceProof, BoltV3OperatorArtifactError> {
+    let strategy_source_bytes = read_file_bounded(strategy_source_path, max_strategy_source_bytes)
+        .map_err(|source| {
+            BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceRead {
+                path: strategy_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let strategy_source_sha256 = hex::encode(Sha256::digest(&strategy_source_bytes));
+    let strategy_source = std::str::from_utf8(&strategy_source_bytes).map_err(|_| {
+        BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceInvalid {
+            field: "strategy_source_utf8",
+        }
+    })?;
+    let contract = require_abort_plan_nt_accepted_venue_pending_contract(strategy_source)?;
+
+    let proof_input = Phase8AbortPlanNtAcceptedVenuePendingSourceProofHashInput {
+        schema_version: ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_SOURCE_PROOF_RECORD_KIND,
+        strategy_source_sha256: strategy_source_sha256.as_str(),
+        exit_pending_before_submit: contract.exit_pending_before_submit,
+        submit_error_restores_managed_position: contract.submit_error_restores_managed_position,
+        terminal_handlers_mark_exit_order_terminal: contract
+            .terminal_handlers_mark_exit_order_terminal,
+    };
+    let nt_accepted_venue_pending_abort_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8AbortPlanNtAcceptedVenuePendingSourceProof {
+        nt_accepted_venue_pending_abort_evidence_hash,
     })
 }
 
@@ -2859,8 +2941,24 @@ struct Phase8AbortPlanCancelIfOpenSourceProofHashInput<'a> {
     forced_flat_cancel_before_exit_pending: bool,
 }
 
+#[derive(Serialize)]
+struct Phase8AbortPlanNtAcceptedVenuePendingSourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    strategy_source_sha256: &'a str,
+    exit_pending_before_submit: bool,
+    submit_error_restores_managed_position: bool,
+    terminal_handlers_mark_exit_order_terminal: bool,
+}
+
 struct AbortPlanCancelIfOpenContract {
     forced_flat_cancel_before_exit_pending: bool,
+}
+
+struct AbortPlanNtAcceptedVenuePendingContract {
+    exit_pending_before_submit: bool,
+    submit_error_restores_managed_position: bool,
+    terminal_handlers_mark_exit_order_terminal: bool,
 }
 
 fn require_abort_plan_cancel_if_open_contract(
@@ -2935,6 +3033,67 @@ fn require_abort_plan_cancel_if_open_contract(
     }
 }
 
+fn require_abort_plan_nt_accepted_venue_pending_contract(
+    strategy_source: &str,
+) -> Result<AbortPlanNtAcceptedVenuePendingContract, BoltV3OperatorArtifactError> {
+    let comment_masked_source = abort_plan_cancel_if_open_comment_masked_source(strategy_source);
+    let code_masked_source = abort_plan_cancel_if_open_string_masked_source(&comment_masked_source);
+    let mut candidate_indexes = Vec::new();
+    let mut target_function_scope_count = ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_ORIGIN;
+    for function_scope in abort_plan_cancel_if_open_function_scopes(&code_masked_source) {
+        let scoped_code_source = &code_masked_source[function_scope];
+        if !abort_plan_cancel_if_open_scope_matches_target_function(scoped_code_source) {
+            continue;
+        }
+        target_function_scope_count += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+        if let Some(indexes) =
+            abort_plan_nt_accepted_venue_pending_scoped_marker_indexes(scoped_code_source)?
+        {
+            candidate_indexes.push(indexes);
+        }
+    }
+
+    if target_function_scope_count != ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP {
+        return Err(
+            BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceInvalid {
+                field: "exit_submit_function_scope",
+            },
+        );
+    }
+
+    let [indexes] = candidate_indexes.as_slice() else {
+        return Err(
+            BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceInvalid {
+                field: "exit_submit_function_scope",
+            },
+        );
+    };
+
+    if !(indexes.exit_pending < indexes.pending_exit
+        && indexes.pending_exit < indexes.fill_received_false
+        && indexes.fill_received_false < indexes.close_received_false
+        && indexes.close_received_false < indexes.terminal_received_false
+        && indexes.terminal_received_false < indexes.submit
+        && indexes.submit < indexes.restore_managed
+        && indexes.restore_managed < indexes.return_error
+        && indexes.return_error < indexes.ok_some)
+    {
+        return Err(
+            BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceInvalid {
+                field: "exit_pending_before_submit",
+            },
+        );
+    }
+
+    require_abort_plan_nt_accepted_venue_pending_terminal_contract(&code_masked_source)?;
+
+    Ok(AbortPlanNtAcceptedVenuePendingContract {
+        exit_pending_before_submit: true,
+        submit_error_restores_managed_position: true,
+        terminal_handlers_mark_exit_order_terminal: true,
+    })
+}
+
 #[derive(Debug)]
 struct AbortPlanCancelIfOpenMarkerIndexes {
     forced_flat: usize,
@@ -2942,6 +3101,19 @@ struct AbortPlanCancelIfOpenMarkerIndexes {
     cancel_order: usize,
     context: usize,
     exit_pending: usize,
+}
+
+#[derive(Debug)]
+struct AbortPlanNtAcceptedVenuePendingMarkerIndexes {
+    exit_pending: usize,
+    pending_exit: usize,
+    fill_received_false: usize,
+    close_received_false: usize,
+    terminal_received_false: usize,
+    submit: usize,
+    restore_managed: usize,
+    return_error: usize,
+    ok_some: usize,
 }
 
 fn abort_plan_cancel_if_open_function_scopes(strategy_source: &str) -> Vec<Range<usize>> {
@@ -3030,6 +3202,154 @@ fn abort_plan_cancel_if_open_scoped_marker_indexes(
     }))
 }
 
+fn abort_plan_nt_accepted_venue_pending_scoped_marker_indexes(
+    code_source: &str,
+) -> Result<Option<AbortPlanNtAcceptedVenuePendingMarkerIndexes>, BoltV3OperatorArtifactError> {
+    let exit_pending = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_EXIT_PENDING_MARKER,
+    );
+    let pending_exit = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_PENDING_EXIT_MARKER,
+    );
+    let fill_received_false = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_FILL_FALSE_MARKER,
+    );
+    let close_received_false = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_CLOSE_FALSE_MARKER,
+    );
+    let terminal_received_false = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_FALSE_MARKER,
+    );
+    let submit = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_SUBMIT_MARKER,
+    );
+    let restore_managed = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_RESTORE_MANAGED_MARKER,
+    );
+    let return_error = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_RETURN_ERROR_MARKER,
+    );
+    let ok_some = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_OK_MARKER,
+    );
+
+    if exit_pending.is_empty()
+        || pending_exit.is_empty()
+        || fill_received_false.is_empty()
+        || close_received_false.is_empty()
+        || terminal_received_false.is_empty()
+        || submit.is_empty()
+        || restore_managed.is_empty()
+        || return_error.is_empty()
+        || ok_some.is_empty()
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(AbortPlanNtAcceptedVenuePendingMarkerIndexes {
+        exit_pending: abort_plan_nt_accepted_venue_pending_single_marker_index(
+            &exit_pending,
+            "exit_pending",
+        )?,
+        pending_exit: abort_plan_nt_accepted_venue_pending_single_marker_index(
+            &pending_exit,
+            "pending_exit",
+        )?,
+        fill_received_false: abort_plan_nt_accepted_venue_pending_single_marker_index(
+            &fill_received_false,
+            "fill_received_false",
+        )?,
+        close_received_false: abort_plan_nt_accepted_venue_pending_single_marker_index(
+            &close_received_false,
+            "close_received_false",
+        )?,
+        terminal_received_false: abort_plan_nt_accepted_venue_pending_single_marker_index(
+            &terminal_received_false,
+            "terminal_received_false",
+        )?,
+        submit: abort_plan_nt_accepted_venue_pending_single_marker_index(&submit, "submit")?,
+        restore_managed: abort_plan_nt_accepted_venue_pending_single_marker_index(
+            &restore_managed,
+            "restore_managed",
+        )?,
+        return_error: abort_plan_nt_accepted_venue_pending_single_marker_index(
+            &return_error,
+            "return_error",
+        )?,
+        ok_some: abort_plan_nt_accepted_venue_pending_single_marker_index(&ok_some, "ok_some")?,
+    }))
+}
+
+fn require_abort_plan_nt_accepted_venue_pending_terminal_contract(
+    code_source: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let terminal_function = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_FUNCTION_MARKER,
+    );
+    let terminal_client_match = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_CLIENT_MATCH_MARKER,
+    );
+    let terminal_received = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_RECEIVED_MARKER,
+    );
+    let terminal_state_update = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_STATE_UPDATE_MARKER,
+    );
+    let terminal_handlers = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_HANDLER_MARKER,
+    );
+
+    let terminal_function = abort_plan_nt_accepted_venue_pending_single_marker_index(
+        &terminal_function,
+        "mark_exit_order_terminal_function",
+    )?;
+    let terminal_client_match = abort_plan_nt_accepted_venue_pending_single_marker_index(
+        &terminal_client_match,
+        "terminal_client_order_match",
+    )?;
+    let terminal_received = abort_plan_nt_accepted_venue_pending_single_marker_index(
+        &terminal_received,
+        "terminal_received",
+    )?;
+    let terminal_state_update = abort_plan_nt_accepted_venue_pending_single_marker_index(
+        &terminal_state_update,
+        "terminal_state_update",
+    )?;
+    if terminal_handlers.len() < 3 {
+        return Err(
+            BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceInvalid {
+                field: "terminal_handlers",
+            },
+        );
+    }
+    if terminal_function < terminal_client_match
+        && terminal_client_match < terminal_received
+        && terminal_received < terminal_state_update
+    {
+        Ok(())
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceInvalid {
+                field: "terminal_state_update",
+            },
+        )
+    }
+}
+
 fn abort_plan_cancel_if_open_scoped_marker_occurrences(
     strategy_source: &str,
     marker: &str,
@@ -3050,6 +3370,18 @@ fn abort_plan_cancel_if_open_single_marker_index(
 ) -> Result<usize, BoltV3OperatorArtifactError> {
     let [index] = indexes else {
         return Err(BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid { field });
+    };
+    Ok(*index)
+}
+
+fn abort_plan_nt_accepted_venue_pending_single_marker_index(
+    indexes: &[usize],
+    field: &'static str,
+) -> Result<usize, BoltV3OperatorArtifactError> {
+    let [index] = indexes else {
+        return Err(
+            BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceInvalid { field },
+        );
     };
     Ok(*index)
 }

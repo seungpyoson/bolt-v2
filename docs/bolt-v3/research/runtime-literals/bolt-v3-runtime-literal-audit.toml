@@ -4650,6 +4650,126 @@ reason = "This is the stable record-kind discriminator for cancel-if-open source
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the NT-accepted venue-pending source-proof artifact schema version emitted by the abort-plan evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.abort_plan_nt_accepted_venue_pending_source_proof.v1"'''
+context = '''"bolt_v3.abort_plan_nt_accepted_venue_pending_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for NT-accepted venue-pending source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.exposure = ExposureState::ExitPending(ExitPendingState {"'''
+context = '''"self.exposure = ExposureState::ExitPending(ExitPendingState {";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the production exit-pending state transition for the NT-accepted venue-pending abort proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"pending_exit: PendingExitState {"'''
+context = '''"pending_exit: PendingExitState {";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies that the production exit-pending state includes the pending-exit lifecycle state; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"fill_received: false"'''
+context = '''const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_FILL_FALSE_MARKER: &str = "fill_received: false";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the initial fill state for the NT-accepted venue-pending abort proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"close_received: false"'''
+context = '''const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_CLOSE_FALSE_MARKER: &str = "close_received: false";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the initial close state for the NT-accepted venue-pending abort proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"terminal_received: false"'''
+context = '''const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_FALSE_MARKER: &str = "terminal_received: false";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the initial terminal state for the NT-accepted venue-pending abort proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.submit_order_with_decision_evidence("'''
+context = '''"self.submit_order_with_decision_evidence(";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the production submit call ordering for the NT-accepted venue-pending abort proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.exposure = ExposureState::Managed(managed_position);"'''
+context = '''"self.exposure = ExposureState::Managed(managed_position);";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the production submit-error restore path for the NT-accepted venue-pending abort proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"Ok(Some(client_order_id))"'''
+context = '''const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_OK_MARKER: &str = "Ok(Some(client_order_id))";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the successful submit return path for the NT-accepted venue-pending abort proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"fn mark_exit_order_terminal(&mut self, client_order_id: ClientOrderId)"'''
+context = '''"fn mark_exit_order_terminal(&mut self, client_order_id: ClientOrderId)";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the production terminal-handler function for the NT-accepted venue-pending abort proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"exit_pending.pending_exit.client_order_id != client_order_id"'''
+context = '''"exit_pending.pending_exit.client_order_id != client_order_id";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies client-order correlation before terminal handling in the abort proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"exit_pending.pending_exit.terminal_received = true"'''
+context = '''"exit_pending.pending_exit.terminal_received = true";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies terminal event capture in the NT-accepted venue-pending abort proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.exposure = exit_pending.into_state_after_exit_update();"'''
+context = '''"self.exposure = exit_pending.into_state_after_exit_update();";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies terminal state reduction in the NT-accepted venue-pending abort proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.mark_exit_order_terminal(event.client_order_id);"'''
+context = '''"self.mark_exit_order_terminal(event.client_order_id);";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies terminal event handlers call the terminal transition helper; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"single_runner_lock_path"'''
 context = '''validate_output_path_components("single_runner_lock_path", lock_path)?;'''
@@ -4735,6 +4855,118 @@ literal = '''"exit_pending"'''
 context = '''exit_pending: abort_plan_cancel_if_open_single_marker_index(&exit_pending, "exit_pending")?,'''
 classification = "operator_source_proof_diagnostic_field"
 reason = "This field names the missing exit-pending source marker in diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"exit_pending"'''
+context = '''"exit_pending",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing exit-pending source marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"pending_exit"'''
+context = '''"pending_exit",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing pending-exit source marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"fill_received_false"'''
+context = '''"fill_received_false",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing initial-fill source marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"close_received_false"'''
+context = '''"close_received_false",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing initial-close source marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"terminal_received_false"'''
+context = '''"terminal_received_false",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing initial-terminal source marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"submit"'''
+context = '''submit: abort_plan_nt_accepted_venue_pending_single_marker_index(&submit, "submit")?,'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing submit source marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"restore_managed"'''
+context = '''"restore_managed",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing managed-state restore source marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"return_error"'''
+context = '''"return_error",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing submit-error return marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"ok_some"'''
+context = '''ok_some: abort_plan_nt_accepted_venue_pending_single_marker_index(&ok_some, "ok_some")?,'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing successful-submit return marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"mark_exit_order_terminal_function"'''
+context = '''"mark_exit_order_terminal_function",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing terminal helper source marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"terminal_client_order_match"'''
+context = '''"terminal_client_order_match",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing terminal client-order correlation marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"terminal_received"'''
+context = '''"terminal_received",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing terminal-received marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"terminal_state_update"'''
+context = '''"terminal_state_update",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing terminal state update marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''3'''
+context = '''if terminal_handlers.len() < 3 {'''
+classification = "operator_source_proof_required_handler_count"
+reason = "This is the required count of cancel/reject/expire terminal-handler source markers for the abort proof, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

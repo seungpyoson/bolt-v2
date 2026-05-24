@@ -157,3 +157,15 @@ The collector is non-live and source-owned: it reads a bounded local JSON source
 - `git diff --check`: passed.
 
 The collectors are non-live and source-owned: they read bounded local JSON source proofs, validate schema/record kinds, validate lowercase source/evidence hashes, bind adapter signing to the caller-provided release-manifest CLOB signing version, require recovered-signer match proof, derive pUSD collateral coverage from balance/allowance/required decimals, require the CLOB V2 fee-behavior policy booleans and valid price/fee-rate bounds, return only booleans plus hashes, and do not write `pre-run-state.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T021/T022.
+
+## T025/T026 NT-Accepted Venue-Pending Abort Collector Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts abort_plan_nt_accepted_venue_pending -- --nocapture` failed with `E0425`/`E0422` because `collect_abort_plan_nt_accepted_venue_pending_source_proof` and `Phase8AbortPlanNtAcceptedVenuePendingSourceProof` did not exist.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts abort_plan_nt_accepted_venue_pending -- --nocapture` passed: 2 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts abort_plan_ -- --nocapture`: 21 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `git diff --check`: passed.
+
+The collector is non-live and source-owned: it reads bounded local Rust source, validates that `try_submit_exit_order` creates `ExitPending`/`PendingExitState` before `submit_order_with_decision_evidence`, validates submit-error restoration to `Managed`, validates cancel/reject/expire terminal handlers call `mark_exit_order_terminal`, returns only a source-proof hash, and does not write `abort-plan.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T025/T026.

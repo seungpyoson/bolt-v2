@@ -58,8 +58,8 @@
 
 **Independent Test**: abort-plan proof generation fails for each missing abort collector and passes only when every required abort proof is present.
 
-- [ ] T025 [P] [US4] Add RED tests for NT accepted and venue pending abort collectors in `tests/bolt_v3_operator_artifacts.rs`.
-- [ ] T026 [US4] Implement NT accepted and venue pending abort collectors in `src/bolt_v3_operator_artifacts.rs`.
+- [x] T025 [P] [US4] Add RED tests for NT accepted and venue pending abort collectors in `tests/bolt_v3_operator_artifacts.rs`.
+- [x] T026 [US4] Implement NT accepted and venue pending abort collectors in `src/bolt_v3_operator_artifacts.rs`.
 - [ ] T027 [P] [US4] Add RED tests for partial-fill abort collector in `tests/bolt_v3_operator_artifacts.rs`.
 - [ ] T028 [US4] Implement partial-fill abort collector in `src/bolt_v3_operator_artifacts.rs`.
 - [ ] T029 [P] [US4] Add RED tests for network-partition abort collector in `tests/bolt_v3_operator_artifacts.rs`.

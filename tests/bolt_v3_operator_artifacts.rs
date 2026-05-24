@@ -476,6 +476,75 @@ fn abort_plan_cancel_if_open_source_proof_derives_from_strategy_cancel_sources()
 }
 
 #[test]
+fn abort_plan_nt_accepted_venue_pending_source_proof_derives_from_exit_pending_lifecycle() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let abort_plan_path = temp.path().join("abort-plan.json");
+    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
+        &strategy_source_path,
+        1_000_000,
+    )
+    .expect("strategy source should prove NT-accepted / venue-pending abort lifecycle");
+    let bolt_v2::bolt_v3_operator_artifacts::Phase8AbortPlanNtAcceptedVenuePendingSourceProof {
+        nt_accepted_venue_pending_abort_evidence_hash,
+    } = proof;
+
+    assert_eq!(nt_accepted_venue_pending_abort_evidence_hash.len(), 64);
+    assert!(
+        nt_accepted_venue_pending_abort_evidence_hash
+            .chars()
+            .all(|char| char.is_ascii_hexdigit() && !char.is_ascii_uppercase()),
+        "NT-accepted / venue-pending proof hash should be lowercase sha256"
+    );
+    assert!(
+        !abort_plan_path.exists(),
+        "collector must not write final abort-plan artifact"
+    );
+}
+
+#[test]
+fn abort_plan_nt_accepted_venue_pending_source_proof_rejects_pending_after_submit() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
+    let client_order_id = self.core.order_factory().generate_client_order_id();
+    let managed_position = self.managed_position().cloned().unwrap();
+    if let Err(error) = self.submit_order_with_decision_evidence(intent, order, context) {
+        self.exposure = ExposureState::Managed(managed_position);
+        return Err(error);
+    }
+    self.exposure = ExposureState::ExitPending(ExitPendingState {
+        position: Some(managed_position.clone()),
+        pending_exit: PendingExitState {
+            client_order_id,
+            fill_received: false,
+            close_received: false,
+            terminal_received: false,
+        },
+    });
+    Ok(Some(client_order_id))
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
+        &strategy_source_path,
+        10_000,
+    )
+    .expect_err("venue-pending state after submit should not prove abort lifecycle");
+
+    assert!(
+        error.to_string().contains("exit_pending_before_submit"),
+        "late pending-state error should identify ordering proof: {error}"
+    );
+}
+
+#[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_cancel_after_exit_pending() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let strategy_source_path = temp.path().join("strategy.rs");

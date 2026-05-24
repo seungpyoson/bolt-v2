@@ -66,8 +66,8 @@ const PRE_RUN_RELEASE_MANIFEST_SOURCE_PROOF_RECORD_KIND: &str =
 const PRE_RUN_HOST_CLOCK_SOURCE_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_HOST_CLOCK_SOURCE_RECORD_KIND: &str = "bolt_v3.pre_run_host_clock_source.v1";
 const PRE_RUN_HOST_CLOCK_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
-const PRE_RUN_HOST_CLOCK_SOURCE_PROOF_RECORD_KIND: &str =
-    "bolt_v3.pre_run_host_clock_source_proof.v1";
+#[rustfmt::skip]
+const PRE_RUN_HOST_CLOCK_SOURCE_PROOF_RECORD_KIND: &str = "bolt_v3.pre_run_host_clock_source_proof.v1";
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_market_window_source_proof.v1";
@@ -1652,6 +1652,11 @@ pub fn collect_pre_run_host_clock_source_proof(
     max_source_bytes: u64,
     max_host_clock_skew_millis: u64,
 ) -> Result<Phase8PreRunHostClockSourceProof, BoltV3OperatorArtifactError> {
+    if max_host_clock_skew_millis == 0 {
+        return Err(BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+            field: "max_host_clock_skew_millis",
+        });
+    }
     let host_clock_source_bytes = read_file_bounded(host_clock_source_path, max_source_bytes)
         .map_err(
             |source| BoltV3OperatorArtifactError::PreRunHostClockSourceRead {

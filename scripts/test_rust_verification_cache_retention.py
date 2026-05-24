@@ -1857,6 +1857,8 @@ def assert_v6_red_wrapped_renamed_cargo_launches_are_classified() -> None:
     owner = load_owner_module()
     commands = [
         "/tmp/mycargo build",
+        "/tmp/mycargo --target-dir=/tmp/raw-target test",
+        "/tmp/mycargo --config=build.target-dir=/tmp/raw-target test",
         "time /tmp/c build",
         "time -apv /tmp/c test",
         "command /tmp/c test",
@@ -1881,9 +1883,12 @@ def assert_v6_red_wrapped_renamed_cargo_launches_are_classified() -> None:
         "docker run --label my-label rust /tmp/c build",
         "docker run --unknown-opt=rust mycargo build",
         "python -c \"import os; os.system('/tmp/c build')\"",
+        "python -c \"import subprocess; subprocess.run(['/tmp/mycargo', '--target-dir=/tmp/raw-target', 'test'])\"",
         "python -c \"import subprocess; subprocess.run(['/tmp/c', 'build'])\"",
         "python -c \"import subprocess; subprocess.run(args=['/tmp/c', 'build'])\"",
+        "env -S \"/tmp/mycargo --target-dir=/tmp/raw-target test\"",
         "bash -c 'sleep 10 && /tmp/c test'",
+        "bash -c '/tmp/mycargo --target-dir=/tmp/raw-target test'",
         "bash -c 'echo ok ; /tmp/c build'",
     ]
     misses: list[str] = []

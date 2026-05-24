@@ -52,6 +52,7 @@ fn latest_entry_decision_evidence_chain_binds_snapshot_order_intent_and_admissio
 }
 
 #[test]
+#[allow(clippy::type_complexity)]
 fn latest_entry_decision_evidence_chain_rejects_untrusted_record_metadata() {
     let cases: [(&str, fn(&mut serde_json::Value)); 8] = [
         ("missing schema_version", |line: &mut serde_json::Value| {
@@ -159,6 +160,7 @@ fn latest_entry_decision_evidence_chain_rejects_symlinked_file_before_parse() {
 }
 
 #[test]
+#[allow(clippy::type_complexity)]
 fn latest_entry_decision_evidence_chain_rejects_cross_record_field_mismatches() {
     let cases: [(&str, fn(&mut [serde_json::Value; 3])); 7] = [
         ("intent strategy_id", |lines| {
@@ -273,7 +275,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         intent_kind: BoltV3SubmitIntentKind::Entry,
         outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
     };
-    let lines = [
+    [
         serde_json::json!({
             "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": 1_i64,
@@ -298,8 +300,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
             "kind": "admission_decision",
             "decision": admission,
         }),
-    ];
-    lines
+    ]
 }
 
 fn write_decision_evidence_lines(path: &std::path::Path, lines: &[serde_json::Value]) {

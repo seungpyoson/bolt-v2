@@ -220,6 +220,9 @@ ci-lint-workflow:
     if ! python3 scripts/test_rust_verification.py; then
         failed=1
     fi
+    if ! python3 scripts/test_command_understanding.py; then
+        failed=1
+    fi
     if ! python3 scripts/test_rust_verification_decoupling.py; then
         failed=1
     fi

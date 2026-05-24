@@ -636,7 +636,7 @@ mod tests {
             "expected field context in error: {message}"
         );
         assert!(
-            !message.contains(&raw_path),
+            !message.contains(raw_path),
             "SSM failure message must not expose raw path: {message}"
         );
         assert!(
@@ -646,7 +646,7 @@ mod tests {
 
         let debug = format!("{error:?}");
         assert!(
-            !debug.contains(&raw_path),
+            !debug.contains(raw_path),
             "SSM failure Debug output must not expose raw path: {debug}"
         );
     }

@@ -1,0 +1,79 @@
+# Production Trade Readiness Evidence Baseline
+
+Date: 2026-05-25  
+Worktree: `/Users/spson/Projects/Claude/bolt-v2/.worktrees/466-command-tokenization-characterization`  
+Branch: `goal/024-production-trade-readiness`  
+Head: `aee45c97108219e82034bb2730aa4f1ddf7da5e8`
+
+## Git And PR State
+
+- `git status --short --branch` in main: `## main...origin/main`.
+- `git status --short --branch` in #478 worktree before branch rename: `## goal/466-command-tokenization-characterization...origin/goal/466-command-tokenization-characterization`.
+- The existing PR #478 branch was renamed in GitHub and locally to `goal/024-production-trade-readiness`; no new PR was created.
+- PR #478 title/body were updated to identify `specs/024-production-trade-readiness/` as the active task packet, exclude order-intent and #466 work, and record the six-reviewer task-list gate.
+- `gh pr list --state open` showed exactly two open PRs:
+  - #478 `Consolidate production trade-readiness follow-ups`, draft, head `aee45c97108219e82034bb2730aa4f1ddf7da5e8`, base `main`.
+  - #479 `Finalize #466 verifier decomposition ledger`, draft, head `8efef5863a6bd4a0f1a9276852fd63a37305bd2f`, base `main`.
+- #478 status check rollup showed successful build/test/gate/check jobs, with deploy and same-sha-main-evidence skipped.
+
+## Issue State
+
+- #369 is open and defines production-grade live trading readiness beyond a tiny canary.
+- #385 is open and tracks real no-order live connectivity. Its text is older than later T038 EC2/EIP success evidence.
+- #409 is open and requests PortfolioSnapshot runtime capture.
+- #360 is closed and explicitly says tiny-canary readiness is not production live trading readiness.
+
+## Speckit And Readiness Ledger Evidence
+
+- `.specify/feature.json` pointed to `specs/023-nt-order-intent-layer`, which is not this work.
+- `specs/001-thin-live-canary-path/tasks.md` marks:
+  - T038 checked only for historical EC2/EIP no-submit.
+  - T046, T116, T122, T124, T125, T126, T127, T128, T130, and T131 unchecked.
+  - T129 checked only for final-packet verifier coverage.
+- `docs/bolt-v3/2026-05-23-pr388-t124-t128-root-problem-memos.md` says T124-T128 are not readiness completion; they still require real source-owned artifacts.
+
+## Current Code Evidence
+
+`rg` over #478 `src/bolt_v3_operator_artifacts.rs` found these current collector functions:
+
+- `collect_abort_plan_cancel_if_open_source_proof`
+- `collect_pre_run_release_manifest_source_proof`
+- `collect_pre_run_host_clock_source_proof`
+- `collect_pre_run_market_window_source_proof`
+- `collect_pre_run_single_runner_lock_source_proof`
+
+The same search found no `pub fn collect_pre_run_venue...`, `collect_pre_run_funding...`, `collect_pre_run_egress...`, `collect_pre_run_clob...`, `collect_abort_plan_nt...`, `collect_abort_plan_partial...`, `collect_abort_plan_network...`, or `collect_abort_plan_panic...` functions.
+
+Implication: #478 has some source-owned collectors, but most T126/T127 fields are still satisfied only by caller-supplied proof bundles or fixtures.
+
+## T038 Branch Evidence
+
+- `git ls-remote --heads origin t038-operator-config-snapshot` returned `53c43608e74d7d8293c8830f57ed180d94bb7c5a`.
+- `git fetch origin t038-operator-config-snapshot` fetched that head.
+- `git log --oneline -12 FETCH_HEAD` showed the old branch commits:
+  - `bced44fe config: add bolt-v3 t038 operator snapshot`
+  - `48201c32 fix: build no-submit live node before async readiness`
+  - `36a50aa1 fix: tighten no-submit readiness connect path`
+  - `b7c4d419 fix: align bolt v3 live config with NT clients`
+  - `f6e3dcc8 fix: pin NT for Binance SBE v4`
+  - `33f6c738 fix: use NT start for no-submit readiness`
+  - `2849fb73 fix: pump NT events during no-submit connect`
+  - `53c43608 fix: bind no-submit events before client registration`
+- `git log --oneline --all --grep='no-submit|Binance SBE|SBE v4|controlled connect|reference readiness'` showed later current-main no-submit/SBE work, including `ddace928 Unblock no-submit transport and Binance SBE (#408)`, `973cb4f3 fix: run no-submit readiness from sync boundary`, `d69b43c2 fix: harden no-submit reference readiness evidence`, and `85ec589d fix: harden no-submit readiness waits`.
+- Current #478 tests assert no-submit uses `node.run()` in the strategy-free helper and must not use `LiveNode::start` because `start` does not drain execution account events.
+- `specs/001-thin-live-canary-path/tasks.md` records a later EC2/EIP T038 pass at head `1245264f294ae096155bffc3236fb692cc46b46f`, with all seven no-submit stages satisfied.
+
+Implication: do not port `t038-operator-config-snapshot` wholesale. The remaining task is a targeted port audit for any still-missing behavior or operator snapshot evidence after current no-submit code and docs are considered.
+
+## PortfolioSnapshot Evidence For #409
+
+Current source already contains:
+
+- `src/nt_runtime_capture.rs` imports `subscribe_portfolio_snapshot` and `unsubscribe_portfolio_snapshot`.
+- `src/nt_runtime_capture.rs` defines `portfolio_snapshot/snapshots.jsonl` capture paths.
+- `src/nt_runtime_capture.rs` writes `CaptureMessage::PortfolioSnapshot` to `jsonl_paths.portfolio_snapshots`.
+- `tests/nt_runtime_capture.rs` publishes a `PortfolioSnapshot` and asserts one JSONL row is written.
+- `docs/bolt-v3/research/runtime-capture/nt-msgbus-surfaces.yaml` marks the PortfolioSnapshot stream captured.
+- `scripts/verify_runtime_capture_yaml.py` includes PortfolioSnapshot capture checks.
+
+Implication: #409 may be closable or may need PR/issue evidence updates, but it does not appear to be a blocker for T126/T127 collector implementation.

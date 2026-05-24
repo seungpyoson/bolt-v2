@@ -440,7 +440,6 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
 
     non_exports = [
         "command_tokens",
-        "command_tokens_with_line_boundaries",
         "shell_command_substitution_payloads",
         "shell_command_substitution_at",
         "path_name_looks_like_renamed_cargo",
@@ -456,113 +455,36 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
     if leaked:
         raise AssertionError("unproven helpers must not be shared exports: " + ", ".join(leaked))
 
-    cargo_args = ["--manifest-path", "Cargo.toml", "test", "--", "--target-dir", "/tmp/raw"]
-    if runtime.cargo_subcommand_with_index(cargo_args) != (2, "test"):
-        raise AssertionError("runtime cargo_subcommand_with_index changed")
-    if static.cargo_subcommand_with_index(cargo_args) != (2, "test"):
-        raise AssertionError("static cargo_subcommand_with_index default changed")
-    if static.cargo_subcommand_with_index(["cargo", *cargo_args], start=1) != (3, "test"):
-        raise AssertionError("static cargo_subcommand_with_index start-offset behavior changed")
+    command = "cargo build&&cargo test"
+    runtime_tokens = runtime.command_tokens(command)
+    static_tokens = static.command_tokens(command)
+    if runtime_tokens != ["cargo", "build&&cargo", "test"]:
+        raise AssertionError(f"runtime command_tokens boundary changed: {runtime_tokens!r}")
+    if static_tokens != ["cargo", "build", "&&", "cargo", "test"]:
+        raise AssertionError(f"static command_tokens boundary changed: {static_tokens!r}")
 
+    substitution_tokens = ["echo", "$(", "cargo", ")"]
+    runtime_payloads = runtime.shell_command_substitution_payloads(substitution_tokens)
+    static_payloads = static.shell_command_substitution_payloads(substitution_tokens)
+    if runtime_payloads != [["cargo"]] or static_payloads != []:
+        raise AssertionError(
+            "shell_command_substitution_payloads divergence changed: "
+            f"runtime={runtime_payloads!r} static={static_payloads!r}"
+        )
 
-def assert_command_tokenization_and_line_boundaries_are_characterized() -> None:
-    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_tokenization_under_test")
-    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_tokenization_under_test")
+    prefix_tokens = ["prefix$", "(", "cargo", ")"]
+    runtime_substitution = runtime.shell_command_substitution_at(prefix_tokens, 0)
+    static_substitution = static.shell_command_substitution_at(prefix_tokens, 0)
+    if runtime_substitution is not None or static_substitution != (["cargo"], 4):
+        raise AssertionError(
+            "shell_command_substitution_at prefix-$ divergence changed: "
+            f"runtime={runtime_substitution!r} static={static_substitution!r}"
+        )
 
-    if hasattr(runtime, "command_tokens_with_line_boundaries"):
-        raise AssertionError("runtime command_tokens_with_line_boundaries peer requires fresh review")
-    if not hasattr(static, "command_tokens_with_line_boundaries"):
-        raise AssertionError("static command_tokens_with_line_boundaries helper is required")
-
-    cases = [
-        (
-            "cargo build&&cargo test",
-            ["cargo", "build&&cargo", "test"],
-            ["cargo", "build", "&&", "cargo", "test"],
-            ["cargo", "build", "&&", "cargo", "test"],
-        ),
-        (
-            "cargo build; cargo test",
-            ["cargo", "build;", "cargo", "test"],
-            ["cargo", "build", ";", "cargo", "test"],
-            ["cargo", "build", ";", "cargo", "test"],
-        ),
-        (
-            "cargo build\ncargo test",
-            ["cargo", "build", "cargo", "test"],
-            ["cargo", "build", "cargo", "test"],
-            ["cargo", "build", ";", "cargo", "test"],
-        ),
-        (
-            "cargo build &&\ncargo test",
-            ["cargo", "build", "&&", "cargo", "test"],
-            ["cargo", "build", "&&", "cargo", "test"],
-            ["cargo", "build", "&&", "cargo", "test"],
-        ),
-    ]
-    for command, expected_runtime, expected_static, expected_static_lines in cases:
-        runtime_tokens = runtime.command_tokens(command)
-        static_tokens = static.command_tokens(command)
-        static_line_tokens = static.command_tokens_with_line_boundaries(command)
-        if runtime_tokens != expected_runtime:
-            raise AssertionError(f"runtime command_tokens({command!r}) changed: {runtime_tokens!r}")
-        if static_tokens != expected_static:
-            raise AssertionError(f"static command_tokens({command!r}) changed: {static_tokens!r}")
-        if static_line_tokens != expected_static_lines:
-            raise AssertionError(
-                "static command_tokens_with_line_boundaries"
-                f"({command!r}) changed: {static_line_tokens!r}"
-            )
-
-
-def assert_renamed_cargo_and_rustc_detection_is_characterized() -> None:
-    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_renamed_tools_under_test")
-    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_renamed_tools_under_test")
-
-    name_cases = [
-        ("rustup", True, False, False, False),
-        ("mycargo", True, True, False, False),
-        ("my_cargo", False, False, False, False),
-        ("cargo.sh", False, False, False, False),
-        ("rustc", True, True, True, True),
-        ("myrustc", False, False, True, True),
-        ("my_rustc", False, False, False, False),
-        ("r", False, False, True, True),
-    ]
-    for name, expected_runtime_cargo, expected_static_cargo, expected_runtime_rustc, expected_static_rustc in name_cases:
-        runtime_cargo = runtime.path_name_looks_like_renamed_cargo(name)
-        static_cargo = static.path_name_looks_like_renamed_cargo(name)
-        runtime_rustc = runtime.path_name_looks_like_renamed_rustc(name)
-        static_rustc = static.path_name_looks_like_renamed_rustc(name)
-        if runtime_cargo is not expected_runtime_cargo:
-            raise AssertionError(f"runtime cargo path-name classifier changed for {name!r}: {runtime_cargo!r}")
-        if static_cargo is not expected_static_cargo:
-            raise AssertionError(f"static cargo path-name classifier changed for {name!r}: {static_cargo!r}")
-        if runtime_rustc is not expected_runtime_rustc:
-            raise AssertionError(f"runtime rustc path-name classifier changed for {name!r}: {runtime_rustc!r}")
-        if static_rustc is not expected_static_rustc:
-            raise AssertionError(f"static rustc path-name classifier changed for {name!r}: {static_rustc!r}")
-
-    path_cases = [
-        ("mycargo", False, False, False, False),
-        ("/tmp/mycargo", True, True, False, False),
-        ("/tmp/my_cargo", False, False, False, False),
-        ("/tmp/myrustc", False, False, True, True),
-        ("/tmp/my_rustc", False, False, False, False),
-    ]
-    for token, expected_runtime_cargo, expected_static_cargo, expected_runtime_rustc, expected_static_rustc in path_cases:
-        runtime_cargo = runtime.path_executable_looks_like_cargo(token)
-        static_cargo = static.path_executable_looks_like_cargo(token)
-        runtime_rustc = runtime.path_executable_looks_like_rustc(token)
-        static_rustc = static.path_executable_looks_like_rustc(token)
-        if runtime_cargo is not expected_runtime_cargo:
-            raise AssertionError(f"runtime cargo path classifier changed for {token!r}: {runtime_cargo!r}")
-        if static_cargo is not expected_static_cargo:
-            raise AssertionError(f"static cargo path classifier changed for {token!r}: {static_cargo!r}")
-        if runtime_rustc is not expected_runtime_rustc:
-            raise AssertionError(f"runtime rustc path classifier changed for {token!r}: {runtime_rustc!r}")
-        if static_rustc is not expected_static_rustc:
-            raise AssertionError(f"static rustc path classifier changed for {token!r}: {static_rustc!r}")
+    if runtime.path_name_looks_like_renamed_cargo("rustup") is not True:
+        raise AssertionError("runtime rustup-as-cargo path-name classification changed")
+    if static.path_name_looks_like_renamed_cargo("rustup") is not False:
+        raise AssertionError("static rustup-as-cargo path-name classification changed")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -590,184 +512,27 @@ def assert_renamed_cargo_and_rustc_detection_is_characterized() -> None:
                 f"runtime={runtime_rustc!r} static={static_rustc!r}"
             )
 
+    cargo_args = ["--manifest-path", "Cargo.toml", "test", "--", "--target-dir", "/tmp/raw"]
+    if runtime.cargo_subcommand_with_index(cargo_args) != (2, "test"):
+        raise AssertionError("runtime cargo_subcommand_with_index changed")
+    if static.cargo_subcommand_with_index(cargo_args) != (2, "test"):
+        raise AssertionError("static cargo_subcommand_with_index default changed")
+    if static.cargo_subcommand_with_index(["cargo", *cargo_args], start=1) != (3, "test"):
+        raise AssertionError("static cargo_subcommand_with_index start-offset behavior changed")
 
-def assert_wrapper_handling_is_characterized() -> None:
-    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_wrappers_under_test")
-    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_wrappers_under_test")
+    if runtime.process_wrapper_tokens(["command", "--", "cargo", "build"]) != ["cargo", "build"]:
+        raise AssertionError("runtime process_wrapper_tokens representative behavior changed")
+    if static.wrapper_inner_tokens(["command", "--", "cargo", "build"]) != ["cargo", "build"]:
+        raise AssertionError("static wrapper_inner_tokens representative behavior changed")
 
-    cases = [
-        (["command", "--", "cargo", "build"], ["cargo", "build"], ["cargo", "build"]),
-        (["command", "-v", "cargo"], [], []),
-        (["env", "-i", "cargo", "test"], ["cargo", "test"], ["cargo", "test"]),
-        (
-            ["env", "-S", "timeout 30 cargo build"],
-            ["timeout", "30", "cargo", "build"],
-            ["timeout", "30", "cargo", "build"],
-        ),
-        (["sudo", "-EHu", "root", "cargo", "build"], ["cargo", "build"], ["cargo", "build"]),
-        (["nice", "--", "-5", "cargo", "build"], ["-5", "cargo", "build"], ["-5", "cargo", "build"]),
-        (["flock", "-c", "cargo build", "/tmp/bolt.lock"], ["cargo", "build"], ["cargo", "build"]),
-        (["docker", "run", "--label", "my-label", "rust", "cargo", "build"], ["cargo", "build"], ["cargo", "build"]),
-        (
-            ["docker", "run", "--unknown-opt=rust", "mycargo", "build"],
-            ["mycargo", "build"],
-            ["mycargo", "build"],
-        ),
-        (["no-mistakes", "run", "--", "cargo", "build"], ["cargo", "build"], ["cargo", "build"]),
-        (["xargs", "cargo", "build"], ["cargo", "build"], ["cargo", "build"]),
-        (["make", "build"], None, None),
-    ]
-    for tokens, expected_runtime, expected_static in cases:
-        runtime_inner = runtime.process_wrapper_tokens(tokens)
-        static_inner = static.wrapper_inner_tokens(tokens)
-        if runtime_inner != expected_runtime:
-            raise AssertionError(f"runtime process_wrapper_tokens({tokens!r}) changed: {runtime_inner!r}")
-        if static_inner != expected_static:
-            raise AssertionError(f"static wrapper_inner_tokens({tokens!r}) changed: {static_inner!r}")
-
-
-def assert_target_routing_policy_is_characterized() -> None:
-    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_target_routing_under_test")
-    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_target_routing_under_test")
-
-    runtime_cases = [
-        (["test", "--target-dir", "/tmp/raw"], "--target-dir"),
-        (["test", "--target-dir=/tmp/raw"], "--target-dir"),
-        (["test", "--", "--target-dir", "/tmp/raw"], None),
-        (["bench", "--", "--artifact-dir", "/tmp/raw"], None),
-        (["run", "--", "--out-dir", "/tmp/raw"], None),
-        (["build", "--", "--target-dir", "/tmp/raw"], "--target-dir"),
-        (["test", "--config", "build.target-dir=/tmp/raw"], "--config build.target-dir"),
-        (
-            ["test", "--config=build.rustflags=[\"--out-dir\",\"/tmp/raw\"]"],
-            "--config=build.rustflags",
-        ),
-        (["test", "--config", "/tmp/config.toml"], "--config config-file"),
-    ]
-    for cargo_args, expected in runtime_cases:
-        actual = runtime.cargo_target_routing_override(cargo_args)
-        if actual != expected:
-            raise AssertionError(
-                f"runtime cargo_target_routing_override({cargo_args!r}) "
-                f"changed: {actual!r}"
-            )
-
-    static_cases = [
-        (["cargo", "test", "--target-dir", "/tmp/raw"], True, ["test", "--target-dir", "/tmp/raw"]),
-        (["cargo", "test", "--target-dir=/tmp/raw"], True, ["test", "--target-dir=/tmp/raw"]),
-        (
-            ["cargo", "test", "--", "--target-dir", "/tmp/raw"],
-            False,
-            ["test", "--", "--target-dir", "/tmp/raw"],
-        ),
-        (
-            ["cargo", "build", "--", "--target-dir", "/tmp/raw"],
-            True,
-            ["build", "--", "--target-dir", "/tmp/raw"],
-        ),
-        (["CARGO_TARGET_DIR=/tmp/raw", "cargo", "test"], True, None),
-        (["RUSTFLAGS=--out-dir /tmp/raw", "cargo", "check"], True, None),
-        (
-            ["cargo", "test", "--config", "build.target-dir=/tmp/raw"],
-            True,
-            ["test", "--config", "build.target-dir=/tmp/raw"],
-        ),
-        (
-            ["cargo", "test", "--config=build.rustflags=[\"--out-dir\",\"/tmp/raw\"]"],
-            True,
-            ["test", "--config=build.rustflags=[\"--out-dir\",\"/tmp/raw\"]"],
-        ),
-        (
-            ["cargo", "test", "--config", "/tmp/config.toml"],
-            True,
-            ["test", "--config", "/tmp/config.toml"],
-        ),
-        (
-            [
-                "python3",
-                "scripts/rust_verification.py",
-                "cargo",
-                "--repo",
-                ".",
-                "--",
-                "test",
-                "--target-dir",
-                "/tmp/raw",
-            ],
-            True,
-            ["test", "--target-dir", "/tmp/raw"],
-        ),
-        (
-            ["python3", "scripts/rust_verification.py", "test-binary", "--", "--target-dir", "/tmp/raw"],
-            False,
-            None,
-        ),
-    ]
-    for tokens, expected_override, expected_args in static_cases:
-        actual_override = static.tokens_have_target_routing_override(tokens)
-        actual_args = static.target_routing_cargo_args(tokens)
-        if actual_override is not expected_override:
-            raise AssertionError(
-                f"static tokens_have_target_routing_override({tokens!r}) "
-                f"changed: {actual_override!r}"
-            )
-        if actual_args != expected_args:
-            raise AssertionError(
-                f"static target_routing_cargo_args({tokens!r}) "
-                f"changed: {actual_args!r}"
-            )
-
-
-def assert_shell_command_substitution_parsing_is_characterized() -> None:
-    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_shell_substitution_under_test")
-    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_shell_substitution_under_test")
-
-    payload_cases = [
-        (["echo", "$(", "cargo", ")"], [["cargo"]], []),
-        (["echo", "$", "(", "cargo", ")"], [["cargo"]], [["cargo"]]),
-        (["echo", "prefix$", "(", "cargo", ")"], [["cargo"]], [["cargo"]]),
-        (["echo", "<", "(", "cargo", ")"], [["cargo"]], [["cargo"]]),
-        (["echo", "$(cargo test)"], [["cargo", "test"]], [["cargo", "test"]]),
-        (["echo", "`cargo test`"], [["cargo", "test"]], [["cargo", "test"]]),
-        (
-            ["echo", "$", "(", "cargo", "(", "test", ")", ")"],
-            [["cargo", "(", "test", ")"]],
-            [["cargo", "(", "test", ")"]],
-        ),
-    ]
-    for tokens, expected_runtime, expected_static in payload_cases:
-        runtime_payloads = runtime.shell_command_substitution_payloads(tokens)
-        static_payloads = static.shell_command_substitution_payloads(tokens)
-        if runtime_payloads != expected_runtime:
-            raise AssertionError(
-                f"runtime shell_command_substitution_payloads({tokens!r}) "
-                f"changed: {runtime_payloads!r}"
-            )
-        if static_payloads != expected_static:
-            raise AssertionError(
-                f"static shell_command_substitution_payloads({tokens!r}) "
-                f"changed: {static_payloads!r}"
-            )
-
-    at_cases = [
-        (["echo", "$", "(", "cargo", ")"], 1, (["cargo"], 5), (["cargo"], 5)),
-        (["prefix$", "(", "cargo", ")"], 0, None, (["cargo"], 4)),
-        (["echo", "<", "(", "cargo", ")"], 1, None, None),
-        (["echo", "$(", "cargo", ")"], 1, (["cargo"], 5), None),
-    ]
-    for tokens, index, expected_runtime, expected_static in at_cases:
-        runtime_substitution = runtime.shell_command_substitution_at(tokens, index)
-        static_substitution = static.shell_command_substitution_at(tokens, index)
-        if runtime_substitution != expected_runtime:
-            raise AssertionError(
-                f"runtime shell_command_substitution_at({tokens!r}, {index}) "
-                f"changed: {runtime_substitution!r}"
-            )
-        if static_substitution != expected_static:
-            raise AssertionError(
-                f"static shell_command_substitution_at({tokens!r}, {index}) "
-                f"changed: {static_substitution!r}"
-            )
+    if runtime.cargo_target_routing_override(["test", "--target-dir", "/tmp/raw"]) != "--target-dir":
+        raise AssertionError("runtime target-routing override detection changed")
+    if static.tokens_have_target_routing_override(["cargo", "test", "--target-dir", "/tmp/raw"]) is not True:
+        raise AssertionError("static target-routing override detection changed")
+    if runtime.cargo_target_routing_override(["test", "--", "--target-dir", "/tmp/raw"]) is not None:
+        raise AssertionError("runtime post-separator target-routing handling changed")
+    if static.tokens_have_target_routing_override(["cargo", "test", "--", "--target-dir", "/tmp/raw"]) is not False:
+        raise AssertionError("static post-separator target-routing handling changed")
 
 
 def main() -> int:
@@ -780,11 +545,6 @@ def main() -> int:
     assert_python_inline_payloads_match_current_verifiers()
     assert_verifier_clients_use_shared_python_helpers()
     assert_shared_cargo_scanner_helpers_match_current_verifiers()
-    assert_command_tokenization_and_line_boundaries_are_characterized()
-    assert_shell_command_substitution_parsing_is_characterized()
-    assert_renamed_cargo_and_rustc_detection_is_characterized()
-    assert_wrapper_handling_is_characterized()
-    assert_target_routing_policy_is_characterized()
     assert_non_exported_candidate_helpers_are_characterized()
     print("OK: command understanding self-tests passed.")
     return 0

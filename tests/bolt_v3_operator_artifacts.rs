@@ -633,6 +633,7 @@ fn abort_plan_cancel_if_open_source_proof_accepts_supported_qualified_function_s
     let strategy_source_path = temp.path().join("strategy.rs");
     for function_declaration in [
         "pub(crate) fn forced_flat_exit()",
+        r#"pub(in crate::strategy) fn forced_flat_exit()"#,
         "unsafe fn forced_flat_exit()",
         "const fn forced_flat_exit()",
         r#"extern "C" fn forced_flat_exit()"#,
@@ -671,6 +672,59 @@ fn abort_plan_cancel_if_open_source_proof_accepts_supported_qualified_function_s
 
         assert!(proof.cancel_if_open_defined);
     }
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_multiple_valid_scopes() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn first_forced_flat_exit() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+
+fn second_forced_flat_exit() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("multiple valid marker scopes should be rejected as ambiguous");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "multiple valid scopes should identify function-scoped proof: {error}"
+    );
 }
 
 #[test]
@@ -837,6 +891,42 @@ fn forced_flat_exit() {
 }
 
 #[test]
+fn abort_plan_cancel_if_open_source_proof_ignores_quote_inside_char_literals() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn forced_flat_exit() {
+    let _quote = '"';
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect("quote characters inside char literals should not start string masking");
+
+    assert!(proof.cancel_if_open_defined);
+}
+
+#[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_comment_only_markers() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let strategy_source_path = temp.path().join("strategy.rs");
@@ -897,6 +987,41 @@ fn forced_flat_line_commentary_only() {
     assert!(
         error.to_string().contains("forced_flat_function_scope"),
         "line-comment-only marker error should identify function-scoped proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_raw_string_context_marker() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r##"
+fn forced_flat_exit() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)?;
+        let _ = r#"
+        forced-flat exit could not cancel pending entry client_order_id={}
+        "#;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"##,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("raw-string-only context marker should not prove cancel-if-open abort path");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "raw-string context marker error should identify function-scoped proof: {error}"
     );
 }
 

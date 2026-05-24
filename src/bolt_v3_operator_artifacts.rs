@@ -261,7 +261,6 @@ pub struct Phase8PreRunMarketWindowSourceProof {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phase8AbortPlanCancelIfOpenSourceProof {
-    pub cancel_if_open_defined: bool,
     pub cancel_if_open_evidence_hash: String,
 }
 
@@ -1223,18 +1222,17 @@ pub fn collect_abort_plan_cancel_if_open_source_proof(
             field: "strategy_source_utf8",
         }
     })?;
-    require_abort_plan_cancel_if_open_contract(strategy_source)?;
+    let contract = require_abort_plan_cancel_if_open_contract(strategy_source)?;
 
     let proof_input = Phase8AbortPlanCancelIfOpenSourceProofHashInput {
         schema_version: ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_SCHEMA_VERSION,
         record_kind: ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_RECORD_KIND,
         strategy_source_sha256: strategy_source_sha256.as_str(),
-        forced_flat_cancel_before_exit_pending: true,
+        forced_flat_cancel_before_exit_pending: contract.forced_flat_cancel_before_exit_pending,
     };
     let cancel_if_open_evidence_hash = json_artifact_sha256(&proof_input)?;
 
     Ok(Phase8AbortPlanCancelIfOpenSourceProof {
-        cancel_if_open_defined: true,
         cancel_if_open_evidence_hash,
     })
 }
@@ -1843,9 +1841,13 @@ struct Phase8AbortPlanCancelIfOpenSourceProofHashInput<'a> {
     forced_flat_cancel_before_exit_pending: bool,
 }
 
+struct AbortPlanCancelIfOpenContract {
+    forced_flat_cancel_before_exit_pending: bool,
+}
+
 fn require_abort_plan_cancel_if_open_contract(
     strategy_source: &str,
-) -> Result<(), BoltV3OperatorArtifactError> {
+) -> Result<AbortPlanCancelIfOpenContract, BoltV3OperatorArtifactError> {
     let comment_masked_source = abort_plan_cancel_if_open_comment_masked_source(strategy_source);
     let context_masked_source =
         abort_plan_cancel_if_open_raw_string_masked_source(&comment_masked_source);
@@ -1890,7 +1892,9 @@ fn require_abort_plan_cancel_if_open_contract(
         && indexes.cancel_order < indexes.context
         && indexes.context < indexes.exit_pending
     {
-        Ok(())
+        Ok(AbortPlanCancelIfOpenContract {
+            forced_flat_cancel_before_exit_pending: true,
+        })
     } else {
         Err(
             BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid {

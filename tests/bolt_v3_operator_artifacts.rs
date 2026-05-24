@@ -458,12 +458,13 @@ fn abort_plan_cancel_if_open_source_proof_derives_source_owned_values_without_ar
             1_000_000,
         )
         .expect("strategy source should prove cancel-if-open abort path");
+    let bolt_v2::bolt_v3_operator_artifacts::Phase8AbortPlanCancelIfOpenSourceProof {
+        cancel_if_open_evidence_hash,
+    } = proof;
 
-    assert!(proof.cancel_if_open_defined);
-    assert_eq!(proof.cancel_if_open_evidence_hash.len(), 64);
+    assert_eq!(cancel_if_open_evidence_hash.len(), 64);
     assert!(
-        proof
-            .cancel_if_open_evidence_hash
+        cancel_if_open_evidence_hash
             .chars()
             .all(|char| char.is_ascii_hexdigit() && !char.is_ascii_uppercase()),
         "cancel-if-open proof hash should be lowercase sha256"
@@ -589,7 +590,7 @@ pub async fn forced_flat_exit() {
         )
         .expect("qualified function declaration should prove cancel-if-open abort path");
 
-    assert!(proof.cancel_if_open_defined);
+    assert_eq!(proof.cancel_if_open_evidence_hash.len(), 64);
 }
 
 #[test]
@@ -624,7 +625,7 @@ fn abort_plan_cancel_if_open_source_proof_accepts_same_line_attribute_function_s
         )
         .expect("same-line attribute function declaration should prove cancel-if-open abort path");
 
-    assert!(proof.cancel_if_open_defined);
+    assert_eq!(proof.cancel_if_open_evidence_hash.len(), 64);
 }
 
 #[test]
@@ -670,7 +671,7 @@ fn abort_plan_cancel_if_open_source_proof_accepts_supported_qualified_function_s
                 "supported qualified function declaration should prove cancel-if-open abort path",
             );
 
-        assert!(proof.cancel_if_open_defined);
+        assert_eq!(proof.cancel_if_open_evidence_hash.len(), 64);
     }
 }
 
@@ -764,7 +765,7 @@ fn forced_flat_exit() {
         )
         .expect("unrelated duplicate markers should not poison a valid candidate");
 
-    assert!(proof.cancel_if_open_defined);
+    assert_eq!(proof.cancel_if_open_evidence_hash.len(), 64);
 }
 
 #[test]
@@ -815,7 +816,7 @@ fn forced_flat_exit() {
         )
         .expect("invalid duplicate marker scope should not poison a later valid candidate");
 
-    assert!(proof.cancel_if_open_defined);
+    assert_eq!(proof.cancel_if_open_evidence_hash.len(), 64);
 }
 
 #[test]
@@ -851,7 +852,7 @@ fn forced_flat_exit() {
         )
         .expect("comment delimiters inside strings should not mask real source markers");
 
-    assert!(proof.cancel_if_open_defined);
+    assert_eq!(proof.cancel_if_open_evidence_hash.len(), 64);
 }
 
 #[test]
@@ -887,7 +888,7 @@ fn forced_flat_exit() {
         )
         .expect("line comment delimiters inside strings should not mask real source markers");
 
-    assert!(proof.cancel_if_open_defined);
+    assert_eq!(proof.cancel_if_open_evidence_hash.len(), 64);
 }
 
 #[test]
@@ -923,7 +924,7 @@ fn forced_flat_exit() {
         )
         .expect("quote characters inside char literals should not start string masking");
 
-    assert!(proof.cancel_if_open_defined);
+    assert_eq!(proof.cancel_if_open_evidence_hash.len(), 64);
 }
 
 #[test]

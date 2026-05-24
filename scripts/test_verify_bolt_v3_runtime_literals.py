@@ -380,6 +380,16 @@ def test_char_literals_do_not_corrupt_scanning() -> None:
     )
 
 
+def test_source_proof_marker_constants_are_audited_even_when_diagnostic_text() -> None:
+    assert_emits(
+        """
+        const ABORT_PLAN_CANCEL_IF_OPEN_CONTEXT_MARKER: &str =
+            "forced-flat exit could not cancel pending entry client_order_id={}";
+        """,
+        '"forced-flat exit could not cancel pending entry client_order_id={}"',
+    )
+
+
 def test_allowlist_exactness() -> None:
     allowed = VERIFIER.load_allowed()
     scanned = {literal.key() for literal in VERIFIER.scan_literals()}
@@ -440,6 +450,7 @@ def main() -> int:
         test_non_log_macro_literals_are_not_callsite_bypassed,
         test_not_diagnostic_guard_is_word_bounded,
         test_char_literals_do_not_corrupt_scanning,
+        test_source_proof_marker_constants_are_audited_even_when_diagnostic_text,
         test_allowlist_exactness,
         test_provider_credential_log_modules_are_provider_scoped,
     ]

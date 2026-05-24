@@ -4443,6 +4443,14 @@ reason = "This marker verifies cancel-if-open ordering before the production exi
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"forced-flat exit could not cancel pending entry client_order_id={}"'''
+context = '''"forced-flat exit could not cancel pending entry client_order_id={}";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies the production cancel-if-open diagnostic context in the source contract; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"forced_flat_reasons"'''
 context = '''"forced_flat_reasons",'''
 classification = "operator_source_proof_diagnostic_field"

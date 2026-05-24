@@ -82,6 +82,9 @@ IGNORED_CALL_CONTEXT_PATTERNS = [
 DIAGNOSTIC_MACRO_PATTERN = re.compile(
     r"\b(?:log|tracing)::(?:debug|error|info|trace|warn)!\s*(\(|\[|\{)"
 )
+SOURCE_PROOF_MARKER_CONST_PATTERN = re.compile(
+    r"\bconst\s+ABORT_PLAN_[A-Z0-9_]*_MARKER\s*:"
+)
 
 @dataclass(frozen=True)
 class Literal:
@@ -91,6 +94,7 @@ class Literal:
     literal: str
     context: str
     call_context: str
+    declaration_context: str
 
     def key(self) -> tuple[str, str, str, str]:
         return (self.path, self.kind, self.literal, self.context)
@@ -201,6 +205,17 @@ def rust_string_literal_end(text: str, start: int) -> int | None:
 
 def line_context(text: str, line: int) -> str:
     return text.splitlines()[line - 1].strip()
+
+
+def declaration_context(text: str, line: int) -> str:
+    lines = text.splitlines()
+    current = lines[line - 1].strip()
+    index = line - 2
+    while index >= 0 and not lines[index].strip():
+        index -= 1
+    if index >= 0:
+        return f"{lines[index].strip()} {current}"
+    return current
 
 
 def call_context(text: str, literal_start: int) -> str:
@@ -328,7 +343,15 @@ def scan_file(path: Path) -> list[Literal]:
             start = index
             literal = text[start:raw_end]
             literals.append(
-                Literal(rel, line, "string", literal, current_context(), call_context(text, start))
+                Literal(
+                    rel,
+                    line,
+                    "string",
+                    literal,
+                    current_context(),
+                    call_context(text, start),
+                    declaration_context(text, line),
+                )
             )
             line += literal.count("\n")
             index = raw_end
@@ -357,6 +380,7 @@ def scan_file(path: Path) -> list[Literal]:
                     literal,
                     current_context(),
                     call_context(text, start),
+                    declaration_context(text, literal_line),
                 )
             )
             line += literal.count("\n")
@@ -375,6 +399,7 @@ def scan_file(path: Path) -> list[Literal]:
                     text[start:index],
                     current_context(),
                     call_context(text, start),
+                    declaration_context(text, line),
                 )
             )
             continue
@@ -471,6 +496,10 @@ def is_unary_minus_context(text: str, start: int) -> bool:
 
 def is_ignored_by_rule(literal: Literal) -> bool:
     context = literal.context
+    if literal.kind == "string" and SOURCE_PROOF_MARKER_CONST_PATTERN.search(
+        literal.declaration_context
+    ):
+        return False
     if any(re.search(pattern, context) for pattern in IGNORED_CONTEXT_PATTERNS):
         return True
     if any(re.search(pattern, literal.call_context) for pattern in IGNORED_CALL_CONTEXT_PATTERNS):

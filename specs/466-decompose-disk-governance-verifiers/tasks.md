@@ -72,8 +72,8 @@ Run T036 through T039 before each PR-ready slice. Repeat T040 through T044 for e
 - [ ] T045 Verify every ledger item final state is `resolved` or `operator-moved` in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T046 Run final whole-#466 local verification and record results in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T047 Run final whole-#466 external review across all merged #466 PRs and record reviewer verdicts in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T048 Update issue #466 with completion evidence only after all final checks pass
-- [ ] T049 Ask operator approval to close #466; do not close without explicit approval
+- [ ] T048 Update issue #466 with completion evidence only after all final checks pass, explicitly accounting for the fact that GitHub already shows #466 closed
+- [ ] T049 Ask operator approval for final #466 issue disposition; if #466 is open, do not close without explicit approval, and if it is already closed, do not treat the earlier closure as completion approval
 
 ## Dependencies & Execution Order
 

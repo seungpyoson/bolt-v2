@@ -5,11 +5,11 @@
 | Fact | Evidence |
 |---|---|
 | Branch/worktree | `goal/466-disk-governance-verifier-decomposition` at `REPO_ROOT_PATH/.worktrees/466-disk-governance-verifier-decomposition` |
-| Base | `origin/main` at `3a444a57cfdcdc31d58cbfe8d22857eb86f8bad9` after PR #470 and PR #474 merges |
-| Issue #466 | Closed 2026-05-24T11:21:38Z, but current body and prior owner comment still identify remaining verifier-decomposition scope. This ledger does not treat the closed state as proof of final completion. |
+| Base | `origin/main` at `3a444a57cfdcdc31d58cbfe8d22857eb86f8bad9` after both PR #474 and PR #470 merges |
+| Issue #466 | Closed 2026-05-24T11:21:38Z, but current body and prior owner comment still identify remaining verifier-decomposition scope. This ledger does not treat the closed state as proof of final completion; final issue disposition still requires completion evidence and explicit operator approval. |
 | PR #478 | Open draft consolidation PR on `goal/466-command-tokenization-characterization`; excluded from this work because it mixes #466 verifier/governance characterization with unrelated #374 and T125/T126/T127 trade-readiness/source-proof scope. |
-| PR #474 | Merged 2026-05-24T11:21:37Z; re-applied the item-8 static cargo option drift slice after PR #468 was reverted. |
 | PR #470 | Merged 2026-05-24T12:02:25Z; delivered only the item-7 test import setup cleanup slice. |
+| PR #474 | Merged 2026-05-24T11:21:37Z; re-applied the item-8 static cargo option drift slice after PR #468 was reverted. |
 | Issue #464 | Closed for PR #465 cargo-scanner slice only; close comment moved remaining work to #466 |
 | PR #468 | Merged 2026-05-24T07:06:34Z, then superseded by revert/reapply flow; delivered only the item-8 static cargo option drift slice before replacement PR #474 |
 | PR #465 | Merged 2026-05-24T03:33:55Z; delivered only shared cargo scanner helpers |
@@ -21,7 +21,7 @@
 
 | Entity | Command | Current result |
 |---|---|---|
-| Issue #466 | `gh issue view 466 --json number,title,state,body,comments,url,closedAt` | Closed 2026-05-24T11:21:38Z. Body lists the eight decomposition areas, and the owner comment after PR #468 says #466 remains active for command tokenization, shell substitution, renamed cargo/rustc, wrapper handling, target-routing policy, mechanical splitting, and import setup cleanup. Current closed state is recorded as external state, not as completion evidence for this ledger. |
+| Issue #466 | `gh issue view 466 --json number,title,state,body,comments,url,closedAt` | Closed 2026-05-24T11:21:38Z. Body lists the eight decomposition areas, and the owner comment after PR #468 says #466 remains active for command tokenization, shell substitution, renamed cargo/rustc, wrapper handling, target-routing policy, mechanical splitting, and import setup cleanup. Current closed state is recorded as external state, not as completion evidence for this ledger; final issue handling must explicitly account for the already-closed state rather than treating it as approval. |
 | Issue #464 | `gh issue view 464 --json number,title,state,closedAt,body,comments,url` | Closed 2026-05-24T03:46:28Z. Close comment states PR #465 completed only the cargo-scanner extraction slice and moved remaining verifier-decomposition work to #466. |
 | PR #465 | `gh pr view 465 --json number,title,state,mergedAt,headRefName,baseRefName,commits,files,url,body` | Merged 2026-05-24T03:33:55Z. Files show `scripts/command_understanding.py`, runtime/static verifier clients, tests, and `specs/464-*`; body says PR does not close broader remaining scope. |
 | PR #461 | `gh pr view 461 --json number,title,state,mergedAt,headRefName,baseRefName,commits,files,url,body` | Merged 2026-05-24T01:10:27Z. Delivered command-understanding helper extraction for #454 and recorded residual follow-up scope. |
@@ -57,7 +57,7 @@
 
 ## Scope Ledger
 
-Completion invariant: before #466 completion, every row must end as `resolved` or `operator-moved`. A `blocked` row cannot support completion because it still requires operator input or external-state change. Row resolution does not by itself prove whole-issue completion; final #466 completion still requires verification, external review, and operator-approved issue handling.
+Completion invariant: before #466 completion, every row must end as `resolved` or `operator-moved`. A `blocked` row cannot support completion because it still requires operator input or external-state change. In this ledger, `Resolved` means the decomposition decision for that row is finalized; row resolution does not by itself prove PR merge readiness or whole-issue completion. Final #466 completion still requires verification, external review, and operator-approved issue handling.
 
 | # | Ledger item | Current-main runtime implementation evidence | Current-main static verifier implementation evidence | Current-main test/doc evidence | Equivalence verdict | Chosen resolution | Exact files touched or intentionally not touched | Tests required | Review evidence | Final state |
 |---:|---|---|---|---|---|---|---|---|---|---|
@@ -115,7 +115,7 @@ Pre-implementation external review for #466 is satisfied for implementation star
 
 ## Post-Implementation Review Gate Status
 
-Post-implementation review must target the current pushed PR head after exact-head GitHub CI is green. Because committing a review-results update changes the PR head, committed rows in this file are historical snapshots unless they describe the current git head. Final merge evidence belongs in the PR status checks and PR body/comment for the final head; superseded snapshots here must not be used as merge approval.
+Post-implementation review must target the current pushed PR head after exact-head GitHub CI is green. Because committing a review-results update changes the PR head, committed rows in this file are historical snapshots unless they describe the current git head. Final merge evidence belongs in the PR status checks and PR body/comment for the final head; superseded snapshots here must not be used as merge approval. The rows below are historical committed review snapshots from earlier #466 slices; PR #479 current-head review status is intentionally recorded in the PR body/comment after CI.
 
 | Reviewer | Route / source state | Result |
 |---|---|---|

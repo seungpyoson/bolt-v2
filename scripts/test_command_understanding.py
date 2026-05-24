@@ -48,12 +48,44 @@ def load_shared_module() -> object:
     return importlib.import_module("command_understanding")
 
 
+def top_level_sys_import_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
+    sys_module_aliases = {"sys"}
+    sys_path_aliases: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "sys":
+                    sys_module_aliases.add(alias.asname or alias.name)
+        if isinstance(node, ast.ImportFrom) and node.module == "sys":
+            for alias in node.names:
+                if alias.name == "path":
+                    sys_path_aliases.add(alias.asname or alias.name)
+    return sys_module_aliases, sys_path_aliases
+
+
+def node_references_sys_path(
+    node: ast.AST, sys_module_aliases: set[str], sys_path_aliases: set[str]
+) -> bool:
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Attribute)
+            and child.attr == "path"
+            and isinstance(child.value, ast.Name)
+            and child.value.id in sys_module_aliases
+        ):
+            return True
+        if isinstance(child, ast.Name) and child.id in sys_path_aliases:
+            return True
+    return False
+
+
 def assert_test_import_setup_is_encapsulated() -> None:
     tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+    sys_module_aliases, sys_path_aliases = top_level_sys_import_aliases(tree)
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
-        if "sys.path" in ast.unparse(node):
+        if node_references_sys_path(node, sys_module_aliases, sys_path_aliases):
             raise AssertionError("test import sys.path setup must be encapsulated in a helper")
 
 
@@ -78,6 +110,31 @@ def assert_import_setup_rejects_bare_top_level_sys_path_mutation() -> None:
                     raise
             else:
                 raise AssertionError("bare top-level sys.path setup must be rejected")
+        finally:
+            globals()["__file__"] = original_file
+
+
+def assert_import_setup_rejects_aliased_top_level_sys_path_mutation() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        candidate = pathlib.Path(tmp) / "candidate.py"
+        candidate.write_text(
+            "from sys import path\n"
+            "path.insert(0, 'scripts')\n"
+            "\n"
+            "def helper() -> None:\n"
+            "    path.insert(0, 'scripts')\n",
+            encoding="utf-8",
+        )
+        original_file = globals()["__file__"]
+        globals()["__file__"] = str(candidate)
+        try:
+            try:
+                assert_test_import_setup_is_encapsulated()
+            except AssertionError as exc:
+                if "test import sys.path setup" not in str(exc):
+                    raise
+            else:
+                raise AssertionError("aliased top-level sys.path setup must be rejected")
         finally:
             globals()["__file__"] = original_file
 
@@ -481,6 +538,7 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
 def main() -> int:
     assert_test_import_setup_is_encapsulated()
     assert_import_setup_rejects_bare_top_level_sys_path_mutation()
+    assert_import_setup_rejects_aliased_top_level_sys_path_mutation()
     assert_verifier_modules_import_from_repo_root()
     assert_load_module_caches_verifier_modules()
     assert_python_ast_helpers_match_current_verifiers()

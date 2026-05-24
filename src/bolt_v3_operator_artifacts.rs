@@ -2,6 +2,7 @@ use std::{
     error::Error,
     fmt, fs,
     io::{self, Read, Write},
+    ops::Range,
     path::{Path, PathBuf},
 };
 
@@ -66,6 +67,26 @@ const PRE_RUN_RELEASE_MANIFEST_SOURCE_PROOF_RECORD_KIND: &str =
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_market_window_source_proof.v1";
+const ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.abort_plan_cancel_if_open_source_proof.v1";
+const ABORT_PLAN_CANCEL_IF_OPEN_TARGET_FUNCTION_NAME: &str = "try_submit_exit_order";
+const ABORT_PLAN_CANCEL_IF_OPEN_FORCED_FLAT_MARKER: &str =
+    "!decision.forced_flat_reasons.is_empty()";
+const ABORT_PLAN_CANCEL_IF_OPEN_PENDING_ENTRY_MARKER: &str =
+    "managed_position.pending_entry.as_ref()";
+const ABORT_PLAN_CANCEL_IF_OPEN_CANCEL_ORDER_MARKER: &str =
+    "self.cancel_order(pending_entry.client_order_id, Some(client_id), None)";
+const ABORT_PLAN_CANCEL_IF_OPEN_CONTEXT_MARKER: &str =
+    "forced-flat exit could not cancel pending entry client_order_id={}";
+const ABORT_PLAN_CANCEL_IF_OPEN_EXIT_PENDING_MARKER: &str =
+    "self.exposure = ExposureState::ExitPending";
+const ABORT_PLAN_CANCEL_IF_OPEN_FUNCTION_KEYWORD_WIDTH: usize = [b'f', b'n', b' '].len();
+const ABORT_PLAN_CANCEL_IF_OPEN_ATTRIBUTE_MARKER_WIDTH: usize = [b'#', b'['].len();
+const ABORT_PLAN_CANCEL_IF_OPEN_COMMENT_MARKER_WIDTH: usize = [b'/', b'/'].len();
+const ABORT_PLAN_CANCEL_IF_OPEN_PUB_VISIBILITY_PREFIX_WIDTH: usize = [b'p', b'u', b'b', b'('].len();
+const ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_ORIGIN: usize = [b' '].len() - [b' '].len();
+const ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP: usize = [b' '].len();
 const BUILD_CARGO_TOML: &str = include_str!("../Cargo.toml");
 const NAUTILUS_TRADER_GIT_URL: &str = "https://github.com/nautechsystems/nautilus_trader.git";
 const NAUTILUS_TRADER_CARGO_LOCK_SOURCE_PREFIX: &str =
@@ -239,6 +260,11 @@ pub struct Phase8PreRunMarketWindowSourceProof {
     pub market_state_evidence_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8AbortPlanCancelIfOpenSourceProof {
+    pub cancel_if_open_evidence_hash: String,
+}
+
 impl fmt::Debug for WrittenOperatorArtifact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WrittenOperatorArtifact")
@@ -311,6 +337,13 @@ pub enum BoltV3OperatorArtifactError {
     },
     AbortPrerequisiteUnproven {
         prerequisite: &'static str,
+    },
+    AbortPlanCancelIfOpenSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    AbortPlanCancelIfOpenSourceInvalid {
+        field: &'static str,
     },
     AbortPlanSourceBundleRead {
         path: PathBuf,
@@ -523,6 +556,16 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "refusing to write successful abort plan because {prerequisite} is not proven"
             ),
+            Self::AbortPlanCancelIfOpenSourceRead { source, .. } => {
+                write!(
+                    f,
+                    "failed to read abort plan cancel-if-open source: {source}"
+                )
+            }
+            Self::AbortPlanCancelIfOpenSourceInvalid { field } => write!(
+                f,
+                "abort plan cancel-if-open source field `{field}` is invalid or unproven"
+            ),
             Self::AbortPlanSourceBundleRead { source, .. } => {
                 write!(f, "failed to read abort plan source bundle: {source}")
             }
@@ -707,6 +750,7 @@ impl Error for BoltV3OperatorArtifactError {
             Self::PreRunMarketWindowSourceRead { source, .. } => Some(source),
             Self::PreRunStateSourceBundleRead { source, .. } => Some(source),
             Self::PreRunStateSourceBundleParse { source, .. } => Some(source),
+            Self::AbortPlanCancelIfOpenSourceRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleParse { source, .. } => Some(source),
             Self::StaticManifestRead { source, .. } => Some(source),
@@ -1160,6 +1204,38 @@ pub fn write_abort_plan_artifact_from_source_bundle_file(
         proofs.as_source_proofs(),
         path,
     )
+}
+
+pub fn collect_abort_plan_cancel_if_open_source_proof(
+    strategy_source_path: &Path,
+    max_strategy_source_bytes: u64,
+) -> Result<Phase8AbortPlanCancelIfOpenSourceProof, BoltV3OperatorArtifactError> {
+    let strategy_source_bytes = read_file_bounded(strategy_source_path, max_strategy_source_bytes)
+        .map_err(
+            |source| BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceRead {
+                path: strategy_source_path.to_path_buf(),
+                source,
+            },
+        )?;
+    let strategy_source_sha256 = hex::encode(Sha256::digest(&strategy_source_bytes));
+    let strategy_source = std::str::from_utf8(&strategy_source_bytes).map_err(|_| {
+        BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid {
+            field: "strategy_source_utf8",
+        }
+    })?;
+    let contract = require_abort_plan_cancel_if_open_contract(strategy_source)?;
+
+    let proof_input = Phase8AbortPlanCancelIfOpenSourceProofHashInput {
+        schema_version: ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_RECORD_KIND,
+        strategy_source_sha256: strategy_source_sha256.as_str(),
+        forced_flat_cancel_before_exit_pending: contract.forced_flat_cancel_before_exit_pending,
+    };
+    let cancel_if_open_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8AbortPlanCancelIfOpenSourceProof {
+        cancel_if_open_evidence_hash,
+    })
 }
 
 pub fn write_strategy_input_evidence_artifact(
@@ -1756,6 +1832,604 @@ struct Phase8PreRunMarketWindowSourceProofHashInput<'a> {
     record_kind: &'static str,
     strategy_input_evidence_sha256: &'a str,
     expected_price_to_beat_source: &'a str,
+}
+
+#[derive(Serialize)]
+struct Phase8AbortPlanCancelIfOpenSourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    strategy_source_sha256: &'a str,
+    forced_flat_cancel_before_exit_pending: bool,
+}
+
+struct AbortPlanCancelIfOpenContract {
+    forced_flat_cancel_before_exit_pending: bool,
+}
+
+fn require_abort_plan_cancel_if_open_contract(
+    strategy_source: &str,
+) -> Result<AbortPlanCancelIfOpenContract, BoltV3OperatorArtifactError> {
+    let comment_masked_source = abort_plan_cancel_if_open_comment_masked_source(strategy_source);
+    let context_masked_source =
+        abort_plan_cancel_if_open_raw_string_masked_source(&comment_masked_source);
+    let code_masked_source = abort_plan_cancel_if_open_string_masked_source(&comment_masked_source);
+    let mut candidate_indexes = Vec::new();
+    let mut first_invalid_candidate_error = None;
+    let mut target_function_scope_count = ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_ORIGIN;
+    for function_scope in abort_plan_cancel_if_open_function_scopes(&code_masked_source) {
+        let scoped_context_source = &context_masked_source[function_scope.clone()];
+        let scoped_code_source = &code_masked_source[function_scope];
+        if !abort_plan_cancel_if_open_scope_matches_target_function(scoped_code_source) {
+            continue;
+        }
+        target_function_scope_count += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+        match abort_plan_cancel_if_open_scoped_marker_indexes(
+            scoped_context_source,
+            scoped_code_source,
+        ) {
+            Ok(Some(indexes)) => {
+                candidate_indexes.push(indexes);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                if first_invalid_candidate_error.is_none() {
+                    first_invalid_candidate_error = Some(error);
+                }
+            }
+        }
+    }
+
+    if target_function_scope_count != ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP {
+        return Err(
+            BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid {
+                field: "forced_flat_function_scope",
+            },
+        );
+    }
+
+    if candidate_indexes.is_empty()
+        && let Some(error) = first_invalid_candidate_error
+    {
+        return Err(error);
+    }
+
+    let [indexes] = candidate_indexes.as_slice() else {
+        return Err(
+            BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid {
+                field: "forced_flat_function_scope",
+            },
+        );
+    };
+
+    if indexes.forced_flat < indexes.pending_entry
+        && indexes.pending_entry < indexes.cancel_order
+        && indexes.cancel_order < indexes.context
+        && indexes.context < indexes.exit_pending
+    {
+        Ok(AbortPlanCancelIfOpenContract {
+            forced_flat_cancel_before_exit_pending: true,
+        })
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid {
+                field: "forced_flat_cancel_before_exit_pending",
+            },
+        )
+    }
+}
+
+#[derive(Debug)]
+struct AbortPlanCancelIfOpenMarkerIndexes {
+    forced_flat: usize,
+    pending_entry: usize,
+    cancel_order: usize,
+    context: usize,
+    exit_pending: usize,
+}
+
+fn abort_plan_cancel_if_open_function_scopes(strategy_source: &str) -> Vec<Range<usize>> {
+    let mut function_starts = Vec::new();
+    let mut line_offset = ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_ORIGIN;
+    for line in strategy_source.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if abort_plan_cancel_if_open_function_start_line(trimmed) {
+            function_starts.push(line_offset + line.len() - trimmed.len());
+        }
+        line_offset += line.len();
+    }
+
+    let mut scopes = Vec::new();
+    let mut starts = function_starts.iter().copied().peekable();
+    while let Some(start) = starts.next() {
+        let end = starts.peek().copied().unwrap_or(strategy_source.len());
+        scopes.push(start..end);
+    }
+    scopes
+}
+
+fn abort_plan_cancel_if_open_scope_matches_target_function(scoped_source: &str) -> bool {
+    scoped_source.lines().next().is_some_and(|line| {
+        line.as_bytes()
+            .windows(ABORT_PLAN_CANCEL_IF_OPEN_FUNCTION_KEYWORD_WIDTH)
+            .position(|window| matches!(window, [b'f', b'n', b' ']))
+            .is_some_and(|function_keyword_index| {
+                let suffix = line
+                    [function_keyword_index + ABORT_PLAN_CANCEL_IF_OPEN_FUNCTION_KEYWORD_WIDTH..]
+                    .trim_start();
+                suffix
+                    .strip_prefix(ABORT_PLAN_CANCEL_IF_OPEN_TARGET_FUNCTION_NAME)
+                    .and_then(|after_name| after_name.as_bytes().first().copied())
+                    .is_some_and(|after_name| matches!(after_name, b'(' | b'<'))
+            })
+    })
+}
+
+fn abort_plan_cancel_if_open_scoped_marker_indexes(
+    context_source: &str,
+    code_source: &str,
+) -> Result<Option<AbortPlanCancelIfOpenMarkerIndexes>, BoltV3OperatorArtifactError> {
+    let forced_flat = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_FORCED_FLAT_MARKER,
+    );
+    let pending_entry = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_PENDING_ENTRY_MARKER,
+    );
+    let cancel_order = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_CANCEL_ORDER_MARKER,
+    );
+    let context = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        context_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_CONTEXT_MARKER,
+    );
+    let exit_pending = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        code_source,
+        ABORT_PLAN_CANCEL_IF_OPEN_EXIT_PENDING_MARKER,
+    );
+
+    if forced_flat.is_empty()
+        || pending_entry.is_empty()
+        || cancel_order.is_empty()
+        || context.is_empty()
+        || exit_pending.is_empty()
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(AbortPlanCancelIfOpenMarkerIndexes {
+        forced_flat: abort_plan_cancel_if_open_single_marker_index(
+            &forced_flat,
+            "forced_flat_reasons",
+        )?,
+        pending_entry: abort_plan_cancel_if_open_single_marker_index(
+            &pending_entry,
+            "pending_entry",
+        )?,
+        cancel_order: abort_plan_cancel_if_open_single_marker_index(&cancel_order, "cancel_order")?,
+        context: abort_plan_cancel_if_open_single_marker_index(&context, "cancel_order_context")?,
+        exit_pending: abort_plan_cancel_if_open_single_marker_index(&exit_pending, "exit_pending")?,
+    }))
+}
+
+fn abort_plan_cancel_if_open_scoped_marker_occurrences(
+    strategy_source: &str,
+    marker: &str,
+) -> Vec<usize> {
+    let mut indexes = Vec::new();
+    let mut search_start = ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_ORIGIN;
+    while let Some(relative_index) = strategy_source[search_start..].find(marker) {
+        let index = search_start + relative_index;
+        indexes.push(index);
+        search_start = index + marker.len();
+    }
+    indexes
+}
+
+fn abort_plan_cancel_if_open_single_marker_index(
+    indexes: &[usize],
+    field: &'static str,
+) -> Result<usize, BoltV3OperatorArtifactError> {
+    let [index] = indexes else {
+        return Err(BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid { field });
+    };
+    Ok(*index)
+}
+
+fn abort_plan_cancel_if_open_function_start_line(trimmed_line: &str) -> bool {
+    let Some(function_keyword_index) = trimmed_line
+        .as_bytes()
+        .windows(ABORT_PLAN_CANCEL_IF_OPEN_FUNCTION_KEYWORD_WIDTH)
+        .position(|window| matches!(window, [b'f', b'n', b' ']))
+    else {
+        return false;
+    };
+    let prefix = trimmed_line[..function_keyword_index].trim();
+    let prefix = abort_plan_cancel_if_open_function_prefix_without_same_line_attributes(prefix);
+    prefix.is_empty() || abort_plan_cancel_if_open_function_prefix_is_supported(prefix)
+}
+
+fn abort_plan_cancel_if_open_function_prefix_without_same_line_attributes(
+    mut prefix: &str,
+) -> &str {
+    loop {
+        let trimmed_prefix = prefix.trim_start();
+        let Some(stripped_prefix) =
+            abort_plan_cancel_if_open_strip_same_line_attribute(trimmed_prefix)
+        else {
+            return trimmed_prefix;
+        };
+        prefix = stripped_prefix;
+    }
+}
+
+fn abort_plan_cancel_if_open_strip_same_line_attribute(prefix: &str) -> Option<&str> {
+    let bytes = prefix.as_bytes();
+    if !matches!(bytes, [b'#', b'[', ..]) {
+        return None;
+    }
+
+    let mut index = ABORT_PLAN_CANCEL_IF_OPEN_ATTRIBUTE_MARKER_WIDTH;
+    let mut bracket_depth = ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'[' => {
+                bracket_depth += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+            }
+            b']' => {
+                bracket_depth -= ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+                index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+                if bracket_depth == ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_ORIGIN {
+                    return Some(prefix[index..].trim_start());
+                }
+                continue;
+            }
+            _ => {}
+        }
+        index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    }
+    None
+}
+
+fn abort_plan_cancel_if_open_function_prefix_is_supported(prefix: &str) -> bool {
+    let prefix = abort_plan_cancel_if_open_function_prefix_without_pub_visibility(prefix);
+    prefix
+        .split_whitespace()
+        .all(abort_plan_cancel_if_open_function_prefix_token_is_supported)
+}
+
+fn abort_plan_cancel_if_open_function_prefix_without_pub_visibility(prefix: &str) -> &str {
+    let trimmed_prefix = prefix.trim_start();
+    let bytes = trimmed_prefix.as_bytes();
+    if !matches!(bytes, [b'p', b'u', b'b', b'(', ..]) {
+        return trimmed_prefix;
+    }
+
+    let mut index = ABORT_PLAN_CANCEL_IF_OPEN_PUB_VISIBILITY_PREFIX_WIDTH;
+    let mut paren_depth = ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'(' => {
+                paren_depth += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+            }
+            b')' => {
+                paren_depth -= ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+                index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+                if paren_depth == ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_ORIGIN {
+                    return trimmed_prefix[index..].trim_start();
+                }
+                continue;
+            }
+            _ => {}
+        }
+        index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    }
+    trimmed_prefix
+}
+
+fn abort_plan_cancel_if_open_function_prefix_token_is_supported(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    matches!(
+        bytes,
+        [b'p', b'u', b'b']
+            | [b'p', b'u', b'b', b'(', .., b')']
+            | [b'a', b's', b'y', b'n', b'c']
+            | [b'u', b'n', b's', b'a', b'f', b'e']
+            | [b'c', b'o', b'n', b's', b't']
+            | [b'e', b'x', b't', b'e', b'r', b'n']
+    ) || bytes.first() == Some(&b'"') && bytes.last() == Some(&b'"')
+}
+
+fn abort_plan_cancel_if_open_comment_masked_source(strategy_source: &str) -> String {
+    let source_bytes = strategy_source.as_bytes();
+    let mut masked_bytes = source_bytes.to_vec();
+    let source_index_origin = ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_ORIGIN;
+    let mut index = source_index_origin;
+    let mut block_comment_depth = source_index_origin;
+
+    while index < source_bytes.len() {
+        if block_comment_depth > source_index_origin {
+            if abort_plan_cancel_if_open_line_separator_byte(source_bytes[index]) {
+                index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+                continue;
+            }
+            if abort_plan_cancel_if_open_block_comment_start(source_bytes, index) {
+                abort_plan_cancel_if_open_mask_pair(&mut masked_bytes, index);
+                block_comment_depth += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+                index += ABORT_PLAN_CANCEL_IF_OPEN_COMMENT_MARKER_WIDTH;
+                continue;
+            }
+            if abort_plan_cancel_if_open_block_comment_end(source_bytes, index) {
+                abort_plan_cancel_if_open_mask_pair(&mut masked_bytes, index);
+                block_comment_depth -= ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+                index += ABORT_PLAN_CANCEL_IF_OPEN_COMMENT_MARKER_WIDTH;
+                continue;
+            }
+            masked_bytes[index] = b' ';
+            index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+            continue;
+        }
+
+        if let Some(end) = abort_plan_cancel_if_open_char_literal_end(source_bytes, index) {
+            index = end;
+            continue;
+        }
+        if abort_plan_cancel_if_open_line_comment_start(source_bytes, index) {
+            abort_plan_cancel_if_open_mask_line_comment(
+                source_bytes,
+                &mut masked_bytes,
+                &mut index,
+            );
+            continue;
+        }
+        if abort_plan_cancel_if_open_block_comment_start(source_bytes, index) {
+            abort_plan_cancel_if_open_mask_pair(&mut masked_bytes, index);
+            block_comment_depth += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+            index += ABORT_PLAN_CANCEL_IF_OPEN_COMMENT_MARKER_WIDTH;
+            continue;
+        }
+        if let Some(end) = abort_plan_cancel_if_open_raw_string_end(source_bytes, index) {
+            index = end;
+            continue;
+        }
+        if source_bytes[index] == b'"' {
+            index = abort_plan_cancel_if_open_quoted_string_end(source_bytes, index);
+            continue;
+        }
+        index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    }
+
+    String::from_utf8(masked_bytes)
+        .unwrap_or_else(|source| String::from_utf8_lossy(source.as_bytes()).into_owned())
+}
+
+fn abort_plan_cancel_if_open_raw_string_masked_source(strategy_source: &str) -> String {
+    let source_bytes = strategy_source.as_bytes();
+    let mut masked_bytes = source_bytes.to_vec();
+    let mut index = ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_ORIGIN;
+
+    while index < source_bytes.len() {
+        if let Some(end) = abort_plan_cancel_if_open_raw_string_end(source_bytes, index) {
+            abort_plan_cancel_if_open_mask_range(source_bytes, &mut masked_bytes, index, end);
+            index = end;
+            continue;
+        }
+        if let Some(end) = abort_plan_cancel_if_open_char_literal_end(source_bytes, index) {
+            index = end;
+            continue;
+        }
+        if source_bytes[index] == b'"' {
+            index = abort_plan_cancel_if_open_quoted_string_end(source_bytes, index);
+            continue;
+        }
+        index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    }
+
+    String::from_utf8(masked_bytes)
+        .unwrap_or_else(|source| String::from_utf8_lossy(source.as_bytes()).into_owned())
+}
+
+fn abort_plan_cancel_if_open_string_masked_source(strategy_source: &str) -> String {
+    let source_bytes = strategy_source.as_bytes();
+    let mut masked_bytes = source_bytes.to_vec();
+    let mut index = ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_ORIGIN;
+
+    while index < source_bytes.len() {
+        if let Some(end) = abort_plan_cancel_if_open_raw_string_end(source_bytes, index) {
+            abort_plan_cancel_if_open_mask_range(source_bytes, &mut masked_bytes, index, end);
+            index = end;
+            continue;
+        }
+        if let Some(end) = abort_plan_cancel_if_open_char_literal_end(source_bytes, index) {
+            index = end;
+            continue;
+        }
+        if source_bytes[index] == b'"' {
+            index = abort_plan_cancel_if_open_mask_quoted_string(
+                source_bytes,
+                &mut masked_bytes,
+                index,
+            );
+            continue;
+        }
+        index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    }
+
+    String::from_utf8(masked_bytes)
+        .unwrap_or_else(|source| String::from_utf8_lossy(source.as_bytes()).into_owned())
+}
+
+fn abort_plan_cancel_if_open_raw_string_end(source_bytes: &[u8], start: usize) -> Option<usize> {
+    if source_bytes.get(start) != Some(&b'r') {
+        return None;
+    }
+    let mut delimiter_index = start + ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    while source_bytes.get(delimiter_index) == Some(&b'#') {
+        delimiter_index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    }
+    if source_bytes.get(delimiter_index) != Some(&b'"') {
+        return None;
+    }
+
+    let hash_count = delimiter_index - start - ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    let mut index = delimiter_index + ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    while index < source_bytes.len() {
+        let suffix_start = index + ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+        if source_bytes[index] == b'"'
+            && abort_plan_cancel_if_open_raw_string_hash_suffix_matches(
+                source_bytes,
+                suffix_start,
+                hash_count,
+            )
+        {
+            return Some(suffix_start + hash_count);
+        }
+        index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    }
+    Some(source_bytes.len())
+}
+
+fn abort_plan_cancel_if_open_char_literal_end(source_bytes: &[u8], start: usize) -> Option<usize> {
+    if source_bytes.get(start) != Some(&b'\'') {
+        return None;
+    }
+
+    let content_start = start + ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    let content_byte = *source_bytes.get(content_start)?;
+    if abort_plan_cancel_if_open_lifetime_start_byte(content_byte)
+        && source_bytes.get(content_start + ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP)
+            != Some(&b'\'')
+    {
+        return None;
+    }
+
+    let mut index = content_start;
+    let mut escaped = false;
+    while index < source_bytes.len() {
+        let byte = source_bytes[index];
+        index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+        if abort_plan_cancel_if_open_line_separator_byte(byte) {
+            return None;
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if byte == b'\\' {
+            escaped = true;
+            continue;
+        }
+        if byte == b'\'' && index > start + ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn abort_plan_cancel_if_open_lifetime_start_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphabetic()
+}
+
+fn abort_plan_cancel_if_open_raw_string_hash_suffix_matches(
+    source_bytes: &[u8],
+    suffix_start: usize,
+    hash_count: usize,
+) -> bool {
+    let suffix_end = suffix_start + hash_count;
+    source_bytes
+        .get(suffix_start..suffix_end)
+        .is_some_and(|suffix| suffix.iter().all(|byte| *byte == b'#'))
+}
+
+fn abort_plan_cancel_if_open_mask_quoted_string(
+    source_bytes: &[u8],
+    masked_bytes: &mut [u8],
+    start: usize,
+) -> usize {
+    let end = abort_plan_cancel_if_open_quoted_string_end(source_bytes, start);
+    abort_plan_cancel_if_open_mask_range(source_bytes, masked_bytes, start, end);
+    end
+}
+
+fn abort_plan_cancel_if_open_quoted_string_end(source_bytes: &[u8], start: usize) -> usize {
+    let mut index = start;
+    let mut escaped = false;
+    while index < source_bytes.len() {
+        let byte = source_bytes[index];
+        index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if byte == b'\\' {
+            escaped = true;
+            continue;
+        }
+        if byte == b'"' && index > start + ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP {
+            return index;
+        }
+    }
+    index
+}
+
+fn abort_plan_cancel_if_open_line_comment_start(source_bytes: &[u8], index: usize) -> bool {
+    matches!(
+        source_bytes.get(index..index + ABORT_PLAN_CANCEL_IF_OPEN_COMMENT_MARKER_WIDTH),
+        Some([b'/', b'/'])
+    )
+}
+
+fn abort_plan_cancel_if_open_block_comment_start(source_bytes: &[u8], index: usize) -> bool {
+    matches!(
+        source_bytes.get(index..index + ABORT_PLAN_CANCEL_IF_OPEN_COMMENT_MARKER_WIDTH),
+        Some([b'/', b'*'])
+    )
+}
+
+fn abort_plan_cancel_if_open_block_comment_end(source_bytes: &[u8], index: usize) -> bool {
+    matches!(
+        source_bytes.get(index..index + ABORT_PLAN_CANCEL_IF_OPEN_COMMENT_MARKER_WIDTH),
+        Some([b'*', b'/'])
+    )
+}
+
+fn abort_plan_cancel_if_open_line_separator_byte(byte: u8) -> bool {
+    byte == b'\n' || byte == b'\r'
+}
+
+fn abort_plan_cancel_if_open_mask_pair(masked_bytes: &mut [u8], index: usize) {
+    masked_bytes[index] = b' ';
+    masked_bytes[index + ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP] = b' ';
+}
+
+fn abort_plan_cancel_if_open_mask_range(
+    source_bytes: &[u8],
+    masked_bytes: &mut [u8],
+    start: usize,
+    end: usize,
+) {
+    let mut index = start;
+    while index < end {
+        if !abort_plan_cancel_if_open_line_separator_byte(source_bytes[index]) {
+            masked_bytes[index] = b' ';
+        }
+        index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    }
+}
+
+fn abort_plan_cancel_if_open_mask_line_comment(
+    source_bytes: &[u8],
+    masked_bytes: &mut [u8],
+    index: &mut usize,
+) {
+    let start = *index;
+    while *index < source_bytes.len()
+        && !abort_plan_cancel_if_open_line_separator_byte(source_bytes[*index])
+    {
+        *index += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
+    }
+    abort_plan_cancel_if_open_mask_range(source_bytes, masked_bytes, start, *index);
 }
 
 fn read_release_manifest_source_file(

@@ -28,6 +28,9 @@ struct Cli {
     command: Command,
 }
 
+// Clap keeps parsed argument fields directly in enum variants; these startup-only
+// command values are not on a hot path.
+#[allow(clippy::large_enum_variant)]
 #[derive(clap::Subcommand)]
 enum Command {
     Run {
@@ -60,6 +63,9 @@ enum SecretsCommand {
     },
 }
 
+// The collector commands intentionally expose each required source path as a
+// first-class CLI argument so operators can audit the binding explicitly.
+#[allow(clippy::large_enum_variant)]
 #[derive(clap::Subcommand)]
 enum OperatorArtifactsCommand {
     GenerateStatic {

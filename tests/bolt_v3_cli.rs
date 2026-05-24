@@ -1,7 +1,12 @@
 use std::{fs, process::Command};
 
+use bolt_v2::{
+    bolt_v3_config::{LiveCanaryOperatorEvidenceBlock, load_bolt_v3_config},
+    bolt_v3_operator_artifacts::compute_operator_approval_envelope_sha256,
+};
+
 mod support;
-use support::repo_path;
+use support::{repo_path, valid_live_canary_operator_evidence};
 use tempfile::tempdir;
 
 #[test]
@@ -133,6 +138,62 @@ fn bolt_v3_cli_exposes_static_manifest_from_operator_evidence_command() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--config"));
     assert!(stdout.contains("--output"));
+}
+
+#[test]
+fn bolt_v3_cli_computes_approval_envelope_sha256_without_printing_operator_paths() {
+    let operator_evidence = valid_live_canary_operator_evidence();
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!(
+            "{root}\n{}",
+            live_canary_with_operator_evidence_toml(&operator_evidence)
+        )
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "compute-approval-envelope-sha256",
+            "--config",
+            config_path.to_str().expect("fixture path should be utf-8"),
+        ])
+        .output()
+        .expect("bolt-v3 approval-envelope hash command should run");
+
+    assert!(
+        output.status.success(),
+        "expected approval-envelope hash command to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout_json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
+    let loaded = load_bolt_v3_config(&config_path).expect("fixture root should load");
+    let expected_sha256 = compute_operator_approval_envelope_sha256(&loaded)
+        .expect("approval envelope hash should compute");
+    let stdout_object = stdout_json
+        .as_object()
+        .expect("stdout should be a JSON object");
+    assert_eq!(
+        stdout_object.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["sha256"]
+    );
+    assert_eq!(stdout_json["sha256"], expected_sha256);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for forbidden in [
+        operator_evidence.ssm_manifest_path.as_str(),
+        operator_evidence.strategy_input_evidence_path.as_str(),
+        operator_evidence.financial_envelope_path.as_str(),
+        operator_evidence.pre_run_state_path.as_str(),
+        operator_evidence.abort_plan_path.as_str(),
+        operator_evidence.approval_nonce_path.as_str(),
+        operator_evidence.approval_consumption_path.as_str(),
+        "operator-approved-canary-001",
+    ] {
+        assert!(
+            !stdout.contains(forbidden),
+            "stdout must not expose operator path or approval id {forbidden}"
+        );
+    }
 }
 
 #[test]
@@ -568,4 +629,88 @@ where
     )
     .expect("root fixture should write");
     root_path
+}
+
+fn live_canary_with_operator_evidence_toml(evidence: &LiveCanaryOperatorEvidenceBlock) -> String {
+    format!(
+        r#"
+[live_canary]
+approval_id = "operator-approved-canary-001"
+no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+max_no_submit_readiness_report_bytes = 1000000
+readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 30
+reference_quote_wait_timeout_seconds = 5
+reference_quote_probe_actor_id = "test-reference-probe"
+reference_quote_probe_log_events = false
+reference_quote_probe_log_commands = false
+max_live_order_count = 1
+max_notional_per_order = "10.00"
+
+[live_canary.operator_evidence]
+head_sha = "{head_sha}"
+max_operator_evidence_file_bytes = {max_operator_evidence_file_bytes}
+approval_consumption_max_age_seconds = {approval_consumption_max_age_seconds}
+approval_envelope_path = "{approval_envelope_path}"
+approval_envelope_sha256 = "{approval_envelope_sha256}"
+ssm_manifest_path = "{ssm_manifest_path}"
+ssm_manifest_sha256 = "{ssm_manifest_sha256}"
+strategy_input_evidence_path = "{strategy_input_evidence_path}"
+strategy_input_evidence_sha256 = "{strategy_input_evidence_sha256}"
+financial_envelope_path = "{financial_envelope_path}"
+financial_envelope_sha256 = "{financial_envelope_sha256}"
+pre_run_state_path = "{pre_run_state_path}"
+pre_run_state_sha256 = "{pre_run_state_sha256}"
+abort_plan_path = "{abort_plan_path}"
+abort_plan_sha256 = "{abort_plan_sha256}"
+canary_evidence_path = "{canary_evidence_path}"
+approval_not_before_unix_seconds = {approval_not_before_unix_seconds}
+approval_not_after_unix_seconds = {approval_not_after_unix_seconds}
+approval_nonce_path = "{approval_nonce_path}"
+approval_nonce_sha256 = "{approval_nonce_sha256}"
+approval_consumption_path = "{approval_consumption_path}"
+decision_evidence_path = "{decision_evidence_path}"
+nt_submit_event_path = "{nt_submit_event_path}"
+venue_order_state_path = "{venue_order_state_path}"
+strategy_cancel_path = "{strategy_cancel_path}"
+restart_reconciliation_path = "{restart_reconciliation_path}"
+post_run_hygiene_path = "{post_run_hygiene_path}"
+"#,
+        head_sha = toml_string(&evidence.head_sha),
+        max_operator_evidence_file_bytes = evidence.max_operator_evidence_file_bytes,
+        approval_consumption_max_age_seconds = evidence.approval_consumption_max_age_seconds,
+        approval_envelope_path = toml_string(&evidence.approval_envelope_path),
+        approval_envelope_sha256 = toml_string(&evidence.approval_envelope_sha256),
+        ssm_manifest_path = toml_string(&evidence.ssm_manifest_path),
+        ssm_manifest_sha256 = toml_string(&evidence.ssm_manifest_sha256),
+        strategy_input_evidence_path = toml_string(&evidence.strategy_input_evidence_path),
+        strategy_input_evidence_sha256 = toml_string(&evidence.strategy_input_evidence_sha256),
+        financial_envelope_path = toml_string(&evidence.financial_envelope_path),
+        financial_envelope_sha256 = toml_string(&evidence.financial_envelope_sha256),
+        pre_run_state_path = toml_string(&evidence.pre_run_state_path),
+        pre_run_state_sha256 = toml_string(&evidence.pre_run_state_sha256),
+        abort_plan_path = toml_string(&evidence.abort_plan_path),
+        abort_plan_sha256 = toml_string(&evidence.abort_plan_sha256),
+        canary_evidence_path = toml_string(&evidence.canary_evidence_path),
+        approval_not_before_unix_seconds = evidence.approval_not_before_unix_seconds,
+        approval_not_after_unix_seconds = evidence.approval_not_after_unix_seconds,
+        approval_nonce_path = toml_string(&evidence.approval_nonce_path),
+        approval_nonce_sha256 = toml_string(&evidence.approval_nonce_sha256),
+        approval_consumption_path = toml_string(&evidence.approval_consumption_path),
+        decision_evidence_path = toml_string(&evidence.decision_evidence_path),
+        nt_submit_event_path = toml_string(&evidence.nt_submit_event_path),
+        venue_order_state_path = toml_string(&evidence.venue_order_state_path),
+        strategy_cancel_path = toml_string(
+            evidence
+                .strategy_cancel_path
+                .as_deref()
+                .expect("test operator evidence should include strategy cancel path"),
+        ),
+        restart_reconciliation_path = toml_string(&evidence.restart_reconciliation_path),
+        post_run_hygiene_path = toml_string(&evidence.post_run_hygiene_path),
+    )
+}
+
+fn toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }

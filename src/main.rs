@@ -7,8 +7,8 @@ use bolt_v2::{
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
     bolt_v3_operator_artifacts::{
         PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
-        assemble_operator_packet_from_static_manifest, verify_final_operator_packet,
-        write_abort_plan_artifact_from_source_bundle_file,
+        assemble_operator_packet_from_static_manifest, compute_operator_approval_envelope_sha256,
+        verify_final_operator_packet, write_abort_plan_artifact_from_source_bundle_file,
         write_abort_plan_artifact_from_source_collectors,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_pre_run_state_artifact_from_source_bundle_file,
@@ -89,6 +89,10 @@ enum OperatorArtifactsCommand {
         config: PathBuf,
         #[arg(long)]
         output: PathBuf,
+    },
+    ComputeApprovalEnvelopeSha256 {
+        #[arg(short, long)]
+        config: PathBuf,
     },
     GeneratePreRunStateFromSourceBundle {
         #[arg(short, long)]
@@ -287,6 +291,15 @@ fn run_operator_artifacts_command(
             let loaded = load_bolt_v3_config(&config)?;
             let written = write_static_artifacts_manifest_from_operator_evidence(&loaded, &output)?;
             print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::ComputeApprovalEnvelopeSha256 { config } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let sha256 = compute_operator_approval_envelope_sha256(&loaded)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({ "sha256": sha256 }))?
+            );
+            Ok(())
         }
         OperatorArtifactsCommand::GeneratePreRunStateFromSourceBundle {
             config,

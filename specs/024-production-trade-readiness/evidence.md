@@ -322,3 +322,13 @@ Conclusion: T124 binds through the `strategy_input_evidence_path`/`strategy_inpu
 - `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 The final-packet verifier now parses and validates the financial envelope, pre-run-state artifact, and abort-plan artifact against the loaded root TOML instead of accepting only static-manifest path/hash agreement. T036/T037 remain open because real approved artifact files and `config/live.local.toml` operator-evidence bindings have not been produced in this worktree.
+
+## T035A T128 Approval-Envelope Hash CLI Evidence
+
+- Read-only subagent audit `019e5bd8-94ae-7f02-8275-537100c99b9c` found that `operator-artifacts assemble-final` requires `[live_canary.operator_evidence].approval_envelope_sha256` to already equal the canonical approval-envelope hash before it writes `approval-envelope.json` or `operator-evidence-packet.json`, while `compute_operator_approval_envelope_sha256` existed only as a Rust library function.
+- RED: `cargo test --test bolt_v3_cli bolt_v3_cli_computes_approval_envelope_sha256_without_printing_operator_paths -- --nocapture` failed because `operator-artifacts compute-approval-envelope-sha256` was not a recognized subcommand.
+- GREEN: `cargo test --test bolt_v3_cli bolt_v3_cli_computes_approval_envelope_sha256_without_printing_operator_paths -- --nocapture` passed: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_final_operator_packet_assembly_command -- --nocapture`: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_static_manifest_from_operator_evidence_command -- --nocapture`: 1 passed, 0 failed.
+
+`operator-artifacts compute-approval-envelope-sha256 --config <root.toml>` now loads the approved root TOML, computes the canonical hash through the same non-circular approval-envelope construction used by final packet assembly, and prints only `{ "sha256": "..." }`. It does not read AWS/SSM, run no-submit, submit/cancel orders, mutate live config, or print operator evidence paths, raw approval IDs, nonce material, or secrets. T036/T037 remain open until real artifacts are present and the approved root TOML is updated with the final operator-evidence paths/hashes.

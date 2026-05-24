@@ -6857,6 +6857,14 @@ classification = "operator_artifact_cli_summary_field"
 reason = "This names the CLI JSON summary SHA-256 field for generated artifacts; the value is evidence output metadata."
 
 [[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"sha256"'''
+context = '''serde_json::to_string_pretty(&serde_json::json!({ "sha256": sha256 }))?'''
+classification = "operator_artifact_cli_summary_field"
+reason = "This names the CLI JSON field for the computed approval-envelope SHA-256; the value is evidence output metadata."
+
+[[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"down_instrument_id"'''

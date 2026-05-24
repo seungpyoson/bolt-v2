@@ -77,6 +77,7 @@
 **Independent Test**: `operator-artifacts verify-final` passes only for the exact root TOML and final packet with matching artifact hashes.
 
 - [x] T035 [US5] Add a RED end-to-end final-packet test in `tests/bolt_v3_operator_artifacts.rs` that fails until T124-T127 artifacts and `[live_canary.operator_evidence]` exist together.
+- [x] T035A [US5] Add a non-live CLI hash step for computing the canonical `approval_envelope_sha256` required before `operator-artifacts assemble-final` can write the approval envelope and operator packet.
 - [ ] T036 [US5] Assemble blocker-free `static-artifacts-manifest.json`, `approval-envelope.json`, and `operator-evidence-packet.json` from real artifacts and record paths in `specs/024-production-trade-readiness/final-packet.md`.
 - [ ] T037 [US5] Update the approved root TOML operator-evidence block in `config/live.local.toml` with final artifact paths and hashes without printing secrets.
 - [ ] T038 [US5] Run `operator-artifacts verify-final` against the exact root TOML and final packet; record command, head, hashes, and result in `specs/024-production-trade-readiness/evidence.md`.

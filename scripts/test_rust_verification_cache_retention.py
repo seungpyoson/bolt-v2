@@ -2798,6 +2798,53 @@ printf '123 {escaped_command}\\n'
     if failures:
         raise AssertionError("managed cargo clean must refuse before deletion when related Rust processes are active: " + "; ".join(failures))
 
+
+def assert_managed_cargo_clean_refuses_symlinked_target() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo)
+        root_base = tmp_path / "rust-root"
+        namespace = root_base / "bolt-v2"
+        namespace.mkdir(parents=True)
+        outside = tmp_path / "outside-target"
+        outside.mkdir()
+        outside_payload = outside / "payload.bin"
+        outside_payload.write_bytes(b"outside")
+        (namespace / "target").symlink_to(outside, target_is_directory=True)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker = tmp_path / "cargo-started"
+        write_executable(
+            bin_dir / "cargo",
+            f"""#!/usr/bin/env bash
+touch {marker}
+rm -f {outside_payload}
+exit 0
+""",
+        )
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+exit 0
+""",
+        )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cargo", "--repo", str(repo), "--", "clean"], env=env)
+        combined = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0 or marker.exists() or not outside_payload.exists() or "symlink" not in combined.lower():
+            raise AssertionError(
+                "managed cargo clean must refuse a symlinked managed target before invoking cargo: "
+                f"returncode={result.returncode} cargo_started={marker.exists()} "
+                f"outside_exists={outside_payload.exists()} stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
 def assert_v6_red_disk_preflight_before_managed_cargo_and_run() -> None:
     failures: list[str] = []
     cases = [
@@ -4400,6 +4447,7 @@ def assert_v6_red_policy_gaps() -> None:
         assert_v6_red_active_process_parser_does_not_treat_trustd_as_rust,
         assert_v6_red_active_process_parser_does_not_treat_rust_named_scripts_as_rust,
         assert_v6_red_managed_cargo_clean_refuses_active_process,
+        assert_managed_cargo_clean_refuses_symlinked_target,
         assert_v6_red_disk_preflight_before_managed_cargo_and_run,
         assert_v6_red_nextest_archive_extraction_uses_exclusive_cache_lock,
         assert_managed_cargo_clean_keeps_disk_pressure_escape_hatch,
@@ -4460,6 +4508,7 @@ def main() -> int:
     assert_cache_prune_active_process_scan_uses_portable_ps_columns()
     assert_managed_cargo_preflight_errors_are_structured()
     assert_managed_cargo_clean_target_errors_are_structured()
+    assert_managed_cargo_clean_refuses_symlinked_target()
     assert_cache_prune_apply_ignores_unrelated_process_by_lsof_cwd()
     assert_cache_prune_skips_unrelated_process_before_cwd_lookup()
     assert_cache_prune_apply_ignores_visible_unrelated_process_by_cwd()

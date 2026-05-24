@@ -2425,6 +2425,7 @@ def clean_preflight_refusal_payload(
 ) -> tuple[pathlib.Path | None, dict[str, Any] | None]:
     try:
         inspected_target = target if target is not None else target_dir(repo, policy)
+        validate_managed_target_path(inspected_target, policy)
         refusal = active_process_refusal_payload(repo, inspected_target, policy)
     except (KeyError, OSError, PolicyError, FileNotFoundError) as exc:
         return target, refusal_payload(

@@ -160,6 +160,22 @@ The collector is non-live and source-owned: it reads a bounded local JSON source
 
 The collectors are non-live and source-owned: they read bounded local JSON source proofs, validate schema/record kinds, validate lowercase source/evidence hashes, bind adapter signing to the caller-provided release-manifest CLOB signing version, require recovered-signer match proof, derive pUSD collateral coverage from balance/allowance/required decimals, require the CLOB V2 fee-behavior policy booleans and valid price/fee-rate bounds, return only booleans plus hashes, and do not write `pre-run-state.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T021/T022.
 
+## T023/T024 Source-Owned T126 Pre-Run-State Binding Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts pre_run_state_writer_emits_artifact_from_source_owned_collectors -- --nocapture` failed with `E0425`/`E0422` because `write_pre_run_state_artifact_from_source_collectors` and `PreRunStateSourceCollectorInputs` did not exist.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts pre_run_state_writer_emits_artifact_from_source_owned_collectors -- --nocapture` passed: 1 passed, 0 failed.
+- RED: `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_pre_run_state_source_collector_command -- --nocapture` failed because `generate-pre-run-state-from-source-collectors` was not exposed.
+- GREEN: `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_pre_run_state_source_collector_command -- --nocapture` passed: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts pre_run_ -- --nocapture`: 52 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `python3 -B scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `python3 -B scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `git diff --check`: passed.
+- `just fmt-check`: passed.
+- `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+T126 no longer depends on a caller-supplied pre-run source bundle for local artifact generation. `write_pre_run_state_artifact_from_source_collectors` and the `operator-artifacts generate-pre-run-state-from-source-collectors` CLI path collect release-manifest, host-clock, venue-account-state, market/window, funding/margin, single-runner-lock, egress-identity, CLOB V2 adapter-signing, CLOB V2 collateral-accounting, and CLOB V2 fee-behavior proofs from bounded local source inputs, then write the final `pre-run-state.json`. The schema-level operator evidence config still binds the final artifact by `pre_run_state_path` and `pre_run_state_sha256`; the approved root TOML update remains T037 with the full final packet.
+
 ## T025/T026 NT-Accepted Venue-Pending Abort Collector Evidence
 
 - RED: `cargo test --test bolt_v3_operator_artifacts abort_plan_nt_accepted_venue_pending -- --nocapture` failed with `E0425`/`E0422` because `collect_abort_plan_nt_accepted_venue_pending_source_proof` and `Phase8AbortPlanNtAcceptedVenuePendingSourceProof` did not exist.

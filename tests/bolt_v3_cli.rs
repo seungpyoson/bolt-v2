@@ -162,6 +162,61 @@ fn bolt_v3_cli_exposes_source_bundle_artifact_commands() {
 }
 
 #[test]
+fn bolt_v3_cli_exposes_pre_run_state_source_collector_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-pre-run-state-from-source-collectors",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 source-owned pre-run-state help should run");
+
+    assert!(
+        output.status.success(),
+        "expected source-owned pre-run-state help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"), "{stdout}");
+    assert!(stdout.contains("--strategy-instance-id"), "{stdout}");
+    assert!(stdout.contains("--cargo-toml"), "{stdout}");
+    assert!(stdout.contains("--cargo-lock"), "{stdout}");
+    assert!(stdout.contains("--clob-signing-source"), "{stdout}");
+    assert!(stdout.contains("--host-clock-source"), "{stdout}");
+    assert!(stdout.contains("--venue-account-state-source"), "{stdout}");
+    assert!(stdout.contains("--funding-margin-source"), "{stdout}");
+    assert!(stdout.contains("--strategy-input-evidence"), "{stdout}");
+    assert!(
+        stdout.contains("--strategy-input-evidence-sha256"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("--expected-price-to-beat-source"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("--single-runner-lock"), "{stdout}");
+    assert!(stdout.contains("--egress-identity-source"), "{stdout}");
+    assert!(
+        stdout.contains("--clob-v2-adapter-signing-source"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("--clob-v2-collateral-accounting-source"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("--clob-v2-fee-behavior-source"), "{stdout}");
+    assert!(stdout.contains("--max-source-bytes"), "{stdout}");
+    assert!(stdout.contains("--max-host-clock-skew-millis"), "{stdout}");
+    assert!(
+        stdout.contains("--max-single-runner-lock-bytes"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("--output"), "{stdout}");
+}
+
+#[test]
 fn bolt_v3_cli_exposes_abort_plan_source_collector_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([

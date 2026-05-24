@@ -6,11 +6,13 @@ use bolt_v2::{
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
     bolt_v3_operator_artifacts::{
-        WrittenOperatorArtifact, assemble_operator_packet_from_static_manifest,
-        verify_final_operator_packet, write_abort_plan_artifact_from_source_bundle_file,
+        PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
+        assemble_operator_packet_from_static_manifest, verify_final_operator_packet,
+        write_abort_plan_artifact_from_source_bundle_file,
         write_abort_plan_artifact_from_source_collectors,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_pre_run_state_artifact_from_source_bundle_file,
+        write_pre_run_state_artifact_from_source_collectors,
         write_static_artifacts_manifest_from_operator_evidence, write_static_operator_artifacts,
         write_strategy_input_evidence_artifact_from_decision_evidence_file,
     },
@@ -91,6 +93,48 @@ enum OperatorArtifactsCommand {
         source_bundle: PathBuf,
         #[arg(long)]
         max_source_bundle_bytes: u64,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    GeneratePreRunStateFromSourceCollectors {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        cargo_toml: PathBuf,
+        #[arg(long)]
+        cargo_lock: PathBuf,
+        #[arg(long)]
+        clob_signing_source: PathBuf,
+        #[arg(long)]
+        host_clock_source: PathBuf,
+        #[arg(long)]
+        venue_account_state_source: PathBuf,
+        #[arg(long)]
+        funding_margin_source: PathBuf,
+        #[arg(long)]
+        strategy_input_evidence: PathBuf,
+        #[arg(long)]
+        strategy_input_evidence_sha256: String,
+        #[arg(long)]
+        expected_price_to_beat_source: String,
+        #[arg(long)]
+        single_runner_lock: PathBuf,
+        #[arg(long)]
+        egress_identity_source: PathBuf,
+        #[arg(long)]
+        clob_v2_adapter_signing_source: PathBuf,
+        #[arg(long)]
+        clob_v2_collateral_accounting_source: PathBuf,
+        #[arg(long)]
+        clob_v2_fee_behavior_source: PathBuf,
+        #[arg(long)]
+        max_source_bytes: u64,
+        #[arg(long)]
+        max_host_clock_skew_millis: u64,
+        #[arg(long)]
+        max_single_runner_lock_bytes: u64,
         #[arg(long)]
         output: PathBuf,
     },
@@ -251,6 +295,56 @@ fn run_operator_artifacts_command(
                 &strategy_instance_id,
                 &source_bundle,
                 max_source_bundle_bytes,
+                &output,
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::GeneratePreRunStateFromSourceCollectors {
+            config,
+            strategy_instance_id,
+            cargo_toml,
+            cargo_lock,
+            clob_signing_source,
+            host_clock_source,
+            venue_account_state_source,
+            funding_margin_source,
+            strategy_input_evidence,
+            strategy_input_evidence_sha256,
+            expected_price_to_beat_source,
+            single_runner_lock,
+            egress_identity_source,
+            clob_v2_adapter_signing_source,
+            clob_v2_collateral_accounting_source,
+            clob_v2_fee_behavior_source,
+            max_source_bytes,
+            max_host_clock_skew_millis,
+            max_single_runner_lock_bytes,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let inputs = PreRunStateSourceCollectorInputs {
+                cargo_toml_path: &cargo_toml,
+                cargo_lock_path: &cargo_lock,
+                clob_signing_source_path: &clob_signing_source,
+                host_clock_source_path: &host_clock_source,
+                venue_account_state_source_path: &venue_account_state_source,
+                funding_margin_source_path: &funding_margin_source,
+                strategy_input_evidence_path: &strategy_input_evidence,
+                strategy_input_evidence_sha256: &strategy_input_evidence_sha256,
+                expected_price_to_beat_source: &expected_price_to_beat_source,
+                single_runner_lock_path: &single_runner_lock,
+                egress_identity_source_path: &egress_identity_source,
+                clob_v2_adapter_signing_source_path: &clob_v2_adapter_signing_source,
+                clob_v2_collateral_accounting_source_path: &clob_v2_collateral_accounting_source,
+                clob_v2_fee_behavior_source_path: &clob_v2_fee_behavior_source,
+                max_source_bytes,
+                max_host_clock_skew_millis,
+                max_single_runner_lock_bytes,
+            };
+            let written = write_pre_run_state_artifact_from_source_collectors(
+                &loaded,
+                &strategy_instance_id,
+                inputs,
                 &output,
             )?;
             print_written_operator_artifact(&written)

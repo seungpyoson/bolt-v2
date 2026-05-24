@@ -1540,6 +1540,234 @@ fn pre_run_state_writer_emits_artifact_from_source_bundle_file() {
 }
 
 #[test]
+fn pre_run_state_writer_emits_artifact_from_source_owned_collectors() {
+    let fixture = strategy_input_runtime_fixture();
+    let temp = fixture.temp.path();
+    let strategy_input_path = temp.join("strategy-input.json");
+    let strategy_input = bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_runtime_snapshot(
+        &fixture.loaded,
+        &fixture.strategy_instance_id,
+        &fixture.snapshot,
+        &fixture.market_selection_source_ref,
+        100_000,
+        &fixture.candidate_market_start_timestamps_ms,
+        &strategy_input_path,
+    )
+    .expect("source-bound strategy input evidence should write");
+    let clob_signing_source_path = temp.join("eip712.rs");
+    std::fs::write(
+        &clob_signing_source_path,
+        r#"
+const CLOB_AUTH_DOMAIN_VERSION: &str = "1";
+const DOMAIN_VERSION: &str = "2";
+"#,
+    )
+    .expect("CLOB signing source fixture should write");
+    let host_clock_source_path = temp.join("host-clock-source.json");
+    std::fs::write(
+        &host_clock_source_path,
+        host_clock_source_fixture(1716510000125, 1716510000000),
+    )
+    .expect("host clock source fixture should write");
+    let venue_account_state_source_path = temp.join("venue-account-state-source.json");
+    std::fs::write(
+        &venue_account_state_source_path,
+        venue_account_state_source_fixture(0, 0, &sha256_text("venue-account-state")),
+    )
+    .expect("venue account state source fixture should write");
+    let funding_margin_source_path = temp.join("funding-margin-source.json");
+    std::fs::write(
+        &funding_margin_source_path,
+        funding_margin_source_fixture("10.00", "1.25", &sha256_text("funding-margin")),
+    )
+    .expect("funding margin source fixture should write");
+    let egress_identity_source_path = temp.join("egress-identity-source.json");
+    std::fs::write(
+        &egress_identity_source_path,
+        egress_identity_source_fixture(&sha256_text("approved-egress-identity")),
+    )
+    .expect("egress identity source fixture should write");
+    let clob_v2_adapter_signing_source_path = temp.join("clob-v2-signing-source.json");
+    std::fs::write(
+        &clob_v2_adapter_signing_source_path,
+        clob_v2_adapter_signing_source_fixture(
+            "2",
+            &sha256_text("clob-signing-contract"),
+            &sha256_text("clob-domain-requirements"),
+            &sha256_text("clob-signed-order"),
+            &sha256_text("clob-signature-verification"),
+            true,
+        ),
+    )
+    .expect("CLOB V2 signing source fixture should write");
+    let clob_v2_collateral_accounting_source_path = temp.join("clob-v2-collateral-source.json");
+    std::fs::write(
+        &clob_v2_collateral_accounting_source_path,
+        clob_v2_collateral_accounting_source_fixture(
+            true,
+            "10.00",
+            "10.00",
+            "1.25",
+            &sha256_text("clob-collateral-account"),
+            &sha256_text("clob-collateral-assumptions"),
+        ),
+    )
+    .expect("CLOB V2 collateral source fixture should write");
+    let clob_v2_fee_behavior_source_path = temp.join("clob-v2-fee-source.json");
+    std::fs::write(
+        &clob_v2_fee_behavior_source_path,
+        clob_v2_fee_behavior_source_fixture(
+            true,
+            true,
+            true,
+            true,
+            "0.55",
+            "0.01",
+            &sha256_text("clob-fee-account"),
+            &sha256_text("clob-fee-assumptions"),
+        ),
+    )
+    .expect("CLOB V2 fee source fixture should write");
+    let single_runner_lock_path = temp.join("single-runner-lock.json");
+    let pre_run_state_path = temp.join("pre-run-state.json");
+
+    let release_manifest =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_release_manifest_source_proof(
+            &repo_path("Cargo.toml"),
+            &repo_path("Cargo.lock"),
+            &clob_signing_source_path,
+            1_000_000,
+        )
+        .expect("release manifest source proof should collect");
+    let host_clock = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_source_path,
+        1_000_000,
+        250,
+    )
+    .expect("host clock source proof should collect");
+    let venue_account =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
+            &venue_account_state_source_path,
+            1_000_000,
+        )
+        .expect("venue account state source proof should collect");
+    let market = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_market_window_source_proof(
+        &strategy_input_path,
+        &strategy_input.sha256,
+        fixture.snapshot.price_to_beat_source.as_str(),
+        1_000_000,
+    )
+    .expect("market/window source proof should collect");
+    let funding = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_funding_margin_source_proof(
+        &funding_margin_source_path,
+        1_000_000,
+    )
+    .expect("funding margin source proof should collect");
+    let egress = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_egress_identity_source_proof(
+        &egress_identity_source_path,
+        1_000_000,
+    )
+    .expect("egress identity source proof should collect");
+    let clob_signing =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_adapter_signing_source_proof(
+            &clob_v2_adapter_signing_source_path,
+            1_000_000,
+            &release_manifest.clob_signing_version,
+        )
+        .expect("CLOB V2 signing source proof should collect");
+    let clob_collateral = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_collateral_accounting_source_proof(
+        &clob_v2_collateral_accounting_source_path,
+        1_000_000,
+    )
+    .expect("CLOB V2 collateral source proof should collect");
+    let clob_fee =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_fee_behavior_source_proof(
+            &clob_v2_fee_behavior_source_path,
+            1_000_000,
+        )
+        .expect("CLOB V2 fee source proof should collect");
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_pre_run_state_artifact_from_source_collectors(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            bolt_v2::bolt_v3_operator_artifacts::PreRunStateSourceCollectorInputs {
+                cargo_toml_path: &repo_path("Cargo.toml"),
+                cargo_lock_path: &repo_path("Cargo.lock"),
+                clob_signing_source_path: &clob_signing_source_path,
+                host_clock_source_path: &host_clock_source_path,
+                venue_account_state_source_path: &venue_account_state_source_path,
+                funding_margin_source_path: &funding_margin_source_path,
+                strategy_input_evidence_path: &strategy_input_path,
+                strategy_input_evidence_sha256: &strategy_input.sha256,
+                expected_price_to_beat_source: fixture.snapshot.price_to_beat_source.as_str(),
+                single_runner_lock_path: &single_runner_lock_path,
+                egress_identity_source_path: &egress_identity_source_path,
+                clob_v2_adapter_signing_source_path: &clob_v2_adapter_signing_source_path,
+                clob_v2_collateral_accounting_source_path:
+                    &clob_v2_collateral_accounting_source_path,
+                clob_v2_fee_behavior_source_path: &clob_v2_fee_behavior_source_path,
+                max_source_bytes: 1_000_000,
+                max_host_clock_skew_millis: 250,
+                max_single_runner_lock_bytes: 100_000,
+            },
+            &pre_run_state_path,
+        )
+        .expect("source-owned collectors should write pre-run-state artifact");
+
+    let artifact_bytes =
+        std::fs::read(&pre_run_state_path).expect("pre-run-state artifact should exist");
+    assert_eq!(written.sha256, hex::encode(Sha256::digest(&artifact_bytes)));
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&artifact_bytes).expect("pre-run state should be JSON");
+    assert_eq!(
+        json["host_clock_skew_evidence_hash"],
+        host_clock.host_clock_skew_evidence_hash
+    );
+    assert_eq!(
+        json["venue_account_state_evidence_hash"],
+        venue_account.venue_account_state_evidence_hash
+    );
+    assert_eq!(
+        json["market_state_evidence_hash"],
+        market.market_state_evidence_hash
+    );
+    assert_eq!(
+        json["funding_margin_evidence_hash"],
+        funding.funding_margin_evidence_hash
+    );
+    assert_eq!(
+        json["single_runner_lock_evidence_hash"],
+        sha256_file(&single_runner_lock_path)
+    );
+    assert_eq!(
+        json["egress_identity_evidence_hash"],
+        egress.egress_identity_evidence_hash
+    );
+    assert_eq!(
+        json["clob_v2_adapter_signing_evidence_hash"],
+        clob_signing.clob_v2_adapter_signing_evidence_hash
+    );
+    assert_eq!(
+        json["clob_v2_collateral_accounting_evidence_hash"],
+        clob_collateral.clob_v2_collateral_accounting_evidence_hash
+    );
+    assert_eq!(
+        json["clob_v2_fee_behavior_evidence_hash"],
+        clob_fee.clob_v2_fee_behavior_evidence_hash
+    );
+    assert_eq!(
+        json["release_manifest_clob_signing_version"],
+        release_manifest.clob_signing_version
+    );
+    assert_eq!(
+        json["release_manifest_evidence_hash"],
+        release_manifest.evidence_hash
+    );
+}
+
+#[test]
 fn pre_run_state_writer_rejects_source_bundle_false_proof_without_artifact() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded

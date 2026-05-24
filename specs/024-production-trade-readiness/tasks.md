@@ -49,8 +49,8 @@
 - [x] T020 [US3] Implement approved egress identity source collector in `src/bolt_v3_operator_artifacts.rs`.
 - [x] T021 [P] [US3] Add RED tests for CLOB V2 adapter signing, collateral accounting, and fee behavior collectors in `tests/bolt_v3_operator_artifacts.rs`.
 - [x] T022 [US3] Implement CLOB V2 adapter signing, collateral accounting, and fee behavior collectors in `src/bolt_v3_operator_artifacts.rs`.
-- [ ] T023 [US3] Bind all T126 collector outputs through operator evidence config in `config/live.local.toml` and runtime-literal audit rows in `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`.
-- [ ] T024 [US3] Run focused T126 tests plus runtime-literal verification and record evidence in `specs/024-production-trade-readiness/evidence.md`.
+- [x] T023 [US3] Bind all T126 collector outputs into source-owned pre-run-state artifact generation and CLI wiring; final `config/live.local.toml` `pre_run_state_path`/`pre_run_state_sha256` binding remains T037.
+- [x] T024 [US3] Run focused T126 tests plus runtime-literal verification and record evidence in `specs/024-production-trade-readiness/evidence.md`.
 
 ## Phase 5: User Story 4 - Abort-Plan Collectors
 

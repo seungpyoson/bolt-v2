@@ -2004,6 +2004,103 @@ pub fn write_pre_run_state_artifact_from_source_proofs(
     write_json_artifact_create_new(path, &artifact)
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PreRunStateSourceCollectorInputs<'a> {
+    pub cargo_toml_path: &'a Path,
+    pub cargo_lock_path: &'a Path,
+    pub clob_signing_source_path: &'a Path,
+    pub host_clock_source_path: &'a Path,
+    pub venue_account_state_source_path: &'a Path,
+    pub funding_margin_source_path: &'a Path,
+    pub strategy_input_evidence_path: &'a Path,
+    pub strategy_input_evidence_sha256: &'a str,
+    pub expected_price_to_beat_source: &'a str,
+    pub single_runner_lock_path: &'a Path,
+    pub egress_identity_source_path: &'a Path,
+    pub clob_v2_adapter_signing_source_path: &'a Path,
+    pub clob_v2_collateral_accounting_source_path: &'a Path,
+    pub clob_v2_fee_behavior_source_path: &'a Path,
+    pub max_source_bytes: u64,
+    pub max_host_clock_skew_millis: u64,
+    pub max_single_runner_lock_bytes: u64,
+}
+
+pub fn write_pre_run_state_artifact_from_source_collectors(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    inputs: PreRunStateSourceCollectorInputs<'_>,
+    path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let release_manifest = collect_pre_run_release_manifest_source_proof(
+        inputs.cargo_toml_path,
+        inputs.cargo_lock_path,
+        inputs.clob_signing_source_path,
+        inputs.max_source_bytes,
+    )?;
+    let host_clock = collect_pre_run_host_clock_source_proof(
+        inputs.host_clock_source_path,
+        inputs.max_source_bytes,
+        inputs.max_host_clock_skew_millis,
+    )?;
+    let venue_account = collect_pre_run_venue_account_state_source_proof(
+        inputs.venue_account_state_source_path,
+        inputs.max_source_bytes,
+    )?;
+    let market_window = collect_pre_run_market_window_source_proof(
+        inputs.strategy_input_evidence_path,
+        inputs.strategy_input_evidence_sha256,
+        inputs.expected_price_to_beat_source,
+        inputs.max_source_bytes,
+    )?;
+    let funding_margin = collect_pre_run_funding_margin_source_proof(
+        inputs.funding_margin_source_path,
+        inputs.max_source_bytes,
+    )?;
+    let egress_identity = collect_pre_run_egress_identity_source_proof(
+        inputs.egress_identity_source_path,
+        inputs.max_source_bytes,
+    )?;
+    let clob_signing = collect_pre_run_clob_v2_adapter_signing_source_proof(
+        inputs.clob_v2_adapter_signing_source_path,
+        inputs.max_source_bytes,
+        &release_manifest.clob_signing_version,
+    )?;
+    let clob_collateral = collect_pre_run_clob_v2_collateral_accounting_source_proof(
+        inputs.clob_v2_collateral_accounting_source_path,
+        inputs.max_source_bytes,
+    )?;
+    let clob_fee = collect_pre_run_clob_v2_fee_behavior_source_proof(
+        inputs.clob_v2_fee_behavior_source_path,
+        inputs.max_source_bytes,
+    )?;
+    let single_runner = collect_pre_run_single_runner_lock_source_proof(
+        loaded,
+        strategy_instance_id,
+        inputs.single_runner_lock_path,
+        inputs.max_single_runner_lock_bytes,
+    )?;
+    let proofs = OwnedPhase8PreRunStateSourceProofs {
+        host_clock_skew_evidence_hash: host_clock.host_clock_skew_evidence_hash,
+        venue_account_state_evidence_hash: venue_account.venue_account_state_evidence_hash,
+        market_state_evidence_hash: market_window.market_state_evidence_hash,
+        funding_margin_evidence_hash: funding_margin.funding_margin_evidence_hash,
+        single_runner_lock_evidence_hash: single_runner.single_runner_lock_evidence_hash,
+        egress_identity_evidence_hash: egress_identity.egress_identity_evidence_hash,
+        clob_v2_adapter_signing_evidence_hash: clob_signing.clob_v2_adapter_signing_evidence_hash,
+        clob_v2_collateral_accounting_evidence_hash: clob_collateral
+            .clob_v2_collateral_accounting_evidence_hash,
+        clob_v2_fee_behavior_evidence_hash: clob_fee.clob_v2_fee_behavior_evidence_hash,
+        release_manifest_clob_signing_version: release_manifest.clob_signing_version,
+        release_manifest_evidence_hash: release_manifest.evidence_hash,
+    };
+    write_pre_run_state_artifact_from_source_proofs(
+        loaded,
+        strategy_instance_id,
+        proofs.as_source_proofs(),
+        path,
+    )
+}
+
 #[derive(Debug)]
 struct OwnedPhase8PreRunStateSourceProofs {
     host_clock_skew_evidence_hash: String,

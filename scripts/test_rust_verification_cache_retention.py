@@ -3388,6 +3388,177 @@ printf '123 1 cargo build\n'
             )
 
 
+def assert_cleanup_apply_refuses_symlinked_managed_target() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        write_policy_with_cache(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    """\
+
+                    [cleanup.worktree_targets]
+                    dirname = "target"
+                    """
+                )
+            )
+        root_base = tmp_path / "rust-root"
+        namespace = root_base / "bolt-v2"
+        namespace.mkdir(parents=True)
+        outside = tmp_path / "outside-target"
+        outside.mkdir()
+        outside_payload = outside / "payload.bin"
+        outside_payload.write_bytes(b"outside")
+        (namespace / "target").symlink_to(outside, target_is_directory=True)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+exit 0
+""",
+        )
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cleanup", "--repo", str(repo), "--apply", "--json"], env=env)
+        combined = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0 or not outside_payload.exists() or "symlink" not in combined.lower():
+            raise AssertionError(
+                "cleanup apply must refuse a symlinked managed target before active-process scanning: "
+                f"returncode={result.returncode} outside_exists={outside_payload.exists()} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
+def assert_cleanup_apply_refuses_repo_scoped_process_for_tmp_bundle_candidate() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        tmp_parent = tmp_path / "tmp"
+        tmp_parent.mkdir()
+        write_policy_with_cache(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    f"""\
+
+                    [cleanup.tmp_bundles]
+                    parent = "{tmp_parent}"
+                    prefix = "bolt-v2-"
+                    prune_after_days = 1
+                    """
+                )
+            )
+
+        old_bundle = tmp_parent / "bolt-v2-old-review"
+        old_bundle.mkdir()
+        old_payload = old_bundle / "payload.bin"
+        old_payload.write_bytes(b"old")
+        old_time = time.time() - (2 * 24 * 60 * 60)
+        os.utime(old_bundle, (old_time, old_time))
+        os.utime(old_payload, (old_time, old_time))
+        outside_cwd = tmp_path / "outside-cwd"
+        outside_cwd.mkdir()
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            f"""#!/usr/bin/env bash
+printf '123 1 cargo build --manifest-path {repo / "Cargo.toml"}\\n'
+""",
+        )
+        proc_dir = tmp_path / "proc" / "123"
+        proc_dir.mkdir(parents=True)
+        (proc_dir / "cwd").symlink_to(outside_cwd)
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
+        env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "proc")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cleanup", "--repo", str(repo), "--apply", "--json"], env=env)
+        combined = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0 or not old_bundle.exists() or "active_process" not in combined:
+            raise AssertionError(
+                "cleanup apply must use the real repo context when checking tmp-bundle candidates: "
+                f"returncode={result.returncode} bundle_exists={old_bundle.exists()} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
+def assert_cleanup_apply_refuses_repo_scoped_process_for_worktree_target_candidate() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "--allow-empty", "-m", "init"],
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        worktree = tmp_path / "bolt-v2-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "cleanup-repo-scope-test", str(worktree)],
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        write_policy_with_cache(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    """\
+
+                    [cleanup.worktree_targets]
+                    dirname = "target"
+                    """
+                )
+            )
+
+        target = worktree / "target"
+        target.mkdir()
+        protected = target / "protected.bin"
+        protected.write_bytes(b"active")
+        outside_cwd = tmp_path / "outside-cwd"
+        outside_cwd.mkdir()
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            f"""#!/usr/bin/env bash
+printf '123 1 cargo build --manifest-path {repo / "Cargo.toml"}\\n'
+""",
+        )
+        proc_dir = tmp_path / "proc" / "123"
+        proc_dir.mkdir(parents=True)
+        (proc_dir / "cwd").symlink_to(outside_cwd)
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
+        env["RUST_VERIFICATION_PROCESS_CWD_BASE"] = str(tmp_path / "proc")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cleanup", "--repo", str(repo), "--apply", "--json"], env=env)
+        combined = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0 or not target.exists() or "active_process" not in combined:
+            raise AssertionError(
+                "cleanup apply must use the real repo context when checking worktree target candidates: "
+                f"returncode={result.returncode} target_exists={target.exists()} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
 def assert_cleanup_apply_removes_registered_worktree_target_only() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -3624,7 +3795,11 @@ def assert_cleanup_apply_rechecks_candidate_before_deletion() -> None:
             owner.active_process_refusal_payload = lambda _repo, _target, _policy: None
             owner.cache_lock = lambda _policy, *, exclusive: contextlib.nullcontext(lock_modes.append(exclusive))
 
-            def fake_candidate_refusal(entry: dict[str, object], _policy: dict[str, object]) -> dict[str, object] | None:
+            def fake_candidate_refusal(
+                _repo: pathlib.Path,
+                entry: dict[str, object],
+                _policy: dict[str, object],
+            ) -> dict[str, object] | None:
                 candidate_checks.append(str(entry["path"]))
                 if len(candidate_checks) <= len(candidates):
                     return None
@@ -3719,7 +3894,11 @@ def assert_cleanup_apply_reports_partial_removals_on_late_candidate_refusal() ->
             owner.active_process_refusal_payload = lambda _repo, _target, _policy: None
             owner.cache_lock = lambda _policy, *, exclusive: contextlib.nullcontext()
 
-            def fake_candidate_refusal(entry: dict[str, object], _policy: dict[str, object]) -> dict[str, object] | None:
+            def fake_candidate_refusal(
+                _repo: pathlib.Path,
+                entry: dict[str, object],
+                _policy: dict[str, object],
+            ) -> dict[str, object] | None:
                 candidate_checks.append(str(entry["path"]))
                 if len(candidate_checks) < 4:
                     return None
@@ -3748,6 +3927,99 @@ def assert_cleanup_apply_reports_partial_removals_on_late_candidate_refusal() ->
             raise AssertionError(
                 "cleanup apply must report partial removals when a later candidate recheck refuses: "
                 f"payload={payload!r} removed={removed!r} candidate_checks={candidate_checks!r}"
+            )
+
+
+def assert_cleanup_candidate_rechecks_use_repo_context_with_candidate_scope() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        tmp_bundle = tmp_path / "tmp" / "bolt-v2-old"
+        tmp_bundle.mkdir(parents=True)
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        worktree_target = worktree / "target"
+        worktree_target.mkdir()
+        owner = load_owner_module()
+        candidates = [
+            {
+                "bytes": 1,
+                "class": "tmp_bundle",
+                "path": str(tmp_bundle),
+                "parent": str(tmp_bundle.parent),
+                "reason": "test",
+            },
+            {
+                "bytes": 1,
+                "class": "worktree_target",
+                "dirname": "target",
+                "path": str(worktree_target),
+                "reason": "test",
+                "worktree": str(worktree),
+            },
+        ]
+        checks: list[tuple[pathlib.Path, pathlib.Path, tuple[pathlib.Path, ...]]] = []
+        originals = {
+            "load_policy": owner.load_policy,
+            "root_base": owner.root_base,
+            "registered_worktree_paths": owner.registered_worktree_paths,
+            "cleanup_tmp_bundle_candidates": owner.cleanup_tmp_bundle_candidates,
+            "cleanup_worktree_target_candidates": owner.cleanup_worktree_target_candidates,
+            "active_process_refusal_payload": owner.active_process_refusal_payload,
+            "remove_cleanup_candidate": owner.remove_cleanup_candidate,
+            "cache_lock": owner.cache_lock,
+        }
+        try:
+            owner.load_policy = lambda _repo: {
+                "cache": {
+                    "active_process_patterns": ["cargo"],
+                    "min_free_bytes": 0,
+                    "retention": {
+                        "debug": {"prunable": True, "prune_after_days": 1},
+                        "release": {"prunable": True, "prune_after_days": 1},
+                        "cross-target": {"prunable": True, "prune_after_days": 1},
+                        "tmp": {"prunable": True, "prune_after_days": 1},
+                        "other": {"prunable": False},
+                    },
+                    "soft_limit_bytes": 100,
+                },
+                "target_namespace": "bolt-v2",
+            }
+            owner.root_base = lambda: tmp_path / "rust-root"
+            owner.registered_worktree_paths = lambda _repo: {worktree}
+            owner.cleanup_tmp_bundle_candidates = lambda _repo, _policy, *, now, registered: [candidates[0]]
+            owner.cleanup_worktree_target_candidates = lambda _repo, _policy, *, registered: [candidates[1]]
+            owner.cache_lock = lambda _policy, *, exclusive: contextlib.nullcontext()
+            owner.remove_cleanup_candidate = lambda _entry: None
+
+            def fake_refusal(
+                checked_repo: pathlib.Path,
+                checked_target: pathlib.Path,
+                _policy: dict[str, object],
+                *,
+                extra_scopes: tuple[pathlib.Path, ...] = (),
+            ) -> dict[str, object] | None:
+                checks.append((checked_repo, checked_target, extra_scopes))
+                return None
+
+            owner.active_process_refusal_payload = fake_refusal
+            owner.cleanup_payload(repo, dry_run=False)
+        finally:
+            for name, value in originals.items():
+                setattr(owner, name, value)
+
+        candidate_checks = checks[1:]
+        expected = [
+            (repo, tmp_bundle, ()),
+            (repo, worktree_target, (worktree,)),
+            (repo, tmp_bundle, ()),
+            (repo, worktree_target, (worktree,)),
+        ]
+        if candidate_checks != expected:
+            raise AssertionError(
+                "cleanup candidate rechecks must preserve repo context and pass candidate/worktree scopes: "
+                f"checks={checks!r} expected_candidate_checks={expected!r}"
             )
 
 
@@ -4138,12 +4410,16 @@ def assert_v6_red_policy_gaps() -> None:
         assert_cleanup_dry_run_reports_worktree_targets_without_deleting,
         assert_cleanup_apply_removes_stale_tmp_bundles_only,
         assert_cleanup_apply_refuses_active_worktree_target_process,
+        assert_cleanup_apply_refuses_symlinked_managed_target,
+        assert_cleanup_apply_refuses_repo_scoped_process_for_tmp_bundle_candidate,
+        assert_cleanup_apply_refuses_repo_scoped_process_for_worktree_target_candidate,
         assert_cleanup_apply_removes_registered_worktree_target_only,
         assert_cleanup_fails_closed_when_worktree_inventory_unavailable,
         assert_cleanup_fails_closed_when_registered_worktree_path_is_missing,
         assert_cleanup_candidate_removal_validates_namespace,
         assert_cleanup_apply_rechecks_candidate_before_deletion,
         assert_cleanup_apply_reports_partial_removals_on_late_candidate_refusal,
+        assert_cleanup_candidate_rechecks_use_repo_context_with_candidate_scope,
         assert_managed_cargo_rejects_alias_subcommands,
         assert_v6_red_managed_cargo_rejects_target_routing_overrides,
         assert_managed_cargo_rejects_config_file_target_routing_override,

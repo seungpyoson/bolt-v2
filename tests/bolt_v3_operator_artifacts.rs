@@ -3471,6 +3471,34 @@ fn pre_run_host_clock_source_proof_accepts_exact_bound_and_reverse_skew() {
 }
 
 #[test]
+fn pre_run_host_clock_source_proof_rejects_zero_skew_bound() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_source_path = temp.path().join("host-clock-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    std::fs::write(
+        &host_clock_source_path,
+        host_clock_source_fixture(1716510000000, 1716510000000),
+    )
+    .expect("host clock fixture should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_source_path,
+        4096,
+        0,
+    )
+    .expect_err("zero host clock skew bound must not approve pre-run proof");
+
+    assert!(
+        error.to_string().contains("max_host_clock_skew_millis"),
+        "zero skew bound should identify the failed source field: {error}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "failed host clock proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
 fn pre_run_host_clock_source_proof_rejects_out_of_bound_skew() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let host_clock_source_path = temp.path().join("host-clock-source.json");

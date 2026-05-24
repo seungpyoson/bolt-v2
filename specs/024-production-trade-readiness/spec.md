@@ -55,7 +55,7 @@ As operator, I need T128/T130/T131/T122 and T116/T046 to run only after real art
 
 ## Requirements
 
-- **FR-001**: Use this feature for production trade readiness; do not use `specs/023-nt-order-intent-layer/`.
+- **FR-001**: Use `specs/024-production-trade-readiness/` as the explicit PR #480 trade-readiness task packet; do not implement order-intent work from `specs/023-nt-order-intent-layer/`.
 - **FR-002**: Keep #466 verifier decomposition outside this feature unless the operator explicitly changes scope.
 - **FR-003**: Use one readiness PR; do not create PR-per-slice churn.
 - **FR-004**: Do not implement production code until the task list receives task-list approvals from Claude, Gemini, DeepSeek, GLM, Kimi, and Grok, or until the operator explicitly waives an unavailable reviewer with exact failure evidence.

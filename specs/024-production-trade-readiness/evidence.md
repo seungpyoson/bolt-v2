@@ -38,7 +38,7 @@ This file is a source-inspection baseline, not a self-validating exact-head proo
 
 ## Speckit And Readiness Ledger Evidence
 
-- `.specify/feature.json` pointed to `specs/023-nt-order-intent-layer`, which is not this work.
+- `.specify/feature.json` and the AGENTS Speckit block point to `specs/023-nt-order-intent-layer`; source-fence requires that pointer. PR #480 therefore keeps `specs/024-production-trade-readiness/` as an explicit readiness task packet, not the active `.specify` feature.
 - `specs/001-thin-live-canary-path/tasks.md` marks:
   - T038 checked only for historical EC2/EIP no-submit.
   - T046, T116, T122, T124, T125, T126, T127, T128, T130, and T131 unchecked.
@@ -78,6 +78,10 @@ Implication: the active readiness branch has some source-owned collectors, but m
 
 Implication: do not port `t038-operator-config-snapshot` wholesale. The remaining task is a targeted port audit for any still-missing behavior or operator snapshot evidence after current no-submit code and docs are considered.
 
+T006 completed in `specs/024-production-trade-readiness/t038-port-audit.md`: no exact old `origin/t038-operator-config-snapshot` behavior needs to be ported into current `main` / PR #480 no-submit readiness code.
+
+T008 completed in `specs/024-production-trade-readiness/issue-385-no-submit.md`: historical T038 no-submit is satisfied only for the May 22 EC2/EIP no-submit run, while final-packet T131/T122 no-submit remains unproven until the verified final packet exists and the exact-head EC2/EIP no-submit rerun is executed.
+
 ## PortfolioSnapshot Evidence For #409
 
 Current source already contains:
@@ -90,3 +94,12 @@ Current source already contains:
 - `scripts/verify_runtime_capture_yaml.py` includes PortfolioSnapshot capture checks.
 
 Implication: #409 may be closable or may need PR/issue evidence updates, but it does not appear to be a blocker for T126/T127 collector implementation.
+
+T007 completed in `specs/024-production-trade-readiness/issue-409-portfolio-snapshot.md`: PortfolioSnapshot-specific source, tests, docs, and runtime-capture verifier acceptance are satisfied, but #409 should not be closed until PR #480 source-fence/CI are green or the unrelated source-fence blocker is explicitly waived for the #409 slice.
+
+## Local Verification After Source-Fence Fix
+
+- `git diff --check`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify_bolt_v3_schema_current.py`: `OK: Bolt-v3 schema/status docs match current order-intent source scope.`
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_verify_bolt_v3_schema_current.py`: `OK: Bolt-v3 schema-current verifier self-tests passed.`
+- `just source-fence`: passed after rerun with approved access to `/Users/spson/.cache/rust-verification/bolt-v2/cache.lock`.

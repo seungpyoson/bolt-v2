@@ -11,16 +11,16 @@
 - [x] T001 Record current git, PR, issue, Speckit, readiness-ledger, code, and T038-branch evidence in `specs/024-production-trade-readiness/evidence.md`.
 - [x] T002 Update PR #480 body to reference `specs/024-production-trade-readiness/` as the active readiness task list, branch `goal/024-production-trade-readiness`, and to keep PR #479/#466 out of scope.
 - [x] T003 Remove #466 verifier-characterization/decomposition files from PR #480 and record the exact removed paths in `specs/024-production-trade-readiness/scope-resolution.md`.
-- [ ] T004 Send `specs/024-production-trade-readiness/{spec.md,plan.md,tasks.md,evidence.md,scope-resolution.md}` to Claude, Gemini, DeepSeek, GLM, Kimi, and Grok for task-list review only; record verdicts in `specs/024-production-trade-readiness/external-tasklist-review.md`.
+- [ ] T004 Send `specs/024-production-trade-readiness/{spec.md,plan.md,tasks.md,evidence.md,scope-resolution.md}` plus `AGENTS.md` policy context to Claude, Gemini, DeepSeek, GLM, Kimi, and Grok for task-list review only; record verdicts in `specs/024-production-trade-readiness/external-tasklist-review.md`.
 - [ ] T005 Resolve every blocking task-list review finding in `specs/024-production-trade-readiness/tasks.md` and record disposition in `specs/024-production-trade-readiness/external-tasklist-review.md`.
 
 ## Phase 2: T038 Branch And Existing Issue Hygiene
 
 **Purpose**: Avoid blind ports and close/update issue state that current evidence already resolves.
 
-- [ ] T006 [P] Complete a targeted `t038-operator-config-snapshot` port audit in `specs/024-production-trade-readiness/t038-port-audit.md`, comparing each unique old branch behavior to current #480/main no-submit code and recording any exact missing patch.
-- [ ] T007 [P] Verify whether #409 PortfolioSnapshot acceptance criteria are satisfied by current source and tests; record close/update evidence in `specs/024-production-trade-readiness/issue-409-portfolio-snapshot.md`.
-- [ ] T008 [P] Update #385 evidence with the current distinction between historical T038 no-submit success and missing final-packet T131/T122 no-submit proof in `specs/024-production-trade-readiness/issue-385-no-submit.md`.
+- [x] T006 [P] Complete a targeted `t038-operator-config-snapshot` port audit in `specs/024-production-trade-readiness/t038-port-audit.md`, comparing each unique old branch behavior to current #480/main no-submit code and recording any exact missing patch.
+- [x] T007 [P] Verify whether #409 PortfolioSnapshot acceptance criteria are satisfied by current source and tests; record close/update evidence in `specs/024-production-trade-readiness/issue-409-portfolio-snapshot.md`.
+- [x] T008 [P] Update #385 evidence with the current distinction between historical T038 no-submit success and missing final-packet T131/T122 no-submit proof in `specs/024-production-trade-readiness/issue-385-no-submit.md`.
 
 ## Phase 3: User Story 2 - Real Decision Evidence
 

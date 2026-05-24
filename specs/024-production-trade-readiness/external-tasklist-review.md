@@ -4,7 +4,6 @@ Scope: task-list packet only; no production code was approved by this review rou
 
 Reviewed task-packet files:
 
-- `.specify/feature.json`
 - `AGENTS.md`
 - `specs/024-production-trade-readiness/spec.md`
 - `specs/024-production-trade-readiness/plan.md`
@@ -28,7 +27,7 @@ This file is the review audit log and is not part of the task packet being appro
 - Blocking branch-identity finding: fixed by moving active readiness work to `goal/024-production-trade-readiness`. GitHub closed historical PR #478 after the rename, so PR #480 is now the single active readiness PR.
 - Six-reviewer quorum wording: fixed in `spec.md` and `tasks.md`; the required reviewers are Claude, Gemini, DeepSeek, GLM, Kimi, and Grok.
 - Scope-contamination handling: tightened T003 to require removal of #466 verifier-characterization/decomposition files from PR #480 before implementation resumes.
-- Stale active-feature pointer: `.specify/feature.json` now points to `specs/024-production-trade-readiness`.
+- Stale active-feature pointer: superseded by the source-fence disposition below. CI requires `.specify/feature.json` to keep pointing at `specs/023-nt-order-intent-layer`, while PR #480 treats `specs/024-production-trade-readiness/` as an explicit readiness task packet.
 - #409 criteria: T007 remains a required evidence task before issue close/update.
 
 ## Current Gate
@@ -95,5 +94,11 @@ Results:
 - Grok job `job_280651f3-a013-4afb-bfc8-66ad5099d9d7`: APPROVE. The self-referential audit-log issue was resolved by excluding this file from the reviewed task-packet scope.
 - Kimi job `19958cb7-44c0-4b4d-ad32-2749c2be6fab`: FAILED with `timeout`; source was sent, but no valid verdict was produced.
 - Claude doctor: FAILED with `oauth_inference_rejected` / HTTP 401; no source was sent and no valid verdict was produced.
+
+## Source-Fence Disposition
+
+CI source-fence requires `.specify/feature.json` and the AGENTS Speckit block to point at `specs/023-nt-order-intent-layer/`. PR #480 keeps those guarded pointers intact and treats `specs/024-production-trade-readiness/` as the explicit readiness task packet for this PR.
+
+Local `just source-fence` passed after restoring the guarded pointers. GitHub CI still needs to re-run on the pushed fix before this can be treated as PR-level evidence.
 
 Round 4 does not unblock implementation because Claude and Kimi have no valid verdicts. Gemini, DeepSeek, GLM, and Grok have approved the corrected direction, but the six-reviewer gate is not complete without valid Claude/Kimi verdicts or explicit operator waiver.

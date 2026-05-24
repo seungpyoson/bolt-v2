@@ -4331,6 +4331,22 @@ fn egress_identity_source_fixture(egress_identity_sha256: &str) -> String {
     )
 }
 
+fn venue_account_state_source_fixture(
+    open_order_count: u64,
+    open_position_count: u64,
+    account_state_snapshot_sha256: &str,
+) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_venue_account_state_source.v1",
+  "open_order_count": {open_order_count},
+  "open_position_count": {open_position_count},
+  "account_state_snapshot_sha256": "{account_state_snapshot_sha256}"
+}}"#
+    )
+}
+
 #[test]
 fn pre_run_host_clock_source_proof_derives_source_owned_skew_bound() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -4367,6 +4383,213 @@ fn pre_run_host_clock_source_proof_derives_source_owned_skew_bound() {
     assert!(
         !pre_run_state_path.exists(),
         "host clock proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_venue_account_state_source_proof_derives_source_owned_absence() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let venue_account_source_path = temp.path().join("venue-account-state-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let raw_order_id = "venue-order-id-fixture";
+    let account_state_snapshot_sha256 = sha256_text(raw_order_id);
+    std::fs::write(
+        &venue_account_source_path,
+        venue_account_state_source_fixture(0, 0, &account_state_snapshot_sha256),
+    )
+    .expect("venue account fixture should write");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
+            &venue_account_source_path,
+            4096,
+        )
+        .expect("source-owned venue account state proof should collect");
+
+    assert!(proof.conflicting_open_orders_absent);
+    assert!(proof.preexisting_position_absent);
+    assert_eq!(
+        proof.venue_account_state_source_sha256,
+        sha256_file(&venue_account_source_path)
+    );
+    assert_eq!(proof.venue_account_state_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .venue_account_state_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "venue account proof evidence hash should be lowercase hex"
+    );
+    let debug = format!("{proof:?}");
+    assert!(
+        !debug.contains(raw_order_id),
+        "venue account proof must not expose raw order or position material"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "venue account proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_venue_account_state_source_proof_rejects_present_orders_or_positions() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let account_state_snapshot_sha256 = sha256_text("venue-account-state-snapshot");
+    let cases = [
+        ("open_order", 1, 0, "conflicting_open_orders_absent"),
+        ("open_position", 0, 1, "preexisting_position_absent"),
+        ("bad_snapshot_hash", 0, 0, "account_state_snapshot_sha256"),
+    ];
+
+    for (name, open_order_count, open_position_count, expected) in cases {
+        let venue_account_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        let snapshot_hash = if name == "bad_snapshot_hash" {
+            "ABC"
+        } else {
+            account_state_snapshot_sha256.as_str()
+        };
+        std::fs::write(
+            &venue_account_source_path,
+            venue_account_state_source_fixture(
+                open_order_count,
+                open_position_count,
+                snapshot_hash,
+            ),
+        )
+        .expect("venue account fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
+                &venue_account_source_path,
+                4096,
+            )
+            .expect_err("present orders or positions must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed venue account proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_venue_account_state_source_proof_rejects_invalid_source_shape() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let account_state_snapshot_sha256 = sha256_text("venue-account-state-snapshot");
+    let raw_order_id = "venue-order-id-fixture";
+    let cases = [
+        (
+            "schema_version",
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "record_kind": "bolt_v3.pre_run_venue_account_state_source.v1",
+  "open_order_count": 0,
+  "open_position_count": 0,
+  "account_state_snapshot_sha256": "{account_state_snapshot_sha256}"
+}}"#
+            ),
+            "schema_version",
+        ),
+        (
+            "record_kind",
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_venue_account_state_source.v2",
+  "open_order_count": 0,
+  "open_position_count": 0,
+  "account_state_snapshot_sha256": "{account_state_snapshot_sha256}"
+}}"#
+            ),
+            "record_kind",
+        ),
+        (
+            "unknown_field",
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_venue_account_state_source.v1",
+  "open_order_count": 0,
+  "open_position_count": 0,
+  "account_state_snapshot_sha256": "{account_state_snapshot_sha256}",
+  "raw_order_id": "{raw_order_id}"
+}}"#
+            ),
+            "failed to parse venue account state source input",
+        ),
+        (
+            "malformed_json",
+            r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_venue_account_state_source.v1""#
+                .to_string(),
+            "failed to parse venue account state source input",
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let venue_account_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(&venue_account_source_path, source)
+            .expect("venue account fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
+                &venue_account_source_path,
+                4096,
+            )
+            .expect_err("invalid venue account state source must not approve pre-run proof");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !message.contains(raw_order_id),
+            "{name} diagnostic must not expose raw order material: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed venue account proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_venue_account_state_source_proof_rejects_oversized_source_before_parse() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let venue_account_source_path = temp.path().join("venue-account-state-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let account_state_snapshot_sha256 = sha256_text("venue-account-state-snapshot");
+    std::fs::write(
+        &venue_account_source_path,
+        venue_account_state_source_fixture(0, 0, &account_state_snapshot_sha256),
+    )
+    .expect("venue account fixture should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
+            &venue_account_source_path,
+            1,
+        )
+        .expect_err("oversized venue account source must not approve pre-run proof");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("failed to read venue account state source input"),
+        "oversized source should be a read diagnostic: {message}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "oversized venue account proof collection must not write pre-run-state.json"
     );
 }
 

@@ -69,6 +69,12 @@ const PRE_RUN_HOST_CLOCK_SOURCE_RECORD_KIND: &str = "bolt_v3.pre_run_host_clock_
 const PRE_RUN_HOST_CLOCK_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 #[rustfmt::skip]
 const PRE_RUN_HOST_CLOCK_SOURCE_PROOF_RECORD_KIND: &str = "bolt_v3.pre_run_host_clock_source_proof.v1";
+const PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_RECORD_KIND: &str =
+    "bolt_v3.pre_run_venue_account_state_source.v1";
+const PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.pre_run_venue_account_state_source_proof.v1";
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_market_window_source_proof.v1";
@@ -277,6 +283,14 @@ pub struct Phase8PreRunHostClockSourceProof {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8PreRunVenueAccountStateSourceProof {
+    pub conflicting_open_orders_absent: bool,
+    pub preexisting_position_absent: bool,
+    pub venue_account_state_source_sha256: String,
+    pub venue_account_state_evidence_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phase8PreRunMarketWindowSourceProof {
     pub market_state_approved: bool,
     pub market_window_approved: bool,
@@ -362,6 +376,17 @@ pub enum BoltV3OperatorArtifactError {
         source: serde_json::Error,
     },
     PreRunHostClockSourceInvalid {
+        field: &'static str,
+    },
+    PreRunVenueAccountStateSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    PreRunVenueAccountStateSourceParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    PreRunVenueAccountStateSourceInvalid {
         field: &'static str,
     },
     PreRunMarketWindowSourceRead {
@@ -609,6 +634,22 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "host-clock source field `{field}` is invalid or unproven"
             ),
+            Self::PreRunVenueAccountStateSourceRead { source, .. } => {
+                write!(
+                    f,
+                    "failed to read venue account state source input: {source}"
+                )
+            }
+            Self::PreRunVenueAccountStateSourceParse { source, .. } => {
+                write!(
+                    f,
+                    "failed to parse venue account state source input: {source}"
+                )
+            }
+            Self::PreRunVenueAccountStateSourceInvalid { field } => write!(
+                f,
+                "venue account state source field `{field}` is invalid or unproven"
+            ),
             Self::PreRunMarketWindowSourceRead { source, .. } => {
                 write!(f, "failed to read market/window source input: {source}")
             }
@@ -841,6 +882,8 @@ impl Error for BoltV3OperatorArtifactError {
             Self::PreRunReleaseManifestSourceRead { source, .. } => Some(source),
             Self::PreRunHostClockSourceRead { source, .. } => Some(source),
             Self::PreRunHostClockSourceParse { source, .. } => Some(source),
+            Self::PreRunVenueAccountStateSourceRead { source, .. } => Some(source),
+            Self::PreRunVenueAccountStateSourceParse { source, .. } => Some(source),
             Self::PreRunMarketWindowSourceRead { source, .. } => Some(source),
             Self::PreRunEgressIdentitySourceRead { source, .. } => Some(source),
             Self::PreRunEgressIdentitySourceParse { source, .. } => Some(source),
@@ -1845,6 +1888,79 @@ pub fn collect_pre_run_host_clock_source_proof(
     })
 }
 
+pub fn collect_pre_run_venue_account_state_source_proof(
+    venue_account_state_source_path: &Path,
+    max_source_bytes: u64,
+) -> Result<Phase8PreRunVenueAccountStateSourceProof, BoltV3OperatorArtifactError> {
+    let venue_account_state_source_bytes =
+        read_file_bounded(venue_account_state_source_path, max_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceRead {
+                path: venue_account_state_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let venue_account_state_source_sha256 =
+        hex::encode(Sha256::digest(&venue_account_state_source_bytes));
+    let source: Phase8PreRunVenueAccountStateSourceEvidence =
+        serde_json::from_slice(&venue_account_state_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceParse {
+                path: venue_account_state_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    if source.schema_version != PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_SCHEMA_VERSION {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+                field: "schema_version",
+            },
+        );
+    }
+    if source.record_kind != PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_RECORD_KIND {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+                field: "record_kind",
+            },
+        );
+    }
+    if !is_lowercase_sha256(&source.account_state_snapshot_sha256) {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+                field: "account_state_snapshot_sha256",
+            },
+        );
+    }
+    if source.open_order_count != 0 {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+                field: "conflicting_open_orders_absent",
+            },
+        );
+    }
+    if source.open_position_count != 0 {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+                field: "preexisting_position_absent",
+            },
+        );
+    }
+    let proof_input = Phase8PreRunVenueAccountStateSourceProofHashInput {
+        schema_version: PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_PROOF_RECORD_KIND,
+        open_order_count: source.open_order_count,
+        open_position_count: source.open_position_count,
+        account_state_snapshot_sha256: &source.account_state_snapshot_sha256,
+        venue_account_state_source_sha256: &venue_account_state_source_sha256,
+    };
+    let venue_account_state_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8PreRunVenueAccountStateSourceProof {
+        conflicting_open_orders_absent: true,
+        preexisting_position_absent: true,
+        venue_account_state_source_sha256,
+        venue_account_state_evidence_hash,
+    })
+}
+
 pub fn collect_pre_run_market_window_source_proof(
     strategy_input_evidence_path: &Path,
     strategy_input_evidence_sha256: &str,
@@ -2111,6 +2227,16 @@ struct Phase8PreRunHostClockSourceEvidence {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Phase8PreRunVenueAccountStateSourceEvidence {
+    schema_version: u32,
+    record_kind: String,
+    open_order_count: u64,
+    open_position_count: u64,
+    account_state_snapshot_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Phase8PreRunEgressIdentitySourceEvidence {
     schema_version: u32,
     record_kind: String,
@@ -2138,6 +2264,16 @@ struct Phase8PreRunHostClockSourceProofHashInput<'a> {
     host_clock_skew_millis: u64,
     max_host_clock_skew_millis: u64,
     host_clock_source_sha256: &'a str,
+}
+
+#[derive(Serialize)]
+struct Phase8PreRunVenueAccountStateSourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    open_order_count: u64,
+    open_position_count: u64,
+    account_state_snapshot_sha256: &'a str,
+    venue_account_state_source_sha256: &'a str,
 }
 
 #[derive(Serialize)]

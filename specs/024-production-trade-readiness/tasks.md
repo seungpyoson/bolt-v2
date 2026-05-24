@@ -41,8 +41,8 @@
 
 **Independent Test**: pre-run proof generation fails for each missing collector and passes only when every required pre-run source proof is present.
 
-- [ ] T015 [P] [US3] Add RED tests for venue account, open-orders, and positions collectors in `tests/bolt_v3_operator_artifacts.rs`.
-- [ ] T016 [US3] Implement venue account, open-orders, and positions source collectors in `src/bolt_v3_operator_artifacts.rs`.
+- [x] T015 [P] [US3] Add RED tests for venue account, open-orders, and positions collectors in `tests/bolt_v3_operator_artifacts.rs`.
+- [x] T016 [US3] Implement venue account, open-orders, and positions source collectors in `src/bolt_v3_operator_artifacts.rs`.
 - [ ] T017 [P] [US3] Add RED tests for funding and margin source collectors in `tests/bolt_v3_operator_artifacts.rs`.
 - [ ] T018 [US3] Implement funding and margin source collectors in `src/bolt_v3_operator_artifacts.rs`.
 - [x] T019 [P] [US3] Add RED tests for approved egress identity source collector in `tests/bolt_v3_operator_artifacts.rs`.

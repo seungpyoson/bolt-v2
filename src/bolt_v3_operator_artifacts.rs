@@ -75,6 +75,11 @@ const PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_RECORD_KIND: &str =
 const PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_venue_account_state_source_proof.v1";
+const PRE_RUN_FUNDING_MARGIN_SOURCE_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_FUNDING_MARGIN_SOURCE_RECORD_KIND: &str = "bolt_v3.pre_run_funding_margin_source.v1";
+const PRE_RUN_FUNDING_MARGIN_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_FUNDING_MARGIN_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.pre_run_funding_margin_source_proof.v1";
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_market_window_source_proof.v1";
@@ -291,6 +296,13 @@ pub struct Phase8PreRunVenueAccountStateSourceProof {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8PreRunFundingMarginSourceProof {
+    pub funding_margin_covers_max_notional_plus_fees: bool,
+    pub funding_margin_source_sha256: String,
+    pub funding_margin_evidence_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phase8PreRunMarketWindowSourceProof {
     pub market_state_approved: bool,
     pub market_window_approved: bool,
@@ -387,6 +399,17 @@ pub enum BoltV3OperatorArtifactError {
         source: serde_json::Error,
     },
     PreRunVenueAccountStateSourceInvalid {
+        field: &'static str,
+    },
+    PreRunFundingMarginSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    PreRunFundingMarginSourceParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    PreRunFundingMarginSourceInvalid {
         field: &'static str,
     },
     PreRunMarketWindowSourceRead {
@@ -650,6 +673,16 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "venue account state source field `{field}` is invalid or unproven"
             ),
+            Self::PreRunFundingMarginSourceRead { source, .. } => {
+                write!(f, "failed to read funding margin source input: {source}")
+            }
+            Self::PreRunFundingMarginSourceParse { source, .. } => {
+                write!(f, "failed to parse funding margin source input: {source}")
+            }
+            Self::PreRunFundingMarginSourceInvalid { field } => write!(
+                f,
+                "funding margin source field `{field}` is invalid or unproven"
+            ),
             Self::PreRunMarketWindowSourceRead { source, .. } => {
                 write!(f, "failed to read market/window source input: {source}")
             }
@@ -884,6 +917,8 @@ impl Error for BoltV3OperatorArtifactError {
             Self::PreRunHostClockSourceParse { source, .. } => Some(source),
             Self::PreRunVenueAccountStateSourceRead { source, .. } => Some(source),
             Self::PreRunVenueAccountStateSourceParse { source, .. } => Some(source),
+            Self::PreRunFundingMarginSourceRead { source, .. } => Some(source),
+            Self::PreRunFundingMarginSourceParse { source, .. } => Some(source),
             Self::PreRunMarketWindowSourceRead { source, .. } => Some(source),
             Self::PreRunEgressIdentitySourceRead { source, .. } => Some(source),
             Self::PreRunEgressIdentitySourceParse { source, .. } => Some(source),
@@ -1961,6 +1996,100 @@ pub fn collect_pre_run_venue_account_state_source_proof(
     })
 }
 
+pub fn collect_pre_run_funding_margin_source_proof(
+    funding_margin_source_path: &Path,
+    max_source_bytes: u64,
+) -> Result<Phase8PreRunFundingMarginSourceProof, BoltV3OperatorArtifactError> {
+    let funding_margin_source_bytes =
+        read_file_bounded(funding_margin_source_path, max_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::PreRunFundingMarginSourceRead {
+                path: funding_margin_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let funding_margin_source_sha256 = hex::encode(Sha256::digest(&funding_margin_source_bytes));
+    let source: Phase8PreRunFundingMarginSourceEvidence =
+        serde_json::from_slice(&funding_margin_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::PreRunFundingMarginSourceParse {
+                path: funding_margin_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    if source.schema_version != PRE_RUN_FUNDING_MARGIN_SOURCE_SCHEMA_VERSION {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
+                field: "schema_version",
+            },
+        );
+    }
+    if source.record_kind != PRE_RUN_FUNDING_MARGIN_SOURCE_RECORD_KIND {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
+                field: "record_kind",
+            },
+        );
+    }
+    if !is_lowercase_sha256(&source.margin_snapshot_sha256) {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
+                field: "margin_snapshot_sha256",
+            },
+        );
+    }
+    let available_collateral = source
+        .available_collateral
+        .parse::<Decimal>()
+        .map_err(
+            |_| BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
+                field: "available_collateral",
+            },
+        )?;
+    let required_max_notional_plus_fees = source
+        .required_max_notional_plus_fees
+        .parse::<Decimal>()
+        .map_err(
+            |_| BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
+                field: "required_max_notional_plus_fees",
+            },
+        )?;
+    if available_collateral < Decimal::ZERO {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
+                field: "available_collateral",
+            },
+        );
+    }
+    if required_max_notional_plus_fees <= Decimal::ZERO {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
+                field: "required_max_notional_plus_fees",
+            },
+        );
+    }
+    if available_collateral < required_max_notional_plus_fees {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
+                field: "funding_margin_covers_max_notional_plus_fees",
+            },
+        );
+    }
+    let proof_input = Phase8PreRunFundingMarginSourceProofHashInput {
+        schema_version: PRE_RUN_FUNDING_MARGIN_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: PRE_RUN_FUNDING_MARGIN_SOURCE_PROOF_RECORD_KIND,
+        available_collateral: &source.available_collateral,
+        required_max_notional_plus_fees: &source.required_max_notional_plus_fees,
+        margin_snapshot_sha256: &source.margin_snapshot_sha256,
+        funding_margin_source_sha256: &funding_margin_source_sha256,
+    };
+    let funding_margin_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8PreRunFundingMarginSourceProof {
+        funding_margin_covers_max_notional_plus_fees: true,
+        funding_margin_source_sha256,
+        funding_margin_evidence_hash,
+    })
+}
+
 pub fn collect_pre_run_market_window_source_proof(
     strategy_input_evidence_path: &Path,
     strategy_input_evidence_sha256: &str,
@@ -2237,6 +2366,16 @@ struct Phase8PreRunVenueAccountStateSourceEvidence {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Phase8PreRunFundingMarginSourceEvidence {
+    schema_version: u32,
+    record_kind: String,
+    available_collateral: String,
+    required_max_notional_plus_fees: String,
+    margin_snapshot_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Phase8PreRunEgressIdentitySourceEvidence {
     schema_version: u32,
     record_kind: String,
@@ -2274,6 +2413,16 @@ struct Phase8PreRunVenueAccountStateSourceProofHashInput<'a> {
     open_position_count: u64,
     account_state_snapshot_sha256: &'a str,
     venue_account_state_source_sha256: &'a str,
+}
+
+#[derive(Serialize)]
+struct Phase8PreRunFundingMarginSourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    available_collateral: &'a str,
+    required_max_notional_plus_fees: &'a str,
+    margin_snapshot_sha256: &'a str,
+    funding_margin_source_sha256: &'a str,
 }
 
 #[derive(Serialize)]

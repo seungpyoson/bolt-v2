@@ -43,8 +43,8 @@
 
 - [x] T015 [P] [US3] Add RED tests for venue account, open-orders, and positions collectors in `tests/bolt_v3_operator_artifacts.rs`.
 - [x] T016 [US3] Implement venue account, open-orders, and positions source collectors in `src/bolt_v3_operator_artifacts.rs`.
-- [ ] T017 [P] [US3] Add RED tests for funding and margin source collectors in `tests/bolt_v3_operator_artifacts.rs`.
-- [ ] T018 [US3] Implement funding and margin source collectors in `src/bolt_v3_operator_artifacts.rs`.
+- [x] T017 [P] [US3] Add RED tests for funding and margin source collectors in `tests/bolt_v3_operator_artifacts.rs`.
+- [x] T018 [US3] Implement funding and margin source collectors in `src/bolt_v3_operator_artifacts.rs`.
 - [x] T019 [P] [US3] Add RED tests for approved egress identity source collector in `tests/bolt_v3_operator_artifacts.rs`.
 - [x] T020 [US3] Implement approved egress identity source collector in `src/bolt_v3_operator_artifacts.rs`.
 - [ ] T021 [P] [US3] Add RED tests for CLOB V2 adapter signing, collateral accounting, and fee behavior collectors in `tests/bolt_v3_operator_artifacts.rs`.

@@ -53,11 +53,12 @@ This file is a source-inspection baseline, not a self-validating exact-head proo
 - `collect_pre_run_release_manifest_source_proof`
 - `collect_pre_run_host_clock_source_proof`
 - `collect_pre_run_venue_account_state_source_proof`
+- `collect_pre_run_funding_margin_source_proof`
 - `collect_pre_run_market_window_source_proof`
 - `collect_pre_run_single_runner_lock_source_proof`
 - `collect_pre_run_egress_identity_source_proof`
 
-The same search found no `pub fn collect_pre_run_funding...`, `collect_pre_run_clob...`, `collect_abort_plan_nt...`, `collect_abort_plan_partial...`, `collect_abort_plan_network...`, or `collect_abort_plan_panic...` functions.
+The same search found no `pub fn collect_pre_run_clob...`, `collect_abort_plan_nt...`, `collect_abort_plan_partial...`, `collect_abort_plan_network...`, or `collect_abort_plan_panic...` functions.
 
 Implication: the active readiness branch has some source-owned collectors, but most T126/T127 fields are still satisfied only by caller-supplied proof bundles or fixtures.
 
@@ -131,3 +132,14 @@ The collector is non-live and source-owned: it reads a bounded local JSON source
 - `git diff --check`: passed.
 
 The collector is non-live and source-owned: it reads a bounded local JSON source, validates schema/record kind, validates a lowercase account-state snapshot hash, requires zero open orders and zero open positions, fails closed on present orders/positions or invalid shape, returns only absence booleans plus hashes, and does not write `pre-run-state.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T015/T016.
+
+## T017/T018 Funding Margin Collector Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts pre_run_funding_margin_source_proof_derives_source_owned_coverage -- --nocapture` failed with `E0425` because `collect_pre_run_funding_margin_source_proof` did not exist.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts pre_run_funding_margin_source_proof -- --nocapture` passed: 4 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `git diff --check`: passed.
+
+The collector is non-live and source-owned: it reads a bounded local JSON source, validates schema/record kind, validates a lowercase margin snapshot hash, parses collateral and required max-notional-plus-fees as decimals, requires positive required coverage, fails closed when available collateral is insufficient, returns only a coverage boolean plus hashes, and does not write `pre-run-state.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T017/T018.

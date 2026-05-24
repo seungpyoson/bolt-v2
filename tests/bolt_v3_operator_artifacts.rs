@@ -4347,6 +4347,22 @@ fn venue_account_state_source_fixture(
     )
 }
 
+fn funding_margin_source_fixture(
+    available_collateral: &str,
+    required_max_notional_plus_fees: &str,
+    margin_snapshot_sha256: &str,
+) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_funding_margin_source.v1",
+  "available_collateral": "{available_collateral}",
+  "required_max_notional_plus_fees": "{required_max_notional_plus_fees}",
+  "margin_snapshot_sha256": "{margin_snapshot_sha256}"
+}}"#
+    )
+}
+
 #[test]
 fn pre_run_host_clock_source_proof_derives_source_owned_skew_bound() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -4590,6 +4606,240 @@ fn pre_run_venue_account_state_source_proof_rejects_oversized_source_before_pars
     assert!(
         !pre_run_state_path.exists(),
         "oversized venue account proof collection must not write pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_funding_margin_source_proof_derives_source_owned_coverage() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let funding_margin_source_path = temp.path().join("funding-margin-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let raw_margin_account = "margin-account-fixture";
+    let margin_snapshot_sha256 = sha256_text(raw_margin_account);
+    std::fs::write(
+        &funding_margin_source_path,
+        funding_margin_source_fixture("10.00", "1.25", &margin_snapshot_sha256),
+    )
+    .expect("funding margin fixture should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_funding_margin_source_proof(
+        &funding_margin_source_path,
+        4096,
+    )
+    .expect("source-owned funding margin proof should collect");
+
+    assert!(proof.funding_margin_covers_max_notional_plus_fees);
+    assert_eq!(
+        proof.funding_margin_source_sha256,
+        sha256_file(&funding_margin_source_path)
+    );
+    assert_eq!(proof.funding_margin_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .funding_margin_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "funding margin proof evidence hash should be lowercase hex"
+    );
+    let debug = format!("{proof:?}");
+    assert!(
+        !debug.contains(raw_margin_account),
+        "funding margin proof must not expose raw margin account material"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "funding margin proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_funding_margin_source_proof_rejects_insufficient_or_invalid_margin() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let margin_snapshot_sha256 = sha256_text("funding-margin-snapshot");
+    let cases = [
+        (
+            "insufficient_collateral",
+            "1.00",
+            "1.25",
+            margin_snapshot_sha256.as_str(),
+            "funding_margin_covers_max_notional_plus_fees",
+        ),
+        (
+            "negative_available",
+            "-1.00",
+            "1.25",
+            margin_snapshot_sha256.as_str(),
+            "available_collateral",
+        ),
+        (
+            "zero_required",
+            "1.00",
+            "0",
+            margin_snapshot_sha256.as_str(),
+            "required_max_notional_plus_fees",
+        ),
+        (
+            "bad_available",
+            "not-decimal",
+            "1.25",
+            margin_snapshot_sha256.as_str(),
+            "available_collateral",
+        ),
+        (
+            "bad_required",
+            "1.00",
+            "not-decimal",
+            margin_snapshot_sha256.as_str(),
+            "required_max_notional_plus_fees",
+        ),
+        (
+            "bad_snapshot_hash",
+            "10.00",
+            "1.25",
+            "ABC",
+            "margin_snapshot_sha256",
+        ),
+    ];
+
+    for (name, available, required, snapshot_hash, expected) in cases {
+        let funding_margin_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(
+            &funding_margin_source_path,
+            funding_margin_source_fixture(available, required, snapshot_hash),
+        )
+        .expect("funding margin fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_funding_margin_source_proof(
+                &funding_margin_source_path,
+                4096,
+            )
+            .expect_err("insufficient or invalid funding margin must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed funding margin proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_funding_margin_source_proof_rejects_invalid_source_shape() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let margin_snapshot_sha256 = sha256_text("funding-margin-snapshot");
+    let raw_account = "margin-account-fixture";
+    let cases = [
+        (
+            "schema_version",
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "record_kind": "bolt_v3.pre_run_funding_margin_source.v1",
+  "available_collateral": "10.00",
+  "required_max_notional_plus_fees": "1.25",
+  "margin_snapshot_sha256": "{margin_snapshot_sha256}"
+}}"#
+            ),
+            "schema_version",
+        ),
+        (
+            "record_kind",
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_funding_margin_source.v2",
+  "available_collateral": "10.00",
+  "required_max_notional_plus_fees": "1.25",
+  "margin_snapshot_sha256": "{margin_snapshot_sha256}"
+}}"#
+            ),
+            "record_kind",
+        ),
+        (
+            "unknown_field",
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_funding_margin_source.v1",
+  "available_collateral": "10.00",
+  "required_max_notional_plus_fees": "1.25",
+  "margin_snapshot_sha256": "{margin_snapshot_sha256}",
+  "raw_margin_account": "{raw_account}"
+}}"#
+            ),
+            "failed to parse funding margin source input",
+        ),
+        (
+            "malformed_json",
+            r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_funding_margin_source.v1""#
+                .to_string(),
+            "failed to parse funding margin source input",
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let funding_margin_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(&funding_margin_source_path, source)
+            .expect("funding margin fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_funding_margin_source_proof(
+                &funding_margin_source_path,
+                4096,
+            )
+            .expect_err("invalid funding margin source must not approve pre-run proof");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !message.contains(raw_account),
+            "{name} diagnostic must not expose raw margin account material: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed funding margin proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_funding_margin_source_proof_rejects_oversized_source_before_parse() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let funding_margin_source_path = temp.path().join("funding-margin-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let margin_snapshot_sha256 = sha256_text("funding-margin-snapshot");
+    std::fs::write(
+        &funding_margin_source_path,
+        funding_margin_source_fixture("10.00", "1.25", &margin_snapshot_sha256),
+    )
+    .expect("funding margin fixture should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_funding_margin_source_proof(
+        &funding_margin_source_path,
+        1,
+    )
+    .expect_err("oversized funding margin source must not approve pre-run proof");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("failed to read funding margin source input"),
+        "oversized source should be a read diagnostic: {message}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "oversized funding margin proof collection must not write pre-run-state.json"
     );
 }
 

@@ -150,6 +150,35 @@ const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_STATE_UPDATE_MARKER: &str =
     "self.exposure = exit_pending.into_state_after_exit_update();";
 const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_HANDLER_MARKER: &str =
     "self.mark_exit_order_terminal(event.client_order_id);";
+const ABORT_PLAN_PARTIAL_FILL_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const ABORT_PLAN_PARTIAL_FILL_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.abort_plan_partial_fill_source_proof.v1";
+const ABORT_PLAN_PARTIAL_FILL_ON_ORDER_FILLED_FUNCTION_NAME: &str = "on_order_filled";
+const ABORT_PLAN_PARTIAL_FILL_ON_POSITION_CLOSED_FUNCTION_NAME: &str = "on_position_closed";
+const ABORT_PLAN_PARTIAL_FILL_MATERIALIZE_FUNCTION_NAME: &str = "materialize_position_from_event";
+const ABORT_PLAN_PARTIAL_FILL_TERMINAL_FUNCTION_NAME: &str = "into_state_after_exit_update";
+const ABORT_PLAN_PARTIAL_FILL_EXIT_FILL_MARKER: &str =
+    "exit.pending_exit.client_order_id == event.client_order_id";
+const ABORT_PLAN_PARTIAL_FILL_FILL_RECEIVED_MARKER: &str =
+    "exit_pending.pending_exit.fill_received = true";
+const ABORT_PLAN_PARTIAL_FILL_CLOSE_RECEIVED_CHECK_MARKER: &str =
+    "if exit_pending.pending_exit.close_received";
+const ABORT_PLAN_PARTIAL_FILL_POSITION_MATCH_MARKER: &str =
+    "exit_pending.pending_exit.position_id == Some(event.position_id)";
+const ABORT_PLAN_PARTIAL_FILL_CLOSE_RECEIVED_MARKER: &str =
+    "exit_pending.pending_exit.close_received = true";
+const ABORT_PLAN_PARTIAL_FILL_POSITION_CLEAR_MARKER: &str = "exit_pending.position = None";
+const ABORT_PLAN_PARTIAL_FILL_TERMINAL_CHECK_MARKER: &str = "if exit_pending.is_terminal()";
+const ABORT_PLAN_PARTIAL_FILL_RESIDUAL_GUARD_MARKER: &str = "if pending_exit.fill_received";
+const ABORT_PLAN_PARTIAL_FILL_RESIDUAL_MARKER: &str =
+    "pending_exit.residual_position_observed_after_fill = true";
+const ABORT_PLAN_PARTIAL_FILL_TERMINAL_RECEIVED_MARKER: &str =
+    "self.pending_exit.terminal_received";
+const ABORT_PLAN_PARTIAL_FILL_TERMINAL_NOT_FILLED_MARKER: &str = "!self.pending_exit.fill_received";
+const ABORT_PLAN_PARTIAL_FILL_TERMINAL_RESIDUAL_MARKER: &str =
+    "self.pending_exit.residual_position_observed_after_fill";
+const ABORT_PLAN_PARTIAL_FILL_TERMINAL_MANAGED_MARKER: &str =
+    "Some(position) => ExposureState::Managed(position)";
 const ABORT_PLAN_CANCEL_IF_OPEN_FUNCTION_KEYWORD_WIDTH: usize = [b'f', b'n', b' '].len();
 const ABORT_PLAN_CANCEL_IF_OPEN_ATTRIBUTE_MARKER_WIDTH: usize = [b'#', b'['].len();
 const ABORT_PLAN_CANCEL_IF_OPEN_COMMENT_MARKER_WIDTH: usize = [b'/', b'/'].len();
@@ -397,6 +426,11 @@ pub struct Phase8AbortPlanNtAcceptedVenuePendingSourceProof {
     pub nt_accepted_venue_pending_abort_evidence_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8AbortPlanPartialFillSourceProof {
+    pub partial_fill_abort_evidence_hash: String,
+}
+
 impl fmt::Debug for WrittenOperatorArtifact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WrittenOperatorArtifact")
@@ -540,6 +574,13 @@ pub enum BoltV3OperatorArtifactError {
         source: std::io::Error,
     },
     AbortPlanNtAcceptedVenuePendingSourceInvalid {
+        field: &'static str,
+    },
+    AbortPlanPartialFillSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    AbortPlanPartialFillSourceInvalid {
         field: &'static str,
     },
     AbortPlanSourceBundleRead {
@@ -833,6 +874,13 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "abort plan NT-accepted venue-pending source field `{field}` is invalid or unproven"
             ),
+            Self::AbortPlanPartialFillSourceRead { source, .. } => {
+                write!(f, "failed to read abort plan partial-fill source: {source}")
+            }
+            Self::AbortPlanPartialFillSourceInvalid { field } => write!(
+                f,
+                "abort plan partial-fill source field `{field}` is invalid or unproven"
+            ),
             Self::AbortPlanSourceBundleRead { source, .. } => {
                 write!(f, "failed to read abort plan source bundle: {source}")
             }
@@ -1033,6 +1081,7 @@ impl Error for BoltV3OperatorArtifactError {
             Self::PreRunStateSourceBundleParse { source, .. } => Some(source),
             Self::AbortPlanCancelIfOpenSourceRead { source, .. } => Some(source),
             Self::AbortPlanNtAcceptedVenuePendingSourceRead { source, .. } => Some(source),
+            Self::AbortPlanPartialFillSourceRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleParse { source, .. } => Some(source),
             Self::StaticManifestRead { source, .. } => Some(source),
@@ -1552,6 +1601,41 @@ pub fn collect_abort_plan_nt_accepted_venue_pending_source_proof(
 
     Ok(Phase8AbortPlanNtAcceptedVenuePendingSourceProof {
         nt_accepted_venue_pending_abort_evidence_hash,
+    })
+}
+
+pub fn collect_abort_plan_partial_fill_source_proof(
+    strategy_source_path: &Path,
+    max_strategy_source_bytes: u64,
+) -> Result<Phase8AbortPlanPartialFillSourceProof, BoltV3OperatorArtifactError> {
+    let strategy_source_bytes = read_file_bounded(strategy_source_path, max_strategy_source_bytes)
+        .map_err(
+            |source| BoltV3OperatorArtifactError::AbortPlanPartialFillSourceRead {
+                path: strategy_source_path.to_path_buf(),
+                source,
+            },
+        )?;
+    let strategy_source_sha256 = hex::encode(Sha256::digest(&strategy_source_bytes));
+    let strategy_source = std::str::from_utf8(&strategy_source_bytes).map_err(|_| {
+        BoltV3OperatorArtifactError::AbortPlanPartialFillSourceInvalid {
+            field: "strategy_source_utf8",
+        }
+    })?;
+    let contract = require_abort_plan_partial_fill_contract(strategy_source)?;
+
+    let proof_input = Phase8AbortPlanPartialFillSourceProofHashInput {
+        schema_version: ABORT_PLAN_PARTIAL_FILL_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: ABORT_PLAN_PARTIAL_FILL_SOURCE_PROOF_RECORD_KIND,
+        strategy_source_sha256: strategy_source_sha256.as_str(),
+        partial_fill_waits_for_position_close: contract.partial_fill_waits_for_position_close,
+        position_close_completes_exit: contract.position_close_completes_exit,
+        residual_after_fill_preserved: contract.residual_after_fill_preserved,
+        terminal_without_flat_preserves_managed: contract.terminal_without_flat_preserves_managed,
+    };
+    let partial_fill_abort_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8AbortPlanPartialFillSourceProof {
+        partial_fill_abort_evidence_hash,
     })
 }
 
@@ -2951,6 +3035,17 @@ struct Phase8AbortPlanNtAcceptedVenuePendingSourceProofHashInput<'a> {
     terminal_handlers_mark_exit_order_terminal: bool,
 }
 
+#[derive(Serialize)]
+struct Phase8AbortPlanPartialFillSourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    strategy_source_sha256: &'a str,
+    partial_fill_waits_for_position_close: bool,
+    position_close_completes_exit: bool,
+    residual_after_fill_preserved: bool,
+    terminal_without_flat_preserves_managed: bool,
+}
+
 struct AbortPlanCancelIfOpenContract {
     forced_flat_cancel_before_exit_pending: bool,
 }
@@ -2959,6 +3054,13 @@ struct AbortPlanNtAcceptedVenuePendingContract {
     exit_pending_before_submit: bool,
     submit_error_restores_managed_position: bool,
     terminal_handlers_mark_exit_order_terminal: bool,
+}
+
+struct AbortPlanPartialFillContract {
+    partial_fill_waits_for_position_close: bool,
+    position_close_completes_exit: bool,
+    residual_after_fill_preserved: bool,
+    terminal_without_flat_preserves_managed: bool,
 }
 
 fn require_abort_plan_cancel_if_open_contract(
@@ -3091,6 +3193,25 @@ fn require_abort_plan_nt_accepted_venue_pending_contract(
         exit_pending_before_submit: true,
         submit_error_restores_managed_position: true,
         terminal_handlers_mark_exit_order_terminal: true,
+    })
+}
+
+fn require_abort_plan_partial_fill_contract(
+    strategy_source: &str,
+) -> Result<AbortPlanPartialFillContract, BoltV3OperatorArtifactError> {
+    let comment_masked_source = abort_plan_cancel_if_open_comment_masked_source(strategy_source);
+    let code_masked_source = abort_plan_cancel_if_open_string_masked_source(&comment_masked_source);
+
+    require_abort_plan_partial_fill_waits_for_position_close(&code_masked_source)?;
+    require_abort_plan_partial_fill_position_close_completes_exit(&code_masked_source)?;
+    require_abort_plan_partial_fill_residual_after_fill_preserved(&code_masked_source)?;
+    require_abort_plan_partial_fill_terminal_without_flat_preserves_managed(&code_masked_source)?;
+
+    Ok(AbortPlanPartialFillContract {
+        partial_fill_waits_for_position_close: true,
+        position_close_completes_exit: true,
+        residual_after_fill_preserved: true,
+        terminal_without_flat_preserves_managed: true,
     })
 }
 
@@ -3350,6 +3471,157 @@ fn require_abort_plan_nt_accepted_venue_pending_terminal_contract(
     }
 }
 
+fn require_abort_plan_partial_fill_waits_for_position_close(
+    code_source: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let scope = abort_plan_partial_fill_single_function_scope(
+        code_source,
+        ABORT_PLAN_PARTIAL_FILL_ON_ORDER_FILLED_FUNCTION_NAME,
+        "partial_fill_order_filled_scope",
+    )?;
+    let exit_fill = abort_plan_partial_fill_single_marker_index(
+        scope,
+        ABORT_PLAN_PARTIAL_FILL_EXIT_FILL_MARKER,
+        "partial_fill_waits_for_position_close",
+    )?;
+    let fill_received = abort_plan_partial_fill_single_marker_index(
+        scope,
+        ABORT_PLAN_PARTIAL_FILL_FILL_RECEIVED_MARKER,
+        "partial_fill_waits_for_position_close",
+    )?;
+    let close_received_check = abort_plan_partial_fill_single_marker_index(
+        scope,
+        ABORT_PLAN_PARTIAL_FILL_CLOSE_RECEIVED_CHECK_MARKER,
+        "partial_fill_waits_for_position_close",
+    )?;
+
+    if exit_fill < fill_received && fill_received < close_received_check {
+        Ok(())
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::AbortPlanPartialFillSourceInvalid {
+                field: "partial_fill_waits_for_position_close",
+            },
+        )
+    }
+}
+
+fn require_abort_plan_partial_fill_position_close_completes_exit(
+    code_source: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let scope = abort_plan_partial_fill_single_function_scope(
+        code_source,
+        ABORT_PLAN_PARTIAL_FILL_ON_POSITION_CLOSED_FUNCTION_NAME,
+        "partial_fill_position_closed_scope",
+    )?;
+    let position_match = abort_plan_partial_fill_single_marker_index(
+        scope,
+        ABORT_PLAN_PARTIAL_FILL_POSITION_MATCH_MARKER,
+        "partial_fill_position_match",
+    )?;
+    let close_received = abort_plan_partial_fill_single_marker_index(
+        scope,
+        ABORT_PLAN_PARTIAL_FILL_CLOSE_RECEIVED_MARKER,
+        "partial_fill_close_received",
+    )?;
+    let position_clear = abort_plan_partial_fill_single_marker_index(
+        scope,
+        ABORT_PLAN_PARTIAL_FILL_POSITION_CLEAR_MARKER,
+        "partial_fill_position_clear",
+    )?;
+    let terminal_check = abort_plan_partial_fill_single_marker_index(
+        scope,
+        ABORT_PLAN_PARTIAL_FILL_TERMINAL_CHECK_MARKER,
+        "partial_fill_terminal_check",
+    )?;
+
+    if position_match < close_received
+        && close_received < position_clear
+        && position_clear < terminal_check
+    {
+        Ok(())
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::AbortPlanPartialFillSourceInvalid {
+                field: "position_close_completes_exit",
+            },
+        )
+    }
+}
+
+fn require_abort_plan_partial_fill_residual_after_fill_preserved(
+    code_source: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let scope = abort_plan_partial_fill_single_function_scope(
+        code_source,
+        ABORT_PLAN_PARTIAL_FILL_MATERIALIZE_FUNCTION_NAME,
+        "partial_fill_materialize_scope",
+    )?;
+    let residual_guard = abort_plan_partial_fill_single_marker_index(
+        scope,
+        ABORT_PLAN_PARTIAL_FILL_RESIDUAL_GUARD_MARKER,
+        "partial_fill_residual_guard",
+    )?;
+    let residual_marker = abort_plan_partial_fill_single_marker_index(
+        scope,
+        ABORT_PLAN_PARTIAL_FILL_RESIDUAL_MARKER,
+        "partial_fill_residual_marker",
+    )?;
+
+    if residual_guard < residual_marker {
+        Ok(())
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::AbortPlanPartialFillSourceInvalid {
+                field: "residual_after_fill_preserved",
+            },
+        )
+    }
+}
+
+fn require_abort_plan_partial_fill_terminal_without_flat_preserves_managed(
+    code_source: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let scope = abort_plan_partial_fill_single_function_scope(
+        code_source,
+        ABORT_PLAN_PARTIAL_FILL_TERMINAL_FUNCTION_NAME,
+        "partial_fill_terminal_scope",
+    )?;
+    let terminal_received = abort_plan_partial_fill_single_marker_index(
+        scope,
+        ABORT_PLAN_PARTIAL_FILL_TERMINAL_RECEIVED_MARKER,
+        "partial_fill_terminal_received",
+    )?;
+    let terminal_not_filled = abort_plan_partial_fill_single_marker_index(
+        scope,
+        ABORT_PLAN_PARTIAL_FILL_TERMINAL_NOT_FILLED_MARKER,
+        "partial_fill_terminal_not_filled",
+    )?;
+    let terminal_residual = abort_plan_partial_fill_single_marker_index(
+        scope,
+        ABORT_PLAN_PARTIAL_FILL_TERMINAL_RESIDUAL_MARKER,
+        "partial_fill_terminal_residual",
+    )?;
+    let terminal_managed = abort_plan_partial_fill_single_marker_index(
+        scope,
+        ABORT_PLAN_PARTIAL_FILL_TERMINAL_MANAGED_MARKER,
+        "partial_fill_terminal_managed",
+    )?;
+
+    if terminal_received < terminal_not_filled
+        && terminal_not_filled < terminal_residual
+        && terminal_residual < terminal_managed
+    {
+        Ok(())
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::AbortPlanPartialFillSourceInvalid {
+                field: "terminal_without_flat_preserves_managed",
+            },
+        )
+    }
+}
+
 fn abort_plan_cancel_if_open_scoped_marker_occurrences(
     strategy_source: &str,
     marker: &str,
@@ -3364,12 +3636,58 @@ fn abort_plan_cancel_if_open_scoped_marker_occurrences(
     indexes
 }
 
+fn abort_plan_partial_fill_single_function_scope<'a>(
+    code_source: &'a str,
+    function_name: &'static str,
+    field: &'static str,
+) -> Result<&'a str, BoltV3OperatorArtifactError> {
+    let mut scopes = abort_plan_cancel_if_open_function_scopes(code_source)
+        .into_iter()
+        .filter(|scope| {
+            abort_plan_source_scope_matches_function(&code_source[scope.clone()], function_name)
+        })
+        .collect::<Vec<_>>();
+    let [scope] = scopes.as_mut_slice() else {
+        return Err(BoltV3OperatorArtifactError::AbortPlanPartialFillSourceInvalid { field });
+    };
+    Ok(&code_source[scope.clone()])
+}
+
+fn abort_plan_source_scope_matches_function(scoped_source: &str, function_name: &str) -> bool {
+    scoped_source.lines().next().is_some_and(|line| {
+        line.as_bytes()
+            .windows(ABORT_PLAN_CANCEL_IF_OPEN_FUNCTION_KEYWORD_WIDTH)
+            .position(|window| matches!(window, [b'f', b'n', b' ']))
+            .is_some_and(|function_keyword_index| {
+                let suffix = line
+                    [function_keyword_index + ABORT_PLAN_CANCEL_IF_OPEN_FUNCTION_KEYWORD_WIDTH..]
+                    .trim_start();
+                suffix
+                    .strip_prefix(function_name)
+                    .and_then(|after_name| after_name.as_bytes().first().copied())
+                    .is_some_and(|after_name| matches!(after_name, b'(' | b'<'))
+            })
+    })
+}
+
 fn abort_plan_cancel_if_open_single_marker_index(
     indexes: &[usize],
     field: &'static str,
 ) -> Result<usize, BoltV3OperatorArtifactError> {
     let [index] = indexes else {
         return Err(BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid { field });
+    };
+    Ok(*index)
+}
+
+fn abort_plan_partial_fill_single_marker_index(
+    source: &str,
+    marker: &str,
+    field: &'static str,
+) -> Result<usize, BoltV3OperatorArtifactError> {
+    let indexes = abort_plan_cancel_if_open_scoped_marker_occurrences(source, marker);
+    let [index] = indexes.as_slice() else {
+        return Err(BoltV3OperatorArtifactError::AbortPlanPartialFillSourceInvalid { field });
     };
     Ok(*index)
 }

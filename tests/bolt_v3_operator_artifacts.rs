@@ -545,6 +545,91 @@ fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
 }
 
 #[test]
+fn abort_plan_partial_fill_source_proof_derives_from_exit_fill_lifecycle() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let abort_plan_path = temp.path().join("abort-plan.json");
+    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
+        &strategy_source_path,
+        1_000_000,
+    )
+    .expect("strategy source should prove partial-fill abort lifecycle");
+    let bolt_v2::bolt_v3_operator_artifacts::Phase8AbortPlanPartialFillSourceProof {
+        partial_fill_abort_evidence_hash,
+    } = proof;
+
+    assert_eq!(partial_fill_abort_evidence_hash.len(), 64);
+    assert!(
+        partial_fill_abort_evidence_hash
+            .chars()
+            .all(|char| char.is_ascii_hexdigit() && !char.is_ascii_uppercase()),
+        "partial-fill proof hash should be lowercase sha256"
+    );
+    assert!(
+        !abort_plan_path.exists(),
+        "collector must not write final abort-plan artifact"
+    );
+}
+
+#[test]
+fn abort_plan_partial_fill_source_proof_rejects_fill_that_flattens_before_position_close() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn into_state_after_exit_update(self) -> ExposureState {
+    if self.pending_exit.fill_received && self.pending_exit.close_received {
+        return ExposureState::Flat;
+    }
+    ExposureState::ExitPending(self)
+}
+
+fn on_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) -> anyhow::Result<()> {
+    let exit_fill = self
+        .exposure
+        .exit_pending()
+        .is_some_and(|exit| exit.pending_exit.client_order_id == event.client_order_id);
+    if exit_fill {
+        self.exposure = ExposureState::Flat;
+    }
+    Ok(())
+}
+
+fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
+    match &mut self.exposure {
+        ExposureState::ExitPending(exit_pending)
+            if exit_pending.pending_exit.position_id == Some(event.position_id) =>
+        {
+            exit_pending.pending_exit.close_received = true;
+            exit_pending.position = None;
+            if exit_pending.is_terminal() {
+                self.exposure = ExposureState::Flat;
+            }
+        }
+        _ => {}
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
+        &strategy_source_path,
+        10_000,
+    )
+    .expect_err("exit fill must wait for position close before flattening");
+
+    assert!(
+        error
+            .to_string()
+            .contains("partial_fill_waits_for_position_close"),
+        "eager flat error should identify partial-fill ordering proof: {error}"
+    );
+}
+
+#[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_cancel_after_exit_pending() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let strategy_source_path = temp.path().join("strategy.rs");

@@ -169,3 +169,15 @@ The collectors are non-live and source-owned: they read bounded local JSON sourc
 - `git diff --check`: passed.
 
 The collector is non-live and source-owned: it reads bounded local Rust source, validates that `try_submit_exit_order` creates `ExitPending`/`PendingExitState` before `submit_order_with_decision_evidence`, validates submit-error restoration to `Managed`, validates cancel/reject/expire terminal handlers call `mark_exit_order_terminal`, returns only a source-proof hash, and does not write `abort-plan.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T025/T026.
+
+## T027/T028 Partial-Fill Abort Collector Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts abort_plan_partial_fill -- --nocapture` failed with `E0425`/`E0422` because `collect_abort_plan_partial_fill_source_proof` and `Phase8AbortPlanPartialFillSourceProof` did not exist.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts abort_plan_partial_fill -- --nocapture` passed: 2 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts abort_plan_ -- --nocapture`: 23 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `git diff --check`: passed.
+
+The collector is non-live and source-owned: it reads bounded local Rust source, validates that exit fills set `fill_received` and wait for `close_received` before flat, validates position-close completion sets `close_received` and clears the stored position, validates residual-after-fill state preservation, validates terminal-without-flat preserves managed exposure instead of falsely flattening, returns only a source-proof hash, and does not write `abort-plan.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T027/T028.

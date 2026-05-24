@@ -4770,6 +4770,158 @@ reason = "This marker verifies terminal event handlers call the terminal transit
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const ABORT_PLAN_PARTIAL_FILL_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the partial-fill source-proof artifact schema version emitted by the abort-plan evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.abort_plan_partial_fill_source_proof.v1"'''
+context = '''"bolt_v3.abort_plan_partial_fill_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for partial-fill source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"on_order_filled"'''
+context = '''const ABORT_PLAN_PARTIAL_FILL_ON_ORDER_FILLED_FUNCTION_NAME: &str = "on_order_filled";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker pins the partial-fill source proof to the production order-fill handler; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"on_position_closed"'''
+context = '''const ABORT_PLAN_PARTIAL_FILL_ON_POSITION_CLOSED_FUNCTION_NAME: &str = "on_position_closed";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker pins the partial-fill source proof to the production position-close handler; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"materialize_position_from_event"'''
+context = '''const ABORT_PLAN_PARTIAL_FILL_MATERIALIZE_FUNCTION_NAME: &str = "materialize_position_from_event";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker pins the partial-fill source proof to the production position materialization path; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"into_state_after_exit_update"'''
+context = '''const ABORT_PLAN_PARTIAL_FILL_TERMINAL_FUNCTION_NAME: &str = "into_state_after_exit_update";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker pins the partial-fill source proof to the production exit-pending terminal transition; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"exit.pending_exit.client_order_id == event.client_order_id"'''
+context = '''"exit.pending_exit.client_order_id == event.client_order_id";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies order-fill correlation to the pending exit order for the partial-fill proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"exit_pending.pending_exit.fill_received = true"'''
+context = '''"exit_pending.pending_exit.fill_received = true";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies fill receipt is recorded for the pending exit order; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"if exit_pending.pending_exit.close_received"'''
+context = '''"if exit_pending.pending_exit.close_received";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies fills wait for position close before flattening; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"exit_pending.pending_exit.position_id == Some(event.position_id)"'''
+context = '''"exit_pending.pending_exit.position_id == Some(event.position_id)";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies position-close correlation to the pending exit position; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"exit_pending.pending_exit.close_received = true"'''
+context = '''"exit_pending.pending_exit.close_received = true";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies position close completion is recorded for the pending exit; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"exit_pending.position = None"'''
+context = '''const ABORT_PLAN_PARTIAL_FILL_POSITION_CLEAR_MARKER: &str = "exit_pending.position = None";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies closed position state is cleared for the pending exit; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"if exit_pending.is_terminal()"'''
+context = '''const ABORT_PLAN_PARTIAL_FILL_TERMINAL_CHECK_MARKER: &str = "if exit_pending.is_terminal()";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies terminal evaluation after position close for the partial-fill proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"if pending_exit.fill_received"'''
+context = '''const ABORT_PLAN_PARTIAL_FILL_RESIDUAL_GUARD_MARKER: &str = "if pending_exit.fill_received";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies residual exposure detection after an exit fill; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"pending_exit.residual_position_observed_after_fill = true"'''
+context = '''"pending_exit.residual_position_observed_after_fill = true";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies residual position state is preserved after a fill; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.pending_exit.terminal_received"'''
+context = '''"self.pending_exit.terminal_received";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies terminal event handling in the exit-pending state machine; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"!self.pending_exit.fill_received"'''
+context = '''const ABORT_PLAN_PARTIAL_FILL_TERMINAL_NOT_FILLED_MARKER: &str = "!self.pending_exit.fill_received";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies a terminal-without-fill path does not claim clean flattening; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.pending_exit.residual_position_observed_after_fill"'''
+context = '''"self.pending_exit.residual_position_observed_after_fill";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies residual-after-fill handling in the terminal path; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"Some(position) => ExposureState::Managed(position)"'''
+context = '''"Some(position) => ExposureState::Managed(position)";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies residual terminal state preserves managed exposure instead of flattening; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"single_runner_lock_path"'''
 context = '''validate_output_path_components("single_runner_lock_path", lock_path)?;'''
@@ -4967,6 +5119,126 @@ literal = '''3'''
 context = '''if terminal_handlers.len() < 3 {'''
 classification = "operator_source_proof_required_handler_count"
 reason = "This is the required count of cancel/reject/expire terminal-handler source markers for the abort proof, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_order_filled_scope"'''
+context = '''"partial_fill_order_filled_scope",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing order-fill source scope in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_waits_for_position_close"'''
+context = '''"partial_fill_waits_for_position_close",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing wait-for-close source proof in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_position_closed_scope"'''
+context = '''"partial_fill_position_closed_scope",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing position-close source scope in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_position_match"'''
+context = '''"partial_fill_position_match",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing position correlation marker in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_close_received"'''
+context = '''"partial_fill_close_received",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing close-received marker in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_position_clear"'''
+context = '''"partial_fill_position_clear",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing position-clear marker in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_terminal_check"'''
+context = '''"partial_fill_terminal_check",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing terminal-check marker in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_materialize_scope"'''
+context = '''"partial_fill_materialize_scope",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing materialization source scope in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_residual_guard"'''
+context = '''"partial_fill_residual_guard",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing residual guard marker in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_residual_marker"'''
+context = '''"partial_fill_residual_marker",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing residual marker in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_terminal_scope"'''
+context = '''"partial_fill_terminal_scope",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing terminal source scope in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_terminal_received"'''
+context = '''"partial_fill_terminal_received",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing terminal-received marker in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_terminal_not_filled"'''
+context = '''"partial_fill_terminal_not_filled",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing terminal-not-filled marker in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_terminal_residual"'''
+context = '''"partial_fill_terminal_residual",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing terminal-residual marker in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_terminal_managed"'''
+context = '''"partial_fill_terminal_managed",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing terminal-managed marker in partial-fill diagnostics; it is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

@@ -267,6 +267,7 @@ def assert_shared_cargo_scanner_helpers_match_current_verifiers() -> None:
         (["--unknown-cargo-flag", "build"], (1, "build")),
         (["--version", "build"], (1, "build")),
         (["+nightly", "--offline", "check"], (2, "check")),
+        (["--locked", "--frozen"], None),
     ]
     for cargo_args, expected in cargo_subcommand_cases:
         values = [
@@ -303,6 +304,7 @@ def assert_shared_cargo_scanner_helpers_match_current_verifiers() -> None:
 
     target_scan_cases = [
         (["test", "--", "--target-dir", "/tmp/raw"], ["test"]),
+        (["bench", "--", "--target-dir", "/tmp/raw"], ["bench"]),
         (
             ["nextest", "run", "--archive-file", "archive", "--", "--target-dir", "/tmp/raw"],
             ["nextest", "run", "--archive-file", "archive"],
@@ -317,6 +319,14 @@ def assert_shared_cargo_scanner_helpers_match_current_verifiers() -> None:
         ]
         if values != [expected, expected, expected]:
             raise AssertionError(f"cargo_args_for_target_routing_scan({cargo_args!r}) returned {values!r}")
+
+    nextest_separator_values = [
+        runtime.nextest_subcommand_with_index(["--"]),
+        static.nextest_subcommand_with_index(["--"]),
+        shared.nextest_subcommand_with_index(["--"]),
+    ]
+    if nextest_separator_values != [None, None, None]:
+        raise AssertionError(f"nextest_subcommand_with_index separator returned {nextest_separator_values!r}")
 
 
 def assert_non_exported_candidate_helpers_are_characterized() -> None:

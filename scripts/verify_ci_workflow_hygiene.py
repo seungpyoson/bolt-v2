@@ -346,6 +346,8 @@ CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {
     "-C",
     "-Z",
 }
+# Static-only option consumption keeps these local constants intentionally; the
+# shared scanner has broader Cargo CLI coverage while preserving scan parity.
 CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "--quiet", "-q", "--verbose", "-v"}
 ZIGBUILD_PREBUILT_LITERALS = (
     'version="${{ steps.setup.outputs.zigbuild_version }}"',

@@ -13,6 +13,7 @@
 | Branch base | `817ddfc9af8cd835ee6143f0562595f73a1d2645` |
 | Planning review head | `1082acc40cfe12f0759aca951295046de198ca47` |
 | Implementation start head | `a4ddac81d0009ef63f15b8f51b2994996f969237` |
+| Exact CI/review head | `e692d0d25ec7341c2aaa00500f1b27377caf422a` |
 | `.worktrees` gitignore status | Ignored. |
 
 ## Baseline Verification
@@ -117,3 +118,5 @@ Implementation gate is open because the operator explicitly waived the failed Ki
 | T030 unresolved-marker scan | Pass: no unresolved-marker matches in specs or touched Python files. |
 | T031 implementation commit | `0aa53b3f62e3902f3d9a403ce21f6af2a1fe2c36` (`refactor: share cargo scanner helpers`). |
 | T033 pull request | PR #465 opened for issue #464 slice without claiming to close #464. |
+| T034 exact-head CI | Pass: actionlint run `26349148010` and CI run `26349147999` both completed successfully for `e692d0d25ec7341c2aaa00500f1b27377caf422a`. |
+| Initial implementation reviews | APPROVE from Claude (`37d2ecca-05e7-42a8-9757-3f43420f4296`), Gemini (`2318be3e-8a4d-4961-abd2-db776e6a3c9e`), Grok custom-review (`job_84ec2021-d4e0-4092-842e-0798c324cfc7`), DeepSeek (`job_1d435a38-0610-490d-a5b5-cf86e89701a8`), and GLM (`job_64df462a-1058-45f5-95c8-b3f5af15c3f6`); Kimi operator-skipped. Non-blocking findings are resolved by the follow-up test/comment/evidence update. |

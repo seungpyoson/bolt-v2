@@ -62,8 +62,8 @@
 - [x] T026 [US4] Implement NT accepted and venue pending abort collectors in `src/bolt_v3_operator_artifacts.rs`.
 - [x] T027 [P] [US4] Add RED tests for partial-fill abort collector in `tests/bolt_v3_operator_artifacts.rs`.
 - [x] T028 [US4] Implement partial-fill abort collector in `src/bolt_v3_operator_artifacts.rs`.
-- [ ] T029 [P] [US4] Add RED tests for network-partition abort collector in `tests/bolt_v3_operator_artifacts.rs`.
-- [ ] T030 [US4] Implement network-partition abort collector in `src/bolt_v3_operator_artifacts.rs`.
+- [x] T029 [P] [US4] Add RED tests for network-partition abort collector in `tests/bolt_v3_operator_artifacts.rs`.
+- [x] T030 [US4] Implement network-partition abort collector in `src/bolt_v3_operator_artifacts.rs`.
 - [ ] T031 [P] [US4] Add RED tests for panic-gate and service-policy collector in `tests/bolt_v3_operator_artifacts.rs`.
 - [ ] T032 [US4] Implement panic-gate and service-policy collector in `src/bolt_v3_operator_artifacts.rs`.
 - [ ] T033 [US4] Bind all T127 collector outputs through operator evidence config in `config/live.local.toml` and runtime-literal audit rows in `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`.

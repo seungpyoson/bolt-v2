@@ -153,6 +153,9 @@ const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_HANDLER_MARKER: &str =
 const ABORT_PLAN_PARTIAL_FILL_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const ABORT_PLAN_PARTIAL_FILL_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.abort_plan_partial_fill_source_proof.v1";
+const ABORT_PLAN_NETWORK_PARTITION_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const ABORT_PLAN_NETWORK_PARTITION_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.abort_plan_network_partition_source_proof.v1";
 const ABORT_PLAN_PARTIAL_FILL_ON_ORDER_FILLED_FUNCTION_NAME: &str = "on_order_filled";
 const ABORT_PLAN_PARTIAL_FILL_ON_POSITION_CLOSED_FUNCTION_NAME: &str = "on_position_closed";
 const ABORT_PLAN_PARTIAL_FILL_MATERIALIZE_FUNCTION_NAME: &str = "materialize_position_from_event";
@@ -431,6 +434,11 @@ pub struct Phase8AbortPlanPartialFillSourceProof {
     pub partial_fill_abort_evidence_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8AbortPlanNetworkPartitionSourceProof {
+    pub network_partition_during_submit_abort_evidence_hash: String,
+}
+
 impl fmt::Debug for WrittenOperatorArtifact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WrittenOperatorArtifact")
@@ -581,6 +589,13 @@ pub enum BoltV3OperatorArtifactError {
         source: std::io::Error,
     },
     AbortPlanPartialFillSourceInvalid {
+        field: &'static str,
+    },
+    AbortPlanNetworkPartitionSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    AbortPlanNetworkPartitionSourceInvalid {
         field: &'static str,
     },
     AbortPlanSourceBundleRead {
@@ -881,6 +896,14 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "abort plan partial-fill source field `{field}` is invalid or unproven"
             ),
+            Self::AbortPlanNetworkPartitionSourceRead { source, .. } => write!(
+                f,
+                "failed to read abort plan network-partition source: {source}"
+            ),
+            Self::AbortPlanNetworkPartitionSourceInvalid { field } => write!(
+                f,
+                "abort plan network-partition source field `{field}` is invalid or unproven"
+            ),
             Self::AbortPlanSourceBundleRead { source, .. } => {
                 write!(f, "failed to read abort plan source bundle: {source}")
             }
@@ -1082,6 +1105,7 @@ impl Error for BoltV3OperatorArtifactError {
             Self::AbortPlanCancelIfOpenSourceRead { source, .. } => Some(source),
             Self::AbortPlanNtAcceptedVenuePendingSourceRead { source, .. } => Some(source),
             Self::AbortPlanPartialFillSourceRead { source, .. } => Some(source),
+            Self::AbortPlanNetworkPartitionSourceRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleRead { source, .. } => Some(source),
             Self::AbortPlanSourceBundleParse { source, .. } => Some(source),
             Self::StaticManifestRead { source, .. } => Some(source),
@@ -1636,6 +1660,38 @@ pub fn collect_abort_plan_partial_fill_source_proof(
 
     Ok(Phase8AbortPlanPartialFillSourceProof {
         partial_fill_abort_evidence_hash,
+    })
+}
+
+pub fn collect_abort_plan_network_partition_source_proof(
+    strategy_source_path: &Path,
+    max_strategy_source_bytes: u64,
+) -> Result<Phase8AbortPlanNetworkPartitionSourceProof, BoltV3OperatorArtifactError> {
+    let strategy_source_bytes = read_file_bounded(strategy_source_path, max_strategy_source_bytes)
+        .map_err(
+            |source| BoltV3OperatorArtifactError::AbortPlanNetworkPartitionSourceRead {
+                path: strategy_source_path.to_path_buf(),
+                source,
+            },
+        )?;
+    let strategy_source_sha256 = hex::encode(Sha256::digest(&strategy_source_bytes));
+    let strategy_source = std::str::from_utf8(&strategy_source_bytes).map_err(|_| {
+        BoltV3OperatorArtifactError::AbortPlanNetworkPartitionSourceInvalid {
+            field: "strategy_source_utf8",
+        }
+    })?;
+    let contract = require_abort_plan_network_partition_contract(strategy_source)?;
+
+    let proof_input = Phase8AbortPlanNetworkPartitionSourceProofHashInput {
+        schema_version: ABORT_PLAN_NETWORK_PARTITION_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: ABORT_PLAN_NETWORK_PARTITION_SOURCE_PROOF_RECORD_KIND,
+        strategy_source_sha256: strategy_source_sha256.as_str(),
+        submit_error_restores_managed_position: contract.submit_error_restores_managed_position,
+    };
+    let network_partition_during_submit_abort_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8AbortPlanNetworkPartitionSourceProof {
+        network_partition_during_submit_abort_evidence_hash,
     })
 }
 
@@ -3046,6 +3102,14 @@ struct Phase8AbortPlanPartialFillSourceProofHashInput<'a> {
     terminal_without_flat_preserves_managed: bool,
 }
 
+#[derive(Serialize)]
+struct Phase8AbortPlanNetworkPartitionSourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    strategy_source_sha256: &'a str,
+    submit_error_restores_managed_position: bool,
+}
+
 struct AbortPlanCancelIfOpenContract {
     forced_flat_cancel_before_exit_pending: bool,
 }
@@ -3061,6 +3125,10 @@ struct AbortPlanPartialFillContract {
     position_close_completes_exit: bool,
     residual_after_fill_preserved: bool,
     terminal_without_flat_preserves_managed: bool,
+}
+
+struct AbortPlanNetworkPartitionContract {
+    submit_error_restores_managed_position: bool,
 }
 
 fn require_abort_plan_cancel_if_open_contract(
@@ -3213,6 +3281,56 @@ fn require_abort_plan_partial_fill_contract(
         residual_after_fill_preserved: true,
         terminal_without_flat_preserves_managed: true,
     })
+}
+
+fn require_abort_plan_network_partition_contract(
+    strategy_source: &str,
+) -> Result<AbortPlanNetworkPartitionContract, BoltV3OperatorArtifactError> {
+    let comment_masked_source = abort_plan_cancel_if_open_comment_masked_source(strategy_source);
+    let code_masked_source = abort_plan_cancel_if_open_string_masked_source(&comment_masked_source);
+    let target_function_scopes = abort_plan_cancel_if_open_function_scopes(&code_masked_source)
+        .into_iter()
+        .filter(|function_scope| {
+            let scoped_code_source = &code_masked_source[function_scope.clone()];
+            abort_plan_cancel_if_open_scope_matches_target_function(scoped_code_source)
+        })
+        .collect::<Vec<_>>();
+
+    let [target_function_scope] = target_function_scopes.as_slice() else {
+        return Err(
+            BoltV3OperatorArtifactError::AbortPlanNetworkPartitionSourceInvalid {
+                field: "submit_error_function_scope",
+            },
+        );
+    };
+    let scoped_code_source = &code_masked_source[target_function_scope.clone()];
+    let submit = abort_plan_network_partition_single_marker_index(
+        scoped_code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_SUBMIT_MARKER,
+        "submit_error_restores_managed_position",
+    )?;
+    let restore_managed = abort_plan_network_partition_single_marker_index(
+        scoped_code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_RESTORE_MANAGED_MARKER,
+        "submit_error_restores_managed_position",
+    )?;
+    let return_error = abort_plan_network_partition_single_marker_index(
+        scoped_code_source,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_RETURN_ERROR_MARKER,
+        "submit_error_restores_managed_position",
+    )?;
+
+    if submit < restore_managed && restore_managed < return_error {
+        Ok(AbortPlanNetworkPartitionContract {
+            submit_error_restores_managed_position: true,
+        })
+    } else {
+        Err(
+            BoltV3OperatorArtifactError::AbortPlanNetworkPartitionSourceInvalid {
+                field: "submit_error_restores_managed_position",
+            },
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -3688,6 +3806,18 @@ fn abort_plan_partial_fill_single_marker_index(
     let indexes = abort_plan_cancel_if_open_scoped_marker_occurrences(source, marker);
     let [index] = indexes.as_slice() else {
         return Err(BoltV3OperatorArtifactError::AbortPlanPartialFillSourceInvalid { field });
+    };
+    Ok(*index)
+}
+
+fn abort_plan_network_partition_single_marker_index(
+    source: &str,
+    marker: &str,
+    field: &'static str,
+) -> Result<usize, BoltV3OperatorArtifactError> {
+    let indexes = abort_plan_cancel_if_open_scoped_marker_occurrences(source, marker);
+    let [index] = indexes.as_slice() else {
+        return Err(BoltV3OperatorArtifactError::AbortPlanNetworkPartitionSourceInvalid { field });
     };
     Ok(*index)
 }

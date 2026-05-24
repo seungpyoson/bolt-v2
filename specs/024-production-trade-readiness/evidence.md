@@ -181,3 +181,17 @@ The collector is non-live and source-owned: it reads bounded local Rust source, 
 - `git diff --check`: passed.
 
 The collector is non-live and source-owned: it reads bounded local Rust source, validates that exit fills set `fill_received` and wait for `close_received` before flat, validates position-close completion sets `close_received` and clears the stored position, validates residual-after-fill state preservation, validates terminal-without-flat preserves managed exposure instead of falsely flattening, returns only a source-proof hash, and does not write `abort-plan.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T027/T028.
+
+## T029/T030 Network-Partition Abort Collector Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts abort_plan_network_partition -- --nocapture` failed with `E0425`/`E0422` because `collect_abort_plan_network_partition_source_proof` and `Phase8AbortPlanNetworkPartitionSourceProof` did not exist.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts abort_plan_network_partition -- --nocapture` passed: 2 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts abort_plan_ -- --nocapture`: 25 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `python3 -B scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `python3 -B scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `git diff --check`: passed.
+- `just fmt-check`: passed.
+- `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+The collector is non-live and source-owned: it reads bounded local Rust source, validates that `try_submit_exit_order` calls `submit_order_with_decision_evidence`, validates submit-error restoration to `Managed`, validates the submit error is returned instead of swallowed, returns only a source-proof hash, and does not write `abort-plan.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T029/T030.

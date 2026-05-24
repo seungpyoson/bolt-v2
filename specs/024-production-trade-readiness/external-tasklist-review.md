@@ -102,3 +102,14 @@ CI source-fence requires `.specify/feature.json` and the AGENTS Speckit block to
 Local `just source-fence` passed after restoring the guarded pointers. GitHub CI still needs to re-run on the pushed fix before this can be treated as PR-level evidence.
 
 Round 4 does not unblock implementation because Claude and Kimi have no valid verdicts. Gemini, DeepSeek, GLM, and Grok have approved the corrected direction, but the six-reviewer gate is not complete without valid Claude/Kimi verdicts or explicit operator waiver.
+
+## Round 5
+
+Current pushed PR #480 head: `269e98d8a183c2f6e90f7faff3f1da32b940cf1d`.
+
+GitHub CI for this head is green: source-fence, gate, nextest archive/shards, clippy, deny, fmt-check, CodeQL, actionlint, detector, check-aarch64, and analysis passed.
+
+- Claude doctor: FAILED before review with `oauth_inference_rejected` / HTTP 401. OAuth status is logged in with subscription type `max`, but non-interactive inference is rejected. No source was sent and no valid verdict was produced.
+- Kimi job `e0f1f813-cb69-4e3f-9f4d-45cd79bb63e4`: FAILED with `step_limit_exceeded`. Source was sent for branch-diff scope `origin/main`; session `1351b5ee-2d46-4f7f-8c79-5bb6ae919dc0`; max step budget `50`; no review verdict was produced.
+
+Round 5 does not unblock implementation. Kimi failure may be treated only as a recorded skip/failure under the operator's skip-if-failing instruction or an explicit waiver; it is not an approval. Claude still requires refreshed OAuth that allows non-interactive inference, or an explicit operator waiver. Do not mark T004/T005 complete until the missing verdict/waiver state is resolved.

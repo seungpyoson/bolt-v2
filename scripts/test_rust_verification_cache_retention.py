@@ -1840,6 +1840,84 @@ exit 0
             raise AssertionError("incomplete scan allowed subtree deletion")
 
 
+def assert_cache_prune_apply_reports_partial_removals_on_late_remove_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        owner = load_owner_module()
+        target = tmp_path / "rust-root" / "bolt-v2" / "target"
+        candidates = [
+            {
+                "bytes": 1,
+                "class": "debug",
+                "latest_mtime": time.time() - 10_000,
+                "path": str(target / "debug"),
+                "relative_path": "debug",
+                "skipped_special_entries": 0,
+            },
+            {
+                "bytes": 1,
+                "class": "release",
+                "latest_mtime": time.time() - 10_000,
+                "path": str(target / "release"),
+                "relative_path": "release",
+                "skipped_special_entries": 0,
+            },
+        ]
+        originals = {
+            "load_policy": owner.load_policy,
+            "root_base": owner.root_base,
+            "cache_lock": owner.cache_lock,
+            "cache_status_payload": owner.cache_status_payload,
+            "is_prune_candidate": owner.is_prune_candidate,
+            "active_process_refusal_payload": owner.active_process_refusal_payload,
+            "remove_cache_candidate": owner.remove_cache_candidate,
+        }
+        try:
+            owner.load_policy = lambda _repo: {
+                "cache": {
+                    "active_process_patterns": ["cargo"],
+                    "min_free_bytes": 0,
+                    "retention": {
+                        "debug": {"prunable": True, "prune_after_days": 1},
+                        "release": {"prunable": True, "prune_after_days": 1},
+                        "cross-target": {"prunable": True, "prune_after_days": 1},
+                        "tmp": {"prunable": True, "prune_after_days": 1},
+                        "other": {"prunable": False},
+                    },
+                    "soft_limit_bytes": 100,
+                },
+                "target_namespace": "bolt-v2",
+            }
+            owner.root_base = lambda: tmp_path / "rust-root"
+            owner.cache_lock = lambda _policy, *, exclusive: contextlib.nullcontext()
+            owner.cache_status_payload = lambda _repo: {
+                "pressure": False,
+                "pressure_reasons": [],
+                "subtrees": candidates,
+                "target_dir": str(target),
+            }
+            owner.is_prune_candidate = lambda _subtree, _policy, *, now, pressure: (True, "test")
+            owner.active_process_refusal_payload = lambda _repo, _target, _policy: None
+
+            def fake_remove(entry: dict[str, object], _target: pathlib.Path) -> None:
+                if entry["relative_path"] == "release":
+                    raise owner.PolicyError("late cache-prune removal failure")
+
+            owner.remove_cache_candidate = fake_remove
+            payload = owner.cache_prune_payload(repo, dry_run=False)
+        finally:
+            for name, value in originals.items():
+                setattr(owner, name, value)
+        removed_paths = [entry.get("relative_path") for entry in payload.get("removed", [])]
+        if payload.get("refusal_code") != "operation_failed" or removed_paths != ["debug"]:
+            raise AssertionError(
+                "cache-prune apply must report partial removals when late remove raises: "
+                f"payload={payload!r}"
+            )
+
+
 def assert_cache_prune_rejects_conflicting_modes() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -2100,6 +2178,73 @@ def assert_cache_reset_apply_rechecks_active_process_before_each_removal() -> No
             raise AssertionError(
                 "cache-reset apply must re-check before each child removal and report partial removals: "
                 f"payload={payload!r} removed={removed!r} active_checks={active_checks!r}"
+            )
+
+
+def assert_cache_reset_apply_reports_partial_removals_on_late_remove_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        owner = load_owner_module()
+        target = tmp_path / "rust-root" / "bolt-v2" / "target"
+        candidates = [
+            {
+                "bytes": 1,
+                "class": "cache_reset",
+                "path": str(target / "debug"),
+                "reason": "test",
+            },
+            {
+                "bytes": 1,
+                "class": "cache_reset",
+                "path": str(target / "release"),
+                "reason": "test",
+            },
+        ]
+        originals = {
+            "load_policy": owner.load_policy,
+            "root_base": owner.root_base,
+            "cache_lock": owner.cache_lock,
+            "cache_reset_candidates": owner.cache_reset_candidates,
+            "active_process_refusal_payload": owner.active_process_refusal_payload,
+            "remove_cache_candidate": owner.remove_cache_candidate,
+        }
+        try:
+            owner.load_policy = lambda _repo: {
+                "cache": {
+                    "active_process_patterns": ["cargo"],
+                    "min_free_bytes": 0,
+                    "retention": {
+                        "debug": {"prunable": True, "prune_after_days": 1},
+                        "release": {"prunable": True, "prune_after_days": 1},
+                        "cross-target": {"prunable": True, "prune_after_days": 1},
+                        "tmp": {"prunable": True, "prune_after_days": 1},
+                        "other": {"prunable": False},
+                    },
+                    "soft_limit_bytes": 100,
+                },
+                "target_namespace": "bolt-v2",
+            }
+            owner.root_base = lambda: tmp_path / "rust-root"
+            owner.cache_lock = lambda _policy, *, exclusive: contextlib.nullcontext()
+            owner.cache_reset_candidates = lambda _target: (candidates, 2)
+            owner.active_process_refusal_payload = lambda _repo, _target, _policy: None
+
+            def fake_remove(entry: dict[str, object], _target: pathlib.Path) -> None:
+                if str(entry["path"]).endswith("release"):
+                    raise owner.PolicyError("late cache-reset removal failure")
+
+            owner.remove_cache_candidate = fake_remove
+            payload = owner.cache_reset_payload(repo, dry_run=False)
+        finally:
+            for name, value in originals.items():
+                setattr(owner, name, value)
+        removed_paths = [entry.get("path") for entry in payload.get("removed", [])]
+        if payload.get("refusal_code") != "operation_failed" or removed_paths != [str(target / "debug")]:
+            raise AssertionError(
+                "cache-reset apply must report partial removals when late remove raises: "
+                f"payload={payload!r}"
             )
 
 
@@ -4341,6 +4486,84 @@ def assert_cleanup_apply_reports_partial_removals_on_late_candidate_refusal() ->
             )
 
 
+def assert_cleanup_apply_reports_partial_removals_on_late_remove_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        bundle_one = tmp_path / "tmp" / "bolt-v2-one"
+        bundle_two = tmp_path / "tmp" / "bolt-v2-two"
+        bundle_one.mkdir(parents=True)
+        bundle_two.mkdir(parents=True)
+        owner = load_owner_module()
+        candidates = [
+            {
+                "bytes": 1,
+                "class": "tmp_bundle",
+                "path": str(bundle_one),
+                "parent": str(bundle_one.parent),
+                "reason": "test",
+            },
+            {
+                "bytes": 1,
+                "class": "tmp_bundle",
+                "path": str(bundle_two),
+                "parent": str(bundle_two.parent),
+                "reason": "test",
+            },
+        ]
+        originals = {
+            "load_policy": owner.load_policy,
+            "root_base": owner.root_base,
+            "registered_worktree_paths": owner.registered_worktree_paths,
+            "cleanup_tmp_bundle_candidates": owner.cleanup_tmp_bundle_candidates,
+            "cleanup_worktree_target_candidates": owner.cleanup_worktree_target_candidates,
+            "active_process_refusal_payload": owner.active_process_refusal_payload,
+            "cleanup_candidate_refusal_payload": owner.cleanup_candidate_refusal_payload,
+            "remove_cleanup_candidate": owner.remove_cleanup_candidate,
+            "cache_lock": owner.cache_lock,
+        }
+        try:
+            owner.load_policy = lambda _repo: {
+                "cache": {
+                    "active_process_patterns": ["cargo"],
+                    "min_free_bytes": 0,
+                    "retention": {
+                        "debug": {"prunable": True, "prune_after_days": 1},
+                        "release": {"prunable": True, "prune_after_days": 1},
+                        "cross-target": {"prunable": True, "prune_after_days": 1},
+                        "tmp": {"prunable": True, "prune_after_days": 1},
+                        "other": {"prunable": False},
+                    },
+                    "soft_limit_bytes": 100,
+                },
+                "target_namespace": "bolt-v2",
+            }
+            owner.root_base = lambda: tmp_path / "rust-root"
+            owner.registered_worktree_paths = lambda _repo: set()
+            owner.cleanup_tmp_bundle_candidates = lambda _repo, _policy, *, now, registered: candidates
+            owner.cleanup_worktree_target_candidates = lambda _repo, _policy, *, registered: []
+            owner.active_process_refusal_payload = lambda _repo, _target, _policy: None
+            owner.cleanup_candidate_refusal_payload = lambda _repo, _entry, _policy: None
+            owner.cache_lock = lambda _policy, *, exclusive: contextlib.nullcontext()
+
+            def fake_remove(entry: dict[str, object]) -> None:
+                if entry["path"] == str(bundle_two):
+                    raise owner.PolicyError("late cleanup removal failure")
+
+            owner.remove_cleanup_candidate = fake_remove
+            payload = owner.cleanup_payload(repo, dry_run=False)
+        finally:
+            for name, value in originals.items():
+                setattr(owner, name, value)
+        removed_paths = [entry.get("path") for entry in payload.get("removed", [])]
+        if payload.get("refusal_code") != "operation_failed" or removed_paths != [str(bundle_one)]:
+            raise AssertionError(
+                "cleanup apply must report partial removals when late remove raises: "
+                f"payload={payload!r}"
+            )
+
+
 def assert_cleanup_candidate_rechecks_use_repo_context_with_candidate_scope() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -4904,6 +5127,7 @@ def assert_v6_red_policy_gaps() -> None:
         assert_cleanup_candidate_removal_validates_namespace,
         assert_cleanup_apply_rechecks_candidate_before_deletion,
         assert_cleanup_apply_reports_partial_removals_on_late_candidate_refusal,
+        assert_cleanup_apply_reports_partial_removals_on_late_remove_failure,
         assert_cleanup_candidate_rechecks_use_repo_context_with_candidate_scope,
         assert_cleanup_apply_refuses_tmp_bundle_registered_after_scan,
         assert_managed_cargo_rejects_alias_subcommands,
@@ -4968,12 +5192,14 @@ def main() -> int:
     assert_validate_policy_rejects_boolean_cache_numbers()
     assert_cache_prune_apply_removes_only_candidates()
     assert_cache_prune_apply_preserves_subtree_when_scan_incomplete()
+    assert_cache_prune_apply_reports_partial_removals_on_late_remove_failure()
     assert_cache_prune_rejects_conflicting_modes()
     assert_cache_reset_dry_run_reports_managed_target_children_without_deleting()
     assert_cache_reset_apply_refuses_active_related_process()
     assert_cache_reset_apply_removes_only_managed_target_children()
     assert_cache_reset_apply_refuses_incomplete_scan_without_deleting()
     assert_cache_reset_apply_rechecks_active_process_before_each_removal()
+    assert_cache_reset_apply_reports_partial_removals_on_late_remove_failure()
     assert_cache_reset_apply_refuses_symlinked_target()
     assert_validate_managed_target_path_rejects_existing_non_directory_target()
     assert_cache_reset_apply_unlinks_symlink_child_without_following()

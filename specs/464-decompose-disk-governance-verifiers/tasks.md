@@ -25,13 +25,13 @@
 - [x] T009 Run `git diff --check` on current planning changes including `specs/464-decompose-disk-governance-verifiers/tasks.md`.
 - [x] T010 Request Claude adversarial planning review for `specs/464-decompose-disk-governance-verifiers/` and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 - [x] T011 Request Gemini adversarial planning review for `specs/464-decompose-disk-governance-verifiers/` and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
-- [x] T012 Request Kimi adversarial planning review for `specs/464-decompose-disk-governance-verifiers/` and record failed slot in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T012 Request Kimi adversarial planning review for `specs/464-decompose-disk-governance-verifiers/`, record failed slot in `specs/464-decompose-disk-governance-verifiers/evidence.md`, and record the 2026-05-24 operator waiver before Phase 3.
 - [x] T013 Request Grok adversarial planning review for `specs/464-decompose-disk-governance-verifiers/` and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 - [x] T014 Request GLM adversarial planning review for `specs/464-decompose-disk-governance-verifiers/`, record approval-request metadata, and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 - [x] T015 Request DeepSeek adversarial planning review for `specs/464-decompose-disk-governance-verifiers/`, record approval-request metadata, and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 - [x] T016 Resolve or explicitly record every planning review finding in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 
-**Checkpoint**: No implementation starts until T008 through T016 pass and every available reviewer has approved or the operator explicitly waives a failed/skipped slot.
+**Checkpoint**: T008 through T016 passed. Kimi failed without verdict and is not counted as approval; the operator explicitly waived that failed slot on 2026-05-24 before Phase 3.
 
 ## Phase 3: User Story 1 - Characterize Cargo Scanner Behavior (Priority: P1)
 

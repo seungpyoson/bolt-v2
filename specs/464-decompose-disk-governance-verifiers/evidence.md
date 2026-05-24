@@ -62,12 +62,12 @@ The shared module remains pure scanner logic. Runtime/static policy wrappers rem
 |---|---|---|
 | Claude | APPROVE | Job `d41fc5eb-6ee7-407a-bea7-5404fa6fc04a`; no blocking findings. Non-blocking: verify line references before Phase 3, strengthen unknown-flag and runtime-only option tests, implementation review needs precise scope paths. |
 | Gemini | APPROVE | Job `f76bb83d-8144-4776-b9d2-d7ca892b9734`; no blocking findings. Non-blocking: add explicit negative/unknown leading flag coverage. |
-| Kimi | FAILED | Job `a01bd07a-f3cf-4be2-8875-fe490ab63efd`; `step_limit_exceeded` at 32 steps, no verdict. This is not approval. |
+| Kimi | FAILED; OPERATOR-WAIVED | Job `a01bd07a-f3cf-4be2-8875-fe490ab63efd`; `step_limit_exceeded` at 32 steps, no verdict. This is not approval. Operator message `skip kimi` on 2026-05-24 explicitly waived this failed planning slot for implementation start. |
 | Grok | APPROVE | Job `job_0cbe4ebc-cd48-4794-9915-e0b45484b621`; no blocking findings. Non-blocking: stale branch-head row, fixed by recording base and planning review head separately. |
 | DeepSeek | APPROVE | Job `job_795182e6-4fff-452e-a905-b3f555357635`; no blocking findings. Non-blocking: prove option-set union or preserve client-local constants, stale branch-head row. |
 | GLM | APPROVE | Job `job_f0bb0980-0e7a-4036-9c2c-25dd762b3849`; no blocking findings. Non-blocking: stale branch-head row, option-set fallback sentence, explicit guard around exported/non-exported helpers. |
 
-Implementation remains blocked because Kimi failed without a verdict. The gate needs either a successful Kimi retry or explicit operator waiver before Phase 3 starts.
+Implementation gate is open because the operator explicitly waived the failed Kimi planning slot on 2026-05-24. Kimi is still recorded as failed, not approved.
 
 ## Review Note Resolution
 

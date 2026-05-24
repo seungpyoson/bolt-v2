@@ -4380,6 +4380,38 @@ reason = "This is the stable record-kind discriminator for release-manifest sour
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = '''1'''
+context = '''const PRE_RUN_HOST_CLOCK_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the host-clock source input schema version consumed by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_host_clock_source.v1"'''
+context = '''const PRE_RUN_HOST_CLOCK_SOURCE_RECORD_KIND: &str = "bolt_v3.pre_run_host_clock_source.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for host-clock source input parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_HOST_CLOCK_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the host-clock source-proof artifact schema version emitted by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_host_clock_source_proof.v1"'''
+context = '''"bolt_v3.pre_run_host_clock_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for host-clock source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
 context = '''const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
 classification = "operator_artifact_schema_version"
 reason = "This is the market/window source-proof artifact schema version emitted by the pre-run evidence helper, not an operator runtime value."

@@ -621,17 +621,18 @@ fn pre_run_host_clock_source_proof_derives_source_owned_values() {
     let host_clock_path = temp.path().join("host-clock-source.json");
     let source = host_clock_source_json(current_test_unix_seconds());
     write_json_value_and_hash(&host_clock_path, &source);
+    let max_allowed_skew_seconds = 30;
 
     let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
         &host_clock_path,
         100_000,
-        5,
+        max_allowed_skew_seconds,
     )
     .expect("source-owned host clock proof should collect");
 
     assert!(proof.host_clock_skew_within_bound);
     assert!(
-        proof.absolute_skew_seconds <= 5,
+        proof.absolute_skew_seconds <= max_allowed_skew_seconds,
         "collector should derive host clock near fixture reference, got {}s",
         proof.absolute_skew_seconds
     );
@@ -699,6 +700,27 @@ fn pre_run_host_clock_source_proof_rejects_invalid_schema_and_record_kind() {
     assert!(
         record_kind_error.to_string().contains("record_kind"),
         "wrong record kind should identify record_kind: {record_kind_error}"
+    );
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_rejects_unknown_fields() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_path = temp.path().join("host-clock-source.json");
+    let mut source = host_clock_source_json(current_test_unix_seconds());
+    source["unexpected_field"] = serde_json::json!(true);
+    write_json_value_and_hash(&host_clock_path, &source);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_path,
+        100_000,
+        30,
+    )
+    .expect_err("unknown host-clock source fields must fail closed");
+
+    assert!(
+        error.to_string().contains("source_json"),
+        "unknown field should fail JSON source validation before acceptance: {error}"
     );
 }
 

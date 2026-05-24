@@ -4320,6 +4320,17 @@ fn host_clock_source_fixture(host_unix_millis: u64, reference_unix_millis: u64) 
     )
 }
 
+fn egress_identity_source_fixture(egress_identity_sha256: &str) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_egress_identity_source.v1",
+  "observed_egress_identity_sha256": "{egress_identity_sha256}",
+  "approved_egress_identity_sha256": "{egress_identity_sha256}"
+}}"#
+    )
+}
+
 #[test]
 fn pre_run_host_clock_source_proof_derives_source_owned_skew_bound() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -4356,6 +4367,221 @@ fn pre_run_host_clock_source_proof_derives_source_owned_skew_bound() {
     assert!(
         !pre_run_state_path.exists(),
         "host clock proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_egress_identity_source_proof_derives_source_owned_values() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let egress_identity_source_path = temp.path().join("egress-identity-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let raw_identity = "operator-egress-identity-fixture";
+    let egress_identity_sha256 = sha256_text(raw_identity);
+    std::fs::write(
+        &egress_identity_source_path,
+        egress_identity_source_fixture(&egress_identity_sha256),
+    )
+    .expect("egress identity fixture should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_egress_identity_source_proof(
+        &egress_identity_source_path,
+        4096,
+    )
+    .expect("source-owned egress identity proof should collect");
+
+    assert!(proof.egress_identity_approved);
+    assert_eq!(
+        proof.egress_identity_source_sha256,
+        sha256_file(&egress_identity_source_path)
+    );
+    assert_eq!(proof.egress_identity_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .egress_identity_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "egress identity proof evidence hash should be lowercase hex"
+    );
+    let debug = format!("{proof:?}");
+    assert!(
+        !debug.contains(raw_identity),
+        "egress identity proof must not expose raw identity material"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "egress identity proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_egress_identity_source_proof_rejects_unapproved_or_invalid_hashes() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let observed_hash = sha256_text("observed-egress-identity-fixture");
+    let approved_hash = sha256_text("approved-egress-identity-fixture");
+    let cases = [
+        (
+            "mismatch",
+            observed_hash.as_str(),
+            approved_hash.as_str(),
+            "approved_egress_identity_sha256",
+        ),
+        (
+            "bad_observed_hash",
+            "ABC",
+            approved_hash.as_str(),
+            "observed_egress_identity_sha256",
+        ),
+        (
+            "bad_approved_hash",
+            observed_hash.as_str(),
+            "ABC",
+            "approved_egress_identity_sha256",
+        ),
+    ];
+
+    for (name, observed, approved, expected) in cases {
+        let egress_identity_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(
+            &egress_identity_source_path,
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_egress_identity_source.v1",
+  "observed_egress_identity_sha256": "{observed}",
+  "approved_egress_identity_sha256": "{approved}"
+}}"#
+            ),
+        )
+        .expect("egress identity fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_egress_identity_source_proof(
+                &egress_identity_source_path,
+                4096,
+            )
+            .expect_err("unapproved or invalid egress identity must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed egress identity proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_egress_identity_source_proof_rejects_invalid_source_shape() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let egress_identity_sha256 = sha256_text("operator-egress-identity-fixture");
+    let raw_identity = "198.51.100.10";
+    let cases = [
+        (
+            "schema_version",
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "record_kind": "bolt_v3.pre_run_egress_identity_source.v1",
+  "observed_egress_identity_sha256": "{egress_identity_sha256}",
+  "approved_egress_identity_sha256": "{egress_identity_sha256}"
+}}"#
+            ),
+            "schema_version",
+        ),
+        (
+            "record_kind",
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_egress_identity_source.v2",
+  "observed_egress_identity_sha256": "{egress_identity_sha256}",
+  "approved_egress_identity_sha256": "{egress_identity_sha256}"
+}}"#
+            ),
+            "record_kind",
+        ),
+        (
+            "unknown_field",
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_egress_identity_source.v1",
+  "observed_egress_identity_sha256": "{egress_identity_sha256}",
+  "approved_egress_identity_sha256": "{egress_identity_sha256}",
+  "raw_egress_identity": "{raw_identity}"
+}}"#
+            ),
+            "failed to parse egress identity source input",
+        ),
+        (
+            "malformed_json",
+            r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_egress_identity_source.v1""#
+                .to_string(),
+            "failed to parse egress identity source input",
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let egress_identity_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(&egress_identity_source_path, source)
+            .expect("egress identity fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_egress_identity_source_proof(
+                &egress_identity_source_path,
+                4096,
+            )
+            .expect_err("invalid egress identity source must not approve pre-run proof");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !message.contains(raw_identity),
+            "{name} diagnostic must not expose raw egress identity material: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed egress identity proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_egress_identity_source_proof_rejects_oversized_source_before_parse() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let egress_identity_source_path = temp.path().join("egress-identity-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let egress_identity_sha256 = sha256_text("operator-egress-identity-fixture");
+    std::fs::write(
+        &egress_identity_source_path,
+        egress_identity_source_fixture(&egress_identity_sha256),
+    )
+    .expect("egress identity fixture should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_egress_identity_source_proof(
+        &egress_identity_source_path,
+        1,
+    )
+    .expect_err("oversized egress identity source must not approve pre-run proof");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("failed to read egress identity source input"),
+        "oversized source should be a read diagnostic: {message}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "oversized egress identity proof collection must not write pre-run-state.json"
     );
 }
 

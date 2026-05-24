@@ -54,8 +54,9 @@ This file is a source-inspection baseline, not a self-validating exact-head proo
 - `collect_pre_run_host_clock_source_proof`
 - `collect_pre_run_market_window_source_proof`
 - `collect_pre_run_single_runner_lock_source_proof`
+- `collect_pre_run_egress_identity_source_proof`
 
-The same search found no `pub fn collect_pre_run_venue...`, `collect_pre_run_funding...`, `collect_pre_run_egress...`, `collect_pre_run_clob...`, `collect_abort_plan_nt...`, `collect_abort_plan_partial...`, `collect_abort_plan_network...`, or `collect_abort_plan_panic...` functions.
+The same search found no `pub fn collect_pre_run_venue...`, `collect_pre_run_funding...`, `collect_pre_run_clob...`, `collect_abort_plan_nt...`, `collect_abort_plan_partial...`, `collect_abort_plan_network...`, or `collect_abort_plan_panic...` functions.
 
 Implication: the active readiness branch has some source-owned collectors, but most T126/T127 fields are still satisfied only by caller-supplied proof bundles or fixtures.
 
@@ -103,3 +104,18 @@ T007 completed in `specs/024-production-trade-readiness/issue-409-portfolio-snap
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify_bolt_v3_schema_current.py`: `OK: Bolt-v3 schema/status docs match current order-intent source scope.`
 - `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_verify_bolt_v3_schema_current.py`: `OK: Bolt-v3 schema-current verifier self-tests passed.`
 - `just source-fence`: passed after rerun with approved access to `/Users/spson/.cache/rust-verification/bolt-v2/cache.lock`.
+
+## Task-List Gate Disposition
+
+T004/T005 are complete by recorded reviewer skip, not by unanimous six-reviewer approval. Gemini, DeepSeek, GLM, and Grok approved the corrected task-list direction. Claude is skipped because repeated OAuth subscription attempts failed before source transmission with `oauth_inference_rejected` / HTTP 401. Kimi is skipped because repeated attempts produced no verdict; the latest sent source, session `1351b5ee-2d46-4f7f-8c79-5bb6ae919dc0`, then failed with `step_limit_exceeded` at max step budget `50`. See `specs/024-production-trade-readiness/external-tasklist-review.md`.
+
+## T019/T020 Egress Identity Collector Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts pre_run_egress_identity_source_proof_derives_source_owned_values -- --nocapture` failed with `E0425` because `collect_pre_run_egress_identity_source_proof` did not exist.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts pre_run_egress_identity_source_proof -- --nocapture` passed: 4 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `git diff --check`: passed.
+
+The collector is non-live and source-owned: it reads a bounded local JSON source, validates schema/record kind, validates lowercase observed/approved egress identity hashes, fails closed on mismatch, returns only approval plus hashes, and does not write `pre-run-state.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T019/T020.

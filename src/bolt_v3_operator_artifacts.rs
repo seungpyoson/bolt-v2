@@ -75,6 +75,12 @@ const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_RECORD_KIND: &str =
 const PRE_RUN_SINGLE_RUNNER_LOCK_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_SINGLE_RUNNER_LOCK_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_single_runner_lock_source_proof.v1";
+const PRE_RUN_EGRESS_IDENTITY_SOURCE_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_EGRESS_IDENTITY_SOURCE_RECORD_KIND: &str =
+    "bolt_v3.pre_run_egress_identity_source.v1";
+const PRE_RUN_EGRESS_IDENTITY_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_EGRESS_IDENTITY_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.pre_run_egress_identity_source_proof.v1";
 const ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.abort_plan_cancel_if_open_source_proof.v1";
@@ -284,6 +290,13 @@ pub struct Phase8PreRunSingleRunnerLockSourceProof {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8PreRunEgressIdentitySourceProof {
+    pub egress_identity_approved: bool,
+    pub egress_identity_source_sha256: String,
+    pub egress_identity_evidence_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phase8AbortPlanCancelIfOpenSourceProof {
     pub cancel_if_open_evidence_hash: String,
 }
@@ -359,6 +372,17 @@ pub enum BoltV3OperatorArtifactError {
         field: &'static str,
     },
     PreRunSingleRunnerLockSourceInvalid {
+        field: &'static str,
+    },
+    PreRunEgressIdentitySourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    PreRunEgressIdentitySourceParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    PreRunEgressIdentitySourceInvalid {
         field: &'static str,
     },
     PreRunStateSourceBundleRead {
@@ -596,6 +620,16 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "single-runner lock source field `{field}` is invalid or unproven"
             ),
+            Self::PreRunEgressIdentitySourceRead { source, .. } => {
+                write!(f, "failed to read egress identity source input: {source}")
+            }
+            Self::PreRunEgressIdentitySourceParse { source, .. } => {
+                write!(f, "failed to parse egress identity source input: {source}")
+            }
+            Self::PreRunEgressIdentitySourceInvalid { field } => write!(
+                f,
+                "egress identity source field `{field}` is invalid or unproven"
+            ),
             Self::PreRunStateSourceBundleRead { source, .. } => {
                 write!(f, "failed to read pre-run state source bundle: {source}")
             }
@@ -808,6 +842,8 @@ impl Error for BoltV3OperatorArtifactError {
             Self::PreRunHostClockSourceRead { source, .. } => Some(source),
             Self::PreRunHostClockSourceParse { source, .. } => Some(source),
             Self::PreRunMarketWindowSourceRead { source, .. } => Some(source),
+            Self::PreRunEgressIdentitySourceRead { source, .. } => Some(source),
+            Self::PreRunEgressIdentitySourceParse { source, .. } => Some(source),
             Self::PreRunStateSourceBundleRead { source, .. } => Some(source),
             Self::PreRunStateSourceBundleParse { source, .. } => Some(source),
             Self::AbortPlanCancelIfOpenSourceRead { source, .. } => Some(source),
@@ -1924,6 +1960,76 @@ pub fn collect_pre_run_single_runner_lock_source_proof(
     })
 }
 
+pub fn collect_pre_run_egress_identity_source_proof(
+    egress_identity_source_path: &Path,
+    max_source_bytes: u64,
+) -> Result<Phase8PreRunEgressIdentitySourceProof, BoltV3OperatorArtifactError> {
+    let egress_identity_source_bytes =
+        read_file_bounded(egress_identity_source_path, max_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::PreRunEgressIdentitySourceRead {
+                path: egress_identity_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let egress_identity_source_sha256 = hex::encode(Sha256::digest(&egress_identity_source_bytes));
+    let source: Phase8PreRunEgressIdentitySourceEvidence =
+        serde_json::from_slice(&egress_identity_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::PreRunEgressIdentitySourceParse {
+                path: egress_identity_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    if source.schema_version != PRE_RUN_EGRESS_IDENTITY_SOURCE_SCHEMA_VERSION {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunEgressIdentitySourceInvalid {
+                field: "schema_version",
+            },
+        );
+    }
+    if source.record_kind != PRE_RUN_EGRESS_IDENTITY_SOURCE_RECORD_KIND {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunEgressIdentitySourceInvalid {
+                field: "record_kind",
+            },
+        );
+    }
+    if !is_lowercase_sha256(&source.observed_egress_identity_sha256) {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunEgressIdentitySourceInvalid {
+                field: "observed_egress_identity_sha256",
+            },
+        );
+    }
+    if !is_lowercase_sha256(&source.approved_egress_identity_sha256) {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunEgressIdentitySourceInvalid {
+                field: "approved_egress_identity_sha256",
+            },
+        );
+    }
+    if source.observed_egress_identity_sha256 != source.approved_egress_identity_sha256 {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunEgressIdentitySourceInvalid {
+                field: "approved_egress_identity_sha256",
+            },
+        );
+    }
+    let proof_input = Phase8PreRunEgressIdentitySourceProofHashInput {
+        schema_version: PRE_RUN_EGRESS_IDENTITY_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: PRE_RUN_EGRESS_IDENTITY_SOURCE_PROOF_RECORD_KIND,
+        observed_egress_identity_sha256: &source.observed_egress_identity_sha256,
+        approved_egress_identity_sha256: &source.approved_egress_identity_sha256,
+        egress_identity_source_sha256: &egress_identity_source_sha256,
+    };
+    let egress_identity_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8PreRunEgressIdentitySourceProof {
+        egress_identity_approved: true,
+        egress_identity_source_sha256,
+        egress_identity_evidence_hash,
+    })
+}
+
 #[derive(Serialize)]
 struct Phase8PreRunSingleRunnerLockEvidenceFile<'a> {
     schema_version: u32,
@@ -2003,6 +2109,15 @@ struct Phase8PreRunHostClockSourceEvidence {
     reference_unix_millis: u64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Phase8PreRunEgressIdentitySourceEvidence {
+    schema_version: u32,
+    record_kind: String,
+    observed_egress_identity_sha256: String,
+    approved_egress_identity_sha256: String,
+}
+
 #[derive(Serialize)]
 struct Phase8PreRunReleaseManifestSourceProofHashInput<'a> {
     schema_version: u32,
@@ -2031,6 +2146,15 @@ struct Phase8PreRunMarketWindowSourceProofHashInput<'a> {
     record_kind: &'static str,
     strategy_input_evidence_sha256: &'a str,
     expected_price_to_beat_source: &'a str,
+}
+
+#[derive(Serialize)]
+struct Phase8PreRunEgressIdentitySourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    observed_egress_identity_sha256: &'a str,
+    approved_egress_identity_sha256: &'a str,
+    egress_identity_source_sha256: &'a str,
 }
 
 #[derive(Serialize)]

@@ -4436,6 +4436,38 @@ reason = "This is the single-runner lock source-proof artifact schema version em
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = '''1'''
+context = '''const PRE_RUN_EGRESS_IDENTITY_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the approved-egress-identity source input schema version consumed by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_egress_identity_source.v1"'''
+context = '''"bolt_v3.pre_run_egress_identity_source.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for approved-egress-identity source input parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_EGRESS_IDENTITY_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the approved-egress-identity source-proof artifact schema version emitted by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_egress_identity_source_proof.v1"'''
+context = '''"bolt_v3.pre_run_egress_identity_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for approved-egress-identity source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
 context = '''const ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
 classification = "operator_artifact_schema_version"
 reason = "This is the cancel-if-open source-proof artifact schema version emitted by the abort-plan evidence helper, not an operator runtime value."

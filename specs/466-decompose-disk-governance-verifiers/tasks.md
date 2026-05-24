@@ -12,20 +12,20 @@
 ## Phase 2: Foundational Review Gates
 
 - [x] T007 Create pre-implementation review packet covering `specs/466-decompose-disk-governance-verifiers/spec.md`, `plan.md`, `tasks.md`, `evidence.md`, `research.md`, `data-model.md`, `contracts/ledger-resolution.md`, and `quickstart.md`
-- [ ] T008 Run Claude pre-implementation review and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T009 Run Gemini pre-implementation review and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T010 Run Grok pre-implementation review and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T011 Run GLM pre-implementation review with audit metadata and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T012 Run DeepSeek pre-implementation review with audit metadata and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T013 Run Kimi pre-implementation review and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T014 Resolve or operator-waive every pre-implementation review finding before editing implementation code in `scripts/`
+- [x] T008 Run or operator-waive Claude pre-implementation review and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T009 Run Gemini pre-implementation review and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T010 Run Grok pre-implementation review and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T011 Run GLM pre-implementation review with audit metadata and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T012 Run DeepSeek pre-implementation review with audit metadata and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T013 Run Kimi pre-implementation review and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T014 Resolve or operator-waive every pre-implementation review finding before editing implementation code in `scripts/`
 
 ## Phase 3: User Story 1 - Govern The Full #466 Scope Ledger (Priority: P1)
 
 **Independent Test**: `rg -n` over `specs/466-decompose-disk-governance-verifiers/evidence.md` proves all eight #466 ledger items are present and no item is silently moved or marked complete without evidence.
 
-- [ ] T015 [US1] Add exact issue/PR command output references for #466, #464, #465, #461, and #454 to `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T016 [US1] Add final-state transition rules for `open`, `resolved`, `blocked`, and `operator-moved` to `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T015 [US1] Add exact issue/PR command output references for #466, #464, #465, #461, and #454 to `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T016 [US1] Add final-state transition rules for `open`, `resolved`, `blocked`, and `operator-moved` to `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [x] T017 [US1] Add unresolved-marker scan command and current result for #466 docs to `specs/466-decompose-disk-governance-verifiers/evidence.md`
 
 ## Phase 4: User Story 2 - Reduce Runtime/Static Drift Without New Semantics (Priority: P2)
@@ -44,10 +44,10 @@
 - [ ] T027 [US2] Mark ledger item 5 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T028 [US2] Audit behavior-preserving file split candidates and record split/no-split decision in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T029 [US2] If approved, mechanically split one concern boundary in `scripts/rust_verification.py`, `scripts/verify_ci_workflow_hygiene.py`, or their test files; otherwise mark ledger item 6 resolved as no-split with evidence in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T030 [US2] Add RED import-mode guard for any test-only import setup cleanup in `scripts/test_command_understanding.py`
+- [ ] T030 [P] [US2] Add RED import-mode guard for any test-only import setup cleanup in `scripts/test_command_understanding.py`
 - [ ] T031 [US2] Implement approved test-only import setup cleanup in `scripts/test_command_understanding.py`
 - [ ] T032 [US2] Mark ledger item 7 resolved in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T033 [US2] Add/verify parity or identity guard for static `CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT` handling in `scripts/test_command_understanding.py`
+- [ ] T033 [P] [US2] Add/verify parity or identity guard for static `CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT` handling in `scripts/test_command_understanding.py`
 - [ ] T034 [US2] Import shared `CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT` in `scripts/verify_ci_workflow_hygiene.py` if review approves; otherwise retain explicit parity guard/comment
 - [ ] T035 [US2] Mark ledger item 8 resolved in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 
@@ -55,7 +55,7 @@
 
 **Independent Test**: PR and final completion evidence map every claim to ledger rows, verification, exact-head CI, external reviews, and operator approval.
 
-Repeat T040 through T044 for every bounded PR slice; one merge does not satisfy #466 unless the ledger says every row is resolved or operator-moved.
+Run T036 through T039 before each PR-ready slice. Repeat T040 through T044 for every bounded PR slice; one merge does not satisfy #466 unless the ledger says every row is resolved or operator-moved.
 
 - [ ] T036 [US3] Run focused local verification for touched slice and record commands/results in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T037 [US3] Run `python3 -m py_compile` for touched Python files and record result in `specs/466-decompose-disk-governance-verifiers/evidence.md`

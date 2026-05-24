@@ -1106,6 +1106,48 @@ fn pre_run_single_runner_lock_source_proof_rejects_parent_dir_lock_path() {
 }
 
 #[test]
+#[cfg(unix)]
+fn pre_run_single_runner_lock_source_proof_rejects_symlink_lock_path_without_target() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let target = temp.path().join("unexpected-single-runner.lock");
+    let link = temp.path().join("single-runner-link.lock");
+    std::os::unix::fs::symlink(&target, &link).expect("single-runner symlink should create");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            strategy_instance_id,
+            &link,
+            100_000,
+        )
+        .expect_err("symlinked single-runner lock path must fail closed");
+
+    assert!(
+        error.to_string().contains("write"),
+        "symlink lock path rejection should surface as write failure: {error}"
+    );
+    assert!(
+        !target.exists(),
+        "single-runner lock proof must not follow symlink and create target"
+    );
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .expect("single-runner symlink metadata should read")
+            .file_type()
+            .is_symlink(),
+        "failed symlink lock write must leave the original symlink untouched"
+    );
+}
+
+#[test]
 fn pre_run_single_runner_lock_source_proof_rejects_unknown_strategy_before_lock_write() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded

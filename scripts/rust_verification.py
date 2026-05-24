@@ -2013,6 +2013,14 @@ def active_process_refusal_payload(repo: pathlib.Path, target: pathlib.Path, pol
     return None
 
 
+def refusal_with_removed(refusal: dict[str, Any], removed: list[dict[str, Any]]) -> dict[str, Any]:
+    if not removed:
+        return refusal
+    updated = dict(refusal)
+    updated["removed"] = list(removed)
+    return updated
+
+
 def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
     policy = load_policy(repo)
     validate_cache_policy(policy)
@@ -2098,6 +2106,9 @@ def cache_reset_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
             if refusal is not None:
                 return refusal
             for entry in candidates:
+                refusal = active_process_refusal_payload(repo, target, policy)
+                if refusal is not None:
+                    return refusal_with_removed(refusal, removed)
                 remove_cache_candidate(entry, target)
                 removed.append(entry)
         return {
@@ -2130,6 +2141,11 @@ def cleanup_tmp_bundle_config(policy: dict[str, Any]) -> dict[str, Any] | None:
     prune_after_days = tmp_bundles.get("prune_after_days")
     if not isinstance(parent, str) or not parent:
         raise PolicyError("cleanup.tmp_bundles.parent must be a non-empty string")
+    parent_path = pathlib.Path(parent).expanduser()
+    if not parent_path.is_absolute():
+        raise PolicyError("cleanup.tmp_bundles.parent must be an absolute path")
+    if parent_path.exists() and not parent_path.is_dir():
+        raise PolicyError("cleanup.tmp_bundles.parent must be a directory")
     if not isinstance(prefix, str) or not prefix:
         raise PolicyError("cleanup.tmp_bundles.prefix must be a non-empty string")
     if not is_non_negative_int(prune_after_days):
@@ -2191,7 +2207,7 @@ def cleanup_worktree_target_candidates(
     for worktree in sorted(registered, key=lambda item: str(item)):
         candidate = worktree / dirname
         try:
-            candidate_lstat = candidate.lstat()
+            candidate.lstat()
         except FileNotFoundError:
             continue
         if not candidate.is_dir() or candidate.is_symlink():
@@ -2240,7 +2256,7 @@ def cleanup_tmp_bundle_candidates(
         if not child.name.startswith(prefix):
             continue
         try:
-            child_lstat = child.lstat()
+            child.lstat()
         except FileNotFoundError:
             continue
         if not child.is_dir() or child.is_symlink():
@@ -2271,15 +2287,19 @@ def cleanup_tmp_bundle_candidates(
 
 def remove_cleanup_candidate(entry: dict[str, Any]) -> None:
     path = pathlib.Path(entry["path"])
+    try:
+        resolved_path = path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise PolicyError(f"unable to resolve cleanup candidate {path}: {exc}") from exc
     class_name = entry.get("class")
     if class_name == "tmp_bundle":
         parent = pathlib.Path(str(entry.get("parent", ""))).expanduser()
-        if not is_direct_child(path.resolve(), parent.resolve()):
+        if not is_direct_child(resolved_path, parent.resolve(strict=False)):
             raise PolicyError("refusing to remove tmp bundle outside configured parent")
     elif class_name == "worktree_target":
         worktree = pathlib.Path(str(entry.get("worktree", ""))).expanduser()
         dirname = str(entry.get("dirname", ""))
-        if not dirname or path.name != dirname or not is_direct_child(path.resolve(), worktree.resolve()):
+        if not dirname or path.name != dirname or not is_direct_child(resolved_path, worktree.resolve(strict=False)):
             raise PolicyError("refusing to remove worktree target outside registered worktree")
     else:
         raise PolicyError("refusing to remove unknown cleanup candidate class")
@@ -2300,6 +2320,7 @@ def cleanup_candidate_refusal_payload(entry: dict[str, Any], policy: dict[str, A
 
 def cleanup_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
     policy = load_policy(repo)
+    validate_cache_policy(policy)
     lock_context = cache_lock(policy, exclusive=True) if not dry_run else contextlib.nullcontext()
     with lock_context:
         target = target_dir(repo, policy)
@@ -2321,7 +2342,7 @@ def cleanup_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
             for entry in candidates:
                 refusal = cleanup_candidate_refusal_payload(entry, policy)
                 if refusal is not None:
-                    return refusal
+                    return refusal_with_removed(refusal, removed)
                 remove_cleanup_candidate(entry)
                 removed.append(entry)
         return {

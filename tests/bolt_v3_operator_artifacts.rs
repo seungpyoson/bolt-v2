@@ -482,7 +482,7 @@ fn abort_plan_cancel_if_open_source_proof_rejects_cancel_after_exit_pending() {
     std::fs::write(
         &strategy_source_path,
         r#"
-fn forced_flat_exit() {
+fn try_submit_exit_order() {
     if !decision.forced_flat_reasons.is_empty()
         && let Some(pending_entry) = managed_position.pending_entry.as_ref()
     {
@@ -559,13 +559,51 @@ fn unrelated_exit_pending() {
 }
 
 #[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_decoy_marker_scope() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn helper_with_cancel_markers() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("decoy marker scopes must not prove the production cancel-if-open path");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "decoy marker scope should identify function-scoped proof: {error}"
+    );
+}
+
+#[test]
 fn abort_plan_cancel_if_open_source_proof_accepts_qualified_function_scope() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let strategy_source_path = temp.path().join("strategy.rs");
     std::fs::write(
         &strategy_source_path,
         r#"
-pub async fn forced_flat_exit() {
+pub async fn try_submit_exit_order() {
     if !decision.forced_flat_reasons.is_empty()
         && let Some(pending_entry) = managed_position.pending_entry.as_ref()
     {
@@ -600,7 +638,7 @@ fn abort_plan_cancel_if_open_source_proof_rejects_multiple_valid_scopes() {
     std::fs::write(
         &strategy_source_path,
         r#"
-fn first_forced_flat_exit() {
+fn try_submit_exit_order() {
     if !decision.forced_flat_reasons.is_empty()
         && let Some(pending_entry) = managed_position.pending_entry.as_ref()
     {
@@ -615,7 +653,7 @@ fn first_forced_flat_exit() {
     }
 }
 
-fn second_forced_flat_exit() {
+fn try_submit_exit_order() {
     if !decision.forced_flat_reasons.is_empty()
         && let Some(pending_entry) = managed_position.pending_entry.as_ref()
     {
@@ -653,7 +691,7 @@ fn abort_plan_cancel_if_open_source_proof_rejects_comment_only_markers() {
     std::fs::write(
         &strategy_source_path,
         r#"
-fn forced_flat_commentary_only() {
+fn try_submit_exit_order() {
     /*
     !decision.forced_flat_reasons.is_empty()
     managed_position.pending_entry.as_ref()
@@ -686,7 +724,7 @@ fn abort_plan_cancel_if_open_source_proof_rejects_string_only_markers() {
     std::fs::write(
         &strategy_source_path,
         r#"
-fn forced_flat_string_only() {
+fn try_submit_exit_order() {
     let _ = "
     !decision.forced_flat_reasons.is_empty()
     managed_position.pending_entry.as_ref()
@@ -719,7 +757,7 @@ fn abort_plan_cancel_if_open_source_proof_rejects_raw_string_only_markers() {
     std::fs::write(
         &strategy_source_path,
         r###"
-fn forced_flat_raw_string_only() {
+fn try_submit_exit_order() {
     let _ = r##"
     !decision.forced_flat_reasons.is_empty()
     managed_position.pending_entry.as_ref()
@@ -746,13 +784,46 @@ fn forced_flat_raw_string_only() {
 }
 
 #[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_raw_string_marker_substitution() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r###"
+fn try_submit_exit_order() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        let _ = r##"self.cancel_order(pending_entry.client_order_id, Some(client_id), None)"##;
+        let _ = "forced-flat exit could not cancel pending entry client_order_id={}";
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"###,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("raw-string markers must not substitute for real cancel-order code");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "raw-string marker substitution should fail function-scoped proof: {error}"
+    );
+}
+
+#[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_duplicate_context_string() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let strategy_source_path = temp.path().join("strategy.rs");
     std::fs::write(
         &strategy_source_path,
         r#"
-fn forced_flat_exit_with_duplicate_context_string() {
+fn try_submit_exit_order() {
     let _ = "forced-flat exit could not cancel pending entry client_order_id={}";
     if !decision.forced_flat_reasons.is_empty()
         && let Some(pending_entry) = managed_position.pending_entry.as_ref()
@@ -791,7 +862,7 @@ fn abort_plan_cancel_if_open_source_proof_accepts_lifetimes_and_char_literals() 
     std::fs::write(
         &strategy_source_path,
         r#"
-fn forced_flat_exit_with_lifetime<'a>(label: &'a str) {
+fn try_submit_exit_order<'a>(label: &'a str) {
     let quote = '\'';
     let _label = label;
     if !decision.forced_flat_reasons.is_empty()
@@ -828,7 +899,7 @@ fn abort_plan_cancel_if_open_source_proof_accepts_same_line_attribute_with_brack
     std::fs::write(
         &strategy_source_path,
         r#"
-#[doc = "keeps ] inside attribute text"] pub async fn forced_flat_exit() {
+#[doc = "keeps ] inside attribute text"] pub async fn try_submit_exit_order() {
     if !decision.forced_flat_reasons.is_empty()
         && let Some(pending_entry) = managed_position.pending_entry.as_ref()
     {

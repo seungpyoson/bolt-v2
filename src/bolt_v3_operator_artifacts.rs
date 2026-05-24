@@ -70,6 +70,7 @@ const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_RECORD_KIND: &str =
 const ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.abort_plan_cancel_if_open_source_proof.v1";
+const ABORT_PLAN_CANCEL_IF_OPEN_TARGET_FUNCTION_NAME: &str = "try_submit_exit_order";
 const ABORT_PLAN_CANCEL_IF_OPEN_FORCED_FLAT_MARKER: &str =
     "!decision.forced_flat_reasons.is_empty()";
 const ABORT_PLAN_CANCEL_IF_OPEN_PENDING_ENTRY_MARKER: &str =
@@ -1857,6 +1858,9 @@ fn require_abort_plan_cancel_if_open_contract(
     for function_scope in abort_plan_cancel_if_open_function_scopes(&code_masked_source) {
         let scoped_context_source = &context_masked_source[function_scope.clone()];
         let scoped_code_source = &code_masked_source[function_scope];
+        if !abort_plan_cancel_if_open_scope_matches_target_function(scoped_code_source) {
+            continue;
+        }
         match abort_plan_cancel_if_open_scoped_marker_indexes(
             scoped_context_source,
             scoped_code_source,
@@ -1931,6 +1935,23 @@ fn abort_plan_cancel_if_open_function_scopes(strategy_source: &str) -> Vec<Range
         scopes.push(start..end);
     }
     scopes
+}
+
+fn abort_plan_cancel_if_open_scope_matches_target_function(scoped_source: &str) -> bool {
+    scoped_source.lines().next().is_some_and(|line| {
+        line.as_bytes()
+            .windows(ABORT_PLAN_CANCEL_IF_OPEN_FUNCTION_KEYWORD_WIDTH)
+            .position(|window| matches!(window, [b'f', b'n', b' ']))
+            .is_some_and(|function_keyword_index| {
+                let suffix = line
+                    [function_keyword_index + ABORT_PLAN_CANCEL_IF_OPEN_FUNCTION_KEYWORD_WIDTH..]
+                    .trim_start();
+                suffix
+                    .strip_prefix(ABORT_PLAN_CANCEL_IF_OPEN_TARGET_FUNCTION_NAME)
+                    .and_then(|after_name| after_name.as_bytes().first().copied())
+                    .is_some_and(|after_name| matches!(after_name, b'(' | b'<'))
+            })
+    })
 }
 
 fn abort_plan_cancel_if_open_scoped_marker_indexes(

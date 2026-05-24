@@ -261,8 +261,14 @@ def assert_shared_cargo_scanner_helpers_match_current_verifiers() -> None:
     if identity_failures:
         raise AssertionError("verifier clients must import shared cargo scanner helpers: " + ", ".join(identity_failures))
 
+    if static.CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT != shared.CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT:
+        raise AssertionError(
+            "static CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT must stay aligned with shared cargo scanner constants"
+        )
+
     cargo_subcommand_cases = [
         (["--manifest-path", "Cargo.toml", "test", "--", "--target-dir", "/tmp/raw"], (2, "test")),
+        (["--manifest-path=Cargo.toml", "test"], (1, "test")),
         (["--locked", "nextest", "run"], (1, "nextest")),
         (["--unknown-cargo-flag", "build"], (1, "build")),
         (["--version", "build"], (1, "build")),

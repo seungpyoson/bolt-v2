@@ -464,11 +464,6 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
     if static.cargo_subcommand_with_index(["cargo", *cargo_args], start=1) != (3, "test"):
         raise AssertionError("static cargo_subcommand_with_index start-offset behavior changed")
 
-    if runtime.process_wrapper_tokens(["command", "--", "cargo", "build"]) != ["cargo", "build"]:
-        raise AssertionError("runtime process_wrapper_tokens representative behavior changed")
-    if static.wrapper_inner_tokens(["command", "--", "cargo", "build"]) != ["cargo", "build"]:
-        raise AssertionError("static wrapper_inner_tokens representative behavior changed")
-
     if runtime.cargo_target_routing_override(["test", "--target-dir", "/tmp/raw"]) != "--target-dir":
         raise AssertionError("runtime target-routing override detection changed")
     if static.tokens_have_target_routing_override(["cargo", "test", "--target-dir", "/tmp/raw"]) is not True:
@@ -605,6 +600,41 @@ def assert_renamed_cargo_and_rustc_detection_is_characterized() -> None:
             )
 
 
+def assert_wrapper_handling_is_characterized() -> None:
+    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_wrappers_under_test")
+    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_wrappers_under_test")
+
+    cases = [
+        (["command", "--", "cargo", "build"], ["cargo", "build"], ["cargo", "build"]),
+        (["command", "-v", "cargo"], [], []),
+        (["env", "-i", "cargo", "test"], ["cargo", "test"], ["cargo", "test"]),
+        (
+            ["env", "-S", "timeout 30 cargo build"],
+            ["timeout", "30", "cargo", "build"],
+            ["timeout", "30", "cargo", "build"],
+        ),
+        (["sudo", "-EHu", "root", "cargo", "build"], ["cargo", "build"], ["cargo", "build"]),
+        (["nice", "--", "-5", "cargo", "build"], ["-5", "cargo", "build"], ["-5", "cargo", "build"]),
+        (["flock", "-c", "cargo build", "/tmp/bolt.lock"], ["cargo", "build"], ["cargo", "build"]),
+        (["docker", "run", "--label", "my-label", "rust", "cargo", "build"], ["cargo", "build"], ["cargo", "build"]),
+        (
+            ["docker", "run", "--unknown-opt=rust", "mycargo", "build"],
+            ["mycargo", "build"],
+            ["mycargo", "build"],
+        ),
+        (["no-mistakes", "run", "--", "cargo", "build"], ["cargo", "build"], ["cargo", "build"]),
+        (["xargs", "cargo", "build"], ["cargo", "build"], ["cargo", "build"]),
+        (["make", "build"], None, None),
+    ]
+    for tokens, expected_runtime, expected_static in cases:
+        runtime_inner = runtime.process_wrapper_tokens(tokens)
+        static_inner = static.wrapper_inner_tokens(tokens)
+        if runtime_inner != expected_runtime:
+            raise AssertionError(f"runtime process_wrapper_tokens({tokens!r}) changed: {runtime_inner!r}")
+        if static_inner != expected_static:
+            raise AssertionError(f"static wrapper_inner_tokens({tokens!r}) changed: {static_inner!r}")
+
+
 def assert_shell_command_substitution_parsing_is_characterized() -> None:
     runtime = load_module(RUNTIME_VERIFIER, "rust_verification_shell_substitution_under_test")
     static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_shell_substitution_under_test")
@@ -670,6 +700,7 @@ def main() -> int:
     assert_command_tokenization_and_line_boundaries_are_characterized()
     assert_shell_command_substitution_parsing_is_characterized()
     assert_renamed_cargo_and_rustc_detection_is_characterized()
+    assert_wrapper_handling_is_characterized()
     assert_non_exported_candidate_helpers_are_characterized()
     print("OK: command understanding self-tests passed.")
     return 0

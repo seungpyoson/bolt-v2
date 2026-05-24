@@ -38,8 +38,8 @@
 - [x] T021 [US2] Mark ledger item 2 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [x] T022 [P] [US2] Add/verify renamed cargo/rustc characterization coverage in `scripts/test_command_understanding.py`, `scripts/test_rust_verification_cache_retention.py`, and `scripts/test_verify_ci_workflow_hygiene.py`
 - [x] T023 [US2] Mark ledger item 3 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T024 [P] [US2] Add/verify wrapper handling characterization coverage in `scripts/test_command_understanding.py`, `scripts/test_rust_verification_cache_retention.py`, and `scripts/test_verify_ci_workflow_hygiene.py`
-- [ ] T025 [US2] Mark ledger item 4 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T024 [P] [US2] Add/verify wrapper handling characterization coverage in `scripts/test_command_understanding.py`, `scripts/test_rust_verification_cache_retention.py`, and `scripts/test_verify_ci_workflow_hygiene.py`
+- [x] T025 [US2] Mark ledger item 4 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T026 [P] [US2] Add/verify full target-routing policy characterization coverage in `scripts/test_command_understanding.py`, `scripts/test_rust_verification_cache_retention.py`, and `scripts/test_verify_ci_workflow_hygiene.py`
 - [ ] T027 [US2] Mark ledger item 5 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T028 [US2] Audit behavior-preserving file split candidates and record split/no-split decision in `specs/466-decompose-disk-governance-verifiers/evidence.md`

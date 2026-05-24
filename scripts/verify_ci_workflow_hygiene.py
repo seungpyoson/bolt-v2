@@ -14,9 +14,13 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-# Keep the full former verifier-local helper family module-scoped so the
-# parity tests prove the old helper surface now points at the shared path.
+# Keep the former verifier-local helper families module-scoped so parity tests
+# prove the old helper surface now points at the shared path.
 from command_understanding import (
+    cargo_args_for_target_routing_scan,
+    cargo_subcommand,
+    cargo_subcommand_with_index,
+    nextest_subcommand_with_index,
     python_call_command_argument,
     python_call_name,
     python_command_string,
@@ -342,6 +346,8 @@ CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {
     "-C",
     "-Z",
 }
+# Static-only option consumption keeps these local constants intentionally; the
+# shared scanner has broader Cargo CLI coverage while preserving scan parity.
 CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "--quiet", "-q", "--verbose", "-v"}
 ZIGBUILD_PREBUILT_LITERALS = (
     'version="${{ steps.setup.outputs.zigbuild_version }}"',
@@ -1067,7 +1073,6 @@ CARGO_PROCESS_SUBCOMMANDS = {
     "rustc",
     "test",
 }
-NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT = {"--config-file", "--manifest-path", "--profile", "--workspace-remap"}
 
 
 def consume_assignment_words(tokens: list[str], index: int) -> int:
@@ -1695,80 +1700,6 @@ def managed_rust_verification_cargo_args(tokens: list[str]) -> list[str] | None:
     managed_command = tail[index]
     managed_args = tail[index + 1 :]
     return [managed_command, *managed_args]
-
-
-def cargo_subcommand_with_index(tokens: list[str], start: int = 0) -> tuple[int, str] | None:
-    index = start
-    while index < len(tokens):
-        token = tokens[index]
-        if token.startswith("+"):
-            index += 1
-            continue
-        if token == "--":
-            index += 1
-            continue
-        if token in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT:
-            index += 2
-            continue
-        if any(token.startswith(f"{option}=") for option in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
-            index += 1
-            continue
-        if token in CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT:
-            index += 1
-            continue
-        if token.startswith("-"):
-            index += 1
-            continue
-        return index, token
-    return None
-
-
-def cargo_subcommand(tokens: list[str]) -> str | None:
-    subcommand = cargo_subcommand_with_index(tokens)
-    if subcommand is None:
-        return None
-    return subcommand[1]
-
-
-def nextest_subcommand_with_index(nextest_args: list[str]) -> tuple[int, str] | None:
-    index = 0
-    while index < len(nextest_args):
-        token = nextest_args[index]
-        if token == "--":
-            return None
-        if token in NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT:
-            index += 2
-            continue
-        if any(token.startswith(f"{option}=") for option in NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT):
-            index += 1
-            continue
-        if token.startswith("-"):
-            index += 1
-            continue
-        return index, token
-    return None
-
-
-def cargo_args_for_target_routing_scan(tokens: list[str]) -> list[str]:
-    subcommand = cargo_subcommand_with_index(tokens)
-    if subcommand is None:
-        return tokens
-    subcommand_index, subcommand_name = subcommand
-    if subcommand_name == "nextest":
-        nextest_subcommand = nextest_subcommand_with_index(tokens[subcommand_index + 1 :])
-        if nextest_subcommand is None or nextest_subcommand[1] != "run":
-            return tokens
-        nextest_run_index = subcommand_index + 1 + nextest_subcommand[0]
-        for index, token in enumerate(tokens):
-            if index > nextest_run_index and token == "--":
-                return tokens[:index]
-        return tokens
-    if subcommand_name not in {"bench", "run", "test"}:
-        return tokens
-    for index, token in enumerate(tokens):
-        if index > subcommand_index and token == "--":
-            return tokens[:index]
-    return tokens
 
 
 def target_routing_cargo_args(tokens: list[str]) -> list[str] | None:

@@ -6,6 +6,33 @@ import ast
 import shlex
 
 
+CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {
+    "--color",
+    "--config",
+    "--jobs",
+    "--manifest-path",
+    "--profile",
+    "--target",
+    "--target-dir",
+    "-C",
+    "-Z",
+}
+CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {
+    "--help",
+    "--list",
+    "--frozen",
+    "--locked",
+    "--offline",
+    "--quiet",
+    "--verbose",
+    "--version",
+    "-q",
+    "-v",
+    "-V",
+}
+NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT = {"--config-file", "--manifest-path", "--profile", "--workspace-remap"}
+
+
 def python_constant_string(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
@@ -86,3 +113,77 @@ def python_inline_command_payloads(tokens: list[str]) -> list[str]:
             if payload is not None:
                 payloads.append(payload)
     return payloads
+
+
+def cargo_subcommand_with_index(tokens: list[str], start: int = 0) -> tuple[int, str] | None:
+    index = start
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("+"):
+            index += 1
+            continue
+        if token == "--":
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
+            index += 1
+            continue
+        if token in CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT:
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return index, token
+    return None
+
+
+def cargo_subcommand(tokens: list[str]) -> str | None:
+    subcommand = cargo_subcommand_with_index(tokens)
+    if subcommand is None:
+        return None
+    return subcommand[1]
+
+
+def nextest_subcommand_with_index(nextest_args: list[str]) -> tuple[int, str] | None:
+    index = 0
+    while index < len(nextest_args):
+        token = nextest_args[index]
+        if token == "--":
+            return None
+        if token in NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT:
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return index, token
+    return None
+
+
+def cargo_args_for_target_routing_scan(tokens: list[str]) -> list[str]:
+    subcommand = cargo_subcommand_with_index(tokens)
+    if subcommand is None:
+        return tokens
+    subcommand_index, subcommand_name = subcommand
+    if subcommand_name == "nextest":
+        nextest_subcommand = nextest_subcommand_with_index(tokens[subcommand_index + 1 :])
+        if nextest_subcommand is None or nextest_subcommand[1] != "run":
+            return tokens
+        nextest_run_index = subcommand_index + 1 + nextest_subcommand[0]
+        for index, token in enumerate(tokens):
+            if index > nextest_run_index and token == "--":
+                return tokens[:index]
+        return tokens
+    if subcommand_name not in {"bench", "run", "test"}:
+        return tokens
+    for index, token in enumerate(tokens):
+        if index > subcommand_index and token == "--":
+            return tokens[:index]
+    return tokens

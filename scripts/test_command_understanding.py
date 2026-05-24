@@ -456,24 +456,6 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
     if leaked:
         raise AssertionError("unproven helpers must not be shared exports: " + ", ".join(leaked))
 
-    substitution_tokens = ["echo", "$(", "cargo", ")"]
-    runtime_payloads = runtime.shell_command_substitution_payloads(substitution_tokens)
-    static_payloads = static.shell_command_substitution_payloads(substitution_tokens)
-    if runtime_payloads != [["cargo"]] or static_payloads != []:
-        raise AssertionError(
-            "shell_command_substitution_payloads divergence changed: "
-            f"runtime={runtime_payloads!r} static={static_payloads!r}"
-        )
-
-    prefix_tokens = ["prefix$", "(", "cargo", ")"]
-    runtime_substitution = runtime.shell_command_substitution_at(prefix_tokens, 0)
-    static_substitution = static.shell_command_substitution_at(prefix_tokens, 0)
-    if runtime_substitution is not None or static_substitution != (["cargo"], 4):
-        raise AssertionError(
-            "shell_command_substitution_at prefix-$ divergence changed: "
-            f"runtime={runtime_substitution!r} static={static_substitution!r}"
-        )
-
     if runtime.path_name_looks_like_renamed_cargo("rustup") is not True:
         raise AssertionError("runtime rustup-as-cargo path-name classification changed")
     if static.path_name_looks_like_renamed_cargo("rustup") is not False:
@@ -578,6 +560,58 @@ def assert_command_tokenization_and_line_boundaries_are_characterized() -> None:
             )
 
 
+def assert_shell_command_substitution_parsing_is_characterized() -> None:
+    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_shell_substitution_under_test")
+    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_shell_substitution_under_test")
+
+    payload_cases = [
+        (["echo", "$(", "cargo", ")"], [["cargo"]], []),
+        (["echo", "$", "(", "cargo", ")"], [["cargo"]], [["cargo"]]),
+        (["echo", "prefix$", "(", "cargo", ")"], [["cargo"]], [["cargo"]]),
+        (["echo", "<", "(", "cargo", ")"], [["cargo"]], [["cargo"]]),
+        (["echo", "$(cargo test)"], [["cargo", "test"]], [["cargo", "test"]]),
+        (["echo", "`cargo test`"], [["cargo", "test"]], [["cargo", "test"]]),
+        (
+            ["echo", "$", "(", "cargo", "(", "test", ")", ")"],
+            [["cargo", "(", "test", ")"]],
+            [["cargo", "(", "test", ")"]],
+        ),
+    ]
+    for tokens, expected_runtime, expected_static in payload_cases:
+        runtime_payloads = runtime.shell_command_substitution_payloads(tokens)
+        static_payloads = static.shell_command_substitution_payloads(tokens)
+        if runtime_payloads != expected_runtime:
+            raise AssertionError(
+                f"runtime shell_command_substitution_payloads({tokens!r}) "
+                f"changed: {runtime_payloads!r}"
+            )
+        if static_payloads != expected_static:
+            raise AssertionError(
+                f"static shell_command_substitution_payloads({tokens!r}) "
+                f"changed: {static_payloads!r}"
+            )
+
+    at_cases = [
+        (["echo", "$", "(", "cargo", ")"], 1, (["cargo"], 5), (["cargo"], 5)),
+        (["prefix$", "(", "cargo", ")"], 0, None, (["cargo"], 4)),
+        (["echo", "<", "(", "cargo", ")"], 1, None, None),
+        (["echo", "$(", "cargo", ")"], 1, (["cargo"], 5), None),
+    ]
+    for tokens, index, expected_runtime, expected_static in at_cases:
+        runtime_substitution = runtime.shell_command_substitution_at(tokens, index)
+        static_substitution = static.shell_command_substitution_at(tokens, index)
+        if runtime_substitution != expected_runtime:
+            raise AssertionError(
+                f"runtime shell_command_substitution_at({tokens!r}, {index}) "
+                f"changed: {runtime_substitution!r}"
+            )
+        if static_substitution != expected_static:
+            raise AssertionError(
+                f"static shell_command_substitution_at({tokens!r}, {index}) "
+                f"changed: {static_substitution!r}"
+            )
+
+
 def main() -> int:
     assert_test_import_setup_is_encapsulated()
     assert_import_setup_rejects_bare_top_level_sys_path_mutation()
@@ -589,6 +623,7 @@ def main() -> int:
     assert_verifier_clients_use_shared_python_helpers()
     assert_shared_cargo_scanner_helpers_match_current_verifiers()
     assert_command_tokenization_and_line_boundaries_are_characterized()
+    assert_shell_command_substitution_parsing_is_characterized()
     assert_non_exported_candidate_helpers_are_characterized()
     print("OK: command understanding self-tests passed.")
     return 0

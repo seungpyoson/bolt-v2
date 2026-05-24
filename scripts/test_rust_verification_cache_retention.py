@@ -9,6 +9,7 @@ import json
 import importlib.util
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1327,6 +1328,7 @@ def assert_cache_prune_apply_rechecks_active_process_before_each_removal() -> No
         active_checks: list[pathlib.Path] = []
         originals = {
             "load_policy": owner.load_policy,
+            "root_base": owner.root_base,
             "cache_lock": owner.cache_lock,
             "cache_status_payload": owner.cache_status_payload,
             "active_process_refusal_payload": owner.active_process_refusal_payload,
@@ -1349,6 +1351,7 @@ def assert_cache_prune_apply_rechecks_active_process_before_each_removal() -> No
                 },
                 "target_namespace": "bolt-v2",
             }
+            owner.root_base = lambda: tmp_path / "rust-root"
             owner.cache_lock = lambda _policy, *, exclusive: contextlib.nullcontext()
             owner.cache_status_payload = lambda _repo: {
                 "filesystem": {"free_bytes": 0, "total_bytes": 1, "used_bytes": 1},
@@ -1398,6 +1401,91 @@ def assert_cache_prune_apply_rechecks_active_process_before_each_removal() -> No
                 "cache-prune apply must re-check before each child removal and report partial removals: "
                 f"payload={payload!r} removed={removed!r} active_checks={active_checks!r}"
             )
+
+
+def assert_cache_prune_apply_revalidates_target_after_scan() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        owner = load_owner_module()
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        real_debug = target / "debug"
+        real_debug.mkdir(parents=True)
+        (real_debug / "old.bin").write_bytes(b"old")
+        outside = tmp_path / "outside-target"
+        outside_debug = outside / "debug"
+        outside_debug.mkdir(parents=True)
+        protected = outside_debug / "protected.bin"
+        protected.write_bytes(b"protected")
+        candidate = {
+            "bytes": 1,
+            "class": "debug",
+            "latest_mtime": 0,
+            "path": str(target / "debug"),
+            "relative_path": "debug",
+            "skipped_special_entries": 0,
+        }
+        originals = {
+            "load_policy": owner.load_policy,
+            "root_base": owner.root_base,
+            "cache_lock": owner.cache_lock,
+            "cache_status_payload": owner.cache_status_payload,
+            "active_process_refusal_payload": owner.active_process_refusal_payload,
+            "is_prune_candidate": owner.is_prune_candidate,
+        }
+
+        def fake_status(_repo: pathlib.Path) -> dict[str, object]:
+            shutil.rmtree(target)
+            target.symlink_to(outside, target_is_directory=True)
+            return {
+                "filesystem": {"free_bytes": 0, "total_bytes": 1, "used_bytes": 1},
+                "pressure": True,
+                "pressure_reasons": ["test"],
+                "status": "ok",
+                "subtrees": [candidate],
+                "target_dir": str(target),
+                "thresholds": {"min_free_bytes": 0, "soft_limit_bytes": 100},
+                "total_bytes": 1,
+            }
+
+        try:
+            owner.load_policy = lambda _repo: {
+                "cache": {
+                    "active_process_patterns": ["cargo"],
+                    "min_free_bytes": 0,
+                    "retention": {
+                        "debug": {"prunable": True, "prune_after_days": 1},
+                        "release": {"prunable": True, "prune_after_days": 1},
+                        "cross-target": {"prunable": True, "prune_after_days": 1},
+                        "tmp": {"prunable": True, "prune_after_days": 1},
+                        "other": {"prunable": False},
+                    },
+                    "soft_limit_bytes": 100,
+                },
+                "target_namespace": "bolt-v2",
+            }
+            owner.root_base = lambda: root_base
+            owner.cache_lock = lambda _policy, *, exclusive: contextlib.nullcontext()
+            owner.cache_status_payload = fake_status
+            owner.active_process_refusal_payload = lambda _repo, _target, _policy, **_kwargs: None
+            owner.is_prune_candidate = lambda _subtree, _policy, *, now, pressure: (True, "test")
+            try:
+                payload = owner.cache_prune_payload(repo, dry_run=False)
+            except owner.PolicyError as exc:
+                if "symlink" not in str(exc).lower():
+                    raise
+                if not protected.exists():
+                    raise AssertionError("cache-prune deleted through a target symlink before refusing")
+                return
+        finally:
+            for name, value in originals.items():
+                setattr(owner, name, value)
+        raise AssertionError(
+            "cache-prune apply must revalidate the managed target after scan before removing candidates: "
+            f"payload={payload!r} protected_exists={protected.exists()}"
+        )
 
 
 def assert_cache_prune_apply_fails_closed_when_process_visibility_missing() -> None:
@@ -4622,6 +4710,7 @@ def main() -> int:
     assert_cache_prune_apply_checks_active_process_before_scan()
     assert_cache_prune_apply_rechecks_active_process_before_delete()
     assert_cache_prune_apply_rechecks_active_process_before_each_removal()
+    assert_cache_prune_apply_revalidates_target_after_scan()
     assert_cache_prune_apply_fails_closed_when_process_visibility_missing()
     assert_cache_prune_apply_fails_closed_when_matching_process_scope_unknown()
     assert_cache_prune_apply_fails_closed_when_policy_missing()

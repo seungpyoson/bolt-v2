@@ -3516,6 +3516,35 @@ def assert_cleanup_rejects_relative_tmp_bundle_parent() -> None:
             )
 
 
+def assert_cleanup_rejects_slash_worktree_target_dirname() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        write_policy_with_cache(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    """\
+
+                    [cleanup.worktree_targets]
+                    dirname = "nested/target"
+                    """
+                )
+            )
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
+        result = run_owner(["cleanup", "--repo", str(repo), "--dry-run", "--json"], env=env)
+        combined = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0 or "invalid_policy" not in combined or "dirname" not in combined:
+            raise AssertionError(
+                "cleanup must reject cleanup.worktree_targets.dirname values containing slashes: "
+                f"returncode={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
 def assert_cleanup_dry_run_reports_worktree_targets_without_deleting() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -4768,6 +4797,7 @@ def assert_v6_red_policy_gaps() -> None:
         assert_cleanup_dry_run_preserves_tmp_bundle_with_recent_contents,
         assert_cleanup_rejects_missing_cache_policy_with_json_refusal,
         assert_cleanup_rejects_relative_tmp_bundle_parent,
+        assert_cleanup_rejects_slash_worktree_target_dirname,
         assert_cleanup_dry_run_reports_worktree_targets_without_deleting,
         assert_cleanup_apply_removes_stale_tmp_bundles_only,
         assert_cleanup_apply_refuses_active_worktree_target_process,

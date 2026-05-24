@@ -2626,7 +2626,7 @@ fn verify_strategy_input_replay_binding(
         )?;
     let strategy_instance_id =
         strategy_input_replay_required_str(&strategy_input_json, "strategy_instance_id")?;
-    let market_selection_source_path =
+    let market_selection_source_path_text =
         strategy_input_replay_required_str(&strategy_input_json, "market_selection_source_path")?;
     let market_selection_source_sha256 =
         strategy_input_replay_required_str(&strategy_input_json, "market_selection_source_sha256")?;
@@ -2635,13 +2635,15 @@ fn verify_strategy_input_replay_binding(
             field: "strategy_input_replay.market_selection_source_sha256",
         });
     }
-    let market_selection_source_path = Path::new(market_selection_source_path);
+    let market_selection_source_path = Path::new(market_selection_source_path_text);
     validate_market_window_source_path(
         "strategy_input_replay.market_selection_source_path",
         market_selection_source_path,
     )?;
+    let resolved_market_selection_source_path =
+        resolve_peer_artifact_path(&strategy_input_path, market_selection_source_path);
     let market_selection_source_bytes = read_file_bounded(
-        market_selection_source_path,
+        &resolved_market_selection_source_path,
         operator_evidence.max_operator_evidence_file_bytes,
     )
     .map_err(
@@ -2677,7 +2679,7 @@ fn verify_strategy_input_replay_binding(
             &decision_chain.snapshot,
             strategy_instance_id,
             &market_selection_source,
-            market_selection_source_path.to_string_lossy(),
+            market_selection_source_path_text,
             market_selection_source_sha256,
             market_selection_source.candidate_market_start_timestamps_ms(),
         )
@@ -3937,6 +3939,18 @@ fn resolve_loaded_config_path_from_path(loaded: &LoadedBoltV3Config, path: &Path
     normalize_path_components(
         &loaded
             .root_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(path),
+    )
+}
+
+fn resolve_peer_artifact_path(anchor_path: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return normalize_path_components(path);
+    }
+    normalize_path_components(
+        &anchor_path
             .parent()
             .unwrap_or_else(|| Path::new(""))
             .join(path),

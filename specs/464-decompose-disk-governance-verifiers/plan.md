@@ -75,7 +75,7 @@ The shared module will also own the option sets needed by these helpers:
 - `CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT`
 - `NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT`
 
-The no-argument Cargo option set will use a superset that preserves existing behavior for both clients because both current implementations skip unknown leading dash tokens before returning a subcommand.
+The no-argument Cargo option set will use a superset only if characterization proves it preserves existing behavior for both clients because both current implementations skip unknown leading dash tokens before returning a subcommand. If characterization disproves that assumption, preserve the current client-local constants and do not extract the option-set constants in this slice.
 
 ## Non-Goals
 
@@ -110,6 +110,8 @@ The no-argument Cargo option set will use a superset that preserves existing beh
 - `cargo_subcommand_with_index(["--manifest-path", "Cargo.toml", "test", "--", "--target-dir", "/tmp/raw"]) == (2, "test")`.
 - `cargo_subcommand_with_index(["cargo", "--manifest-path", "Cargo.toml", "test"], start=1) == (3, "test")`.
 - `cargo_subcommand(["--locked", "nextest", "run"]) == "nextest"`.
+- `cargo_subcommand_with_index(["--unknown-cargo-flag", "build"]) == (1, "build")` for current unknown leading dash-token behavior.
+- `cargo_subcommand_with_index(["--version", "build"]) == (1, "build")` for runtime-only no-argument option coverage against the static verifier.
 - `nextest_subcommand_with_index(["--profile", "ci", "run", "--archive-file", "archive"]) == (2, "run")`.
 - `cargo_args_for_target_routing_scan(["test", "--", "--target-dir", "/tmp/raw"]) == ["test"]`.
 - `cargo_args_for_target_routing_scan(["nextest", "run", "--archive-file", "archive", "--", "--target-dir", "/tmp/raw"]) == ["nextest", "run", "--archive-file", "archive"]`.

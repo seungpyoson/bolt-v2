@@ -23,13 +23,13 @@
 
 - [x] T008 Run unresolved-marker scan over `specs/464-decompose-disk-governance-verifiers/`.
 - [x] T009 Run `git diff --check` on current planning changes including `specs/464-decompose-disk-governance-verifiers/tasks.md`.
-- [ ] T010 Request Claude adversarial planning review for `specs/464-decompose-disk-governance-verifiers/` and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
-- [ ] T011 Request Gemini adversarial planning review for `specs/464-decompose-disk-governance-verifiers/` and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
-- [ ] T012 Request Kimi adversarial planning review for `specs/464-decompose-disk-governance-verifiers/` and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
-- [ ] T013 Request Grok adversarial planning review for `specs/464-decompose-disk-governance-verifiers/` and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
-- [ ] T014 Request GLM adversarial planning review for `specs/464-decompose-disk-governance-verifiers/`, record approval-request metadata, and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
-- [ ] T015 Request DeepSeek adversarial planning review for `specs/464-decompose-disk-governance-verifiers/`, record approval-request metadata, and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
-- [ ] T016 Resolve or explicitly record every planning review finding in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T010 Request Claude adversarial planning review for `specs/464-decompose-disk-governance-verifiers/` and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T011 Request Gemini adversarial planning review for `specs/464-decompose-disk-governance-verifiers/` and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T012 Request Kimi adversarial planning review for `specs/464-decompose-disk-governance-verifiers/` and record failed slot in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T013 Request Grok adversarial planning review for `specs/464-decompose-disk-governance-verifiers/` and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T014 Request GLM adversarial planning review for `specs/464-decompose-disk-governance-verifiers/`, record approval-request metadata, and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T015 Request DeepSeek adversarial planning review for `specs/464-decompose-disk-governance-verifiers/`, record approval-request metadata, and record verdict in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T016 Resolve or explicitly record every planning review finding in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 
 **Checkpoint**: No implementation starts until T008 through T016 pass and every available reviewer has approved or the operator explicitly waives a failed/skipped slot.
 
@@ -39,7 +39,7 @@
 
 **Independent Test**: `python3 scripts/test_command_understanding.py` fails before shared exports exist and passes after both verifier clients use the shared helper family.
 
-- [ ] T017 [US1] RED: Add shared cargo scanner parity tests in `scripts/test_command_understanding.py` for `cargo_subcommand_with_index`, static `start` offset, `cargo_subcommand`, `nextest_subcommand_with_index`, and `cargo_args_for_target_routing_scan`.
+- [ ] T017 [US1] RED: Add shared cargo scanner parity tests in `scripts/test_command_understanding.py` for `cargo_subcommand_with_index`, static `start` offset, unknown leading dash tokens, runtime-only no-argument Cargo options, `cargo_subcommand`, `nextest_subcommand_with_index`, and `cargo_args_for_target_routing_scan`.
 - [ ] T018 [US1] RED: Run `python3 scripts/test_command_understanding.py` and record the expected missing-export failure in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 
 ## Phase 4: User Story 2 - Share Cargo Scanner Helpers (Priority: P2)

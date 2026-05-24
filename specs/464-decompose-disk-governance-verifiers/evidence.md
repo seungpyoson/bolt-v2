@@ -9,7 +9,8 @@
 | PR #461 | Merged into `main` as `817ddfc9af8cd835ee6143f0562595f73a1d2645`. |
 | Worktree | `.worktrees/464-verifier-decomposition` |
 | Branch | `codex/464-verifier-decomposition` tracking `origin/main` |
-| Branch head | `817ddfc9af8cd835ee6143f0562595f73a1d2645` |
+| Branch base | `817ddfc9af8cd835ee6143f0562595f73a1d2645` |
+| Planning review head | `1082acc40cfe12f0759aca951295046de198ca47` |
 | `.worktrees` gitignore status | Ignored. |
 
 ## Baseline Verification
@@ -59,14 +60,22 @@ The shared module remains pure scanner logic. Runtime/static policy wrappers rem
 
 | Reviewer | Status | Evidence |
 |---|---|---|
-| Claude | Ready, review not run yet | Doctor ready with subscription OAuth. |
-| Gemini | Ready, review not run yet | Doctor ready with subscription OAuth. |
-| Kimi | Ready, review not run yet | Doctor ready with subscription OAuth. |
-| Grok | Ready, review not run yet | Doctor ready with subscription CLI. |
-| DeepSeek | Ready, review not run yet | Doctor ready with direct API HTTP 200. |
-| GLM | Ready, review not run yet | Doctor ready with direct API HTTP 200. |
+| Claude | APPROVE | Job `d41fc5eb-6ee7-407a-bea7-5404fa6fc04a`; no blocking findings. Non-blocking: verify line references before Phase 3, strengthen unknown-flag and runtime-only option tests, implementation review needs precise scope paths. |
+| Gemini | APPROVE | Job `f76bb83d-8144-4776-b9d2-d7ca892b9734`; no blocking findings. Non-blocking: add explicit negative/unknown leading flag coverage. |
+| Kimi | FAILED | Job `a01bd07a-f3cf-4be2-8875-fe490ab63efd`; `step_limit_exceeded` at 32 steps, no verdict. This is not approval. |
+| Grok | APPROVE | Job `job_0cbe4ebc-cd48-4794-9915-e0b45484b621`; no blocking findings. Non-blocking: stale branch-head row, fixed by recording base and planning review head separately. |
+| DeepSeek | APPROVE | Job `job_795182e6-4fff-452e-a905-b3f555357635`; no blocking findings. Non-blocking: prove option-set union or preserve client-local constants, stale branch-head row. |
+| GLM | APPROVE | Job `job_f0bb0980-0e7a-4036-9c2c-25dd762b3849`; no blocking findings. Non-blocking: stale branch-head row, option-set fallback sentence, explicit guard around exported/non-exported helpers. |
 
-Implementation is blocked until the planning review gate records approvals or operator-waived skipped/failed slots.
+Implementation remains blocked because Kimi failed without a verdict. The gate needs either a successful Kimi retry or explicit operator waiver before Phase 3 starts.
+
+## Review Note Resolution
+
+| Review note | Resolution |
+|---|---|
+| Evidence branch head was stale or ambiguous. | Replaced the single branch-head row with `Branch base` and `Planning review head`. |
+| Option-set union needs proof or fallback. | Added explicit characterization tests for unknown leading dash tokens and runtime-only no-argument Cargo options; added fallback in `plan.md` to preserve client-local constants if parity fails. |
+| Export/non-export guard should be explicit. | T017 keeps shared-export parity tests and existing non-export guard coverage in `scripts/test_command_understanding.py`; full target-routing and wrapper helpers remain non-exports. |
 
 ## Residual #464 Scope After This Slice
 

@@ -28,6 +28,7 @@ python3 scripts/test_verify_ci_workflow_hygiene.py
 python3 -m scripts.test_command_understanding
 python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py
 git diff --check
+just source-fence
 just ci-lint-workflow
 ```
 

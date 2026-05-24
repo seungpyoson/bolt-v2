@@ -5,13 +5,13 @@
 - [x] T001 Create #466 feature directory and seed evidence ledger in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [x] T002 Create #466 specification and quality checklist in `specs/466-decompose-disk-governance-verifiers/spec.md` and `specs/466-decompose-disk-governance-verifiers/checklists/requirements.md`
 - [x] T003 Create #466 plan, research, data model, contract, and quickstart docs in `specs/466-decompose-disk-governance-verifiers/`
-- [x] T004 Keep active Spec Kit pointers pinned to `specs/023-nt-order-intent-layer/plan.md` in `.specify/feature.json` and `AGENTS.md`, and address #466 docs by explicit path
+- [x] T004 Keep active Spec Kit pointers pinned to `specs/023-nt-order-intent-layer/plan.md` in `.specify/feature.json` and `AGENTS.md`, address #466 docs by explicit path, and record the current-head source-fence pass in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [x] T005 Rerun `python3 scripts/test_rust_verification_cache_retention.py` serially and record the result in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [x] T006 Run `python3 -m scripts.test_command_understanding` and record import-mode baseline in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 
 ## Phase 2: Foundational Review Gates
 
-- [ ] T007 Create pre-implementation review packet covering `specs/466-decompose-disk-governance-verifiers/spec.md`, `plan.md`, `tasks.md`, `evidence.md`, `research.md`, `data-model.md`, `contracts/ledger-resolution.md`, and `quickstart.md`
+- [x] T007 Create pre-implementation review packet covering `specs/466-decompose-disk-governance-verifiers/spec.md`, `plan.md`, `tasks.md`, `evidence.md`, `research.md`, `data-model.md`, `contracts/ledger-resolution.md`, and `quickstart.md`
 - [ ] T008 Run Claude pre-implementation review and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T009 Run Gemini pre-implementation review and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T010 Run Grok pre-implementation review and record verdict/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
@@ -54,6 +54,8 @@
 ## Phase 5: User Story 3 - Gate PRs And Issue Closure With Evidence (Priority: P3)
 
 **Independent Test**: PR and final completion evidence map every claim to ledger rows, verification, exact-head CI, external reviews, and operator approval.
+
+Repeat T040 through T044 for every bounded PR slice; one merge does not satisfy #466 unless the ledger says every row is resolved or operator-moved.
 
 - [ ] T036 [US3] Run focused local verification for touched slice and record commands/results in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T037 [US3] Run `python3 -m py_compile` for touched Python files and record result in `specs/466-decompose-disk-governance-verifiers/evidence.md`

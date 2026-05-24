@@ -23,7 +23,9 @@
 | `python3 scripts/test_rust_verification_cache_retention.py` | Pass from root checkout with same current-main Python verifier code: `OK: Rust verification cache retention self-tests passed.` First worktree run was inconclusive because the worktree path disappeared while the test subprocess used it as `cwd`; no verifier assertion failed before the cwd failure. |
 | `git diff --check` | Pass |
 | Strict #466 placeholder scan | Pass: no matches for Spec Kit placeholders or unresolved clarification markers in #466 spec/plan/tasks/evidence/research/data-model/quickstart/contract files. |
-| PR #468 source-fence on head `112c6e6386937ef4b02b8dccbcb5284f92063665` | Fail: source-fence requires `AGENTS.md` and `.specify/feature.json` to remain pinned to `specs/023-nt-order-intent-layer/plan.md`; the #466 docs must not update the active global Spec Kit pointer. |
+| PR #468 source-fence on superseded head `112c6e6386937ef4b02b8dccbcb5284f92063665` | Fail: source-fence caught the incorrect active Spec Kit pointer update. This head is superseded by `9771a13d3db6ae64451b04426f0d8439911f4258`. |
+| `just source-fence` after restoring active Spec Kit pointers | Pass. Confirms `AGENTS.md` and `.specify/feature.json` remain pinned to `specs/023-nt-order-intent-layer/plan.md`; #466 docs are addressed by explicit path. |
+| PR #468 GitHub Actions on pre-Kimi-fix head `9771a13d3db6ae64451b04426f0d8439911f4258` | Pass: `source-fence`, `gate`, `test`, `fmt-check`, `clippy`, `deny`, `check-aarch64`, `nextest archive`, nextest shards 1-4, CodeQL, actionlint, and analyze jobs passed. Workflow run `26351928227`; source-fence job `77571603841`; gate job `77571960933`. |
 
 ## Scope Ledger
 

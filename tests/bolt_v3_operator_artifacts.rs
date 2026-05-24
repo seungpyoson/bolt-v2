@@ -3399,6 +3399,83 @@ fn strategy_input_writer_rejects_oversized_market_selection_source_before_artifa
 }
 
 #[test]
+fn pre_run_host_clock_source_proof_derives_source_owned_skew_bound() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_source_path = temp.path().join("host-clock-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    std::fs::write(
+        &host_clock_source_path,
+        r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_host_clock_source.v1",
+  "host_unix_millis": 1716510000125,
+  "reference_unix_millis": 1716510000000
+}"#,
+    )
+    .expect("host clock fixture should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_source_path,
+        4096,
+        250,
+    )
+    .expect("source-owned host clock proof should collect");
+
+    assert!(proof.host_clock_skew_within_bound);
+    assert_eq!(proof.host_clock_skew_millis, 125);
+    assert_eq!(proof.max_host_clock_skew_millis, 250);
+    assert_eq!(
+        proof.host_clock_source_sha256,
+        sha256_file(&host_clock_source_path)
+    );
+    assert_eq!(proof.host_clock_skew_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .host_clock_skew_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "host clock proof evidence hash should be lowercase hex"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "host clock proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_rejects_out_of_bound_skew() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_source_path = temp.path().join("host-clock-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    std::fs::write(
+        &host_clock_source_path,
+        r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_host_clock_source.v1",
+  "host_unix_millis": 1716510001000,
+  "reference_unix_millis": 1716510000000
+}"#,
+    )
+    .expect("host clock fixture should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_source_path,
+        4096,
+        250,
+    )
+    .expect_err("out-of-bound host clock skew must not approve pre-run proof");
+
+    assert!(
+        error.to_string().contains("host_clock_skew_millis"),
+        "out-of-bound skew should identify the failed source field: {error}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "failed host clock proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
 fn pre_run_market_window_source_proof_derives_source_owned_values() {
     let fixture = strategy_input_runtime_fixture();
     let loaded = &fixture.loaded;

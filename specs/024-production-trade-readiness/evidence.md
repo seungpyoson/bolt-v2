@@ -258,7 +258,7 @@ T127 no longer depends on a caller-supplied abort source bundle for local artifa
 - `just clippy`: passed.
 - `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
-T125 strategy-input replay is now bound to the configured runtime decision-evidence JSONL path. The verifier resolves `[live_canary.operator_evidence].decision_evidence_path`, compares it to the canonical `[persistence]` `decision_evidence_path(&loaded)`, and fails closed with `strategy_input_replay.decision_evidence_path` before replaying if the paths differ. Existing strategy code remains the runtime producer: `binary_oracle_edge_taker` records the strategy snapshot, order intent, and admission decision through the decision-evidence writer, and the final packet now accepts replay only from that configured runtime JSONL location. Final root TOML operator-evidence binding remains open in T013/T014/T037.
+T125 strategy-input replay is now bound to the configured runtime decision-evidence JSONL path. The verifier resolves `[live_canary.operator_evidence].decision_evidence_path`, compares it to the canonical `[persistence]` `decision_evidence_path(&loaded)`, and fails closed with `strategy_input_replay.decision_evidence_path` before replaying if the paths differ. Existing strategy code remains the runtime producer: `binary_oracle_edge_taker` records the strategy snapshot, order intent, and admission decision through the decision-evidence writer, and the final packet now accepts replay only from that configured runtime JSONL location. Final root TOML operator-evidence values remain T037.
 
 ## T009/T010 Runtime Market-Selection Source Binding Evidence
 
@@ -275,4 +275,15 @@ T125 strategy-input replay is now bound to the configured runtime decision-evide
 - `just clippy`: passed.
 - `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
-T124 market-selection replay is now bound to runtime provenance, not fixture consistency alone. `market-selection-source.json` produced through the decision-evidence plus instrument-source path records decision-evidence path/hash and instrument-source path/hash. Final-packet replay now requires that provenance, verifies the decision-evidence path matches the configured runtime JSONL path, verifies both source hashes, parses the instrument source, recomputes the market-selection source from the current config, runtime decision evidence, and instrument facts, and rejects copied fixture/static market-selection sources. Final root TOML operator-evidence binding remains open in T013/T014/T037.
+T124 market-selection replay is now bound to runtime provenance, not fixture consistency alone. `market-selection-source.json` produced through the decision-evidence plus instrument-source path records decision-evidence path/hash and instrument-source path/hash. Final-packet replay now requires that provenance, verifies the decision-evidence path matches the configured runtime JSONL path, verifies both source hashes, parses the instrument source, recomputes the market-selection source from the current config, runtime decision evidence, and instrument facts, and rejects copied fixture/static market-selection sources. Final root TOML operator-evidence values remain T037.
+
+## T013/T014 Operator-Evidence Binding And Focused T124/T125 Verification
+
+- `git ls-files config/live.local.toml config '*.toml' | sort` showed no tracked `config/live.local.toml`; the repo-owned config surface is `config/root.example.toml` plus test fixtures.
+- `ls -la config` showed no local `config/live.local.toml` in this worktree. No live-local TOML was read, printed, or edited.
+- `rg` over `src/bolt_v3_config.rs` and `config/root.example.toml` shows the schema-level T124/T125 binding fields are `strategy_input_evidence_path`, `strategy_input_evidence_sha256`, and `decision_evidence_path`; there is no standalone top-level market-selection operator-evidence field.
+- `rg` over `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml` shows existing audit rows for `strategy_input_evidence_path`, `strategy_input_evidence_sha256`, and `decision_evidence_path`.
+- `python3 -B scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `python3 -B scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+
+Conclusion: T124 binds through the `strategy_input_evidence_path`/`strategy_input_evidence_sha256` artifact because `strategy-input.json` carries `market_selection_source_path`/`market_selection_source_sha256`, and final replay now requires nested market-selection runtime provenance. T125 binds through `[live_canary.operator_evidence].decision_evidence_path`, which final replay now requires to equal the configured `[persistence]` runtime decision-evidence JSONL path. The actual approved root TOML values and final artifact hashes are not available until T035/T036 assemble the final packet, so `config/live.local.toml` remains T037 and was not touched in this slice.

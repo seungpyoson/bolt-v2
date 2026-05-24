@@ -32,8 +32,8 @@
 - [x] T010 [US2] Produce or wire the real current-head runtime market-selection artifact path in `src/bolt_v3_operator_artifacts.rs` without hardcoded venue, market, price, quantity, or timeout values.
 - [x] T011 [US2] Add a RED final-packet test in `tests/bolt_v3_operator_artifacts.rs` proving missing real runtime JSONL strategy-input chain cannot satisfy T125.
 - [x] T012 [US2] Produce or wire the real current-head runtime strategy-input evidence chain in `src/bolt_v3_operator_artifacts.rs` and `src/strategies/binary_oracle_edge_taker.rs`.
-- [ ] T013 [US2] Bind T124/T125 artifact paths and hashes through `[live_canary.operator_evidence]` in `config/live.local.toml` and update runtime-literal audit rows in `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`.
-- [ ] T014 [US2] Run focused T124/T125 tests plus runtime-literal verification and record the evidence in `specs/024-production-trade-readiness/evidence.md`.
+- [x] T013 [US2] Confirm T124/T125 bind through existing `[live_canary.operator_evidence]` `strategy_input_evidence_path`/`strategy_input_evidence_sha256` and `decision_evidence_path`; final approved `config/live.local.toml` values remain T037 with the full final packet.
+- [x] T014 [US2] Run focused T124/T125 tests plus runtime-literal verification and record the evidence in `specs/024-production-trade-readiness/evidence.md`.
 
 ## Phase 4: User Story 3 - Pre-Run State Collectors
 

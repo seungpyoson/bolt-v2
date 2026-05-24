@@ -32,18 +32,18 @@
 
 **Independent Test**: Each helper family has a characterization or parity proof before any extraction, cleanup, or explicit keep-local decision is marked resolved.
 
-- [ ] T018 [P] [US2] Add/verify command tokenization and line-boundary characterization coverage in `scripts/test_command_understanding.py`
-- [ ] T019 [US2] Mark ledger item 1 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T020 [P] [US2] Add/verify shell command substitution characterization coverage in `scripts/test_command_understanding.py`
-- [ ] T021 [US2] Mark ledger item 2 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T022 [P] [US2] Add/verify renamed cargo/rustc characterization coverage in `scripts/test_command_understanding.py`, `scripts/test_rust_verification_cache_retention.py`, and `scripts/test_verify_ci_workflow_hygiene.py`
-- [ ] T023 [US2] Mark ledger item 3 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T024 [P] [US2] Add/verify wrapper handling characterization coverage in `scripts/test_command_understanding.py`, `scripts/test_rust_verification_cache_retention.py`, and `scripts/test_verify_ci_workflow_hygiene.py`
-- [ ] T025 [US2] Mark ledger item 4 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T026 [P] [US2] Add/verify full target-routing policy characterization coverage in `scripts/test_command_understanding.py`, `scripts/test_rust_verification_cache_retention.py`, and `scripts/test_verify_ci_workflow_hygiene.py`
-- [ ] T027 [US2] Mark ledger item 5 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T028 [US2] Audit behavior-preserving file split candidates and record split/no-split decision in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T029 [US2] If approved, mechanically split one concern boundary in `scripts/rust_verification.py`, `scripts/verify_ci_workflow_hygiene.py`, or their test files; otherwise mark ledger item 6 resolved as no-split with evidence in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T018 [P] [US2] Add/verify command tokenization and line-boundary characterization coverage in `scripts/test_command_understanding.py`
+- [x] T019 [US2] Mark ledger item 1 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T020 [P] [US2] Add/verify shell command substitution characterization coverage in `scripts/test_command_understanding.py`
+- [x] T021 [US2] Mark ledger item 2 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T022 [P] [US2] Add/verify renamed cargo/rustc characterization coverage in `scripts/test_command_understanding.py`, `scripts/test_rust_verification_cache_retention.py`, and `scripts/test_verify_ci_workflow_hygiene.py`
+- [x] T023 [US2] Mark ledger item 3 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T024 [P] [US2] Add/verify wrapper handling characterization coverage in `scripts/test_command_understanding.py`, `scripts/test_rust_verification_cache_retention.py`, and `scripts/test_verify_ci_workflow_hygiene.py`
+- [x] T025 [US2] Mark ledger item 4 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T026 [P] [US2] Add/verify full target-routing policy characterization coverage in `scripts/test_command_understanding.py`, `scripts/test_rust_verification_cache_retention.py`, and `scripts/test_verify_ci_workflow_hygiene.py`
+- [x] T027 [US2] Mark ledger item 5 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T028 [US2] Audit behavior-preserving file split candidates and record split/no-split decision in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T029 [US2] If approved, mechanically split one concern boundary in `scripts/rust_verification.py`, `scripts/verify_ci_workflow_hygiene.py`, or their test files; otherwise mark ledger item 6 resolved as no-split with evidence in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [x] T030 [P] [US2] Add RED import-mode guard for any test-only import setup cleanup in `scripts/test_command_understanding.py`
 - [x] T031 [US2] Implement approved test-only import setup cleanup in `scripts/test_command_understanding.py`
 - [x] T032 [US2] Mark ledger item 7 resolved in `specs/466-decompose-disk-governance-verifiers/evidence.md`
@@ -57,10 +57,10 @@
 
 Run T036 through T039 before each PR-ready slice. Repeat T040 through T044 for every bounded PR slice; one merge does not satisfy #466 unless the ledger says every row is resolved or operator-moved.
 
-- [ ] T036 [US3] Run focused local verification for touched slice and record commands/results in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T037 [US3] Run `python3 -m py_compile` for touched Python files and record result in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T038 [US3] Run `git diff --check` and record result in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T039 [US3] Run `just ci-lint-workflow` when verifier/CI hygiene paths are touched and record result in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T036 [US3] Run focused local verification for touched slice and record commands/results in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T037 [US3] Run `python3 -m py_compile` for touched Python files and record result in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T038 [US3] Run `git diff --check` and record result in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T039 [US3] Confirm `just ci-lint-workflow` is not required for this docs-only slice and record rationale in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T040 [US3] Open a bounded PR for the completed slice and include #466 ledger coverage, non-goals, behavior preservation, tests, reviews, residual risk, and #466-open statement in the PR body
 - [ ] T041 [US3] Confirm exact-head GitHub CI green for the current PR head and record check/run IDs in the PR body/comment or, if committed to `specs/466-decompose-disk-governance-verifiers/evidence.md`, label the record historical when a later evidence commit supersedes that head
 - [ ] T042 [US3] Run post-implementation external reviews for Claude, Gemini, Grok, GLM, DeepSeek, and Kimi on the current PR head and record verdicts/findings in the PR body/comment or, if committed to `specs/466-decompose-disk-governance-verifiers/evidence.md`, label the record historical when a later evidence commit supersedes that head

@@ -60,7 +60,7 @@ Run T036 through T039 before each PR-ready slice. Repeat T040 through T044 for e
 - [x] T036 [US3] Run focused local verification for touched slice and record commands/results in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [x] T037 [US3] Run `python3 -m py_compile` for touched Python files and record result in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [x] T038 [US3] Run `git diff --check` and record result in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [x] T039 [US3] Confirm `just ci-lint-workflow` is not required for this docs-only slice and record rationale in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T039 [US3] Run `just ci-lint-workflow` when verifier/CI hygiene paths are touched and record result in `specs/466-decompose-disk-governance-verifiers/evidence.md` (N/A for this docs-only slice; rationale recorded in `evidence.md`)
 - [x] T040 [US3] Open a bounded PR for the completed slice and include #466 ledger coverage, non-goals, behavior preservation, tests, reviews, residual risk, and #466-open statement in the PR body
 - [ ] T041 [US3] Confirm exact-head GitHub CI green for the current PR head and record check/run IDs in the PR body/comment or, if committed to `specs/466-decompose-disk-governance-verifiers/evidence.md`, label the record historical when a later evidence commit supersedes that head
 - [ ] T042 [US3] Run post-implementation external reviews for Claude, Gemini, Grok, GLM, DeepSeek, and Kimi on the current PR head and record verdicts/findings in the PR body/comment or, if committed to `specs/466-decompose-disk-governance-verifiers/evidence.md`, label the record historical when a later evidence commit supersedes that head

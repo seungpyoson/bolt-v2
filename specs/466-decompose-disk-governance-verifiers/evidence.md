@@ -57,7 +57,7 @@
 
 ## Scope Ledger
 
-Completion invariant: before #466 completion, every row must end as `resolved` or `operator-moved`. Row resolution does not by itself prove whole-issue completion; final #466 completion still requires required verification, external review, and operator-approved issue handling.
+Completion invariant: before #466 completion, every row must end as `resolved` or `operator-moved`. A `blocked` row cannot support completion because it still requires operator input or external-state change. Row resolution does not by itself prove whole-issue completion; final #466 completion still requires verification, external review, and operator-approved issue handling.
 
 | # | Ledger item | Current-main runtime implementation evidence | Current-main static verifier implementation evidence | Current-main test/doc evidence | Equivalence verdict | Chosen resolution | Exact files touched or intentionally not touched | Tests required | Review evidence | Final state |
 |---:|---|---|---|---|---|---|---|---|---|---|

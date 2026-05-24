@@ -236,6 +236,89 @@ def assert_verifier_clients_use_shared_python_helpers() -> None:
         raise AssertionError("verifier clients must import shared helpers: " + ", ".join(failures))
 
 
+def assert_shared_cargo_scanner_helpers_match_current_verifiers() -> None:
+    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_cargo_shared_under_test")
+    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_cargo_shared_under_test")
+    shared = load_shared_module()
+
+    helper_names = [
+        "cargo_subcommand_with_index",
+        "cargo_subcommand",
+        "nextest_subcommand_with_index",
+        "cargo_args_for_target_routing_scan",
+    ]
+    missing = [helper_name for helper_name in helper_names if not hasattr(shared, helper_name)]
+    if missing:
+        raise AssertionError("shared cargo scanner helpers missing: " + ", ".join(missing))
+
+    identity_failures: list[str] = []
+    for helper_name in helper_names:
+        shared_helper = getattr(shared, helper_name)
+        if getattr(runtime, helper_name) is not shared_helper:
+            identity_failures.append(f"rust_verification.{helper_name}")
+        if getattr(static, helper_name) is not shared_helper:
+            identity_failures.append(f"verify_ci_workflow_hygiene.{helper_name}")
+    if identity_failures:
+        raise AssertionError("verifier clients must import shared cargo scanner helpers: " + ", ".join(identity_failures))
+
+    cargo_subcommand_cases = [
+        (["--manifest-path", "Cargo.toml", "test", "--", "--target-dir", "/tmp/raw"], (2, "test")),
+        (["--locked", "nextest", "run"], (1, "nextest")),
+        (["--unknown-cargo-flag", "build"], (1, "build")),
+        (["--version", "build"], (1, "build")),
+        (["+nightly", "--offline", "check"], (2, "check")),
+    ]
+    for cargo_args, expected in cargo_subcommand_cases:
+        values = [
+            runtime.cargo_subcommand_with_index(cargo_args),
+            static.cargo_subcommand_with_index(cargo_args),
+            shared.cargo_subcommand_with_index(cargo_args),
+        ]
+        if values != [expected, expected, expected]:
+            raise AssertionError(f"cargo_subcommand_with_index({cargo_args!r}) returned {values!r}")
+
+    start_tokens = ["cargo", "--manifest-path", "Cargo.toml", "test"]
+    start_values = [
+        static.cargo_subcommand_with_index(start_tokens, start=1),
+        shared.cargo_subcommand_with_index(start_tokens, start=1),
+    ]
+    if start_values != [(3, "test"), (3, "test")]:
+        raise AssertionError(f"cargo_subcommand_with_index start offset returned {start_values!r}")
+
+    cargo_command_values = [
+        runtime.cargo_subcommand(["--locked", "nextest", "run"]),
+        static.cargo_subcommand(["--locked", "nextest", "run"]),
+        shared.cargo_subcommand(["--locked", "nextest", "run"]),
+    ]
+    if cargo_command_values != ["nextest", "nextest", "nextest"]:
+        raise AssertionError(f"cargo_subcommand returned {cargo_command_values!r}")
+
+    nextest_values = [
+        runtime.nextest_subcommand_with_index(["--profile", "ci", "run", "--archive-file", "archive"]),
+        static.nextest_subcommand_with_index(["--profile", "ci", "run", "--archive-file", "archive"]),
+        shared.nextest_subcommand_with_index(["--profile", "ci", "run", "--archive-file", "archive"]),
+    ]
+    if nextest_values != [(2, "run"), (2, "run"), (2, "run")]:
+        raise AssertionError(f"nextest_subcommand_with_index returned {nextest_values!r}")
+
+    target_scan_cases = [
+        (["test", "--", "--target-dir", "/tmp/raw"], ["test"]),
+        (
+            ["nextest", "run", "--archive-file", "archive", "--", "--target-dir", "/tmp/raw"],
+            ["nextest", "run", "--archive-file", "archive"],
+        ),
+        (["build", "--", "--target-dir", "/tmp/raw"], ["build", "--", "--target-dir", "/tmp/raw"]),
+    ]
+    for cargo_args, expected in target_scan_cases:
+        values = [
+            runtime.cargo_args_for_target_routing_scan(cargo_args),
+            static.cargo_args_for_target_routing_scan(cargo_args),
+            shared.cargo_args_for_target_routing_scan(cargo_args),
+        ]
+        if values != [expected, expected, expected]:
+            raise AssertionError(f"cargo_args_for_target_routing_scan({cargo_args!r}) returned {values!r}")
+
+
 def assert_non_exported_candidate_helpers_are_characterized() -> None:
     runtime = load_module(RUNTIME_VERIFIER, "rust_verification_candidates_under_test")
     static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_candidates_under_test")
@@ -249,7 +332,6 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
         "path_executable_looks_like_cargo",
         "path_name_looks_like_renamed_rustc",
         "path_executable_looks_like_rustc",
-        "cargo_subcommand_with_index",
         "cargo_target_routing_override",
         "tokens_have_target_routing_override",
         "process_wrapper_tokens",
@@ -345,6 +427,7 @@ def main() -> int:
     assert_python_ast_helpers_match_current_verifiers()
     assert_python_inline_payloads_match_current_verifiers()
     assert_verifier_clients_use_shared_python_helpers()
+    assert_shared_cargo_scanner_helpers_match_current_verifiers()
     assert_non_exported_candidate_helpers_are_characterized()
     print("OK: command understanding self-tests passed.")
     return 0

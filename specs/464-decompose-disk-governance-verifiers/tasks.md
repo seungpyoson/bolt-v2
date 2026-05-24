@@ -39,8 +39,8 @@
 
 **Independent Test**: `python3 scripts/test_command_understanding.py` fails before shared exports exist and passes after both verifier clients use the shared helper family.
 
-- [ ] T017 [US1] RED: Add shared cargo scanner parity tests in `scripts/test_command_understanding.py` for `cargo_subcommand_with_index`, static `start` offset, unknown leading dash tokens, runtime-only no-argument Cargo options, `cargo_subcommand`, `nextest_subcommand_with_index`, and `cargo_args_for_target_routing_scan`.
-- [ ] T018 [US1] RED: Run `python3 scripts/test_command_understanding.py` and record the expected missing-export failure in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T017 [US1] RED: Add shared cargo scanner parity tests in `scripts/test_command_understanding.py` for `cargo_subcommand_with_index`, static `start` offset, unknown leading dash tokens, runtime-only no-argument Cargo options, `cargo_subcommand`, `nextest_subcommand_with_index`, and `cargo_args_for_target_routing_scan`.
+- [x] T018 [US1] RED: Run `python3 scripts/test_command_understanding.py` and record the expected missing-export failure in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 
 ## Phase 4: User Story 2 - Share Cargo Scanner Helpers (Priority: P2)
 
@@ -48,12 +48,12 @@
 
 **Independent Test**: `python3 scripts/test_command_understanding.py`, `python3 scripts/test_rust_verification_cache_retention.py`, and `python3 scripts/test_verify_ci_workflow_hygiene.py` pass.
 
-- [ ] T019 [US2] GREEN: Add cargo scanner option constants and helper functions in `scripts/command_understanding.py`.
-- [ ] T020 [US2] GREEN: Rewire `scripts/rust_verification.py` to import cargo scanner helpers from `scripts/command_understanding.py` and remove duplicate local helper definitions.
-- [ ] T021 [US2] GREEN: Rewire `scripts/verify_ci_workflow_hygiene.py` to import cargo scanner helpers from `scripts/command_understanding.py` and remove duplicate local helper definitions.
-- [ ] T022 [US2] GREEN: Run `python3 scripts/test_command_understanding.py` and record pass evidence in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
-- [ ] T023 [US2] GREEN: Run `python3 scripts/test_rust_verification_cache_retention.py` and record pass evidence in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
-- [ ] T024 [US2] GREEN: Run `python3 scripts/test_verify_ci_workflow_hygiene.py` and record pass evidence in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T019 [US2] GREEN: Add cargo scanner option constants and helper functions in `scripts/command_understanding.py`.
+- [x] T020 [US2] GREEN: Rewire `scripts/rust_verification.py` to import cargo scanner helpers from `scripts/command_understanding.py` and remove duplicate local helper definitions.
+- [x] T021 [US2] GREEN: Rewire `scripts/verify_ci_workflow_hygiene.py` to import cargo scanner helpers from `scripts/command_understanding.py` and remove duplicate local helper definitions.
+- [x] T022 [US2] GREEN: Run `python3 scripts/test_command_understanding.py` and record pass evidence in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T023 [US2] GREEN: Run `python3 scripts/test_rust_verification_cache_retention.py` and record pass evidence in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T024 [US2] GREEN: Run `python3 scripts/test_verify_ci_workflow_hygiene.py` and record pass evidence in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 
 ## Phase 5: User Story 3 - Record Residual Scope (Priority: P3)
 
@@ -61,17 +61,17 @@
 
 **Independent Test**: `specs/464-decompose-disk-governance-verifiers/evidence.md` and the PR body state selected scope and residual scope without claiming to close all #464 work.
 
-- [ ] T025 [US3] Update `specs/464-decompose-disk-governance-verifiers/evidence.md` with implementation result, line references, and residual #464 scope.
-- [ ] T026 [US3] Update `specs/464-decompose-disk-governance-verifiers/research.md` with final classification and verification results.
+- [x] T025 [US3] Update `specs/464-decompose-disk-governance-verifiers/evidence.md` with implementation result, line references, and residual #464 scope.
+- [x] T026 [US3] Update `specs/464-decompose-disk-governance-verifiers/research.md` with final classification and verification results.
 
 ## Final Phase: Verification, PR, Review, Merge Gate
 
 **Purpose**: Prove exact-head behavior preservation and stop for operator approval before merge.
 
-- [ ] T027 Run `python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py`.
-- [ ] T028 Run `git diff --check`.
-- [ ] T029 Run `just ci-lint-workflow`.
-- [ ] T030 Run unresolved-marker scan over `specs/464-decompose-disk-governance-verifiers/` and touched Python files.
+- [x] T027 Run `python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py`.
+- [x] T028 Run `git diff --check`.
+- [x] T029 Run `just ci-lint-workflow`.
+- [x] T030 Run unresolved-marker scan over `specs/464-decompose-disk-governance-verifiers/` and touched Python files.
 - [ ] T031 Commit branch `codex/464-verifier-decomposition` with `scripts/command_understanding.py`, `scripts/rust_verification.py`, `scripts/verify_ci_workflow_hygiene.py`, `scripts/test_command_understanding.py`, and `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 - [ ] T032 Push branch `codex/464-verifier-decomposition` containing `specs/464-decompose-disk-governance-verifiers/tasks.md`.
 - [ ] T033 Open PR for issue #464 with scope, non-goals, evidence map, chosen slice, remaining local behavior, tests, external review results, skipped review slots, residual risk, and relationship to PR #461 from `specs/464-decompose-disk-governance-verifiers/evidence.md`.

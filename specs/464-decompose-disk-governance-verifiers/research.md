@@ -22,14 +22,14 @@
 
 | Helper family | Runtime verifier | Static workflow verifier | Classification for this slice |
 |---|---:|---:|---|
-| `command_tokens` | `scripts/rust_verification.py:520` | `scripts/verify_ci_workflow_hygiene.py:1230` | Divergent but characterizable. Runtime uses simple `shlex.split`; static uses punctuation-aware lexing and line-boundary support. |
-| `shell_command_substitution_payloads` | `scripts/rust_verification.py:635` | `scripts/verify_ci_workflow_hygiene.py:1326` | Divergent but characterizable. Runtime normalizes tokens first; static scans caller tokens. |
-| `shell_command_substitution_at` | `scripts/rust_verification.py:668` | `scripts/verify_ci_workflow_hygiene.py:2271` | Divergent but characterizable. Runtime requires normalized exact `$`; static accepts prefix tokens ending in `$`. |
+| `command_tokens` | `scripts/rust_verification.py:524` | `scripts/verify_ci_workflow_hygiene.py:1233` | Divergent but characterizable. Runtime uses simple `shlex.split`; static uses punctuation-aware lexing and line-boundary support. |
+| `shell_command_substitution_payloads` | `scripts/rust_verification.py:639` | `scripts/verify_ci_workflow_hygiene.py:1329` | Divergent but characterizable. Runtime normalizes tokens first; static scans caller tokens. |
+| `shell_command_substitution_at` | `scripts/rust_verification.py:672` | `scripts/verify_ci_workflow_hygiene.py:2200` | Divergent but characterizable. Runtime requires normalized exact `$`; static accepts prefix tokens ending in `$`. |
 | Python AST command helpers | Shared import in both clients | Shared import in both clients | Already extracted by PR #461. Not part of this slice. |
-| Renamed cargo/rustc path helpers | `scripts/rust_verification.py:1557` and adjacent | `scripts/verify_ci_workflow_hygiene.py:2537` and adjacent | Divergent but characterizable. Runtime resolves filesystem symlinks; static inspects raw path tokens. |
-| Wrapper handling | `scripts/rust_verification.py:1438` and wrapper indices | `scripts/verify_ci_workflow_hygiene.py:2001` and inner-token helpers | Insufficient equivalence evidence. Similar purpose, different helper interface and policy context. |
-| Cargo subcommand scanning | `scripts/rust_verification.py:2150`, `:2176`, `:2187`, `:2266` | `scripts/verify_ci_workflow_hygiene.py:1700`, `:1726`, `:1733`, `:1752` | Proven equivalent enough for this slice after characterization. Static keeps a `start` offset that can become an optional shared parameter. |
-| Full target-routing override detection | `scripts/rust_verification.py:2288` | `scripts/verify_ci_workflow_hygiene.py:1794` | Explicit non-goal. Return shape and policy inputs differ. Only scan-boundary helper is selected. |
+| Renamed cargo/rustc path helpers | `scripts/rust_verification.py:1561` and adjacent | `scripts/verify_ci_workflow_hygiene.py:2466` and adjacent | Divergent but characterizable. Runtime resolves filesystem symlinks; static inspects raw path tokens. |
+| Wrapper handling | `scripts/rust_verification.py:1442` and wrapper indices | `scripts/verify_ci_workflow_hygiene.py:1930` and inner-token helpers | Insufficient equivalence evidence. Similar purpose, different helper interface and policy context. |
+| Cargo subcommand scanning | Shared `scripts/command_understanding.py:118`, `:144`, `:151`, `:170`; runtime import `scripts/rust_verification.py:27` | Shared `scripts/command_understanding.py:118`, `:144`, `:151`, `:170`; static import `scripts/verify_ci_workflow_hygiene.py:19` | Extracted in this slice. Static start-offset support is preserved as an optional shared parameter. |
+| Full target-routing override detection | `scripts/rust_verification.py:2193` | `scripts/verify_ci_workflow_hygiene.py:1723` | Explicit non-goal. Return shape and policy inputs differ. Only scan-boundary helper is selected. |
 | Oversized verifier/test split | Large files listed in `evidence.md` | Large files listed in `evidence.md` | Insufficient evidence for this slice. No mechanical split selected. |
 | Test-only `sys.path` setup hygiene | `scripts/test_command_understanding.py:22` and related import guards | Test helper import loading | Explicit non-goal for this slice. PR #461 already addressed import-order coupling; a broader setup-helper change needs separate evidence. |
 
@@ -42,6 +42,15 @@ The selected slice is the cargo scanner helper family because:
 - Current PR #461 tests already characterize representative runtime/static cargo subcommand and target-routing scan behavior.
 - The helper family is pure and does not read filesystem, environment, processes, Git state, network, credentials, or operator home paths.
 - Full target-routing policy remains local, so the shared module does not take on runtime/static policy differences.
+
+## Implementation Result
+
+| Command | Result |
+|---|---|
+| `python3 scripts/test_command_understanding.py` | Pass: `OK: command understanding self-tests passed.` |
+| `python3 scripts/test_rust_verification_cache_retention.py` | Pass: `OK: Rust verification cache retention self-tests passed.` |
+| `python3 scripts/test_verify_ci_workflow_hygiene.py` | Pass: `OK: CI workflow hygiene verifier self-tests passed.` |
+| Duplicate-definition scan | Pass: selected cargo scanner helper definitions exist only in `scripts/command_understanding.py`. |
 
 ## Rejected Alternatives
 

@@ -22,9 +22,13 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-# Keep the full former verifier-local helper family module-scoped so the
-# parity tests prove the old helper surface now points at the shared path.
+# Keep the former verifier-local helper families module-scoped so parity tests
+# prove the old helper surface now points at the shared path.
 from command_understanding import (
+    cargo_args_for_target_routing_scan,
+    cargo_subcommand,
+    cargo_subcommand_with_index,
+    nextest_subcommand_with_index,
     python_call_command_argument,
     python_call_name,
     python_command_string,
@@ -2113,30 +2117,6 @@ def print_refusal(payload: dict[str, Any]) -> int:
     return 2
 
 
-CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {
-    "--config",
-    "--color",
-    "--jobs",
-    "--manifest-path",
-    "--profile",
-    "--target",
-    "--target-dir",
-    "-C",
-    "-Z",
-}
-CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {
-    "--help",
-    "--list",
-    "--frozen",
-    "--locked",
-    "--offline",
-    "--quiet",
-    "--verbose",
-    "--version",
-    "-q",
-    "-v",
-    "-V",
-}
 CARGO_DISK_PREFLIGHT_SUBCOMMANDS = frozenset(
     {"bench", "build", "check", "clippy", "doc", "fetch", "install", "nextest", "run", "rustc", "test"}
 )
@@ -2144,63 +2124,10 @@ CARGO_PROCESS_SUBCOMMANDS = CARGO_DISK_PREFLIGHT_SUBCOMMANDS | {"clean", "fmt"}
 CARGO_ALIAS_SUBCOMMANDS = {"b", "c", "d", "r", "t"}
 CARGO_CONFIG_RELATIVE_PATHS = (pathlib.Path(".cargo/config.toml"), pathlib.Path(".cargo/config"))
 CARGO_HOME_CONFIG_NAMES = ("config.toml", "config")
-NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT = {"--config-file", "--manifest-path", "--profile", "--workspace-remap"}
-
-
-def cargo_subcommand_with_index(cargo_args: list[str]) -> tuple[int, str] | None:
-    index = 0
-    while index < len(cargo_args):
-        token = cargo_args[index]
-        if token.startswith("+"):
-            index += 1
-            continue
-        if token == "--":
-            index += 1
-            continue
-        if token in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT:
-            index += 2
-            continue
-        if any(token.startswith(f"{option}=") for option in CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT if option.startswith("--")):
-            index += 1
-            continue
-        if token in CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT:
-            index += 1
-            continue
-        if token.startswith("-"):
-            index += 1
-            continue
-        return index, token
-    return None
-
-
-def cargo_subcommand(cargo_args: list[str]) -> str | None:
-    subcommand = cargo_subcommand_with_index(cargo_args)
-    if subcommand is None:
-        return None
-    return subcommand[1]
 
 
 def cargo_args_need_disk_preflight(cargo_args: list[str]) -> bool:
     return cargo_subcommand(cargo_args) in CARGO_DISK_PREFLIGHT_SUBCOMMANDS
-
-
-def nextest_subcommand_with_index(nextest_args: list[str]) -> tuple[int, str] | None:
-    index = 0
-    while index < len(nextest_args):
-        token = nextest_args[index]
-        if token == "--":
-            return None
-        if token in NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT:
-            index += 2
-            continue
-        if any(token.startswith(f"{option}=") for option in NEXTEST_GLOBAL_OPTIONS_WITH_ARGUMENT):
-            index += 1
-            continue
-        if token.startswith("-"):
-            index += 1
-            continue
-        return index, token
-    return None
 
 
 def cargo_args_need_exclusive_cache_lock(cargo_args: list[str]) -> bool:
@@ -2261,28 +2188,6 @@ def cargo_alias_subcommand(cargo_args: list[str], repo: pathlib.Path | None = No
     if repo is not None and subcommand is not None and subcommand in repo_cargo_aliases(repo):
         return subcommand
     return None
-
-
-def cargo_args_for_target_routing_scan(cargo_args: list[str]) -> list[str]:
-    subcommand = cargo_subcommand_with_index(cargo_args)
-    if subcommand is None:
-        return cargo_args
-    subcommand_index, subcommand_name = subcommand
-    if subcommand_name == "nextest":
-        nextest_subcommand = nextest_subcommand_with_index(cargo_args[subcommand_index + 1 :])
-        if nextest_subcommand is None or nextest_subcommand[1] != "run":
-            return cargo_args
-        nextest_run_index = subcommand_index + 1 + nextest_subcommand[0]
-        for index, token in enumerate(cargo_args):
-            if index > nextest_run_index and token == "--":
-                return cargo_args[:index]
-        return cargo_args
-    if subcommand_name not in {"bench", "run", "test"}:
-        return cargo_args
-    for index, token in enumerate(cargo_args):
-        if index > subcommand_index and token == "--":
-            return cargo_args[:index]
-    return cargo_args
 
 
 def cargo_target_routing_override(cargo_args: list[str]) -> str | None:

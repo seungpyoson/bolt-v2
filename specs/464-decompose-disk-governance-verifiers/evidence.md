@@ -8,9 +8,10 @@
 | Issue #454 | Closed as completed. |
 | PR #461 | Merged into `main` as `817ddfc9af8cd835ee6143f0562595f73a1d2645`. |
 | Worktree | `.worktrees/464-verifier-decomposition` |
-| Branch | `codex/464-verifier-decomposition` tracking `origin/main` |
+| Branch | `codex/464-verifier-decomposition` tracking `origin/codex/464-verifier-decomposition` |
 | Branch base | `817ddfc9af8cd835ee6143f0562595f73a1d2645` |
 | Planning review head | `1082acc40cfe12f0759aca951295046de198ca47` |
+| Implementation start head | `a4ddac81d0009ef63f15b8f51b2994996f969237` |
 | `.worktrees` gitignore status | Ignored. |
 
 ## Baseline Verification
@@ -34,14 +35,14 @@
 
 | Helper family | Runtime verifier | Static workflow verifier | Current classification |
 |---|---:|---:|---|
-| `command_tokens` | `scripts/rust_verification.py:520` | `scripts/verify_ci_workflow_hygiene.py:1230` | Divergent but characterizable. Remains local. |
-| `shell_command_substitution_payloads` | `scripts/rust_verification.py:635` | `scripts/verify_ci_workflow_hygiene.py:1326` | Divergent but characterizable. Remains local. |
-| `shell_command_substitution_at` | `scripts/rust_verification.py:668` | `scripts/verify_ci_workflow_hygiene.py:2271` | Divergent but characterizable. Remains local. |
+| `command_tokens` | `scripts/rust_verification.py:524` | `scripts/verify_ci_workflow_hygiene.py:1233` | Divergent but characterizable. Remains local. |
+| `shell_command_substitution_payloads` | `scripts/rust_verification.py:639` | `scripts/verify_ci_workflow_hygiene.py:1329` | Divergent but characterizable. Remains local. |
+| `shell_command_substitution_at` | `scripts/rust_verification.py:672` | `scripts/verify_ci_workflow_hygiene.py:2200` | Divergent but characterizable. Remains local. |
 | Python AST command helpers | Shared imports | Shared imports | Already extracted by PR #461. |
-| Renamed cargo/rustc helpers | `scripts/rust_verification.py:1557` and adjacent | `scripts/verify_ci_workflow_hygiene.py:2537` and adjacent | Divergent filesystem boundary. Remains local. |
-| Wrapper handling | `scripts/rust_verification.py:1438` and adjacent | `scripts/verify_ci_workflow_hygiene.py:2001` and adjacent | Insufficient equivalence evidence. Remains local. |
-| Cargo subcommand scanning | `scripts/rust_verification.py:2150`, `:2176`, `:2187`, `:2266` | `scripts/verify_ci_workflow_hygiene.py:1700`, `:1726`, `:1733`, `:1752` | Selected slice. Pure helper family with static start-offset support. |
-| Full target-routing override detection | `scripts/rust_verification.py:2288` | `scripts/verify_ci_workflow_hygiene.py:1794` | Explicit non-goal. Policy and return shape differ. |
+| Renamed cargo/rustc helpers | `scripts/rust_verification.py:1561` and adjacent | `scripts/verify_ci_workflow_hygiene.py:2466` and adjacent | Divergent filesystem boundary. Remains local. |
+| Wrapper handling | `scripts/rust_verification.py:1442` and adjacent | `scripts/verify_ci_workflow_hygiene.py:1930` and adjacent | Insufficient equivalence evidence. Remains local. |
+| Cargo subcommand scanning | Shared `scripts/command_understanding.py:118`, `:144`, `:151`, `:170`; runtime import `scripts/rust_verification.py:27` | Shared `scripts/command_understanding.py:118`, `:144`, `:151`, `:170`; static import `scripts/verify_ci_workflow_hygiene.py:19` | Extracted slice. Pure helper family with static start-offset support. |
+| Full target-routing override detection | `scripts/rust_verification.py:2193` | `scripts/verify_ci_workflow_hygiene.py:1723` | Explicit non-goal. Policy and return shape differ. |
 | Oversized verifier/test file structure | Large files under `scripts/` | Large files under `scripts/` | Explicit non-goal for this slice. |
 | Test-only `sys.path` setup hygiene | `scripts/test_command_understanding.py:22` | Test import setup | Explicit non-goal for this slice. |
 
@@ -99,3 +100,17 @@ Implementation gate is open because the operator explicitly waived the failed Ki
 | CI workflow verifier path | `just ci-lint-workflow` |
 | Remote gate | Exact-head GitHub CI green |
 | External gate | Exact-head implementation review from Claude, Gemini, Grok, GLM, DeepSeek, and Kimi |
+
+## Implementation Evidence
+
+| Task | Result |
+|---|---|
+| T018 RED focused characterization | Fail as expected: `AssertionError: shared cargo scanner helpers missing: cargo_subcommand_with_index, cargo_subcommand, nextest_subcommand_with_index, cargo_args_for_target_routing_scan`. |
+| T022 focused characterization | Pass: `OK: command understanding self-tests passed.` |
+| T023 runtime verifier suite | Pass: `OK: Rust verification cache retention self-tests passed.` |
+| T024 static verifier suite | Pass: `OK: CI workflow hygiene verifier self-tests passed.` |
+| Duplicate-definition scan | Pass: selected helper definitions exist only in `scripts/command_understanding.py`. |
+| T027 Python syntax | Pass: `python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py`. |
+| T028 whitespace | Pass: `git diff --check` produced no output. |
+| T029 CI workflow verifier path | Pass: `just ci-lint-workflow` completed with `OK: No raw cargo workflow commands or explicit Rust-wrapper bypasses found`. |
+| T030 unresolved-marker scan | Pass: no `TODO`, `FIXME`, `TBD`, `XXX`, conflict marker, `REPLACE_ME`, or `PLACEHOLDER` matches in specs or touched Python files. |

@@ -19,8 +19,14 @@ STATIC_VERIFIER = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 SHARED_HELPERS = REPO_ROOT / "scripts" / "command_understanding.py"
 _MODULE_CACHE: dict[pathlib.Path, object] = {}
 
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
+
+def ensure_test_imports_available() -> None:
+    scripts_dir = str(SCRIPTS_DIR)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+
+
+ensure_test_imports_available()
 
 
 def load_module(path: pathlib.Path, module_name: str) -> object:
@@ -40,6 +46,15 @@ def load_shared_module() -> object:
     if not SHARED_HELPERS.exists():
         raise AssertionError("missing scripts/command_understanding.py")
     return importlib.import_module("command_understanding")
+
+
+def assert_test_import_setup_is_encapsulated() -> None:
+    tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.If):
+            continue
+        if "sys.path" in ast.unparse(node):
+            raise AssertionError("test import sys.path setup must be encapsulated in a helper")
 
 
 def expression(source: str) -> ast.AST:
@@ -439,6 +454,7 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
 
 
 def main() -> int:
+    assert_test_import_setup_is_encapsulated()
     assert_verifier_modules_import_from_repo_root()
     assert_load_module_caches_verifier_modules()
     assert_python_ast_helpers_match_current_verifiers()

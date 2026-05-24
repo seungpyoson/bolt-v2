@@ -44,9 +44,9 @@
 - [ ] T027 [US2] Mark ledger item 5 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T028 [US2] Audit behavior-preserving file split candidates and record split/no-split decision in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T029 [US2] If approved, mechanically split one concern boundary in `scripts/rust_verification.py`, `scripts/verify_ci_workflow_hygiene.py`, or their test files; otherwise mark ledger item 6 resolved as no-split with evidence in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T030 [P] [US2] Add RED import-mode guard for any test-only import setup cleanup in `scripts/test_command_understanding.py`
-- [ ] T031 [US2] Implement approved test-only import setup cleanup in `scripts/test_command_understanding.py`
-- [ ] T032 [US2] Mark ledger item 7 resolved in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T030 [P] [US2] Add RED import-mode guard for any test-only import setup cleanup in `scripts/test_command_understanding.py`
+- [x] T031 [US2] Implement approved test-only import setup cleanup in `scripts/test_command_understanding.py`
+- [x] T032 [US2] Mark ledger item 7 resolved in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [x] T033 [P] [US2] Add/verify parity or identity guard for static `CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT` handling in `scripts/test_command_understanding.py`
 - [x] T034 [US2] Import shared `CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT` in `scripts/verify_ci_workflow_hygiene.py` if review approves; otherwise retain explicit parity guard/comment
 - [x] T035 [US2] Mark ledger item 8 resolved in `specs/466-decompose-disk-governance-verifiers/evidence.md`

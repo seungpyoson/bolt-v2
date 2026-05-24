@@ -1979,6 +1979,43 @@ exit 0
             raise AssertionError(f"cache-reset apply did not remove only managed target children: {payload!r}")
 
 
+def assert_cache_reset_apply_refuses_incomplete_scan_without_deleting() -> None:
+    if not hasattr(os, "mkfifo"):
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo)
+        root_base = tmp_path / "rust-root"
+        target = root_base / "bolt-v2" / "target"
+        debug_file = target / "debug" / "artifact.bin"
+        debug_file.parent.mkdir(parents=True)
+        debug_file.write_bytes(b"debug")
+        pipe = debug_file.parent / "pipe"
+        os.mkfifo(pipe)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+exit 0
+""",
+        )
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cache-reset", "--repo", str(repo), "--apply", "--json"], env=env)
+        combined = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0 or not debug_file.exists() or not pipe.exists() or "incomplete_scan" not in combined:
+            raise AssertionError(
+                "cache-reset apply must fail closed when a managed target child scan is incomplete: "
+                f"returncode={result.returncode} debug_exists={debug_file.exists()} pipe_exists={pipe.exists()} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
 def assert_cache_reset_apply_rechecks_active_process_before_each_removal() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -3890,6 +3927,69 @@ exit 0
             raise AssertionError(f"cleanup apply did not remove only registered worktree target: {payload!r}")
 
 
+def assert_cleanup_apply_refuses_incomplete_worktree_target_scan() -> None:
+    if not hasattr(os, "mkfifo"):
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "--allow-empty", "-m", "init"],
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        worktree = tmp_path / "bolt-v2-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "cleanup-incomplete-scan-test", str(worktree)],
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        write_policy_with_cache(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    """\
+
+                    [cleanup.worktree_targets]
+                    dirname = "target"
+                    """
+                )
+            )
+
+        target = worktree / "target"
+        target.mkdir()
+        artifact = target / "artifact.bin"
+        artifact.write_bytes(b"artifact")
+        pipe = target / "pipe"
+        os.mkfifo(pipe)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+exit 0
+""",
+        )
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cleanup", "--repo", str(repo), "--apply", "--json"], env=env)
+        combined = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0 or not artifact.exists() or not pipe.exists() or "incomplete_scan" not in combined:
+            raise AssertionError(
+                "cleanup apply must fail closed when a registered worktree target scan is incomplete: "
+                f"returncode={result.returncode} artifact_exists={artifact.exists()} pipe_exists={pipe.exists()} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
 def assert_cleanup_fails_closed_when_worktree_inventory_unavailable() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -4675,6 +4775,7 @@ def assert_v6_red_policy_gaps() -> None:
         assert_cleanup_apply_refuses_repo_scoped_process_for_tmp_bundle_candidate,
         assert_cleanup_apply_refuses_repo_scoped_process_for_worktree_target_candidate,
         assert_cleanup_apply_removes_registered_worktree_target_only,
+        assert_cleanup_apply_refuses_incomplete_worktree_target_scan,
         assert_cleanup_fails_closed_when_worktree_inventory_unavailable,
         assert_cleanup_fails_closed_when_registered_worktree_path_is_missing,
         assert_cleanup_candidate_removal_validates_namespace,
@@ -4747,6 +4848,7 @@ def main() -> int:
     assert_cache_reset_dry_run_reports_managed_target_children_without_deleting()
     assert_cache_reset_apply_refuses_active_related_process()
     assert_cache_reset_apply_removes_only_managed_target_children()
+    assert_cache_reset_apply_refuses_incomplete_scan_without_deleting()
     assert_cache_reset_apply_rechecks_active_process_before_each_removal()
     assert_cache_reset_apply_refuses_symlinked_target()
     assert_cache_reset_apply_unlinks_symlink_child_without_following()

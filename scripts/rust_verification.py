@@ -2134,6 +2134,9 @@ def cache_reset_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
             refusal = active_process_refusal_payload(repo, target, policy)
             if refusal is not None:
                 return refusal
+            refusal = incomplete_scan_refusal_payload(candidates, dry_run=dry_run, target=str(target))
+            if refusal is not None:
+                return refusal
             for entry in candidates:
                 validate_managed_target_path(target, policy)
                 refusal = active_process_refusal_payload(repo, target, policy)
@@ -2370,6 +2373,9 @@ def cleanup_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
             refusal = active_process_refusal_payload(repo, target, policy)
             if refusal is not None:
                 return refusal
+            refusal = incomplete_scan_refusal_payload(candidates, dry_run=dry_run, target=str(target))
+            if refusal is not None:
+                return refusal
             for entry in candidates:
                 validate_managed_target_path(target, policy)
                 refusal = cleanup_candidate_refusal_payload(repo, entry, policy)
@@ -2399,6 +2405,25 @@ def refusal_payload(*, code: str, reason: str, dry_run: bool, target: str | None
         "reclaimable_bytes": 0,
         "refusal_code": code,
         "refusal_reason": reason,
+        "refused": True,
+        "target_dir": target,
+    }
+
+
+def incomplete_scan_refusal_payload(
+    candidates: list[dict[str, Any]],
+    *,
+    dry_run: bool,
+    target: str | None,
+) -> dict[str, Any] | None:
+    if not any(int(entry.get("skipped_special_entries") or 0) > 0 for entry in candidates):
+        return None
+    return {
+        "candidates": candidates,
+        "dry_run": dry_run,
+        "reclaimable_bytes": sum(int(entry.get("bytes") or 0) for entry in candidates),
+        "refusal_code": "incomplete_scan",
+        "refusal_reason": "refusing to remove candidates while scan skipped special entries",
         "refused": True,
         "target_dir": target,
     }

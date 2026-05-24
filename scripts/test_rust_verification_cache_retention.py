@@ -1899,7 +1899,7 @@ def assert_cache_prune_apply_reports_partial_removals_on_late_remove_failure() -
                 "target_dir": str(target),
             }
             owner.is_prune_candidate = lambda _subtree, _policy, *, now, pressure: (True, "test")
-            owner.active_process_refusal_payload = lambda _repo, _target, _policy: None
+            owner.active_process_refusal_payload = lambda _repo, _target, _policy, *, extra_scopes=(): None
 
             def fake_remove(entry: dict[str, object], _target: pathlib.Path) -> None:
                 if entry["relative_path"] == "release":
@@ -1911,7 +1911,7 @@ def assert_cache_prune_apply_reports_partial_removals_on_late_remove_failure() -
             for name, value in originals.items():
                 setattr(owner, name, value)
         removed_paths = [entry.get("relative_path") for entry in payload.get("removed", [])]
-        if payload.get("refusal_code") != "operation_failed" or removed_paths != ["debug"]:
+        if payload.get("refusal_code") != "policy_error" or removed_paths != ["debug"]:
             raise AssertionError(
                 "cache-prune apply must report partial removals when late remove raises: "
                 f"payload={payload!r}"
@@ -2229,7 +2229,7 @@ def assert_cache_reset_apply_reports_partial_removals_on_late_remove_failure() -
             owner.root_base = lambda: tmp_path / "rust-root"
             owner.cache_lock = lambda _policy, *, exclusive: contextlib.nullcontext()
             owner.cache_reset_candidates = lambda _target: (candidates, 2)
-            owner.active_process_refusal_payload = lambda _repo, _target, _policy: None
+            owner.active_process_refusal_payload = lambda _repo, _target, _policy, *, extra_scopes=(): None
 
             def fake_remove(entry: dict[str, object], _target: pathlib.Path) -> None:
                 if str(entry["path"]).endswith("release"):
@@ -2241,7 +2241,7 @@ def assert_cache_reset_apply_reports_partial_removals_on_late_remove_failure() -
             for name, value in originals.items():
                 setattr(owner, name, value)
         removed_paths = [entry.get("path") for entry in payload.get("removed", [])]
-        if payload.get("refusal_code") != "operation_failed" or removed_paths != [str(target / "debug")]:
+        if payload.get("refusal_code") != "policy_error" or removed_paths != [str(target / "debug")]:
             raise AssertionError(
                 "cache-reset apply must report partial removals when late remove raises: "
                 f"payload={payload!r}"
@@ -4287,6 +4287,28 @@ def assert_cleanup_candidate_removal_validates_namespace() -> None:
         if not outside.exists():
             raise AssertionError("cleanup candidate namespace validation ran after deletion")
 
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / "target").mkdir()
+        worktree_outside = tmp_path / "worktree-outside" / "target"
+        worktree_outside.mkdir(parents=True)
+        (worktree_outside / "payload.bin").write_bytes(b"unsafe")
+        try:
+            owner.remove_cleanup_candidate(
+                {
+                    "class": "worktree_target",
+                    "dirname": "target",
+                    "path": str(worktree_outside),
+                    "worktree": str(worktree),
+                }
+            )
+        except owner.PolicyError:
+            pass
+        else:
+            raise AssertionError("cleanup candidate removal accepted a worktree target outside its registered worktree")
+        if not worktree_outside.exists():
+            raise AssertionError("worktree target namespace validation ran after deletion")
+
 
 def assert_cleanup_apply_rechecks_candidate_before_deletion() -> None:
     with tempfile.TemporaryDirectory() as tmp:
@@ -4348,7 +4370,7 @@ def assert_cleanup_apply_rechecks_candidate_before_deletion() -> None:
             owner.registered_worktree_paths = lambda _repo: set()
             owner.cleanup_tmp_bundle_candidates = lambda _repo, _policy, *, now, registered: candidates
             owner.cleanup_worktree_target_candidates = lambda _repo, _policy, *, registered: []
-            owner.active_process_refusal_payload = lambda _repo, _target, _policy: None
+            owner.active_process_refusal_payload = lambda _repo, _target, _policy, *, extra_scopes=(): None
             owner.cache_lock = lambda _policy, *, exclusive: contextlib.nullcontext(lock_modes.append(exclusive))
 
             def fake_candidate_refusal(
@@ -4557,7 +4579,7 @@ def assert_cleanup_apply_reports_partial_removals_on_late_remove_failure() -> No
             for name, value in originals.items():
                 setattr(owner, name, value)
         removed_paths = [entry.get("path") for entry in payload.get("removed", [])]
-        if payload.get("refusal_code") != "operation_failed" or removed_paths != [str(bundle_one)]:
+        if payload.get("refusal_code") != "policy_error" or removed_paths != [str(bundle_one)]:
             raise AssertionError(
                 "cleanup apply must report partial removals when late remove raises: "
                 f"payload={payload!r}"

@@ -2051,11 +2051,12 @@ def refusal_with_removed(refusal: dict[str, Any], removed: list[dict[str, Any]])
 
 
 def removal_failure_refusal_payload(exc: BaseException, entry: dict[str, Any]) -> dict[str, Any]:
+    code = "policy_error" if isinstance(exc, PolicyError) else "operation_failed"
     return {
         "candidates": [entry],
         "dry_run": False,
         "reclaimable_bytes": int(entry.get("bytes") or 0),
-        "refusal_code": "operation_failed",
+        "refusal_code": code,
         "refusal_reason": str(exc),
         "refused": True,
         "target_dir": str(entry.get("path", "")),

@@ -80,6 +80,7 @@ Post-implementation review must target the current pushed PR head after exact-he
 
 | Reviewer | Route / source state | Result |
 |---|---|---|
+| Current PR #474 replacement head | Head `fbfb82c0e9360c0c7c0bd1abaa4d1f8c81949c73` has exact-head CI green, but current-head post-implementation external review is not yet recorded in this file or the PR body/comment. | OPEN GATE: do not treat the historical rows below as merge approval for PR #474. Current-head Claude, Gemini, Grok, GLM, DeepSeek, and Kimi reviews or explicit operator waivers are still required before merge readiness. |
 | Gemini | Subscription review job `5d0e79f8-0f41-4521-8baa-0676fcad12e3`, session `32fa4ad1-9875-427e-9965-3326a2a1b679`; source sent for head `9b020b7a363f959afa01a4eb8fd0074eb6614540`. | REQUEST_CHANGES: stale committed CI/review evidence referenced superseded heads. |
 | Grok | Subscription-backed review job `job_d1775521-0105-4cc3-beef-deed2e93759e`; source sent for head `9b020b7a363f959afa01a4eb8fd0074eb6614540`. | REQUEST_CHANGES: stale committed CI/review evidence referenced superseded heads. |
 | Kimi | Subscription review job `f77fbb82-9f33-467c-af13-30cc38278ed5`, session `b2f90e0a-e5dc-441d-937a-37a6849c871e`; source sent for head `9b020b7a363f959afa01a4eb8fd0074eb6614540`. | Failed slot: `step_limit_exceeded`; no usable verdict. |

@@ -1488,6 +1488,29 @@ def assert_cache_prune_apply_revalidates_target_after_scan() -> None:
         )
 
 
+def assert_cache_candidate_removal_requires_symlink_safe_rmtree() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        target = tmp_path / "target"
+        child = target / "debug"
+        child.mkdir(parents=True)
+        old_value = owner.shutil.rmtree.avoids_symlink_attacks
+        try:
+            owner.shutil.rmtree.avoids_symlink_attacks = False
+            try:
+                owner.remove_cache_candidate({"path": str(child)}, target)
+            except owner.PolicyError as exc:
+                if "symlink-safe" not in str(exc):
+                    raise
+            else:
+                raise AssertionError("cache candidate directory removal must fail closed without symlink-safe rmtree")
+        finally:
+            owner.shutil.rmtree.avoids_symlink_attacks = old_value
+        if not child.exists():
+            raise AssertionError("cache candidate was removed without symlink-safe rmtree")
+
+
 def assert_cache_prune_apply_fails_closed_when_process_visibility_missing() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -4711,6 +4734,7 @@ def main() -> int:
     assert_cache_prune_apply_rechecks_active_process_before_delete()
     assert_cache_prune_apply_rechecks_active_process_before_each_removal()
     assert_cache_prune_apply_revalidates_target_after_scan()
+    assert_cache_candidate_removal_requires_symlink_safe_rmtree()
     assert_cache_prune_apply_fails_closed_when_process_visibility_missing()
     assert_cache_prune_apply_fails_closed_when_matching_process_scope_unknown()
     assert_cache_prune_apply_fails_closed_when_policy_missing()

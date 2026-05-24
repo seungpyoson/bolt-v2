@@ -1981,12 +1981,18 @@ def is_direct_child(path: pathlib.Path, parent: pathlib.Path) -> bool:
     return len(relative.parts) == 1
 
 
+def remove_directory_tree(path: pathlib.Path) -> None:
+    if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
+        raise PolicyError("symlink-safe directory removal is unavailable")
+    shutil.rmtree(path)
+
+
 def remove_cache_candidate(entry: dict[str, Any], target: pathlib.Path) -> None:
     path = pathlib.Path(entry["path"])
     if path == target or not is_direct_child(path, target):
         raise PolicyError("refusing to remove non-child cache path")
     if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
+        remove_directory_tree(path)
     else:
         try:
             path.unlink()
@@ -2328,7 +2334,7 @@ def remove_cleanup_candidate(entry: dict[str, Any]) -> None:
     else:
         raise PolicyError("refusing to remove unknown cleanup candidate class")
     if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
+        remove_directory_tree(path)
     else:
         raise PolicyError("refusing to remove non-directory cleanup candidate")
 

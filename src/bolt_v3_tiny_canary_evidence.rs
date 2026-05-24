@@ -650,6 +650,10 @@ pub struct Phase8MarketSelectionSourceEvidenceFile {
 }
 
 impl Phase8MarketSelectionSourceEvidenceFile {
+    pub fn candidate_market_start_timestamps_ms(&self) -> &[u64] {
+        &self.candidate_market_start_timestamps_ms
+    }
+
     pub fn from_market_family_selection(
         market_selection_timestamp_ms: u64,
         candidate_windows: &[MarketSelectionCandidateWindow],

@@ -630,7 +630,10 @@ fn pre_run_host_clock_source_proof_derives_source_owned_values() {
     )
     .expect("source-owned host clock proof should collect");
 
-    assert!(proof.host_clock_skew_within_bound);
+    assert!(
+        !format!("{proof:?}").contains("host_clock_skew_within_bound"),
+        "collector proof should not expose a redundant success boolean"
+    );
     assert!(
         proof.absolute_skew_seconds <= max_allowed_skew_seconds,
         "collector should derive host clock near fixture reference, got {}s",
@@ -661,8 +664,14 @@ fn pre_run_host_clock_source_proof_rejects_over_bound_skew() {
     .expect_err("over-bound host clock skew must not approve source proof");
 
     assert!(
-        error.to_string().contains("absolute_skew_seconds"),
-        "over-bound host clock skew should identify skew field: {error}"
+        error
+            .to_string()
+            .contains("host-clock source skew exceeds configured bound"),
+        "over-bound host clock skew should identify computed skew-bound failure: {error}"
+    );
+    assert!(
+        !error.to_string().contains("source field"),
+        "computed skew-bound failure should not be reported as a source field: {error}"
     );
 }
 
@@ -760,9 +769,7 @@ fn pre_run_host_clock_source_proof_rejects_oversized_input_before_parse() {
     .expect_err("oversized host-clock source input must fail closed");
 
     assert!(
-        error
-            .to_string()
-            .contains("max_operator_evidence_file_bytes"),
+        error.to_string().contains("configured byte limit"),
         "oversized source input should fail as bounded read: {error}"
     );
 }
@@ -2024,9 +2031,7 @@ fn approval_packet_assembly_rejects_oversized_static_manifest_before_writes() {
     .expect_err("oversized static manifest should fail closed");
 
     assert!(
-        error
-            .to_string()
-            .contains("max_operator_evidence_file_bytes"),
+        error.to_string().contains("configured byte limit"),
         "oversized manifest error should cite configured cap: {error}"
     );
     assert!(
@@ -2088,9 +2093,7 @@ fn approval_packet_assembly_rejects_oversized_static_artifact_before_writes() {
     .expect_err("oversized static artifact should fail closed");
 
     assert!(
-        error
-            .to_string()
-            .contains("max_operator_evidence_file_bytes"),
+        error.to_string().contains("configured byte limit"),
         "oversized artifact error should cite configured cap: {error}"
     );
     assert!(
@@ -2796,9 +2799,7 @@ fn final_packet_verifier_rejects_oversized_operator_packet_before_parsing() {
     .expect_err("oversized operator packet should fail closed");
 
     assert!(
-        error
-            .to_string()
-            .contains("max_operator_evidence_file_bytes"),
+        error.to_string().contains("configured byte limit"),
         "oversized packet should cite configured cap: {error}"
     );
 }

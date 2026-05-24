@@ -248,7 +248,6 @@ pub struct Phase8PreRunMarketWindowSourceProof {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phase8PreRunHostClockSourceProof {
-    pub host_clock_skew_within_bound: bool,
     pub absolute_skew_seconds: u64,
     pub host_clock_skew_evidence_hash: String,
 }
@@ -311,6 +310,10 @@ pub enum BoltV3OperatorArtifactError {
     },
     PreRunHostClockSourceInvalid {
         field: &'static str,
+    },
+    PreRunHostClockSkewExceedsBound {
+        absolute_skew_seconds: u64,
+        max_allowed_skew_seconds: u64,
     },
     PreRunMarketWindowSourceRead {
         path: PathBuf,
@@ -529,6 +532,13 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::PreRunHostClockSourceInvalid { field } => write!(
                 f,
                 "host-clock source field `{field}` is invalid or unproven"
+            ),
+            Self::PreRunHostClockSkewExceedsBound {
+                absolute_skew_seconds,
+                max_allowed_skew_seconds,
+            } => write!(
+                f,
+                "host-clock source skew exceeds configured bound: absolute_skew_seconds={absolute_skew_seconds}, max_allowed_skew_seconds={max_allowed_skew_seconds}"
             ),
             Self::PreRunMarketWindowSourceRead { source, .. } => {
                 write!(f, "failed to read market/window source input: {source}")
@@ -1634,9 +1644,12 @@ pub fn collect_pre_run_host_clock_source_proof(
     let host_unix_seconds = current_host_unix_seconds()?;
     let absolute_skew_seconds = host_unix_seconds.abs_diff(input.reference_unix_seconds);
     if absolute_skew_seconds > max_allowed_skew_seconds {
-        return Err(BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
-            field: "absolute_skew_seconds",
-        });
+        return Err(
+            BoltV3OperatorArtifactError::PreRunHostClockSkewExceedsBound {
+                absolute_skew_seconds,
+                max_allowed_skew_seconds,
+            },
+        );
     }
     let proof_input = Phase8PreRunHostClockSourceProofHashInput {
         schema_version: PRE_RUN_HOST_CLOCK_SOURCE_PROOF_SCHEMA_VERSION,
@@ -1650,7 +1663,6 @@ pub fn collect_pre_run_host_clock_source_proof(
     let host_clock_skew_evidence_hash = json_artifact_sha256(&proof_input)?;
 
     Ok(Phase8PreRunHostClockSourceProof {
-        host_clock_skew_within_bound: true,
         absolute_skew_seconds,
         host_clock_skew_evidence_hash,
     })
@@ -3820,9 +3832,7 @@ fn read_file_bounded(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
     if length > max_bytes {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!(
-                "operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"
-            ),
+            format!("artifact exceeds configured byte limit={max_bytes} bytes (length={length})"),
         ));
     }
     Ok(bytes)

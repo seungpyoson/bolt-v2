@@ -5019,10 +5019,10 @@ reason = "This reads one extra byte beyond the config-owned operator evidence fi
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"'''
-context = '''"operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"'''
+literal = '''"host-clock source skew exceeds configured bound: absolute_skew_seconds={absolute_skew_seconds}, max_allowed_skew_seconds={max_allowed_skew_seconds}"'''
+context = '''"host-clock source skew exceeds configured bound: absolute_skew_seconds={absolute_skew_seconds}, max_allowed_skew_seconds={max_allowed_skew_seconds}"'''
 classification = "operator_artifact_error_template"
-reason = "This is a fail-closed diagnostic template for bounded operator-artifact reads using the config-owned cap, not an operator runtime value."
+reason = "This is a fail-closed diagnostic template for a computed host-clock skew bound failure; the bound itself is caller/config-owned, not hardcoded here."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

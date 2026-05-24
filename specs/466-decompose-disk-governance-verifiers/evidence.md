@@ -22,7 +22,8 @@
 | `python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py` | Pass |
 | `python3 scripts/test_rust_verification_cache_retention.py` | Pass from root checkout with same current-main Python verifier code: `OK: Rust verification cache retention self-tests passed.` First worktree run was inconclusive because the worktree path disappeared while the test subprocess used it as `cwd`; no verifier assertion failed before the cwd failure. |
 | `git diff --check` | Pass |
-| Strict #466 placeholder scan | Pass: no matches for Spec Kit placeholders or `NEEDS CLARIFICATION` in #466 spec/plan/tasks/evidence/research/data-model/quickstart/contract files. |
+| Strict #466 placeholder scan | Pass: no matches for Spec Kit placeholders or unresolved clarification markers in #466 spec/plan/tasks/evidence/research/data-model/quickstart/contract files. |
+| PR #468 source-fence on head `112c6e6386937ef4b02b8dccbcb5284f92063665` | Fail: source-fence requires `AGENTS.md` and `.specify/feature.json` to remain pinned to `specs/023-nt-order-intent-layer/plan.md`; the #466 docs must not update the active global Spec Kit pointer. |
 
 ## Scope Ledger
 

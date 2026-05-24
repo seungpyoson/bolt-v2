@@ -5,7 +5,7 @@
 - [x] T001 Create #466 feature directory and seed evidence ledger in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [x] T002 Create #466 specification and quality checklist in `specs/466-decompose-disk-governance-verifiers/spec.md` and `specs/466-decompose-disk-governance-verifiers/checklists/requirements.md`
 - [x] T003 Create #466 plan, research, data model, contract, and quickstart docs in `specs/466-decompose-disk-governance-verifiers/`
-- [x] T004 Point active Spec Kit feature context at #466 in `.specify/feature.json` and `AGENTS.md`
+- [x] T004 Keep active Spec Kit pointers pinned to `specs/023-nt-order-intent-layer/plan.md` in `.specify/feature.json` and `AGENTS.md`, and address #466 docs by explicit path
 - [x] T005 Rerun `python3 scripts/test_rust_verification_cache_retention.py` serially and record the result in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [x] T006 Run `python3 -m scripts.test_command_understanding` and record import-mode baseline in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 

@@ -62,12 +62,9 @@ scripts/
 ├── test_command_understanding.py
 ├── test_rust_verification_cache_retention.py
 └── test_verify_ci_workflow_hygiene.py
-
-AGENTS.md
-.specify/feature.json
 ```
 
-**Structure Decision**: Start with specs/evidence only. Implementation slices may touch only the listed verifier/test/helper files unless the ledger and external review approve a narrower or different file set. File splitting is allowed only when mechanical and behavior-preserving.
+**Structure Decision**: Start with specs/evidence only. Implementation slices may touch only the listed verifier/test/helper files unless the ledger and external review approve a narrower or different file set. File splitting is allowed only when mechanical and behavior-preserving. Repository source-fence checks require `AGENTS.md` and `.specify/feature.json` to remain pinned to `specs/023-nt-order-intent-layer/plan.md`; #466 Spec Kit artifacts are therefore addressed by explicit path rather than active global pointer.
 
 ## Phase 0 Research
 

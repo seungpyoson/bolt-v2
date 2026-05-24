@@ -5,7 +5,7 @@ use bolt_v2::{
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3OrderIntentEvidence,
         BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitIntentKind,
+        BoltV3SubmitIntentKind, decision_evidence_path,
     },
     bolt_v3_market_families::updown::updown_market_slug,
     bolt_v3_operator_artifacts::{WrittenOperatorArtifact, build_redacted_ssm_manifest},
@@ -4064,12 +4064,8 @@ fn final_packet_verifier_rejects_strategy_input_not_replayable_from_decision_evi
     let mut wrong_snapshot = strategy_input_runtime_fixture().snapshot;
     wrong_snapshot.price_to_beat_value = "3200".to_string();
     let decision_evidence_path =
-        write_entry_decision_evidence_chain(&fixture.temp, &wrong_snapshot);
-    assert_eq!(
-        decision_evidence_path,
-        std::path::PathBuf::from(&operator_evidence.decision_evidence_path),
-        "test should replace the configured decision evidence path"
-    );
+        std::path::PathBuf::from(&operator_evidence.decision_evidence_path);
+    write_entry_decision_evidence_chain_at(&decision_evidence_path, &wrong_snapshot);
     let decision_evidence_sha256 = sha256_file(&decision_evidence_path);
     let canary_path = std::path::PathBuf::from(&operator_evidence.canary_evidence_path);
     let mut canary = read_json_value(&canary_path);
@@ -4090,6 +4086,32 @@ fn final_packet_verifier_rejects_strategy_input_not_replayable_from_decision_evi
     assert!(
         error.to_string().contains("strategy_input_replay"),
         "strategy-input replay failure should be redacted and specific: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_non_runtime_decision_evidence_jsonl_for_strategy_input() {
+    let fixture = assembled_final_packet_fixture_with_decision_evidence_path_binding(
+        DecisionEvidencePathBinding::NonCanonicalTempJsonl,
+    );
+    let operator_evidence = fixture.operator_evidence();
+    let configured_decision_evidence_path =
+        decision_evidence_path(&fixture.loaded).expect("fixture persistence path should resolve");
+    assert_ne!(
+        std::path::PathBuf::from(&operator_evidence.decision_evidence_path),
+        configured_decision_evidence_path,
+        "test setup must bind operator evidence to a non-runtime decision JSONL path"
+    );
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("final packet verifier must reject non-runtime decision evidence JSONL provenance");
+
+    assert!(
+        error.to_string().contains("strategy_input_replay"),
+        "decision evidence provenance failure should be redacted and specific: {error}"
     );
 }
 
@@ -7030,6 +7052,9 @@ fn write_entry_decision_evidence_chain_at(
     decision_evidence_path: &std::path::Path,
     snapshot: &BoltV3StrategyInputEvidenceSnapshot,
 ) {
+    if let Some(parent) = decision_evidence_path.parent() {
+        std::fs::create_dir_all(parent).expect("decision evidence parent should create");
+    }
     let intent = BoltV3OrderIntentEvidence {
         strategy_id: snapshot.strategy_id.clone(),
         intent_kind: BoltV3OrderIntentKind::Entry,
@@ -7161,8 +7186,23 @@ impl FinalPacketFixture {
     }
 }
 
+#[derive(Clone, Copy)]
+enum DecisionEvidencePathBinding {
+    CanonicalRuntimeJsonl,
+    NonCanonicalTempJsonl,
+}
+
 fn assembled_final_packet_fixture() -> FinalPacketFixture {
     assembled_final_packet_fixture_with_strategy_input_mutation(|_| {})
+}
+
+fn assembled_final_packet_fixture_with_decision_evidence_path_binding(
+    decision_evidence_binding: DecisionEvidencePathBinding,
+) -> FinalPacketFixture {
+    assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding(
+        |_| {},
+        decision_evidence_binding,
+    )
 }
 
 fn assembled_final_packet_fixture_with_strategy_input_mutation<F>(
@@ -7171,10 +7211,34 @@ fn assembled_final_packet_fixture_with_strategy_input_mutation<F>(
 where
     F: FnOnce(&mut serde_json::Value),
 {
+    assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding(
+        mutate_strategy_input,
+        DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
+    )
+}
+
+fn assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding<F>(
+    mutate_strategy_input: F,
+    decision_evidence_binding: DecisionEvidencePathBinding,
+) -> FinalPacketFixture
+where
+    F: FnOnce(&mut serde_json::Value),
+{
     let mut loaded = load_fixture_with_live_canary();
     loaded.config_bundle_checksum = sha256_text("final-packet-config-bundle");
     let temp = tempfile::tempdir().expect("tempdir should create");
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
     let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    if matches!(
+        decision_evidence_binding,
+        DecisionEvidencePathBinding::CanonicalRuntimeJsonl
+    ) {
+        operator_evidence.decision_evidence_path = decision_evidence_path(&loaded)
+            .expect("fixture persistence decision evidence path should resolve")
+            .to_string_lossy()
+            .to_string();
+    }
     operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
         .unwrap_or_else(|| {
             panic!("build head sha should be compiled for final-packet verifier tests")

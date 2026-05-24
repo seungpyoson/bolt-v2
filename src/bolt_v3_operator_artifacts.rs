@@ -16,7 +16,8 @@ use zeroize::Zeroize;
 use crate::{
     bolt_v3_config::{LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
     bolt_v3_decision_evidence::{
-        BoltV3StrategyInputEvidenceSnapshot, read_latest_entry_decision_evidence_chain,
+        BoltV3StrategyInputEvidenceSnapshot, decision_evidence_path,
+        read_latest_entry_decision_evidence_chain,
     },
     bolt_v3_live_canary_gate::{
         APPROVAL_ENVELOPE_RECORD_KIND, APPROVAL_ENVELOPE_SCHEMA_VERSION,
@@ -5719,10 +5720,22 @@ fn verify_strategy_input_replay_binding(
                 field: "strategy_input_replay.market_selection_source",
             }
         })?;
-    let decision_evidence_path =
+    let resolved_decision_evidence_path =
         resolve_loaded_config_path(loaded, &operator_evidence.decision_evidence_path);
+    let configured_decision_evidence_path = decision_evidence_path(loaded)
+        .map(|path| resolve_loaded_config_path_from_path(loaded, &path))
+        .map_err(
+            |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+                field: "strategy_input_replay.decision_evidence_path",
+            },
+        )?;
+    if resolved_decision_evidence_path != configured_decision_evidence_path {
+        return Err(BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.decision_evidence_path",
+        });
+    }
     let decision_chain = read_latest_entry_decision_evidence_chain(
-        &decision_evidence_path,
+        &resolved_decision_evidence_path,
         operator_evidence.max_operator_evidence_file_bytes,
     )
     .map_err(

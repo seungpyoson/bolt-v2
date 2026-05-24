@@ -243,3 +243,18 @@ The collector is non-live and source-owned: it reads bounded local Rust source f
 - `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 T127 no longer depends on a caller-supplied abort source bundle for local artifact generation. `write_abort_plan_artifact_from_source_collectors` and the `operator-artifacts generate-abort-plan-from-source-collectors` CLI path collect cancel-if-open, NT-accepted/venue-pending, partial-fill, network-partition, and panic/service-policy proofs from bounded local source inputs, then write the final `abort-plan.json`. The schema-level operator evidence config still binds the final artifact by `abort_plan_path` and `abort_plan_sha256`; the approved root TOML update remains T037 with the full final packet.
+
+## T011/T012 Runtime Strategy-Input JSONL Binding Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts final_packet_verifier_rejects_non_runtime_decision_evidence_jsonl_for_strategy_input -- --nocapture` failed because the final-packet verifier accepted a non-runtime `decision-evidence.jsonl` path and returned a successful verification summary instead of rejecting the packet.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts final_packet_verifier_rejects_non_runtime_decision_evidence_jsonl_for_strategy_input -- --nocapture` passed: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts final_packet_verifier_ -- --nocapture`: 29 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts strategy_input -- --nocapture`: 10 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `python3 -B scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `python3 -B scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `git diff --check`: passed.
+- `just fmt-check`: passed.
+- `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+T125 strategy-input replay is now bound to the configured runtime decision-evidence JSONL path. The verifier resolves `[live_canary.operator_evidence].decision_evidence_path`, compares it to the canonical `[persistence]` `decision_evidence_path(&loaded)`, and fails closed with `strategy_input_replay.decision_evidence_path` before replaying if the paths differ. Existing strategy code remains the runtime producer: `binary_oracle_edge_taker` records the strategy snapshot, order intent, and admission decision through the decision-evidence writer, and the final packet now accepts replay only from that configured runtime JSONL location. T124 market-selection provenance and the final root TOML operator-evidence binding remain open in T009/T010/T013/T014.

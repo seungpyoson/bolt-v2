@@ -21,7 +21,7 @@ Each #466 PR must state:
 - Characterization/parity tests.
 - What remains local and why.
 - Verification commands/results.
-- External review results and failed/skipped slots.
+- External review results and failed/skipped slots, with superseded heads labeled as historical evidence.
 - Residual risk.
 - Whether #466 remains open.
 
@@ -34,6 +34,8 @@ A non-final PR must not say it closes #466.
 - Missing output, timeout, failed slot, shallow output, no verdict, or source-send failure is not approval.
 - A failed/skipped slot may be accepted only by explicit operator waiver.
 - DeepSeek and GLM direct-API source sends have standing approval, but audit metadata must still be recorded.
+- Post-implementation review must target the current pushed PR head after exact-head CI is green.
+- If the branch moves after CI/review records are written, those records become historical and cannot satisfy merge readiness for the new head.
 
 ## Completion Contract
 

@@ -29,7 +29,7 @@
 | Generic core, concrete edges | Pass | Work is repo-verifier helper cleanup; no venue or strategy-specific core behavior is added. |
 | Single path and config-controlled runtime | Pass | No runtime config/secret path changes. Static verifier cleanup must not introduce alternate secret, build, or runtime paths. |
 | Test-first safety gates | Pass | Spec requires characterization/RED evidence before moved or generalized behavior. |
-| Evidence before claims | Pass | `evidence.md` is the source of truth; completion requires ledger, local verification, exact-head CI, external review, and operator approval. |
+| Evidence before claims | Pass | `evidence.md` is the source of truth for #466 ledger state; merge readiness also requires live exact-head CI/review records for the current PR head and operator approval. |
 | Minimal slice discipline | Pass | Plan allows one coherent helper family or mechanical split per PR and requires residual scope in every non-final PR. |
 | Research and analytics stay NT-first | Pass | Not applicable; no research/backtest/dashboard behavior. |
 
@@ -76,7 +76,7 @@ Required decisions:
 - Which ledger items are cleanup candidates after pre-implementation review.
 - Which file split boundaries reduce review risk without behavior change.
 - Which tests prove direct-script versus module import coverage after test setup cleanup.
-- How to record external reviewer approval, failed slots, skipped slots, and operator waivers.
+- How to record external reviewer approval, failed slots, skipped slots, operator waivers, and superseded exact-head evidence.
 
 ## Phase 1 Design
 

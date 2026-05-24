@@ -45,7 +45,7 @@ As the operator, I need every PR slice and final issue closure to be gated by lo
 
 **Why this priority**: #466 is multi-PR capable; completion cannot be inferred from tests, one merge, or moved work.
 
-**Independent Test**: For each PR-ready slice, inspect the PR body, ledger, CI state, external review records, and issue comments before merge or closure.
+**Independent Test**: For each PR-ready slice, inspect the PR body, ledger, live CI state, external review records, and issue comments before merge or closure. Superseded committed evidence cannot satisfy a current-head merge gate.
 
 **Acceptance Scenarios**:
 
@@ -86,7 +86,7 @@ As the operator, I need every PR slice and final issue closure to be gated by lo
 - **Helper Family**: A command-understanding, wrapper, target-routing, or option-handling behavior that may be extracted, kept local, split, or cleaned up.
 - **PR Slice**: A bounded implementation PR that resolves one coherent helper family or mechanical cleanup without claiming broader completion.
 - **Review Gate**: Required reviewer verdict set plus operator waivers where applicable.
-- **Verification Evidence**: Local command output, exact-head CI state, characterization RED/GREEN record, and final whole-issue evidence.
+- **Verification Evidence**: Local command output, live exact-head CI state, characterization RED/GREEN record, and final whole-issue evidence.
 
 ## Success Criteria
 
@@ -95,7 +95,7 @@ As the operator, I need every PR slice and final issue closure to be gated by lo
 - **SC-001**: The final #466 ledger has zero rows marked open, insufficient evidence, unreviewed, partial, tracked later, or TBD.
 - **SC-002**: Every extracted helper family has tests proving both verifier clients use the shared path and preserve current behavior.
 - **SC-003**: Every kept-local helper family has characterization evidence explaining why extraction was not performed.
-- **SC-004**: Every implementation PR needed for #466 has passing relevant local verification, exact-head CI, and external review evidence or explicit waiver records.
+- **SC-004**: Every implementation PR needed for #466 has passing relevant local verification, live exact-head CI, and external review evidence or explicit waiver records for the current merged head.
 - **SC-005**: #466 remains open across intermediate PR slices and is closed only after explicit operator approval with final completion evidence.
 
 ## Assumptions

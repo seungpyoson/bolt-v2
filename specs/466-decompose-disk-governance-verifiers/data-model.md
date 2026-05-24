@@ -28,7 +28,7 @@
 - `ledger_items_covered`: One or more coherent #466 ledger items.
 - `non_goals`: Residual #466 scope explicitly left open.
 - `behavior_preservation_strategy`: Characterization, parity, identity, or mechanical-move proof.
-- `verification`: Local commands, exact-head CI, and reviewer evidence.
+- `verification`: Local commands, live exact-head CI, and reviewer evidence. Superseded exact-head records are historical snapshots, not merge approval.
 - `closure_claim`: Whether #466 remains open; must remain open until the final ledger is resolved.
 
 ## Review Gate

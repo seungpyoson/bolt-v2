@@ -53,7 +53,7 @@
 
 ## Phase 5: User Story 3 - Gate PRs And Issue Closure With Evidence (Priority: P3)
 
-**Independent Test**: PR and final completion evidence map every claim to ledger rows, verification, exact-head CI, external reviews, and operator approval.
+**Independent Test**: PR and final completion evidence map every claim to ledger rows, local verification, live exact-head CI/review records, and operator approval. Committed evidence may record historical snapshots, but superseded heads do not satisfy the merge gate.
 
 Run T036 through T039 before each PR-ready slice. Repeat T040 through T044 for every bounded PR slice; one merge does not satisfy #466 unless the ledger says every row is resolved or operator-moved.
 
@@ -62,8 +62,8 @@ Run T036 through T039 before each PR-ready slice. Repeat T040 through T044 for e
 - [ ] T038 [US3] Run `git diff --check` and record result in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T039 [US3] Run `just ci-lint-workflow` when verifier/CI hygiene paths are touched and record result in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T040 [US3] Open a bounded PR for the completed slice and include #466 ledger coverage, non-goals, behavior preservation, tests, reviews, residual risk, and #466-open statement in the PR body
-- [ ] T041 [US3] Confirm exact-head GitHub CI green for the PR head and record check/run IDs in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T042 [US3] Run post-implementation external reviews for Claude, Gemini, Grok, GLM, DeepSeek, and Kimi on the exact PR head and record verdicts/findings in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [ ] T041 [US3] Confirm exact-head GitHub CI green for the current PR head and record check/run IDs in the PR body/comment or, if committed to `specs/466-decompose-disk-governance-verifiers/evidence.md`, label the record historical when a later evidence commit supersedes that head
+- [ ] T042 [US3] Run post-implementation external reviews for Claude, Gemini, Grok, GLM, DeepSeek, and Kimi on the current PR head and record verdicts/findings in the PR body/comment or, if committed to `specs/466-decompose-disk-governance-verifiers/evidence.md`, label the record historical when a later evidence commit supersedes that head
 - [ ] T043 [US3] Address all PR review comments and external findings before asking operator merge approval
 - [ ] T044 [US3] After operator approval, merge with a normal merge commit unless the operator explicitly requests squash, then return to current `main` and continue unresolved #466 ledger items
 

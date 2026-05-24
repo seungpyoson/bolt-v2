@@ -1855,12 +1855,14 @@ fn require_abort_plan_cancel_if_open_contract(
     let code_masked_source = abort_plan_cancel_if_open_string_masked_source(&comment_masked_source);
     let mut candidate_indexes = Vec::new();
     let mut first_invalid_candidate_error = None;
+    let mut target_function_scope_count = ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_ORIGIN;
     for function_scope in abort_plan_cancel_if_open_function_scopes(&code_masked_source) {
         let scoped_context_source = &context_masked_source[function_scope.clone()];
         let scoped_code_source = &code_masked_source[function_scope];
         if !abort_plan_cancel_if_open_scope_matches_target_function(scoped_code_source) {
             continue;
         }
+        target_function_scope_count += ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP;
         match abort_plan_cancel_if_open_scoped_marker_indexes(
             scoped_context_source,
             scoped_code_source,
@@ -1875,6 +1877,14 @@ fn require_abort_plan_cancel_if_open_contract(
                 }
             }
         }
+    }
+
+    if target_function_scope_count != ABORT_PLAN_CANCEL_IF_OPEN_SOURCE_INDEX_STEP {
+        return Err(
+            BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceInvalid {
+                field: "forced_flat_function_scope",
+            },
+        );
     }
 
     if candidate_indexes.is_empty()

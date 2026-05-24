@@ -9,7 +9,7 @@ use std::{
 use anyhow::anyhow;
 use nautilus_model::instruments::InstrumentAny;
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
@@ -5583,6 +5583,7 @@ pub fn verify_final_operator_packet(
         static_manifest,
         operator_evidence,
     )?;
+    verify_source_owned_static_readiness_artifacts(loaded, operator_evidence)?;
     verify_strategy_input_replay_binding(loaded, operator_evidence)?;
     let approval_envelope = verify_operator_approval_envelope(
         loaded,
@@ -5710,6 +5711,84 @@ fn validate_required_operator_evidence_static_artifacts(
         "approval_nonce_sha256",
         operator_evidence.max_operator_evidence_file_bytes,
     )
+}
+
+fn verify_source_owned_static_readiness_artifacts(
+    loaded: &LoadedBoltV3Config,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let financial_envelope: Phase8FinancialEnvelopeEvidenceFile =
+        read_operator_evidence_json_artifact(
+            loaded,
+            operator_evidence,
+            "financial_envelope_path",
+            "financial_envelope_sha256",
+            &operator_evidence.financial_envelope_path,
+            &operator_evidence.financial_envelope_sha256,
+        )?;
+    let expected_financial_envelope =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(
+            loaded,
+            financial_envelope.strategy_instance_id(),
+        )
+        .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    financial_envelope
+        .validate_matches(&expected_financial_envelope)
+        .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+
+    let pre_run_state: Phase8PreRunStateEvidenceFile = read_operator_evidence_json_artifact(
+        loaded,
+        operator_evidence,
+        "pre_run_state_path",
+        "pre_run_state_sha256",
+        &operator_evidence.pre_run_state_path,
+        &operator_evidence.pre_run_state_sha256,
+    )?;
+    pre_run_state
+        .validate_matches_loaded(&expected_financial_envelope)
+        .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+
+    let abort_plan: Phase8AbortPlanEvidenceFile = read_operator_evidence_json_artifact(
+        loaded,
+        operator_evidence,
+        "abort_plan_path",
+        "abort_plan_sha256",
+        &operator_evidence.abort_plan_path,
+        &operator_evidence.abort_plan_sha256,
+    )?;
+    abort_plan
+        .validate_matches_loaded(&expected_financial_envelope)
+        .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)
+}
+
+fn read_operator_evidence_json_artifact<T>(
+    loaded: &LoadedBoltV3Config,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+    path_field: &'static str,
+    hash_field: &'static str,
+    configured_path: &str,
+    configured_sha256: &str,
+) -> Result<T, BoltV3OperatorArtifactError>
+where
+    T: DeserializeOwned,
+{
+    let path = resolve_loaded_config_path(loaded, configured_path);
+    let bytes = read_file_bounded(&path, operator_evidence.max_operator_evidence_file_bytes)
+        .map_err(|source| BoltV3OperatorArtifactError::FinalEvidenceRead {
+            field: path_field,
+            path: path.clone(),
+            source,
+        })?;
+    if hex::encode(Sha256::digest(&bytes)) != configured_sha256 {
+        return Err(BoltV3OperatorArtifactError::FinalEvidenceHashMismatch { field: hash_field });
+    }
+    serde_json::from_slice(&bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::FinalEvidenceParse {
+            field: path_field,
+            path,
+            source,
+        }
+    })
 }
 
 fn verify_strategy_input_replay_binding(

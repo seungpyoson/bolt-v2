@@ -10,7 +10,8 @@ use bolt_v2::{
     bolt_v3_market_families::updown::updown_market_slug,
     bolt_v3_operator_artifacts::{WrittenOperatorArtifact, build_redacted_ssm_manifest},
     bolt_v3_tiny_canary_evidence::{
-        Phase8AbortPlanSourceProofs, Phase8OperatorApprovalEnvelope, Phase8PreRunStateSourceProofs,
+        Phase8AbortPlanSourceProofs, Phase8FinancialEnvelopeEvidenceFile,
+        Phase8OperatorApprovalEnvelope, Phase8PreRunStateSourceProofs,
         Phase8StrategyInputSafetyAudit,
     },
 };
@@ -3176,14 +3177,26 @@ fn approval_packet_assembly_binds_relative_static_manifest_to_config_root() {
     let mut loaded = load_fixture_with_live_canary();
     let temp = tempfile::tempdir().expect("tempdir should create");
     loaded.root_path = temp.path().join("root.toml");
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
     std::fs::write(&loaded.root_path, "fixture root").expect("root fixture should write");
     let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    operator_evidence.decision_evidence_path = decision_evidence_path(&loaded)
+        .expect("fixture persistence decision evidence path should resolve")
+        .to_string_lossy()
+        .to_string();
     operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
         .unwrap_or_else(|| {
             panic!("build head sha should be compiled for relative manifest verifier test")
         })
         .to_string();
     let mut refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    write_valid_financial_static_artifact_for_test(&loaded, &mut operator_evidence, &mut refs);
+    write_source_owned_readiness_static_artifacts_for_test(
+        &loaded,
+        &mut operator_evidence,
+        &mut refs,
+    );
     write_replayable_strategy_input_artifacts_for_test(
         &loaded,
         temp.path(),
@@ -4141,6 +4154,24 @@ fn final_packet_verifier_rejects_fixture_market_selection_source_for_t124() {
     assert!(
         error.to_string().contains("strategy_input_replay"),
         "market-selection provenance failure should be redacted and specific: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_hash_only_t126_t127_static_artifacts() {
+    let fixture = assembled_final_packet_fixture_with_readiness_artifact_binding(
+        ReadinessStaticArtifactBinding::HashOnlyFixtureMarkers,
+    );
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("final packet verifier must reject hash-only T126/T127 marker artifacts");
+
+    assert!(
+        error.to_string().contains("pre_run_state_path"),
+        "T126 source-artifact failure should name pre_run_state_path without relying on raw paths: {error}"
     );
 }
 
@@ -7329,6 +7360,12 @@ enum MarketSelectionSourceBinding {
     StaticFixtureCopy,
 }
 
+#[derive(Clone, Copy)]
+enum ReadinessStaticArtifactBinding {
+    SourceOwnedT126T127,
+    HashOnlyFixtureMarkers,
+}
+
 fn assembled_final_packet_fixture() -> FinalPacketFixture {
     assembled_final_packet_fixture_with_strategy_input_mutation(|_| {})
 }
@@ -7340,6 +7377,7 @@ fn assembled_final_packet_fixture_with_decision_evidence_path_binding(
         |_| {},
         decision_evidence_binding,
         MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
+        ReadinessStaticArtifactBinding::SourceOwnedT126T127,
     )
 }
 
@@ -7350,6 +7388,18 @@ fn assembled_final_packet_fixture_with_market_selection_source_binding(
         |_| {},
         DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
         market_selection_source_binding,
+        ReadinessStaticArtifactBinding::SourceOwnedT126T127,
+    )
+}
+
+fn assembled_final_packet_fixture_with_readiness_artifact_binding(
+    readiness_artifact_binding: ReadinessStaticArtifactBinding,
+) -> FinalPacketFixture {
+    assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding(
+        |_| {},
+        DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
+        MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
+        readiness_artifact_binding,
     )
 }
 
@@ -7363,6 +7413,7 @@ where
         mutate_strategy_input,
         DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
         MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
+        ReadinessStaticArtifactBinding::SourceOwnedT126T127,
     )
 }
 
@@ -7370,6 +7421,7 @@ fn assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evid
     mutate_strategy_input: F,
     decision_evidence_binding: DecisionEvidencePathBinding,
     market_selection_source_binding: MarketSelectionSourceBinding,
+    readiness_artifact_binding: ReadinessStaticArtifactBinding,
 ) -> FinalPacketFixture
 where
     F: FnOnce(&mut serde_json::Value),
@@ -7395,6 +7447,17 @@ where
         })
         .to_string();
     let mut refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    write_valid_financial_static_artifact_for_test(&loaded, &mut operator_evidence, &mut refs);
+    if matches!(
+        readiness_artifact_binding,
+        ReadinessStaticArtifactBinding::SourceOwnedT126T127
+    ) {
+        write_source_owned_readiness_static_artifacts_for_test(
+            &loaded,
+            &mut operator_evidence,
+            &mut refs,
+        );
+    }
     write_replayable_strategy_input_artifacts_for_test(
         &loaded,
         temp.path(),
@@ -7589,6 +7652,75 @@ fn write_final_live_evidence_artifacts_for_test(
         std::path::Path::new(&operator_evidence.approval_consumption_path),
         &approval_consumption,
     );
+}
+
+fn write_source_owned_readiness_static_artifacts_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+) {
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let pre_run_state_path = std::path::PathBuf::from(&operator_evidence.pre_run_state_path);
+    std::fs::remove_file(&pre_run_state_path)
+        .expect("initial pre-run state marker should be removable");
+    let pre_run_hashes = TestPreRunStateProofHashes::new();
+    let written_pre_run =
+        bolt_v2::bolt_v3_operator_artifacts::write_pre_run_state_artifact_from_source_proofs(
+            loaded,
+            strategy_instance_id,
+            pre_run_hashes.as_source_proofs(),
+            &pre_run_state_path,
+        )
+        .expect("source-owned pre-run state artifact should write");
+    operator_evidence.pre_run_state_sha256 = written_pre_run.sha256.clone();
+    replace_static_artifact_ref_sha256(refs, "pre-run-state", &written_pre_run.sha256);
+
+    let abort_plan_path = std::path::PathBuf::from(&operator_evidence.abort_plan_path);
+    std::fs::remove_file(&abort_plan_path).expect("initial abort plan marker should be removable");
+    let abort_hashes = TestAbortPlanProofHashes::new();
+    let written_abort =
+        bolt_v2::bolt_v3_operator_artifacts::write_abort_plan_artifact_from_source_proofs(
+            loaded,
+            strategy_instance_id,
+            abort_hashes.as_source_proofs(),
+            &abort_plan_path,
+        )
+        .expect("source-owned abort plan artifact should write");
+    operator_evidence.abort_plan_sha256 = written_abort.sha256.clone();
+    replace_static_artifact_ref_sha256(refs, "abort-plan", &written_abort.sha256);
+}
+
+fn write_valid_financial_static_artifact_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+) {
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let financial_path = std::path::PathBuf::from(&operator_evidence.financial_envelope_path);
+    std::fs::remove_file(&financial_path)
+        .expect("initial financial envelope marker should be removable");
+    let financial =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .expect("fixture financial envelope should build from loaded config");
+    let financial_bytes =
+        serde_json::to_vec_pretty(&financial).expect("financial envelope should serialize");
+    std::fs::write(&financial_path, &financial_bytes)
+        .expect("financial envelope artifact should write");
+    let financial_sha256 = sha256_bytes(&financial_bytes);
+    operator_evidence.financial_envelope_sha256 = financial_sha256.clone();
+    replace_static_artifact_ref_sha256(refs, "financial-envelope", &financial_sha256);
 }
 
 fn write_final_bytes_for_test(path: &str, bytes: &[u8]) -> String {

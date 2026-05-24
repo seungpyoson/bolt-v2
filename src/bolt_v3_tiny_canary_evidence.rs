@@ -2409,7 +2409,7 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         })
     }
 
-    fn validate_matches(&self, loaded: &Self) -> Result<()> {
+    pub fn validate_matches(&self, loaded: &Self) -> Result<()> {
         if self.max_live_order_count != loaded.max_live_order_count {
             return Err(financial_envelope_mismatch(stringify!(
                 max_live_order_count
@@ -2923,7 +2923,10 @@ impl Phase8PreRunStateEvidenceFile {
         Ok(artifact)
     }
 
-    fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
+    pub fn validate_matches_loaded(
+        &self,
+        loaded: &Phase8FinancialEnvelopeEvidenceFile,
+    ) -> Result<()> {
         if self.execution_client_id != loaded.execution_client_id {
             return Err(pre_run_state_mismatch(stringify!(execution_client_id)));
         }
@@ -3118,7 +3121,10 @@ impl Phase8AbortPlanEvidenceFile {
         Ok(artifact)
     }
 
-    fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
+    pub fn validate_matches_loaded(
+        &self,
+        loaded: &Phase8FinancialEnvelopeEvidenceFile,
+    ) -> Result<()> {
         if self.execution_client_id != loaded.execution_client_id {
             return Err(abort_plan_mismatch(stringify!(execution_client_id)));
         }

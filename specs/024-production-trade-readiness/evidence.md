@@ -305,3 +305,20 @@ T124 market-selection replay is now bound to runtime provenance, not fixture con
 - `python3 -B scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
 
 Conclusion: T124 binds through the `strategy_input_evidence_path`/`strategy_input_evidence_sha256` artifact because `strategy-input.json` carries `market_selection_source_path`/`market_selection_source_sha256`, and final replay now requires nested market-selection runtime provenance. T125 binds through `[live_canary.operator_evidence].decision_evidence_path`, which final replay now requires to equal the configured `[persistence]` runtime decision-evidence JSONL path. The actual approved root TOML values and final artifact hashes are not available until T035/T036 assemble the final packet, so `config/live.local.toml` remains T037 and was not touched in this slice.
+
+## T035 T128 Final-Packet Source-Artifact Guard Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts final_packet_verifier_rejects_hash_only_t126_t127_static_artifacts -- --nocapture` failed because `verify_final_operator_packet` accepted hash-matched marker files for T126/T127 static artifacts and returned a successful final-packet verification summary.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts final_packet_verifier_rejects_hash_only_t126_t127_static_artifacts -- --nocapture` passed: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts approval_packet_assembly_binds_relative_static_manifest_to_config_root -- --nocapture`: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts approval_packet_assembly -- --nocapture`: 15 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts final_packet_verifier_ -- --nocapture`: 31 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `python3 -B scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `python3 -B scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `git diff --check`: passed.
+- `just fmt-check`: passed.
+- `just clippy`: passed.
+- `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+The final-packet verifier now parses and validates the financial envelope, pre-run-state artifact, and abort-plan artifact against the loaded root TOML instead of accepting only static-manifest path/hash agreement. T036/T037 remain open because real approved artifact files and `config/live.local.toml` operator-evidence bindings have not been produced in this worktree.

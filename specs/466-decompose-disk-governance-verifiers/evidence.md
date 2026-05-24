@@ -15,6 +15,7 @@
 | PR #465 | Merged 2026-05-24T03:33:55Z; delivered only shared cargo scanner helpers |
 | PR #461 | Merged 2026-05-24T01:10:27Z; delivered Python command AST helper extraction |
 | Issue #454 | Closed by PR #461; residual scope moved through #464/#466 |
+| PR #479 | Open draft PR for this #466-only docs/evidence slice; exact-head CI, post-implementation external review, operator approval, and final issue handling remain open gates. |
 
 ## Issue And PR Source References
 
@@ -28,6 +29,7 @@
 | PR #470 | `gh pr view 470 --json number,title,state,mergedAt,headRefName,baseRefName,commits,files,url,body` | Merged 2026-05-24T12:02:25Z. Body states it resolved only item 7, kept #466 open, and left items 1-6 unresolved. |
 | PR #474 | `gh pr view 474 --json number,title,state,mergedAt,headRefName,baseRefName,commits,files,url,body` | Merged 2026-05-24T11:21:37Z. Body states it resolved only item 8 and explicitly lists items 1-7 as still open at that point. |
 | PR #478 | `gh pr view 478 --json number,title,state,isDraft,headRefName,baseRefName,commits,files,url,body` | Open draft. Body and file list show #466 characterization mixed with #374 cleanup and T125/T126/T127 trade-readiness/source-proof changes. This branch is not used as source proof for this #466-only worktree. |
+| PR #479 | `gh pr create` / GitHub PR creation result | Open draft: "Finalize #466 verifier decomposition ledger". Files are limited to this evidence ledger and tasks checklist. |
 
 ## Current Baseline
 

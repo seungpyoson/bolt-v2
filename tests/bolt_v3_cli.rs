@@ -97,6 +97,7 @@ fn bolt_v3_cli_exposes_final_operator_packet_verifier_command() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--config"));
     assert!(stdout.contains("--operator-packet"));
+    assert!(stdout.contains("--verification-stage"));
 }
 
 #[test]

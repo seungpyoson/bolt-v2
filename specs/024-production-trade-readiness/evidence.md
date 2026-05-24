@@ -345,4 +345,21 @@ The final-packet verifier now parses and validates the financial envelope, pre-r
 
 `operator-artifacts generate-entry-decision-evidence-from-source --config <root.toml> ...` now creates the configured `[persistence]` decision-evidence JSONL from bounded source files and the real `BinaryOracleEdgeTaker` entry path. It consumes a source-owned decision input plus the same instrument-source JSON shape used by market-selection replay, registers the strategy core with the root TOML trader id and an explicit NT cache, injects the source quote/volatility/fee/book facts, and lets unarmed submit admission reject the entry order after strategy-input, order-intent, and admission evidence are written. This is a non-live path: it does not read AWS/SSM, run no-submit, connect to a venue, submit/cancel orders, mutate `config/live.local.toml`, or print secrets.
 
+## T035C T128 Pre-Run Final-Packet Verification Scope
+
+- Read-only subagent audits `019e5c26-c203-78b1-806d-1fcb254d83b9` and `019e5c26-d505-7881-9472-a2cf17e8fea0` found two current T036/T038 gaps: real source input files are still absent, and the existing `operator-artifacts verify-final` path required live/no-submit result files such as `canary_evidence_path`, `approval_consumption_path`, `nt_submit_event_path`, `venue_order_state_path`, `restart_reconciliation_path`, and `post_run_hygiene_path`. Those result files cannot honestly exist before the T043/T044 operations.
+- RED: `cargo test --test bolt_v3_operator_artifacts final_packet_pre_run_verifier_accepts_packet_before_live_result_evidence_exists -- --nocapture` failed with missing `FinalOperatorPacketVerificationScope` and missing `verify_final_operator_packet_with_scope`.
+- RED: `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_final_operator_packet_verifier_command -- --nocapture` failed because help output did not expose `--verification-stage`.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts final_packet_pre_run_verifier_accepts_packet_before_live_result_evidence_exists -- --nocapture`: 1 passed, 0 failed.
+- GREEN: `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_final_operator_packet_verifier_command -- --nocapture`: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts final_packet -- --nocapture`: 32 passed, 0 failed.
+- `cargo test --test bolt_v3_cli operator_artifacts -- --nocapture`: 2 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+- `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+- `just clippy`: passed.
+
+`operator-artifacts verify-final` now has an explicit `--verification-stage pre-run|post-run` stage. The default remains post-run and still requires the final live/no-submit evidence files. The pre-run stage verifies the operator packet, static manifest, approval envelope, source-owned static readiness artifacts, and strategy-input replay binding before T043/T044 produce result evidence. This is non-live verification only; no AWS, SSM, no-submit, venue connection, order submit/cancel, or `config/live.local.toml` mutation was run.
+
 T036 remains open. The final packet is not assembled until real source inputs exist, the configured market-selection/strategy-input/pre-run/abort/approval artifacts are written together, `config/live.local.toml` is updated in T037, and `operator-artifacts verify-final` passes in T038.

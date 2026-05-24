@@ -3777,6 +3777,34 @@ fn final_packet_verifier_accepts_t128_packet_bound_to_current_config() {
 }
 
 #[test]
+fn final_packet_pre_run_verifier_accepts_packet_before_live_result_evidence_exists() {
+    let fixture = assembled_final_packet_fixture();
+    let evidence = fixture.operator_evidence();
+    for path in [
+        &evidence.canary_evidence_path,
+        &evidence.nt_submit_event_path,
+        &evidence.venue_order_state_path,
+        &evidence.restart_reconciliation_path,
+        &evidence.post_run_hygiene_path,
+        &evidence.approval_consumption_path,
+    ] {
+        let _ = std::fs::remove_file(path);
+    }
+
+    let outcome = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet_with_scope(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+        bolt_v2::bolt_v3_operator_artifacts::FinalOperatorPacketVerificationScope::PreRun,
+    )
+    .expect(
+        "pre-run verifier should not require evidence produced by the later live/no-submit run",
+    );
+
+    assert_eq!(outcome.operator_packet.path, fixture.operator_packet_path);
+    assert_eq!(outcome.static_manifest.path, fixture.static_manifest_path);
+}
+
+#[test]
 fn final_packet_verifier_redacted_summary_omits_artifact_paths() {
     let fixture = assembled_final_packet_fixture();
     let outcome = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(

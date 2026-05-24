@@ -6,9 +6,10 @@ use bolt_v2::{
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
     bolt_v3_operator_artifacts::{
-        PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
-        assemble_operator_packet_from_static_manifest, compute_operator_approval_envelope_sha256,
-        verify_final_operator_packet, write_abort_plan_artifact_from_source_bundle_file,
+        FinalOperatorPacketVerificationScope, PreRunStateSourceCollectorInputs,
+        WrittenOperatorArtifact, assemble_operator_packet_from_static_manifest,
+        compute_operator_approval_envelope_sha256, verify_final_operator_packet_with_scope,
+        write_abort_plan_artifact_from_source_bundle_file,
         write_abort_plan_artifact_from_source_collectors,
         write_entry_decision_evidence_from_source_file,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
@@ -230,7 +231,24 @@ enum OperatorArtifactsCommand {
         config: PathBuf,
         #[arg(long)]
         operator_packet: PathBuf,
+        #[arg(long, value_enum, default_value_t = FinalVerificationStage::PostRun)]
+        verification_stage: FinalVerificationStage,
     },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum FinalVerificationStage {
+    PreRun,
+    PostRun,
+}
+
+impl From<FinalVerificationStage> for FinalOperatorPacketVerificationScope {
+    fn from(stage: FinalVerificationStage) -> Self {
+        match stage {
+            FinalVerificationStage::PreRun => Self::PreRun,
+            FinalVerificationStage::PostRun => Self::PostRun,
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -492,9 +510,14 @@ fn run_operator_artifacts_command(
         OperatorArtifactsCommand::VerifyFinal {
             config,
             operator_packet,
+            verification_stage,
         } => {
             let loaded = load_bolt_v3_config(&config)?;
-            let outcome = verify_final_operator_packet(&loaded, &operator_packet)?;
+            let outcome = verify_final_operator_packet_with_scope(
+                &loaded,
+                &operator_packet,
+                verification_stage.into(),
+            )?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&outcome.redacted_summary())?

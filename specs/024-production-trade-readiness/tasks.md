@@ -79,6 +79,7 @@
 - [x] T035 [US5] Add a RED end-to-end final-packet test in `tests/bolt_v3_operator_artifacts.rs` that fails until T124-T127 artifacts and `[live_canary.operator_evidence]` exist together.
 - [x] T035A [US5] Add a non-live CLI hash step for computing the canonical `approval_envelope_sha256` required before `operator-artifacts assemble-final` can write the approval envelope and operator packet.
 - [x] T035B [US5] Add a source-owned non-live entry-decision evidence generator so T036 can write the configured runtime decision-evidence JSONL without AWS/SSM, no-submit, live venue, or trading side effects.
+- [x] T035C [US5] Add a pre-run `operator-artifacts verify-final` verification stage so T038 can verify the final packet before T043/T044 live/no-submit result evidence exists, while preserving strict post-run evidence verification.
 - [ ] T036 [US5] Assemble blocker-free `static-artifacts-manifest.json`, `approval-envelope.json`, and `operator-evidence-packet.json` from real artifacts and record paths in `specs/024-production-trade-readiness/final-packet.md`.
 - [ ] T037 [US5] Update the approved root TOML operator-evidence block in `config/live.local.toml` with final artifact paths and hashes without printing secrets.
 - [ ] T038 [US5] Run `operator-artifacts verify-final` against the exact root TOML and final packet; record command, head, hashes, and result in `specs/024-production-trade-readiness/evidence.md`.

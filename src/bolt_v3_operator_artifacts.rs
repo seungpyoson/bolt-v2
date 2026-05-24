@@ -350,6 +350,12 @@ pub struct BoltV3FinalOperatorPacketVerification {
     pub static_manifest: WrittenOperatorArtifact,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinalOperatorPacketVerificationScope {
+    PreRun,
+    PostRun,
+}
+
 impl BoltV3FinalOperatorPacketVerification {
     pub fn redacted_summary(&self) -> BoltV3FinalOperatorPacketVerificationSummary {
         BoltV3FinalOperatorPacketVerificationSummary {
@@ -5654,6 +5660,18 @@ pub fn verify_final_operator_packet(
     loaded: &LoadedBoltV3Config,
     operator_packet_path: &Path,
 ) -> Result<BoltV3FinalOperatorPacketVerification, BoltV3OperatorArtifactError> {
+    verify_final_operator_packet_with_scope(
+        loaded,
+        operator_packet_path,
+        FinalOperatorPacketVerificationScope::PostRun,
+    )
+}
+
+pub fn verify_final_operator_packet_with_scope(
+    loaded: &LoadedBoltV3Config,
+    operator_packet_path: &Path,
+    scope: FinalOperatorPacketVerificationScope,
+) -> Result<BoltV3FinalOperatorPacketVerification, BoltV3OperatorArtifactError> {
     let live_canary = loaded
         .root
         .live_canary
@@ -5722,14 +5740,16 @@ pub fn verify_final_operator_packet(
         operator_evidence,
         live_canary.approval_id.as_str(),
     )?;
-    verify_final_live_evidence_files(
-        loaded,
-        operator_evidence,
-        live_canary.approval_id.as_str(),
-        approval_envelope.sha256.as_str(),
-        live_canary.max_live_order_count,
-        live_canary.max_notional_per_order.to_string().as_str(),
-    )?;
+    if scope == FinalOperatorPacketVerificationScope::PostRun {
+        verify_final_live_evidence_files(
+            loaded,
+            operator_evidence,
+            live_canary.approval_id.as_str(),
+            approval_envelope.sha256.as_str(),
+            live_canary.max_live_order_count,
+            live_canary.max_notional_per_order.to_string().as_str(),
+        )?;
+    }
 
     Ok(BoltV3FinalOperatorPacketVerification {
         approval_envelope,

@@ -32,8 +32,8 @@
 
 **Independent Test**: Each helper family has a characterization or parity proof before any extraction, cleanup, or explicit keep-local decision is marked resolved.
 
-- [ ] T018 [P] [US2] Add/verify command tokenization and line-boundary characterization coverage in `scripts/test_command_understanding.py`
-- [ ] T019 [US2] Mark ledger item 1 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T018 [P] [US2] Add/verify command tokenization and line-boundary characterization coverage in `scripts/test_command_understanding.py`
+- [x] T019 [US2] Mark ledger item 1 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T020 [P] [US2] Add/verify shell command substitution characterization coverage in `scripts/test_command_understanding.py`
 - [ ] T021 [US2] Mark ledger item 2 resolved as keep-local or approved extraction in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 - [ ] T022 [P] [US2] Add/verify renamed cargo/rustc characterization coverage in `scripts/test_command_understanding.py`, `scripts/test_rust_verification_cache_retention.py`, and `scripts/test_verify_ci_workflow_hygiene.py`

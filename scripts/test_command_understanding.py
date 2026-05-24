@@ -455,14 +455,6 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
     if leaked:
         raise AssertionError("unproven helpers must not be shared exports: " + ", ".join(leaked))
 
-    command = "cargo build&&cargo test"
-    runtime_tokens = runtime.command_tokens(command)
-    static_tokens = static.command_tokens(command)
-    if runtime_tokens != ["cargo", "build&&cargo", "test"]:
-        raise AssertionError(f"runtime command_tokens boundary changed: {runtime_tokens!r}")
-    if static_tokens != ["cargo", "build", "&&", "cargo", "test"]:
-        raise AssertionError(f"static command_tokens boundary changed: {static_tokens!r}")
-
     substitution_tokens = ["echo", "$(", "cargo", ")"]
     runtime_payloads = runtime.shell_command_substitution_payloads(substitution_tokens)
     static_payloads = static.shell_command_substitution_payloads(substitution_tokens)
@@ -535,6 +527,54 @@ def assert_non_exported_candidate_helpers_are_characterized() -> None:
         raise AssertionError("static post-separator target-routing handling changed")
 
 
+def assert_command_tokenization_and_line_boundaries_are_characterized() -> None:
+    runtime = load_module(RUNTIME_VERIFIER, "rust_verification_tokenization_under_test")
+    static = load_module(STATIC_VERIFIER, "verify_ci_workflow_hygiene_tokenization_under_test")
+
+    if hasattr(runtime, "command_tokens_with_line_boundaries"):
+        raise AssertionError("runtime command_tokens_with_line_boundaries peer requires fresh review")
+
+    cases = [
+        (
+            "cargo build&&cargo test",
+            ["cargo", "build&&cargo", "test"],
+            ["cargo", "build", "&&", "cargo", "test"],
+            ["cargo", "build", "&&", "cargo", "test"],
+        ),
+        (
+            "cargo build; cargo test",
+            ["cargo", "build;", "cargo", "test"],
+            ["cargo", "build", ";", "cargo", "test"],
+            ["cargo", "build", ";", "cargo", "test"],
+        ),
+        (
+            "cargo build\ncargo test",
+            ["cargo", "build", "cargo", "test"],
+            ["cargo", "build", "cargo", "test"],
+            ["cargo", "build", ";", "cargo", "test"],
+        ),
+        (
+            "cargo build &&\ncargo test",
+            ["cargo", "build", "&&", "cargo", "test"],
+            ["cargo", "build", "&&", "cargo", "test"],
+            ["cargo", "build", "&&", "cargo", "test"],
+        ),
+    ]
+    for command, expected_runtime, expected_static, expected_static_lines in cases:
+        runtime_tokens = runtime.command_tokens(command)
+        static_tokens = static.command_tokens(command)
+        static_line_tokens = static.command_tokens_with_line_boundaries(command)
+        if runtime_tokens != expected_runtime:
+            raise AssertionError(f"runtime command_tokens({command!r}) changed: {runtime_tokens!r}")
+        if static_tokens != expected_static:
+            raise AssertionError(f"static command_tokens({command!r}) changed: {static_tokens!r}")
+        if static_line_tokens != expected_static_lines:
+            raise AssertionError(
+                "static command_tokens_with_line_boundaries"
+                f"({command!r}) changed: {static_line_tokens!r}"
+            )
+
+
 def main() -> int:
     assert_test_import_setup_is_encapsulated()
     assert_import_setup_rejects_bare_top_level_sys_path_mutation()
@@ -545,6 +585,7 @@ def main() -> int:
     assert_python_inline_payloads_match_current_verifiers()
     assert_verifier_clients_use_shared_python_helpers()
     assert_shared_cargo_scanner_helpers_match_current_verifiers()
+    assert_command_tokenization_and_line_boundaries_are_characterized()
     assert_non_exported_candidate_helpers_are_characterized()
     print("OK: command understanding self-tests passed.")
     return 0

@@ -2048,7 +2048,9 @@ def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
                 return refusal
         status = cache_status_payload(repo)
         if not dry_run:
-            refusal = active_process_refusal_payload(repo, pathlib.Path(status["target_dir"]), policy)
+            target = pathlib.Path(status["target_dir"])
+            validate_managed_target_path(target, policy)
+            refusal = active_process_refusal_payload(repo, target, policy)
             if refusal is not None:
                 return refusal
         candidates: list[dict[str, Any]] = []
@@ -2065,10 +2067,12 @@ def cache_prune_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
         removed: list[dict[str, Any]] = []
         if not dry_run:
             target = pathlib.Path(status["target_dir"])
+            validate_managed_target_path(target, policy)
             refusal = active_process_refusal_payload(repo, target, policy)
             if refusal is not None:
                 return refusal
             for entry in candidates:
+                validate_managed_target_path(target, policy)
                 refusal = active_process_refusal_payload(repo, target, policy)
                 if refusal is not None:
                     return refusal_with_removed(refusal, removed)
@@ -2120,10 +2124,12 @@ def cache_reset_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
         candidates, reclaimable_bytes = cache_reset_candidates(target)
         removed: list[dict[str, Any]] = []
         if not dry_run:
+            validate_managed_target_path(target, policy)
             refusal = active_process_refusal_payload(repo, target, policy)
             if refusal is not None:
                 return refusal
             for entry in candidates:
+                validate_managed_target_path(target, policy)
                 refusal = active_process_refusal_payload(repo, target, policy)
                 if refusal is not None:
                     return refusal_with_removed(refusal, removed)
@@ -2354,14 +2360,17 @@ def cleanup_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
         reclaimable_bytes = sum(int(entry["bytes"]) for entry in candidates)
         removed: list[dict[str, Any]] = []
         if not dry_run:
+            validate_managed_target_path(target, policy)
             refusal = active_process_refusal_payload(repo, target, policy)
             if refusal is not None:
                 return refusal
             for entry in candidates:
+                validate_managed_target_path(target, policy)
                 refusal = cleanup_candidate_refusal_payload(repo, entry, policy)
                 if refusal is not None:
                     return refusal
             for entry in candidates:
+                validate_managed_target_path(target, policy)
                 refusal = cleanup_candidate_refusal_payload(repo, entry, policy)
                 if refusal is not None:
                     return refusal_with_removed(refusal, removed)

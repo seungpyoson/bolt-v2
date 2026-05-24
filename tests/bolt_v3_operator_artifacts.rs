@@ -3179,6 +3179,7 @@ fn approval_packet_assembly_binds_relative_static_manifest_to_config_root() {
         temp.path(),
         &mut operator_evidence,
         &mut refs,
+        MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
     );
     loaded
         .root
@@ -4116,6 +4117,24 @@ fn final_packet_verifier_rejects_non_runtime_decision_evidence_jsonl_for_strateg
 }
 
 #[test]
+fn final_packet_verifier_rejects_fixture_market_selection_source_for_t124() {
+    let fixture = assembled_final_packet_fixture_with_market_selection_source_binding(
+        MarketSelectionSourceBinding::StaticFixtureCopy,
+    );
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("final packet verifier must reject fixture/static market-selection provenance");
+
+    assert!(
+        error.to_string().contains("strategy_input_replay"),
+        "market-selection provenance failure should be redacted and specific: {error}"
+    );
+}
+
+#[test]
 fn final_packet_verifier_rejects_strategy_input_candidate_list_not_replayable_from_market_source() {
     let fixture = assembled_final_packet_fixture_with_strategy_input_mutation(|strategy_input| {
         strategy_input["candidate_market_start_timestamps_ms"] =
@@ -4677,6 +4696,22 @@ fn market_selection_source_writer_promotes_decision_evidence_from_instrument_sou
         TEST_MARKET_SELECTION_NOW_MS
     );
     assert_eq!(json["polymarket_condition_id"], TEST_CONDITION_ID);
+    assert_eq!(
+        json["runtime_provenance"]["decision_evidence_path"],
+        decision_evidence_path.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        json["runtime_provenance"]["decision_evidence_sha256"],
+        sha256_file(&decision_evidence_path)
+    );
+    assert_eq!(
+        json["runtime_provenance"]["instrument_source_path"],
+        instrument_source_path.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        json["runtime_provenance"]["instrument_source_sha256"],
+        sha256_file(&instrument_source_path)
+    );
 }
 
 #[test]
@@ -7192,6 +7227,12 @@ enum DecisionEvidencePathBinding {
     NonCanonicalTempJsonl,
 }
 
+#[derive(Clone, Copy)]
+enum MarketSelectionSourceBinding {
+    RuntimeDecisionEvidenceAndInstrumentSource,
+    StaticFixtureCopy,
+}
+
 fn assembled_final_packet_fixture() -> FinalPacketFixture {
     assembled_final_packet_fixture_with_strategy_input_mutation(|_| {})
 }
@@ -7202,6 +7243,17 @@ fn assembled_final_packet_fixture_with_decision_evidence_path_binding(
     assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding(
         |_| {},
         decision_evidence_binding,
+        MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
+    )
+}
+
+fn assembled_final_packet_fixture_with_market_selection_source_binding(
+    market_selection_source_binding: MarketSelectionSourceBinding,
+) -> FinalPacketFixture {
+    assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding(
+        |_| {},
+        DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
+        market_selection_source_binding,
     )
 }
 
@@ -7214,12 +7266,14 @@ where
     assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding(
         mutate_strategy_input,
         DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
+        MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
     )
 }
 
 fn assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding<F>(
     mutate_strategy_input: F,
     decision_evidence_binding: DecisionEvidencePathBinding,
+    market_selection_source_binding: MarketSelectionSourceBinding,
 ) -> FinalPacketFixture
 where
     F: FnOnce(&mut serde_json::Value),
@@ -7250,6 +7304,7 @@ where
         temp.path(),
         &mut operator_evidence,
         &mut refs,
+        market_selection_source_binding,
     );
     let strategy_input_path =
         std::path::PathBuf::from(&operator_evidence.strategy_input_evidence_path);
@@ -7955,6 +8010,7 @@ fn write_replayable_strategy_input_artifacts_for_test(
     dir: &std::path::Path,
     operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
     refs: &mut [serde_json::Value],
+    market_selection_source_binding: MarketSelectionSourceBinding,
 ) {
     let runtime = strategy_input_runtime_fixture();
     let strategy_instance_id = loaded
@@ -7968,19 +8024,48 @@ fn write_replayable_strategy_input_artifacts_for_test(
         runtime.strategy_instance_id, strategy_instance_id,
         "runtime strategy fixture must match final packet config"
     );
-    let market_selection_source_path = dir.join(TEST_MARKET_SELECTION_SOURCE_FILE);
-    std::fs::copy(
-        &runtime.market_selection_source_ref.path,
-        &market_selection_source_path,
-    )
-    .expect("market selection source should copy into final packet fixture");
-    let market_selection_source_ref = WrittenOperatorArtifact {
-        path: market_selection_source_path.clone(),
-        sha256: sha256_file(&market_selection_source_path),
-    };
     let decision_evidence_path =
         std::path::PathBuf::from(&operator_evidence.decision_evidence_path);
     write_entry_decision_evidence_chain_at(&decision_evidence_path, &runtime.snapshot);
+    let market_selection_source_path = dir.join(TEST_MARKET_SELECTION_SOURCE_FILE);
+    let market_selection_source_ref = match market_selection_source_binding {
+        MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource => {
+            let market_slug = runtime
+                .snapshot
+                .polymarket_market_slug
+                .as_deref()
+                .expect("fixture snapshot should bind market slug");
+            let instruments = market_selection_instruments_for_slug(market_slug);
+            let instrument_source_path = dir.join("market-selection-instruments.json");
+            std::fs::write(
+                &instrument_source_path,
+                serde_json::to_vec_pretty(&instruments)
+                    .expect("market-selection instruments should serialize"),
+            )
+            .expect("market-selection instrument source should write");
+            bolt_v2::bolt_v3_operator_artifacts::write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file(
+                loaded,
+                strategy_instance_id,
+                &decision_evidence_path,
+                operator_evidence.max_operator_evidence_file_bytes,
+                &instrument_source_path,
+                operator_evidence.max_operator_evidence_file_bytes,
+                &market_selection_source_path,
+            )
+            .expect("runtime-bound market-selection source should write")
+        }
+        MarketSelectionSourceBinding::StaticFixtureCopy => {
+            std::fs::copy(
+                &runtime.market_selection_source_ref.path,
+                &market_selection_source_path,
+            )
+            .expect("market selection source should copy into final packet fixture");
+            WrittenOperatorArtifact {
+                path: market_selection_source_path.clone(),
+                sha256: sha256_file(&market_selection_source_path),
+            }
+        }
+    };
     let strategy_input_path =
         std::path::PathBuf::from(&operator_evidence.strategy_input_evidence_path);
     std::fs::remove_file(&strategy_input_path)

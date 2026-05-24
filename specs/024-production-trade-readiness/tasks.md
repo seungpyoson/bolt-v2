@@ -28,8 +28,8 @@
 
 **Independent Test**: final-packet generation rejects missing real market-selection and strategy-input evidence, then accepts only current-head artifact paths and hashes bound by `[live_canary.operator_evidence]`.
 
-- [ ] T009 [US2] Add a RED final-packet test in `tests/bolt_v3_operator_artifacts.rs` proving fixture/static market-selection evidence cannot satisfy T124.
-- [ ] T010 [US2] Produce or wire the real current-head runtime market-selection artifact path in `src/bolt_v3_operator_artifacts.rs` without hardcoded venue, market, price, quantity, or timeout values.
+- [x] T009 [US2] Add a RED final-packet test in `tests/bolt_v3_operator_artifacts.rs` proving fixture/static market-selection evidence cannot satisfy T124.
+- [x] T010 [US2] Produce or wire the real current-head runtime market-selection artifact path in `src/bolt_v3_operator_artifacts.rs` without hardcoded venue, market, price, quantity, or timeout values.
 - [x] T011 [US2] Add a RED final-packet test in `tests/bolt_v3_operator_artifacts.rs` proving missing real runtime JSONL strategy-input chain cannot satisfy T125.
 - [x] T012 [US2] Produce or wire the real current-head runtime strategy-input evidence chain in `src/bolt_v3_operator_artifacts.rs` and `src/strategies/binary_oracle_edge_taker.rs`.
 - [ ] T013 [US2] Bind T124/T125 artifact paths and hashes through `[live_canary.operator_evidence]` in `config/live.local.toml` and update runtime-literal audit rows in `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`.

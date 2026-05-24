@@ -633,9 +633,76 @@ fn required_snapshot_string(value: Option<&str>, field: &str) -> Result<String> 
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Phase8MarketSelectionRuntimeProvenance {
+    decision_evidence_path: String,
+    decision_evidence_sha256: String,
+    instrument_source_path: String,
+    instrument_source_sha256: String,
+}
+
+impl Phase8MarketSelectionRuntimeProvenance {
+    pub fn new(
+        decision_evidence_path: impl AsRef<str>,
+        decision_evidence_sha256: impl AsRef<str>,
+        instrument_source_path: impl AsRef<str>,
+        instrument_source_sha256: impl AsRef<str>,
+    ) -> Result<Self> {
+        let decision_evidence_path = decision_evidence_path.as_ref().trim();
+        if decision_evidence_path.is_empty() {
+            return Err(anyhow!(
+                "phase8 market selection source requires decision_evidence_path"
+            ));
+        }
+        let decision_evidence_sha256 = decision_evidence_sha256.as_ref().trim();
+        if !phase8_is_sha256_hex(decision_evidence_sha256) {
+            return Err(anyhow!(
+                "phase8 market selection source requires decision_evidence_sha256"
+            ));
+        }
+        let instrument_source_path = instrument_source_path.as_ref().trim();
+        if instrument_source_path.is_empty() {
+            return Err(anyhow!(
+                "phase8 market selection source requires instrument_source_path"
+            ));
+        }
+        let instrument_source_sha256 = instrument_source_sha256.as_ref().trim();
+        if !phase8_is_sha256_hex(instrument_source_sha256) {
+            return Err(anyhow!(
+                "phase8 market selection source requires instrument_source_sha256"
+            ));
+        }
+        Ok(Self {
+            decision_evidence_path: decision_evidence_path.to_string(),
+            decision_evidence_sha256: decision_evidence_sha256.to_string(),
+            instrument_source_path: instrument_source_path.to_string(),
+            instrument_source_sha256: instrument_source_sha256.to_string(),
+        })
+    }
+
+    pub fn decision_evidence_path(&self) -> &str {
+        &self.decision_evidence_path
+    }
+
+    pub fn decision_evidence_sha256(&self) -> &str {
+        &self.decision_evidence_sha256
+    }
+
+    pub fn instrument_source_path(&self) -> &str {
+        &self.instrument_source_path
+    }
+
+    pub fn instrument_source_sha256(&self) -> &str {
+        &self.instrument_source_sha256
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Phase8MarketSelectionSourceEvidenceFile {
     record_kind: String,
     source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_provenance: Option<Phase8MarketSelectionRuntimeProvenance>,
     market_selection_timestamp_ms: u64,
     candidate_market_start_timestamps_ms: Vec<u64>,
     market_selection_outcome: String,
@@ -652,6 +719,18 @@ pub struct Phase8MarketSelectionSourceEvidenceFile {
 impl Phase8MarketSelectionSourceEvidenceFile {
     pub fn candidate_market_start_timestamps_ms(&self) -> &[u64] {
         &self.candidate_market_start_timestamps_ms
+    }
+
+    pub fn runtime_provenance(&self) -> Option<&Phase8MarketSelectionRuntimeProvenance> {
+        self.runtime_provenance.as_ref()
+    }
+
+    pub fn with_runtime_provenance(
+        mut self,
+        provenance: Phase8MarketSelectionRuntimeProvenance,
+    ) -> Self {
+        self.runtime_provenance = Some(provenance);
+        self
     }
 
     pub fn from_market_family_selection(
@@ -689,6 +768,7 @@ impl Phase8MarketSelectionSourceEvidenceFile {
         Ok(Self {
             record_kind: PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND.to_string(),
             source: PHASE8_MARKET_SELECTION_SOURCE.to_string(),
+            runtime_provenance: None,
             market_selection_timestamp_ms,
             candidate_market_start_timestamps_ms: candidate_windows
                 .iter()

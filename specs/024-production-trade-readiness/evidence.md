@@ -258,4 +258,21 @@ T127 no longer depends on a caller-supplied abort source bundle for local artifa
 - `just clippy`: passed.
 - `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
-T125 strategy-input replay is now bound to the configured runtime decision-evidence JSONL path. The verifier resolves `[live_canary.operator_evidence].decision_evidence_path`, compares it to the canonical `[persistence]` `decision_evidence_path(&loaded)`, and fails closed with `strategy_input_replay.decision_evidence_path` before replaying if the paths differ. Existing strategy code remains the runtime producer: `binary_oracle_edge_taker` records the strategy snapshot, order intent, and admission decision through the decision-evidence writer, and the final packet now accepts replay only from that configured runtime JSONL location. T124 market-selection provenance and the final root TOML operator-evidence binding remain open in T009/T010/T013/T014.
+T125 strategy-input replay is now bound to the configured runtime decision-evidence JSONL path. The verifier resolves `[live_canary.operator_evidence].decision_evidence_path`, compares it to the canonical `[persistence]` `decision_evidence_path(&loaded)`, and fails closed with `strategy_input_replay.decision_evidence_path` before replaying if the paths differ. Existing strategy code remains the runtime producer: `binary_oracle_edge_taker` records the strategy snapshot, order intent, and admission decision through the decision-evidence writer, and the final packet now accepts replay only from that configured runtime JSONL location. Final root TOML operator-evidence binding remains open in T013/T014/T037.
+
+## T009/T010 Runtime Market-Selection Source Binding Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts final_packet_verifier_rejects_fixture_market_selection_source_for_t124 -- --nocapture` failed because the final-packet verifier accepted a copied fixture/static `market-selection-source.json` and returned a successful verification summary instead of rejecting the packet.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts final_packet_verifier_rejects_fixture_market_selection_source_for_t124 -- --nocapture` passed: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts final_packet_verifier_ -- --nocapture`: 30 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts market_selection -- --nocapture`: 13 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts strategy_input -- --nocapture`: 10 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `python3 -B scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `python3 -B scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `git diff --check`: passed.
+- `just fmt-check`: passed.
+- `just clippy`: passed.
+- `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+T124 market-selection replay is now bound to runtime provenance, not fixture consistency alone. `market-selection-source.json` produced through the decision-evidence plus instrument-source path records decision-evidence path/hash and instrument-source path/hash. Final-packet replay now requires that provenance, verifies the decision-evidence path matches the configured runtime JSONL path, verifies both source hashes, parses the instrument source, recomputes the market-selection source from the current config, runtime decision evidence, and instrument facts, and rejects copied fixture/static market-selection sources. Final root TOML operator-evidence binding remains open in T013/T014/T037.

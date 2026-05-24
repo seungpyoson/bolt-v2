@@ -28,9 +28,10 @@ use crate::{
     bolt_v3_secrets::BoltV3SecretError,
     bolt_v3_tiny_canary_evidence::{
         Phase8AbortPlanEvidenceFile, Phase8AbortPlanSourceProofs,
-        Phase8FinancialEnvelopeEvidenceFile, Phase8MarketSelectionSourceEvidenceFile,
-        Phase8PreRunStateEvidenceFile, Phase8PreRunStateSourceProofs,
-        Phase8StrategyInputEvidenceFile, Phase8StrategyInputSafetyAudit,
+        Phase8FinancialEnvelopeEvidenceFile, Phase8MarketSelectionRuntimeProvenance,
+        Phase8MarketSelectionSourceEvidenceFile, Phase8PreRunStateEvidenceFile,
+        Phase8PreRunStateSourceProofs, Phase8StrategyInputEvidenceFile,
+        Phase8StrategyInputSafetyAudit,
     },
 };
 
@@ -1335,6 +1336,25 @@ pub fn write_market_selection_source_artifact_from_decision_evidence_file(
     instruments: &[InstrumentAny],
     path: &Path,
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let artifact = build_market_selection_source_artifact_from_decision_evidence(
+        loaded,
+        strategy_instance_id,
+        decision_evidence_path,
+        max_decision_evidence_bytes,
+        instruments,
+        path,
+    )?;
+    write_json_artifact_create_new(path, &artifact)
+}
+
+fn build_market_selection_source_artifact_from_decision_evidence(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    decision_evidence_path: &Path,
+    max_decision_evidence_bytes: u64,
+    instruments: &[InstrumentAny],
+    path: &Path,
+) -> Result<Phase8MarketSelectionSourceEvidenceFile, BoltV3OperatorArtifactError> {
     let chain = read_latest_entry_decision_evidence_chain(
         decision_evidence_path,
         max_decision_evidence_bytes,
@@ -1391,7 +1411,7 @@ pub fn write_market_selection_source_artifact_from_decision_evidence_file(
         .map_err(|_| BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
             prerequisite: "T046 remains blocked: market selection source does not match source-bound strategy decision input",
     })?;
-    write_json_artifact_create_new(path, &artifact)
+    Ok(artifact)
 }
 
 pub fn write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file(
@@ -1424,14 +1444,32 @@ pub fn write_market_selection_source_artifact_from_decision_evidence_and_instrum
             },
         );
     }
-    write_market_selection_source_artifact_from_decision_evidence_file(
+    let artifact = build_market_selection_source_artifact_from_decision_evidence(
         loaded,
         strategy_instance_id,
         decision_evidence_path,
         max_decision_evidence_bytes,
         &instruments,
         path,
+    )?;
+    let decision_evidence_bytes =
+        read_file_bounded(decision_evidence_path, max_decision_evidence_bytes).map_err(|_| {
+            BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
+                prerequisite: "T046 remains blocked: missing complete source-bound strategy decision input",
+            }
+        })?;
+    let provenance = Phase8MarketSelectionRuntimeProvenance::new(
+        decision_evidence_path.to_string_lossy(),
+        hex::encode(Sha256::digest(&decision_evidence_bytes)),
+        instrument_source_path.to_string_lossy(),
+        hex::encode(Sha256::digest(&instrument_source_bytes)),
     )
+    .map_err(
+        |_| BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
+            prerequisite: "T046 remains blocked: market selection runtime provenance is invalid",
+        },
+    )?;
+    write_json_artifact_create_new(path, &artifact.with_runtime_provenance(provenance))
 }
 
 fn source_bound_price_to_beat_value_is_usable(value: &str) -> bool {
@@ -5743,6 +5781,102 @@ fn verify_strategy_input_replay_binding(
             field: "strategy_input_replay.decision_evidence_path",
         },
     )?;
+    let market_selection_runtime_provenance = market_selection_source.runtime_provenance().ok_or(
+        BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.market_selection_source.runtime_provenance",
+        },
+    )?;
+    let provenance_decision_evidence_path = resolve_peer_artifact_path(
+        &resolved_market_selection_source_path,
+        Path::new(market_selection_runtime_provenance.decision_evidence_path()),
+    );
+    if provenance_decision_evidence_path != resolved_decision_evidence_path {
+        return Err(BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.market_selection_source.decision_evidence_path",
+        });
+    }
+    let decision_evidence_bytes = read_file_bounded(
+        &resolved_decision_evidence_path,
+        operator_evidence.max_operator_evidence_file_bytes,
+    )
+    .map_err(
+        |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.market_selection_source.decision_evidence_path",
+        },
+    )?;
+    if hex::encode(Sha256::digest(&decision_evidence_bytes))
+        != market_selection_runtime_provenance.decision_evidence_sha256()
+    {
+        return Err(BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.market_selection_source.decision_evidence_sha256",
+        });
+    }
+    let instrument_source_path = resolve_peer_artifact_path(
+        &resolved_market_selection_source_path,
+        Path::new(market_selection_runtime_provenance.instrument_source_path()),
+    );
+    let instrument_source_bytes = read_file_bounded(
+        &instrument_source_path,
+        operator_evidence.max_operator_evidence_file_bytes,
+    )
+    .map_err(
+        |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.market_selection_source.instrument_source_path",
+        },
+    )?;
+    if hex::encode(Sha256::digest(&instrument_source_bytes))
+        != market_selection_runtime_provenance.instrument_source_sha256()
+    {
+        return Err(BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.market_selection_source.instrument_source_sha256",
+        });
+    }
+    let instruments: Vec<InstrumentAny> = serde_json::from_slice(&instrument_source_bytes)
+        .map_err(
+            |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+                field: "strategy_input_replay.market_selection_source.instrument_source",
+            },
+        )?;
+    if instruments.is_empty() {
+        return Err(BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.market_selection_source.instrument_source",
+        });
+    }
+    let market_selection_timestamp_ms = decision_chain
+        .snapshot
+        .market_selection_timestamp_ms
+        .ok_or(BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.market_selection_source.market_selection_timestamp_ms",
+        })?;
+    let expected_market_selection_source = build_market_selection_source_artifact(
+        loaded,
+        strategy_instance_id,
+        &instruments,
+        market_selection_timestamp_ms,
+    )
+    .map_err(
+        |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.market_selection_source",
+        },
+    )?
+    .with_runtime_provenance(
+        Phase8MarketSelectionRuntimeProvenance::new(
+            market_selection_runtime_provenance.decision_evidence_path(),
+            market_selection_runtime_provenance.decision_evidence_sha256(),
+            market_selection_runtime_provenance.instrument_source_path(),
+            market_selection_runtime_provenance.instrument_source_sha256(),
+        )
+        .map_err(
+            |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+                field: "strategy_input_replay.market_selection_source.runtime_provenance",
+            },
+        )?,
+    );
+    if expected_market_selection_source != market_selection_source {
+        return Err(BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.market_selection_source",
+        });
+    }
     let expected_strategy_input =
         Phase8StrategyInputEvidenceFile::from_runtime_snapshot_and_market_selection_source(
             &decision_chain.snapshot,

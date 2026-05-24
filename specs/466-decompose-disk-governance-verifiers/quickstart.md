@@ -6,8 +6,8 @@
 git fetch origin
 git status --short --branch
 git rev-parse origin/main
-gh issue view 466 --repo seungpyoson/bolt-v2 --json number,state,title,body,comments,labels,url,closedAt
-gh pr view 465 --repo seungpyoson/bolt-v2 --json number,state,mergedAt,title,body,headRefName,baseRefName,commits,files,url
+gh issue view 466 --repo REPO_OWNER/REPO_NAME --json number,state,title,body,comments,labels,url,closedAt
+gh pr view 465 --repo REPO_OWNER/REPO_NAME --json number,state,mergedAt,title,body,headRefName,baseRefName,commits,files,url
 ```
 
 ## Ledger Checks

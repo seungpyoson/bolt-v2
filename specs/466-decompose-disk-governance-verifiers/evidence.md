@@ -4,7 +4,7 @@
 
 | Fact | Evidence |
 |---|---|
-| Branch/worktree | `goal/466-disk-governance-verifier-decomposition` at `.worktrees/466-disk-governance-verifier-decomposition` |
+| Branch/worktree | `goal/466-disk-governance-verifier-decomposition` at `REPO_ROOT_PATH/.worktrees/466-disk-governance-verifier-decomposition` |
 | Base | `origin/main` at `60c14602a0d3a6b4aef5a4b0cbc7c2d6179bd21f` |
 | Issue #466 | Open: "Continue disk-governance verifier decomposition after cargo scanner extraction" |
 | Issue #464 | Closed for PR #465 cargo-scanner slice only; close comment moved remaining work to #466 |

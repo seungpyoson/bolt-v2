@@ -67,8 +67,8 @@ const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_market_window_source_proof.v1";
 const PRE_RUN_SINGLE_RUNNER_LOCK_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
-#[rustfmt::skip]
-const PRE_RUN_SINGLE_RUNNER_LOCK_SOURCE_PROOF_RECORD_KIND: &str = "bolt_v3.pre_run_single_runner_lock_source_proof.v1";
+const PRE_RUN_SINGLE_RUNNER_LOCK_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.pre_run_single_runner_lock_source_proof.v1";
 const BUILD_CARGO_TOML: &str = include_str!("../Cargo.toml");
 const NAUTILUS_TRADER_GIT_URL: &str = "https://github.com/nautechsystems/nautilus_trader.git";
 const NAUTILUS_TRADER_CARGO_LOCK_SOURCE_PREFIX: &str =
@@ -1705,14 +1705,6 @@ pub fn collect_pre_run_single_runner_lock_source_proof(
             .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
     validate_output_path_components("single_runner_lock_path", lock_path)?;
     let resolved_lock_path = resolve_loaded_config_path_from_path(loaded, lock_path);
-    if resolved_lock_path.exists() {
-        return Err(
-            BoltV3OperatorArtifactError::PreRunSingleRunnerLockSourceInvalid {
-                field: "single_runner_lock_acquired",
-            },
-        );
-    }
-
     let artifact = Phase8PreRunSingleRunnerLockEvidenceFile {
         schema_version: PRE_RUN_SINGLE_RUNNER_LOCK_SOURCE_PROOF_SCHEMA_VERSION,
         record_kind: PRE_RUN_SINGLE_RUNNER_LOCK_SOURCE_PROOF_RECORD_KIND,
@@ -1730,7 +1722,19 @@ pub fn collect_pre_run_single_runner_lock_source_proof(
         );
     }
 
-    let written = write_json_artifact_create_new(&resolved_lock_path, &artifact)?;
+    let written = write_json_artifact_create_new_from_bytes(&resolved_lock_path, &bytes).map_err(
+        |error| match error {
+            BoltV3OperatorArtifactError::Write { path, source }
+                if path == resolved_lock_path
+                    && source.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                BoltV3OperatorArtifactError::PreRunSingleRunnerLockSourceInvalid {
+                    field: "single_runner_lock_acquired",
+                }
+            }
+            other => other,
+        },
+    )?;
     Ok(Phase8PreRunSingleRunnerLockSourceProof {
         single_runner_lock_acquired: true,
         single_runner_lock_evidence_hash: written.sha256,
@@ -3595,7 +3599,19 @@ fn write_json_artifact_create_new<T: Serialize>(
     path: &Path,
     value: &T,
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
-    write_json_artifact_create_new_with_file(path, value, open_json_artifact_create_new_file)
+    let bytes = serde_json::to_vec_pretty(value).map_err(BoltV3OperatorArtifactError::Serialize)?;
+    write_json_artifact_create_new_from_bytes(path, &bytes)
+}
+
+fn write_json_artifact_create_new_from_bytes(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    write_json_artifact_create_new_from_bytes_with_file(
+        path,
+        bytes,
+        open_json_artifact_create_new_file,
+    )
 }
 
 trait ArtifactFile {
@@ -3620,6 +3636,7 @@ fn open_json_artifact_create_new_file(path: &Path) -> io::Result<fs::File> {
     options.open(path)
 }
 
+#[cfg(test)]
 fn write_json_artifact_create_new_with_file<T, F, File>(
     path: &Path,
     value: &T,
@@ -3627,6 +3644,19 @@ fn write_json_artifact_create_new_with_file<T, F, File>(
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError>
 where
     T: Serialize,
+    F: FnOnce(&Path) -> io::Result<File>,
+    File: ArtifactFile,
+{
+    let bytes = serde_json::to_vec_pretty(value).map_err(BoltV3OperatorArtifactError::Serialize)?;
+    write_json_artifact_create_new_from_bytes_with_file(path, &bytes, open_file)
+}
+
+fn write_json_artifact_create_new_from_bytes_with_file<F, File>(
+    path: &Path,
+    bytes: &[u8],
+    open_file: F,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError>
+where
     F: FnOnce(&Path) -> io::Result<File>,
     File: ArtifactFile,
 {
@@ -3639,7 +3669,6 @@ where
             source,
         })?;
     }
-    let bytes = serde_json::to_vec_pretty(value).map_err(BoltV3OperatorArtifactError::Serialize)?;
     let mut file = open_file(path).map_err(|source| BoltV3OperatorArtifactError::Write {
         path: path.to_path_buf(),
         source,

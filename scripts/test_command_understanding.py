@@ -305,6 +305,7 @@ def assert_shared_cargo_scanner_helpers_match_current_verifiers() -> None:
     target_scan_cases = [
         (["test", "--", "--target-dir", "/tmp/raw"], ["test"]),
         (["bench", "--", "--target-dir", "/tmp/raw"], ["bench"]),
+        (["run", "--", "--target-dir", "/tmp/raw"], ["run"]),
         (
             ["nextest", "run", "--archive-file", "archive", "--", "--target-dir", "/tmp/raw"],
             ["nextest", "run", "--archive-file", "archive"],

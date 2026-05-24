@@ -616,6 +616,160 @@ fn pre_run_state_writer_rejects_source_bundle_false_proof_without_artifact() {
 }
 
 #[test]
+fn pre_run_host_clock_source_proof_derives_source_owned_values() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_path = temp.path().join("host-clock-source.json");
+    let source = host_clock_source_json(current_test_unix_seconds());
+    write_json_value_and_hash(&host_clock_path, &source);
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_path,
+        100_000,
+        5,
+    )
+    .expect("source-owned host clock proof should collect");
+
+    assert!(proof.host_clock_skew_within_bound);
+    assert!(
+        proof.absolute_skew_seconds <= 5,
+        "collector should derive host clock near fixture reference, got {}s",
+        proof.absolute_skew_seconds
+    );
+    assert_eq!(proof.host_clock_skew_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .host_clock_skew_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "host clock evidence hash should be lowercase hex"
+    );
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_rejects_over_bound_skew() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_path = temp.path().join("host-clock-source.json");
+    let source = host_clock_source_json(current_test_unix_seconds().saturating_sub(60));
+    write_json_value_and_hash(&host_clock_path, &source);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_path,
+        100_000,
+        1,
+    )
+    .expect_err("over-bound host clock skew must not approve source proof");
+
+    assert!(
+        error.to_string().contains("absolute_skew_seconds"),
+        "over-bound host clock skew should identify skew field: {error}"
+    );
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_rejects_invalid_schema_and_record_kind() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_path = temp.path().join("host-clock-source.json");
+    let mut source = host_clock_source_json(current_test_unix_seconds());
+    source["schema_version"] = serde_json::json!(2);
+    write_json_value_and_hash(&host_clock_path, &source);
+
+    let schema_error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+            &host_clock_path,
+            100_000,
+            5,
+        )
+        .expect_err("wrong host-clock schema must fail closed");
+    assert!(
+        schema_error.to_string().contains("schema_version"),
+        "wrong schema should identify schema_version: {schema_error}"
+    );
+
+    let mut source = host_clock_source_json(current_test_unix_seconds());
+    source["record_kind"] = serde_json::json!("wrong.kind");
+    write_json_value_and_hash(&host_clock_path, &source);
+
+    let record_kind_error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+            &host_clock_path,
+            100_000,
+            5,
+        )
+        .expect_err("wrong host-clock record kind must fail closed");
+    assert!(
+        record_kind_error.to_string().contains("record_kind"),
+        "wrong record kind should identify record_kind: {record_kind_error}"
+    );
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_rejects_negative_reference_timestamp() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_path = temp.path().join("host-clock-source.json");
+    let source = host_clock_source_json(-1);
+    write_json_value_and_hash(&host_clock_path, &source);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_path,
+        100_000,
+        5,
+    )
+    .expect_err("negative reference clock timestamp must fail closed");
+
+    assert!(
+        error.to_string().contains("reference_unix_seconds"),
+        "negative reference timestamp should identify field: {error}"
+    );
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_rejects_oversized_input_before_parse() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_path = temp.path().join("host-clock-source.json");
+    let mut source = host_clock_source_json(current_test_unix_seconds());
+    source["padding"] = serde_json::json!("x".repeat(128));
+    write_json_value_and_hash(&host_clock_path, &source);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_path,
+        16,
+        5,
+    )
+    .expect_err("oversized host-clock source input must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("max_operator_evidence_file_bytes"),
+        "oversized source input should fail as bounded read: {error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn pre_run_host_clock_source_proof_rejects_symlinked_input() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let real_path = temp.path().join("real-host-clock-source.json");
+    let symlink_path = temp.path().join("host-clock-source.json");
+    let source = host_clock_source_json(current_test_unix_seconds());
+    write_json_value_and_hash(&real_path, &source);
+    std::os::unix::fs::symlink(&real_path, &symlink_path)
+        .expect("host-clock source symlink should create");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &symlink_path,
+        100_000,
+        5,
+    )
+    .expect_err("symlinked host-clock source input must fail closed");
+
+    assert!(
+        error.to_string().contains("regular file"),
+        "symlinked source input should fail regular-file validation: {error}"
+    );
+}
+
+#[test]
 fn pre_run_state_writer_rejects_each_unsatisfied_source_proof_without_artifact() {
     assert_rejects_unsatisfied_pre_run_source_proof("host_clock_skew_within_bound", |proofs| {
         proofs.host_clock_skew_within_bound = false;
@@ -4290,6 +4444,23 @@ fn write_json_value_and_hash(path: &std::path::Path, value: &serde_json::Value) 
 
 fn sha256_json_value(value: &serde_json::Value) -> String {
     sha256_bytes(&serde_json::to_vec_pretty(value).expect("JSON value should serialize"))
+}
+
+fn current_test_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("test host clock should be after UNIX_EPOCH")
+        .as_secs()
+        .try_into()
+        .expect("test host clock should fit in i64")
+}
+
+fn host_clock_source_json(reference_unix_seconds: i64) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.pre_run_host_clock_source_input.v1",
+        "reference_unix_seconds": reference_unix_seconds,
+    })
 }
 
 fn pre_run_state_source_bundle_json() -> serde_json::Value {

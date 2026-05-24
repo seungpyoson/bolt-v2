@@ -3,6 +3,7 @@ use std::{
     fmt, fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::anyhow;
@@ -66,6 +67,12 @@ const PRE_RUN_RELEASE_MANIFEST_SOURCE_PROOF_RECORD_KIND: &str =
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_market_window_source_proof.v1";
+const PRE_RUN_HOST_CLOCK_SOURCE_INPUT_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_HOST_CLOCK_SOURCE_INPUT_RECORD_KIND: &str =
+    "bolt_v3.pre_run_host_clock_source_input.v1";
+const PRE_RUN_HOST_CLOCK_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_HOST_CLOCK_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.pre_run_host_clock_source_proof.v1";
 const BUILD_CARGO_TOML: &str = include_str!("../Cargo.toml");
 const NAUTILUS_TRADER_GIT_URL: &str = "https://github.com/nautechsystems/nautilus_trader.git";
 const NAUTILUS_TRADER_CARGO_LOCK_SOURCE_PREFIX: &str =
@@ -239,6 +246,13 @@ pub struct Phase8PreRunMarketWindowSourceProof {
     pub market_state_evidence_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8PreRunHostClockSourceProof {
+    pub host_clock_skew_within_bound: bool,
+    pub absolute_skew_seconds: u64,
+    pub host_clock_skew_evidence_hash: String,
+}
+
 impl fmt::Debug for WrittenOperatorArtifact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WrittenOperatorArtifact")
@@ -289,6 +303,13 @@ pub enum BoltV3OperatorArtifactError {
         source: std::io::Error,
     },
     PreRunReleaseManifestSourceInvalid {
+        field: &'static str,
+    },
+    PreRunHostClockSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    PreRunHostClockSourceInvalid {
         field: &'static str,
     },
     PreRunMarketWindowSourceRead {
@@ -502,6 +523,13 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "release manifest source field `{field}` is invalid or unproven"
             ),
+            Self::PreRunHostClockSourceRead { source, .. } => {
+                write!(f, "failed to read host-clock source input: {source}")
+            }
+            Self::PreRunHostClockSourceInvalid { field } => write!(
+                f,
+                "host-clock source field `{field}` is invalid or unproven"
+            ),
             Self::PreRunMarketWindowSourceRead { source, .. } => {
                 write!(f, "failed to read market/window source input: {source}")
             }
@@ -704,6 +732,7 @@ impl Error for BoltV3OperatorArtifactError {
             Self::MarketSelectionInstrumentSourceRead { source, .. } => Some(source),
             Self::MarketSelectionInstrumentSourceParse { source, .. } => Some(source),
             Self::PreRunReleaseManifestSourceRead { source, .. } => Some(source),
+            Self::PreRunHostClockSourceRead { source, .. } => Some(source),
             Self::PreRunMarketWindowSourceRead { source, .. } => Some(source),
             Self::PreRunStateSourceBundleRead { source, .. } => Some(source),
             Self::PreRunStateSourceBundleParse { source, .. } => Some(source),
@@ -1561,6 +1590,88 @@ pub fn write_pre_run_state_artifact_from_source_bundle_file(
     )
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Phase8PreRunHostClockSourceInput {
+    schema_version: u32,
+    record_kind: String,
+    reference_unix_seconds: i64,
+}
+
+pub fn collect_pre_run_host_clock_source_proof(
+    host_clock_source_path: &Path,
+    max_source_bytes: u64,
+    max_allowed_skew_seconds: u64,
+) -> Result<Phase8PreRunHostClockSourceProof, BoltV3OperatorArtifactError> {
+    let source_bytes =
+        read_file_bounded(host_clock_source_path, max_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::PreRunHostClockSourceRead {
+                path: host_clock_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let input: Phase8PreRunHostClockSourceInput =
+        serde_json::from_slice(&source_bytes).map_err(|_| {
+            BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+                field: "source_json",
+            }
+        })?;
+    if input.schema_version != PRE_RUN_HOST_CLOCK_SOURCE_INPUT_SCHEMA_VERSION {
+        return Err(BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+            field: "schema_version",
+        });
+    }
+    if input.record_kind != PRE_RUN_HOST_CLOCK_SOURCE_INPUT_RECORD_KIND {
+        return Err(BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+            field: "record_kind",
+        });
+    }
+    if input.reference_unix_seconds < 0 {
+        return Err(BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+            field: "reference_unix_seconds",
+        });
+    }
+    let host_unix_seconds = current_host_unix_seconds()?;
+    let absolute_skew_seconds = host_unix_seconds.abs_diff(input.reference_unix_seconds);
+    if absolute_skew_seconds > max_allowed_skew_seconds {
+        return Err(BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+            field: "absolute_skew_seconds",
+        });
+    }
+    let proof_input = Phase8PreRunHostClockSourceProofHashInput {
+        schema_version: PRE_RUN_HOST_CLOCK_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: PRE_RUN_HOST_CLOCK_SOURCE_PROOF_RECORD_KIND,
+        source_sha256: hex::encode(Sha256::digest(&source_bytes)),
+        host_unix_seconds,
+        reference_unix_seconds: input.reference_unix_seconds,
+        max_allowed_skew_seconds,
+        absolute_skew_seconds,
+    };
+    let host_clock_skew_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8PreRunHostClockSourceProof {
+        host_clock_skew_within_bound: true,
+        absolute_skew_seconds,
+        host_clock_skew_evidence_hash,
+    })
+}
+
+fn current_host_unix_seconds() -> Result<i64, BoltV3OperatorArtifactError> {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(
+            |_| BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+                field: "host_unix_seconds",
+            },
+        )?
+        .as_secs();
+    i64::try_from(seconds).map_err(
+        |_| BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+            field: "host_unix_seconds",
+        },
+    )
+}
+
 pub fn collect_pre_run_release_manifest_source_proof(
     cargo_toml_path: &Path,
     cargo_lock_path: &Path,
@@ -1756,6 +1867,17 @@ struct Phase8PreRunMarketWindowSourceProofHashInput<'a> {
     record_kind: &'static str,
     strategy_input_evidence_sha256: &'a str,
     expected_price_to_beat_source: &'a str,
+}
+
+#[derive(Serialize)]
+struct Phase8PreRunHostClockSourceProofHashInput {
+    schema_version: u32,
+    record_kind: &'static str,
+    source_sha256: String,
+    host_unix_seconds: i64,
+    reference_unix_seconds: i64,
+    max_allowed_skew_seconds: u64,
+    absolute_skew_seconds: u64,
 }
 
 fn read_release_manifest_source_file(

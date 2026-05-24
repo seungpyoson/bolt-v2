@@ -1868,7 +1868,13 @@ def current_process_family_pids(entries: list[tuple[int, int | None, str]], curr
     return ignored
 
 
-def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: dict[str, Any]) -> list[dict[str, Any]]:
+def active_related_processes(
+    repo: pathlib.Path,
+    target: pathlib.Path,
+    policy: dict[str, Any],
+    *,
+    extra_scopes: tuple[pathlib.Path, ...] = (),
+) -> list[dict[str, Any]]:
     patterns = active_process_patterns(policy)
     if not patterns:
         return []
@@ -1887,8 +1893,12 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
     related: list[dict[str, Any]] = []
     repo_scope = repo.resolve()
     target_scope = target.resolve()
-    path_scopes = (repo_scope, target_scope)
+    extra_path_scopes = tuple(scope.resolve() for scope in extra_scopes)
+    path_scopes = (repo_scope, target_scope, *extra_path_scopes)
     scope_texts = {str(repo), str(target), str(repo_scope), str(target_scope)}
+    for scope, resolved_scope in zip(extra_scopes, extra_path_scopes):
+        scope_texts.add(str(scope))
+        scope_texts.add(str(resolved_scope))
     unscoped_match = False
     for pid, _ppid, command in entries:
         if pid in ignored_pids:
@@ -1930,9 +1940,7 @@ def active_related_processes(repo: pathlib.Path, target: pathlib.Path, policy: d
         if not cwd_sampled:
             cwd = process_cwd(pid)
             cwd_sampled = True
-        cwd_matches_scope = cwd is not None and (
-            path_is_or_inside(cwd, repo_scope) or path_is_or_inside(cwd, target_scope)
-        )
+        cwd_matches_scope = cwd is not None and any(path_is_or_inside(cwd, scope) for scope in path_scopes)
         if matched_pattern is None:
             if cwd_matches_scope and may_launch_rust:
                 matched_pattern = (
@@ -1986,9 +1994,15 @@ def remove_cache_candidate(entry: dict[str, Any], target: pathlib.Path) -> None:
             pass
 
 
-def active_process_refusal_payload(repo: pathlib.Path, target: pathlib.Path, policy: dict[str, Any]) -> dict[str, Any] | None:
+def active_process_refusal_payload(
+    repo: pathlib.Path,
+    target: pathlib.Path,
+    policy: dict[str, Any],
+    *,
+    extra_scopes: tuple[pathlib.Path, ...] = (),
+) -> dict[str, Any] | None:
     try:
-        active = active_related_processes(repo, target, policy)
+        active = active_related_processes(repo, target, policy, extra_scopes=extra_scopes)
     except ProcessVisibilityError as exc:
         return {
             "candidates": [],
@@ -2309,13 +2323,16 @@ def remove_cleanup_candidate(entry: dict[str, Any]) -> None:
         raise PolicyError("refusing to remove non-directory cleanup candidate")
 
 
-def cleanup_candidate_refusal_payload(entry: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any] | None:
+def cleanup_candidate_refusal_payload(
+    repo: pathlib.Path,
+    entry: dict[str, Any],
+    policy: dict[str, Any],
+) -> dict[str, Any] | None:
     path = pathlib.Path(str(entry["path"]))
+    extra_scopes: tuple[pathlib.Path, ...] = ()
     if entry.get("class") == "worktree_target":
-        scope = pathlib.Path(str(entry.get("worktree", path.parent)))
-    else:
-        scope = path
-    return active_process_refusal_payload(scope, path, policy)
+        extra_scopes = (pathlib.Path(str(entry.get("worktree", path.parent))),)
+    return active_process_refusal_payload(repo, path, policy, extra_scopes=extra_scopes)
 
 
 def cleanup_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
@@ -2324,6 +2341,7 @@ def cleanup_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
     lock_context = cache_lock(policy, exclusive=True) if not dry_run else contextlib.nullcontext()
     with lock_context:
         target = target_dir(repo, policy)
+        validate_managed_target_path(target, policy)
         registered = registered_worktree_paths(repo)
         candidates = [
             *cleanup_tmp_bundle_candidates(repo, policy, now=time.time(), registered=registered),
@@ -2336,11 +2354,11 @@ def cleanup_payload(repo: pathlib.Path, *, dry_run: bool) -> dict[str, Any]:
             if refusal is not None:
                 return refusal
             for entry in candidates:
-                refusal = cleanup_candidate_refusal_payload(entry, policy)
+                refusal = cleanup_candidate_refusal_payload(repo, entry, policy)
                 if refusal is not None:
                     return refusal
             for entry in candidates:
-                refusal = cleanup_candidate_refusal_payload(entry, policy)
+                refusal = cleanup_candidate_refusal_payload(repo, entry, policy)
                 if refusal is not None:
                     return refusal_with_removed(refusal, removed)
                 remove_cleanup_candidate(entry)

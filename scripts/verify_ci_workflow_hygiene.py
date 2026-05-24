@@ -336,7 +336,7 @@ CI_INSTALL_ACTION_COMMANDS = {
     "test-archive": 'just test-archive "$NEXTEST_ARCHIVE_PATH"',
     "test-shards": TEST_PARTITION_COMMAND,
 }
-# Static-only option consumption keeps these local constants intentionally; the
+# Static-only option consumption keeps this local constant intentionally; the
 # shared scanner has broader Cargo CLI coverage while preserving scan parity.
 CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "--quiet", "-q", "--verbose", "-v"}
 ZIGBUILD_PREBUILT_LITERALS = (

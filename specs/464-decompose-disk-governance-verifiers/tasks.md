@@ -76,8 +76,8 @@
 - [x] T032 Push branch `codex/464-verifier-decomposition` containing `specs/464-decompose-disk-governance-verifiers/tasks.md`.
 - [x] T033 Open PR for issue #464 with scope, non-goals, evidence map, chosen slice, remaining local behavior, tests, external review results, skipped review slots, residual risk, and relationship to PR #461 from `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 - [x] T034 Confirm exact-head GitHub CI is green for the PR head that includes `scripts/command_understanding.py`.
-- [ ] T035 Request exact-head implementation review from Claude, Gemini, Kimi, Grok, GLM, and DeepSeek; record all verdicts or skipped/failed slots in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
-- [ ] T036 Resolve or explicitly record every implementation review finding in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T035 Request exact-head implementation review from Claude, Gemini, Kimi, Grok, GLM, and DeepSeek; record all verdicts or skipped/failed slots in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T036 Resolve or explicitly record every implementation review finding in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 - [ ] T037 Stop for explicit operator merge approval before merging the PR described by `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 - [ ] T038 After explicit merge approval and verification, merge with a normal merge commit unless the operator explicitly asks for squash merge; record final relationship to `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 - [ ] T039 Confirm remaining #464 decomposition scope is explicitly tracked in issue #464 or a named follow-up issue before claiming completion in `specs/464-decompose-disk-governance-verifiers/evidence.md`.

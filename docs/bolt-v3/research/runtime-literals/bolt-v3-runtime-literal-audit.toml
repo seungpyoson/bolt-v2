@@ -4476,6 +4476,102 @@ reason = "This is the stable record-kind discriminator for funding margin source
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = '''1'''
+context = '''const PRE_RUN_CLOB_V2_ADAPTER_SIGNING_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the CLOB V2 adapter-signing source input schema version consumed by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_clob_v2_adapter_signing_source.v1"'''
+context = '''"bolt_v3.pre_run_clob_v2_adapter_signing_source.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for CLOB V2 adapter-signing source input parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_CLOB_V2_ADAPTER_SIGNING_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the CLOB V2 adapter-signing source-proof artifact schema version emitted by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_clob_v2_adapter_signing_source_proof.v1"'''
+context = '''"bolt_v3.pre_run_clob_v2_adapter_signing_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for CLOB V2 adapter-signing source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the CLOB V2 collateral-accounting source input schema version consumed by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_clob_v2_collateral_accounting_source.v1"'''
+context = '''"bolt_v3.pre_run_clob_v2_collateral_accounting_source.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for CLOB V2 collateral-accounting source input parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the CLOB V2 collateral-accounting source-proof artifact schema version emitted by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_clob_v2_collateral_accounting_source_proof.v1"'''
+context = '''"bolt_v3.pre_run_clob_v2_collateral_accounting_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for CLOB V2 collateral-accounting source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the CLOB V2 fee-behavior source input schema version consumed by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_clob_v2_fee_behavior_source.v1"'''
+context = '''"bolt_v3.pre_run_clob_v2_fee_behavior_source.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for CLOB V2 fee-behavior source input parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_artifact_schema_version"
+reason = "This is the CLOB V2 fee-behavior source-proof artifact schema version emitted by the pre-run evidence helper, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_clob_v2_fee_behavior_source_proof.v1"'''
+context = '''"bolt_v3.pre_run_clob_v2_fee_behavior_source_proof.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for CLOB V2 fee-behavior source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
 context = '''const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
 classification = "operator_artifact_schema_version"
 reason = "This is the market/window source-proof artifact schema version emitted by the pre-run evidence helper, not an operator runtime value."

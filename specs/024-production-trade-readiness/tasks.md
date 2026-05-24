@@ -47,8 +47,8 @@
 - [x] T018 [US3] Implement funding and margin source collectors in `src/bolt_v3_operator_artifacts.rs`.
 - [x] T019 [P] [US3] Add RED tests for approved egress identity source collector in `tests/bolt_v3_operator_artifacts.rs`.
 - [x] T020 [US3] Implement approved egress identity source collector in `src/bolt_v3_operator_artifacts.rs`.
-- [ ] T021 [P] [US3] Add RED tests for CLOB V2 adapter signing, collateral accounting, and fee behavior collectors in `tests/bolt_v3_operator_artifacts.rs`.
-- [ ] T022 [US3] Implement CLOB V2 adapter signing, collateral accounting, and fee behavior collectors in `src/bolt_v3_operator_artifacts.rs`.
+- [x] T021 [P] [US3] Add RED tests for CLOB V2 adapter signing, collateral accounting, and fee behavior collectors in `tests/bolt_v3_operator_artifacts.rs`.
+- [x] T022 [US3] Implement CLOB V2 adapter signing, collateral accounting, and fee behavior collectors in `src/bolt_v3_operator_artifacts.rs`.
 - [ ] T023 [US3] Bind all T126 collector outputs through operator evidence config in `config/live.local.toml` and runtime-literal audit rows in `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`.
 - [ ] T024 [US3] Run focused T126 tests plus runtime-literal verification and record evidence in `specs/024-production-trade-readiness/evidence.md`.
 

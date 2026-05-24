@@ -54,13 +54,16 @@ This file is a source-inspection baseline, not a self-validating exact-head proo
 - `collect_pre_run_host_clock_source_proof`
 - `collect_pre_run_venue_account_state_source_proof`
 - `collect_pre_run_funding_margin_source_proof`
+- `collect_pre_run_clob_v2_adapter_signing_source_proof`
+- `collect_pre_run_clob_v2_collateral_accounting_source_proof`
+- `collect_pre_run_clob_v2_fee_behavior_source_proof`
 - `collect_pre_run_market_window_source_proof`
 - `collect_pre_run_single_runner_lock_source_proof`
 - `collect_pre_run_egress_identity_source_proof`
 
-The same search found no `pub fn collect_pre_run_clob...`, `collect_abort_plan_nt...`, `collect_abort_plan_partial...`, `collect_abort_plan_network...`, or `collect_abort_plan_panic...` functions.
+The same search found no `pub fn collect_abort_plan_nt...`, `collect_abort_plan_partial...`, `collect_abort_plan_network...`, or `collect_abort_plan_panic...` functions.
 
-Implication: the active readiness branch has some source-owned collectors, but most T126/T127 fields are still satisfied only by caller-supplied proof bundles or fixtures.
+Implication: the active readiness branch now has source-owned collector functions for the planned T126 pre-run proof fields, while T023/T024 still need binding and focused T126 verification. T127 abort-plan fields are still satisfied only by caller-supplied proof bundles or fixtures.
 
 ## T038 Branch Evidence
 
@@ -143,3 +146,14 @@ The collector is non-live and source-owned: it reads a bounded local JSON source
 - `git diff --check`: passed.
 
 The collector is non-live and source-owned: it reads a bounded local JSON source, validates schema/record kind, validates a lowercase margin snapshot hash, parses collateral and required max-notional-plus-fees as decimals, requires positive required coverage, fails closed when available collateral is insufficient, returns only a coverage boolean plus hashes, and does not write `pre-run-state.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T017/T018.
+
+## T021/T022 CLOB V2 Collector Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts pre_run_clob_v2 -- --nocapture` failed with `E0425` because `collect_pre_run_clob_v2_adapter_signing_source_proof`, `collect_pre_run_clob_v2_collateral_accounting_source_proof`, and `collect_pre_run_clob_v2_fee_behavior_source_proof` did not exist.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts pre_run_clob_v2 -- --nocapture` passed: 7 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `git diff --check`: passed.
+
+The collectors are non-live and source-owned: they read bounded local JSON source proofs, validate schema/record kinds, validate lowercase source/evidence hashes, bind adapter signing to the caller-provided release-manifest CLOB signing version, require recovered-signer match proof, derive pUSD collateral coverage from balance/allowance/required decimals, require the CLOB V2 fee-behavior policy booleans and valid price/fee-rate bounds, return only booleans plus hashes, and do not write `pre-run-state.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T021/T022.

@@ -4363,6 +4363,76 @@ fn funding_margin_source_fixture(
     )
 }
 
+fn clob_v2_adapter_signing_source_fixture(
+    clob_signing_version: &str,
+    adapter_signing_source_sha256: &str,
+    domain_requirements_sha256: &str,
+    signed_order_fixture_sha256: &str,
+    signature_verification_sha256: &str,
+    signer_recovered_matches_expected: bool,
+) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_clob_v2_adapter_signing_source.v1",
+  "clob_signing_version": "{clob_signing_version}",
+  "adapter_signing_source_sha256": "{adapter_signing_source_sha256}",
+  "domain_requirements_sha256": "{domain_requirements_sha256}",
+  "signed_order_fixture_sha256": "{signed_order_fixture_sha256}",
+  "signature_verification_sha256": "{signature_verification_sha256}",
+  "signer_recovered_matches_expected": {signer_recovered_matches_expected}
+}}"#
+    )
+}
+
+fn clob_v2_collateral_accounting_source_fixture(
+    collateral_accounting_verified: bool,
+    p_usd_balance: &str,
+    p_usd_allowance: &str,
+    required_max_notional_plus_fees: &str,
+    collateral_accounting_source_sha256: &str,
+    collateral_assumptions_sha256: &str,
+) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_clob_v2_collateral_accounting_source.v1",
+  "collateral_accounting_verified": {collateral_accounting_verified},
+  "p_usd_balance": "{p_usd_balance}",
+  "p_usd_allowance": "{p_usd_allowance}",
+  "required_max_notional_plus_fees": "{required_max_notional_plus_fees}",
+  "collateral_accounting_source_sha256": "{collateral_accounting_source_sha256}",
+  "collateral_assumptions_sha256": "{collateral_assumptions_sha256}"
+}}"#
+    )
+}
+
+fn clob_v2_fee_behavior_source_fixture(
+    fee_behavior_verified: bool,
+    maker_zero_fee_verified: bool,
+    taker_fee_schedule_verified: bool,
+    market_buy_fee_adjustment_verified: bool,
+    price: &str,
+    fee_rate: &str,
+    fee_behavior_source_sha256: &str,
+    fee_assumptions_sha256: &str,
+) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_clob_v2_fee_behavior_source.v1",
+  "fee_behavior_verified": {fee_behavior_verified},
+  "maker_zero_fee_verified": {maker_zero_fee_verified},
+  "taker_fee_schedule_verified": {taker_fee_schedule_verified},
+  "market_buy_fee_adjustment_verified": {market_buy_fee_adjustment_verified},
+  "price": "{price}",
+  "fee_rate": "{fee_rate}",
+  "fee_behavior_source_sha256": "{fee_behavior_source_sha256}",
+  "fee_assumptions_sha256": "{fee_assumptions_sha256}"
+}}"#
+    )
+}
+
 #[test]
 fn pre_run_host_clock_source_proof_derives_source_owned_skew_bound() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -4840,6 +4910,514 @@ fn pre_run_funding_margin_source_proof_rejects_oversized_source_before_parse() {
     assert!(
         !pre_run_state_path.exists(),
         "oversized funding margin proof collection must not write pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_clob_v2_adapter_signing_source_proof_derives_source_owned_values() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let signing_source_path = temp.path().join("clob-v2-adapter-signing-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let raw_signing_contract = "clob-signing-contract-fixture";
+    let signing_source_sha256 = sha256_text(raw_signing_contract);
+    let domain_requirements_sha256 = sha256_text("clob-domain-requirements");
+    let signed_order_fixture_sha256 = sha256_text("clob-signed-order-fixture");
+    let signature_verification_sha256 = sha256_text("clob-signature-verification");
+    std::fs::write(
+        &signing_source_path,
+        clob_v2_adapter_signing_source_fixture(
+            "2",
+            &signing_source_sha256,
+            &domain_requirements_sha256,
+            &signed_order_fixture_sha256,
+            &signature_verification_sha256,
+            true,
+        ),
+    )
+    .expect("CLOB V2 signing fixture should write");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_adapter_signing_source_proof(
+            &signing_source_path,
+            4096,
+            "2",
+        )
+        .expect("source-owned CLOB V2 signing proof should collect");
+
+    assert!(proof.clob_v2_adapter_signing_verified);
+    assert_eq!(
+        proof.clob_v2_adapter_signing_source_sha256,
+        sha256_file(&signing_source_path)
+    );
+    assert_eq!(proof.clob_v2_adapter_signing_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .clob_v2_adapter_signing_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "CLOB V2 signing evidence hash should be lowercase hex"
+    );
+    assert!(
+        !format!("{proof:?}").contains(raw_signing_contract),
+        "CLOB V2 signing proof must not expose raw signing material"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "CLOB V2 signing proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_clob_v2_collateral_accounting_source_proof_derives_source_owned_values() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let collateral_source_path = temp.path().join("clob-v2-collateral-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let raw_collateral_account = "clob-collateral-account-fixture";
+    let collateral_source_sha256 = sha256_text(raw_collateral_account);
+    let collateral_assumptions_sha256 = sha256_text("clob-collateral-assumptions");
+    std::fs::write(
+        &collateral_source_path,
+        clob_v2_collateral_accounting_source_fixture(
+            true,
+            "10.00",
+            "10.00",
+            "1.25",
+            &collateral_source_sha256,
+            &collateral_assumptions_sha256,
+        ),
+    )
+    .expect("CLOB V2 collateral fixture should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_collateral_accounting_source_proof(
+        &collateral_source_path,
+        4096,
+    )
+    .expect("source-owned CLOB V2 collateral accounting proof should collect");
+
+    assert!(proof.clob_v2_collateral_accounting_verified);
+    assert_eq!(
+        proof.clob_v2_collateral_accounting_source_sha256,
+        sha256_file(&collateral_source_path)
+    );
+    assert_eq!(proof.clob_v2_collateral_accounting_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .clob_v2_collateral_accounting_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "CLOB V2 collateral evidence hash should be lowercase hex"
+    );
+    assert!(
+        !format!("{proof:?}").contains(raw_collateral_account),
+        "CLOB V2 collateral proof must not expose raw account material"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "CLOB V2 collateral proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_clob_v2_fee_behavior_source_proof_derives_source_owned_values() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let fee_source_path = temp.path().join("clob-v2-fee-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let raw_fee_account = "clob-fee-account-fixture";
+    let fee_source_sha256 = sha256_text(raw_fee_account);
+    let fee_assumptions_sha256 = sha256_text("clob-fee-assumptions");
+    std::fs::write(
+        &fee_source_path,
+        clob_v2_fee_behavior_source_fixture(
+            true,
+            true,
+            true,
+            true,
+            "0.55",
+            "0.01",
+            &fee_source_sha256,
+            &fee_assumptions_sha256,
+        ),
+    )
+    .expect("CLOB V2 fee fixture should write");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_fee_behavior_source_proof(
+            &fee_source_path,
+            4096,
+        )
+        .expect("source-owned CLOB V2 fee behavior proof should collect");
+
+    assert!(proof.clob_v2_fee_behavior_verified);
+    assert_eq!(
+        proof.clob_v2_fee_behavior_source_sha256,
+        sha256_file(&fee_source_path)
+    );
+    assert_eq!(proof.clob_v2_fee_behavior_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .clob_v2_fee_behavior_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "CLOB V2 fee evidence hash should be lowercase hex"
+    );
+    assert!(
+        !format!("{proof:?}").contains(raw_fee_account),
+        "CLOB V2 fee proof must not expose raw account material"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "CLOB V2 fee proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_clob_v2_adapter_signing_source_proof_rejects_invalid_signing() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let signing_source_sha256 = sha256_text("clob-signing-contract-fixture");
+    let domain_requirements_sha256 = sha256_text("clob-domain-requirements");
+    let signed_order_fixture_sha256 = sha256_text("clob-signed-order-fixture");
+    let signature_verification_sha256 = sha256_text("clob-signature-verification");
+    let cases = [
+        (
+            "version_mismatch",
+            "1",
+            signing_source_sha256.as_str(),
+            domain_requirements_sha256.as_str(),
+            signed_order_fixture_sha256.as_str(),
+            signature_verification_sha256.as_str(),
+            true,
+            "clob_signing_version",
+        ),
+        (
+            "bad_signing_hash",
+            "2",
+            "ABC",
+            domain_requirements_sha256.as_str(),
+            signed_order_fixture_sha256.as_str(),
+            signature_verification_sha256.as_str(),
+            true,
+            "adapter_signing_source_sha256",
+        ),
+        (
+            "signer_mismatch",
+            "2",
+            signing_source_sha256.as_str(),
+            domain_requirements_sha256.as_str(),
+            signed_order_fixture_sha256.as_str(),
+            signature_verification_sha256.as_str(),
+            false,
+            "signer_recovered_matches_expected",
+        ),
+    ];
+
+    for (
+        name,
+        version,
+        signing_hash,
+        domain_hash,
+        order_hash,
+        verification_hash,
+        signer_match,
+        expected,
+    ) in cases
+    {
+        let signing_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(
+            &signing_source_path,
+            clob_v2_adapter_signing_source_fixture(
+                version,
+                signing_hash,
+                domain_hash,
+                order_hash,
+                verification_hash,
+                signer_match,
+            ),
+        )
+        .expect("CLOB V2 signing fixture should write");
+
+        let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_adapter_signing_source_proof(
+            &signing_source_path,
+            4096,
+            "2",
+        )
+        .expect_err("invalid CLOB V2 signing source must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed CLOB V2 signing proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_clob_v2_collateral_accounting_source_proof_rejects_invalid_collateral() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let collateral_source_sha256 = sha256_text("clob-collateral-account-fixture");
+    let collateral_assumptions_sha256 = sha256_text("clob-collateral-assumptions");
+    let cases = [
+        (
+            "not_verified",
+            false,
+            "10.00",
+            "10.00",
+            "1.25",
+            collateral_source_sha256.as_str(),
+            collateral_assumptions_sha256.as_str(),
+            "clob_v2_collateral_accounting_verified",
+        ),
+        (
+            "insufficient_balance",
+            true,
+            "1.00",
+            "10.00",
+            "1.25",
+            collateral_source_sha256.as_str(),
+            collateral_assumptions_sha256.as_str(),
+            "clob_v2_collateral_accounting_verified",
+        ),
+        (
+            "insufficient_allowance",
+            true,
+            "10.00",
+            "1.00",
+            "1.25",
+            collateral_source_sha256.as_str(),
+            collateral_assumptions_sha256.as_str(),
+            "clob_v2_collateral_accounting_verified",
+        ),
+        (
+            "bad_balance",
+            true,
+            "not-decimal",
+            "10.00",
+            "1.25",
+            collateral_source_sha256.as_str(),
+            collateral_assumptions_sha256.as_str(),
+            "p_usd_balance",
+        ),
+        (
+            "bad_hash",
+            true,
+            "10.00",
+            "10.00",
+            "1.25",
+            "ABC",
+            collateral_assumptions_sha256.as_str(),
+            "collateral_accounting_source_sha256",
+        ),
+    ];
+
+    for (name, verified, balance, allowance, required, source_hash, assumptions_hash, expected) in
+        cases
+    {
+        let collateral_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(
+            &collateral_source_path,
+            clob_v2_collateral_accounting_source_fixture(
+                verified,
+                balance,
+                allowance,
+                required,
+                source_hash,
+                assumptions_hash,
+            ),
+        )
+        .expect("CLOB V2 collateral fixture should write");
+
+        let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_collateral_accounting_source_proof(
+            &collateral_source_path,
+            4096,
+        )
+        .expect_err("invalid CLOB V2 collateral source must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed CLOB V2 collateral proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_clob_v2_fee_behavior_source_proof_rejects_invalid_fee_behavior() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let fee_source_sha256 = sha256_text("clob-fee-account-fixture");
+    let fee_assumptions_sha256 = sha256_text("clob-fee-assumptions");
+    let cases = [
+        (
+            "not_verified",
+            false,
+            true,
+            true,
+            true,
+            "0.55",
+            "0.01",
+            fee_source_sha256.as_str(),
+            fee_assumptions_sha256.as_str(),
+            "clob_v2_fee_behavior_verified",
+        ),
+        (
+            "maker_fee_not_verified",
+            true,
+            false,
+            true,
+            true,
+            "0.55",
+            "0.01",
+            fee_source_sha256.as_str(),
+            fee_assumptions_sha256.as_str(),
+            "maker_zero_fee_verified",
+        ),
+        (
+            "bad_price",
+            true,
+            true,
+            true,
+            true,
+            "1.00",
+            "0.01",
+            fee_source_sha256.as_str(),
+            fee_assumptions_sha256.as_str(),
+            "price",
+        ),
+        (
+            "bad_fee_rate",
+            true,
+            true,
+            true,
+            true,
+            "0.55",
+            "-0.01",
+            fee_source_sha256.as_str(),
+            fee_assumptions_sha256.as_str(),
+            "fee_rate",
+        ),
+        (
+            "bad_hash",
+            true,
+            true,
+            true,
+            true,
+            "0.55",
+            "0.01",
+            "ABC",
+            fee_assumptions_sha256.as_str(),
+            "fee_behavior_source_sha256",
+        ),
+    ];
+
+    for (
+        name,
+        verified,
+        maker_verified,
+        taker_verified,
+        market_buy_verified,
+        price,
+        fee_rate,
+        source_hash,
+        assumptions_hash,
+        expected,
+    ) in cases
+    {
+        let fee_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(
+            &fee_source_path,
+            clob_v2_fee_behavior_source_fixture(
+                verified,
+                maker_verified,
+                taker_verified,
+                market_buy_verified,
+                price,
+                fee_rate,
+                source_hash,
+                assumptions_hash,
+            ),
+        )
+        .expect("CLOB V2 fee fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_fee_behavior_source_proof(
+                &fee_source_path,
+                4096,
+            )
+            .expect_err("invalid CLOB V2 fee source must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed CLOB V2 fee proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_clob_v2_source_proofs_reject_invalid_shape_or_oversize() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let malformed_path = temp.path().join("malformed-clob-v2-source.json");
+    std::fs::write(
+        &malformed_path,
+        r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_clob_v2_fee_behavior_source.v1""#,
+    )
+    .expect("malformed CLOB fixture should write");
+    let malformed_error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_fee_behavior_source_proof(
+            &malformed_path,
+            4096,
+        )
+        .expect_err("malformed CLOB V2 source must fail closed");
+    assert!(
+        malformed_error
+            .to_string()
+            .contains("failed to parse CLOB V2 source input"),
+        "malformed CLOB source should be parse diagnostic: {malformed_error}"
+    );
+
+    let fee_source_path = temp.path().join("oversized-clob-v2-source.json");
+    let fee_source_sha256 = sha256_text("clob-fee-account-fixture");
+    let fee_assumptions_sha256 = sha256_text("clob-fee-assumptions");
+    std::fs::write(
+        &fee_source_path,
+        clob_v2_fee_behavior_source_fixture(
+            true,
+            true,
+            true,
+            true,
+            "0.55",
+            "0.01",
+            &fee_source_sha256,
+            &fee_assumptions_sha256,
+        ),
+    )
+    .expect("CLOB V2 fee fixture should write");
+    let oversized_error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_fee_behavior_source_proof(
+            &fee_source_path,
+            1,
+        )
+        .expect_err("oversized CLOB V2 source must fail closed");
+    assert!(
+        oversized_error
+            .to_string()
+            .contains("failed to read CLOB V2 source input"),
+        "oversized CLOB source should be read diagnostic: {oversized_error}"
     );
 }
 

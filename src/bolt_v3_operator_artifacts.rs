@@ -80,6 +80,24 @@ const PRE_RUN_FUNDING_MARGIN_SOURCE_RECORD_KIND: &str = "bolt_v3.pre_run_funding
 const PRE_RUN_FUNDING_MARGIN_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_FUNDING_MARGIN_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_funding_margin_source_proof.v1";
+const PRE_RUN_CLOB_V2_ADAPTER_SIGNING_SOURCE_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_CLOB_V2_ADAPTER_SIGNING_SOURCE_RECORD_KIND: &str =
+    "bolt_v3.pre_run_clob_v2_adapter_signing_source.v1";
+const PRE_RUN_CLOB_V2_ADAPTER_SIGNING_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_CLOB_V2_ADAPTER_SIGNING_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.pre_run_clob_v2_adapter_signing_source_proof.v1";
+const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_RECORD_KIND: &str =
+    "bolt_v3.pre_run_clob_v2_collateral_accounting_source.v1";
+const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.pre_run_clob_v2_collateral_accounting_source_proof.v1";
+const PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_RECORD_KIND: &str =
+    "bolt_v3.pre_run_clob_v2_fee_behavior_source.v1";
+const PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
+const PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_PROOF_RECORD_KIND: &str =
+    "bolt_v3.pre_run_clob_v2_fee_behavior_source_proof.v1";
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_MARKET_WINDOW_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_market_window_source_proof.v1";
@@ -303,6 +321,27 @@ pub struct Phase8PreRunFundingMarginSourceProof {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8PreRunClobV2AdapterSigningSourceProof {
+    pub clob_v2_adapter_signing_verified: bool,
+    pub clob_v2_adapter_signing_source_sha256: String,
+    pub clob_v2_adapter_signing_evidence_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8PreRunClobV2CollateralAccountingSourceProof {
+    pub clob_v2_collateral_accounting_verified: bool,
+    pub clob_v2_collateral_accounting_source_sha256: String,
+    pub clob_v2_collateral_accounting_evidence_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase8PreRunClobV2FeeBehaviorSourceProof {
+    pub clob_v2_fee_behavior_verified: bool,
+    pub clob_v2_fee_behavior_source_sha256: String,
+    pub clob_v2_fee_behavior_evidence_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phase8PreRunMarketWindowSourceProof {
     pub market_state_approved: bool,
     pub market_window_approved: bool,
@@ -410,6 +449,17 @@ pub enum BoltV3OperatorArtifactError {
         source: serde_json::Error,
     },
     PreRunFundingMarginSourceInvalid {
+        field: &'static str,
+    },
+    PreRunClobV2SourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    PreRunClobV2SourceParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    PreRunClobV2SourceInvalid {
         field: &'static str,
     },
     PreRunMarketWindowSourceRead {
@@ -683,6 +733,15 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "funding margin source field `{field}` is invalid or unproven"
             ),
+            Self::PreRunClobV2SourceRead { source, .. } => {
+                write!(f, "failed to read CLOB V2 source input: {source}")
+            }
+            Self::PreRunClobV2SourceParse { source, .. } => {
+                write!(f, "failed to parse CLOB V2 source input: {source}")
+            }
+            Self::PreRunClobV2SourceInvalid { field } => {
+                write!(f, "CLOB V2 source field `{field}` is invalid or unproven")
+            }
             Self::PreRunMarketWindowSourceRead { source, .. } => {
                 write!(f, "failed to read market/window source input: {source}")
             }
@@ -919,6 +978,8 @@ impl Error for BoltV3OperatorArtifactError {
             Self::PreRunVenueAccountStateSourceParse { source, .. } => Some(source),
             Self::PreRunFundingMarginSourceRead { source, .. } => Some(source),
             Self::PreRunFundingMarginSourceParse { source, .. } => Some(source),
+            Self::PreRunClobV2SourceRead { source, .. } => Some(source),
+            Self::PreRunClobV2SourceParse { source, .. } => Some(source),
             Self::PreRunMarketWindowSourceRead { source, .. } => Some(source),
             Self::PreRunEgressIdentitySourceRead { source, .. } => Some(source),
             Self::PreRunEgressIdentitySourceParse { source, .. } => Some(source),
@@ -1793,6 +1854,49 @@ fn pre_run_source_bundle_evidence_hash(
     json_artifact_sha256(value)
 }
 
+fn read_clob_v2_source<T>(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<(T, String), BoltV3OperatorArtifactError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let bytes = read_file_bounded(path, max_bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::PreRunClobV2SourceRead {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    let sha256 = hex::encode(Sha256::digest(&bytes));
+    let value = serde_json::from_slice(&bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::PreRunClobV2SourceParse {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    Ok((value, sha256))
+}
+
+fn require_clob_v2_source_sha256(
+    field: &'static str,
+    value: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if is_lowercase_sha256(value) {
+        Ok(())
+    } else {
+        Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid { field })
+    }
+}
+
+fn parse_clob_v2_decimal(
+    field: &'static str,
+    value: &str,
+) -> Result<Decimal, BoltV3OperatorArtifactError> {
+    value
+        .parse::<Decimal>()
+        .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid { field })
+}
+
 pub fn write_pre_run_state_artifact_from_source_bundle_file(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
@@ -2049,7 +2153,7 @@ pub fn collect_pre_run_funding_margin_source_proof(
         .parse::<Decimal>()
         .map_err(
             |_| BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
-                field: "required_max_notional_plus_fees",
+                field: stringify!(required_max_notional_plus_fees),
             },
         )?;
     if available_collateral < Decimal::ZERO {
@@ -2062,7 +2166,7 @@ pub fn collect_pre_run_funding_margin_source_proof(
     if required_max_notional_plus_fees <= Decimal::ZERO {
         return Err(
             BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
-                field: "required_max_notional_plus_fees",
+                field: stringify!(required_max_notional_plus_fees),
             },
         );
     }
@@ -2087,6 +2191,234 @@ pub fn collect_pre_run_funding_margin_source_proof(
         funding_margin_covers_max_notional_plus_fees: true,
         funding_margin_source_sha256,
         funding_margin_evidence_hash,
+    })
+}
+
+pub fn collect_pre_run_clob_v2_adapter_signing_source_proof(
+    clob_v2_adapter_signing_source_path: &Path,
+    max_source_bytes: u64,
+    expected_clob_signing_version: &str,
+) -> Result<Phase8PreRunClobV2AdapterSigningSourceProof, BoltV3OperatorArtifactError> {
+    if expected_clob_signing_version.trim().is_empty() {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "expected_clob_signing_version",
+        });
+    }
+    let (source, clob_v2_adapter_signing_source_sha256) =
+        read_clob_v2_source::<Phase8PreRunClobV2AdapterSigningSourceEvidence>(
+            clob_v2_adapter_signing_source_path,
+            max_source_bytes,
+        )?;
+    if source.schema_version != PRE_RUN_CLOB_V2_ADAPTER_SIGNING_SOURCE_SCHEMA_VERSION {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "schema_version",
+        });
+    }
+    if source.record_kind != PRE_RUN_CLOB_V2_ADAPTER_SIGNING_SOURCE_RECORD_KIND {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "record_kind",
+        });
+    }
+    if source.clob_signing_version.trim() != expected_clob_signing_version.trim() {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(clob_signing_version),
+        });
+    }
+    if !source.signer_recovered_matches_expected {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(signer_recovered_matches_expected),
+        });
+    }
+    require_clob_v2_source_sha256(
+        stringify!(adapter_signing_source_sha256),
+        &source.adapter_signing_source_sha256,
+    )?;
+    require_clob_v2_source_sha256(
+        stringify!(domain_requirements_sha256),
+        &source.domain_requirements_sha256,
+    )?;
+    require_clob_v2_source_sha256(
+        stringify!(signed_order_fixture_sha256),
+        &source.signed_order_fixture_sha256,
+    )?;
+    require_clob_v2_source_sha256(
+        stringify!(signature_verification_sha256),
+        &source.signature_verification_sha256,
+    )?;
+    let proof_input = Phase8PreRunClobV2AdapterSigningSourceProofHashInput {
+        schema_version: PRE_RUN_CLOB_V2_ADAPTER_SIGNING_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: PRE_RUN_CLOB_V2_ADAPTER_SIGNING_SOURCE_PROOF_RECORD_KIND,
+        clob_signing_version: &source.clob_signing_version,
+        adapter_signing_source_sha256: &source.adapter_signing_source_sha256,
+        domain_requirements_sha256: &source.domain_requirements_sha256,
+        signed_order_fixture_sha256: &source.signed_order_fixture_sha256,
+        signature_verification_sha256: &source.signature_verification_sha256,
+        signer_recovered_matches_expected: source.signer_recovered_matches_expected,
+        clob_v2_adapter_signing_source_sha256: &clob_v2_adapter_signing_source_sha256,
+    };
+    let clob_v2_adapter_signing_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8PreRunClobV2AdapterSigningSourceProof {
+        clob_v2_adapter_signing_verified: true,
+        clob_v2_adapter_signing_source_sha256,
+        clob_v2_adapter_signing_evidence_hash,
+    })
+}
+
+pub fn collect_pre_run_clob_v2_collateral_accounting_source_proof(
+    clob_v2_collateral_accounting_source_path: &Path,
+    max_source_bytes: u64,
+) -> Result<Phase8PreRunClobV2CollateralAccountingSourceProof, BoltV3OperatorArtifactError> {
+    let (source, clob_v2_collateral_accounting_source_sha256) =
+        read_clob_v2_source::<Phase8PreRunClobV2CollateralAccountingSourceEvidence>(
+            clob_v2_collateral_accounting_source_path,
+            max_source_bytes,
+        )?;
+    if source.schema_version != PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "schema_version",
+        });
+    }
+    if source.record_kind != PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_RECORD_KIND {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "record_kind",
+        });
+    }
+    if !source.collateral_accounting_verified {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(clob_v2_collateral_accounting_verified),
+        });
+    }
+    let p_usd_balance = parse_clob_v2_decimal(stringify!(p_usd_balance), &source.p_usd_balance)?;
+    let p_usd_allowance =
+        parse_clob_v2_decimal(stringify!(p_usd_allowance), &source.p_usd_allowance)?;
+    let required_max_notional_plus_fees = parse_clob_v2_decimal(
+        stringify!(required_max_notional_plus_fees),
+        &source.required_max_notional_plus_fees,
+    )?;
+    if p_usd_balance < Decimal::ZERO {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(p_usd_balance),
+        });
+    }
+    if p_usd_allowance < Decimal::ZERO {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(p_usd_allowance),
+        });
+    }
+    if required_max_notional_plus_fees <= Decimal::ZERO {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(required_max_notional_plus_fees),
+        });
+    }
+    if p_usd_balance < required_max_notional_plus_fees
+        || p_usd_allowance < required_max_notional_plus_fees
+    {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(clob_v2_collateral_accounting_verified),
+        });
+    }
+    require_clob_v2_source_sha256(
+        stringify!(collateral_accounting_source_sha256),
+        &source.collateral_accounting_source_sha256,
+    )?;
+    require_clob_v2_source_sha256(
+        stringify!(collateral_assumptions_sha256),
+        &source.collateral_assumptions_sha256,
+    )?;
+    let proof_input = Phase8PreRunClobV2CollateralAccountingSourceProofHashInput {
+        schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_PROOF_RECORD_KIND,
+        p_usd_balance: &source.p_usd_balance,
+        p_usd_allowance: &source.p_usd_allowance,
+        required_max_notional_plus_fees: &source.required_max_notional_plus_fees,
+        collateral_accounting_source_sha256: &source.collateral_accounting_source_sha256,
+        collateral_assumptions_sha256: &source.collateral_assumptions_sha256,
+        clob_v2_collateral_accounting_source_sha256: &clob_v2_collateral_accounting_source_sha256,
+    };
+    let clob_v2_collateral_accounting_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8PreRunClobV2CollateralAccountingSourceProof {
+        clob_v2_collateral_accounting_verified: true,
+        clob_v2_collateral_accounting_source_sha256,
+        clob_v2_collateral_accounting_evidence_hash,
+    })
+}
+
+pub fn collect_pre_run_clob_v2_fee_behavior_source_proof(
+    clob_v2_fee_behavior_source_path: &Path,
+    max_source_bytes: u64,
+) -> Result<Phase8PreRunClobV2FeeBehaviorSourceProof, BoltV3OperatorArtifactError> {
+    let (source, clob_v2_fee_behavior_source_sha256) =
+        read_clob_v2_source::<Phase8PreRunClobV2FeeBehaviorSourceEvidence>(
+            clob_v2_fee_behavior_source_path,
+            max_source_bytes,
+        )?;
+    if source.schema_version != PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_SCHEMA_VERSION {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "schema_version",
+        });
+    }
+    if source.record_kind != PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_RECORD_KIND {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "record_kind",
+        });
+    }
+    if !source.fee_behavior_verified {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(clob_v2_fee_behavior_verified),
+        });
+    }
+    if !source.maker_zero_fee_verified {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(maker_zero_fee_verified),
+        });
+    }
+    if !source.taker_fee_schedule_verified {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(taker_fee_schedule_verified),
+        });
+    }
+    if !source.market_buy_fee_adjustment_verified {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(market_buy_fee_adjustment_verified),
+        });
+    }
+    let price = parse_clob_v2_decimal(stringify!(price), &source.price)?;
+    let fee_rate = parse_clob_v2_decimal(stringify!(fee_rate), &source.fee_rate)?;
+    if price <= Decimal::ZERO || price >= Decimal::ONE {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(price),
+        });
+    }
+    if fee_rate < Decimal::ZERO {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(fee_rate),
+        });
+    }
+    require_clob_v2_source_sha256(
+        stringify!(fee_behavior_source_sha256),
+        &source.fee_behavior_source_sha256,
+    )?;
+    require_clob_v2_source_sha256(
+        stringify!(fee_assumptions_sha256),
+        &source.fee_assumptions_sha256,
+    )?;
+    let proof_input = Phase8PreRunClobV2FeeBehaviorSourceProofHashInput {
+        schema_version: PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_PROOF_SCHEMA_VERSION,
+        record_kind: PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_PROOF_RECORD_KIND,
+        price: &source.price,
+        fee_rate: &source.fee_rate,
+        fee_behavior_source_sha256: &source.fee_behavior_source_sha256,
+        fee_assumptions_sha256: &source.fee_assumptions_sha256,
+        clob_v2_fee_behavior_source_sha256: &clob_v2_fee_behavior_source_sha256,
+    };
+    let clob_v2_fee_behavior_evidence_hash = json_artifact_sha256(&proof_input)?;
+
+    Ok(Phase8PreRunClobV2FeeBehaviorSourceProof {
+        clob_v2_fee_behavior_verified: true,
+        clob_v2_fee_behavior_source_sha256,
+        clob_v2_fee_behavior_evidence_hash,
     })
 }
 
@@ -2376,6 +2708,47 @@ struct Phase8PreRunFundingMarginSourceEvidence {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Phase8PreRunClobV2AdapterSigningSourceEvidence {
+    schema_version: u32,
+    record_kind: String,
+    clob_signing_version: String,
+    adapter_signing_source_sha256: String,
+    domain_requirements_sha256: String,
+    signed_order_fixture_sha256: String,
+    signature_verification_sha256: String,
+    signer_recovered_matches_expected: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Phase8PreRunClobV2CollateralAccountingSourceEvidence {
+    schema_version: u32,
+    record_kind: String,
+    collateral_accounting_verified: bool,
+    p_usd_balance: String,
+    p_usd_allowance: String,
+    required_max_notional_plus_fees: String,
+    collateral_accounting_source_sha256: String,
+    collateral_assumptions_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Phase8PreRunClobV2FeeBehaviorSourceEvidence {
+    schema_version: u32,
+    record_kind: String,
+    fee_behavior_verified: bool,
+    maker_zero_fee_verified: bool,
+    taker_fee_schedule_verified: bool,
+    market_buy_fee_adjustment_verified: bool,
+    price: String,
+    fee_rate: String,
+    fee_behavior_source_sha256: String,
+    fee_assumptions_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Phase8PreRunEgressIdentitySourceEvidence {
     schema_version: u32,
     record_kind: String,
@@ -2423,6 +2796,42 @@ struct Phase8PreRunFundingMarginSourceProofHashInput<'a> {
     required_max_notional_plus_fees: &'a str,
     margin_snapshot_sha256: &'a str,
     funding_margin_source_sha256: &'a str,
+}
+
+#[derive(Serialize)]
+struct Phase8PreRunClobV2AdapterSigningSourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    clob_signing_version: &'a str,
+    adapter_signing_source_sha256: &'a str,
+    domain_requirements_sha256: &'a str,
+    signed_order_fixture_sha256: &'a str,
+    signature_verification_sha256: &'a str,
+    signer_recovered_matches_expected: bool,
+    clob_v2_adapter_signing_source_sha256: &'a str,
+}
+
+#[derive(Serialize)]
+struct Phase8PreRunClobV2CollateralAccountingSourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    p_usd_balance: &'a str,
+    p_usd_allowance: &'a str,
+    required_max_notional_plus_fees: &'a str,
+    collateral_accounting_source_sha256: &'a str,
+    collateral_assumptions_sha256: &'a str,
+    clob_v2_collateral_accounting_source_sha256: &'a str,
+}
+
+#[derive(Serialize)]
+struct Phase8PreRunClobV2FeeBehaviorSourceProofHashInput<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    price: &'a str,
+    fee_rate: &'a str,
+    fee_behavior_source_sha256: &'a str,
+    fee_assumptions_sha256: &'a str,
+    clob_v2_fee_behavior_source_sha256: &'a str,
 }
 
 #[derive(Serialize)]
@@ -3237,7 +3646,7 @@ fn clob_domain_version_from_source(source: &str) -> Result<String, BoltV3Operato
     }
     Err(
         BoltV3OperatorArtifactError::PreRunReleaseManifestSourceInvalid {
-            field: "clob_signing_version",
+            field: stringify!(clob_signing_version),
         },
     )
 }

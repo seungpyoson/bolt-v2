@@ -1,7 +1,7 @@
 # Tasks: Production Trade Readiness
 
-**Input**: `specs/024-production-trade-readiness/spec.md`, `specs/024-production-trade-readiness/plan.md`, and `specs/024-production-trade-readiness/evidence.md`  
-**Branch/PR**: `goal/024-production-trade-readiness`, PR #478  
+**Input**: `specs/024-production-trade-readiness/spec.md`, `specs/024-production-trade-readiness/plan.md`, and `specs/024-production-trade-readiness/evidence.md`
+**Branch/PR**: `goal/024-production-trade-readiness`, PR #480
 **Policy**: one readiness PR; no order-intent-layer work; no #466 decomposition-ledger work.
 
 ## Phase 1: Baseline And Task-List Approval
@@ -9,8 +9,8 @@
 **Purpose**: Lock scope and approve this task list before production code work resumes.
 
 - [x] T001 Record current git, PR, issue, Speckit, readiness-ledger, code, and T038-branch evidence in `specs/024-production-trade-readiness/evidence.md`.
-- [x] T002 Update PR #478 body to reference `specs/024-production-trade-readiness/` as the active readiness task list, branch `goal/024-production-trade-readiness`, and to keep PR #479/#466 out of scope.
-- [x] T003 Remove #466 verifier-characterization/decomposition files from PR #478 and record the exact removed paths in `specs/024-production-trade-readiness/scope-resolution.md`.
+- [x] T002 Update PR #480 body to reference `specs/024-production-trade-readiness/` as the active readiness task list, branch `goal/024-production-trade-readiness`, and to keep PR #479/#466 out of scope.
+- [x] T003 Remove #466 verifier-characterization/decomposition files from PR #480 and record the exact removed paths in `specs/024-production-trade-readiness/scope-resolution.md`.
 - [ ] T004 Send `specs/024-production-trade-readiness/{spec.md,plan.md,tasks.md,evidence.md,external-tasklist-review.md}` to Claude, Gemini, DeepSeek, GLM, Kimi, and Grok for task-list review only; record verdicts in `specs/024-production-trade-readiness/external-tasklist-review.md`.
 - [ ] T005 Resolve every blocking task-list review finding in `specs/024-production-trade-readiness/tasks.md` and record disposition in `specs/024-production-trade-readiness/external-tasklist-review.md`.
 
@@ -18,7 +18,7 @@
 
 **Purpose**: Avoid blind ports and close/update issue state that current evidence already resolves.
 
-- [ ] T006 [P] Complete a targeted `t038-operator-config-snapshot` port audit in `specs/024-production-trade-readiness/t038-port-audit.md`, comparing each unique old branch behavior to current #478/main no-submit code and recording any exact missing patch.
+- [ ] T006 [P] Complete a targeted `t038-operator-config-snapshot` port audit in `specs/024-production-trade-readiness/t038-port-audit.md`, comparing each unique old branch behavior to current #480/main no-submit code and recording any exact missing patch.
 - [ ] T007 [P] Verify whether #409 PortfolioSnapshot acceptance criteria are satisfied by current source and tests; record close/update evidence in `specs/024-production-trade-readiness/issue-409-portfolio-snapshot.md`.
 - [ ] T008 [P] Update #385 evidence with the current distinction between historical T038 no-submit success and missing final-packet T131/T122 no-submit proof in `specs/024-production-trade-readiness/issue-385-no-submit.md`.
 
@@ -88,7 +88,7 @@
 
 - [ ] T039 [US5] Run focused readiness tests: `tests/bolt_v3_operator_artifacts.rs`, `tests/bolt_v3_tiny_canary_preconditions.rs`, `tests/bolt_v3_tiny_canary_operator.rs`, `tests/bolt_v3_live_canary_gate.rs`, and `tests/bolt_v3_cli.rs`.
 - [ ] T040 [US5] Run full local verification: `cargo fmt --check`, `git diff --check`, runtime-literal verification, source/slop/hardcode/secret scans, and readiness test suites; record output summary in `specs/024-production-trade-readiness/evidence.md`.
-- [ ] T041 [US5] Push PR #478 and record exact-head GitHub CI evidence in `specs/024-production-trade-readiness/evidence.md`.
+- [ ] T041 [US5] Push PR #480 and record exact-head GitHub CI evidence in `specs/024-production-trade-readiness/evidence.md`.
 - [ ] T042 [US5] Send exact-head final review to Claude, Gemini, DeepSeek, GLM, Kimi, and Grok; record unanimous approvals or explicit waivers in `specs/024-production-trade-readiness/external-final-review.md`.
 
 ## Phase 8: Approved Operations
@@ -100,7 +100,7 @@
 - [ ] T043 [US5] Execute T131/T122 final-packet EC2/EIP no-submit rerun with the verified root TOML and final operator packet; record evidence in `specs/024-production-trade-readiness/final-no-submit.md`.
 - [ ] T044 [US5] Execute T116/T046 tiny-capital canary with the verified root TOML and final operator packet; record evidence in `specs/024-production-trade-readiness/tiny-canary.md`.
 - [ ] T045 [US5] Run post-run artifact/log secret scan and record retention/purge decision in `specs/024-production-trade-readiness/post-run-hygiene.md`.
-- [ ] T046 [US5] Update #369, #385, #409, #360, and PR #478 with exact final readiness status and record links in `specs/024-production-trade-readiness/readiness-ledger.md`.
+- [ ] T046 [US5] Update #369, #385, #409, #360, and PR #480 with exact final readiness status and record links in `specs/024-production-trade-readiness/readiness-ledger.md`.
 
 ## Dependencies
 

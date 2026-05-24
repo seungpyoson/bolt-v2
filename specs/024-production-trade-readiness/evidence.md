@@ -1,20 +1,23 @@
 # Production Trade Readiness Evidence Baseline
 
-Date: 2026-05-25  
-Worktree: `/Users/spson/Projects/Claude/bolt-v2/.worktrees/466-command-tokenization-characterization`  
-Branch: `goal/024-production-trade-readiness`  
+Date: 2026-05-25
+Worktree: `/Users/spson/Projects/Claude/bolt-v2/.worktrees/466-command-tokenization-characterization`
+Branch: `goal/024-production-trade-readiness`
 Head: `aee45c97108219e82034bb2730aa4f1ddf7da5e8`
 
 ## Git And PR State
 
 - `git status --short --branch` in main: `## main...origin/main`.
 - `git status --short --branch` in #478 worktree before branch rename: `## goal/466-command-tokenization-characterization...origin/goal/466-command-tokenization-characterization`.
-- The existing PR #478 branch was renamed in GitHub and locally to `goal/024-production-trade-readiness`; no new PR was created.
-- PR #478 title/body were updated to identify `specs/024-production-trade-readiness/` as the active task packet, exclude order-intent and #466 work, and record the six-reviewer task-list gate.
+- The old PR #478 branch was renamed in GitHub and locally to `goal/024-production-trade-readiness`.
+- GitHub closed PR #478 after the branch rename and would not reopen it because the old head branch no longer exists.
+- PR #480 was opened from `goal/024-production-trade-readiness` as the active single production-readiness PR.
+- PR #480 title/body identify `specs/024-production-trade-readiness/` as the active task packet, exclude order-intent and #466 work, and record the six-reviewer task-list gate.
 - `gh pr list --state open` showed exactly two open PRs:
-  - #478 `Consolidate production trade-readiness follow-ups`, draft, head `aee45c97108219e82034bb2730aa4f1ddf7da5e8`, base `main`.
+  - #480 `Production trade-readiness consolidation`, draft, active readiness PR, base `main`.
+  - #478 is historical/closed after the branch rename.
   - #479 `Finalize #466 verifier decomposition ledger`, draft, head `8efef5863a6bd4a0f1a9276852fd63a37305bd2f`, base `main`.
-- #478 status check rollup showed successful build/test/gate/check jobs, with deploy and same-sha-main-evidence skipped.
+- Historical #478 status check rollup showed successful build/test/gate/check jobs, with deploy and same-sha-main-evidence skipped. #480 requires fresh exact-head CI before final review.
 
 ## Issue State
 
@@ -34,7 +37,7 @@ Head: `aee45c97108219e82034bb2730aa4f1ddf7da5e8`
 
 ## Current Code Evidence
 
-`rg` over #478 `src/bolt_v3_operator_artifacts.rs` found these current collector functions:
+`rg` over active readiness branch `src/bolt_v3_operator_artifacts.rs` found these current collector functions:
 
 - `collect_abort_plan_cancel_if_open_source_proof`
 - `collect_pre_run_release_manifest_source_proof`
@@ -44,7 +47,7 @@ Head: `aee45c97108219e82034bb2730aa4f1ddf7da5e8`
 
 The same search found no `pub fn collect_pre_run_venue...`, `collect_pre_run_funding...`, `collect_pre_run_egress...`, `collect_pre_run_clob...`, `collect_abort_plan_nt...`, `collect_abort_plan_partial...`, `collect_abort_plan_network...`, or `collect_abort_plan_panic...` functions.
 
-Implication: #478 has some source-owned collectors, but most T126/T127 fields are still satisfied only by caller-supplied proof bundles or fixtures.
+Implication: the active readiness branch has some source-owned collectors, but most T126/T127 fields are still satisfied only by caller-supplied proof bundles or fixtures.
 
 ## T038 Branch Evidence
 
@@ -60,7 +63,7 @@ Implication: #478 has some source-owned collectors, but most T126/T127 fields ar
   - `2849fb73 fix: pump NT events during no-submit connect`
   - `53c43608 fix: bind no-submit events before client registration`
 - `git log --oneline --all --grep='no-submit|Binance SBE|SBE v4|controlled connect|reference readiness'` showed later current-main no-submit/SBE work, including `ddace928 Unblock no-submit transport and Binance SBE (#408)`, `973cb4f3 fix: run no-submit readiness from sync boundary`, `d69b43c2 fix: harden no-submit reference readiness evidence`, and `85ec589d fix: harden no-submit readiness waits`.
-- Current #478 tests assert no-submit uses `node.run()` in the strategy-free helper and must not use `LiveNode::start` because `start` does not drain execution account events.
+- Current readiness branch tests assert no-submit uses `node.run()` in the strategy-free helper and must not use `LiveNode::start` because `start` does not drain execution account events.
 - `specs/001-thin-live-canary-path/tasks.md` records a later EC2/EIP T038 pass at head `1245264f294ae096155bffc3236fb692cc46b46f`, with all seven no-submit stages satisfied.
 
 Implication: do not port `t038-operator-config-snapshot` wholesale. The remaining task is a targeted port audit for any still-missing behavior or operator snapshot evidence after current no-submit code and docs are considered.

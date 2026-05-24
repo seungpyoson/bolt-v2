@@ -22,9 +22,9 @@ Reviewed files:
 
 ## Round 1 Disposition
 
-- Blocking branch-identity finding: fixed by renaming the existing PR #478 branch to `goal/024-production-trade-readiness` in GitHub and locally. This did not create another PR.
+- Blocking branch-identity finding: fixed by moving active readiness work to `goal/024-production-trade-readiness`. GitHub closed historical PR #478 after the rename, so PR #480 is now the single active readiness PR.
 - Six-reviewer quorum wording: fixed in `spec.md` and `tasks.md`; the required reviewers are Claude, Gemini, DeepSeek, GLM, Kimi, and Grok.
-- Scope-contamination handling: tightened T003 to require removal of #466 verifier-characterization/decomposition files from PR #478 before implementation resumes.
+- Scope-contamination handling: tightened T003 to require removal of #466 verifier-characterization/decomposition files from PR #480 before implementation resumes.
 - Stale active-feature pointer: `.specify/feature.json` now points to `specs/024-production-trade-readiness`.
 - #409 criteria: T007 remains a required evidence task before issue close/update.
 

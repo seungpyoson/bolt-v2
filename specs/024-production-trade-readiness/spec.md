@@ -1,8 +1,8 @@
 # Feature Specification: Production Trade Readiness
 
-**Feature Branch**: `goal/024-production-trade-readiness`  
-**Created**: 2026-05-25  
-**Status**: Evidence-first task baseline  
+**Feature Branch**: `goal/024-production-trade-readiness`
+**Created**: 2026-05-25
+**Status**: Evidence-first task baseline
 
 ## Scope
 
@@ -12,11 +12,11 @@ Finish production-grade trade readiness for the existing bolt-v3 live path. This
 
 This task list was rebuilt from current hard evidence, not from the stale active Spec Kit pointer:
 
-- Current git and PR state for PR #478 and PR #479.
+- Current git and PR state for PR #480, historical PR #478, and PR #479.
 - GitHub issues #369, #385, #409, and #360.
 - `specs/001-thin-live-canary-path/tasks.md`.
 - `docs/bolt-v3/2026-05-23-pr388-t124-t128-root-problem-memos.md`.
-- Current #478 source inspection of `src/bolt_v3_operator_artifacts.rs` and `tests/bolt_v3_operator_artifacts.rs`.
+- Current readiness source inspection of `src/bolt_v3_operator_artifacts.rs` and `tests/bolt_v3_operator_artifacts.rs`.
 - Fetched branch `origin/t038-operator-config-snapshot` at `53c43608e74d7d8293c8830f57ed180d94bb7c5a`.
 
 The command-level evidence is recorded in `specs/024-production-trade-readiness/evidence.md`.
@@ -27,7 +27,7 @@ The command-level evidence is recorded in `specs/024-production-trade-readiness/
 
 As operator, I need one readiness PR and one current readiness task list so implementation does not drift into order-intent or #466 work.
 
-**Independent Test**: PR #478 references this feature on `goal/024-production-trade-readiness`, PR #479 remains excluded, non-readiness files are removed from the PR, and the readiness task list has six-reviewer task-list approvals before implementation resumes.
+**Independent Test**: PR #480 references this feature on `goal/024-production-trade-readiness`, PR #479 remains excluded, non-readiness files are removed from the PR, and the readiness task list has six-reviewer task-list approvals before implementation resumes.
 
 ### User Story 2 - Real Decision Evidence Is Bound (Priority: P1)
 

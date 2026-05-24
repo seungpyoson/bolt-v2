@@ -1,8 +1,8 @@
 # Scope Resolution
 
-PR #478 is the single production trade-readiness PR. PR #479 remains the separate #466 verifier decomposition PR.
+PR #480 is the single active production trade-readiness PR. Historical PR #478 was closed by GitHub after the stale branch was renamed. PR #479 remains the separate #466 verifier decomposition PR.
 
-The following non-readiness verifier/decomposition/disk-governance paths were restored to `origin/main` content in the #478 worktree so they will not remain in the final PR #478 diff after commit:
+The following non-readiness verifier/decomposition/disk-governance paths were restored to `origin/main` content in the readiness worktree so they will not remain in the final PR #480 diff:
 
 - `ci/rust-verification.toml`
 - `scripts/rust_verification.py`

@@ -72,9 +72,9 @@
 - [x] T028 Run `git diff --check`.
 - [x] T029 Run `just ci-lint-workflow`.
 - [x] T030 Run unresolved-marker scan over `specs/464-decompose-disk-governance-verifiers/` and touched Python files.
-- [ ] T031 Commit branch `codex/464-verifier-decomposition` with `scripts/command_understanding.py`, `scripts/rust_verification.py`, `scripts/verify_ci_workflow_hygiene.py`, `scripts/test_command_understanding.py`, and `specs/464-decompose-disk-governance-verifiers/evidence.md`.
-- [ ] T032 Push branch `codex/464-verifier-decomposition` containing `specs/464-decompose-disk-governance-verifiers/tasks.md`.
-- [ ] T033 Open PR for issue #464 with scope, non-goals, evidence map, chosen slice, remaining local behavior, tests, external review results, skipped review slots, residual risk, and relationship to PR #461 from `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T031 Commit branch `codex/464-verifier-decomposition` with `scripts/command_understanding.py`, `scripts/rust_verification.py`, `scripts/verify_ci_workflow_hygiene.py`, `scripts/test_command_understanding.py`, and `specs/464-decompose-disk-governance-verifiers/evidence.md`.
+- [x] T032 Push branch `codex/464-verifier-decomposition` containing `specs/464-decompose-disk-governance-verifiers/tasks.md`.
+- [x] T033 Open PR for issue #464 with scope, non-goals, evidence map, chosen slice, remaining local behavior, tests, external review results, skipped review slots, residual risk, and relationship to PR #461 from `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 - [ ] T034 Confirm exact-head GitHub CI is green for the PR head that includes `scripts/command_understanding.py`.
 - [ ] T035 Request exact-head implementation review from Claude, Gemini, Kimi, Grok, GLM, and DeepSeek; record all verdicts or skipped/failed slots in `specs/464-decompose-disk-governance-verifiers/evidence.md`.
 - [ ] T036 Resolve or explicitly record every implementation review finding in `specs/464-decompose-disk-governance-verifiers/evidence.md`.

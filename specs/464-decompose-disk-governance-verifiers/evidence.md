@@ -7,6 +7,7 @@
 | Issue #464 | Open: continue disk-governance verifier decomposition after PR #461. |
 | Issue #454 | Closed as completed. |
 | PR #461 | Merged into `main` as `817ddfc9af8cd835ee6143f0562595f73a1d2645`. |
+| PR #465 | Open: `https://github.com/seungpyoson/bolt-v2/pull/465`. |
 | Worktree | `.worktrees/464-verifier-decomposition` |
 | Branch | `codex/464-verifier-decomposition` tracking `origin/codex/464-verifier-decomposition` |
 | Branch base | `817ddfc9af8cd835ee6143f0562595f73a1d2645` |
@@ -113,4 +114,6 @@ Implementation gate is open because the operator explicitly waived the failed Ki
 | T027 Python syntax | Pass: `python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py`. |
 | T028 whitespace | Pass: `git diff --check` produced no output. |
 | T029 CI workflow verifier path | Pass: `just ci-lint-workflow` completed with `OK: No raw cargo workflow commands or explicit Rust-wrapper bypasses found`. |
-| T030 unresolved-marker scan | Pass: no `TODO`, `FIXME`, `TBD`, `XXX`, conflict marker, `REPLACE_ME`, or `PLACEHOLDER` matches in specs or touched Python files. |
+| T030 unresolved-marker scan | Pass: no unresolved-marker matches in specs or touched Python files. |
+| T031 implementation commit | `0aa53b3f62e3902f3d9a403ce21f6af2a1fe2c36` (`refactor: share cargo scanner helpers`). |
+| T033 pull request | PR #465 opened for issue #464 slice without claiming to close #464. |

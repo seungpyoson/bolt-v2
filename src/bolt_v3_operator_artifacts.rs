@@ -1629,6 +1629,46 @@ pub fn write_abort_plan_artifact_from_source_bundle_file(
     )
 }
 
+pub fn write_abort_plan_artifact_from_source_collectors(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    strategy_source_path: &Path,
+    submit_admission_source_path: &Path,
+    max_source_bytes: u64,
+    path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let cancel_if_open =
+        collect_abort_plan_cancel_if_open_source_proof(strategy_source_path, max_source_bytes)?;
+    let venue_pending = collect_abort_plan_nt_accepted_venue_pending_source_proof(
+        strategy_source_path,
+        max_source_bytes,
+    )?;
+    let partial_fill =
+        collect_abort_plan_partial_fill_source_proof(strategy_source_path, max_source_bytes)?;
+    let network_partition =
+        collect_abort_plan_network_partition_source_proof(strategy_source_path, max_source_bytes)?;
+    let panic_gate = collect_abort_plan_panic_gate_service_policy_source_proof(
+        strategy_source_path,
+        submit_admission_source_path,
+        max_source_bytes,
+    )?;
+    let proofs = OwnedPhase8AbortPlanSourceProofs {
+        cancel_if_open_evidence_hash: cancel_if_open.cancel_if_open_evidence_hash,
+        nt_accepted_venue_pending_abort_evidence_hash: venue_pending
+            .nt_accepted_venue_pending_abort_evidence_hash,
+        partial_fill_abort_evidence_hash: partial_fill.partial_fill_abort_evidence_hash,
+        network_partition_during_submit_abort_evidence_hash: network_partition
+            .network_partition_during_submit_abort_evidence_hash,
+        panic_gate_trip_abort_evidence_hash: panic_gate.panic_gate_trip_abort_evidence_hash,
+    };
+    write_abort_plan_artifact_from_source_proofs(
+        loaded,
+        strategy_instance_id,
+        proofs.as_source_proofs(),
+        path,
+    )
+}
+
 pub fn collect_abort_plan_cancel_if_open_source_proof(
     strategy_source_path: &Path,
     max_strategy_source_bytes: u64,

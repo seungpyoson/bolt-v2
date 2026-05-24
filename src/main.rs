@@ -8,6 +8,7 @@ use bolt_v2::{
     bolt_v3_operator_artifacts::{
         WrittenOperatorArtifact, assemble_operator_packet_from_static_manifest,
         verify_final_operator_packet, write_abort_plan_artifact_from_source_bundle_file,
+        write_abort_plan_artifact_from_source_collectors,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_pre_run_state_artifact_from_source_bundle_file,
         write_static_artifacts_manifest_from_operator_evidence, write_static_operator_artifacts,
@@ -102,6 +103,20 @@ enum OperatorArtifactsCommand {
         source_bundle: PathBuf,
         #[arg(long)]
         max_source_bundle_bytes: u64,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    GenerateAbortPlanFromSourceCollectors {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        strategy_source: PathBuf,
+        #[arg(long)]
+        submit_admission_source: PathBuf,
+        #[arg(long)]
+        max_source_bytes: u64,
         #[arg(long)]
         output: PathBuf,
     },
@@ -279,6 +294,25 @@ fn run_operator_artifacts_command(
                 max_decision_evidence_bytes,
                 &market_selection_source_ref,
                 &candidate_market_start_timestamp_ms,
+                &output,
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::GenerateAbortPlanFromSourceCollectors {
+            config,
+            strategy_instance_id,
+            strategy_source,
+            submit_admission_source,
+            max_source_bytes,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let written = write_abort_plan_artifact_from_source_collectors(
+                &loaded,
+                &strategy_instance_id,
+                &strategy_source,
+                &submit_admission_source,
+                max_source_bytes,
                 &output,
             )?;
             print_written_operator_artifact(&written)

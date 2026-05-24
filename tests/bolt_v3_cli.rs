@@ -162,6 +162,32 @@ fn bolt_v3_cli_exposes_source_bundle_artifact_commands() {
 }
 
 #[test]
+fn bolt_v3_cli_exposes_abort_plan_source_collector_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-abort-plan-from-source-collectors",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 source-owned abort-plan help should run");
+
+    assert!(
+        output.status.success(),
+        "expected source-owned abort-plan help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"), "{stdout}");
+    assert!(stdout.contains("--strategy-instance-id"), "{stdout}");
+    assert!(stdout.contains("--strategy-source"), "{stdout}");
+    assert!(stdout.contains("--submit-admission-source"), "{stdout}");
+    assert!(stdout.contains("--max-source-bytes"), "{stdout}");
+    assert!(stdout.contains("--output"), "{stdout}");
+}
+
+#[test]
 fn bolt_v3_cli_exposes_strategy_input_decision_evidence_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([

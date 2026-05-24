@@ -211,3 +211,19 @@ The collector is non-live and source-owned: it reads bounded local Rust source, 
 - `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 The collector is non-live and source-owned: it reads bounded local Rust source for the strategy and submit-admission modules, validates cache-probe panic containment into `BlindRecovery`, validates debug-only invariant panic with release-mode report/error return, validates service-submit lifecycle policy derives from the strategy config, validates submit admission rejects unarmed and lifecycle-disallowed submits before admission, validates replace-submit is gated by policy while entry/risk-reducing exits remain allowed, returns only a source-proof hash, and does not write `abort-plan.json`. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T031/T032.
+
+## T033/T034 Source-Owned T127 Abort-Plan Binding Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts abort_plan_writer_emits_artifact_from_source_owned_collectors -- --nocapture` failed with `E0425` because `write_abort_plan_artifact_from_source_collectors` did not exist.
+- RED: `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_abort_plan_source_collector_command -- --nocapture` failed because `generate-abort-plan-from-source-collectors` was not exposed.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts abort_plan_writer_emits_artifact_from_source_owned_collectors -- --nocapture` passed: 1 passed, 0 failed.
+- GREEN: `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_abort_plan_source_collector_command -- --nocapture` passed: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts abort_plan_ -- --nocapture`: 28 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `python3 -B scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `python3 -B scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `git diff --check`: passed.
+- `just fmt-check`: passed.
+- `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+T127 no longer depends on a caller-supplied abort source bundle for local artifact generation. `write_abort_plan_artifact_from_source_collectors` and the `operator-artifacts generate-abort-plan-from-source-collectors` CLI path collect cancel-if-open, NT-accepted/venue-pending, partial-fill, network-partition, and panic/service-policy proofs from bounded local source inputs, then write the final `abort-plan.json`. The schema-level operator evidence config still binds the final artifact by `abort_plan_path` and `abort_plan_sha256`; the approved root TOML update remains T037 with the full final packet.

@@ -324,6 +324,95 @@ fn abort_plan_writer_emits_config_bound_artifact_from_source_proofs() {
 }
 
 #[test]
+fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let abort_plan_path = temp.path().join("abort-plan.json");
+    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+    let submit_admission_source_path = repo_path("src/bolt_v3_submit_admission.rs");
+
+    let cancel_if_open =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            1_000_000,
+        )
+        .expect("cancel-if-open source proof should collect");
+    let venue_pending = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
+        &strategy_source_path,
+        1_000_000,
+    )
+    .expect("NT-accepted venue-pending source proof should collect");
+    let partial_fill =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
+            &strategy_source_path,
+            1_000_000,
+        )
+        .expect("partial-fill source proof should collect");
+    let network_partition =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_network_partition_source_proof(
+            &strategy_source_path,
+            1_000_000,
+        )
+        .expect("network-partition source proof should collect");
+    let panic_gate =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_panic_gate_service_policy_source_proof(
+            &strategy_source_path,
+            &submit_admission_source_path,
+            1_000_000,
+        )
+        .expect("panic-gate/service-policy source proof should collect");
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_abort_plan_artifact_from_source_collectors(
+            &loaded,
+            strategy_instance_id,
+            &strategy_source_path,
+            &submit_admission_source_path,
+            1_000_000,
+            &abort_plan_path,
+        )
+        .expect("source-owned collectors should write abort-plan artifact");
+
+    let artifact_bytes = std::fs::read(&abort_plan_path).expect("abort plan artifact should exist");
+    assert_eq!(written.sha256, hex::encode(Sha256::digest(&artifact_bytes)));
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&artifact_bytes).expect("abort plan should be JSON");
+    assert_eq!(json["cancel_if_open_defined"], true);
+    assert_eq!(json["nt_accepted_venue_pending_abort_defined"], true);
+    assert_eq!(json["partial_fill_abort_defined"], true);
+    assert_eq!(json["network_partition_during_submit_abort_defined"], true);
+    assert_eq!(json["panic_gate_trip_abort_defined"], true);
+    assert_eq!(
+        json["cancel_if_open_evidence_hash"],
+        cancel_if_open.cancel_if_open_evidence_hash
+    );
+    assert_eq!(
+        json["nt_accepted_venue_pending_abort_evidence_hash"],
+        venue_pending.nt_accepted_venue_pending_abort_evidence_hash
+    );
+    assert_eq!(
+        json["partial_fill_abort_evidence_hash"],
+        partial_fill.partial_fill_abort_evidence_hash
+    );
+    assert_eq!(
+        json["network_partition_during_submit_abort_evidence_hash"],
+        network_partition.network_partition_during_submit_abort_evidence_hash
+    );
+    assert_eq!(
+        json["panic_gate_trip_abort_evidence_hash"],
+        panic_gate.panic_gate_trip_abort_evidence_hash
+    );
+}
+
+#[test]
 fn abort_plan_writer_emits_artifact_from_source_bundle_file() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded

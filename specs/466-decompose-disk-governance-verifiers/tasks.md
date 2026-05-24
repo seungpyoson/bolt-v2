@@ -47,9 +47,9 @@
 - [ ] T030 [P] [US2] Add RED import-mode guard for any test-only import setup cleanup in `scripts/test_command_understanding.py`
 - [ ] T031 [US2] Implement approved test-only import setup cleanup in `scripts/test_command_understanding.py`
 - [ ] T032 [US2] Mark ledger item 7 resolved in `specs/466-decompose-disk-governance-verifiers/evidence.md`
-- [ ] T033 [P] [US2] Add/verify parity or identity guard for static `CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT` handling in `scripts/test_command_understanding.py`
-- [ ] T034 [US2] Import shared `CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT` in `scripts/verify_ci_workflow_hygiene.py` if review approves; otherwise retain explicit parity guard/comment
-- [ ] T035 [US2] Mark ledger item 8 resolved in `specs/466-decompose-disk-governance-verifiers/evidence.md`
+- [x] T033 [P] [US2] Add/verify parity or identity guard for static `CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT` handling in `scripts/test_command_understanding.py`
+- [x] T034 [US2] Import shared `CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT` in `scripts/verify_ci_workflow_hygiene.py` if review approves; otherwise retain explicit parity guard/comment
+- [x] T035 [US2] Mark ledger item 8 resolved in `specs/466-decompose-disk-governance-verifiers/evidence.md`
 
 ## Phase 5: User Story 3 - Gate PRs And Issue Closure With Evidence (Priority: P3)
 

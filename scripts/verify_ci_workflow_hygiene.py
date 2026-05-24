@@ -17,6 +17,7 @@ if str(SCRIPT_DIR) not in sys.path:
 # Keep the former verifier-local helper families module-scoped so parity tests
 # prove the old helper surface now points at the shared path.
 from command_understanding import (
+    CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT,
     cargo_args_for_target_routing_scan,
     cargo_subcommand,
     cargo_subcommand_with_index,
@@ -334,17 +335,6 @@ CI_INSTALL_ACTION_COMMANDS = {
     "advisories": "just deny-advisories",
     "test-archive": 'just test-archive "$NEXTEST_ARCHIVE_PATH"',
     "test-shards": TEST_PARTITION_COMMAND,
-}
-CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT = {
-    "--color",
-    "--config",
-    "--jobs",
-    "--manifest-path",
-    "--profile",
-    "--target",
-    "--target-dir",
-    "-C",
-    "-Z",
 }
 # Static-only option consumption keeps these local constants intentionally; the
 # shared scanner has broader Cargo CLI coverage while preserving scan parity.

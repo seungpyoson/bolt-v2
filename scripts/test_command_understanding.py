@@ -261,9 +261,9 @@ def assert_shared_cargo_scanner_helpers_match_current_verifiers() -> None:
     if identity_failures:
         raise AssertionError("verifier clients must import shared cargo scanner helpers: " + ", ".join(identity_failures))
 
-    if static.CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT != shared.CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT:
+    if static.CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT is not shared.CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT:
         raise AssertionError(
-            "static CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT must stay aligned with shared cargo scanner constants"
+            "static CARGO_GLOBAL_OPTIONS_WITH_ARGUMENT must use the shared cargo scanner constant"
         )
 
     cargo_subcommand_cases = [

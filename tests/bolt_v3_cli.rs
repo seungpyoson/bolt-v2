@@ -359,6 +359,33 @@ fn bolt_v3_cli_exposes_market_selection_decision_evidence_command() {
 }
 
 #[test]
+fn bolt_v3_cli_exposes_entry_decision_evidence_source_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-entry-decision-evidence-from-source",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 entry decision-evidence source help should run");
+
+    assert!(
+        output.status.success(),
+        "expected entry decision-evidence source help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--strategy-instance-id"));
+    assert!(stdout.contains("--decision-source"));
+    assert!(stdout.contains("--max-decision-source-bytes"));
+    assert!(stdout.contains("--instrument-source"));
+    assert!(stdout.contains("--max-instrument-source-bytes"));
+    assert!(stdout.contains("--max-decision-evidence-bytes"));
+}
+
+#[test]
 fn bolt_v3_static_operator_artifacts_command_fails_closed_on_abort_blocker() {
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(

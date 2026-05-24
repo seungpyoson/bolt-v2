@@ -3,10 +3,14 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     rc::Rc,
     str::FromStr,
+    sync::Arc,
 };
 
 use anyhow::{Context, Result};
-use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
+use futures_util::future::{BoxFuture, FutureExt};
+use nautilus_common::{
+    actor::DataActor, cache::Cache, clock::TestClock, component::Component, timer::TimeEvent,
+};
 use nautilus_core::{Params, UnixNanos};
 #[cfg(not(test))]
 use nautilus_model::enums::BookType;
@@ -16,11 +20,12 @@ use nautilus_model::{
         BookAction, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce, TrailingOffsetType,
         TriggerType,
     },
-    identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
+    identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
     types::{Price, Quantity},
 };
+use nautilus_portfolio::portfolio::Portfolio;
 use nautilus_system::trader::Trader;
 use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, nautilus_strategy};
 use rust_decimal::{
@@ -5294,6 +5299,274 @@ impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {
         trader.borrow_mut().add_strategy(strategy)?;
         Ok(strategy_id)
     }
+}
+
+pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 1;
+pub const ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND: &str =
+    "bolt_v3.binary_oracle_entry_decision_source.v1";
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOracleEntryDecisionEvidenceSource {
+    pub schema_version: u32,
+    pub record_kind: String,
+    pub market_selection_timestamp_ms: u64,
+    pub decision_timestamp_ms: u64,
+    pub price_to_beat_value: f64,
+    pub warmup_count: u64,
+    pub reference_quote: BinaryOracleEntryReferenceQuoteSource,
+    pub realized_volatility: BinaryOracleEntryRealizedVolatilitySource,
+    pub fees: BinaryOracleEntryFeeSource,
+    pub books: BinaryOracleEntryBooksSource,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOracleEntryReferenceQuoteSource {
+    pub venue: String,
+    pub price: f64,
+    pub observed_ts_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOracleEntryRealizedVolatilitySource {
+    pub value: f64,
+    pub ready_ts_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOracleEntryFeeSource {
+    pub fee_bps_by_instrument_id: BTreeMap<String, f64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOracleEntryBooksSource {
+    pub price_precision: u8,
+    pub up: BinaryOracleEntryBookSideSource,
+    pub down: BinaryOracleEntryBookSideSource,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOracleEntryBookSideSource {
+    pub best_bid: f64,
+    pub bid_quantity: f64,
+    pub best_ask: f64,
+    pub ask_quantity: f64,
+    pub liquidity_available: f64,
+}
+
+#[derive(Debug, Clone)]
+struct SourceFeeProvider {
+    fee_bps_by_instrument_id: BTreeMap<String, Decimal>,
+}
+
+impl FeeProvider for SourceFeeProvider {
+    fn fee_bps(&self, instrument_id: InstrumentId) -> Option<Decimal> {
+        self.fee_bps_by_instrument_id
+            .get(&instrument_id.to_string())
+            .copied()
+    }
+
+    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
+        async { Ok(()) }.boxed()
+    }
+}
+
+pub fn record_entry_decision_evidence_from_source(
+    raw_config: &Value,
+    decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    trader_id: TraderId,
+    source: &BinaryOracleEntryDecisionEvidenceSource,
+    instruments: &[InstrumentAny],
+) -> Result<()> {
+    validate_entry_decision_source(source)?;
+    if instruments.is_empty() {
+        anyhow::bail!("entry decision evidence source requires at least one instrument");
+    }
+
+    let fee_provider = Arc::new(SourceFeeProvider {
+        fee_bps_by_instrument_id: source_fee_bps_by_instrument_id(source)?,
+    });
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
+            decision_evidence.clone(),
+        ),
+    );
+    let context = StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission);
+    let mut strategy = BinaryOracleEdgeTaker::new(
+        BinaryOracleEdgeTakerBuilder::parse_config(raw_config)?,
+        context,
+    );
+    register_source_replay_strategy(&mut strategy, trader_id, source, instruments)?;
+
+    let mut selection = selection_snapshot_from_instruments(
+        &strategy.config,
+        instruments,
+        source.market_selection_timestamp_ms,
+    );
+    let SelectionState::Active { market } = &mut selection.decision.state else {
+        anyhow::bail!("entry decision evidence source did not select an active configured market");
+    };
+    market.price_to_beat = Some(source.price_to_beat_value);
+    selection.published_at_ms = source.market_selection_timestamp_ms;
+    strategy.apply_selection_snapshot(selection);
+    strategy.observe_reference_quote(&FastSpotObservation {
+        venue_name: source.reference_quote.venue.clone(),
+        price: source.reference_quote.price,
+        observed_ts_ms: source.reference_quote.observed_ts_ms,
+    });
+    strategy.active.warmup_count = source.warmup_count;
+    strategy.pricing.realized_vol.last_ready_vol = Some(source.realized_volatility.value);
+    strategy.pricing.realized_vol.last_ready_ts_ms = Some(source.realized_volatility.ready_ts_ms);
+    strategy.refresh_fee_readiness();
+    apply_entry_decision_source_books(&mut strategy, &source.books)?;
+
+    match strategy.try_submit_entry_order(source.decision_timestamp_ms) {
+        Err(error) if error.to_string().contains("submit admission is not armed") => Ok(()),
+        Err(error) => Err(error),
+        Ok(_) => anyhow::bail!(
+            "entry decision evidence source unexpectedly admitted an order; submit admission must stay unarmed"
+        ),
+    }
+}
+
+fn validate_entry_decision_source(source: &BinaryOracleEntryDecisionEvidenceSource) -> Result<()> {
+    anyhow::ensure!(
+        source.schema_version == ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION,
+        "entry decision evidence source schema_version is invalid"
+    );
+    anyhow::ensure!(
+        source.record_kind == ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND,
+        "entry decision evidence source record_kind is invalid"
+    );
+    anyhow::ensure!(
+        source.decision_timestamp_ms >= source.market_selection_timestamp_ms,
+        "entry decision evidence source decision_timestamp_ms precedes market selection"
+    );
+    anyhow::ensure!(
+        is_positive_finite(source.price_to_beat_value),
+        "entry decision evidence source price_to_beat_value is invalid"
+    );
+    anyhow::ensure!(
+        is_positive_finite(source.reference_quote.price),
+        "entry decision evidence source reference quote price is invalid"
+    );
+    anyhow::ensure!(
+        is_positive_finite(source.realized_volatility.value),
+        "entry decision evidence source realized volatility is invalid"
+    );
+    Ok(())
+}
+
+fn source_fee_bps_by_instrument_id(
+    source: &BinaryOracleEntryDecisionEvidenceSource,
+) -> Result<BTreeMap<String, Decimal>> {
+    let mut fees = BTreeMap::new();
+    for (instrument_id, fee_bps) in &source.fees.fee_bps_by_instrument_id {
+        anyhow::ensure!(
+            !instrument_id.trim().is_empty(),
+            "entry decision evidence source fee instrument id is required"
+        );
+        anyhow::ensure!(
+            is_non_negative_finite(*fee_bps),
+            "entry decision evidence source fee bps is invalid"
+        );
+        let fee_bps = Decimal::from_f64(*fee_bps)
+            .ok_or_else(|| anyhow::anyhow!("entry decision evidence source fee bps is invalid"))?;
+        fees.insert(instrument_id.clone(), fee_bps);
+    }
+    Ok(fees)
+}
+
+fn register_source_replay_strategy(
+    strategy: &mut BinaryOracleEdgeTaker,
+    trader_id: TraderId,
+    source: &BinaryOracleEntryDecisionEvidenceSource,
+    instruments: &[InstrumentAny],
+) -> Result<()> {
+    let clock = Rc::new(RefCell::new(TestClock::new()));
+    clock.borrow_mut().set_time(UnixNanos::from(
+        source
+            .decision_timestamp_ms
+            .saturating_mul(NANOS_PER_MILLI_U64),
+    ));
+    let cache = Rc::new(RefCell::new(Cache::new(None, None)));
+    let portfolio = Rc::new(RefCell::new(Portfolio::new(
+        cache.clone(),
+        clock.clone(),
+        None,
+    )));
+    strategy
+        .core
+        .register(trader_id, clock, cache.clone(), portfolio)
+        .context("failed to register source replay strategy core")?;
+    let mut cache = cache.borrow_mut();
+    for instrument in instruments {
+        cache
+            .add_instrument(instrument.clone())
+            .context("failed to add source replay instrument to cache")?;
+    }
+    Ok(())
+}
+
+fn apply_entry_decision_source_books(
+    strategy: &mut BinaryOracleEdgeTaker,
+    books: &BinaryOracleEntryBooksSource,
+) -> Result<()> {
+    apply_entry_decision_source_book(
+        &mut strategy.active.books.up,
+        &books.up,
+        books.price_precision,
+    )
+    .context("entry decision evidence up book source is invalid")?;
+    apply_entry_decision_source_book(
+        &mut strategy.active.books.down,
+        &books.down,
+        books.price_precision,
+    )
+    .context("entry decision evidence down book source is invalid")?;
+    Ok(())
+}
+
+fn apply_entry_decision_source_book(
+    book: &mut OutcomeBookState,
+    source: &BinaryOracleEntryBookSideSource,
+    price_precision: u8,
+) -> Result<()> {
+    let instrument_id = book
+        .instrument_id
+        .ok_or_else(|| anyhow::anyhow!("entry decision evidence book is missing instrument id"))?;
+    anyhow::ensure!(
+        is_positive_finite(source.best_bid)
+            && is_positive_finite(source.best_ask)
+            && is_positive_finite(source.bid_quantity)
+            && is_positive_finite(source.ask_quantity)
+            && is_positive_finite(source.liquidity_available),
+        "entry decision evidence book contains non-positive values"
+    );
+    anyhow::ensure!(
+        source.best_bid <= source.best_ask,
+        "entry decision evidence book best_bid exceeds best_ask"
+    );
+    book.last_observed_instrument_id = Some(instrument_id);
+    book.bid_levels.clear();
+    book.ask_levels.clear();
+    let best_bid = Price::new_checked(source.best_bid, price_precision).map_err(|source| {
+        anyhow::anyhow!("entry decision evidence book bid is invalid: {source}")
+    })?;
+    let best_ask = Price::new_checked(source.best_ask, price_precision).map_err(|source| {
+        anyhow::anyhow!("entry decision evidence book ask is invalid: {source}")
+    })?;
+    book.bid_levels.insert(best_bid, source.bid_quantity);
+    book.ask_levels.insert(best_ask, source.ask_quantity);
+    book.best_bid = Some(source.best_bid);
+    book.best_ask = Some(source.best_ask);
+    book.liquidity_available = Some(source.liquidity_available);
+    Ok(())
 }
 
 fn apply_selection_snapshot_to_active(

@@ -4,6 +4,7 @@ use std::{
     io::{self, Read, Write},
     ops::Range,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::anyhow;
@@ -14,10 +15,11 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 use crate::{
+    bolt_v3_archetypes::binary_oracle_edge_taker::raw_taker_config,
     bolt_v3_config::{LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
     bolt_v3_decision_evidence::{
-        BoltV3StrategyInputEvidenceSnapshot, decision_evidence_path,
-        read_latest_entry_decision_evidence_chain,
+        BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
+        decision_evidence_path, read_latest_entry_decision_evidence_chain,
     },
     bolt_v3_live_canary_gate::{
         APPROVAL_ENVELOPE_RECORD_KIND, APPROVAL_ENVELOPE_SCHEMA_VERSION,
@@ -32,6 +34,9 @@ use crate::{
         Phase8MarketSelectionSourceEvidenceFile, Phase8PreRunStateEvidenceFile,
         Phase8PreRunStateSourceProofs, Phase8StrategyInputEvidenceFile,
         Phase8StrategyInputSafetyAudit,
+    },
+    strategies::binary_oracle_edge_taker::{
+        BinaryOracleEntryDecisionEvidenceSource, record_entry_decision_evidence_from_source,
     },
 };
 
@@ -516,6 +521,21 @@ pub enum BoltV3OperatorArtifactError {
     StrategyInputPrerequisiteUnproven {
         prerequisite: &'static str,
     },
+    DecisionEvidenceSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    DecisionEvidenceSourceParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    DecisionEvidenceSourceInvalid {
+        message: String,
+    },
+    DecisionEvidenceFileRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     MarketSelectionSourceRead {
         path: PathBuf,
         source: std::io::Error,
@@ -813,6 +833,21 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "refusing to write successful strategy-input evidence because {prerequisite}"
             ),
+            Self::DecisionEvidenceSourceRead { source, .. } => {
+                write!(f, "failed to read entry decision evidence source: {source}")
+            }
+            Self::DecisionEvidenceSourceParse { source, .. } => {
+                write!(
+                    f,
+                    "failed to parse entry decision evidence source: {source}"
+                )
+            }
+            Self::DecisionEvidenceSourceInvalid { message } => {
+                write!(f, "entry decision evidence source is invalid: {message}")
+            }
+            Self::DecisionEvidenceFileRead { source, .. } => {
+                write!(f, "failed to read entry decision evidence JSONL: {source}")
+            }
             Self::MarketSelectionSourceRead { source, .. } => {
                 write!(
                     f,
@@ -1153,6 +1188,9 @@ impl Error for BoltV3OperatorArtifactError {
             Self::SecretInventory(error) => Some(error),
             Self::FinancialEnvelope(error) => Some(error.as_ref()),
             Self::MarketSelection(error) => Some(error.as_ref()),
+            Self::DecisionEvidenceSourceRead { source, .. } => Some(source),
+            Self::DecisionEvidenceSourceParse { source, .. } => Some(source),
+            Self::DecisionEvidenceFileRead { source, .. } => Some(source),
             Self::MarketSelectionSourceRead { source, .. } => Some(source),
             Self::MarketSelectionSourceParse { source, .. } => Some(source),
             Self::MarketSelectionInstrumentSourceRead { source, .. } => Some(source),
@@ -2009,6 +2047,100 @@ pub fn write_strategy_input_evidence_artifact_from_decision_evidence_file(
         candidate_market_start_timestamps_ms,
         path,
     )
+}
+
+pub fn write_entry_decision_evidence_from_source_file(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    decision_source_path: &Path,
+    max_decision_source_bytes: u64,
+    instrument_source_path: &Path,
+    max_instrument_source_bytes: u64,
+    max_decision_evidence_bytes: u64,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let decision_source_bytes = read_file_bounded(decision_source_path, max_decision_source_bytes)
+        .map_err(
+            |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceRead {
+                path: decision_source_path.to_path_buf(),
+                source,
+            },
+        )?;
+    let decision_source: BinaryOracleEntryDecisionEvidenceSource =
+        serde_json::from_slice(&decision_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::DecisionEvidenceSourceParse {
+                path: decision_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let instrument_source_bytes =
+        read_file_bounded(instrument_source_path, max_instrument_source_bytes).map_err(
+            |source| BoltV3OperatorArtifactError::MarketSelectionInstrumentSourceRead {
+                path: instrument_source_path.to_path_buf(),
+                source,
+            },
+        )?;
+    let instruments: Vec<InstrumentAny> = serde_json::from_slice(&instrument_source_bytes)
+        .map_err(
+            |source| BoltV3OperatorArtifactError::MarketSelectionInstrumentSourceParse {
+                path: instrument_source_path.to_path_buf(),
+                source,
+            },
+        )?;
+    if instruments.is_empty() {
+        return Err(
+            BoltV3OperatorArtifactError::MarketSelectionInstrumentSourceInvalid {
+                field: "instruments",
+            },
+        );
+    }
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .ok_or_else(
+            || BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+                message: format!("strategy instance `{strategy_instance_id}` is not loaded"),
+            },
+        )?;
+    let raw = raw_taker_config(strategy, loaded).map_err(|source| {
+        BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+            message: source.to_string(),
+        }
+    })?;
+    let writer = Arc::new(
+        JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|source| {
+            BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+                message: format!("{source:#}"),
+            }
+        })?,
+    );
+    record_entry_decision_evidence_from_source(
+        &raw,
+        writer,
+        loaded.root.trader_id,
+        &decision_source,
+        &instruments,
+    )
+    .map_err(
+        |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+            message: format!("{source:#}"),
+        },
+    )?;
+    let path = decision_evidence_path(loaded).map_err(|source| {
+        BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+            message: format!("{source:#}"),
+        }
+    })?;
+    let bytes = read_file_bounded(&path, max_decision_evidence_bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::DecisionEvidenceFileRead {
+            path: path.clone(),
+            source,
+        }
+    })?;
+    Ok(WrittenOperatorArtifact {
+        path,
+        sha256: hex::encode(Sha256::digest(&bytes)),
+    })
 }
 
 pub fn write_pre_run_state_artifact(

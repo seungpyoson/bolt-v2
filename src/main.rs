@@ -10,6 +10,7 @@ use bolt_v2::{
         assemble_operator_packet_from_static_manifest, compute_operator_approval_envelope_sha256,
         verify_final_operator_packet, write_abort_plan_artifact_from_source_bundle_file,
         write_abort_plan_artifact_from_source_collectors,
+        write_entry_decision_evidence_from_source_file,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_pre_run_state_artifact_from_source_bundle_file,
         write_pre_run_state_artifact_from_source_collectors,
@@ -173,6 +174,22 @@ enum OperatorArtifactsCommand {
         max_source_bytes: u64,
         #[arg(long)]
         output: PathBuf,
+    },
+    GenerateEntryDecisionEvidenceFromSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        decision_source: PathBuf,
+        #[arg(long)]
+        max_decision_source_bytes: u64,
+        #[arg(long)]
+        instrument_source: PathBuf,
+        #[arg(long)]
+        max_instrument_source_bytes: u64,
+        #[arg(long)]
+        max_decision_evidence_bytes: u64,
     },
     GenerateStrategyInputFromDecisionEvidence {
         #[arg(short, long)]
@@ -427,6 +444,27 @@ fn run_operator_artifacts_command(
                 &submit_admission_source,
                 max_source_bytes,
                 &output,
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::GenerateEntryDecisionEvidenceFromSource {
+            config,
+            strategy_instance_id,
+            decision_source,
+            max_decision_source_bytes,
+            instrument_source,
+            max_instrument_source_bytes,
+            max_decision_evidence_bytes,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let written = write_entry_decision_evidence_from_source_file(
+                &loaded,
+                &strategy_instance_id,
+                &decision_source,
+                max_decision_source_bytes,
+                &instrument_source,
+                max_instrument_source_bytes,
+                max_decision_evidence_bytes,
             )?;
             print_written_operator_artifact(&written)
         }

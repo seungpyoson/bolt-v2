@@ -332,3 +332,17 @@ The final-packet verifier now parses and validates the financial envelope, pre-r
 - `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_static_manifest_from_operator_evidence_command -- --nocapture`: 1 passed, 0 failed.
 
 `operator-artifacts compute-approval-envelope-sha256 --config <root.toml>` now loads the approved root TOML, computes the canonical hash through the same non-circular approval-envelope construction used by final packet assembly, and prints only `{ "sha256": "..." }`. It does not read AWS/SSM, run no-submit, submit/cancel orders, mutate live config, or print operator evidence paths, raw approval IDs, nonce material, or secrets. T036/T037 remain open until real artifacts are present and the approved root TOML is updated with the final operator-evidence paths/hashes.
+
+## T036 Prerequisite Entry-Decision Evidence From Source
+
+- RED: `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_entry_decision_evidence_source_command -- --nocapture` failed because `operator-artifacts generate-entry-decision-evidence-from-source` was not a recognized subcommand.
+- GREEN: `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_entry_decision_evidence_source_command -- --nocapture` passed: 1 passed, 0 failed.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts entry_decision_evidence_source_collector -- --nocapture` passed: 3 passed, 0 failed. This covers configured JSONL generation, invalid source `price_precision` failing closed without panic, and symlinked configured JSONL rejection before append.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+- `just clippy`: passed.
+- `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+`operator-artifacts generate-entry-decision-evidence-from-source --config <root.toml> ...` now creates the configured `[persistence]` decision-evidence JSONL from bounded source files and the real `BinaryOracleEdgeTaker` entry path. It consumes a source-owned decision input plus the same instrument-source JSON shape used by market-selection replay, registers the strategy core with the root TOML trader id and an explicit NT cache, injects the source quote/volatility/fee/book facts, and lets unarmed submit admission reject the entry order after strategy-input, order-intent, and admission evidence are written. This is a non-live path: it does not read AWS/SSM, run no-submit, connect to a venue, submit/cancel orders, mutate `config/live.local.toml`, or print secrets.
+
+T036 remains open. The final packet is not assembled until real source inputs exist, the configured market-selection/strategy-input/pre-run/abort/approval artifacts are written together, `config/live.local.toml` is updated in T037, and `operator-artifacts verify-final` passes in T038.

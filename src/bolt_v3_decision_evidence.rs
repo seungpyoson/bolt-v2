@@ -221,13 +221,9 @@ impl JsonlBoltV3DecisionEvidenceWriter {
                 )
             })?;
         }
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .with_context(|| {
-                format!("failed to open decision evidence file `{}`", path.display())
-            })?;
+        let file = open_decision_evidence_append_file(&path).with_context(|| {
+            format!("failed to open decision evidence file `{}`", path.display())
+        })?;
         Ok(Self {
             file: Mutex::new(file),
         })
@@ -398,6 +394,56 @@ fn open_regular_decision_evidence_file(path: &Path) -> std::io::Result<fs::File>
     validate_same_decision_evidence_file(&opened_metadata, &post_open_metadata)?;
     Ok(file)
 }
+
+fn open_decision_evidence_append_file(path: &Path) -> std::io::Result<fs::File> {
+    match fs::symlink_metadata(path) {
+        Ok(pre_open_metadata) => {
+            validate_decision_evidence_regular_file(&pre_open_metadata)?;
+            let file = open_decision_evidence_append_existing_no_follow(path)?;
+            let opened_metadata = file.metadata()?;
+            validate_decision_evidence_regular_file(&opened_metadata)?;
+            validate_same_decision_evidence_file(&pre_open_metadata, &opened_metadata)?;
+            let post_open_metadata = fs::symlink_metadata(path)?;
+            validate_decision_evidence_regular_file(&post_open_metadata)?;
+            validate_same_decision_evidence_file(&opened_metadata, &post_open_metadata)?;
+            Ok(file)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let file = open_decision_evidence_append_new_no_follow(path)?;
+            let opened_metadata = file.metadata()?;
+            validate_decision_evidence_regular_file(&opened_metadata)?;
+            let post_open_metadata = fs::symlink_metadata(path)?;
+            validate_decision_evidence_regular_file(&post_open_metadata)?;
+            validate_same_decision_evidence_file(&opened_metadata, &post_open_metadata)?;
+            Ok(file)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn open_decision_evidence_append_existing_no_follow(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = OpenOptions::new();
+    options.append(true);
+    configure_decision_evidence_append_options(&mut options);
+    options.open(path)
+}
+
+fn open_decision_evidence_append_new_no_follow(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = OpenOptions::new();
+    options.append(true).create_new(true);
+    configure_decision_evidence_append_options(&mut options);
+    options.open(path)
+}
+
+#[cfg(unix)]
+fn configure_decision_evidence_append_options(options: &mut OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+}
+
+#[cfg(not(unix))]
+fn configure_decision_evidence_append_options(_options: &mut OpenOptions) {}
 
 #[cfg(unix)]
 fn open_decision_evidence_file_no_follow(path: &Path) -> std::io::Result<fs::File> {

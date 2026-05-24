@@ -733,6 +733,38 @@ classification = "decision_evidence_jsonl_record_separator"
 reason = "This is the JSONL line separator for one evidence record per line, not a runtime operator value."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''1'''
+context = '''pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "operator_source_schema_version"
+reason = "This pins the local source-owned entry decision evidence source schema consumed by the non-live operator artifact command; trading values remain source/config-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"bolt_v3.binary_oracle_entry_decision_source.v1"'''
+context = '''"bolt_v3.binary_oracle_entry_decision_source.v1";'''
+classification = "operator_source_record_kind"
+reason = "This is the structural record_kind for source-owned entry decision evidence inputs, not a venue, market, quantity, timeout, or trading value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"entry decision evidence source decision_timestamp_ms precedes market selection"'''
+context = '''"entry decision evidence source decision_timestamp_ms precedes market selection"'''
+classification = "operator_source_error_template"
+reason = "This fail-closed diagnostic enforces source chronology for local decision-evidence generation; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"entry decision evidence book best_bid exceeds best_ask"'''
+context = '''"entry decision evidence book best_bid exceeds best_ask"'''
+classification = "operator_source_error_template"
+reason = "This fail-closed diagnostic validates source-owned book facts before local decision-evidence generation; it is not a hardcoded market value."
+
+[[allowed]]
 path = "src/bolt_v3_instrument_filters.rs"
 kind = "string"
 literal = "\"updown period pair overflows i64 (now_unix_seconds={now_unix_seconds}, cadence_seconds={cadence_seconds})\""
@@ -5911,6 +5943,14 @@ literal = '''0o600'''
 context = '''options.mode(0o600).custom_flags(libc::O_NOFOLLOW);'''
 classification = "operator_artifact_file_permission"
 reason = "This is the private file mode for generated operator-evidence artifacts on Unix; it constrains artifact exposure and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = '''0o600'''
+context = '''options.mode(0o600).custom_flags(libc::O_NOFOLLOW);'''
+classification = "decision_evidence_file_permission"
+reason = "This is the private file mode for generated decision-evidence JSONL on Unix; it constrains artifact exposure and does not configure trading behavior."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

@@ -1,11 +1,13 @@
 use sha2::{Digest, Sha256};
 
 use bolt_v2::{
-    bolt_v3_config::{LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, load_bolt_v3_config},
+    bolt_v3_config::{
+        LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, load_bolt_v3_config,
+    },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3OrderIntentEvidence,
         BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitIntentKind, decision_evidence_path,
+        BoltV3SubmitIntentKind, decision_evidence_path, read_latest_entry_decision_evidence_chain,
     },
     bolt_v3_market_families::updown::updown_market_slug,
     bolt_v3_operator_artifacts::{WrittenOperatorArtifact, build_redacted_ssm_manifest},
@@ -4564,6 +4566,224 @@ fn market_selection_source_builder_binds_configured_target_to_nt_instruments() {
         market_start_ms
     );
     assert_eq!(json["polymarket_market_end_timestamp_ms"], market_end_ms);
+}
+
+struct EntryDecisionEvidenceSourceFixture {
+    _temp: tempfile::TempDir,
+    loaded: LoadedBoltV3Config,
+    strategy_instance_id: String,
+    decision_source_path: std::path::PathBuf,
+    instrument_source_path: std::path::PathBuf,
+}
+
+fn entry_decision_evidence_source_fixture(
+    price_precision: u8,
+) -> EntryDecisionEvidenceSourceFixture {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let market_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let instruments = vec![
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+    ];
+    let instrument_source_path = temp.path().join("instruments.json");
+    std::fs::write(
+        &instrument_source_path,
+        serde_json::to_vec_pretty(&instruments).expect("instrument source should serialize"),
+    )
+    .expect("instrument source should write");
+    let decision_source_path = temp.path().join("entry-decision-source.json");
+    std::fs::write(
+        &decision_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v1",
+            "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            "price_to_beat_value": 3100.0,
+            "warmup_count": 20,
+            "reference_quote": {
+                "venue": "binance_reference",
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "realized_volatility": {
+                "value": 1.5,
+                "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "fees": {
+                "fee_bps_by_instrument_id": {
+                    TEST_UP_INSTRUMENT_ID: 0.0,
+                    TEST_DOWN_INSTRUMENT_ID: 0.0
+                }
+            },
+            "books": {
+                "price_precision": price_precision,
+                "up": {
+                    "best_bid": 0.50,
+                    "bid_quantity": 500.0,
+                    "best_ask": 0.50,
+                    "ask_quantity": 500.0,
+                    "liquidity_available": 500.0
+                },
+                "down": {
+                    "best_bid": 0.48,
+                    "bid_quantity": 500.0,
+                    "best_ask": 0.49,
+                    "ask_quantity": 500.0,
+                    "liquidity_available": 500.0
+                }
+            }
+        }))
+        .expect("decision source should serialize"),
+    )
+    .expect("decision source should write");
+
+    EntryDecisionEvidenceSourceFixture {
+        _temp: temp,
+        loaded,
+        strategy_instance_id,
+        decision_source_path,
+        instrument_source_path,
+    }
+}
+
+#[test]
+fn entry_decision_evidence_source_collector_writes_configured_runtime_jsonl() {
+    let fixture = entry_decision_evidence_source_fixture(2);
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.decision_source_path,
+            100_000,
+            &fixture.instrument_source_path,
+            100_000,
+            100_000,
+        )
+        .expect("source-owned entry decision evidence should write");
+    let expected_path =
+        decision_evidence_path(&fixture.loaded).expect("decision evidence path resolves");
+    assert_eq!(written.path, expected_path);
+
+    let chain = read_latest_entry_decision_evidence_chain(&written.path, 100_000)
+        .expect("written JSONL should contain a complete entry decision chain");
+    assert_eq!(chain.snapshot.strategy_id, "binary_oracle_edge_taker-001");
+    assert_eq!(
+        chain.snapshot.configured_target_id,
+        TEST_CONFIGURED_TARGET_ID
+    );
+    assert_eq!(chain.snapshot.market_id.as_deref(), Some(TEST_MARKET_ID));
+    assert_eq!(
+        chain.snapshot.polymarket_condition_id.as_deref(),
+        Some(TEST_CONDITION_ID)
+    );
+    assert_eq!(
+        chain.snapshot.price_to_beat_source,
+        "chainlink_data_streams.report_at_boundary"
+    );
+    assert_eq!(chain.snapshot.price_to_beat_value, "3100");
+    assert_eq!(chain.intent.intent_kind, BoltV3OrderIntentKind::Entry);
+    assert_eq!(
+        chain.admission.outcome,
+        BoltV3AdmissionOutcome::RejectedNotArmed
+    );
+    assert_eq!(written.sha256, sha256_file(&written.path));
+}
+
+#[test]
+fn entry_decision_evidence_source_collector_rejects_invalid_price_precision_without_panicking() {
+    let fixture = entry_decision_evidence_source_fixture(u8::MAX);
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.decision_source_path,
+            100_000,
+            &fixture.instrument_source_path,
+            100_000,
+            100_000,
+        )
+        .expect_err("invalid source price precision should fail closed");
+
+    assert!(
+        error.to_string().contains("entry decision evidence"),
+        "invalid precision should be reported as source validation, got: {error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn entry_decision_evidence_source_collector_rejects_symlinked_configured_jsonl_before_append() {
+    let fixture = entry_decision_evidence_source_fixture(2);
+    let configured_path =
+        decision_evidence_path(&fixture.loaded).expect("decision evidence path resolves");
+    let parent = configured_path
+        .parent()
+        .expect("configured decision evidence path should have parent");
+    std::fs::create_dir_all(parent).expect("configured decision evidence parent should create");
+    let external_path = fixture
+        ._temp
+        .path()
+        .join("external-decision-evidence.jsonl");
+    std::fs::write(&external_path, b"sentinel\n").expect("external target should write");
+    std::os::unix::fs::symlink(&external_path, &configured_path)
+        .expect("configured decision evidence symlink should create");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.decision_source_path,
+            100_000,
+            &fixture.instrument_source_path,
+            100_000,
+            100_000,
+        )
+        .expect_err("symlinked configured decision evidence path should fail closed");
+
+    assert!(
+        error.to_string().contains("decision evidence"),
+        "symlink rejection should be surfaced as decision-evidence failure, got: {error}"
+    );
+    assert_eq!(
+        std::fs::read(&external_path).expect("external target should remain readable"),
+        b"sentinel\n",
+        "writer must not append through configured decision-evidence symlink before failing"
+    );
 }
 
 #[test]

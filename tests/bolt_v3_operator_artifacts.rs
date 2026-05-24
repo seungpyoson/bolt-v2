@@ -593,6 +593,87 @@ pub async fn forced_flat_exit() {
 }
 
 #[test]
+fn abort_plan_cancel_if_open_source_proof_accepts_same_line_attribute_function_scope() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+#[inline] pub(crate) fn forced_flat_exit() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect("same-line attribute function declaration should prove cancel-if-open abort path");
+
+    assert!(proof.cancel_if_open_defined);
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_accepts_supported_qualified_function_scopes() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    for function_declaration in [
+        "pub(crate) fn forced_flat_exit()",
+        "unsafe fn forced_flat_exit()",
+        "const fn forced_flat_exit()",
+        r#"extern "C" fn forced_flat_exit()"#,
+    ] {
+        std::fs::write(
+            &strategy_source_path,
+            format!(
+                r#"
+{function_declaration} {{
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {{
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {{
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={{}}",
+                    pending_entry.client_order_id
+                )
+            }})?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {{}});
+    }}
+}}
+"#,
+            ),
+        )
+        .expect("test source should write");
+
+        let proof =
+            bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+                &strategy_source_path,
+                10_000,
+            )
+            .expect(
+                "supported qualified function declaration should prove cancel-if-open abort path",
+            );
+
+        assert!(proof.cancel_if_open_defined);
+    }
+}
+
+#[test]
 fn abort_plan_cancel_if_open_source_proof_ignores_unrelated_duplicate_markers() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let strategy_source_path = temp.path().join("strategy.rs");
@@ -628,6 +709,57 @@ fn forced_flat_exit() {
             10_000,
         )
         .expect("unrelated duplicate markers should not poison a valid candidate");
+
+    assert!(proof.cancel_if_open_defined);
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_ignores_invalid_duplicate_scope() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn unrelated_duplicate_marker_probe() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+
+fn forced_flat_exit() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect("invalid duplicate marker scope should not poison a later valid candidate");
 
     assert!(proof.cancel_if_open_defined);
 }
@@ -669,6 +801,42 @@ fn forced_flat_exit() {
 }
 
 #[test]
+fn abort_plan_cancel_if_open_source_proof_ignores_line_comment_delimiters_inside_strings() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn forced_flat_exit() {
+    let _ = "literal // not a comment";
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect("line comment delimiters inside strings should not mask real source markers");
+
+    assert!(proof.cancel_if_open_defined);
+}
+
+#[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_comment_only_markers() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let strategy_source_path = temp.path().join("strategy.rs");
@@ -702,6 +870,37 @@ fn forced_flat_commentary_only() {
 }
 
 #[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_line_comment_only_markers() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn forced_flat_line_commentary_only() {
+    // !decision.forced_flat_reasons.is_empty()
+    // managed_position.pending_entry.as_ref()
+    // self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+    // forced-flat exit could not cancel pending entry client_order_id={}
+    // self.exposure = ExposureState::ExitPending(ExitPendingState {})
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("line-comment-only markers should not prove cancel-if-open abort path");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "line-comment-only marker error should identify function-scoped proof: {error}"
+    );
+}
+
+#[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_string_only_markers() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let strategy_source_path = temp.path().join("strategy.rs");
@@ -731,6 +930,39 @@ fn forced_flat_string_only() {
     assert!(
         error.to_string().contains("forced_flat_function_scope"),
         "string-only marker error should identify function-scoped proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_raw_string_only_markers() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r##"
+fn forced_flat_raw_string_only() {
+    let _ = r#"
+    !decision.forced_flat_reasons.is_empty()
+    managed_position.pending_entry.as_ref()
+    self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+    forced-flat exit could not cancel pending entry client_order_id={}
+    self.exposure = ExposureState::ExitPending
+    "#;
+}
+"##,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("raw-string-only markers should not prove cancel-if-open abort path");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "raw-string-only marker error should identify function-scoped proof: {error}"
     );
 }
 

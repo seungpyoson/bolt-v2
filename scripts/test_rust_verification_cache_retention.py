@@ -2953,7 +2953,8 @@ def assert_cleanup_dry_run_reports_stale_tmp_bundles_without_deleting() -> None:
 
         old_bundle = tmp_parent / "bolt-v2-old-review"
         old_bundle.mkdir()
-        (old_bundle / "payload.bin").write_bytes(b"old")
+        old_payload = old_bundle / "payload.bin"
+        old_payload.write_bytes(b"old")
         fresh_bundle = tmp_parent / "bolt-v2-fresh-review"
         fresh_bundle.mkdir()
         (fresh_bundle / "payload.bin").write_bytes(b"fresh")
@@ -2962,6 +2963,7 @@ def assert_cleanup_dry_run_reports_stale_tmp_bundles_without_deleting() -> None:
         (unrelated / "payload.bin").write_bytes(b"other")
         old_time = time.time() - (2 * 24 * 60 * 60)
         os.utime(old_bundle, (old_time, old_time))
+        os.utime(old_payload, (old_time, old_time))
 
         env = os.environ.copy()
         env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
@@ -2983,6 +2985,54 @@ def assert_cleanup_dry_run_reports_stale_tmp_bundles_without_deleting() -> None:
             or not old_bundle.exists()
         ):
             raise AssertionError(f"cleanup dry-run did not report only stale configured tmp bundles: {payload!r}")
+
+
+def assert_cleanup_dry_run_preserves_tmp_bundle_with_recent_contents() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        tmp_parent = tmp_path / "tmp"
+        tmp_parent.mkdir()
+        write_policy_with_cache(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    f"""\
+
+                    [cleanup.tmp_bundles]
+                    parent = "{tmp_parent}"
+                    prefix = "bolt-v2-"
+                    prune_after_days = 1
+                    """
+                )
+            )
+
+        old_named_bundle = tmp_parent / "bolt-v2-old-name-fresh-contents"
+        old_named_bundle.mkdir()
+        fresh_payload = old_named_bundle / "fresh.bin"
+        fresh_payload.write_bytes(b"fresh")
+        old_time = time.time() - (2 * 24 * 60 * 60)
+        now = time.time()
+        os.utime(old_named_bundle, (old_time, old_time))
+        os.utime(fresh_payload, (now, now))
+
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
+        result = run_owner(["cleanup", "--repo", str(repo), "--dry-run", "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError(
+                f"cleanup dry-run should succeed: returncode={result.returncode} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        payload = json.loads(result.stdout)
+        candidate_paths = {pathlib.Path(str(entry.get("path"))).resolve() for entry in payload.get("candidates", [])}
+        if old_named_bundle.resolve() in candidate_paths or not fresh_payload.exists():
+            raise AssertionError(
+                "cleanup dry-run must preserve tmp bundles with recent descendant contents: "
+                f"payload={payload!r}"
+            )
 
 
 def assert_cleanup_dry_run_reports_worktree_targets_without_deleting() -> None:
@@ -3054,12 +3104,14 @@ def assert_cleanup_apply_removes_stale_tmp_bundles_only() -> None:
 
         old_bundle = tmp_parent / "bolt-v2-old-review"
         old_bundle.mkdir()
-        (old_bundle / "payload.bin").write_bytes(b"old")
+        old_payload = old_bundle / "payload.bin"
+        old_payload.write_bytes(b"old")
         fresh_bundle = tmp_parent / "bolt-v2-fresh-review"
         fresh_bundle.mkdir()
         (fresh_bundle / "payload.bin").write_bytes(b"fresh")
         old_time = time.time() - (2 * 24 * 60 * 60)
         os.utime(old_bundle, (old_time, old_time))
+        os.utime(old_payload, (old_time, old_time))
 
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
@@ -3152,6 +3204,77 @@ printf '123 1 cargo build\n'
             )
 
 
+def assert_cleanup_apply_removes_registered_worktree_target_only() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "--allow-empty", "-m", "init"],
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        worktree = tmp_path / "bolt-v2-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "cleanup-apply-test", str(worktree)],
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        write_policy_with_cache(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    """\
+
+                    [cleanup.worktree_targets]
+                    dirname = "target"
+                    """
+                )
+            )
+
+        target = worktree / "target"
+        target.mkdir()
+        (target / "artifact.bin").write_bytes(b"artifact")
+        keep_file = worktree / "src.txt"
+        keep_file.write_text("keep", encoding="utf-8")
+        unrelated = worktree / "not-target"
+        unrelated.mkdir()
+        (unrelated / "payload.bin").write_bytes(b"other")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "ps",
+            """#!/usr/bin/env bash
+exit 0
+""",
+        )
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cleanup", "--repo", str(repo), "--apply", "--json"], env=env)
+        if result.returncode != 0:
+            raise AssertionError(
+                f"cleanup apply should succeed: returncode={result.returncode} "
+                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+        payload = json.loads(result.stdout)
+        removed_paths = {pathlib.Path(str(entry.get("path"))).resolve() for entry in payload.get("removed", [])}
+        if (
+            target.exists()
+            or not worktree.exists()
+            or not keep_file.exists()
+            or not unrelated.exists()
+            or target.resolve() not in removed_paths
+        ):
+            raise AssertionError(f"cleanup apply did not remove only registered worktree target: {payload!r}")
+
+
 def assert_cleanup_fails_closed_when_worktree_inventory_unavailable() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -3196,6 +3319,44 @@ exit 1
                 "cleanup must fail closed when registered worktree inventory is unavailable: "
                 f"returncode={result.returncode} bundle_exists={old_bundle.exists()} "
                 f"stdout={result.stdout!r} stderr={result.stderr!r}"
+            )
+
+
+def assert_cleanup_fails_closed_when_registered_worktree_path_is_missing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy_with_cache(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    """\
+
+                    [cleanup.worktree_targets]
+                    dirname = "target"
+                    """
+                )
+            )
+
+        missing_worktree = tmp_path / "missing-worktree"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        write_executable(
+            bin_dir / "git",
+            f"""#!/usr/bin/env bash
+printf 'worktree {missing_worktree}\\n'
+""",
+        )
+        env = os.environ.copy()
+        env["RUST_VERIFICATION_ROOT_BASE"] = str(tmp_path / "rust-root")
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        result = run_owner(["cleanup", "--repo", str(repo), "--dry-run", "--json"], env=env)
+        combined = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0 or "worktree" not in combined.lower():
+            raise AssertionError(
+                "cleanup must fail closed when a registered worktree path cannot be resolved: "
+                f"returncode={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
             )
 
 
@@ -3679,10 +3840,13 @@ def assert_v6_red_policy_gaps() -> None:
         assert_v6_red_nextest_archive_extraction_uses_exclusive_cache_lock,
         assert_managed_cargo_clean_keeps_disk_pressure_escape_hatch,
         assert_cleanup_dry_run_reports_stale_tmp_bundles_without_deleting,
+        assert_cleanup_dry_run_preserves_tmp_bundle_with_recent_contents,
         assert_cleanup_dry_run_reports_worktree_targets_without_deleting,
         assert_cleanup_apply_removes_stale_tmp_bundles_only,
         assert_cleanup_apply_refuses_active_worktree_target_process,
+        assert_cleanup_apply_removes_registered_worktree_target_only,
         assert_cleanup_fails_closed_when_worktree_inventory_unavailable,
+        assert_cleanup_fails_closed_when_registered_worktree_path_is_missing,
         assert_cleanup_candidate_removal_validates_namespace,
         assert_cleanup_apply_rechecks_candidate_before_deletion,
         assert_managed_cargo_rejects_alias_subcommands,

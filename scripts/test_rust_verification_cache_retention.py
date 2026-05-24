@@ -2139,6 +2139,28 @@ exit 0
             )
 
 
+def assert_validate_managed_target_path_rejects_existing_non_directory_target() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        owner = load_owner_module()
+        root = tmp_path / "rust-root"
+        target = root / "bolt-v2" / "target"
+        target.parent.mkdir(parents=True)
+        target.write_text("not a directory", encoding="utf-8")
+        original_root_base = owner.root_base
+        try:
+            owner.root_base = lambda: root
+            try:
+                owner.validate_managed_target_path(target, {"target_namespace": "bolt-v2"})
+            except owner.PolicyError as exc:
+                if "not a directory" not in str(exc):
+                    raise AssertionError(f"unexpected non-directory refusal: {exc}") from exc
+            else:
+                raise AssertionError("managed target validation accepted an existing non-directory path")
+        finally:
+            owner.root_base = original_root_base
+
+
 def assert_cache_reset_apply_unlinks_symlink_child_without_following() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -4412,6 +4434,77 @@ def assert_cleanup_candidate_rechecks_use_repo_context_with_candidate_scope() ->
             )
 
 
+def assert_cleanup_apply_refuses_tmp_bundle_registered_after_scan() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        bundle = tmp_path / "tmp" / "bolt-v2-racy"
+        bundle.mkdir(parents=True)
+        candidates = [
+            {
+                "bytes": 1,
+                "class": "tmp_bundle",
+                "latest_mtime": time.time() - 10_000,
+                "parent": str(bundle.parent),
+                "path": str(bundle),
+                "reason": "test",
+                "skipped_special_entries": 0,
+            }
+        ]
+        owner = load_owner_module()
+        removed: list[str] = []
+        registered_calls: list[set[pathlib.Path]] = []
+        originals = {
+            "load_policy": owner.load_policy,
+            "root_base": owner.root_base,
+            "registered_worktree_paths": owner.registered_worktree_paths,
+            "cleanup_tmp_bundle_candidates": owner.cleanup_tmp_bundle_candidates,
+            "cleanup_worktree_target_candidates": owner.cleanup_worktree_target_candidates,
+            "active_process_refusal_payload": owner.active_process_refusal_payload,
+            "remove_cleanup_candidate": owner.remove_cleanup_candidate,
+            "cache_lock": owner.cache_lock,
+        }
+
+        def fake_registered_worktrees(_repo: pathlib.Path) -> set[pathlib.Path]:
+            registered = set() if not registered_calls else {bundle.resolve()}
+            registered_calls.append(registered)
+            return registered
+
+        try:
+            owner.load_policy = lambda _repo: {
+                "cache": {
+                    "active_process_patterns": ["cargo"],
+                    "min_free_bytes": 0,
+                    "retention": {
+                        "debug": {"prunable": True, "prune_after_days": 1},
+                        "release": {"prunable": True, "prune_after_days": 1},
+                        "cross-target": {"prunable": True, "prune_after_days": 1},
+                        "tmp": {"prunable": True, "prune_after_days": 1},
+                        "other": {"prunable": False},
+                    },
+                    "soft_limit_bytes": 100,
+                },
+                "target_namespace": "bolt-v2",
+            }
+            owner.root_base = lambda: tmp_path / "rust-root"
+            owner.registered_worktree_paths = fake_registered_worktrees
+            owner.cleanup_tmp_bundle_candidates = lambda _repo, _policy, *, now, registered: candidates
+            owner.cleanup_worktree_target_candidates = lambda _repo, _policy, *, registered: []
+            owner.active_process_refusal_payload = lambda _repo, _target, _policy, **_kwargs: None
+            owner.remove_cleanup_candidate = lambda entry: removed.append(str(entry["path"]))
+            owner.cache_lock = lambda _policy, *, exclusive: contextlib.nullcontext()
+            payload = owner.cleanup_payload(repo, dry_run=False)
+        finally:
+            for name, value in originals.items():
+                setattr(owner, name, value)
+        if payload.get("refusal_code") != "registered_worktree" or removed or len(registered_calls) < 2:
+            raise AssertionError(
+                "cleanup apply must refuse tmp bundles that become registered worktrees after scan: "
+                f"payload={payload!r} removed={removed!r} registered_calls={registered_calls!r}"
+            )
+
+
 def assert_managed_cargo_rejects_alias_subcommands() -> None:
     failures: list[str] = []
     cases: list[tuple[str, str | None]] = [(alias, None) for alias in ["b", "c", "d", "r", "t"]]
@@ -4812,6 +4905,7 @@ def assert_v6_red_policy_gaps() -> None:
         assert_cleanup_apply_rechecks_candidate_before_deletion,
         assert_cleanup_apply_reports_partial_removals_on_late_candidate_refusal,
         assert_cleanup_candidate_rechecks_use_repo_context_with_candidate_scope,
+        assert_cleanup_apply_refuses_tmp_bundle_registered_after_scan,
         assert_managed_cargo_rejects_alias_subcommands,
         assert_v6_red_managed_cargo_rejects_target_routing_overrides,
         assert_managed_cargo_rejects_config_file_target_routing_override,
@@ -4881,6 +4975,7 @@ def main() -> int:
     assert_cache_reset_apply_refuses_incomplete_scan_without_deleting()
     assert_cache_reset_apply_rechecks_active_process_before_each_removal()
     assert_cache_reset_apply_refuses_symlinked_target()
+    assert_validate_managed_target_path_rejects_existing_non_directory_target()
     assert_cache_reset_apply_unlinks_symlink_child_without_following()
     assert_cache_prune_apply_refuses_symlinked_target()
     assert_repo_policy_declares_cache_retention()

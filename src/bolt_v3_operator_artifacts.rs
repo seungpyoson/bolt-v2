@@ -2918,7 +2918,6 @@ pub struct PreRunStateSourceCollectorInputs<'a> {
     pub funding_margin_source_path: &'a Path,
     pub strategy_input_evidence_path: &'a Path,
     pub strategy_input_evidence_sha256: &'a str,
-    pub expected_price_to_beat_source: &'a str,
     pub single_runner_lock_path: &'a Path,
     pub egress_identity_source_path: &'a Path,
     pub clob_v2_adapter_signing_source_path: &'a Path,
@@ -2958,7 +2957,7 @@ pub fn write_pre_run_state_artifact_from_source_collectors(
     let market_window = collect_pre_run_market_window_source_proof(
         inputs.strategy_input_evidence_path,
         inputs.strategy_input_evidence_sha256,
-        inputs.expected_price_to_beat_source,
+        financial_envelope.price_to_beat_source(),
         inputs.max_source_bytes,
     )?;
     let funding_margin = collect_pre_run_funding_margin_source_proof(

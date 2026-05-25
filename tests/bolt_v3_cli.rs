@@ -330,8 +330,8 @@ fn bolt_v3_cli_exposes_pre_run_state_source_collector_command() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("--expected-price-to-beat-source"),
-        "{stdout}"
+        !stdout.contains("--expected-price-to-beat-source"),
+        "pre-run collector must derive the expected price-to-beat source from TOML, not a CLI value: {stdout}"
     );
     assert!(stdout.contains("--single-runner-lock"), "{stdout}");
     assert!(stdout.contains("--egress-identity-source"), "{stdout}");

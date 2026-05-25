@@ -194,6 +194,19 @@ T126 no longer depends on a caller-supplied pre-run source bundle for local arti
 
 The venue-account source proof now requires `execution_client_id` and `configured_target_id` fields and includes them in the source-proof hash input. `write_pre_run_state_artifact_from_source_collectors` derives the expected values from the loaded strategy's financial envelope before collecting venue-account proof. A zero open-order/open-position snapshot from another account or target now fails closed before it can satisfy T126. No AWS, SSM, external network, no-submit, live trading, or secret-source commands were run for T024A.
 
+## T024B Pre-Run Price-Source Override Repair Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts pre_run_state_writer_rejects_caller_supplied_price_source_override -- --nocapture` failed because `write_pre_run_state_artifact_from_source_collectors` accepted a caller-supplied `manual_source_override` price-to-beat source and wrote `pre-run-state.json`.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts pre_run_state_writer_rejects_caller_supplied_price_source_override -- --nocapture` passed: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts pre_run_state -- --nocapture`: 7 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts pre_run_market_window_source_proof -- --nocapture`: 6 passed, 0 failed.
+- `cargo test --test bolt_v3_cli source_collector -- --nocapture`: 2 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `git diff --check`: passed.
+
+`PreRunStateSourceCollectorInputs` no longer carries `expected_price_to_beat_source`, and the CLI no longer exposes `--expected-price-to-beat-source` for `generate-pre-run-state-from-source-collectors`. The pre-run writer derives the expected price-to-beat source from the loaded TOML financial envelope before validating strategy-input evidence, so a tampered strategy-input artifact cannot be made valid by passing a matching caller override. This is non-live local artifact validation only. No AWS, SSM, external network, no-submit, venue connection, order submit/cancel, `config/live.local.toml` mutation, or live trading side effect was run.
+
 ## T025/T026 NT-Accepted Venue-Pending Abort Collector Evidence
 
 - RED: `cargo test --test bolt_v3_operator_artifacts abort_plan_nt_accepted_venue_pending -- --nocapture` failed with `E0425`/`E0422` because `collect_abort_plan_nt_accepted_venue_pending_source_proof` and `Phase8AbortPlanNtAcceptedVenuePendingSourceProof` did not exist.

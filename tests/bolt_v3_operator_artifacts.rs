@@ -1725,7 +1725,6 @@ const DOMAIN_VERSION: &str = "2";
                 funding_margin_source_path: &funding_margin_source_path,
                 strategy_input_evidence_path: &strategy_input_path,
                 strategy_input_evidence_sha256: &strategy_input.sha256,
-                expected_price_to_beat_source: fixture.snapshot.price_to_beat_source.as_str(),
                 single_runner_lock_path: &single_runner_lock_path,
                 egress_identity_source_path: &egress_identity_source_path,
                 clob_v2_adapter_signing_source_path: &clob_v2_adapter_signing_source_path,
@@ -1789,6 +1788,146 @@ const DOMAIN_VERSION: &str = "2";
     assert_eq!(
         json["release_manifest_evidence_hash"],
         release_manifest.evidence_hash
+    );
+}
+
+#[test]
+fn pre_run_state_writer_rejects_caller_supplied_price_source_override() {
+    let fixture = strategy_input_runtime_fixture();
+    let temp = fixture.temp.path();
+    let strategy_input_path = temp.join("strategy-input.json");
+    bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_runtime_snapshot(
+        &fixture.loaded,
+        &fixture.strategy_instance_id,
+        &fixture.snapshot,
+        &fixture.market_selection_source_ref,
+        100_000,
+        &fixture.candidate_market_start_timestamps_ms,
+        &strategy_input_path,
+    )
+    .expect("source-bound strategy input evidence should write");
+    let mut strategy_input_json = read_json_value(&strategy_input_path);
+    strategy_input_json["price_to_beat_source"] = serde_json::json!("manual_source_override");
+    let strategy_input_sha256 =
+        write_json_value_and_hash(&strategy_input_path, &strategy_input_json);
+
+    let clob_signing_source_path = temp.join("eip712.rs");
+    std::fs::write(
+        &clob_signing_source_path,
+        r#"
+const CLOB_AUTH_DOMAIN_VERSION: &str = "1";
+const DOMAIN_VERSION: &str = "2";
+"#,
+    )
+    .expect("CLOB signing source fixture should write");
+    let host_clock_source_path = temp.join("host-clock-source.json");
+    std::fs::write(
+        &host_clock_source_path,
+        host_clock_source_fixture(1716510000125, 1716510000000),
+    )
+    .expect("host clock source fixture should write");
+    let venue_account_state_source_path = temp.join("venue-account-state-source.json");
+    std::fs::write(
+        &venue_account_state_source_path,
+        venue_account_state_source_fixture(
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
+            0,
+            0,
+            &sha256_text("venue-account-state"),
+        ),
+    )
+    .expect("venue account state source fixture should write");
+    let funding_margin_source_path = temp.join("funding-margin-source.json");
+    std::fs::write(
+        &funding_margin_source_path,
+        funding_margin_source_fixture("10.00", "1.25", &sha256_text("funding-margin")),
+    )
+    .expect("funding margin source fixture should write");
+    let egress_identity_source_path = temp.join("egress-identity-source.json");
+    std::fs::write(
+        &egress_identity_source_path,
+        egress_identity_source_fixture(&sha256_text("approved-egress-identity")),
+    )
+    .expect("egress identity source fixture should write");
+    let clob_v2_adapter_signing_source_path = temp.join("clob-v2-signing-source.json");
+    std::fs::write(
+        &clob_v2_adapter_signing_source_path,
+        clob_v2_adapter_signing_source_fixture(
+            "2",
+            &sha256_text("clob-signing-contract"),
+            &sha256_text("clob-domain-requirements"),
+            &sha256_text("clob-signed-order"),
+            &sha256_text("clob-signature-verification"),
+            true,
+        ),
+    )
+    .expect("CLOB V2 signing source fixture should write");
+    let clob_v2_collateral_accounting_source_path = temp.join("clob-v2-collateral-source.json");
+    std::fs::write(
+        &clob_v2_collateral_accounting_source_path,
+        clob_v2_collateral_accounting_source_fixture(
+            true,
+            "10.00",
+            "10.00",
+            "1.25",
+            &sha256_text("clob-collateral-account"),
+            &sha256_text("clob-collateral-assumptions"),
+        ),
+    )
+    .expect("CLOB V2 collateral source fixture should write");
+    let clob_v2_fee_behavior_source_path = temp.join("clob-v2-fee-source.json");
+    std::fs::write(
+        &clob_v2_fee_behavior_source_path,
+        clob_v2_fee_behavior_source_fixture(
+            true,
+            true,
+            true,
+            true,
+            "0.55",
+            "0.01",
+            &sha256_text("clob-fee-account"),
+            &sha256_text("clob-fee-assumptions"),
+        ),
+    )
+    .expect("CLOB V2 fee source fixture should write");
+    let single_runner_lock_path = temp.join("single-runner-lock.json");
+    let pre_run_state_path = temp.join("pre-run-state.json");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_pre_run_state_artifact_from_source_collectors(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            bolt_v2::bolt_v3_operator_artifacts::PreRunStateSourceCollectorInputs {
+                cargo_toml_path: &repo_path("Cargo.toml"),
+                cargo_lock_path: &repo_path("Cargo.lock"),
+                clob_signing_source_path: &clob_signing_source_path,
+                host_clock_source_path: &host_clock_source_path,
+                venue_account_state_source_path: &venue_account_state_source_path,
+                funding_margin_source_path: &funding_margin_source_path,
+                strategy_input_evidence_path: &strategy_input_path,
+                strategy_input_evidence_sha256: &strategy_input_sha256,
+                single_runner_lock_path: &single_runner_lock_path,
+                egress_identity_source_path: &egress_identity_source_path,
+                clob_v2_adapter_signing_source_path: &clob_v2_adapter_signing_source_path,
+                clob_v2_collateral_accounting_source_path:
+                    &clob_v2_collateral_accounting_source_path,
+                clob_v2_fee_behavior_source_path: &clob_v2_fee_behavior_source_path,
+                max_source_bytes: 1_000_000,
+                max_host_clock_skew_millis: 250,
+                max_single_runner_lock_bytes: 100_000,
+            },
+            &pre_run_state_path,
+        )
+        .expect_err("writer must derive price-to-beat source from TOML, not caller override");
+
+    assert!(
+        error.to_string().contains("strategy_input"),
+        "price-source override rejection should identify strategy input evidence: {error}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "caller-supplied price-source override must not leave a pre-run-state artifact"
     );
 }
 

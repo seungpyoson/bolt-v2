@@ -144,8 +144,6 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         strategy_input_evidence_sha256: String,
         #[arg(long)]
-        expected_price_to_beat_source: String,
-        #[arg(long)]
         single_runner_lock: PathBuf,
         #[arg(long)]
         egress_identity_source: PathBuf,
@@ -422,7 +420,6 @@ fn run_operator_artifacts_command(
             funding_margin_source,
             strategy_input_evidence,
             strategy_input_evidence_sha256,
-            expected_price_to_beat_source,
             single_runner_lock,
             egress_identity_source,
             clob_v2_adapter_signing_source,
@@ -443,7 +440,6 @@ fn run_operator_artifacts_command(
                 funding_margin_source_path: &funding_margin_source,
                 strategy_input_evidence_path: &strategy_input_evidence,
                 strategy_input_evidence_sha256: &strategy_input_evidence_sha256,
-                expected_price_to_beat_source: &expected_price_to_beat_source,
                 single_runner_lock_path: &single_runner_lock,
                 egress_identity_source_path: &egress_identity_source,
                 clob_v2_adapter_signing_source_path: &clob_v2_adapter_signing_source,

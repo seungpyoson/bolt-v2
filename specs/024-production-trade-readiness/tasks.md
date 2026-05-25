@@ -52,6 +52,7 @@
 - [x] T023 [US3] Bind all T126 collector outputs into source-owned pre-run-state artifact generation and CLI wiring; final `config/live.local.toml` `pre_run_state_path`/`pre_run_state_sha256` binding remains T037.
 - [x] T024 [US3] Run focused T126 tests plus runtime-literal verification and record evidence in `specs/024-production-trade-readiness/evidence.md`.
 - [x] T024A [US3] Add TDD repair proving venue-account state sources must match the configured execution client and target identity before zero-order/zero-position evidence can satisfy T126.
+- [x] T024B [US3] Add TDD repair proving pre-run source collectors derive the expected price-to-beat source from TOML, not caller or CLI overrides.
 
 ## Phase 5: User Story 4 - Abort-Plan Collectors
 

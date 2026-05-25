@@ -880,6 +880,78 @@ feeSchedule;
 }
 
 #[test]
+fn bolt_v3_cli_collects_egress_identity_source_from_configured_probe() {
+    let temp = tempdir().expect("tempdir should create");
+    let observed_identity = "198.51.100.17\n";
+    let normalized_identity = observed_identity.trim();
+    let approved_egress_identity_sha256 =
+        hex::encode(Sha256::digest(normalized_identity.as_bytes()));
+    let observed_identity_path = temp.path().join("observed-egress-identity.txt");
+    fs::write(&observed_identity_path, observed_identity)
+        .expect("observed egress identity probe source should write");
+
+    let mut operator_evidence = valid_live_canary_operator_evidence();
+    operator_evidence.egress_identity_observed_path = Some(
+        observed_identity_path
+            .to_str()
+            .expect("probe path should be utf-8")
+            .to_string(),
+    );
+    operator_evidence.approved_egress_identity_sha256 =
+        Some(approved_egress_identity_sha256.clone());
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!(
+            "{root}\n{}",
+            live_canary_with_operator_evidence_toml(&operator_evidence)
+        )
+    });
+    let output_path = temp.path().join("egress-identity-source.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-pre-run-egress-identity-source",
+            "--config",
+            config_path.to_str().expect("fixture path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+            "--output",
+            output_path.to_str().expect("output path should be utf-8"),
+        ])
+        .output()
+        .expect("bolt-v3 egress identity source collection should run");
+
+    assert!(
+        output.status.success(),
+        "expected egress identity source collection to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains(normalized_identity),
+        "stdout must not expose raw egress identity: {stdout}"
+    );
+    let json: serde_json::Value = serde_json::from_slice(
+        &fs::read(&output_path).expect("egress identity source should write"),
+    )
+    .expect("egress identity source should be JSON");
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(
+        json["record_kind"],
+        "bolt_v3.pre_run_egress_identity_source.v1"
+    );
+    assert_eq!(
+        json["observed_egress_identity_sha256"],
+        approved_egress_identity_sha256
+    );
+    assert_eq!(
+        json["approved_egress_identity_sha256"],
+        approved_egress_identity_sha256
+    );
+}
+
+#[test]
 fn bolt_v3_cli_exposes_abort_plan_source_collector_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
@@ -1700,6 +1772,7 @@ financial_envelope_path = "{financial_envelope_path}"
 financial_envelope_sha256 = "{financial_envelope_sha256}"
 pre_run_state_path = "{pre_run_state_path}"
 pre_run_state_sha256 = "{pre_run_state_sha256}"
+{egress_identity_observed_path_toml}{approved_egress_identity_sha256_toml}
 abort_plan_path = "{abort_plan_path}"
 abort_plan_sha256 = "{abort_plan_sha256}"
 canary_evidence_path = "{canary_evidence_path}"
@@ -1728,6 +1801,14 @@ post_run_hygiene_path = "{post_run_hygiene_path}"
         financial_envelope_sha256 = toml_string(&evidence.financial_envelope_sha256),
         pre_run_state_path = toml_string(&evidence.pre_run_state_path),
         pre_run_state_sha256 = toml_string(&evidence.pre_run_state_sha256),
+        egress_identity_observed_path_toml = optional_live_canary_operator_evidence_field_toml(
+            "egress_identity_observed_path",
+            evidence.egress_identity_observed_path.as_deref(),
+        ),
+        approved_egress_identity_sha256_toml = optional_live_canary_operator_evidence_field_toml(
+            "approved_egress_identity_sha256",
+            evidence.approved_egress_identity_sha256.as_deref(),
+        ),
         abort_plan_path = toml_string(&evidence.abort_plan_path),
         abort_plan_sha256 = toml_string(&evidence.abort_plan_sha256),
         canary_evidence_path = toml_string(&evidence.canary_evidence_path),
@@ -1748,6 +1829,12 @@ post_run_hygiene_path = "{post_run_hygiene_path}"
         restart_reconciliation_path = toml_string(&evidence.restart_reconciliation_path),
         post_run_hygiene_path = toml_string(&evidence.post_run_hygiene_path),
     )
+}
+
+fn optional_live_canary_operator_evidence_field_toml(field: &str, value: Option<&str>) -> String {
+    value
+        .map(|value| format!(r#"{field} = "{}""#, toml_string(value)) + "\n")
+        .unwrap_or_default()
 }
 
 fn toml_string(value: &str) -> String {

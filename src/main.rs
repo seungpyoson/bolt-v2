@@ -21,6 +21,7 @@ use bolt_v2::{
         write_operator_evidence_json_from_artifact_paths,
         write_pre_run_clob_v2_adapter_signing_source_artifact_from_nt_signing_source,
         write_pre_run_clob_v2_fee_behavior_source_artifact_from_nt_fee_sources,
+        write_pre_run_egress_identity_source_artifact_from_configured_probe,
         write_pre_run_host_clock_source_artifact_from_configured_provider_time,
         write_pre_run_state_artifact_from_source_bundle_file,
         write_pre_run_state_artifact_from_source_collectors,
@@ -226,6 +227,14 @@ enum OperatorArtifactsCommand {
         output: PathBuf,
     },
     CollectPreRunHostClockSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    CollectPreRunEgressIdentitySource {
         #[arg(short, long)]
         config: PathBuf,
         #[arg(long)]
@@ -672,6 +681,19 @@ fn run_operator_artifacts_command(
                     &strategy_instance_id,
                     &output,
                 ),
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectPreRunEgressIdentitySource {
+            config,
+            strategy_instance_id,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let written = write_pre_run_egress_identity_source_artifact_from_configured_probe(
+                &loaded,
+                &strategy_instance_id,
+                &output,
             )?;
             print_written_operator_artifact(&written)
         }

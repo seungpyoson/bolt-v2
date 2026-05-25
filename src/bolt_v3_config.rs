@@ -209,6 +209,10 @@ pub struct LiveCanaryOperatorEvidenceBlock {
     pub financial_envelope_sha256: String,
     pub pre_run_state_path: String,
     pub pre_run_state_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub egress_identity_observed_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approved_egress_identity_sha256: Option<String>,
     pub abort_plan_path: String,
     pub abort_plan_sha256: String,
     pub canary_evidence_path: String,

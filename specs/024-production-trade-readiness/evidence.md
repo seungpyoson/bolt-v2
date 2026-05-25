@@ -404,3 +404,27 @@ T037 remains open. This command enables the approved root TOML patch after T036 
 `operator-artifacts collect-entry-decision-source-inputs --config <root.toml> --strategy-instance-id <id> ...` now writes replayable `entry-decision-source.json` and `instrument-source.json` from bounded source proofs before T036 final-packet assembly. Core artifact code validates source-owned price, quote, volatility, selected instruments, fee proof, and two-sided non-crossed books; book precision is derived from the selected up/down instrument pair and rejected if the pair disagrees. The Polymarket provider binding owns the public Gamma/CLOB collection path, validates local source proofs before the first provider fetch, and sources retry count, delay, jitter, operation timeout, and elapsed bound from the configured TOML execution/data client blocks instead of production defaults. This is non-live public/source capture only: it does not read AWS/SSM, run no-submit, connect to private execution, submit/cancel orders, mutate `config/live.local.toml`, or print secrets.
 
 T036 remains open. The real source proofs and live operator artifact files still need to be captured/assembled into the final packet and bound into the approved root TOML before T038 can verify the packet.
+
+## Current-Head CI Compile Fix
+
+- PR #480 exact head `603eae9033b770c7eeef090d7ac4e905e0c8625f` had failing CI checks: `nextest archive`, `test`, and `gate`.
+- `gh run view 26377089210 --repo seungpyoson/bolt-v2 --log-failed` showed the root compile error: `missing field collect_entry_decision_source_inputs in initializer of ProviderBinding` in three test-only fake provider bindings in `src/bolt_v3_adapters.rs`.
+- The downstream `test` and `gate` failures were secondary because the test archive did not build.
+- Fix: set `collect_entry_decision_source_inputs: None` on the three fake `ProviderBinding` test fixtures in `src/bolt_v3_adapters.rs`.
+- Verification after fix:
+  - `cargo test --lib bolt_v3_adapters -- --nocapture`: 10 passed, 0 failed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+
+This is a branch compile repair only. It does not close T036/T037/T038 and does not claim production trade readiness.
+
+## T036 Static Assembly Rerun Evidence
+
+- Command: `cargo run --bin bolt-v2 -- operator-artifacts generate-static --config /Users/spson/Projects/Claude/bolt-v2/config/live.local.toml --output-dir /private/tmp/bolt-t036-static-603eae-rerun --strategy-instance-id bitcoin_updown_main`
+- Result: generated `ssm-manifest.json`, `financial-envelope.json`, `approval-nonce.json`, and `static-artifacts-manifest.json`, then failed closed with the expected blockers:
+  - `market-selection remains blocked: T046 missing source-bound price-to-beat strategy decision input`
+  - `T046 remains blocked: missing source-bound price-to-beat strategy decision input`
+  - `T121 remains blocked: T046 source-bound pre-run state evidence is unproven`
+  - `panic gate and service policy`
+
+This confirms T036 final-packet assembly is still blocked by real source-owned decision/pre-run evidence, not by static-manifest generation itself.

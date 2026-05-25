@@ -1398,12 +1398,14 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         portfolio: None,
         emulator: None,
         streaming: None,
+        event_store: None,
         loop_debug: false,
         data_engine,
         risk_engine,
         exec_engine,
         data_clients: HashMap::new(),
         exec_clients: HashMap::new(),
+        plugins: Vec::new(),
     }
 }
 

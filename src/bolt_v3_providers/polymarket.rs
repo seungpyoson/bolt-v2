@@ -97,6 +97,9 @@ pub struct PolymarketDataConfig {
     pub subscribe_new_markets: bool,
     pub auto_load_missing_instruments: bool,
     pub auto_load_debounce_ms: u64,
+    pub auto_load_max_retries: u32,
+    pub auto_load_retry_delay_initial_secs: u64,
+    pub auto_load_retry_delay_max_secs: u64,
     pub update_instruments_interval_mins: u64,
     pub ws_max_subscriptions: u64,
     pub transport_backend: TransportBackend,
@@ -305,6 +308,15 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
         ),
         ("ws_max_subscriptions", data.ws_max_subscriptions),
         ("auto_load_debounce_ms", data.auto_load_debounce_ms),
+        ("auto_load_max_retries", data.auto_load_max_retries as u64),
+        (
+            "auto_load_retry_delay_initial_secs",
+            data.auto_load_retry_delay_initial_secs,
+        ),
+        (
+            "auto_load_retry_delay_max_secs",
+            data.auto_load_retry_delay_max_secs,
+        ),
     ];
     for (field, value) in positive_fields {
         if *value == 0 {
@@ -327,6 +339,12 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
              `ws_client.subscribe_market(vec![])` during connect when this flag is true, \
              which violates the bolt-v3 controlled-connect boundary until the \
              market-subscription slice owns it"
+        ));
+    }
+    if data.auto_load_retry_delay_initial_secs > data.auto_load_retry_delay_max_secs {
+        errors.push(format!(
+            "clients.{key}.data.auto_load_retry_delay_initial_secs ({}) must be <= auto_load_retry_delay_max_secs ({})",
+            data.auto_load_retry_delay_initial_secs, data.auto_load_retry_delay_max_secs
         ));
     }
     if data.auto_load_missing_instruments {
@@ -627,6 +645,9 @@ fn map_data(
         subscribe_new_markets: cfg.subscribe_new_markets,
         auto_load_missing_instruments: cfg.auto_load_missing_instruments,
         auto_load_debounce_ms: cfg.auto_load_debounce_ms,
+        auto_load_max_retries: cfg.auto_load_max_retries,
+        auto_load_retry_delay_initial_secs: cfg.auto_load_retry_delay_initial_secs as f64,
+        auto_load_retry_delay_max_secs: cfg.auto_load_retry_delay_max_secs as f64,
         transport_backend: cfg.transport_backend,
         filters,
         new_market_filter: None,

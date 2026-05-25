@@ -25,11 +25,13 @@
 //! binding calls `parse_decimal_string`.
 
 mod adapter_signing_source;
+mod collateral_accounting_source;
 mod entry_decision_source_inputs;
 mod fee_behavior_source;
 mod fees;
 
 pub use adapter_signing_source::materialize_clob_v2_adapter_signing_source_from_nt_signing_source;
+pub use collateral_accounting_source::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance;
 pub use entry_decision_source_inputs::collect_entry_decision_source_inputs;
 pub use fee_behavior_source::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources;
 

@@ -2140,6 +2140,10 @@ pub struct Phase8FinancialEnvelopeEvidenceFile {
 }
 
 impl Phase8FinancialEnvelopeEvidenceFile {
+    pub fn max_notional_per_order(&self) -> &str {
+        &self.max_notional_per_order
+    }
+
     pub fn execution_client_id(&self) -> &str {
         &self.execution_client_id
     }

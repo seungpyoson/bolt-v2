@@ -20,6 +20,7 @@ use bolt_v2::{
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_operator_evidence_json_from_artifact_paths,
         write_pre_run_clob_v2_adapter_signing_source_artifact_from_nt_signing_source,
+        write_pre_run_clob_v2_collateral_accounting_source_artifact_from_configured_balance_allowance,
         write_pre_run_clob_v2_fee_behavior_source_artifact_from_nt_fee_sources,
         write_pre_run_egress_identity_source_artifact_from_configured_probe,
         write_pre_run_host_clock_source_artifact_from_configured_provider_time,
@@ -251,6 +252,20 @@ enum OperatorArtifactsCommand {
         clob_signing_source: PathBuf,
         #[arg(long)]
         max_source_bytes: u64,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    CollectPreRunClobV2CollateralAccountingSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        fee_rate_source: PathBuf,
+        #[arg(long)]
+        fee_rate_source_sha256: String,
+        #[arg(long)]
+        max_fee_rate_source_bytes: u64,
         #[arg(long)]
         output: PathBuf,
     },
@@ -712,6 +727,34 @@ fn run_operator_artifacts_command(
                     max_source_bytes,
                     &output,
                 )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectPreRunClobV2CollateralAccountingSource {
+            config,
+            strategy_instance_id,
+            fee_rate_source,
+            fee_rate_source_sha256,
+            max_fee_rate_source_bytes,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            check_no_forbidden_credential_env_vars(&loaded.root)?;
+            let ssm_resolver_session = SsmResolverSession::new()?;
+            let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let written = runtime.block_on(
+                write_pre_run_clob_v2_collateral_accounting_source_artifact_from_configured_balance_allowance(
+                    &loaded,
+                    &strategy_instance_id,
+                    &resolved,
+                    &fee_rate_source,
+                    &fee_rate_source_sha256,
+                    max_fee_rate_source_bytes,
+                    &output,
+                ),
+            )?;
             print_written_operator_artifact(&written)
         }
         OperatorArtifactsCommand::CollectPreRunClobV2FeeBehaviorSource {

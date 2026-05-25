@@ -4794,6 +4794,22 @@ reason = "This is the stable record-kind discriminator for CLOB V2 collateral-ac
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_clob_v2_collateral_accounting_balance_allowance.v1"'''
+context = '''"bolt_v3.pre_run_clob_v2_collateral_accounting_balance_allowance.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for the CLOB V2 collateral balance-allowance source proof, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_clob_v2_collateral_accounting_assumptions.v1"'''
+context = '''"bolt_v3.pre_run_clob_v2_collateral_accounting_assumptions.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for the CLOB V2 collateral requirement-derivation assumptions proof, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = '''1'''
 context = '''const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
@@ -4807,6 +4823,14 @@ literal = '''"bolt_v3.pre_run_clob_v2_collateral_accounting_source_proof.v1"'''
 context = '''"bolt_v3.pre_run_clob_v2_collateral_accounting_source_proof.v1";'''
 classification = "operator_artifact_record_kind"
 reason = "This is the stable record-kind discriminator for CLOB V2 collateral-accounting source-proof hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''10_000'''
+context = '''const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BPS_DENOMINATOR: u32 = 10_000;'''
+classification = "protocol_math_constant"
+reason = "This is the fixed basis-points denominator used to derive fee-inclusive collateral requirements from approved fee-bps source artifacts, not a runtime trade limit."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -4871,6 +4895,62 @@ literal = '''"bolt_v3.pre_run_clob_v2_fee_behavior_assumptions.v1"'''
 context = '''"bolt_v3.pre_run_clob_v2_fee_behavior_assumptions.v1";'''
 classification = "operator_artifact_record_kind"
 reason = "This is the stable record-kind discriminator for the local CLOB V2 fee-behavior deterministic self-test assumptions proof, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"/balance-allowance"'''
+context = '''const CLOB_V2_COLLATERAL_BALANCE_ALLOWANCE_PATH: &str = "/balance-allowance";'''
+classification = "polymarket_clob_api_path"
+reason = "This is the fixed Polymarket CLOB REST API path for authenticated balance/allowance reads, not an operator-configured venue value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"COLLATERAL"'''
+context = '''const CLOB_V2_COLLATERAL_ASSET_TYPE: &str = "COLLATERAL";'''
+classification = "polymarket_clob_api_enum"
+reason = "This is the fixed Polymarket CLOB balance-allowance asset_type enum value for collateral, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"micro_pusd"'''
+context = '''const CLOB_V2_COLLATERAL_BALANCE_UNIT: &str = "micro_pusd";'''
+classification = "polymarket_clob_unit_label"
+reason = "This labels the fixed unit returned by the Polymarket CLOB balance-allowance API for replayable proof hashing, not a configurable amount."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = '''1_000_000'''
+context = '''const CLOB_V2_COLLATERAL_PUSD_MICRO_SCALE: u32 = 1_000_000;'''
+classification = "polymarket_clob_unit_scale"
+reason = "This is the fixed micro-pUSD scale used by the Polymarket CLOB API and NT parser, not an operator-configured balance or size."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"eoa"'''
+context = '''super::PolymarketSignatureType::Eoa => "eoa",'''
+classification = "polymarket_signature_type_label"
+reason = "This is a stable proof label for the configured Polymarket signature_type enum variant, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"poly_proxy"'''
+context = '''super::PolymarketSignatureType::PolyProxy => "poly_proxy",'''
+classification = "polymarket_signature_type_label"
+reason = "This is a stable proof label for the configured Polymarket signature_type enum variant, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"poly_gnosis_safe"'''
+context = '''super::PolymarketSignatureType::PolyGnosisSafe => "poly_gnosis_safe",'''
+classification = "polymarket_signature_type_label"
+reason = "This is a stable proof label for the configured Polymarket signature_type enum variant, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/fee_behavior_source.rs"

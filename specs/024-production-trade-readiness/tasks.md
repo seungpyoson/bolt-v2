@@ -58,7 +58,8 @@
 - [x] T024F [US3] Add TDD-backed `operator-artifacts collect-pre-run-clob-v2-adapter-signing-source` so T036 can write the CLOB V2 adapter-signing source proof from the pinned NT signing source and a local ephemeral signature-recovery self-test.
 - [x] T024G [US3] Add TDD-backed `operator-artifacts collect-pre-run-clob-v2-fee-behavior-source` so T036 can write the CLOB V2 fee-behavior source proof from pinned NT fee parser sources and a local deterministic NT fee-behavior self-test.
 - [x] T024H [US3] Add TDD-backed `operator-artifacts collect-pre-run-egress-identity-source` so T036 can write the egress identity source proof from TOML-owned approved identity hash and TOML-owned observed probe source.
-- [ ] T024E [US3] Replace remaining caller-supplied pre-run source inputs for venue account/open orders/positions, funding/margin, and CLOB V2 collateral accounting with real source-owned materializer commands before T036 final-packet assembly.
+- [x] T024I [US3] Add TDD-backed `operator-artifacts collect-pre-run-clob-v2-collateral-accounting-source` so T036 can write the CLOB V2 collateral accounting source proof from SSM-resolved Polymarket credentials, authenticated `/balance-allowance`, TOML-owned `max_notional_per_order`, and approved fee-rate source hash.
+- [ ] T024E [US3] Replace remaining caller-supplied pre-run source inputs for venue account/open orders/positions and funding/margin with real source-owned materializer commands before T036 final-packet assembly.
 
 ## Phase 5: User Story 4 - Abort-Plan Collectors
 

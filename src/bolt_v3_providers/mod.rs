@@ -133,6 +133,20 @@ pub struct ClobV2FeeBehaviorSourceMaterialization {
     pub fee_assumptions_sha256: String,
 }
 
+pub struct ClobV2CollateralAccountingSourceMaterializationRequest<'a> {
+    pub schema_version: u32,
+    pub balance_allowance_record_kind: &'static str,
+    pub loaded: &'a LoadedBoltV3Config,
+    pub strategy_instance_id: &'a str,
+    pub resolved: &'a ResolvedBoltV3Secrets,
+}
+
+pub struct ClobV2CollateralAccountingSourceMaterialization {
+    pub p_usd_balance: String,
+    pub p_usd_allowance: String,
+    pub collateral_accounting_source_sha256: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderCredentialedBlock {
     Data,
@@ -238,6 +252,15 @@ pub fn materialize_clob_v2_fee_behavior_source_from_nt_fee_sources(
     request: ClobV2FeeBehaviorSourceMaterializationRequest<'_>,
 ) -> Result<ClobV2FeeBehaviorSourceMaterialization, BoltV3OperatorArtifactError> {
     polymarket::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources(request)
+}
+
+pub async fn materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
+    request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
+) -> Result<ClobV2CollateralAccountingSourceMaterialization, BoltV3OperatorArtifactError> {
+    polymarket::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
+        request,
+    )
+    .await
 }
 
 /// Provider-owned NT adapter modules whose info logs can expose

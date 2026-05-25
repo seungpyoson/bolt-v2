@@ -1,10 +1,13 @@
 use std::{
+    collections::BTreeMap,
     fs,
     io::{Read, Write},
     net::TcpListener,
     path::Path,
     process::Command,
+    sync::mpsc,
     thread,
+    time::Duration,
 };
 
 use bolt_v2::{
@@ -952,6 +955,191 @@ fn bolt_v3_cli_collects_egress_identity_source_from_configured_probe() {
 }
 
 #[test]
+fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_from_ssm_backed_balance_allowance() {
+    let temp = tempdir().expect("tempdir should create");
+    let (clob_url, clob_request_rx) =
+        spawn_one_shot_clob_balance_allowance_server("1000000000", "999999999000000");
+    let (ssm_url, ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
+        (
+            "/bolt/polymarket_main/private_key",
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+        ),
+        ("/bolt/polymarket_main/api_key", "poly-api-key"),
+        ("/bolt/polymarket_main/api_secret", "YWJj"),
+        ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/binance_reference/api_key", "binance-api-key"),
+        (
+            "/bolt/binance_reference/api_secret",
+            "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
+        ),
+    ]));
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!(
+            "{}\n{}",
+            root.replace(
+                "base_url_http = \"https://clob.polymarket.com\"",
+                &format!("base_url_http = \"{clob_url}\""),
+            ),
+            live_canary_toml_without_operator_evidence()
+        )
+    });
+    let fee_rate_source_path = write_cli_json_artifact(
+        temp.path(),
+        "fee-rate-source.json",
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.entry_decision_fee_rate_source.v1",
+            "fee_bps_by_instrument_id": {
+                "condition-token-up.POLYMARKET": 2.5,
+                "condition-token-down.POLYMARKET": 3.5
+            }
+        }),
+    );
+    let fee_rate_source_sha256 = sha256_file_for_cli_test(&fee_rate_source_path);
+    let output_path = temp
+        .path()
+        .join("clob-v2-collateral-accounting-source.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-pre-run-clob-v2-collateral-accounting-source",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+            "--fee-rate-source",
+            fee_rate_source_path
+                .to_str()
+                .expect("fee source path should be utf-8"),
+            "--fee-rate-source-sha256",
+            &fee_rate_source_sha256,
+            "--max-fee-rate-source-bytes",
+            "100000",
+            "--output",
+            output_path.to_str().expect("output path should be utf-8"),
+        ])
+        .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
+        .env("AWS_ACCESS_KEY_ID", "fake-access-key")
+        .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
+        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_MAX_ATTEMPTS", "1")
+        .output()
+        .expect("bolt-v3 CLOB V2 collateral source collection should run");
+
+    assert!(
+        output.status.success(),
+        "expected CLOB V2 collateral source collection to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for forbidden in [
+        "/bolt/polymarket_main/private_key",
+        "poly-api-key",
+        "poly-passphrase",
+        "1000000000",
+        "999999999000000",
+    ] {
+        assert!(
+            !stdout.contains(forbidden),
+            "stdout leaked {forbidden}: {stdout}"
+        );
+    }
+    let request = clob_request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("fake CLOB server should capture balance-allowance request");
+    let request_lower = request.to_ascii_lowercase();
+    assert!(request.starts_with("GET /balance-allowance?"), "{request}");
+    assert!(request.contains("asset_type=COLLATERAL"), "{request}");
+    assert!(request.contains("signature_type=1"), "{request}");
+    for header in [
+        "poly_address:",
+        "poly_signature:",
+        "poly_timestamp:",
+        "poly_api_key:",
+        "poly_passphrase:",
+    ] {
+        assert!(
+            request_lower.contains(header),
+            "missing auth header {header}: {request}"
+        );
+    }
+    let paths = ssm_paths_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("fake SSM server should report requested paths");
+    assert!(paths.contains(&"/bolt/polymarket_main/private_key".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket_main/api_key".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket_main/api_secret".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket_main/passphrase".to_string()));
+
+    let json: serde_json::Value = serde_json::from_slice(
+        &fs::read(&output_path).expect("CLOB V2 collateral source should write"),
+    )
+    .expect("CLOB V2 collateral source should be JSON");
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(
+        json["record_kind"],
+        "bolt_v3.pre_run_clob_v2_collateral_accounting_source.v1"
+    );
+    assert_eq!(json["collateral_accounting_verified"], true);
+    assert_eq!(json["p_usd_balance"], "1000");
+    assert_eq!(json["p_usd_allowance"], "999999999");
+    assert_eq!(json["required_max_notional_plus_fees"], "10.0035");
+    for field in [
+        "collateral_accounting_source_sha256",
+        "collateral_assumptions_sha256",
+    ] {
+        let value = json[field]
+            .as_str()
+            .unwrap_or_else(|| panic!("{field} should be a string: {json}"));
+        assert!(
+            value.len() == 64
+                && value
+                    .chars()
+                    .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+            "{field} should be lowercase sha256 hex: {value}"
+        );
+    }
+}
+
+#[test]
+fn bolt_v3_cli_exposes_clob_v2_collateral_accounting_source_from_configured_balance_allowance() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-pre-run-clob-v2-collateral-accounting-source",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 CLOB V2 collateral accounting source help should run");
+
+    assert!(
+        output.status.success(),
+        "expected CLOB V2 collateral accounting source help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"), "{stdout}");
+    assert!(stdout.contains("--strategy-instance-id"), "{stdout}");
+    assert!(stdout.contains("--fee-rate-source"), "{stdout}");
+    assert!(stdout.contains("--fee-rate-source-sha256"), "{stdout}");
+    assert!(stdout.contains("--max-fee-rate-source-bytes"), "{stdout}");
+    assert!(stdout.contains("--output"), "{stdout}");
+    for forbidden in [
+        "--p-usd-balance",
+        "--p-usd-allowance",
+        "--required-max-notional-plus-fees",
+    ] {
+        assert!(
+            !stdout.contains(forbidden),
+            "CLOB V2 collateral materializer must not accept caller-supplied runtime value {forbidden}: {stdout}"
+        );
+    }
+}
+
+#[test]
 fn bolt_v3_cli_exposes_abort_plan_source_collector_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
@@ -992,6 +1180,94 @@ fn spawn_one_shot_date_server(date: &'static str) -> String {
             .expect("test HTTP response should write");
     });
     format!("http://{address}")
+}
+
+fn spawn_one_shot_clob_balance_allowance_server(
+    balance: &'static str,
+    allowance: &'static str,
+) -> (String, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test CLOB server should bind");
+    let address = listener.local_addr().expect("test CLOB server address");
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("test CLOB request should connect");
+        let request = read_test_http_request(&mut stream);
+        tx.send(request)
+            .expect("test CLOB request should report to caller");
+        let body = format!(r#"{{"balance":"{balance}","allowance":"{allowance}"}}"#);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("test CLOB response should write");
+    });
+    (format!("http://{address}"), rx)
+}
+
+fn spawn_fake_ssm_server(
+    values: BTreeMap<&'static str, &'static str>,
+) -> (String, mpsc::Receiver<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test SSM server should bind");
+    let address = listener.local_addr().expect("test SSM server address");
+    let values: BTreeMap<String, String> = values
+        .into_iter()
+        .map(|(path, value)| (path.to_string(), value.to_string()))
+        .collect();
+    let expected_request_count = values.len();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut paths = Vec::new();
+        for _ in 0..expected_request_count {
+            let (mut stream, _) = listener.accept().expect("test SSM request should connect");
+            let request = read_test_http_request(&mut stream);
+            let body = request
+                .split("\r\n\r\n")
+                .nth(1)
+                .expect("test SSM request should include JSON body");
+            let value: serde_json::Value =
+                serde_json::from_str(body).expect("test SSM request body should parse");
+            let name = value["Name"]
+                .as_str()
+                .expect("test SSM request should include Name")
+                .to_string();
+            paths.push(name.clone());
+            let secret_value = values
+                .get(&name)
+                .unwrap_or_else(|| panic!("unexpected SSM path {name}"));
+            let response_body = serde_json::json!({
+                "Parameter": {
+                    "Name": name,
+                    "Type": "SecureString",
+                    "Value": secret_value,
+                }
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/x-amz-json-1.1\r\nx-amzn-RequestId: test-request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("test SSM response should write");
+        }
+        tx.send(paths).expect("test SSM paths should report");
+    });
+    (format!("http://{address}"), rx)
+}
+
+fn read_test_http_request(stream: &mut std::net::TcpStream) -> String {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("test request read timeout should set");
+    let mut bytes = [0_u8; 8192];
+    let size = stream
+        .read(&mut bytes)
+        .expect("test HTTP request should read");
+    String::from_utf8_lossy(&bytes[..size]).to_string()
 }
 
 #[test]

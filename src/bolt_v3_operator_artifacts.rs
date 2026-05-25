@@ -13,7 +13,7 @@ use anyhow::anyhow;
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
 use nautilus_model::instruments::{Instrument, InstrumentAny};
 use nautilus_network::http::{HttpClient, USER_AGENT};
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::FromPrimitive};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -32,12 +32,14 @@ use crate::{
     bolt_v3_market_families::{self, MarketSelectionTarget},
     bolt_v3_providers::{
         ClobV2AdapterSigningSourceMaterializationRequest,
+        ClobV2CollateralAccountingSourceMaterializationRequest,
         ClobV2FeeBehaviorSourceMaterializationRequest, EntryDecisionSourceProviderContext,
         ProviderSecretResolveContext, binding_for_provider_key,
         materialize_clob_v2_adapter_signing_source_from_nt_signing_source,
+        materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance,
         materialize_clob_v2_fee_behavior_source_from_nt_fee_sources,
     },
-    bolt_v3_secrets::BoltV3SecretError,
+    bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     bolt_v3_tiny_canary_evidence::{
         Phase8AbortPlanEvidenceFile, Phase8AbortPlanSourceProofs,
         Phase8FinancialEnvelopeEvidenceFile, Phase8MarketSelectionRuntimeProvenance,
@@ -156,9 +158,14 @@ const PRE_RUN_CLOB_V2_ADAPTER_SIGNING_SOURCE_PROOF_RECORD_KIND: &str =
 const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_RECORD_KIND: &str =
     "bolt_v3.pre_run_clob_v2_collateral_accounting_source.v1";
+const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BALANCE_ALLOWANCE_RECORD_KIND: &str =
+    "bolt_v3.pre_run_clob_v2_collateral_accounting_balance_allowance.v1";
+const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_ASSUMPTIONS_RECORD_KIND: &str =
+    "bolt_v3.pre_run_clob_v2_collateral_accounting_assumptions.v1";
 const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_clob_v2_collateral_accounting_source_proof.v1";
+const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BPS_DENOMINATOR: u32 = 10_000;
 const PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_RECORD_KIND: &str =
     "bolt_v3.pre_run_clob_v2_fee_behavior_source.v1";
@@ -4024,6 +4031,133 @@ pub fn write_pre_run_clob_v2_fee_behavior_source_artifact_from_nt_fee_sources(
     write_json_artifact_create_new(output_path, &source)
 }
 
+pub async fn write_pre_run_clob_v2_collateral_accounting_source_artifact_from_configured_balance_allowance(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    resolved: &ResolvedBoltV3Secrets,
+    fee_rate_source_path: &Path,
+    fee_rate_source_sha256: &str,
+    max_fee_rate_source_bytes: u64,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let financial_envelope =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+                field: "financial_envelope",
+            })?;
+    let max_notional_per_order = parse_clob_v2_decimal(
+        stringify!(max_notional_per_order),
+        financial_envelope.max_notional_per_order(),
+    )?;
+    let (fee_rate_source, actual_fee_rate_source_sha256) =
+        read_clob_v2_fee_rate_source(fee_rate_source_path, max_fee_rate_source_bytes)?;
+    if actual_fee_rate_source_sha256 != fee_rate_source_sha256 {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "fee_rate_source_sha256",
+        });
+    }
+    validate_entry_decision_fee_rate_source_artifact(&fee_rate_source).map_err(|_| {
+        BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "fee_rate_source",
+        }
+    })?;
+    let max_fee_bps = max_fee_bps_from_fee_rate_source(&fee_rate_source)?;
+    let fee_multiplier = Decimal::ONE
+        + max_fee_bps / Decimal::from(PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BPS_DENOMINATOR);
+    let required_max_notional_plus_fees = max_notional_per_order * fee_multiplier;
+    if required_max_notional_plus_fees <= Decimal::ZERO {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(required_max_notional_plus_fees),
+        });
+    }
+
+    let materialized =
+        materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
+            ClobV2CollateralAccountingSourceMaterializationRequest {
+                schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
+                balance_allowance_record_kind:
+                    PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BALANCE_ALLOWANCE_RECORD_KIND,
+                loaded,
+                strategy_instance_id,
+                resolved,
+            },
+        )
+        .await?;
+    let p_usd_balance =
+        parse_clob_v2_decimal(stringify!(p_usd_balance), &materialized.p_usd_balance)?;
+    let p_usd_allowance =
+        parse_clob_v2_decimal(stringify!(p_usd_allowance), &materialized.p_usd_allowance)?;
+    if p_usd_balance < required_max_notional_plus_fees
+        || p_usd_allowance < required_max_notional_plus_fees
+    {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(collateral_accounting_verified),
+        });
+    }
+
+    let required_max_notional_plus_fees = required_max_notional_plus_fees.normalize().to_string();
+    let max_fee_bps = max_fee_bps.normalize().to_string();
+    let collateral_assumptions = ClobV2CollateralAccountingAssumptionsProof {
+        schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
+        record_kind: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_ASSUMPTIONS_RECORD_KIND,
+        max_notional_per_order: financial_envelope.max_notional_per_order(),
+        fee_rate_source_sha256: &actual_fee_rate_source_sha256,
+        max_fee_bps: &max_fee_bps,
+        bps_denominator: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BPS_DENOMINATOR,
+        required_max_notional_plus_fees: &required_max_notional_plus_fees,
+    };
+    let collateral_assumptions_sha256 = json_artifact_sha256(&collateral_assumptions)?;
+    let source = Phase8PreRunClobV2CollateralAccountingSourceEvidence {
+        schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
+        record_kind: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_RECORD_KIND.to_string(),
+        collateral_accounting_verified: true,
+        p_usd_balance: materialized.p_usd_balance,
+        p_usd_allowance: materialized.p_usd_allowance,
+        required_max_notional_plus_fees,
+        collateral_accounting_source_sha256: materialized.collateral_accounting_source_sha256,
+        collateral_assumptions_sha256,
+    };
+
+    write_json_artifact_create_new(output_path, &source)
+}
+
+fn read_clob_v2_fee_rate_source(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<(EntryDecisionFeeRateSourceArtifact, String), BoltV3OperatorArtifactError> {
+    let bytes = read_file_bounded(path, max_bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::PreRunClobV2SourceRead {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    let sha256 = hex::encode(Sha256::digest(&bytes));
+    let source = serde_json::from_slice(&bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::PreRunClobV2SourceParse {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    Ok((source, sha256))
+}
+
+fn max_fee_bps_from_fee_rate_source(
+    source: &EntryDecisionFeeRateSourceArtifact,
+) -> Result<Decimal, BoltV3OperatorArtifactError> {
+    let mut max_fee_bps = Decimal::ZERO;
+    for fee_bps in source.fee_bps_by_instrument_id.values() {
+        let fee_bps = Decimal::from_f64(*fee_bps).ok_or(
+            BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+                field: "fee_rate_source",
+            },
+        )?;
+        if fee_bps > max_fee_bps {
+            max_fee_bps = fee_bps;
+        }
+    }
+    Ok(max_fee_bps)
+}
+
 pub async fn write_pre_run_host_clock_source_artifact_from_configured_provider_time(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
@@ -5016,7 +5150,7 @@ struct Phase8PreRunClobV2AdapterSigningSourceEvidence {
     signer_recovered_matches_expected: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Phase8PreRunClobV2CollateralAccountingSourceEvidence {
     schema_version: u32,
@@ -5027,6 +5161,17 @@ struct Phase8PreRunClobV2CollateralAccountingSourceEvidence {
     required_max_notional_plus_fees: String,
     collateral_accounting_source_sha256: String,
     collateral_assumptions_sha256: String,
+}
+
+#[derive(Serialize)]
+struct ClobV2CollateralAccountingAssumptionsProof<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    max_notional_per_order: &'a str,
+    fee_rate_source_sha256: &'a str,
+    max_fee_bps: &'a str,
+    bps_denominator: u32,
+    required_max_notional_plus_fees: &'a str,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

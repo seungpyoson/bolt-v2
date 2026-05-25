@@ -742,7 +742,6 @@ fn bolt_v3_cli_exposes_collect_entry_decision_proof_sources() {
     assert!(stdout.contains("--strategy-instance-id"));
     assert!(stdout.contains("--price-report"));
     assert!(stdout.contains("--expected-price-report-sha256"));
-    assert!(stdout.contains("--source-report-benchmark-price"));
     assert!(stdout.contains("--market-selection-timestamp-ms"));
     assert!(stdout.contains("--decision-timestamp-ms"));
     assert!(stdout.contains("--reference-quote-venue"));
@@ -776,8 +775,14 @@ max_notional_per_order = "10.00"
         )
     });
     let report_path = temp.path().join("chainlink-report.bin");
-    fs::write(&report_path, b"operator-approved-report-payload")
-        .expect("report payload should write");
+    let report_source = chainlink_v3_report_source_json(
+        "0x1111111111111111111111111111111111111111111111111111111111111111",
+        600,
+        601,
+        3100.0,
+        8,
+    );
+    fs::write(&report_path, &report_source).expect("report payload should write");
     let report_sha256 = sha256_file_for_cli_test(&report_path);
     let price_output = temp.path().join("source-bound-price.json");
     let quote_output = temp.path().join("reference-quote.json");
@@ -797,12 +802,6 @@ max_notional_per_order = "10.00"
             "100000",
             "--expected-price-report-sha256",
             &report_sha256,
-            "--source-report-valid-from-timestamp-ms",
-            "600000",
-            "--source-report-observations-timestamp-ms",
-            "601000",
-            "--source-report-benchmark-price",
-            "3100.0",
             "--market-selection-timestamp-ms",
             "600000",
             "--decision-timestamp-ms",
@@ -840,7 +839,7 @@ max_notional_per_order = "10.00"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !stdout.contains("operator-approved-report-payload"),
+        !stdout.contains("fullReport"),
         "stdout must not print raw source report bytes: {stdout}"
     );
     let summary: serde_json::Value =
@@ -1150,6 +1149,97 @@ fn sha256_file_for_cli_test(path: &Path) -> String {
     hex::encode(Sha256::digest(
         fs::read(path).expect("test artifact should read"),
     ))
+}
+
+fn chainlink_v3_report_source_json(
+    feed_id: &str,
+    valid_from_timestamp_seconds: u32,
+    observations_timestamp_seconds: u32,
+    benchmark_price: f64,
+    decimal_scale: u64,
+) -> Vec<u8> {
+    let full_report = chainlink_v3_full_report_payload(
+        feed_id,
+        valid_from_timestamp_seconds,
+        observations_timestamp_seconds,
+        benchmark_price,
+        decimal_scale,
+    );
+    serde_json::to_vec_pretty(&serde_json::json!({
+        "feedID": feed_id,
+        "validFromTimestamp": valid_from_timestamp_seconds,
+        "observationsTimestamp": observations_timestamp_seconds,
+        "fullReport": hex::encode(full_report),
+    }))
+    .expect("Chainlink report source JSON should serialize")
+}
+
+fn chainlink_v3_full_report_payload(
+    feed_id: &str,
+    valid_from_timestamp_seconds: u32,
+    observations_timestamp_seconds: u32,
+    benchmark_price: f64,
+    decimal_scale: u64,
+) -> Vec<u8> {
+    let mut blob = Vec::new();
+    blob.extend_from_slice(&chainlink_feed_id_bytes(feed_id));
+    blob.extend_from_slice(&abi_u32_word(valid_from_timestamp_seconds));
+    blob.extend_from_slice(&abi_u32_word(observations_timestamp_seconds));
+    blob.extend_from_slice(&abi_zero_word());
+    blob.extend_from_slice(&abi_zero_word());
+    blob.extend_from_slice(&abi_u32_word(observations_timestamp_seconds + 60));
+    blob.extend_from_slice(&abi_i192_word(
+        (benchmark_price * 10f64.powi(decimal_scale as i32)).round() as i128,
+    ));
+    blob.extend_from_slice(&abi_i192_word(
+        ((benchmark_price - 1.0) * 10f64.powi(decimal_scale as i32)).round() as i128,
+    ));
+    blob.extend_from_slice(&abi_i192_word(
+        ((benchmark_price + 1.0) * 10f64.powi(decimal_scale as i32)).round() as i128,
+    ));
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&abi_zero_word());
+    payload.extend_from_slice(&abi_zero_word());
+    payload.extend_from_slice(&abi_zero_word());
+    payload.extend_from_slice(&abi_usize_word(128));
+    payload.extend_from_slice(&abi_usize_word(blob.len()));
+    payload.extend_from_slice(&blob);
+    payload
+}
+
+fn chainlink_feed_id_bytes(feed_id: &str) -> [u8; 32] {
+    let mut bytes = [0_u8; 32];
+    let decoded = hex::decode(
+        feed_id
+            .strip_prefix("0x")
+            .expect("test feed id should have 0x prefix"),
+    )
+    .expect("test feed id should decode");
+    bytes.copy_from_slice(&decoded);
+    bytes
+}
+
+fn abi_zero_word() -> [u8; 32] {
+    [0_u8; 32]
+}
+
+fn abi_u32_word(value: u32) -> [u8; 32] {
+    let mut word = [0_u8; 32];
+    word[28..32].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn abi_usize_word(value: usize) -> [u8; 32] {
+    let mut word = [0_u8; 32];
+    word[24..32].copy_from_slice(&(value as u64).to_be_bytes());
+    word
+}
+
+fn abi_i192_word(value: i128) -> [u8; 32] {
+    let mut word = if value < 0 { [0xff_u8; 32] } else { [0_u8; 32] };
+    word[16..32].copy_from_slice(&value.to_be_bytes());
+    word
 }
 
 fn live_canary_toml_without_operator_evidence() -> &'static str {

@@ -62,6 +62,27 @@ const ABORT_PLAN_SOURCE_PROOF_BUNDLE_RECORD_KIND: &str =
     "bolt_v3.abort_plan_source_proof_bundle.v1";
 const SOURCE_BOUND_PRICE_TO_BEAT_SOURCE_SCHEMA_VERSION: u32 = 1;
 const SOURCE_BOUND_PRICE_TO_BEAT_SOURCE_RECORD_KIND: &str = "bolt_v3.source_bound_price_to_beat.v1";
+const CHAINLINK_PRICE_REPORT_SCHEMA_VERSION_V3: u64 = 3;
+const CHAINLINK_REPORT_ABI_WORD_BYTES: usize = 32;
+const CHAINLINK_REPORT_ABI_U64_VALUE_BYTES: usize = std::mem::size_of::<u64>();
+const CHAINLINK_REPORT_ABI_U32_VALUE_BYTES: usize = std::mem::size_of::<u32>();
+const CHAINLINK_REPORT_ABI_I128_VALUE_BYTES: usize = std::mem::size_of::<i128>();
+const CHAINLINK_REPORT_ABI_U64_PREFIX_BYTES: usize =
+    CHAINLINK_REPORT_ABI_WORD_BYTES - CHAINLINK_REPORT_ABI_U64_VALUE_BYTES;
+const CHAINLINK_REPORT_ABI_U32_PREFIX_BYTES: usize =
+    CHAINLINK_REPORT_ABI_WORD_BYTES - CHAINLINK_REPORT_ABI_U32_VALUE_BYTES;
+const CHAINLINK_REPORT_ABI_I128_PREFIX_BYTES: usize =
+    CHAINLINK_REPORT_ABI_WORD_BYTES - CHAINLINK_REPORT_ABI_I128_VALUE_BYTES;
+const CHAINLINK_REPORT_BLOB_OFFSET_WORD_INDEX: usize = 3;
+const CHAINLINK_REPORT_CALLBACK_MIN_BYTES: usize = 4 * CHAINLINK_REPORT_ABI_WORD_BYTES;
+const CHAINLINK_REPORT_V3_WORD_COUNT: usize = 9;
+const CHAINLINK_REPORT_V3_FEED_ID_WORD_INDEX: usize = 0;
+const CHAINLINK_REPORT_V3_VALID_FROM_WORD_INDEX: usize = 1;
+const CHAINLINK_REPORT_V3_OBSERVATIONS_WORD_INDEX: usize = 2;
+const CHAINLINK_REPORT_V3_BENCHMARK_PRICE_WORD_INDEX: usize = 6;
+const CHAINLINK_REPORT_MILLISECONDS_PER_SECOND: u64 = 1_000;
+const CHAINLINK_REPORT_SIGN_BIT_MASK: u8 = 0x80;
+const CHAINLINK_REPORT_PRICE_DECIMAL_RADIX: f64 = 10.0;
 const REFERENCE_QUOTE_SOURCE_SCHEMA_VERSION: u32 = 1;
 const REFERENCE_QUOTE_SOURCE_RECORD_KIND: &str = "bolt_v3.reference_quote_source.v1";
 const REALIZED_VOLATILITY_SOURCE_SCHEMA_VERSION: u32 = 1;
@@ -2228,9 +2249,6 @@ pub struct EntryDecisionProofSourceMaterializationRequest<'a> {
     pub price_report_path: &'a Path,
     pub max_price_report_bytes: u64,
     pub expected_price_report_sha256: &'a str,
-    pub source_report_valid_from_timestamp_ms: u64,
-    pub source_report_observations_timestamp_ms: u64,
-    pub source_report_benchmark_price: f64,
     pub market_selection_timestamp_ms: u64,
     pub decision_timestamp_ms: u64,
     pub reference_quote: EntryDecisionReferenceQuoteProofInput,
@@ -2329,6 +2347,26 @@ struct PriceToBeatReportBinding {
     decimal_scale: u64,
 }
 
+struct DecodedPriceToBeatReport {
+    feed_id: String,
+    valid_from_timestamp_ms: u64,
+    observations_timestamp_ms: u64,
+    benchmark_price: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChainlinkDataStreamsReportSource {
+    #[serde(rename = "feedID")]
+    feed_id: String,
+    #[serde(rename = "validFromTimestamp")]
+    valid_from_timestamp: u64,
+    #[serde(rename = "observationsTimestamp")]
+    observations_timestamp: u64,
+    #[serde(rename = "fullReport")]
+    full_report: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EntryDecisionSourceProofFileRequest<'a> {
     pub price_to_beat_source_path: &'a Path,
@@ -2381,20 +2419,19 @@ pub fn write_entry_decision_proof_source_files(
         Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
             .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
     let report_binding = price_to_beat_report_binding(loaded, strategy_instance_id)?;
+    let decoded_report = decode_price_to_beat_report(&report_bytes, &report_binding)?;
     let price_to_beat_source = SourceBoundPriceToBeatSource {
         schema_version: SOURCE_BOUND_PRICE_TO_BEAT_SOURCE_SCHEMA_VERSION,
         record_kind: SOURCE_BOUND_PRICE_TO_BEAT_SOURCE_RECORD_KIND.to_string(),
         source: financial_envelope.price_to_beat_source().to_string(),
-        price_to_beat_value: request.source_report_benchmark_price,
+        price_to_beat_value: decoded_report.benchmark_price,
         source_report_schema_version: Some(report_binding.schema_version),
-        source_report_feed_id: Some(report_binding.feed_id),
+        source_report_feed_id: Some(decoded_report.feed_id),
         source_report_decimal_scale: Some(report_binding.decimal_scale),
         source_report_full_sha256: Some(report_sha256),
-        source_report_valid_from_timestamp_ms: Some(request.source_report_valid_from_timestamp_ms),
-        source_report_observations_timestamp_ms: Some(
-            request.source_report_observations_timestamp_ms,
-        ),
-        source_report_benchmark_price: Some(request.source_report_benchmark_price),
+        source_report_valid_from_timestamp_ms: Some(decoded_report.valid_from_timestamp_ms),
+        source_report_observations_timestamp_ms: Some(decoded_report.observations_timestamp_ms),
+        source_report_benchmark_price: Some(decoded_report.benchmark_price),
         market_selection_timestamp_ms: request.market_selection_timestamp_ms,
         decision_timestamp_ms: request.decision_timestamp_ms,
     };
@@ -2407,7 +2444,11 @@ pub fn write_entry_decision_proof_source_files(
         price: request.reference_quote.price,
         observed_ts_ms: request.reference_quote.observed_ts_ms,
     };
-    validate_reference_quote_source(&reference_quote_source)?;
+    validate_reference_quote_source(
+        &reference_quote_source,
+        request.market_selection_timestamp_ms,
+        request.decision_timestamp_ms,
+    )?;
 
     let realized_volatility_source = RealizedVolatilitySource {
         schema_version: REALIZED_VOLATILITY_SOURCE_SCHEMA_VERSION,
@@ -2415,7 +2456,11 @@ pub fn write_entry_decision_proof_source_files(
         value: request.realized_volatility.value,
         ready_ts_ms: request.realized_volatility.ready_ts_ms,
     };
-    validate_realized_volatility_source(&realized_volatility_source)?;
+    validate_realized_volatility_source(
+        &realized_volatility_source,
+        request.market_selection_timestamp_ms,
+        request.decision_timestamp_ms,
+    )?;
 
     let fee_rate_source = EntryDecisionFeeRateSourceArtifact {
         schema_version: ENTRY_DECISION_FEE_RATE_SOURCE_SCHEMA_VERSION,
@@ -2643,8 +2688,16 @@ fn read_validated_entry_decision_source_proofs(
         request.max_realized_volatility_source_bytes,
     )?;
     validate_price_to_beat_source(loaded, strategy_instance_id, &price_source)?;
-    validate_reference_quote_source(&reference_quote)?;
-    validate_realized_volatility_source(&realized_volatility)?;
+    validate_reference_quote_source(
+        &reference_quote,
+        price_source.market_selection_timestamp_ms,
+        price_source.decision_timestamp_ms,
+    )?;
+    validate_realized_volatility_source(
+        &realized_volatility,
+        price_source.market_selection_timestamp_ms,
+        price_source.decision_timestamp_ms,
+    )?;
     Ok(EntryDecisionSourceProofs {
         price_source,
         reference_quote,
@@ -2818,8 +2871,226 @@ fn price_to_beat_report_provenance_config_invalid() -> BoltV3OperatorArtifactErr
     entry_decision_source_invalid("source-bound price_to_beat report provenance config is invalid")
 }
 
+fn decode_price_to_beat_report(
+    report_bytes: &[u8],
+    binding: &PriceToBeatReportBinding,
+) -> Result<DecodedPriceToBeatReport, BoltV3OperatorArtifactError> {
+    if binding.schema_version != CHAINLINK_PRICE_REPORT_SCHEMA_VERSION_V3 {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    let source: ChainlinkDataStreamsReportSource = serde_json::from_slice(report_bytes)
+        .map_err(|_| price_to_beat_report_provenance_invalid())?;
+    if !is_lowercase_chainlink_feed_id(&source.feed_id)
+        || source.feed_id != binding.feed_id
+        || source.valid_from_timestamp == ENTRY_DECISION_ZERO_TIMESTAMP_MS
+        || source.observations_timestamp == ENTRY_DECISION_ZERO_TIMESTAMP_MS
+        || source.valid_from_timestamp > source.observations_timestamp
+        || source.full_report.trim() != source.full_report
+        || source.full_report.is_empty()
+    {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    let full_report =
+        hex::decode(&source.full_report).map_err(|_| price_to_beat_report_provenance_invalid())?;
+    let report_blob = decode_chainlink_full_report_blob(&full_report)?;
+    let decoded = decode_chainlink_v3_report_blob(&report_blob, binding)?;
+    if decoded.feed_id != source.feed_id
+        || decoded.valid_from_timestamp_ms
+            != source
+                .valid_from_timestamp
+                .checked_mul(CHAINLINK_REPORT_MILLISECONDS_PER_SECOND)
+                .ok_or_else(price_to_beat_report_provenance_invalid)?
+        || decoded.observations_timestamp_ms
+            != source
+                .observations_timestamp
+                .checked_mul(CHAINLINK_REPORT_MILLISECONDS_PER_SECOND)
+                .ok_or_else(price_to_beat_report_provenance_invalid)?
+    {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    Ok(decoded)
+}
+
+fn decode_chainlink_full_report_blob(
+    full_report: &[u8],
+) -> Result<Vec<u8>, BoltV3OperatorArtifactError> {
+    if full_report.len() < CHAINLINK_REPORT_CALLBACK_MIN_BYTES {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    let offset =
+        read_chainlink_abi_usize_word(full_report, CHAINLINK_REPORT_BLOB_OFFSET_WORD_INDEX)?;
+    if offset < CHAINLINK_REPORT_CALLBACK_MIN_BYTES
+        || offset
+            .checked_add(CHAINLINK_REPORT_ABI_WORD_BYTES)
+            .is_none_or(|end| end > full_report.len())
+    {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    let length = read_chainlink_abi_usize_at(full_report, offset)?;
+    let start = offset
+        .checked_add(CHAINLINK_REPORT_ABI_WORD_BYTES)
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let end = start
+        .checked_add(length)
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    if end > full_report.len() {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    Ok(full_report[start..end].to_vec())
+}
+
+fn decode_chainlink_v3_report_blob(
+    report_blob: &[u8],
+    binding: &PriceToBeatReportBinding,
+) -> Result<DecodedPriceToBeatReport, BoltV3OperatorArtifactError> {
+    if report_blob.len() < CHAINLINK_REPORT_V3_WORD_COUNT * CHAINLINK_REPORT_ABI_WORD_BYTES {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    let mut feed_id = String::from(CHAINLINK_FEED_ID_PREFIX);
+    feed_id.push_str(&hex::encode(read_chainlink_abi_word(
+        report_blob,
+        CHAINLINK_REPORT_V3_FEED_ID_WORD_INDEX,
+    )?));
+    let valid_from_timestamp_ms = u64::from(read_chainlink_abi_u32_word(
+        report_blob,
+        CHAINLINK_REPORT_V3_VALID_FROM_WORD_INDEX,
+    )?)
+    .checked_mul(CHAINLINK_REPORT_MILLISECONDS_PER_SECOND)
+    .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let observations_timestamp_ms = u64::from(read_chainlink_abi_u32_word(
+        report_blob,
+        CHAINLINK_REPORT_V3_OBSERVATIONS_WORD_INDEX,
+    )?)
+    .checked_mul(CHAINLINK_REPORT_MILLISECONDS_PER_SECOND)
+    .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let benchmark_price_raw = read_chainlink_abi_i192_as_i128(
+        report_blob,
+        CHAINLINK_REPORT_V3_BENCHMARK_PRICE_WORD_INDEX,
+    )?;
+    let benchmark_price = scale_chainlink_report_price(benchmark_price_raw, binding.decimal_scale)?;
+    Ok(DecodedPriceToBeatReport {
+        feed_id,
+        valid_from_timestamp_ms,
+        observations_timestamp_ms,
+        benchmark_price,
+    })
+}
+
+fn read_chainlink_abi_word(
+    bytes: &[u8],
+    word_index: usize,
+) -> Result<&[u8], BoltV3OperatorArtifactError> {
+    let start = word_index
+        .checked_mul(CHAINLINK_REPORT_ABI_WORD_BYTES)
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let end = start
+        .checked_add(CHAINLINK_REPORT_ABI_WORD_BYTES)
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    bytes
+        .get(start..end)
+        .ok_or_else(price_to_beat_report_provenance_invalid)
+}
+
+fn read_chainlink_abi_word_at(
+    bytes: &[u8],
+    start: usize,
+) -> Result<&[u8], BoltV3OperatorArtifactError> {
+    let end = start
+        .checked_add(CHAINLINK_REPORT_ABI_WORD_BYTES)
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    bytes
+        .get(start..end)
+        .ok_or_else(price_to_beat_report_provenance_invalid)
+}
+
+fn read_chainlink_abi_usize_word(
+    bytes: &[u8],
+    word_index: usize,
+) -> Result<usize, BoltV3OperatorArtifactError> {
+    let word = read_chainlink_abi_word(bytes, word_index)?;
+    read_chainlink_abi_usize_from_word(word)
+}
+
+fn read_chainlink_abi_usize_at(
+    bytes: &[u8],
+    start: usize,
+) -> Result<usize, BoltV3OperatorArtifactError> {
+    let word = read_chainlink_abi_word_at(bytes, start)?;
+    read_chainlink_abi_usize_from_word(word)
+}
+
+fn read_chainlink_abi_usize_from_word(word: &[u8]) -> Result<usize, BoltV3OperatorArtifactError> {
+    if word.len() != CHAINLINK_REPORT_ABI_WORD_BYTES
+        || word[..CHAINLINK_REPORT_ABI_U64_PREFIX_BYTES]
+            .iter()
+            .any(|byte| *byte != u8::MIN)
+    {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    let mut value = [u8::MIN; CHAINLINK_REPORT_ABI_U64_VALUE_BYTES];
+    value.copy_from_slice(
+        &word[CHAINLINK_REPORT_ABI_U64_PREFIX_BYTES..CHAINLINK_REPORT_ABI_WORD_BYTES],
+    );
+    usize::try_from(u64::from_be_bytes(value))
+        .map_err(|_| price_to_beat_report_provenance_invalid())
+}
+
+fn read_chainlink_abi_u32_word(
+    bytes: &[u8],
+    word_index: usize,
+) -> Result<u32, BoltV3OperatorArtifactError> {
+    let word = read_chainlink_abi_word(bytes, word_index)?;
+    if word[..CHAINLINK_REPORT_ABI_U32_PREFIX_BYTES]
+        .iter()
+        .any(|byte| *byte != u8::MIN)
+    {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    let mut value = [u8::MIN; CHAINLINK_REPORT_ABI_U32_VALUE_BYTES];
+    value.copy_from_slice(
+        &word[CHAINLINK_REPORT_ABI_U32_PREFIX_BYTES..CHAINLINK_REPORT_ABI_WORD_BYTES],
+    );
+    Ok(u32::from_be_bytes(value))
+}
+
+fn read_chainlink_abi_i192_as_i128(
+    bytes: &[u8],
+    word_index: usize,
+) -> Result<i128, BoltV3OperatorArtifactError> {
+    let word = read_chainlink_abi_word(bytes, word_index)?;
+    let negative =
+        (word[CHAINLINK_REPORT_ABI_I128_PREFIX_BYTES] & CHAINLINK_REPORT_SIGN_BIT_MASK) != u8::MIN;
+    let expected = if negative { u8::MAX } else { u8::MIN };
+    if word[..CHAINLINK_REPORT_ABI_I128_PREFIX_BYTES]
+        .iter()
+        .any(|byte| *byte != expected)
+    {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    let mut value = [u8::MIN; CHAINLINK_REPORT_ABI_I128_VALUE_BYTES];
+    value.copy_from_slice(
+        &word[CHAINLINK_REPORT_ABI_I128_PREFIX_BYTES..CHAINLINK_REPORT_ABI_WORD_BYTES],
+    );
+    Ok(i128::from_be_bytes(value))
+}
+
+fn scale_chainlink_report_price(
+    value: i128,
+    decimal_scale: u64,
+) -> Result<f64, BoltV3OperatorArtifactError> {
+    let scale =
+        i32::try_from(decimal_scale).map_err(|_| price_to_beat_report_provenance_invalid())?;
+    let price = (value as f64) / CHAINLINK_REPORT_PRICE_DECIMAL_RADIX.powi(scale);
+    if !price.is_finite() {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    Ok(price)
+}
+
 fn validate_reference_quote_source(
     source: &ReferenceQuoteSource,
+    market_selection_timestamp_ms: u64,
+    decision_timestamp_ms: u64,
 ) -> Result<(), BoltV3OperatorArtifactError> {
     if source.schema_version != REFERENCE_QUOTE_SOURCE_SCHEMA_VERSION {
         return Err(entry_decision_source_invalid(
@@ -2841,11 +3112,21 @@ fn validate_reference_quote_source(
             "reference quote source price is invalid",
         ));
     }
+    if source.observed_ts_ms == ENTRY_DECISION_ZERO_TIMESTAMP_MS
+        || source.observed_ts_ms < market_selection_timestamp_ms
+        || source.observed_ts_ms > decision_timestamp_ms
+    {
+        return Err(entry_decision_source_invalid(
+            "reference quote source timestamp is invalid",
+        ));
+    }
     Ok(())
 }
 
 fn validate_realized_volatility_source(
     source: &RealizedVolatilitySource,
+    market_selection_timestamp_ms: u64,
+    decision_timestamp_ms: u64,
 ) -> Result<(), BoltV3OperatorArtifactError> {
     if source.schema_version != REALIZED_VOLATILITY_SOURCE_SCHEMA_VERSION {
         return Err(entry_decision_source_invalid(
@@ -2860,6 +3141,14 @@ fn validate_realized_volatility_source(
     if !source.value.is_finite() || source.value <= ENTRY_DECISION_ZERO_THRESHOLD {
         return Err(entry_decision_source_invalid(
             "realized volatility source value is invalid",
+        ));
+    }
+    if source.ready_ts_ms == ENTRY_DECISION_ZERO_TIMESTAMP_MS
+        || source.ready_ts_ms < market_selection_timestamp_ms
+        || source.ready_ts_ms > decision_timestamp_ms
+    {
+        return Err(entry_decision_source_invalid(
+            "realized volatility source timestamp is invalid",
         ));
     }
     Ok(())

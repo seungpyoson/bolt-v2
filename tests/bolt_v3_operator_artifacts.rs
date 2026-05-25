@@ -5317,8 +5317,17 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
         .strategy_instance_id
         .clone();
     let report_path = temp.path().join("operator-approved-chainlink-report.bin");
-    std::fs::write(&report_path, b"operator-approved-price-report")
-        .expect("report source should write");
+    std::fs::write(
+        &report_path,
+        chainlink_v3_report_source_json(
+            TEST_PRICE_TO_BEAT_FEED_ID,
+            600,
+            601,
+            3100.0,
+            TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+        ),
+    )
+    .expect("report source should write");
     let report_sha256 = sha256_file(&report_path);
     let price_source_path = temp.path().join("source-bound-price.json");
     let reference_quote_source_path = temp.path().join("reference-quote.json");
@@ -5332,9 +5341,6 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
             price_report_path: &report_path,
             max_price_report_bytes: 100_000,
             expected_price_report_sha256: &report_sha256,
-            source_report_valid_from_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
-            source_report_observations_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 1_000,
-            source_report_benchmark_price: 3100.0,
             market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
             decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
             reference_quote: EntryDecisionReferenceQuoteProofInput {
@@ -5385,6 +5391,18 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
         price_json["source_report_schema_version"],
         serde_json::json!(TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION)
     );
+    assert_eq!(
+        price_json["source_report_valid_from_timestamp_ms"],
+        serde_json::json!(TEST_MARKET_SELECTION_NOW_MS)
+    );
+    assert_eq!(
+        price_json["source_report_observations_timestamp_ms"],
+        serde_json::json!(TEST_MARKET_SELECTION_NOW_MS + 1_000)
+    );
+    assert_eq!(
+        price_json["source_report_benchmark_price"],
+        serde_json::json!(3100.0)
+    );
 
     let instruments = entry_decision_source_input_instruments();
     let decision_source_output = temp.path().join("entry-decision-source.json");
@@ -5415,6 +5433,153 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
 }
 
 #[test]
+fn entry_decision_proof_source_materializer_refuses_unparseable_report_before_outputs() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let report_path = temp.path().join("unparseable-chainlink-report.bin");
+    std::fs::write(&report_path, b"operator-approved-price-report")
+        .expect("report source should write");
+    let report_sha256 = sha256_file(&report_path);
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+    let fee_rate_source_path = temp.path().join("entry-decision-fees.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &report_sha256,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            reference_quote: EntryDecisionReferenceQuoteProofInput {
+                venue: "binance_reference".to_string(),
+                price: 3300.0,
+                observed_ts_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            },
+            realized_volatility: EntryDecisionRealizedVolatilityProofInput {
+                value: 1.5,
+                ready_ts_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            },
+            fee_bps_by_instrument_id: BTreeMap::from([
+                (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
+                (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
+            ]),
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+            fee_rate_source_output_path: &fee_rate_source_path,
+        },
+    )
+    .expect_err("hash-matching but unparseable report must fail before output");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source-bound price_to_beat report provenance is invalid"),
+        "expected report-provenance failure, got: {error}"
+    );
+    for path in [
+        price_source_path,
+        reference_quote_source_path,
+        realized_volatility_source_path,
+        fee_rate_source_path,
+    ] {
+        assert!(
+            !path.exists(),
+            "failed materializer must not leave {path:?}"
+        );
+    }
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_rejects_quote_and_volatility_outside_decision_window() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let report_path = temp.path().join("chainlink-report.json");
+    std::fs::write(
+        &report_path,
+        chainlink_v3_report_source_json(
+            TEST_PRICE_TO_BEAT_FEED_ID,
+            600,
+            601,
+            3100.0,
+            TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+        ),
+    )
+    .expect("report source should write");
+    let report_sha256 = sha256_file(&report_path);
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+    let fee_rate_source_path = temp.path().join("entry-decision-fees.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &report_sha256,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            reference_quote: EntryDecisionReferenceQuoteProofInput {
+                venue: "binance_reference".to_string(),
+                price: 3300.0,
+                observed_ts_ms: TEST_MARKET_SELECTION_NOW_MS + 1_201,
+            },
+            realized_volatility: EntryDecisionRealizedVolatilityProofInput {
+                value: 1.5,
+                ready_ts_ms: 0,
+            },
+            fee_bps_by_instrument_id: BTreeMap::from([
+                (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
+                (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
+            ]),
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+            fee_rate_source_output_path: &fee_rate_source_path,
+        },
+    )
+    .expect_err("quote or volatility timestamps outside the decision window must fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("reference quote source timestamp is invalid"),
+        "expected reference quote timestamp failure, got: {error}"
+    );
+    for path in [
+        price_source_path,
+        reference_quote_source_path,
+        realized_volatility_source_path,
+        fee_rate_source_path,
+    ] {
+        assert!(
+            !path.exists(),
+            "failed materializer must not leave {path:?}"
+        );
+    }
+}
+
+#[test]
 fn entry_decision_proof_source_materializer_refuses_report_hash_mismatch_before_outputs() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = load_fixture_with_live_canary();
@@ -5439,9 +5604,6 @@ fn entry_decision_proof_source_materializer_refuses_report_hash_mismatch_before_
             price_report_path: &report_path,
             max_price_report_bytes: 100_000,
             expected_price_report_sha256: TEST_PRICE_TO_BEAT_REPORT_SHA256,
-            source_report_valid_from_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
-            source_report_observations_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 1_000,
-            source_report_benchmark_price: 3100.0,
             market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
             decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
             reference_quote: EntryDecisionReferenceQuoteProofInput {
@@ -9911,6 +10073,97 @@ fn write_static_artifacts_manifest_for_test(
 
 fn sha256_bytes(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn chainlink_v3_report_source_json(
+    feed_id: &str,
+    valid_from_timestamp_seconds: u32,
+    observations_timestamp_seconds: u32,
+    benchmark_price: f64,
+    decimal_scale: u64,
+) -> Vec<u8> {
+    let full_report = chainlink_v3_full_report_payload(
+        feed_id,
+        valid_from_timestamp_seconds,
+        observations_timestamp_seconds,
+        benchmark_price,
+        decimal_scale,
+    );
+    serde_json::to_vec_pretty(&serde_json::json!({
+        "feedID": feed_id,
+        "validFromTimestamp": valid_from_timestamp_seconds,
+        "observationsTimestamp": observations_timestamp_seconds,
+        "fullReport": hex::encode(full_report),
+    }))
+    .expect("Chainlink report source JSON should serialize")
+}
+
+fn chainlink_v3_full_report_payload(
+    feed_id: &str,
+    valid_from_timestamp_seconds: u32,
+    observations_timestamp_seconds: u32,
+    benchmark_price: f64,
+    decimal_scale: u64,
+) -> Vec<u8> {
+    let mut blob = Vec::new();
+    blob.extend_from_slice(&chainlink_feed_id_bytes(feed_id));
+    blob.extend_from_slice(&abi_u32_word(valid_from_timestamp_seconds));
+    blob.extend_from_slice(&abi_u32_word(observations_timestamp_seconds));
+    blob.extend_from_slice(&abi_zero_word());
+    blob.extend_from_slice(&abi_zero_word());
+    blob.extend_from_slice(&abi_u32_word(observations_timestamp_seconds + 60));
+    blob.extend_from_slice(&abi_i192_word(
+        (benchmark_price * 10f64.powi(decimal_scale as i32)).round() as i128,
+    ));
+    blob.extend_from_slice(&abi_i192_word(
+        ((benchmark_price - 1.0) * 10f64.powi(decimal_scale as i32)).round() as i128,
+    ));
+    blob.extend_from_slice(&abi_i192_word(
+        ((benchmark_price + 1.0) * 10f64.powi(decimal_scale as i32)).round() as i128,
+    ));
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&abi_zero_word());
+    payload.extend_from_slice(&abi_zero_word());
+    payload.extend_from_slice(&abi_zero_word());
+    payload.extend_from_slice(&abi_usize_word(128));
+    payload.extend_from_slice(&abi_usize_word(blob.len()));
+    payload.extend_from_slice(&blob);
+    payload
+}
+
+fn chainlink_feed_id_bytes(feed_id: &str) -> [u8; 32] {
+    let mut bytes = [0_u8; 32];
+    let decoded = hex::decode(
+        feed_id
+            .strip_prefix("0x")
+            .expect("test feed id should have 0x prefix"),
+    )
+    .expect("test feed id should decode");
+    bytes.copy_from_slice(&decoded);
+    bytes
+}
+
+fn abi_zero_word() -> [u8; 32] {
+    [0_u8; 32]
+}
+
+fn abi_u32_word(value: u32) -> [u8; 32] {
+    let mut word = [0_u8; 32];
+    word[28..32].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn abi_usize_word(value: usize) -> [u8; 32] {
+    let mut word = [0_u8; 32];
+    word[24..32].copy_from_slice(&(value as u64).to_be_bytes());
+    word
+}
+
+fn abi_i192_word(value: i128) -> [u8; 32] {
+    let mut word = if value < 0 { [0xff_u8; 32] } else { [0_u8; 32] };
+    word[16..32].copy_from_slice(&value.to_be_bytes());
+    word
 }
 
 fn sha256_file(path: &std::path::Path) -> String {

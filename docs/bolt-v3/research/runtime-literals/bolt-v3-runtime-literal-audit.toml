@@ -7498,6 +7498,102 @@ reason = "This is the record-kind discriminator for the materialized fee-rate pr
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "3"
+context = '''const CHAINLINK_PRICE_REPORT_SCHEMA_VERSION_V3: u64 = 3;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the Chainlink Data Streams ReportDataV3 protocol schema identifier supported by the decoder; the strategy TOML still selects the expected report schema and non-V3 configs fail closed."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "32"
+context = '''const CHAINLINK_REPORT_ABI_WORD_BYTES: usize = 32;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the fixed Ethereum ABI word width used to decode a Chainlink Data Streams report, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "3"
+context = '''const CHAINLINK_REPORT_BLOB_OFFSET_WORD_INDEX: usize = 3;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the ABI word position of reportBlob in the Chainlink report callback payload."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "4"
+context = '''const CHAINLINK_REPORT_CALLBACK_MIN_BYTES: usize = 4 * CHAINLINK_REPORT_ABI_WORD_BYTES;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the minimum ABI header word count for three reportContext words plus the reportBlob offset word."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "9"
+context = '''const CHAINLINK_REPORT_V3_WORD_COUNT: usize = 9;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the fixed ReportDataV3 ABI word count for feed id, timestamps, fees, expiry, benchmark, bid, and ask."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "0"
+context = '''const CHAINLINK_REPORT_V3_FEED_ID_WORD_INDEX: usize = 0;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the ReportDataV3 ABI word index for feedId."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "1"
+context = '''const CHAINLINK_REPORT_V3_VALID_FROM_WORD_INDEX: usize = 1;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the ReportDataV3 ABI word index for validFromTimestamp."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "2"
+context = '''const CHAINLINK_REPORT_V3_OBSERVATIONS_WORD_INDEX: usize = 2;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the ReportDataV3 ABI word index for observationsTimestamp."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "6"
+context = '''const CHAINLINK_REPORT_V3_BENCHMARK_PRICE_WORD_INDEX: usize = 6;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the ReportDataV3 ABI word index for benchmarkPrice."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "1_000"
+context = '''const CHAINLINK_REPORT_MILLISECONDS_PER_SECOND: u64 = 1_000;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is a unit conversion constant from Chainlink report seconds to existing millisecond artifact timestamps."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "0x80"
+context = '''const CHAINLINK_REPORT_SIGN_BIT_MASK: u8 = 0x80;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the two's-complement sign-bit mask used when decoding the ReportDataV3 int192 benchmarkPrice word."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "10.0"
+context = '''const CHAINLINK_REPORT_PRICE_DECIMAL_RADIX: f64 = 10.0;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the decimal radix used with the TOML-configured Chainlink decimal scale to convert benchmarkPrice into the existing f64 artifact field."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"source-bound price_to_beat decision timestamp precedes market selection"'''
 context = '''"source-bound price_to_beat decision timestamp precedes market selection",'''

@@ -294,12 +294,6 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         expected_price_report_sha256: String,
         #[arg(long)]
-        source_report_valid_from_timestamp_ms: u64,
-        #[arg(long)]
-        source_report_observations_timestamp_ms: u64,
-        #[arg(long)]
-        source_report_benchmark_price: f64,
-        #[arg(long)]
         market_selection_timestamp_ms: u64,
         #[arg(long)]
         decision_timestamp_ms: u64,
@@ -742,9 +736,6 @@ fn run_operator_artifacts_command(
             price_report,
             max_price_report_bytes,
             expected_price_report_sha256,
-            source_report_valid_from_timestamp_ms,
-            source_report_observations_timestamp_ms,
-            source_report_benchmark_price,
             market_selection_timestamp_ms,
             decision_timestamp_ms,
             reference_quote_venue,
@@ -768,9 +759,6 @@ fn run_operator_artifacts_command(
                     price_report_path: &price_report,
                     max_price_report_bytes,
                     expected_price_report_sha256: &expected_price_report_sha256,
-                    source_report_valid_from_timestamp_ms,
-                    source_report_observations_timestamp_ms,
-                    source_report_benchmark_price,
                     market_selection_timestamp_ms,
                     decision_timestamp_ms,
                     reference_quote: EntryDecisionReferenceQuoteProofInput {

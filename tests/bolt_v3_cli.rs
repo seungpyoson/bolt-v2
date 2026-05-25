@@ -1,9 +1,10 @@
-use std::{fs, process::Command};
+use std::{fs, path::Path, process::Command};
 
 use bolt_v2::{
     bolt_v3_config::{LiveCanaryOperatorEvidenceBlock, load_bolt_v3_config},
     bolt_v3_operator_artifacts::compute_operator_approval_envelope_sha256,
 };
+use sha2::{Digest, Sha256};
 
 mod support;
 use support::{repo_path, valid_live_canary_operator_evidence};
@@ -268,6 +269,232 @@ fn bolt_v3_cli_updates_operator_evidence_toml_without_printing_evidence_values()
         assert!(
             !stdout.contains(forbidden),
             "stdout must not expose operator evidence values or approval id {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn bolt_v3_cli_generates_operator_evidence_json_without_printing_values() {
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!("{root}\n{}", live_canary_toml_without_operator_evidence())
+    });
+    let evidence_dir = config_path
+        .parent()
+        .expect("fixture root should have parent")
+        .join("operator-evidence");
+    fs::create_dir_all(&evidence_dir).expect("operator evidence dir should create");
+    let output_path = evidence_dir.join("operator-evidence.json");
+    let approval_envelope_path = evidence_dir.join("approval-envelope.json");
+    let ssm_manifest_path = write_cli_json_artifact(
+        &evidence_dir,
+        "ssm-manifest.json",
+        serde_json::json!({"record_kind": "test_ssm_manifest"}),
+    );
+    let strategy_input_path = write_cli_json_artifact(
+        &evidence_dir,
+        "strategy-input.json",
+        serde_json::json!({"record_kind": "test_strategy_input"}),
+    );
+    let financial_envelope_path = write_cli_json_artifact(
+        &evidence_dir,
+        "financial-envelope.json",
+        serde_json::json!({"record_kind": "test_financial_envelope"}),
+    );
+    let pre_run_state_path = write_cli_json_artifact(
+        &evidence_dir,
+        "pre-run-state.json",
+        serde_json::json!({"record_kind": "test_pre_run_state"}),
+    );
+    let abort_plan_path = write_cli_json_artifact(
+        &evidence_dir,
+        "abort-plan.json",
+        serde_json::json!({"record_kind": "test_abort_plan"}),
+    );
+    let approval_nonce_path = write_cli_json_artifact(
+        &evidence_dir,
+        "approval-nonce.json",
+        serde_json::json!({"record_kind": "test_approval_nonce"}),
+    );
+    let canary_evidence_path = evidence_dir.join("canary-evidence.json");
+    let approval_consumption_path = evidence_dir.join("approval-consumed.json");
+    let decision_evidence_path = evidence_dir.join("decision-evidence.jsonl");
+    let nt_submit_event_path = evidence_dir.join("nt-submit-event.json");
+    let venue_order_state_path = evidence_dir.join("venue-order-state.json");
+    let strategy_cancel_path = evidence_dir.join("strategy-cancel.json");
+    let restart_reconciliation_path = evidence_dir.join("restart-reconciliation.json");
+    let post_run_hygiene_path = evidence_dir.join("post-run-hygiene.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-operator-evidence-json",
+            "--config",
+            config_path.to_str().expect("fixture path should be utf-8"),
+            "--output",
+            output_path
+                .to_str()
+                .expect("operator evidence output path should be utf-8"),
+            "--max-operator-evidence-file-bytes",
+            "4096",
+            "--approval-consumption-max-age-seconds",
+            "300",
+            "--approval-envelope",
+            approval_envelope_path
+                .to_str()
+                .expect("approval envelope path should be utf-8"),
+            "--ssm-manifest",
+            ssm_manifest_path
+                .to_str()
+                .expect("SSM manifest path should be utf-8"),
+            "--strategy-input-evidence",
+            strategy_input_path
+                .to_str()
+                .expect("strategy input path should be utf-8"),
+            "--financial-envelope",
+            financial_envelope_path
+                .to_str()
+                .expect("financial envelope path should be utf-8"),
+            "--pre-run-state",
+            pre_run_state_path
+                .to_str()
+                .expect("pre-run state path should be utf-8"),
+            "--abort-plan",
+            abort_plan_path
+                .to_str()
+                .expect("abort plan path should be utf-8"),
+            "--canary-evidence",
+            canary_evidence_path
+                .to_str()
+                .expect("canary evidence path should be utf-8"),
+            "--approval-not-before-unix-seconds",
+            "1900000000",
+            "--approval-not-after-unix-seconds",
+            "1900000300",
+            "--approval-nonce",
+            approval_nonce_path
+                .to_str()
+                .expect("approval nonce path should be utf-8"),
+            "--approval-consumption",
+            approval_consumption_path
+                .to_str()
+                .expect("approval consumption path should be utf-8"),
+            "--decision-evidence",
+            decision_evidence_path
+                .to_str()
+                .expect("decision evidence path should be utf-8"),
+            "--nt-submit-event",
+            nt_submit_event_path
+                .to_str()
+                .expect("NT submit event path should be utf-8"),
+            "--venue-order-state",
+            venue_order_state_path
+                .to_str()
+                .expect("venue order state path should be utf-8"),
+            "--strategy-cancel",
+            strategy_cancel_path
+                .to_str()
+                .expect("strategy cancel path should be utf-8"),
+            "--restart-reconciliation",
+            restart_reconciliation_path
+                .to_str()
+                .expect("restart reconciliation path should be utf-8"),
+            "--post-run-hygiene",
+            post_run_hygiene_path
+                .to_str()
+                .expect("post-run hygiene path should be utf-8"),
+        ])
+        .output()
+        .expect("bolt-v3 operator evidence JSON command should run");
+
+    assert!(
+        output.status.success(),
+        "expected operator evidence JSON generation to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout_json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
+    let stdout_object = stdout_json
+        .as_object()
+        .expect("stdout should be a JSON object");
+    assert_eq!(
+        stdout_object.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["operator_evidence_json_sha256"]
+    );
+    assert_eq!(
+        stdout_json["operator_evidence_json_sha256"],
+        sha256_file_for_cli_test(&output_path)
+    );
+    assert!(
+        !approval_envelope_path.exists(),
+        "operator evidence JSON generation must not pre-write approval-envelope"
+    );
+
+    let operator_evidence: LiveCanaryOperatorEvidenceBlock = serde_json::from_slice(
+        &fs::read(&output_path).expect("operator evidence JSON should read"),
+    )
+    .expect("operator evidence JSON should parse");
+    assert_eq!(
+        operator_evidence.head_sha,
+        option_env!("BOLT_V3_BUILD_HEAD_SHA").expect("build head should be available")
+    );
+    assert_eq!(operator_evidence.max_operator_evidence_file_bytes, 4096);
+    assert_eq!(operator_evidence.approval_consumption_max_age_seconds, 300);
+    assert_eq!(
+        operator_evidence.ssm_manifest_sha256,
+        sha256_file_for_cli_test(&ssm_manifest_path)
+    );
+    assert_eq!(
+        operator_evidence.strategy_input_evidence_sha256,
+        sha256_file_for_cli_test(&strategy_input_path)
+    );
+    assert_eq!(
+        operator_evidence.financial_envelope_sha256,
+        sha256_file_for_cli_test(&financial_envelope_path)
+    );
+    assert_eq!(
+        operator_evidence.pre_run_state_sha256,
+        sha256_file_for_cli_test(&pre_run_state_path)
+    );
+    assert_eq!(
+        operator_evidence.abort_plan_sha256,
+        sha256_file_for_cli_test(&abort_plan_path)
+    );
+    assert_eq!(
+        operator_evidence.approval_nonce_sha256,
+        sha256_file_for_cli_test(&approval_nonce_path)
+    );
+    assert_eq!(
+        operator_evidence.strategy_cancel_path.as_deref(),
+        Some(strategy_cancel_path.to_str().expect("strategy cancel path"))
+    );
+    let config_with_evidence = write_bolt_v3_fixture_root(|root| {
+        format!(
+            "{root}\n{}",
+            live_canary_with_operator_evidence_toml(&operator_evidence)
+        )
+    });
+    let loaded = load_bolt_v3_config(&config_with_evidence)
+        .expect("fixture root with generated operator evidence should load");
+    let expected_approval_envelope_sha256 =
+        compute_operator_approval_envelope_sha256(&loaded).expect("approval hash should compute");
+    assert_eq!(
+        operator_evidence.approval_envelope_sha256,
+        expected_approval_envelope_sha256
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for forbidden in [
+        operator_evidence.ssm_manifest_path.as_str(),
+        operator_evidence.strategy_input_evidence_path.as_str(),
+        operator_evidence.financial_envelope_path.as_str(),
+        operator_evidence.pre_run_state_path.as_str(),
+        operator_evidence.abort_plan_path.as_str(),
+        operator_evidence.approval_nonce_path.as_str(),
+        "operator-approved-canary-001",
+    ] {
+        assert!(
+            !stdout.contains(forbidden),
+            "stdout must not expose operator path or approval id {forbidden}"
         );
     }
 }
@@ -764,6 +991,26 @@ where
     )
     .expect("root fixture should write");
     root_path
+}
+
+fn write_cli_json_artifact(
+    dir: &Path,
+    file_name: &str,
+    value: serde_json::Value,
+) -> std::path::PathBuf {
+    let path = dir.join(file_name);
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&value).expect("test JSON should encode"),
+    )
+    .expect("test JSON artifact should write");
+    path
+}
+
+fn sha256_file_for_cli_test(path: &Path) -> String {
+    hex::encode(Sha256::digest(
+        fs::read(path).expect("test artifact should read"),
+    ))
 }
 
 fn live_canary_toml_without_operator_evidence() -> &'static str {

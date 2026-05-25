@@ -427,6 +427,22 @@ T037 remains open. This command enables the approved root TOML patch after T036 
 
 This is non-live local artifact validation only. No AWS, SSM, no-submit, venue connection, order submit/cancel, `config/live.local.toml` mutation, or live trading side effect was run. T036/T037 remain open until real source-owned artifacts exist, the approved root TOML is patched, and the final packet verifies.
 
+## T035F T037 Operator-Evidence JSON Generation
+
+- Read-only subagent review `019e5cd7-cb9c-7df0-b787-133cddd2fc1d` confirmed the current T036/T037 chain still required a manually supplied full `LiveCanaryOperatorEvidenceBlock` JSON before the TOML patch step.
+- RED: `cargo test --test bolt_v3_cli bolt_v3_cli_generates_operator_evidence_json_without_printing_values -- --nocapture` failed because `operator-artifacts generate-operator-evidence-json` was not a recognized subcommand.
+- GREEN: `cargo test --test bolt_v3_cli bolt_v3_cli_generates_operator_evidence_json_without_printing_values -- --nocapture`: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_cli operator_evidence -- --nocapture`: 3 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts operator_evidence_toml_patcher -- --nocapture`: 2 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+- `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+`operator-artifacts generate-operator-evidence-json --config <root.toml> --output <json> ...` now reads bounded materialized static artifacts, computes their sha256 values, fills the current build `head_sha`, computes canonical `approval_envelope_sha256` from the same approval-envelope construction used by final assembly, and writes a full `LiveCanaryOperatorEvidenceBlock` JSON for the T037 patch step. It prints only `operator_evidence_json_sha256`; it does not print artifact paths, approval IDs, nonce material, or secrets, and it does not write `approval-envelope.json`.
+
+This is non-live local artifact generation only. No AWS, SSM, no-submit, venue connection, order submit/cancel, `config/live.local.toml` mutation, or live trading side effect was run. T036/T037 remain open until real source-owned artifacts exist, the generated operator-evidence JSON is applied to the approved root TOML, and the final packet verifies.
+
 ## T036A Entry-Decision Source Input Collector
 
 - RED: `cargo test --test bolt_v3_operator_artifacts entry_decision_source_input_collector_writes_replayable_real_source_files -- --nocapture` failed with unresolved collector API/types because `write_entry_decision_source_inputs_from_source_files`, `EntryDecisionSourceInputRequest`, `EntryDecisionSourceMarketInputs`, and `EntryDecisionSourceBookSideInput` did not exist.

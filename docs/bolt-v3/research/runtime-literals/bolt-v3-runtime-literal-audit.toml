@@ -7529,6 +7529,14 @@ classification = "entry_decision_source_input_cli_output_schema"
 reason = "This is the redacted CLI output object field for the written instrument source artifact."
 
 [[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"operator_evidence_json_sha256"'''
+context = '''const OPERATOR_EVIDENCE_JSON_SHA256_OUTPUT_FIELD: &str = "operator_evidence_json_sha256";'''
+classification = "operator_evidence_cli_output_schema"
+reason = "This is the redacted CLI output object field for the generated operator-evidence JSON artifact hash."
+
+[[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
 kind = "string"
 literal = '''"strategies/binary_oracle_edge_taker.rs"'''

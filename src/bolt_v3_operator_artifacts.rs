@@ -2207,6 +2207,28 @@ pub struct EntryDecisionSourceInputsWritten {
     pub instrument_source: WrittenOperatorArtifact,
 }
 
+pub struct OperatorEvidenceJsonBuildInputs<'a> {
+    pub max_operator_evidence_file_bytes: u64,
+    pub approval_consumption_max_age_seconds: u64,
+    pub approval_envelope_path: &'a Path,
+    pub ssm_manifest_path: &'a Path,
+    pub strategy_input_evidence_path: &'a Path,
+    pub financial_envelope_path: &'a Path,
+    pub pre_run_state_path: &'a Path,
+    pub abort_plan_path: &'a Path,
+    pub canary_evidence_path: &'a Path,
+    pub approval_not_before_unix_seconds: i64,
+    pub approval_not_after_unix_seconds: i64,
+    pub approval_nonce_path: &'a Path,
+    pub approval_consumption_path: &'a Path,
+    pub decision_evidence_path: &'a Path,
+    pub nt_submit_event_path: &'a Path,
+    pub venue_order_state_path: &'a Path,
+    pub strategy_cancel_path: Option<&'a Path>,
+    pub restart_reconciliation_path: &'a Path,
+    pub post_run_hygiene_path: &'a Path,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceBoundPriceToBeatSource {
@@ -6197,6 +6219,121 @@ pub fn write_static_artifacts_manifest_from_operator_evidence(
         blockers: Vec::new(),
     };
     write_json_artifact_create_new(path, &manifest)
+}
+
+pub fn write_operator_evidence_json_from_artifact_paths(
+    loaded: &LoadedBoltV3Config,
+    inputs: OperatorEvidenceJsonBuildInputs<'_>,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or(BoltV3OperatorArtifactError::MissingLiveCanary)?;
+    let head_sha = current_build_head_sha()
+        .ok_or(BoltV3OperatorArtifactError::BuildHeadShaUnavailable)?
+        .to_string();
+    let max_bytes = inputs.max_operator_evidence_file_bytes;
+    let mut operator_evidence = LiveCanaryOperatorEvidenceBlock {
+        head_sha,
+        max_operator_evidence_file_bytes: max_bytes,
+        approval_consumption_max_age_seconds: inputs.approval_consumption_max_age_seconds,
+        approval_envelope_path: operator_evidence_path_string(inputs.approval_envelope_path),
+        approval_envelope_sha256: String::new(),
+        ssm_manifest_path: operator_evidence_path_string(inputs.ssm_manifest_path),
+        ssm_manifest_sha256: operator_evidence_artifact_sha256(
+            loaded,
+            SSM_MANIFEST_ARTIFACT_NAME,
+            "ssm_manifest_path",
+            inputs.ssm_manifest_path,
+            max_bytes,
+        )?,
+        strategy_input_evidence_path: operator_evidence_path_string(
+            inputs.strategy_input_evidence_path,
+        ),
+        strategy_input_evidence_sha256: operator_evidence_artifact_sha256(
+            loaded,
+            STRATEGY_INPUT_ARTIFACT_NAME,
+            "strategy_input_evidence_path",
+            inputs.strategy_input_evidence_path,
+            max_bytes,
+        )?,
+        financial_envelope_path: operator_evidence_path_string(inputs.financial_envelope_path),
+        financial_envelope_sha256: operator_evidence_artifact_sha256(
+            loaded,
+            FINANCIAL_ENVELOPE_ARTIFACT_NAME,
+            "financial_envelope_path",
+            inputs.financial_envelope_path,
+            max_bytes,
+        )?,
+        pre_run_state_path: operator_evidence_path_string(inputs.pre_run_state_path),
+        pre_run_state_sha256: operator_evidence_artifact_sha256(
+            loaded,
+            PRE_RUN_STATE_ARTIFACT_NAME,
+            "pre_run_state_path",
+            inputs.pre_run_state_path,
+            max_bytes,
+        )?,
+        abort_plan_path: operator_evidence_path_string(inputs.abort_plan_path),
+        abort_plan_sha256: operator_evidence_artifact_sha256(
+            loaded,
+            ABORT_PLAN_ARTIFACT_NAME,
+            "abort_plan_path",
+            inputs.abort_plan_path,
+            max_bytes,
+        )?,
+        canary_evidence_path: operator_evidence_path_string(inputs.canary_evidence_path),
+        approval_not_before_unix_seconds: inputs.approval_not_before_unix_seconds,
+        approval_not_after_unix_seconds: inputs.approval_not_after_unix_seconds,
+        approval_nonce_path: operator_evidence_path_string(inputs.approval_nonce_path),
+        approval_nonce_sha256: operator_evidence_artifact_sha256(
+            loaded,
+            APPROVAL_NONCE_ARTIFACT_NAME,
+            "approval_nonce_path",
+            inputs.approval_nonce_path,
+            max_bytes,
+        )?,
+        approval_consumption_path: operator_evidence_path_string(inputs.approval_consumption_path),
+        decision_evidence_path: operator_evidence_path_string(inputs.decision_evidence_path),
+        nt_submit_event_path: operator_evidence_path_string(inputs.nt_submit_event_path),
+        venue_order_state_path: operator_evidence_path_string(inputs.venue_order_state_path),
+        strategy_cancel_path: inputs
+            .strategy_cancel_path
+            .map(operator_evidence_path_string),
+        restart_reconciliation_path: operator_evidence_path_string(
+            inputs.restart_reconciliation_path,
+        ),
+        post_run_hygiene_path: operator_evidence_path_string(inputs.post_run_hygiene_path),
+    };
+    operator_evidence.approval_envelope_sha256 =
+        json_artifact_sha256(&approval_envelope_from_operator_evidence(
+            &operator_evidence,
+            live_canary.approval_id.as_str(),
+        ))?;
+    validate_live_canary_operator_evidence_toml_patch(&operator_evidence)?;
+    validate_operator_evidence_static_artifacts_materialized_for_toml_patch(
+        &loaded.root_path,
+        &operator_evidence,
+    )?;
+    write_json_artifact_create_new(output_path, &operator_evidence)
+}
+
+fn operator_evidence_artifact_sha256(
+    loaded: &LoadedBoltV3Config,
+    name: &'static str,
+    field: &'static str,
+    configured_path: &Path,
+    max_bytes: u64,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    let configured_path_string = operator_evidence_path_string(configured_path);
+    validate_operator_evidence_toml_path(field, &configured_path_string)?;
+    let resolved_path = resolve_loaded_config_path_from_path(loaded, configured_path);
+    sha256_file_for_static_manifest(name, &resolved_path, max_bytes)
+}
+
+fn operator_evidence_path_string(path: &Path) -> String {
+    path.to_string_lossy().to_string()
 }
 
 pub fn update_live_canary_operator_evidence_toml_from_json_file(

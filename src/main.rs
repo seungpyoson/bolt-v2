@@ -7,7 +7,7 @@ use bolt_v2::{
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
     bolt_v3_operator_artifacts::{
         EntryDecisionSourceCollectionRequest, FinalOperatorPacketVerificationScope,
-        PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
+        OperatorEvidenceJsonBuildInputs, PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
         assemble_operator_packet_from_static_manifest,
         collect_entry_decision_source_inputs_from_configured_provider,
         compute_operator_approval_envelope_sha256,
@@ -16,6 +16,7 @@ use bolt_v2::{
         write_abort_plan_artifact_from_source_collectors,
         write_entry_decision_evidence_from_source_file,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
+        write_operator_evidence_json_from_artifact_paths,
         write_pre_run_state_artifact_from_source_bundle_file,
         write_pre_run_state_artifact_from_source_collectors,
         write_static_artifacts_manifest_from_operator_evidence, write_static_operator_artifacts,
@@ -28,6 +29,7 @@ use bolt_v2::{
 
 const ENTRY_DECISION_SOURCE_OUTPUT_FIELD: &str = "decision_source";
 const ENTRY_DECISION_INSTRUMENT_SOURCE_OUTPUT_FIELD: &str = "instrument_source";
+const OPERATOR_EVIDENCE_JSON_SHA256_OUTPUT_FIELD: &str = "operator_evidence_json_sha256";
 
 #[derive(Parser)]
 #[command(name = "bolt-v2")]
@@ -109,6 +111,50 @@ enum OperatorArtifactsCommand {
         operator_evidence_json: PathBuf,
         #[arg(long)]
         max_operator_evidence_json_bytes: u64,
+    },
+    GenerateOperatorEvidenceJson {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        max_operator_evidence_file_bytes: u64,
+        #[arg(long)]
+        approval_consumption_max_age_seconds: u64,
+        #[arg(long)]
+        approval_envelope: PathBuf,
+        #[arg(long)]
+        ssm_manifest: PathBuf,
+        #[arg(long)]
+        strategy_input_evidence: PathBuf,
+        #[arg(long)]
+        financial_envelope: PathBuf,
+        #[arg(long)]
+        pre_run_state: PathBuf,
+        #[arg(long)]
+        abort_plan: PathBuf,
+        #[arg(long)]
+        canary_evidence: PathBuf,
+        #[arg(long)]
+        approval_not_before_unix_seconds: i64,
+        #[arg(long)]
+        approval_not_after_unix_seconds: i64,
+        #[arg(long)]
+        approval_nonce: PathBuf,
+        #[arg(long)]
+        approval_consumption: PathBuf,
+        #[arg(long)]
+        decision_evidence: PathBuf,
+        #[arg(long)]
+        nt_submit_event: PathBuf,
+        #[arg(long)]
+        venue_order_state: PathBuf,
+        #[arg(long)]
+        strategy_cancel: Option<PathBuf>,
+        #[arg(long)]
+        restart_reconciliation: PathBuf,
+        #[arg(long)]
+        post_run_hygiene: PathBuf,
     },
     GeneratePreRunStateFromSourceBundle {
         #[arg(short, long)]
@@ -389,6 +435,63 @@ fn run_operator_artifacts_command(
                 serde_json::to_string_pretty(
                     &serde_json::json!({ "root_toml_sha256": written.sha256 })
                 )?
+            );
+            Ok(())
+        }
+        OperatorArtifactsCommand::GenerateOperatorEvidenceJson {
+            config,
+            output,
+            max_operator_evidence_file_bytes,
+            approval_consumption_max_age_seconds,
+            approval_envelope,
+            ssm_manifest,
+            strategy_input_evidence,
+            financial_envelope,
+            pre_run_state,
+            abort_plan,
+            canary_evidence,
+            approval_not_before_unix_seconds,
+            approval_not_after_unix_seconds,
+            approval_nonce,
+            approval_consumption,
+            decision_evidence,
+            nt_submit_event,
+            venue_order_state,
+            strategy_cancel,
+            restart_reconciliation,
+            post_run_hygiene,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let written = write_operator_evidence_json_from_artifact_paths(
+                &loaded,
+                OperatorEvidenceJsonBuildInputs {
+                    max_operator_evidence_file_bytes,
+                    approval_consumption_max_age_seconds,
+                    approval_envelope_path: &approval_envelope,
+                    ssm_manifest_path: &ssm_manifest,
+                    strategy_input_evidence_path: &strategy_input_evidence,
+                    financial_envelope_path: &financial_envelope,
+                    pre_run_state_path: &pre_run_state,
+                    abort_plan_path: &abort_plan,
+                    canary_evidence_path: &canary_evidence,
+                    approval_not_before_unix_seconds,
+                    approval_not_after_unix_seconds,
+                    approval_nonce_path: &approval_nonce,
+                    approval_consumption_path: &approval_consumption,
+                    decision_evidence_path: &decision_evidence,
+                    nt_submit_event_path: &nt_submit_event,
+                    venue_order_state_path: &venue_order_state,
+                    strategy_cancel_path: strategy_cancel.as_deref(),
+                    restart_reconciliation_path: &restart_reconciliation,
+                    post_run_hygiene_path: &post_run_hygiene,
+                },
+                &output,
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    OPERATOR_EVIDENCE_JSON_SHA256_OUTPUT_FIELD: written.sha256,
+                }))?
             );
             Ok(())
         }

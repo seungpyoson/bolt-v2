@@ -108,7 +108,7 @@
 - [ ] T039 [US5] Run focused readiness tests: `tests/bolt_v3_operator_artifacts.rs`, `tests/bolt_v3_tiny_canary_preconditions.rs`, `tests/bolt_v3_tiny_canary_operator.rs`, `tests/bolt_v3_live_canary_gate.rs`, and `tests/bolt_v3_cli.rs`.
 - [ ] T040 [US5] Run full local verification: `cargo fmt --check`, `git diff --check`, runtime-literal verification, source/slop/hardcode/secret scans, and readiness test suites; record output summary in `specs/024-production-trade-readiness/evidence.md`.
 - [ ] T041 [US5] Push PR #480 and record exact-head GitHub CI evidence in `specs/024-production-trade-readiness/evidence.md`.
-- [ ] T042 [US5] Send exact-head final review to Claude, Gemini, DeepSeek, GLM, Kimi, and Grok; record unanimous approvals or explicit waivers in `specs/024-production-trade-readiness/external-final-review.md`.
+- [ ] T042 [US5] Send exact-head final review to Claude, Gemini, DeepSeek, GLM, and Grok; record their approvals plus the operator's explicit Kimi waiver in `specs/024-production-trade-readiness/external-final-review.md`.
 
 ## Phase 8: Approved Operations
 

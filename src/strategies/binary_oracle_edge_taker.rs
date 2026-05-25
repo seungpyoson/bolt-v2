@@ -32,7 +32,7 @@ use rust_decimal::{
     Decimal,
     prelude::{FromPrimitive, ToPrimitive},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use toml::Value;
 
 use crate::{
@@ -5305,7 +5305,7 @@ pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 1;
 pub const ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND: &str =
     "bolt_v3.binary_oracle_entry_decision_source.v1";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryOracleEntryDecisionEvidenceSource {
     pub schema_version: u32,
@@ -5320,7 +5320,7 @@ pub struct BinaryOracleEntryDecisionEvidenceSource {
     pub books: BinaryOracleEntryBooksSource,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryOracleEntryReferenceQuoteSource {
     pub venue: String,
@@ -5328,20 +5328,20 @@ pub struct BinaryOracleEntryReferenceQuoteSource {
     pub observed_ts_ms: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryOracleEntryRealizedVolatilitySource {
     pub value: f64,
     pub ready_ts_ms: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryOracleEntryFeeSource {
     pub fee_bps_by_instrument_id: BTreeMap<String, f64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryOracleEntryBooksSource {
     pub price_precision: u8,
@@ -5349,7 +5349,7 @@ pub struct BinaryOracleEntryBooksSource {
     pub down: BinaryOracleEntryBookSideSource,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryOracleEntryBookSideSource {
     pub best_bid: f64,

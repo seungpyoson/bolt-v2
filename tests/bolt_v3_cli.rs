@@ -462,6 +462,38 @@ fn bolt_v3_cli_exposes_entry_decision_evidence_source_command() {
 }
 
 #[test]
+fn bolt_v3_cli_exposes_collect_entry_decision_source_inputs() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-entry-decision-source-inputs",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 entry decision source-input collection help should run");
+
+    assert!(
+        output.status.success(),
+        "expected source-input collection help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--strategy-instance-id"));
+    assert!(stdout.contains("--price-to-beat-source"));
+    assert!(stdout.contains("--max-price-to-beat-source-bytes"));
+    assert!(stdout.contains("--reference-quote-source"));
+    assert!(stdout.contains("--max-reference-quote-source-bytes"));
+    assert!(stdout.contains("--realized-volatility-source"));
+    assert!(stdout.contains("--max-realized-volatility-source-bytes"));
+    assert!(stdout.contains("--fee-rate-source"));
+    assert!(stdout.contains("--max-fee-rate-source-bytes"));
+    assert!(stdout.contains("--decision-source-output"));
+    assert!(stdout.contains("--instrument-source-output"));
+}
+
+#[test]
 fn bolt_v3_static_operator_artifacts_command_fails_closed_on_abort_blocker() {
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(

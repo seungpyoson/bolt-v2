@@ -6,8 +6,10 @@ use bolt_v2::{
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
     bolt_v3_operator_artifacts::{
-        FinalOperatorPacketVerificationScope, PreRunStateSourceCollectorInputs,
-        WrittenOperatorArtifact, assemble_operator_packet_from_static_manifest,
+        EntryDecisionSourceCollectionRequest, FinalOperatorPacketVerificationScope,
+        PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
+        assemble_operator_packet_from_static_manifest,
+        collect_entry_decision_source_inputs_from_configured_provider,
         compute_operator_approval_envelope_sha256,
         update_live_canary_operator_evidence_toml_from_json_file,
         verify_final_operator_packet_with_scope, write_abort_plan_artifact_from_source_bundle_file,
@@ -23,6 +25,9 @@ use bolt_v2::{
     bolt_v3_secrets::{check_no_forbidden_credential_env_vars, resolve_bolt_v3_secrets},
     secrets::SsmResolverSession,
 };
+
+const ENTRY_DECISION_SOURCE_OUTPUT_FIELD: &str = "decision_source";
+const ENTRY_DECISION_INSTRUMENT_SOURCE_OUTPUT_FIELD: &str = "instrument_source";
 
 #[derive(Parser)]
 #[command(name = "bolt-v2")]
@@ -200,6 +205,32 @@ enum OperatorArtifactsCommand {
         max_instrument_source_bytes: u64,
         #[arg(long)]
         max_decision_evidence_bytes: u64,
+    },
+    CollectEntryDecisionSourceInputs {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        price_to_beat_source: PathBuf,
+        #[arg(long)]
+        max_price_to_beat_source_bytes: u64,
+        #[arg(long)]
+        reference_quote_source: PathBuf,
+        #[arg(long)]
+        max_reference_quote_source_bytes: u64,
+        #[arg(long)]
+        realized_volatility_source: PathBuf,
+        #[arg(long)]
+        max_realized_volatility_source_bytes: u64,
+        #[arg(long)]
+        fee_rate_source: PathBuf,
+        #[arg(long)]
+        max_fee_rate_source_bytes: u64,
+        #[arg(long)]
+        decision_source_output: PathBuf,
+        #[arg(long)]
+        instrument_source_output: PathBuf,
     },
     GenerateStrategyInputFromDecisionEvidence {
         #[arg(short, long)]
@@ -512,6 +543,51 @@ fn run_operator_artifacts_command(
                 max_decision_evidence_bytes,
             )?;
             print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectEntryDecisionSourceInputs {
+            config,
+            strategy_instance_id,
+            price_to_beat_source,
+            max_price_to_beat_source_bytes,
+            reference_quote_source,
+            max_reference_quote_source_bytes,
+            realized_volatility_source,
+            max_realized_volatility_source_bytes,
+            fee_rate_source,
+            max_fee_rate_source_bytes,
+            decision_source_output,
+            instrument_source_output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let written = runtime.block_on(
+                collect_entry_decision_source_inputs_from_configured_provider(
+                    &loaded,
+                    &strategy_instance_id,
+                    EntryDecisionSourceCollectionRequest {
+                        price_to_beat_source_path: &price_to_beat_source,
+                        max_price_to_beat_source_bytes,
+                        reference_quote_source_path: &reference_quote_source,
+                        max_reference_quote_source_bytes,
+                        realized_volatility_source_path: &realized_volatility_source,
+                        max_realized_volatility_source_bytes,
+                        fee_rate_source_path: &fee_rate_source,
+                        max_fee_rate_source_bytes,
+                        decision_source_output_path: &decision_source_output,
+                        instrument_source_output_path: &instrument_source_output,
+                    },
+                ),
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    ENTRY_DECISION_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.decision_source),
+                    ENTRY_DECISION_INSTRUMENT_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.instrument_source),
+                }))?
+            );
+            Ok(())
         }
         OperatorArtifactsCommand::GenerateMarketSelectionFromDecisionEvidence {
             config,

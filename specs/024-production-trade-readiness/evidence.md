@@ -382,3 +382,25 @@ T036 remains open. The final packet is not assembled until real source inputs ex
 `operator-artifacts update-operator-evidence-toml --config <root.toml> --operator-evidence-json <json> --max-operator-evidence-json-bytes <bytes>` now reads a bounded JSON `LiveCanaryOperatorEvidenceBlock`, validates the current build head, validates configured hashes and path shape, patches only `[live_canary.operator_evidence]`, re-parses the full root TOML, writes the root TOML, and prints only `{ "root_toml_sha256": "..." }`. It does not read AWS/SSM, run no-submit, connect to a venue, submit/cancel orders, mutate live systems, or print approval IDs, artifact paths, nonce material, or secrets.
 
 T037 remains open. This command enables the approved root TOML patch after T036 produces the real final artifact paths/hashes; it did not patch `config/live.local.toml` in this slice.
+
+## T036A Entry-Decision Source Input Collector
+
+- RED: `cargo test --test bolt_v3_operator_artifacts entry_decision_source_input_collector_writes_replayable_real_source_files -- --nocapture` failed with unresolved collector API/types because `write_entry_decision_source_inputs_from_source_files`, `EntryDecisionSourceInputRequest`, `EntryDecisionSourceMarketInputs`, and `EntryDecisionSourceBookSideInput` did not exist.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts entry_decision_source_input_collector -- --nocapture` passed: 4 passed, 0 failed. This covers replayable source/instrument file writing, missing source-bound `price_to_beat`, incomplete selected-market instruments, and empty or one-sided books.
+- RED: `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_collect_entry_decision_source_inputs -- --nocapture` failed because `operator-artifacts collect-entry-decision-source-inputs` was not a recognized subcommand.
+- GREEN: `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_collect_entry_decision_source_inputs -- --nocapture` passed: 1 passed, 0 failed.
+- Read-only subagent review `019e5c78-2147-77a3-954f-2bfea8825228` found four T036A hardening gaps: provider collection could fetch Gamma/CLOB before validating all local source proofs, crossed books could be written before replay rejected them, book `price_precision` came from the first instrument instead of the selected up/down pair, and provider retry policy still carried non-TOML fixed fields after removing `RetryConfig::default()`.
+- RED: `cargo test --test bolt_v3_operator_artifacts entry_decision_source_input -- --nocapture` failed on the four review regressions: provider returned `failed to load instruments by configured slugs` before local reference-quote validation, crossed books wrote artifacts, first-instrument precision `6` was written instead of selected precision `3`, and mismatched selected up/down precision wrote artifacts.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts entry_decision_source_input -- --nocapture`: 8 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts entry_decision -- --nocapture`: 11 passed, 0 failed.
+- `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_collect_entry_decision_source_inputs -- --nocapture`: 1 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+- `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `just clippy`: passed.
+- `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+`operator-artifacts collect-entry-decision-source-inputs --config <root.toml> --strategy-instance-id <id> ...` now writes replayable `entry-decision-source.json` and `instrument-source.json` from bounded source proofs before T036 final-packet assembly. Core artifact code validates source-owned price, quote, volatility, selected instruments, fee proof, and two-sided non-crossed books; book precision is derived from the selected up/down instrument pair and rejected if the pair disagrees. The Polymarket provider binding owns the public Gamma/CLOB collection path, validates local source proofs before the first provider fetch, and sources retry count, delay, jitter, operation timeout, and elapsed bound from the configured TOML execution/data client blocks instead of production defaults. This is non-live public/source capture only: it does not read AWS/SSM, run no-submit, connect to private execution, submit/cancel orders, mutate `config/live.local.toml`, or print secrets.
+
+T036 remains open. The real source proofs and live operator artifact files still need to be captured/assembled into the final packet and bound into the approved root TOML before T038 can verify the packet.

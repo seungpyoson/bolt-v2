@@ -24,7 +24,10 @@
 //! core and is called from this module the same way the archetype
 //! binding calls `parse_decimal_string`.
 
+mod entry_decision_source_inputs;
 mod fees;
+
+pub use entry_decision_source_inputs::collect_entry_decision_source_inputs;
 
 use std::{any::Any, sync::Arc, time::Duration};
 

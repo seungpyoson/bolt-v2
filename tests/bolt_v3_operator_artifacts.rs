@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use sha2::{Digest, Sha256};
 
 use bolt_v2::{
@@ -11,7 +13,11 @@ use bolt_v2::{
         BoltV3SubmitIntentKind, decision_evidence_path, read_latest_entry_decision_evidence_chain,
     },
     bolt_v3_market_families::updown::updown_market_slug,
-    bolt_v3_operator_artifacts::{WrittenOperatorArtifact, build_redacted_ssm_manifest},
+    bolt_v3_operator_artifacts::{
+        EntryDecisionSourceBookSideInput, EntryDecisionSourceCollectionRequest,
+        EntryDecisionSourceInputRequest, EntryDecisionSourceMarketInputs, WrittenOperatorArtifact,
+        build_redacted_ssm_manifest, collect_entry_decision_source_inputs_from_configured_provider,
+    },
     bolt_v3_tiny_canary_evidence::{
         Phase8AbortPlanSourceProofs, Phase8FinancialEnvelopeEvidenceFile,
         Phase8OperatorApprovalEnvelope, Phase8PreRunStateSourceProofs,
@@ -44,7 +50,6 @@ const TEST_CONDITION_ID: &str = "condition-current";
 const TEST_QUESTION_ID: &str = "question-current";
 const TEST_UP_OUTCOME: &str = "Up";
 const TEST_DOWN_OUTCOME: &str = "Down";
-const TEST_BINARY_OPTION_PRICE_INCREMENT: &str = "0.001";
 const TEST_BINARY_OPTION_SIZE_INCREMENT: &str = "0.01";
 const TEST_EXECUTION_CLIENT_ID: &str = "polymarket_main";
 const TEST_CONFIGURED_TARGET_ID: &str = "btc_updown_5m";
@@ -4803,6 +4808,647 @@ fn entry_decision_evidence_source_collector_writes_configured_runtime_jsonl() {
 }
 
 #[test]
+fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let market_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let instruments = vec![
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+    ];
+    let price_source_path = temp.path().join("source-bound-price.json");
+    std::fs::write(
+        &price_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.source_bound_price_to_beat.v1",
+            "source": "chainlink_data_streams.report_at_boundary",
+            "price_to_beat_value": 3100.0,
+            "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+        }))
+        .expect("price source should serialize"),
+    )
+    .expect("price source should write");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    std::fs::write(
+        &reference_quote_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.reference_quote_source.v1",
+            "venue": "binance_reference",
+            "price": 3300.0,
+            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+        }))
+        .expect("reference quote source should serialize"),
+    )
+    .expect("reference quote source should write");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+    std::fs::write(
+        &realized_volatility_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.realized_volatility_source.v1",
+            "value": 1.5,
+            "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+        }))
+        .expect("realized volatility source should serialize"),
+    )
+    .expect("realized volatility source should write");
+    let decision_source_output = temp.path().join("entry-decision-source.json");
+    let instrument_source_output = temp.path().join("instrument-source.json");
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs: EntryDecisionSourceMarketInputs {
+                    instruments: &instruments,
+                    up_book: EntryDecisionSourceBookSideInput {
+                        best_bid: 0.50,
+                        bid_quantity: 500.0,
+                        best_ask: 0.50,
+                        ask_quantity: 500.0,
+                        liquidity_available: 500.0,
+                    },
+                    down_book: EntryDecisionSourceBookSideInput {
+                        best_bid: 0.48,
+                        bid_quantity: 500.0,
+                        best_ask: 0.49,
+                        ask_quantity: 500.0,
+                        liquidity_available: 500.0,
+                    },
+                    fee_bps_by_instrument_id: BTreeMap::from([
+                        (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
+                        (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
+                    ]),
+                },
+                decision_source_output_path: &decision_source_output,
+                instrument_source_output_path: &instrument_source_output,
+            },
+        )
+        .expect("source-input collector should write source files");
+
+    assert_eq!(written.decision_source.path, decision_source_output);
+    assert_eq!(written.instrument_source.path, instrument_source_output);
+    assert_eq!(
+        written.decision_source.sha256,
+        sha256_file(&written.decision_source.path)
+    );
+    assert_eq!(
+        written.instrument_source.sha256,
+        sha256_file(&written.instrument_source.path)
+    );
+
+    let replayed =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &loaded,
+            &strategy_instance_id,
+            &written.decision_source.path,
+            100_000,
+            &written.instrument_source.path,
+            100_000,
+            100_000,
+        )
+        .expect("written source inputs should replay through the T035B generator");
+    let chain = read_latest_entry_decision_evidence_chain(&replayed.path, 100_000)
+        .expect("replayed decision evidence should have a complete entry chain");
+    assert_eq!(chain.snapshot.price_to_beat_value, "3100");
+    assert_eq!(chain.snapshot.market_id.as_deref(), Some(TEST_MARKET_ID));
+    assert_eq!(
+        chain.admission.outcome,
+        BoltV3AdmissionOutcome::RejectedNotArmed
+    );
+}
+
+struct EntryDecisionSourceInputProofPaths {
+    price_source_path: std::path::PathBuf,
+    reference_quote_source_path: std::path::PathBuf,
+    realized_volatility_source_path: std::path::PathBuf,
+    decision_source_output: std::path::PathBuf,
+    instrument_source_output: std::path::PathBuf,
+}
+
+fn write_entry_decision_source_input_proofs(
+    temp: &tempfile::TempDir,
+    price_to_beat_value: f64,
+) -> EntryDecisionSourceInputProofPaths {
+    let price_source_path = temp.path().join("source-bound-price.json");
+    std::fs::write(
+        &price_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.source_bound_price_to_beat.v1",
+            "source": "chainlink_data_streams.report_at_boundary",
+            "price_to_beat_value": price_to_beat_value,
+            "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+        }))
+        .expect("price source should serialize"),
+    )
+    .expect("price source should write");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    std::fs::write(
+        &reference_quote_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.reference_quote_source.v1",
+            "venue": "binance_reference",
+            "price": 3300.0,
+            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+        }))
+        .expect("reference quote source should serialize"),
+    )
+    .expect("reference quote source should write");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+    std::fs::write(
+        &realized_volatility_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.realized_volatility_source.v1",
+            "value": 1.5,
+            "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+        }))
+        .expect("realized volatility source should serialize"),
+    )
+    .expect("realized volatility source should write");
+    EntryDecisionSourceInputProofPaths {
+        price_source_path,
+        reference_quote_source_path,
+        realized_volatility_source_path,
+        decision_source_output: temp.path().join("entry-decision-source.json"),
+        instrument_source_output: temp.path().join("instrument-source.json"),
+    }
+}
+
+fn entry_decision_source_input_instruments() -> Vec<InstrumentAny> {
+    let market_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    vec![
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+    ]
+}
+
+fn entry_decision_source_market_inputs(
+    instruments: &[InstrumentAny],
+) -> EntryDecisionSourceMarketInputs<'_> {
+    EntryDecisionSourceMarketInputs {
+        instruments,
+        up_book: EntryDecisionSourceBookSideInput {
+            best_bid: 0.50,
+            bid_quantity: 500.0,
+            best_ask: 0.50,
+            ask_quantity: 500.0,
+            liquidity_available: 500.0,
+        },
+        down_book: EntryDecisionSourceBookSideInput {
+            best_bid: 0.48,
+            bid_quantity: 500.0,
+            best_ask: 0.49,
+            ask_quantity: 500.0,
+            liquidity_available: 500.0,
+        },
+        fee_bps_by_instrument_id: BTreeMap::from([
+            (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
+            (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
+        ]),
+    }
+}
+
+#[test]
+fn entry_decision_source_input_collector_refuses_missing_source_bound_price_to_beat() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 0.0);
+    let instruments = entry_decision_source_input_instruments();
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs: entry_decision_source_market_inputs(&instruments),
+                decision_source_output_path: &paths.decision_source_output,
+                instrument_source_output_path: &paths.instrument_source_output,
+            },
+        )
+        .expect_err("collector must refuse invalid source-bound price_to_beat");
+
+    assert!(
+        error.to_string().contains("source-bound price_to_beat"),
+        "expected source-bound price_to_beat failure, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
+}
+
+#[test]
+fn entry_decision_source_input_collector_rejects_unselectable_or_incomplete_instrument_pair() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let mut instruments = entry_decision_source_input_instruments();
+    instruments.pop();
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs: entry_decision_source_market_inputs(&instruments),
+                decision_source_output_path: &paths.decision_source_output,
+                instrument_source_output_path: &paths.instrument_source_output,
+            },
+        )
+        .expect_err("collector must reject incomplete selected-market instrument input");
+
+    assert!(
+        error.to_string().contains("two-sided configured market"),
+        "expected selected-market pair failure, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
+}
+
+#[test]
+fn entry_decision_source_input_collector_rejects_empty_or_one_sided_book() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let instruments = entry_decision_source_input_instruments();
+    let mut market_inputs = entry_decision_source_market_inputs(&instruments);
+    market_inputs.up_book.ask_quantity = 0.0;
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs,
+                decision_source_output_path: &paths.decision_source_output,
+                instrument_source_output_path: &paths.instrument_source_output,
+            },
+        )
+        .expect_err("collector must reject one-sided selected-market book input");
+
+    assert!(
+        error.to_string().contains("up book"),
+        "expected book failure, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
+}
+
+#[test]
+fn entry_decision_source_input_collector_rejects_crossed_book_before_write() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let instruments = entry_decision_source_input_instruments();
+    let mut market_inputs = entry_decision_source_market_inputs(&instruments);
+    market_inputs.up_book.best_bid = 0.52;
+    market_inputs.up_book.best_ask = 0.51;
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs,
+                decision_source_output_path: &paths.decision_source_output,
+                instrument_source_output_path: &paths.instrument_source_output,
+            },
+        )
+        .expect_err("collector must reject crossed selected-market book input");
+
+    assert!(
+        error.to_string().contains("crossed"),
+        "expected crossed book failure, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
+}
+
+#[test]
+fn entry_decision_source_input_collector_uses_selected_market_price_precision() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let mut instruments = entry_decision_source_input_instruments();
+    instruments.insert(
+        0,
+        updown_binary_option_with_price_precision(
+            "unrelated-up.POLYMARKET",
+            "unrelated-market-slug",
+            "unrelated-market",
+            "unrelated-condition",
+            "unrelated-question",
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+            6,
+        ),
+    );
+
+    bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionSourceInputRequest {
+            price_to_beat_source_path: &paths.price_source_path,
+            max_price_to_beat_source_bytes: 100_000,
+            reference_quote_source_path: &paths.reference_quote_source_path,
+            max_reference_quote_source_bytes: 100_000,
+            realized_volatility_source_path: &paths.realized_volatility_source_path,
+            max_realized_volatility_source_bytes: 100_000,
+            market_inputs: entry_decision_source_market_inputs(&instruments),
+            decision_source_output_path: &paths.decision_source_output,
+            instrument_source_output_path: &paths.instrument_source_output,
+        },
+    )
+    .expect("collector should use selected market precision, not first instrument precision");
+
+    let decision_source: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&paths.decision_source_output).expect("decision source should read"),
+    )
+    .expect("decision source should parse");
+    assert_eq!(decision_source["books"]["price_precision"], 3);
+}
+
+#[test]
+fn entry_decision_source_input_collector_rejects_selected_price_precision_mismatch() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let market_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let instruments = vec![
+        updown_binary_option_with_price_precision(
+            TEST_UP_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+            3,
+        ),
+        updown_binary_option_with_price_precision(
+            TEST_DOWN_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+            4,
+        ),
+    ];
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs: entry_decision_source_market_inputs(&instruments),
+                decision_source_output_path: &paths.decision_source_output,
+                instrument_source_output_path: &paths.instrument_source_output,
+            },
+        )
+        .expect_err("collector must reject mismatched selected-market price precision");
+
+    assert!(
+        error.to_string().contains("price_precision"),
+        "expected selected price_precision failure, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
+}
+
+#[test]
+fn entry_decision_source_input_provider_validates_local_proofs_before_network() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let client = loaded
+        .root
+        .clients
+        .get_mut(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should include execution client");
+    let data = client
+        .data
+        .as_mut()
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture data block should be a TOML table");
+    data.insert(
+        "base_url_gamma".to_string(),
+        toml::Value::String("http://127.0.0.1:9".to_string()),
+    );
+    data.insert("http_timeout_secs".to_string(), toml::Value::Integer(1));
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    std::fs::write(
+        &paths.reference_quote_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.reference_quote_source.v1",
+            "venue": "binance_reference",
+            "price": 0.0,
+            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+        }))
+        .expect("reference quote source should serialize"),
+    )
+    .expect("reference quote source should write");
+    let fee_rate_source_path = temp.path().join("entry-decision-fees.json");
+    std::fs::write(
+        &fee_rate_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.entry_decision_fee_rate_source.v1",
+            "fee_bps_by_instrument_id": {
+                TEST_UP_INSTRUMENT_ID: 0.0,
+                TEST_DOWN_INSTRUMENT_ID: 0.0
+            }
+        }))
+        .expect("fee source should serialize"),
+    )
+    .expect("fee source should write");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+
+    let error = runtime
+        .block_on(
+            collect_entry_decision_source_inputs_from_configured_provider(
+                &loaded,
+                &strategy_instance_id,
+                EntryDecisionSourceCollectionRequest {
+                    price_to_beat_source_path: &paths.price_source_path,
+                    max_price_to_beat_source_bytes: 100_000,
+                    reference_quote_source_path: &paths.reference_quote_source_path,
+                    max_reference_quote_source_bytes: 100_000,
+                    realized_volatility_source_path: &paths.realized_volatility_source_path,
+                    max_realized_volatility_source_bytes: 100_000,
+                    fee_rate_source_path: &fee_rate_source_path,
+                    max_fee_rate_source_bytes: 100_000,
+                    decision_source_output_path: &paths.decision_source_output,
+                    instrument_source_output_path: &paths.instrument_source_output,
+                },
+            ),
+        )
+        .expect_err("provider must validate local source proofs before network fetches");
+
+    assert!(
+        error.to_string().contains("reference quote source price"),
+        "expected local source proof failure before provider fetch, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
+}
+
+#[test]
 fn entry_decision_evidence_source_collector_rejects_invalid_price_precision_without_panicking() {
     let fixture = entry_decision_evidence_source_fixture(u8::MAX);
 
@@ -8158,6 +8804,31 @@ fn updown_binary_option(
     activation_ms: u64,
     expiration_ms: u64,
 ) -> InstrumentAny {
+    updown_binary_option_with_price_precision(
+        instrument_id,
+        market_slug,
+        market_id,
+        condition_id,
+        question_id,
+        outcome,
+        activation_ms,
+        expiration_ms,
+        3,
+    )
+}
+
+fn updown_binary_option_with_price_precision(
+    instrument_id: &str,
+    market_slug: &str,
+    market_id: &str,
+    condition_id: &str,
+    question_id: &str,
+    outcome: &str,
+    activation_ms: u64,
+    expiration_ms: u64,
+    price_precision: u8,
+) -> InstrumentAny {
+    let price_increment = binary_option_price_increment_for_precision(price_precision);
     let mut info = Params::new();
     info.insert(
         "market_slug".to_string(),
@@ -8182,9 +8853,9 @@ fn updown_binary_option(
         Currency::USDC(),
         (activation_ms.saturating_mul(1_000_000)).into(),
         (expiration_ms.saturating_mul(1_000_000)).into(),
-        3,
+        price_precision,
         2,
-        Price::from(TEST_BINARY_OPTION_PRICE_INCREMENT),
+        Price::from(price_increment.as_str()),
         Quantity::from(TEST_BINARY_OPTION_SIZE_INCREMENT),
         Some(ustr::Ustr::from(outcome)),
         None,
@@ -8202,6 +8873,14 @@ fn updown_binary_option(
         1.into(),
         1.into(),
     ))
+}
+
+fn binary_option_price_increment_for_precision(price_precision: u8) -> String {
+    if price_precision == 0 {
+        return "1".to_string();
+    }
+    let zeros = "0".repeat(usize::from(price_precision.saturating_sub(1)));
+    format!("0.{zeros}1")
 }
 
 struct TestPreRunStateProofHashes {

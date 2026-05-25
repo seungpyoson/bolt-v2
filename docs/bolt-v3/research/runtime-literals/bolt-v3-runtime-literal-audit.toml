@@ -7343,3 +7343,163 @@ literal = '''"root_toml_sha256"'''
 context = '''&serde_json::json!({ "root_toml_sha256": written.sha256 })'''
 classification = "operator_evidence_toml_patch_output_schema"
 reason = "This is the redacted CLI output field name for the patched root TOML hash; the hash value is computed from the written TOML."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "1"
+context = '''const SOURCE_BOUND_PRICE_TO_BEAT_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "entry_decision_source_input_schema_version"
+reason = "This is the source-bound price-to-beat proof schema version; runtime values remain source-file owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.source_bound_price_to_beat.v1"'''
+context = '''const SOURCE_BOUND_PRICE_TO_BEAT_SOURCE_RECORD_KIND: &str = "bolt_v3.source_bound_price_to_beat.v1";'''
+classification = "entry_decision_source_input_record_kind"
+reason = "This is the record-kind discriminator for the source-bound price-to-beat proof, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "1"
+context = '''const REFERENCE_QUOTE_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "entry_decision_source_input_schema_version"
+reason = "This is the reference-quote proof schema version; quote values remain source-file owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.reference_quote_source.v1"'''
+context = '''const REFERENCE_QUOTE_SOURCE_RECORD_KIND: &str = "bolt_v3.reference_quote_source.v1";'''
+classification = "entry_decision_source_input_record_kind"
+reason = "This is the record-kind discriminator for the reference-quote proof, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "1"
+context = '''const REALIZED_VOLATILITY_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "entry_decision_source_input_schema_version"
+reason = "This is the realized-volatility proof schema version; volatility values remain source-file owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.realized_volatility_source.v1"'''
+context = '''const REALIZED_VOLATILITY_SOURCE_RECORD_KIND: &str = "bolt_v3.realized_volatility_source.v1";'''
+classification = "entry_decision_source_input_record_kind"
+reason = "This is the record-kind discriminator for the realized-volatility proof, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"warmup_tick_count"'''
+context = '''const ENTRY_DECISION_WARMUP_COUNT_FIELD: &str = "warmup_tick_count";'''
+classification = "entry_decision_source_input_schema_field"
+reason = "This names the existing strategy config field read from TOML-derived raw config; the value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"up"'''
+context = '''const ENTRY_DECISION_UP_BOOK_LABEL: &str = "up";'''
+classification = "entry_decision_source_input_book_label"
+reason = "This labels the selected up book side in validation errors and source construction; prices and quantities remain source-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"down"'''
+context = '''const ENTRY_DECISION_DOWN_BOOK_LABEL: &str = "down";'''
+classification = "entry_decision_source_input_book_label"
+reason = "This labels the selected down book side in validation errors and source construction; prices and quantities remain source-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "0.0"
+context = '''const ENTRY_DECISION_ZERO_THRESHOLD: f64 = 0.0;'''
+classification = "entry_decision_source_input_validation_threshold"
+reason = "This is the fail-closed zero threshold for positive source-owned prices, volatility, and book quantities."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
+kind = "number"
+literal = "1"
+context = '''const ENTRY_DECISION_FEE_RATE_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "entry_decision_source_input_schema_version"
+reason = "This is the provider-owned fee-rate proof schema version; fee values remain source-file owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
+kind = "string"
+literal = '''"bolt_v3.entry_decision_fee_rate_source.v1"'''
+context = '''"bolt_v3.entry_decision_fee_rate_source.v1";'''
+classification = "entry_decision_source_input_record_kind"
+reason = "This is the record-kind discriminator for the provider-owned fee-rate proof, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
+kind = "string"
+literal = '''"up"'''
+context = '''const ENTRY_DECISION_UP_BOOK_LABEL: &str = "up";'''
+classification = "entry_decision_source_input_book_label"
+reason = "This labels the selected up book side in provider-owned validation errors and source construction."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
+kind = "string"
+literal = '''"down"'''
+context = '''const ENTRY_DECISION_DOWN_BOOK_LABEL: &str = "down";'''
+classification = "entry_decision_source_input_book_label"
+reason = "This labels the selected down book side in provider-owned validation errors and source construction."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
+kind = "number"
+literal = "0.0"
+context = '''const ENTRY_DECISION_FEE_ZERO_THRESHOLD: f64 = 0.0;'''
+classification = "entry_decision_source_input_validation_threshold"
+reason = "This is the fail-closed zero threshold for non-negative provider-owned fee proof values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
+kind = "number"
+literal = "1"
+context = '''const ENTRY_DECISION_RETRY_INITIAL_ATTEMPT_COUNT: u64 = 1;'''
+classification = "entry_decision_source_input_retry_semantics"
+reason = "This encodes NT RetryConfig attempt-count semantics: one initial attempt plus the configured retry count. Retry delays, retry count, jitter, and timeout are TOML-derived."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"source-bound price_to_beat decision timestamp precedes market selection"'''
+context = '''"source-bound price_to_beat decision timestamp precedes market selection",'''
+classification = "entry_decision_source_input_diagnostic"
+reason = "This is a validation diagnostic for inconsistent source-owned timestamps, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"selected market price_precision mismatch"'''
+context = '''"selected market price_precision mismatch",'''
+classification = "entry_decision_source_input_diagnostic"
+reason = "This is a validation diagnostic for inconsistent selected-market instrument metadata, not a runtime operator value."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"decision_source"'''
+context = '''const ENTRY_DECISION_SOURCE_OUTPUT_FIELD: &str = "decision_source";'''
+classification = "entry_decision_source_input_cli_output_schema"
+reason = "This is the redacted CLI output object field for the written decision source artifact."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"instrument_source"'''
+context = '''const ENTRY_DECISION_INSTRUMENT_SOURCE_OUTPUT_FIELD: &str = "instrument_source";'''
+classification = "entry_decision_source_input_cli_output_schema"
+reason = "This is the redacted CLI output object field for the written instrument source artifact."

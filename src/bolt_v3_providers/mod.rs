@@ -18,12 +18,16 @@
 pub mod binance;
 pub mod polymarket;
 
-use std::{any::Any, fmt, sync::Arc};
+use std::{any::Any, fmt, future::Future, pin::Pin, sync::Arc};
 
 use crate::{
     bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3MarketClockFn},
     bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config},
     bolt_v3_market_families::MarketIdentityPlan,
+    bolt_v3_operator_artifacts::{
+        BoltV3OperatorArtifactError, EntryDecisionSourceCollectionRequest,
+        EntryDecisionSourceInputsWritten,
+    },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     strategies::registry::FeeProvider,
 };
@@ -79,6 +83,21 @@ type FeeProviderBuilder = fn(
     &ResolvedBoltV3Secrets,
 ) -> Result<Arc<dyn FeeProvider>, BoltV3AdapterMappingError>;
 
+pub struct EntryDecisionSourceProviderContext<'a> {
+    pub loaded: &'a LoadedBoltV3Config,
+    pub strategy_instance_id: &'a str,
+    pub request: EntryDecisionSourceCollectionRequest<'a>,
+}
+
+pub type EntryDecisionSourceInputCollector = for<'a> fn(
+    EntryDecisionSourceProviderContext<'a>,
+) -> Pin<
+    Box<
+        dyn Future<Output = Result<EntryDecisionSourceInputsWritten, BoltV3OperatorArtifactError>>
+            + 'a,
+    >,
+>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderCredentialedBlock {
     Data,
@@ -128,6 +147,7 @@ pub struct ProviderBinding {
     )
         -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError>,
     pub build_fee_provider: Option<FeeProviderBuilder>,
+    pub collect_entry_decision_source_inputs: Option<EntryDecisionSourceInputCollector>,
 }
 
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
@@ -143,6 +163,9 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         configured_secret_paths: polymarket::configured_secret_paths,
         map_adapters: polymarket::map_adapters,
         build_fee_provider: Some(polymarket::build_fee_provider),
+        collect_entry_decision_source_inputs: Some(
+            polymarket::collect_entry_decision_source_inputs,
+        ),
     },
     ProviderBinding {
         key: binance::KEY,
@@ -156,6 +179,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         configured_secret_paths: binance::configured_secret_paths,
         map_adapters: binance::map_adapters,
         build_fee_provider: None,
+        collect_entry_decision_source_inputs: None,
     },
 ];
 

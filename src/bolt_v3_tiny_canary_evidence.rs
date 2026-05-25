@@ -3079,11 +3079,8 @@ pub struct Phase8AbortPlanSourceProofs<'a> {
 pub struct Phase8AbortPlanEvidenceFile {
     execution_client_id: String,
     configured_target_id: String,
-    #[serde(default)]
     source_collector_derived: bool,
-    #[serde(default)]
     strategy_source_sha256: String,
-    #[serde(default)]
     submit_admission_source_sha256: String,
     cancel_if_open_defined: bool,
     cancel_if_open_evidence_hash: String,

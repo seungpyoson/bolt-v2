@@ -287,6 +287,7 @@ T127 no longer depends on a caller-supplied abort source bundle for local artifa
 - `cargo fmt --check`: passed.
 - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
 - `git diff --check`: passed.
+- `just source-fence`: passed, including 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 Abort-plan artifacts now distinguish collector-derived evidence from caller-supplied proof hashes. `write_abort_plan_artifact_from_source_collectors` writes `source_collector_derived = true` plus the bounded strategy and submit-admission source hashes, and final-packet verification requires those hashes to match the source compiled into the current binary. Source-proof and source-bundle writers remain usable for local tests and diagnostics, but their artifacts cannot satisfy final-packet readiness. This is non-live local artifact validation only. No AWS, SSM, external network, no-submit, venue connection, order submit/cancel, `config/live.local.toml` mutation, or live trading side effect was run.
 

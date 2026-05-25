@@ -24,9 +24,11 @@
 //! core and is called from this module the same way the archetype
 //! binding calls `parse_decimal_string`.
 
+mod adapter_signing_source;
 mod entry_decision_source_inputs;
 mod fees;
 
+pub use adapter_signing_source::materialize_clob_v2_adapter_signing_source_from_nt_signing_source;
 pub use entry_decision_source_inputs::collect_entry_decision_source_inputs;
 
 use std::{any::Any, sync::Arc, time::Duration};

@@ -597,6 +597,11 @@ This is non-live public HTTP provider-time collection only. No AWS, SSM, no-subm
 - `git diff --check`: passed.
 - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
 - `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- Exact-head CI repair after PR #480 head `1708d3c4d7514837a82e60e743b710bc886cb721` failed `source-fence`: provider-specific NT CLOB V2 order/signature probe code moved from `src/bolt_v3_operator_artifacts.rs` into `src/bolt_v3_providers/polymarket/adapter_signing_source.rs` behind the provider-root materialization interface.
+- Boundary/fence rerun after repair:
+  - `python3 scripts/verify_bolt_v3_provider_leaks.py`: `OK: Bolt-v3 provider-leak verifier passed.`
+  - `python3 scripts/verify_bolt_v3_core_boundary.py`: `OK: Bolt-v3 core boundary audit passed.`
+  - `just source-fence`: passed, including `tests/bolt_v3_controlled_connect.rs` 11 passed and `tests/bolt_v3_production_entrypoint.rs` 5 passed.
 
 `operator-artifacts collect-pre-run-clob-v2-adapter-signing-source --cargo-toml <Cargo.toml> --cargo-lock <Cargo.lock> --clob-signing-source <eip712.rs> --max-source-bytes <n> --output <clob-v2-adapter-signing-source.json>` now derives the CLOB signing version and source hash through the existing release-manifest proof, checks the pinned NT signing source contains the expected domain/order-signing markers, signs a local deterministic probe order with an ephemeral key through NT's CLOB V2 `OrderSigner`, recovers the signer from the EIP-712 order hash, and writes only the existing bounded source-proof JSON fields.
 

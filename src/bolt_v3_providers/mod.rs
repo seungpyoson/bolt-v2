@@ -98,6 +98,24 @@ pub type EntryDecisionSourceInputCollector = for<'a> fn(
     >,
 >;
 
+#[derive(Clone, Copy)]
+pub struct ClobV2AdapterSigningSourceMaterializationRequest<'a> {
+    pub schema_version: u32,
+    pub domain_requirements_record_kind: &'static str,
+    pub signed_order_fixture_record_kind: &'static str,
+    pub signature_verification_record_kind: &'static str,
+    pub clob_signing_version: &'a str,
+    pub clob_signing_source_sha256: &'a str,
+    pub clob_signing_source: &'a str,
+}
+
+pub struct ClobV2AdapterSigningSourceMaterialization {
+    pub domain_requirements_sha256: String,
+    pub signed_order_fixture_sha256: String,
+    pub signature_verification_sha256: String,
+    pub signer_recovered_matches_expected: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderCredentialedBlock {
     Data,
@@ -191,6 +209,12 @@ pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
     provider_bindings()
         .iter()
         .find(|binding| binding.key == key)
+}
+
+pub fn materialize_clob_v2_adapter_signing_source_from_nt_signing_source(
+    request: ClobV2AdapterSigningSourceMaterializationRequest<'_>,
+) -> Result<ClobV2AdapterSigningSourceMaterialization, BoltV3OperatorArtifactError> {
+    polymarket::materialize_clob_v2_adapter_signing_source_from_nt_signing_source(request)
 }
 
 /// Provider-owned NT adapter modules whose info logs can expose

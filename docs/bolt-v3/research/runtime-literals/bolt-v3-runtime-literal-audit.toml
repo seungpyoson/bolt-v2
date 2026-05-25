@@ -4585,7 +4585,7 @@ classification = "operator_artifact_record_kind"
 reason = "This is the stable record-kind discriminator for the local CLOB V2 adapter-signing signature-recovery proof, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"0x0000000000000000000000000000000000000000000000000000000000000000"'''
 context = '''"0x0000000000000000000000000000000000000000000000000000000000000000";'''
@@ -4593,7 +4593,7 @@ classification = "clob_v2_adapter_signing_self_test_fixture"
 reason = "This is the fixed EIP-712 bytes32 zero value used inside a local no-submit signing self-test order; production order values remain runtime generated."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"0"'''
 context = '''const CLOB_V2_ADAPTER_SIGNING_NO_EXPIRATION: &str = "0";'''
@@ -4601,7 +4601,7 @@ classification = "clob_v2_adapter_signing_self_test_fixture"
 reason = "This is the Polymarket CLOB V2 no-expiration sentinel for the local signing self-test order, not an operator trading parameter."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "number"
 literal = '''16'''
 context = '''const CLOB_V2_ADAPTER_SIGNING_KEYGEN_MAX_ATTEMPTS: usize = 16;'''
@@ -4609,7 +4609,7 @@ classification = "clob_v2_adapter_signing_self_test_bound"
 reason = "This bounds random ephemeral key generation retries for the local signing self-test; it does not configure trading behavior."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "number"
 literal = '''32'''
 context = '''const CLOB_V2_ADAPTER_SIGNING_SEED_BYTES: usize = 32;'''
@@ -4617,7 +4617,7 @@ classification = "clob_v2_adapter_signing_self_test_fixture"
 reason = "This is the SHA-256 digest byte width used to derive deterministic local signing self-test order fields, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "number"
 literal = '''0'''
 context = '''const CLOB_V2_ADAPTER_SIGNING_SALT_OFFSET: usize = 0;'''
@@ -4625,7 +4625,7 @@ classification = "clob_v2_adapter_signing_self_test_fixture"
 reason = "This is the first seed chunk offset for deriving local signing self-test order fields, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "number"
 literal = '''2'''
 context = '''const CLOB_V2_ADAPTER_SIGNING_TAKER_AMOUNT_OFFSET: usize = CLOB_V2_ADAPTER_SIGNING_U64_BYTES * 2;'''
@@ -4633,7 +4633,7 @@ classification = "clob_v2_adapter_signing_self_test_fixture"
 reason = "This selects the third seed chunk for the local signing self-test taker amount, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "number"
 literal = '''3'''
 context = '''const CLOB_V2_ADAPTER_SIGNING_TIMESTAMP_OFFSET: usize = CLOB_V2_ADAPTER_SIGNING_U64_BYTES * 3;'''
@@ -4641,7 +4641,7 @@ classification = "clob_v2_adapter_signing_self_test_fixture"
 reason = "This selects the fourth seed chunk for the local signing self-test timestamp, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "number"
 literal = '''1_000_000'''
 context = '''const CLOB_V2_ADAPTER_SIGNING_AMOUNT_MODULUS: u64 = 1_000_000;'''
@@ -4649,7 +4649,7 @@ classification = "clob_v2_adapter_signing_self_test_fixture"
 reason = "This bounds deterministic local signing self-test order amounts to pUSD/share base-unit scale; production sizing remains TOML and runtime owned."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "number"
 literal = '''1'''
 context = '''const CLOB_V2_ADAPTER_SIGNING_MIN_POSITIVE: u64 = 1;'''
@@ -4665,71 +4665,71 @@ classification = "operator_artifact_validation_field"
 reason = "This is a bounded UTF-8 validation label for the CLOB V2 signing source materializer, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"DOMAIN_VERSION"'''
-context = '''require_clob_v2_adapter_signing_source_marker(source, "DOMAIN_VERSION", "domain_version")?;'''
+context = '''"DOMAIN_VERSION",'''
 classification = "clob_v2_adapter_signing_source_marker"
 reason = "This is a required source-code marker proving the pinned NT CLOB signing source declares the EIP-712 domain version; the runtime version is still derived from source."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"domain_version"'''
-context = '''require_clob_v2_adapter_signing_source_marker(source, "DOMAIN_VERSION", "domain_version")?;'''
+context = '''"domain_version",'''
 classification = "operator_artifact_validation_field"
 reason = "This is a fail-closed diagnostic field for missing CLOB V2 signing source domain-version proof, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"DOMAIN_NAME"'''
-context = '''require_clob_v2_adapter_signing_source_marker(source, "DOMAIN_NAME", "domain_name")?;'''
+context = '''"DOMAIN_NAME",'''
 classification = "clob_v2_adapter_signing_source_marker"
 reason = "This is a required source-code marker proving the pinned NT CLOB signing source declares the EIP-712 domain name."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"domain_name"'''
-context = '''require_clob_v2_adapter_signing_source_marker(source, "DOMAIN_NAME", "domain_name")?;'''
+context = '''"domain_name",'''
 classification = "operator_artifact_validation_field"
 reason = "This is a fail-closed diagnostic field for missing CLOB V2 signing source domain-name proof, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"POLYGON_CHAIN_ID"'''
-context = '''require_clob_v2_adapter_signing_source_marker(source, "POLYGON_CHAIN_ID", "polygon_chain_id")?;'''
+context = '''"POLYGON_CHAIN_ID",'''
 classification = "clob_v2_adapter_signing_source_marker"
 reason = "This is a required source-code marker proving the pinned NT CLOB signing source binds the EIP-712 chain id."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"polygon_chain_id"'''
-context = '''require_clob_v2_adapter_signing_source_marker(source, "POLYGON_CHAIN_ID", "polygon_chain_id")?;'''
+context = '''"polygon_chain_id",'''
 classification = "operator_artifact_validation_field"
 reason = "This is a fail-closed diagnostic field for missing CLOB V2 signing source chain-id proof, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"CTF_EXCHANGE"'''
-context = '''require_clob_v2_adapter_signing_source_marker(source, "CTF_EXCHANGE", "ctf_exchange")?;'''
+context = '''"CTF_EXCHANGE",'''
 classification = "clob_v2_adapter_signing_source_marker"
 reason = "This is a required source-code marker proving the pinned NT CLOB signing source declares the standard CTF exchange contract binding."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"ctf_exchange"'''
-context = '''require_clob_v2_adapter_signing_source_marker(source, "CTF_EXCHANGE", "ctf_exchange")?;'''
+context = '''"ctf_exchange",'''
 classification = "operator_artifact_validation_field"
 reason = "This is a fail-closed diagnostic field for missing CLOB V2 standard exchange source proof, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"NEG_RISK_CTF_EXCHANGE"'''
 context = '''"NEG_RISK_CTF_EXCHANGE",'''
@@ -4737,7 +4737,7 @@ classification = "clob_v2_adapter_signing_source_marker"
 reason = "This is a required source-code marker proving the pinned NT CLOB signing source declares the negative-risk CTF exchange contract binding."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"neg_risk_ctf_exchange"'''
 context = '''"neg_risk_ctf_exchange",'''
@@ -4745,34 +4745,34 @@ classification = "operator_artifact_validation_field"
 reason = "This is a fail-closed diagnostic field for missing CLOB V2 negative-risk exchange source proof, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"OrderSigner"'''
-context = '''require_clob_v2_adapter_signing_source_marker(source, "OrderSigner", "order_signer")?;'''
+context = '''"OrderSigner",'''
 classification = "clob_v2_adapter_signing_source_marker"
 reason = "This is a required source-code marker proving the pinned NT CLOB signing source exposes the order signer used by the materializer."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"order_signer"'''
-context = '''require_clob_v2_adapter_signing_source_marker(source, "OrderSigner", "order_signer")?;'''
+context = '''"order_signer",'''
 classification = "operator_artifact_validation_field"
 reason = "This is a fail-closed diagnostic field for missing CLOB V2 order signer source proof, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"sign_order"'''
-context = '''require_clob_v2_adapter_signing_source_marker(source, "sign_order", "sign_order")?;'''
+context = '''"sign_order",'''
 classification = "clob_v2_adapter_signing_source_marker"
 reason = "This is a required source-code marker proving the pinned NT CLOB signing source exposes the order-signing path exercised by the materializer."
 
 [[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
+path = "src/bolt_v3_providers/polymarket/adapter_signing_source.rs"
 kind = "string"
 literal = '''"order_hash"'''
-context = '''require_clob_v2_adapter_signing_source_marker(source, "order_hash", "order_hash")?;'''
+context = '''"order_hash",'''
 classification = "clob_v2_adapter_signing_source_marker"
 reason = "This is a required source-code marker proving the pinned NT CLOB signing source exposes the order-hash path used for signature recovery."
 

@@ -1,6 +1,6 @@
 # External Gate Architecture Review
 
-**Head**: `e8eb1f31d0bc71cebbbd73df76acbf7e1fd1dab3`
+**Head**: `3378c0965740658b9f655045827eb64b8449019e`
 **Date**: 2026-05-25
 **Scope**: corrected production-readiness resolution/reference gate model for T036H.
 
@@ -129,3 +129,24 @@ Revision applied after Round 4:
 - `gate-dataflow-contract.md` now defines binary-oracle positive gate requirement exposure through `binary_oracle_edge_taker::gate_requirements() -> Vec<ArchetypeGateRequirement>`.
 - `gate-dataflow-contract.md` now defines canonical enum/value/provenance/helper shapes, selected-market key delimiter rejection, `test_double` test-only behavior, provider id/kind coexistence semantics, and provider collector positive binding behavior.
 - `tasks.md` now adds T036H12B for live-node registration wiring and expands T036H1, T036H3, and T036H11 for test-double rejection, archetype requirement exposure, and provider collector positive CLI coverage.
+
+## Contract Review Round 5
+
+The follow-up patch was committed as `3378c0965740658b9f655045827eb64b8449019e` and sent for final delta review against `af4c927a41651892bcc0f869b863fe90d71f2863..3378c0965740658b9f655045827eb64b8449019e`.
+
+- Claude Code job `373cb414-9af5-41e6-94e7-de791583c1e1`: APPROVE.
+- Gemini job `ff3e7751-fe94-4200-9819-84c92d1a352a`: APPROVE.
+- Grok custom-file job `job_be545773-1fb2-4f17-8564-f0f715378f73`: REQUEST_CHANGES due to missing diff/tree evidence only; superseded by the branch-diff slot below.
+- Grok branch-diff job `job_3f4435ed-ee26-406e-b6bf-97bb1007d503`: APPROVE.
+- GLM job `job_7037569f-0518-49b1-9ae0-e8c149c83254`: APPROVE.
+- DeepSeek job `job_472f7acc-7655-4ff1-b881-da7e026450e5`: REQUEST_CHANGES.
+
+Accepted DeepSeek Round 5 finding:
+
+- `provider_provenance_sha256` must specify the canonical JSON shape for every `ProviderProvenance` variant, including discriminator field, field names, numeric/string encoding, and hash input.
+
+Revision applied after Round 5:
+
+- `gate-dataflow-contract.md` now defines flat tagged canonical provider provenance JSON for Chainlink Data Streams, Pyth, Binance index, venue-native, and test-double provenance before hashing to `provider_provenance_sha256`.
+- `gate-dataflow-contract.md` now makes `normalized_value_scale` a JSON number in the session hash example.
+- `tasks.md` T036H4 now explicitly requires RED coverage for rejecting `|` in selected-market key components.

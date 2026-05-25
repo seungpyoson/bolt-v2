@@ -401,7 +401,7 @@ Session hash canonicalization:
       "provider_id": "<provider_id>",
       "provider_kind": "<provider_kind>",
       "normalized_value_decimal": "<decimal>",
-      "normalized_value_scale": "<scale>",
+      "normalized_value_scale": 8,
       "artifact_sha256s": ["<sha256>"],
       "provider_provenance_sha256": "<sha256>"
     },
@@ -417,6 +417,23 @@ Session hash canonicalization:
 
 - `satisfied_roles` is sorted by role name. `artifact_sha256s` is sorted by artifact path before hashing. `provider_provenance_sha256` is SHA-256 of the canonical JSON representation of the provider provenance payload.
 - A session containing `GateSatisfaction::NoResolution` must include the no-resolution object above so no-resolution sessions cannot collide with evidence-backed sessions or with each other across markets.
+
+Canonical provider provenance JSON:
+
+- Every provenance object uses a flat tagged JSON object with `provider_kind` as the discriminator.
+- Object keys are sorted lexicographically under the same canonical JSON rule as `session_hash`.
+- Numeric schema/scale fields are JSON numbers; hashes and identifiers are strings.
+- The exact variant shapes are:
+
+```json
+{"feed_id":"<feed_id>","provider_kind":"chainlink_data_streams","report_decimal_scale":8,"report_schema_version":3,"report_sha256":"<sha256>"}
+{"feed_id":"<feed_id>","price_message_sha256":"<sha256>","provider_kind":"pyth"}
+{"provider_kind":"binance_index","response_sha256":"<sha256>","symbol":"<symbol>"}
+{"provider_kind":"venue_native","source_sha256":"<sha256>","venue":"<venue>"}
+{"fixture_sha256":"<sha256>","provider_kind":"test_double"}
+```
+
+- `provider_provenance_sha256` is `hex(sha256(<canonical provider provenance JSON bytes>))`.
 
 Fail closed:
 

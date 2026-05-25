@@ -583,4 +583,21 @@ This is non-live local source-code artifact generation only. No AWS, SSM, no-sub
 
 `operator-artifacts collect-pre-run-host-clock-source --config <root.toml> --strategy-instance-id <id> --output <host-clock-source.json>` now derives the execution client from the selected strategy, reads `base_url_http` and `http_timeout_secs` from the TOML execution block, fetches the configured provider HTTP `Date` header, records host runtime milliseconds, and writes the existing `bolt_v3.pre_run_host_clock_source.v1` artifact with create-new semantics. The CLI does not accept `--host-unix-millis` or `--reference-unix-millis`, and stdout uses the existing redacted artifact summary instead of raw timestamps.
 
-This is non-live public HTTP provider-time collection only. No AWS, SSM, no-submit, private venue account access, order submit/cancel, root TOML mutation, or live trading side effect was run. T036 remains open: T024E still requires real source-owned materializers for venue account/open orders/positions, funding/margin, egress identity, and CLOB V2 signing/collateral/fee behavior before a blocker-free `pre-run-state.json`, T037 root TOML patch, final packet, and T038 verification can be honestly produced.
+This is non-live public HTTP provider-time collection only. No AWS, SSM, no-submit, private venue account access, order submit/cancel, root TOML mutation, or live trading side effect was run. T036 remains open: T024E still requires real source-owned materializers for venue account/open orders/positions, funding/margin, egress identity, and CLOB V2 signing/collateral/fee behavior before a blocker-free `pre-run-state.json`, T037 root TOML patch, final packet, and T038 verification can be honestly produced. T024F below narrows that list by closing the CLOB V2 adapter-signing source materializer only.
+
+## T024F CLOB V2 Adapter-Signing Source Materializer
+
+- Read-only sidecar `019e5d8f-9c30-77d1-93f2-6fb4013fe92c` recommended CLOB V2 adapter signing as the smallest honest T024E slice: venue/funding/collateral require private account or chain state, egress lacks an approved identity config field, and fee behavior is larger public CLOB work.
+- Read-only sidecar `019e5d92-05c0-7d63-8006-7fc8201b36f2` identified the pinned NT source path and reusable signing functions: release-manifest proof already reads `--clob-signing-source`, NT exposes `OrderSigner::new`, `OrderSigner::sign_order`, `order_hash`, and existing NT tests use `recover_address_from_prehash`.
+- RED: `cargo test --test bolt_v3_cli bolt_v3_cli_collects_clob_v2_adapter_signing_source_from_nt_signing_source -- --nocapture` failed because `operator-artifacts collect-pre-run-clob-v2-adapter-signing-source` was not a recognized subcommand.
+- GREEN: `cargo test --test bolt_v3_cli bolt_v3_cli_collects_clob_v2_adapter_signing_source_from_nt_signing_source -- --nocapture`: 1 passed, 0 failed.
+- Focused CLOB proof regression: `cargo test --test bolt_v3_operator_artifacts pre_run_clob_v2 -- --nocapture`: 7 passed, 0 failed.
+- Broader CLI regression: `cargo test --test bolt_v3_cli -- --nocapture`: 26 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+- `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+
+`operator-artifacts collect-pre-run-clob-v2-adapter-signing-source --cargo-toml <Cargo.toml> --cargo-lock <Cargo.lock> --clob-signing-source <eip712.rs> --max-source-bytes <n> --output <clob-v2-adapter-signing-source.json>` now derives the CLOB signing version and source hash through the existing release-manifest proof, checks the pinned NT signing source contains the expected domain/order-signing markers, signs a local deterministic probe order with an ephemeral key through NT's CLOB V2 `OrderSigner`, recovers the signer from the EIP-712 order hash, and writes only the existing bounded source-proof JSON fields.
+
+This is non-live local source/signature verification only. It does not read AWS/SSM, use configured private keys, connect to a venue, submit/cancel orders, mutate root TOML, or print signatures/private key material. T036 remains open: T024E still needs real source-owned materializers for venue account/open orders/positions, funding/margin, egress identity, and CLOB V2 collateral/fee behavior before a blocker-free `pre-run-state.json`, T037 root TOML patch, final packet, and T038 verification can be honestly produced.

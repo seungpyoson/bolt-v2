@@ -693,6 +693,95 @@ fn bolt_v3_cli_host_clock_source_collector_does_not_accept_caller_timestamps() {
 }
 
 #[test]
+fn bolt_v3_cli_collects_clob_v2_adapter_signing_source_from_nt_signing_source() {
+    let temp = tempdir().expect("tempdir should create");
+    let clob_signing_source_path = temp.path().join("eip712.rs");
+    fs::write(
+        &clob_signing_source_path,
+        r#"
+const CLOB_AUTH_DOMAIN_VERSION: &str = "1";
+const DOMAIN_NAME: &str = "Polymarket CTF Exchange";
+const DOMAIN_VERSION: &str = "2";
+const POLYGON_CHAIN_ID: u64 = 137;
+pub const CTF_EXCHANGE: &str = "ctf";
+pub const NEG_RISK_CTF_EXCHANGE: &str = "neg-risk";
+struct OrderSigner;
+fn sign_order() {}
+fn order_hash() {}
+"#,
+    )
+    .expect("CLOB signing source fixture should write");
+    let output_path = temp.path().join("clob-v2-adapter-signing-source.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-pre-run-clob-v2-adapter-signing-source",
+            "--cargo-toml",
+            repo_path("Cargo.toml")
+                .to_str()
+                .expect("Cargo.toml path should be utf-8"),
+            "--cargo-lock",
+            repo_path("Cargo.lock")
+                .to_str()
+                .expect("Cargo.lock path should be utf-8"),
+            "--clob-signing-source",
+            clob_signing_source_path
+                .to_str()
+                .expect("CLOB signing source path should be utf-8"),
+            "--max-source-bytes",
+            "300000",
+            "--output",
+            output_path.to_str().expect("output path should be utf-8"),
+        ])
+        .output()
+        .expect("bolt-v3 CLOB V2 adapter signing source collection should run");
+
+    assert!(
+        output.status.success(),
+        "expected CLOB V2 adapter signing source collection to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("signature") && !stdout.contains("private"),
+        "stdout must not expose signatures or ephemeral key material: {stdout}"
+    );
+    let json: serde_json::Value = serde_json::from_slice(
+        &fs::read(&output_path).expect("CLOB V2 adapter signing source should write"),
+    )
+    .expect("CLOB V2 adapter signing source should be JSON");
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(
+        json["record_kind"],
+        "bolt_v3.pre_run_clob_v2_adapter_signing_source.v1"
+    );
+    assert_eq!(json["clob_signing_version"], "2");
+    assert_eq!(
+        json["adapter_signing_source_sha256"],
+        sha256_file_for_cli_test(&clob_signing_source_path)
+    );
+    assert_eq!(json["signer_recovered_matches_expected"], true);
+    for field in [
+        "domain_requirements_sha256",
+        "signed_order_fixture_sha256",
+        "signature_verification_sha256",
+    ] {
+        let value = json[field]
+            .as_str()
+            .unwrap_or_else(|| panic!("{field} should be a string: {json}"));
+        assert!(
+            value.len() == 64
+                && value
+                    .chars()
+                    .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+            "{field} should be lowercase sha256 hex: {value}"
+        );
+    }
+}
+
+#[test]
 fn bolt_v3_cli_exposes_abort_plan_source_collector_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([

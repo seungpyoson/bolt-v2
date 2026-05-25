@@ -19,6 +19,7 @@ use bolt_v2::{
         write_entry_decision_evidence_from_source_file, write_entry_decision_proof_source_files,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_operator_evidence_json_from_artifact_paths,
+        write_pre_run_clob_v2_adapter_signing_source_artifact_from_nt_signing_source,
         write_pre_run_host_clock_source_artifact_from_configured_provider_time,
         write_pre_run_state_artifact_from_source_bundle_file,
         write_pre_run_state_artifact_from_source_collectors,
@@ -228,6 +229,18 @@ enum OperatorArtifactsCommand {
         config: PathBuf,
         #[arg(long)]
         strategy_instance_id: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    CollectPreRunClobV2AdapterSigningSource {
+        #[arg(long)]
+        cargo_toml: PathBuf,
+        #[arg(long)]
+        cargo_lock: PathBuf,
+        #[arg(long)]
+        clob_signing_source: PathBuf,
+        #[arg(long)]
+        max_source_bytes: u64,
         #[arg(long)]
         output: PathBuf,
     },
@@ -649,6 +662,23 @@ fn run_operator_artifacts_command(
                     &output,
                 ),
             )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectPreRunClobV2AdapterSigningSource {
+            cargo_toml,
+            cargo_lock,
+            clob_signing_source,
+            max_source_bytes,
+            output,
+        } => {
+            let written =
+                write_pre_run_clob_v2_adapter_signing_source_artifact_from_nt_signing_source(
+                    &cargo_toml,
+                    &cargo_lock,
+                    &clob_signing_source,
+                    max_source_bytes,
+                    &output,
+                )?;
             print_written_operator_artifact(&written)
         }
         OperatorArtifactsCommand::GenerateAbortPlanFromSourceBundle {

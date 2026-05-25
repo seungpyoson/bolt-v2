@@ -275,6 +275,21 @@ The collector is non-live and source-owned: it reads bounded local Rust source f
 
 T127 no longer depends on a caller-supplied abort source bundle for local artifact generation. `write_abort_plan_artifact_from_source_collectors` and the `operator-artifacts generate-abort-plan-from-source-collectors` CLI path collect cancel-if-open, NT-accepted/venue-pending, partial-fill, network-partition, and panic/service-policy proofs from bounded local source inputs, then write the final `abort-plan.json`. The schema-level operator evidence config still binds the final artifact by `abort_plan_path` and `abort_plan_sha256`; the approved root TOML update remains T037 with the full final packet.
 
+## T034A Abort-Plan Collector Provenance Repair Evidence
+
+- RED: `cargo test --test bolt_v3_operator_artifacts final_packet_verifier_rejects_abort_plan_built_from_synthetic_source_proofs -- --nocapture` failed because `verify_final_operator_packet` accepted an abort-plan artifact built from synthetic caller-supplied proof hashes.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts final_packet_verifier_rejects_abort_plan_built_from_synthetic_source_proofs -- --nocapture` passed: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts abort_plan_ -- --nocapture`: 29 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts final_packet_verifier -- --nocapture`: 32 passed, 0 failed.
+- `cargo test --test bolt_v3_tiny_canary_preconditions operator_approval_envelope -- --nocapture`: 8 passed, 0 failed.
+- `cargo test --test bolt_v3_tiny_canary_operator phase8_operator_envelope -- --nocapture`: 8 passed, 0 failed.
+- `cargo test --test bolt_v3_cli abort_plan -- --nocapture`: 1 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `git diff --check`: passed.
+
+Abort-plan artifacts now distinguish collector-derived evidence from caller-supplied proof hashes. `write_abort_plan_artifact_from_source_collectors` writes `source_collector_derived = true` plus the bounded strategy and submit-admission source hashes, and final-packet verification requires those hashes to match the source compiled into the current binary. Source-proof and source-bundle writers remain usable for local tests and diagnostics, but their artifacts cannot satisfy final-packet readiness. This is non-live local artifact validation only. No AWS, SSM, external network, no-submit, venue connection, order submit/cancel, `config/live.local.toml` mutation, or live trading side effect was run.
+
 ## T011/T012 Runtime Strategy-Input JSONL Binding Evidence
 
 - RED: `cargo test --test bolt_v3_operator_artifacts final_packet_verifier_rejects_non_runtime_decision_evidence_jsonl_for_strategy_input -- --nocapture` failed because the final-packet verifier accepted a non-runtime `decision-evidence.jsonl` path and returned a successful verification summary instead of rejecting the packet.

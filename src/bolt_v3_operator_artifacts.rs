@@ -1814,6 +1814,23 @@ pub fn write_abort_plan_artifact_from_source_collectors(
         submit_admission_source_path,
         max_source_bytes,
     )?;
+    let strategy_source_bytes =
+        read_file_bounded(strategy_source_path, max_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceRead {
+                path: strategy_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let submit_admission_source_bytes =
+        read_file_bounded(submit_admission_source_path, max_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceRead {
+                path: submit_admission_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let strategy_source_sha256 = hex::encode(Sha256::digest(&strategy_source_bytes));
+    let submit_admission_source_sha256 =
+        hex::encode(Sha256::digest(&submit_admission_source_bytes));
     let proofs = OwnedPhase8AbortPlanSourceProofs {
         cancel_if_open_evidence_hash: cancel_if_open.cancel_if_open_evidence_hash,
         nt_accepted_venue_pending_abort_evidence_hash: venue_pending
@@ -1823,12 +1840,18 @@ pub fn write_abort_plan_artifact_from_source_collectors(
             .network_partition_during_submit_abort_evidence_hash,
         panic_gate_trip_abort_evidence_hash: panic_gate.panic_gate_trip_abort_evidence_hash,
     };
-    write_abort_plan_artifact_from_source_proofs(
-        loaded,
-        strategy_instance_id,
-        proofs.as_source_proofs(),
-        path,
-    )
+    let financial_envelope =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    let artifact =
+        Phase8AbortPlanEvidenceFile::from_financial_envelope_and_collector_source_proofs(
+            &financial_envelope,
+            proofs.as_source_proofs(),
+            &strategy_source_sha256,
+            &submit_admission_source_sha256,
+        )
+        .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    write_json_artifact_create_new(path, &artifact)
 }
 
 pub fn collect_abort_plan_cancel_if_open_source_proof(
@@ -6696,7 +6719,7 @@ fn verify_source_owned_static_readiness_artifacts(
         &operator_evidence.abort_plan_sha256,
     )?;
     abort_plan
-        .validate_matches_loaded(&expected_financial_envelope)
+        .validate_collector_derived_matches_loaded(&expected_financial_envelope)
         .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)
 }
 

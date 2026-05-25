@@ -4275,6 +4275,9 @@ fn write_phase8_abort_plan(path: &std::path::Path, panic_policy_missing: bool) {
     let json = serde_json::json!({
         "execution_client_id": "polymarket_main",
         "configured_target_id": "btc_updown_5m",
+        "source_collector_derived": true,
+        "strategy_source_sha256": sha256_text_for_test(include_str!("../src/strategies/binary_oracle_edge_taker.rs")),
+        "submit_admission_source_sha256": sha256_text_for_test(include_str!("../src/bolt_v3_submit_admission.rs")),
         "cancel_if_open_defined": true,
         "cancel_if_open_evidence_hash": sha256_text_for_test("cancel-if-open-proof"),
         "nt_accepted_venue_pending_abort_defined": true,

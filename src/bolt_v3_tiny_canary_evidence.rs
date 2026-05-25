@@ -1787,7 +1787,7 @@ impl Phase8OperatorApprovalEnvelope {
             loaded,
             &approved_financial.strategy_instance_id,
         )?;
-        approved.validate_matches_loaded(&loaded)
+        approved.validate_collector_derived_matches_loaded(&loaded)
     }
 
     fn validate_strategy_cancel_path_against<'a>(
@@ -3079,6 +3079,12 @@ pub struct Phase8AbortPlanSourceProofs<'a> {
 pub struct Phase8AbortPlanEvidenceFile {
     execution_client_id: String,
     configured_target_id: String,
+    #[serde(default)]
+    source_collector_derived: bool,
+    #[serde(default)]
+    strategy_source_sha256: String,
+    #[serde(default)]
+    submit_admission_source_sha256: String,
     cancel_if_open_defined: bool,
     cancel_if_open_evidence_hash: String,
     nt_accepted_venue_pending_abort_defined: bool,
@@ -3096,9 +3102,39 @@ impl Phase8AbortPlanEvidenceFile {
         loaded: &Phase8FinancialEnvelopeEvidenceFile,
         proofs: Phase8AbortPlanSourceProofs<'_>,
     ) -> Result<Self> {
+        Self::from_financial_envelope_and_source_proofs_with_provenance(
+            loaded, proofs, false, "", "",
+        )
+    }
+
+    pub fn from_financial_envelope_and_collector_source_proofs(
+        loaded: &Phase8FinancialEnvelopeEvidenceFile,
+        proofs: Phase8AbortPlanSourceProofs<'_>,
+        strategy_source_sha256: &str,
+        submit_admission_source_sha256: &str,
+    ) -> Result<Self> {
+        Self::from_financial_envelope_and_source_proofs_with_provenance(
+            loaded,
+            proofs,
+            true,
+            strategy_source_sha256,
+            submit_admission_source_sha256,
+        )
+    }
+
+    fn from_financial_envelope_and_source_proofs_with_provenance(
+        loaded: &Phase8FinancialEnvelopeEvidenceFile,
+        proofs: Phase8AbortPlanSourceProofs<'_>,
+        source_collector_derived: bool,
+        strategy_source_sha256: &str,
+        submit_admission_source_sha256: &str,
+    ) -> Result<Self> {
         let artifact = Self {
             execution_client_id: loaded.execution_client_id.clone(),
             configured_target_id: loaded.configured_target_id.clone(),
+            source_collector_derived,
+            strategy_source_sha256: strategy_source_sha256.to_string(),
+            submit_admission_source_sha256: submit_admission_source_sha256.to_string(),
             cancel_if_open_defined: proofs.cancel_if_open_defined,
             cancel_if_open_evidence_hash: proofs.cancel_if_open_evidence_hash.to_string(),
             nt_accepted_venue_pending_abort_defined: proofs.nt_accepted_venue_pending_abort_defined,
@@ -3119,6 +3155,35 @@ impl Phase8AbortPlanEvidenceFile {
         };
         artifact.validate_matches_loaded(loaded)?;
         Ok(artifact)
+    }
+
+    pub fn validate_collector_derived_matches_loaded(
+        &self,
+        loaded: &Phase8FinancialEnvelopeEvidenceFile,
+    ) -> Result<()> {
+        self.validate_matches_loaded(loaded)?;
+        if !self.source_collector_derived {
+            return Err(abort_plan_blocked(stringify!(source_collector_derived)));
+        }
+        require_abort_plan_sha256(
+            stringify!(strategy_source_sha256),
+            &self.strategy_source_sha256,
+        )?;
+        require_abort_plan_sha256(
+            stringify!(submit_admission_source_sha256),
+            &self.submit_admission_source_sha256,
+        )?;
+        if self.strategy_source_sha256 != expected_abort_plan_strategy_source_sha256() {
+            return Err(abort_plan_mismatch(stringify!(strategy_source_sha256)));
+        }
+        if self.submit_admission_source_sha256
+            != expected_abort_plan_submit_admission_source_sha256()
+        {
+            return Err(abort_plan_mismatch(stringify!(
+                submit_admission_source_sha256
+            )));
+        }
+        Ok(())
     }
 
     pub fn validate_matches_loaded(
@@ -3192,6 +3257,14 @@ fn require_abort_plan_sha256(field: &'static str, value: &str) -> Result<()> {
 
 fn abort_plan_mismatch(field: &'static str) -> anyhow::Error {
     anyhow!("phase8 abort plan `{field}` does not match loaded TOML")
+}
+
+fn expected_abort_plan_strategy_source_sha256() -> String {
+    sha256_text(include_str!("strategies/binary_oracle_edge_taker.rs"))
+}
+
+fn expected_abort_plan_submit_admission_source_sha256() -> String {
+    sha256_text(include_str!("bolt_v3_submit_admission.rs"))
 }
 
 fn abort_plan_blocked(field: &'static str) -> anyhow::Error {

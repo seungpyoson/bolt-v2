@@ -70,6 +70,7 @@
 - [x] T032 [US4] Implement panic-gate and service-policy collector in `src/bolt_v3_operator_artifacts.rs`.
 - [x] T033 [US4] Bind all T127 collector outputs into source-owned abort-plan artifact generation and CLI wiring; final `config/live.local.toml` `abort_plan_path`/`abort_plan_sha256` binding remains T037.
 - [x] T034 [US4] Run focused T127 tests plus runtime-literal verification and record evidence in `specs/024-production-trade-readiness/evidence.md`.
+- [x] T034A [US4] Add TDD repair proving final-packet verification rejects abort-plan artifacts built from synthetic/caller-supplied proof hashes instead of collector-derived source proofs.
 
 ## Phase 6: User Story 5 - Final Packet
 

@@ -316,6 +316,7 @@ fn abort_plan_writer_emits_config_bound_artifact_from_source_proofs() {
             .and_then(|value| value.as_str())
             .expect("fixture target should have configured_target_id")
     );
+    assert_eq!(json["source_collector_derived"], false);
     assert_eq!(json["cancel_if_open_defined"], true);
     assert_eq!(json["nt_accepted_venue_pending_abort_defined"], true);
     assert_eq!(json["partial_fill_abort_defined"], true);
@@ -402,6 +403,15 @@ fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
 
     let json: serde_json::Value =
         serde_json::from_slice(&artifact_bytes).expect("abort plan should be JSON");
+    assert_eq!(json["source_collector_derived"], true);
+    assert_eq!(
+        json["strategy_source_sha256"],
+        sha256_file(&strategy_source_path)
+    );
+    assert_eq!(
+        json["submit_admission_source_sha256"],
+        sha256_file(&submit_admission_source_path)
+    );
     assert_eq!(json["cancel_if_open_defined"], true);
     assert_eq!(json["nt_accepted_venue_pending_abort_defined"], true);
     assert_eq!(json["partial_fill_abort_defined"], true);
@@ -4403,6 +4413,24 @@ fn final_packet_verifier_rejects_hash_only_t126_t127_static_artifacts() {
     assert!(
         error.to_string().contains("pre_run_state_path"),
         "T126 source-artifact failure should name pre_run_state_path without relying on raw paths: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_abort_plan_built_from_synthetic_source_proofs() {
+    let fixture = assembled_final_packet_fixture_with_readiness_artifact_binding(
+        ReadinessStaticArtifactBinding::SyntheticAbortPlanProofs,
+    );
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("final verifier must reject abort plan built from synthetic proof hashes");
+
+    assert!(
+        error.to_string().contains("abort plan"),
+        "synthetic abort-plan proof rejection should identify abort plan evidence: {error}"
     );
 }
 
@@ -8554,6 +8582,7 @@ enum MarketSelectionSourceBinding {
 #[derive(Clone, Copy)]
 enum ReadinessStaticArtifactBinding {
     SourceOwnedT126T127,
+    SyntheticAbortPlanProofs,
     HashOnlyFixtureMarkers,
 }
 
@@ -8639,15 +8668,22 @@ where
         .to_string();
     let mut refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
     write_valid_financial_static_artifact_for_test(&loaded, &mut operator_evidence, &mut refs);
-    if matches!(
-        readiness_artifact_binding,
-        ReadinessStaticArtifactBinding::SourceOwnedT126T127
-    ) {
-        write_source_owned_readiness_static_artifacts_for_test(
-            &loaded,
-            &mut operator_evidence,
-            &mut refs,
-        );
+    match readiness_artifact_binding {
+        ReadinessStaticArtifactBinding::SourceOwnedT126T127 => {
+            write_source_owned_readiness_static_artifacts_for_test(
+                &loaded,
+                &mut operator_evidence,
+                &mut refs,
+            );
+        }
+        ReadinessStaticArtifactBinding::SyntheticAbortPlanProofs => {
+            write_readiness_static_artifacts_with_synthetic_abort_plan_for_test(
+                &loaded,
+                &mut operator_evidence,
+                &mut refs,
+            );
+        }
+        ReadinessStaticArtifactBinding::HashOnlyFixtureMarkers => {}
     }
     write_replayable_strategy_input_artifacts_for_test(
         &loaded,
@@ -8850,6 +8886,24 @@ fn write_source_owned_readiness_static_artifacts_for_test(
     operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
     refs: &mut [serde_json::Value],
 ) {
+    write_source_owned_pre_run_static_artifact_for_test(loaded, operator_evidence, refs);
+    write_collector_derived_abort_plan_static_artifact_for_test(loaded, operator_evidence, refs);
+}
+
+fn write_readiness_static_artifacts_with_synthetic_abort_plan_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+) {
+    write_source_owned_pre_run_static_artifact_for_test(loaded, operator_evidence, refs);
+    write_synthetic_abort_plan_static_artifact_for_test(loaded, operator_evidence, refs);
+}
+
+fn write_source_owned_pre_run_static_artifact_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+) {
     let strategy_instance_id = loaded
         .strategies
         .first()
@@ -8871,7 +8925,20 @@ fn write_source_owned_readiness_static_artifacts_for_test(
         .expect("source-owned pre-run state artifact should write");
     operator_evidence.pre_run_state_sha256 = written_pre_run.sha256.clone();
     replace_static_artifact_ref_sha256(refs, "pre-run-state", &written_pre_run.sha256);
+}
 
+fn write_synthetic_abort_plan_static_artifact_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+) {
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
     let abort_plan_path = std::path::PathBuf::from(&operator_evidence.abort_plan_path);
     std::fs::remove_file(&abort_plan_path).expect("initial abort plan marker should be removable");
     let abort_hashes = TestAbortPlanProofHashes::new();
@@ -8883,6 +8950,34 @@ fn write_source_owned_readiness_static_artifacts_for_test(
             &abort_plan_path,
         )
         .expect("source-owned abort plan artifact should write");
+    operator_evidence.abort_plan_sha256 = written_abort.sha256.clone();
+    replace_static_artifact_ref_sha256(refs, "abort-plan", &written_abort.sha256);
+}
+
+fn write_collector_derived_abort_plan_static_artifact_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+) {
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let abort_plan_path = std::path::PathBuf::from(&operator_evidence.abort_plan_path);
+    std::fs::remove_file(&abort_plan_path).expect("initial abort plan marker should be removable");
+    let written_abort =
+        bolt_v2::bolt_v3_operator_artifacts::write_abort_plan_artifact_from_source_collectors(
+            loaded,
+            strategy_instance_id,
+            &repo_path("src/strategies/binary_oracle_edge_taker.rs"),
+            &repo_path("src/bolt_v3_submit_admission.rs"),
+            1_000_000,
+            &abort_plan_path,
+        )
+        .expect("source-collector abort plan artifact should write");
     operator_evidence.abort_plan_sha256 = written_abort.sha256.clone();
     replace_static_artifact_ref_sha256(refs, "abort-plan", &written_abort.sha256);
 }

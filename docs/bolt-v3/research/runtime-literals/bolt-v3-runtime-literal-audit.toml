@@ -7527,3 +7527,19 @@ literal = '''"instrument_source"'''
 context = '''const ENTRY_DECISION_INSTRUMENT_SOURCE_OUTPUT_FIELD: &str = "instrument_source";'''
 classification = "entry_decision_source_input_cli_output_schema"
 reason = "This is the redacted CLI output object field for the written instrument source artifact."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"strategies/binary_oracle_edge_taker.rs"'''
+context = '''sha256_text(include_str!("strategies/binary_oracle_edge_taker.rs"))'''
+classification = "abort_plan_source_provenance_anchor"
+reason = "This compile-time source include anchors final abort-plan provenance to the exact strategy source compiled into the binary; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3_submit_admission.rs"'''
+context = '''sha256_text(include_str!("bolt_v3_submit_admission.rs"))'''
+classification = "abort_plan_source_provenance_anchor"
+reason = "This compile-time source include anchors final abort-plan provenance to the exact submit-admission source compiled into the binary; it is not an operator runtime value."

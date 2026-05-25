@@ -168,3 +168,44 @@ Non-blocking Round 6 dispositions:
 - `provider_provenance_sha256` inherits the existing lowercase hex SHA-256 and UTF-8 canonical JSON convention from the session hash canonicalization section.
 - `|` rejection is already normative in the selected-market fail-closed contract and is also required by T036H4 RED coverage.
 - Provider-kind closure is intentional; adding a new external provider kind requires a contract update before implementation can depend on it.
+
+## Contract Review Round 7
+
+After PR #487 was merged and PR #480 was final-tree synced to NT 0.58, the cleaned provider-agnostic T036H0D/T036H0E/T036H0F packet was sent as a custom-file adversarial review for the current readiness cleanup scope:
+
+- `specs/024-production-trade-readiness/tasks.md`
+- `specs/024-production-trade-readiness/gate-dataflow-contract.md`
+- `specs/024-production-trade-readiness/spec.md`
+- `specs/024-production-trade-readiness/plan.md`
+- `specs/024-production-trade-readiness/evidence.md`
+- `Cargo.toml`
+- `Cargo.lock`
+
+Review jobs:
+
+- Claude Code job `e321f803-da4e-4970-96fe-a29a3b08694c`: APPROVE, with substantive non-blocking findings.
+- Gemini job `00fc1acd-41d4-4a40-b591-563449324455`: APPROVE.
+- Grok job `job_13b17658-fe5f-4b14-9508-f8089c0f4e22`: APPROVE.
+- DeepSeek job `job_f5b951ae-d74d-496f-886f-a33c96ffa217`: APPROVE.
+- GLM job `job_53401a4d-813c-46bf-be30-df18fd6b9f2a`: APPROVE.
+
+Accepted Round 7 findings:
+
+- `selected_market_key` derivation was still underspecified. The contract needed a concrete canonicalization and hash algorithm before RED tests depend on it.
+- `market_metadata` was listed as a provider capability but the contract did not explicitly say it is not a readiness `GateRole` and does not create a `target.gate_subscriptions.market_metadata` join path.
+- `instrument_ids` needed to say whether it represents the complete market instrument/outcome set or only the strategy-traded subset.
+
+Revision applied after Round 7:
+
+- `gate-dataflow-contract.md` now defines `selected_market_key` as lowercase hex SHA-256 over canonical selected-market identity JSON.
+- `gate-dataflow-contract.md` now excludes `selected_at_ms` from `selected_market_key` and keeps it in the gate session hash.
+- `gate-dataflow-contract.md` now requires `instrument_ids` to be the market-complete, lexicographically sorted instrument/outcome id set; strategy-specific traded subsets must live outside selected-market identity.
+- `gate-dataflow-contract.md` now states that `market_metadata` is a provider capability used to build or validate selected-market identity and `metadata_provenance_sha256`; it is not a `GateRole`, does not create a target subscription, and cannot satisfy entry readiness by itself.
+- `tasks.md` T036H2 and T036H4 now require RED coverage for these clarifications.
+- `Cargo.toml` now keeps `nautilus-portfolio` grouped with the other Nautilus dependencies.
+
+Non-blocking Round 7 dispositions:
+
+- The exact `alloy-primitives = "=1.6.0"` pin remains intentional because the T036H0E sync resolved it to NT 0.58's required alloy line and evidence records that reason.
+- Existing test/dev dependency cleanup is outside this T036H0F contract scope unless it becomes build-affecting.
+- Concrete crypto-looking example strings remain examples only; the normative selected-market identity and task tests now require provider-neutral canonicalization.

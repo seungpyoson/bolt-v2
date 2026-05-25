@@ -107,6 +107,7 @@ Rules:
 
 - `provider_kind` is registry-backed. The base contract must support known adapters such as `chainlink_data_streams`, `pyth`, `exchange_index`, `venue_native`, `hyperliquid_hip4`, `deribit_index`, `outcome_oracle`, and test-only `test_double` without making any one provider canonical.
 - `capabilities` contains one or more semantic evidence classes such as `resolution_value`, `reference_value`, or `market_metadata`.
+- `market_metadata` is a provider capability used to build or validate selected-market identity and `metadata_provenance_sha256`. It is not a `GateRole`, does not create a `[target.gate_subscriptions.market_metadata]` block, and does not satisfy entry readiness by itself unless a future archetype adds an explicit code-owned role.
 - `target.gate_subscriptions.<role>` role is an archetype-declared semantic role such as `resolution` or `decision_reference`, not a provider or price-specific role.
 - `value_kind` is the normalized value shape expected by the role, for example `price`, `index`, `outcome`, `metadata`, or `none`.
 - Sports, politics, entertainment, crypto, and traditional market examples must enter through the same role/value-kind/provider-kind machinery. They do not get venue-specific strategy runtime fields.
@@ -157,6 +158,7 @@ Fields:
 Fail closed:
 
 - Required role has no subscription.
+- Subscription role is a provider capability such as `market_metadata` rather than a code-owned `GateRole`.
 - Subscription resolves to exactly one static provider when selected market requirements demand a different provider in a later rotation.
 - `allow_no_resolution` is true for a strategy or market class that requires resolution evidence.
 - Mapping is missing, ambiguous, or mismatched for the selected market identity, provider kind, or value kind.
@@ -212,7 +214,7 @@ Fields:
 - `venue`
 - `family_key`
 - `market_id`
-- `instrument_ids`: zero or more venue instrument/outcome ids.
+- `instrument_ids`: the market-complete, lexicographically sorted set of venue instrument/outcome ids that define the selected market. Strategy-specific traded subsets must be represented outside selected-market identity.
 - `market_class`
 - `resolution_kind`
 - `resolution_identity`
@@ -220,6 +222,14 @@ Fields:
 - `metadata_provenance_sha256`: hash of source metadata used to build the selected-market identity.
 - `selected_market_key`: canonical key derived from the normalized selected-market identity, not from venue-specific Polymarket-only fields.
 - `selected_at_ms`: collector timestamp captured when the market was selected
+
+Selected-market key canonicalization:
+
+- `selected_market_key` is `hex(sha256(<canonical selected-market identity JSON bytes>))`.
+- Canonical selected-market identity JSON uses the same UTF-8 canonical JSON rules as `session_hash`: sorted object keys, arrays in declared order, and no insignificant whitespace.
+- The hash input object contains `configured_target_id`, `venue`, `family_key`, `market_id`, sorted `instrument_ids`, `market_class`, `resolution_kind`, `resolution_identity`, `value_kind`, and `metadata_provenance_sha256`.
+- `selected_at_ms` is intentionally excluded from `selected_market_key`; it belongs in the gate session hash so the same market identity can be selected at different times without becoming a different market.
+- `metadata_provenance_sha256` is `hex(sha256(<canonical market metadata provenance JSON bytes>))`. For venue-native/HIP-4/Deribit/outcome-oracle metadata, the provenance JSON must identify provider kind, venue or source family, source artifact hash, and any source-native identity scope used to derive the selected-market identity.
 
 Canonical shape:
 
@@ -243,6 +253,8 @@ struct SelectedMarketRequirement {
 Fail closed:
 
 - Selected market is missing required identity.
+- `instrument_ids` is only the strategy-traded subset when the market has a larger complete instrument/outcome set.
+- `selected_market_key` is not derived from the canonical selected-market identity JSON algorithm above.
 - Venue metadata lacks resolution identity and no config-owned mapping resolves it.
 - Config mapping resolves to a provider identity that does not match the selected market.
 - Selected-market identity requires a venue-specific field not represented in the normalized identity/provenance payload.

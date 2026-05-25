@@ -2001,8 +2001,6 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             pre_run_state_sha256: "d".repeat(64),
-            egress_identity_observed_path: None,
-            approved_egress_identity_sha256: None,
             abort_plan_path: tempdir
                 .path()
                 .join("abort-plan.json")
@@ -2208,8 +2206,6 @@ mod tests {
             financial_envelope_sha256,
             pre_run_state_path,
             pre_run_state_sha256,
-            egress_identity_observed_path: None,
-            approved_egress_identity_sha256: None,
             abort_plan_path,
             abort_plan_sha256,
             canary_evidence_path: canary_evidence_path.clone(),

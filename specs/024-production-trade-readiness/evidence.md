@@ -598,6 +598,16 @@ This was an approved AWS/SSM operational side effect limited to public egress id
 
 T036G is open. The final packet cannot be assembled honestly until the approved configured account can prove zero open positions, or `config/live.local.toml` is switched to an operator-approved account that proves flat through the same materializer. No submit/cancel/transfer/no-submit action was run by this check.
 
+## T041 Exact-Head CI Compile Repair
+
+- PR #480 CI on head `41cf8be09b01afa56887df072f49d7af95f9a2ef` failed in `nextest archive` while running `cargo test --no-run --message-format json-render-diagnostics --locked`.
+- Failed job log root cause: `src/bolt_v3_live_canary_gate.rs:2004`, `src/bolt_v3_live_canary_gate.rs:2005`, `src/bolt_v3_live_canary_gate.rs:2211`, and `src/bolt_v3_live_canary_gate.rs:2212` still set removed `LiveCanaryOperatorEvidenceBlock` fields `egress_identity_observed_path` and `approved_egress_identity_sha256` in in-crate test helpers.
+- Repair: removed those stale test-helper field initializers only. Runtime ownership remains unchanged: pre-run egress probe inputs belong to top-level `[live_canary]`, not `[live_canary.operator_evidence]`.
+- Local CI-equivalent reproduction after repair: `cargo test --no-run --locked` passed and built all test binaries.
+- `cargo fmt --check` passed after the repair; `git diff --check` passed after the code and evidence update.
+
+T041 is still open until the repaired head is pushed and GitHub CI is green on the exact pushed head.
+
 ## T036 Abort-Plan Artifact Materialization
 
 - Command: `/Users/spson/.cache/rust-verification/bolt-v2/target/debug/bolt-v2 operator-artifacts generate-abort-plan-from-source-collectors --config config/live.local.toml --strategy-instance-id bitcoin_updown_main --strategy-source src/strategies/binary_oracle_edge_taker.rs --submit-admission-source src/bolt_v3_submit_admission.rs --max-source-bytes 599315 --output /private/tmp/bolt-v2-trade-readiness-4e583417/final-artifacts/abort-plan.json`

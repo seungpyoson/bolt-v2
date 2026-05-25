@@ -106,3 +106,26 @@ Revision applied after Round 3:
 - `tasks.md` now expands T036H1-T036H12A with RED coverage for config, target subscription, archetype, selected market, provider evidence, entry join, lifecycle freshness, decision evidence, tiny canary, live canary, CLI, registration/runtime/replay, and final-packet binding.
 - `spec.md` now adds FR-017 and SC-010 for live-canary/final-packet readiness gate-session binding.
 - `plan.md` now includes `src/bolt_v3_live_node.rs` and names live-canary/final-packet consumption in the gate model.
+
+## Contract Review Round 4
+
+The revised contract packet was committed as `af4c927a41651892bcc0f869b863fe90d71f2863` and sent for exact-head contract review.
+
+- Claude Code job `6ce1dc6b-a0af-41ed-ad9c-ec764ecb7f51`: APPROVE.
+- Gemini job `e00b813d-d41a-4e86-ae54-78435a14a751`: APPROVE.
+- Grok job `job_e22d14e7-2265-44dd-bc50-fbefd3471477`: REQUEST_CHANGES.
+- DeepSeek job `job_49805002-e88d-47b2-810a-27dda275ee1f`: APPROVE.
+- GLM job `job_7ec64c78-a336-4c4a-a16e-cf428b94900a`: APPROVE.
+
+Accepted Grok Round 4 findings:
+
+- `session_hash` construction must specify hash algorithm, canonical serialization, field order, no-resolution representation, provenance hashing, and artifact ordering before RED tests depend on it.
+- Archetype gate requirements need a positive exposure mechanism, not only a negative prohibition on provider-specific runtime fields.
+- The RED slice must explicitly cover the live-node build/registration path so a later live-canary gate cannot backfill missing registration evidence.
+
+Revision applied after Round 4:
+
+- `gate-dataflow-contract.md` now pins `session_hash` to lowercase hex SHA-256 over canonical JSON with sorted object keys, sorted role/provenance/artifact inputs, and explicit `NoResolution` hash material.
+- `gate-dataflow-contract.md` now defines binary-oracle positive gate requirement exposure through `binary_oracle_edge_taker::gate_requirements() -> Vec<ArchetypeGateRequirement>`.
+- `gate-dataflow-contract.md` now defines canonical enum/value/provenance/helper shapes, selected-market key delimiter rejection, `test_double` test-only behavior, provider id/kind coexistence semantics, and provider collector positive binding behavior.
+- `tasks.md` now adds T036H12B for live-node registration wiring and expands T036H1, T036H3, and T036H11 for test-double rejection, archetype requirement exposure, and provider collector positive CLI coverage.

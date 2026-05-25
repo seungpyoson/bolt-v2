@@ -26,6 +26,9 @@ The root problem is not only config validation. The current provider-specific va
 
 ## Target Objects
 
+This section defines the exact object and ownership contract that T036H RED tests
+must pin before implementation starts.
+
 ## Canonical Schema
 
 The contract below is normative for T036H. Field names in RED tests must match
@@ -90,10 +93,11 @@ Rules:
 - `provider_kind` is one of `chainlink_data_streams`, `pyth`, `binance_index`, `venue_native`, or `test_double`.
 - `capabilities` contains one or more of `resolution_price`, `reference_price`.
 - `target.gate_subscriptions.<role>` role is one of `resolution_price` or `reference_price`.
-- A subscription may declare `allowed_provider_ids` or `allowed_provider_kinds`. It may not declare both unless `allowed_provider_ids` is a strict subset used to pin the provider list.
+- A subscription may declare `allowed_provider_ids`, `allowed_provider_kinds`, or both. When both are present, every listed provider id must exist and its provider kind must be in `allowed_provider_kinds`; the effective allowed set is the listed provider ids. It is invalid for `allowed_provider_ids` to name a provider whose kind is not in `allowed_provider_kinds`.
 - If more than one provider/evidence item satisfies the same required role, the join must fail closed unless `provider_preference` gives a deterministic first matching provider id.
 - Provider-specific fields are valid only under `[gate_providers.<id>.<provider_kind>]`.
 - Strategy `[parameters.runtime]` may not contain provider ids, feed ids, report schema versions, decimal scales, provider endpoints, stale windows, or source strings.
+- `test_double` is valid only in test fixtures and unit/integration test harnesses. Live/local operator TOML must reject `test_double` providers.
 
 ### Gate Provider Config
 
@@ -157,6 +161,22 @@ struct ArchetypeGateRequirement {
 
 - No provider id, feed id, report schema version, decimal scale, endpoint, credential, or stale window.
 
+Positive exposure mechanism:
+
+- The binary-oracle archetype exposes static code-owned requirements through a function equivalent to `binary_oracle_edge_taker::gate_requirements() -> Vec<ArchetypeGateRequirement>`.
+- The strategy TOML does not declare these archetype requirements. TOML selects the target subscription that may satisfy them.
+- For binary oracle entry readiness, the positive declaration is:
+
+```rust
+vec![ArchetypeGateRequirement {
+    role: GateRole::ResolutionPrice,
+    required: true,
+    allow_no_resolution: false,
+}]
+```
+
+- A no-resolution-compatible archetype may return `allow_no_resolution: true`; a spot or perpetual strategy with no resolution gate returns no `resolution_price` requirement.
+
 Fail closed:
 
 - Legacy provider-specific runtime fields appear under `[parameters.runtime]`.
@@ -204,6 +224,7 @@ Fail closed:
 - Venue metadata lacks resolution identity and no config-owned mapping resolves it.
 - Config mapping resolves to a provider identity that does not match the selected market.
 - Evidence from a previous selected market is reused after rotation.
+- Any selected-market key component contains `|`.
 
 ### Gate Evidence
 
@@ -225,6 +246,68 @@ Fields:
 Canonical shape:
 
 ```rust
+enum GateRole {
+    ResolutionPrice,
+    ReferencePrice,
+}
+
+enum GateProviderKind {
+    ChainlinkDataStreams,
+    Pyth,
+    BinanceIndex,
+    VenueNative,
+    TestDouble,
+}
+
+enum MarketClass {
+    BinaryOption,
+    OneTouch,
+    Spot,
+    Perpetual,
+}
+
+enum ResolutionKind {
+    ChainlinkDataStreams,
+    Pyth,
+    BinanceIndex,
+    VenueNative,
+    NoResolution,
+}
+
+struct GateValue {
+    decimal: String,
+    scale: u32,
+}
+
+struct ArtifactRef {
+    path: String,
+    sha256: String,
+}
+
+enum ProviderProvenance {
+    ChainlinkDataStreams {
+        feed_id: String,
+        report_schema_version: u64,
+        report_decimal_scale: u32,
+        report_sha256: String,
+    },
+    Pyth {
+        feed_id: String,
+        price_message_sha256: String,
+    },
+    BinanceIndex {
+        symbol: String,
+        response_sha256: String,
+    },
+    VenueNative {
+        venue: String,
+        source_sha256: String,
+    },
+    TestDouble {
+        fixture_sha256: String,
+    },
+}
+
 struct GateEvidence {
     role: GateRole,
     provider_id: String,
@@ -290,11 +373,50 @@ Join algorithm:
 
 1. For each required `ArchetypeGateRequirement`, load the matching `target.gate_subscriptions.<role>`.
 2. Verify the selected market's `market_class`, `resolution_kind`, and `resolution_identity` are observed from venue metadata or resolved by exactly one `market_mappings` entry.
-3. If the selected market has `resolution_kind = "no_resolution"`, satisfy only when the archetype and target subscription both allow no-resolution. Otherwise no provider evidence is required.
+3. If the selected market has `resolution_kind = "no_resolution"` and the archetype plus target subscription both allow no-resolution, satisfy the role with `GateSatisfaction::NoResolution`. If either side does not allow no-resolution, fail closed. No provider evidence is required only for this explicit no-resolution satisfaction case.
 4. Filter provider evidence by role, selected-market key, provider capability, provider id/kind subscription, provider provenance validity, and freshness where `collector_observed_at_ms <= created_at_ms <= fresh_until_ms`.
 5. If no evidence remains, fail closed.
 6. If multiple evidence items remain, select by `provider_preference`; if no deterministic first match exists, fail closed.
 7. Build `session_hash` from the root config hash, strategy instance id, configured target id, selected-market key, selected-at timestamp, selected evidence artifact hashes, and normalized values.
+
+Session hash canonicalization:
+
+- `session_hash` is lowercase hex SHA-256 over UTF-8 canonical JSON.
+- Canonical JSON uses lexicographically sorted object keys, arrays in the declared order below, decimal numbers rendered as strings when they are runtime values, and no insignificant whitespace.
+- The hash input object is:
+
+```json
+{
+  "schema_version": 1,
+  "strategy_instance_id": "<strategy_instance_id>",
+  "configured_target_id": "<configured_target_id>",
+  "root_config_sha256": "<sha256>",
+  "selected_market_key": "<selected_market_key>",
+  "selected_at_ms": "<selected_at_ms>",
+  "created_at_ms": "<created_at_ms>",
+  "satisfied_roles": [
+    {
+      "role": "resolution_price",
+      "satisfaction_kind": "evidence",
+      "provider_id": "<provider_id>",
+      "provider_kind": "<provider_kind>",
+      "normalized_value_decimal": "<decimal>",
+      "normalized_value_scale": "<scale>",
+      "artifact_sha256s": ["<sha256>"],
+      "provider_provenance_sha256": "<sha256>"
+    },
+    {
+      "role": "resolution_price",
+      "satisfaction_kind": "no_resolution",
+      "resolution_identity": "none",
+      "selected_market_key": "<selected_market_key>"
+    }
+  ]
+}
+```
+
+- `satisfied_roles` is sorted by role name. `artifact_sha256s` is sorted by artifact path before hashing. `provider_provenance_sha256` is SHA-256 of the canonical JSON representation of the provider provenance payload.
+- A session containing `GateSatisfaction::NoResolution` must include the no-resolution object above so no-resolution sessions cannot collide with evidence-backed sessions or with each other across markets.
 
 Fail closed:
 
@@ -315,7 +437,7 @@ Generic CLI artifact commands must accept provider-neutral gate session argument
 - `--gate-session <path>`
 - `--expected-gate-session-sha256 <sha256>`
 
-Provider-specific collection commands may expose provider-specific arguments only under provider collector commands, for example `collect-gate-evidence --provider-id <id> --selected-market-requirement <path> --output <path>`. Generic entry-decision, final-packet, live-canary, and tiny-canary commands must reject `--price-report`, `--expected-price-report-sha256`, and `--price-to-beat-source`.
+Provider-specific collection commands may expose provider-specific arguments only under provider collector commands, for example `collect-gate-evidence --provider-id <id> --selected-market-requirement <path> --output <path>`. Generic entry-decision, final-packet, live-canary, and tiny-canary commands must reject `--price-report`, `--expected-price-report-sha256`, and `--price-to-beat-source`. Provider collector commands must positively accept provider-specific inputs only after binding them to a configured `provider_id` and selected-market requirement.
 
 Strategy registration must receive an `EntryReadinessGateSession` or a path/hash pair that has already been verified into that session. It must not receive provider config fields directly.
 

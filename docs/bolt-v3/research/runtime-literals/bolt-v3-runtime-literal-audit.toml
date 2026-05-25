@@ -4940,7 +4940,7 @@ reason = "This is a stable error/proof field label for venue account open-order 
 path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
 kind = "string"
 literal = '''"open_position_count"'''
-context = '''let open_position_count = usize_to_u64("open_position_count", positions.len())?;'''
+context = '''let open_position_count = usize_to_u64("open_position_count", reconciled_position_count)?;'''
 classification = "operator_artifact_field_name"
 reason = "This is a stable error/proof field label for venue account position count conversion, not an operator runtime value."
 

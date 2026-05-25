@@ -4,7 +4,7 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     path::Path,
-    process::Command,
+    process::{Command, Output},
     sync::mpsc,
     thread,
     time::Duration,
@@ -14,6 +14,7 @@ use bolt_v2::{
     bolt_v3_config::{LiveCanaryOperatorEvidenceBlock, load_bolt_v3_config},
     bolt_v3_operator_artifacts::compute_operator_approval_envelope_sha256,
 };
+use nautilus_polymarket::common::consts::DUST_POSITION_THRESHOLD;
 use sha2::{Digest, Sha256};
 
 mod support;
@@ -1323,6 +1324,130 @@ fn bolt_v3_cli_collects_venue_account_state_source_from_configured_account_queri
 }
 
 #[test]
+fn bolt_v3_cli_collects_venue_account_state_source_ignores_zero_and_dust_positions() {
+    let temp = tempdir().expect("tempdir should create");
+    let output_path = temp.path().join("venue-account-state-source.json");
+    let output = run_venue_account_state_source_fixture(
+        format!(
+            r#"[
+                {{
+                    "asset": "zero-token",
+                    "conditionId": "0xzero-condition",
+                    "size": 0.0,
+                    "avgPrice": null
+                }},
+                {{
+                    "asset": "dust-token",
+                    "conditionId": "0xdust-condition",
+                    "size": {},
+                    "avgPrice": null
+                }}
+            ]"#,
+            DUST_POSITION_THRESHOLD / 2.0
+        ),
+        &output_path,
+    );
+
+    assert!(
+        output.status.success(),
+        "expected zero and dust positions to be ignored, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(
+        &fs::read(&output_path).expect("venue account state source should write"),
+    )
+    .expect("venue account state source should be JSON");
+    assert_eq!(json["open_order_count"], 0);
+    assert_eq!(json["open_position_count"], 0);
+}
+
+#[test]
+fn bolt_v3_cli_collects_venue_account_state_source_rejects_active_position() {
+    let temp = tempdir().expect("tempdir should create");
+    let output_path = temp.path().join("venue-account-state-source.json");
+    let output = run_venue_account_state_source_fixture(
+        format!(
+            r#"[
+                {{
+                    "asset": "active-token",
+                    "conditionId": "0xactive-condition",
+                    "size": {},
+                    "avgPrice": null
+                }}
+            ]"#,
+            DUST_POSITION_THRESHOLD
+        ),
+        &output_path,
+    );
+
+    assert!(
+        !output.status.success(),
+        "expected active position to block venue account source collection"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("preexisting_position_absent"),
+        "expected active position failure to identify preexisting_position_absent, got: {stderr}"
+    );
+}
+
+fn run_venue_account_state_source_fixture(
+    data_api_positions_body: impl Into<String>,
+    output_path: &Path,
+) -> Output {
+    let (clob_url, _clob_request_rx) = spawn_one_shot_clob_open_orders_server();
+    let (data_api_url, _data_api_request_rx) =
+        spawn_one_shot_data_api_positions_server_with_body(data_api_positions_body);
+    let (ssm_url, _ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
+        (
+            "/bolt/polymarket_main/private_key",
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+        ),
+        ("/bolt/polymarket_main/api_key", "poly-api-key"),
+        ("/bolt/polymarket_main/api_secret", "YWJj"),
+        ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/binance_reference/api_key", "binance-api-key"),
+        (
+            "/bolt/binance_reference/api_secret",
+            "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
+        ),
+    ]));
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!(
+            "{}\n{}",
+            root.replace(
+                "base_url_http = \"https://clob.polymarket.com\"",
+                &format!("base_url_http = \"{clob_url}\""),
+            )
+            .replace(
+                "base_url_data_api = \"https://data-api.polymarket.com\"",
+                &format!("base_url_data_api = \"{data_api_url}\""),
+            ),
+            live_canary_toml_without_operator_evidence()
+        )
+    });
+
+    Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-pre-run-venue-account-state-source",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+            "--output",
+            output_path.to_str().expect("output path should be utf-8"),
+        ])
+        .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
+        .env("AWS_ACCESS_KEY_ID", "fake-access-key")
+        .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
+        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_MAX_ATTEMPTS", "1")
+        .output()
+        .expect("bolt-v3 venue account source collection should run")
+}
+
+#[test]
 fn bolt_v3_cli_exposes_venue_account_state_source_from_configured_account_queries() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
@@ -1607,8 +1732,15 @@ fn spawn_one_shot_clob_open_orders_server() -> (String, mpsc::Receiver<String>) 
 }
 
 fn spawn_one_shot_data_api_positions_server() -> (String, mpsc::Receiver<String>) {
+    spawn_one_shot_data_api_positions_server_with_body("[]")
+}
+
+fn spawn_one_shot_data_api_positions_server_with_body(
+    body: impl Into<String>,
+) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test Data API server should bind");
     let address = listener.local_addr().expect("test Data API server address");
+    let body = body.into();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let (mut stream, _) = listener
@@ -1617,7 +1749,6 @@ fn spawn_one_shot_data_api_positions_server() -> (String, mpsc::Receiver<String>
         let request = read_test_http_request(&mut stream);
         tx.send(request)
             .expect("test Data API request should report to caller");
-        let body = "[]";
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),

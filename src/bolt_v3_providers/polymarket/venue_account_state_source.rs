@@ -1,5 +1,5 @@
 use nautilus_polymarket::{
-    common::credential::Secrets as PolymarketSecrets,
+    common::{consts::DUST_POSITION_THRESHOLD, credential::Secrets as PolymarketSecrets},
     http::{
         clob::PolymarketClobHttpClient, data_api::PolymarketDataApiHttpClient,
         query::GetOrdersParams,
@@ -115,7 +115,8 @@ pub async fn materialize_venue_account_state_source_from_configured_account_quer
             },
         )?;
     let open_order_count = usize_to_u64("open_order_count", open_orders.len())?;
-    let open_position_count = usize_to_u64("open_position_count", positions.len())?;
+    let reconciled_position_count = active_position_count(&positions);
+    let open_position_count = usize_to_u64("open_position_count", reconciled_position_count)?;
     let position_summaries: Vec<DataApiPositionSummary> =
         positions.iter().map(DataApiPositionSummary::from).collect();
     let open_orders_sha256 = json_artifact_sha256(&open_orders)?;
@@ -154,6 +155,15 @@ fn usize_to_u64(field: &'static str, value: usize) -> Result<u64, BoltV3Operator
 
 fn sha256_text(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
+}
+
+fn active_position_count(
+    positions: &[nautilus_polymarket::http::models::DataApiPosition],
+) -> usize {
+    positions
+        .iter()
+        .filter(|position| position.size >= DUST_POSITION_THRESHOLD)
+        .count()
 }
 
 #[derive(Serialize)]

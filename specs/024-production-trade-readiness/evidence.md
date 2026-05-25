@@ -589,6 +589,15 @@ This was non-live local artifact/source verification except for public Chainlink
 
 This was an approved AWS/SSM operational side effect limited to public egress identity capture and a temp file write on the approved EC2/EIP runner. It did not read real AWS SSM secret values, connect to a private venue account, run no-submit, submit/cancel orders, patch `[live_canary.operator_evidence]`, or execute a trade. T036F is closed; T036 remains open until the remaining real source-owned inputs, final pre-run-state/abort/static artifacts, T037 root TOML patch, and T038 pre-run verification exist.
 
+## T036G Venue-Account Flatness Blocker
+
+- Current-head rerun after T036F at head `5113ef74e52dca0f2297a73cc0b5c9fbf71cd072`: `cargo run --bin bolt-v2 -- operator-artifacts collect-pre-run-venue-account-state-source --config config/live.local.toml --strategy-instance-id bitcoin_updown_main --output /private/tmp/bolt-v2-t036-audit-feed-b15b6152/venue-account-state-source.json`.
+- Sandbox rerun first failed only on the known Rust verification cache lock at `/Users/spson/.cache/rust-verification/bolt-v2/cache.lock`; the escalated rerun reached the production materializer and failed closed with `venue account state source field preexisting_position_absent is invalid or unproven`.
+- Code evidence: `src/bolt_v3_operator_artifacts.rs:3978` rejects nonzero materialized `open_position_count` as `preexisting_position_absent`, and `src/bolt_v3_operator_artifacts.rs:4569` rejects any source file whose `open_position_count` is nonzero.
+- Provider-source evidence: `src/bolt_v3_providers/polymarket/venue_account_state_source.rs:109` derives the count from the configured account/funder Data API positions response, then hashes account/request details and returns only counts plus snapshot hash material; the command output did not print positions, credentials, keys, or SSM values.
+
+T036G is open. The final packet cannot be assembled honestly until the approved configured account can prove zero open positions, or `config/live.local.toml` is switched to an operator-approved account that proves flat through the same materializer. No submit/cancel/transfer/no-submit action was run by this check.
+
 ## T036 Abort-Plan Artifact Materialization
 
 - Command: `/Users/spson/.cache/rust-verification/bolt-v2/target/debug/bolt-v2 operator-artifacts generate-abort-plan-from-source-collectors --config config/live.local.toml --strategy-instance-id bitcoin_updown_main --strategy-source src/strategies/binary_oracle_edge_taker.rs --submit-admission-source src/bolt_v3_submit_admission.rs --max-source-bytes 599315 --output /private/tmp/bolt-v2-trade-readiness-4e583417/final-artifacts/abort-plan.json`

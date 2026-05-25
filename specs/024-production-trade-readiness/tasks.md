@@ -98,6 +98,7 @@
 - [x] T036D [US5] Keep price-to-beat feed configuration fail-closed until `config/live.local.toml` points at an operator-approved real Chainlink feed id instead of the shipped placeholder strategy config.
 - [x] T036E [US5] Move egress-identity pre-run source inputs to top-level `[live_canary]` fields so T036 can materialize `egress-identity-source.json` before T037 patches `[live_canary.operator_evidence]`.
 - [x] T036F [US5] Capture the real EC2/EIP observed egress identity file and approved sha256 in ignored `config/live.local.toml`, then rerun `collect-pre-run-egress-identity-source` without inventing local-machine evidence.
+- [ ] T036G [US5] Resolve the current configured venue-account `preexisting_position_absent` blocker by proving the approved account is flat or switching `config/live.local.toml` to an operator-approved flat account before `pre-run-state.json` assembly.
 - [ ] T036 [US5] Assemble blocker-free `static-artifacts-manifest.json`, `approval-envelope.json`, and `operator-evidence-packet.json` from real artifacts and record paths in `specs/024-production-trade-readiness/final-packet.md`.
 - [ ] T037 [US5] Update the approved root TOML operator-evidence block in `config/live.local.toml` with final artifact paths and hashes without printing secrets.
 - [ ] T038 [US5] Run `operator-artifacts verify-final` against the exact root TOML and final packet; record command, head, hashes, and result in `specs/024-production-trade-readiness/evidence.md`.

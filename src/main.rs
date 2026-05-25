@@ -20,6 +20,7 @@ use bolt_v2::{
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_operator_evidence_json_from_artifact_paths,
         write_pre_run_clob_v2_adapter_signing_source_artifact_from_nt_signing_source,
+        write_pre_run_clob_v2_fee_behavior_source_artifact_from_nt_fee_sources,
         write_pre_run_host_clock_source_artifact_from_configured_provider_time,
         write_pre_run_state_artifact_from_source_bundle_file,
         write_pre_run_state_artifact_from_source_collectors,
@@ -239,6 +240,16 @@ enum OperatorArtifactsCommand {
         cargo_lock: PathBuf,
         #[arg(long)]
         clob_signing_source: PathBuf,
+        #[arg(long)]
+        max_source_bytes: u64,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    CollectPreRunClobV2FeeBehaviorSource {
+        #[arg(long)]
+        nt_execution_parse_source: PathBuf,
+        #[arg(long)]
+        nt_http_parse_source: PathBuf,
         #[arg(long)]
         max_source_bytes: u64,
         #[arg(long)]
@@ -679,6 +690,20 @@ fn run_operator_artifacts_command(
                     max_source_bytes,
                     &output,
                 )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectPreRunClobV2FeeBehaviorSource {
+            nt_execution_parse_source,
+            nt_http_parse_source,
+            max_source_bytes,
+            output,
+        } => {
+            let written = write_pre_run_clob_v2_fee_behavior_source_artifact_from_nt_fee_sources(
+                &nt_execution_parse_source,
+                &nt_http_parse_source,
+                max_source_bytes,
+                &output,
+            )?;
             print_written_operator_artifact(&written)
         }
         OperatorArtifactsCommand::GenerateAbortPlanFromSourceBundle {

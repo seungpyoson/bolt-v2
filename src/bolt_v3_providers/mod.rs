@@ -116,6 +116,23 @@ pub struct ClobV2AdapterSigningSourceMaterialization {
     pub signer_recovered_matches_expected: bool,
 }
 
+#[derive(Clone, Copy)]
+pub struct ClobV2FeeBehaviorSourceMaterializationRequest<'a> {
+    pub schema_version: u32,
+    pub nt_execution_parse_source: &'a str,
+    pub nt_http_parse_source: &'a str,
+}
+
+pub struct ClobV2FeeBehaviorSourceMaterialization {
+    pub maker_zero_fee_verified: bool,
+    pub taker_fee_schedule_verified: bool,
+    pub market_buy_fee_adjustment_verified: bool,
+    pub price: String,
+    pub fee_rate: String,
+    pub fee_behavior_source_sha256: String,
+    pub fee_assumptions_sha256: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderCredentialedBlock {
     Data,
@@ -215,6 +232,12 @@ pub fn materialize_clob_v2_adapter_signing_source_from_nt_signing_source(
     request: ClobV2AdapterSigningSourceMaterializationRequest<'_>,
 ) -> Result<ClobV2AdapterSigningSourceMaterialization, BoltV3OperatorArtifactError> {
     polymarket::materialize_clob_v2_adapter_signing_source_from_nt_signing_source(request)
+}
+
+pub fn materialize_clob_v2_fee_behavior_source_from_nt_fee_sources(
+    request: ClobV2FeeBehaviorSourceMaterializationRequest<'_>,
+) -> Result<ClobV2FeeBehaviorSourceMaterialization, BoltV3OperatorArtifactError> {
+    polymarket::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources(request)
 }
 
 /// Provider-owned NT adapter modules whose info logs can expose

@@ -56,7 +56,8 @@
 - [x] T024C [US3] Add RED public-interface tests proving host-clock source materialization derives reference time from a TOML-owned execution-client provider endpoint and does not accept caller-supplied timestamps.
 - [x] T024D [US3] Implement `operator-artifacts collect-pre-run-host-clock-source` so T036 can write `host-clock-source.json` from configured provider time with bounded output and no raw timestamp/stdout leakage.
 - [x] T024F [US3] Add TDD-backed `operator-artifacts collect-pre-run-clob-v2-adapter-signing-source` so T036 can write the CLOB V2 adapter-signing source proof from the pinned NT signing source and a local ephemeral signature-recovery self-test.
-- [ ] T024E [US3] Replace remaining caller-supplied pre-run source inputs for venue account/open orders/positions, funding/margin, egress identity, and CLOB V2 collateral/fee behavior with real source-owned materializer commands before T036 final-packet assembly.
+- [x] T024G [US3] Add TDD-backed `operator-artifacts collect-pre-run-clob-v2-fee-behavior-source` so T036 can write the CLOB V2 fee-behavior source proof from pinned NT fee parser sources and a local deterministic NT fee-behavior self-test.
+- [ ] T024E [US3] Replace remaining caller-supplied pre-run source inputs for venue account/open orders/positions, funding/margin, egress identity, and CLOB V2 collateral accounting with real source-owned materializer commands before T036 final-packet assembly.
 
 ## Phase 5: User Story 4 - Abort-Plan Collectors
 

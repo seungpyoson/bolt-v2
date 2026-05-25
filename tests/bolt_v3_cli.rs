@@ -782,6 +782,104 @@ fn order_hash() {}
 }
 
 #[test]
+fn bolt_v3_cli_collects_clob_v2_fee_behavior_source_from_nt_fee_sources() {
+    let temp = tempdir().expect("tempdir should create");
+    let execution_parse_source_path = temp.path().join("execution-parse.rs");
+    fs::write(
+        &execution_parse_source_path,
+        r#"
+pub fn instrument_taker_fee() {}
+pub fn adjust_market_buy_amount() {}
+pub fn compute_commission() {}
+LiquiditySide::Taker;
+Decimal::ONE - price;
+price <= Decimal::ZERO || price >= Decimal::ONE;
+"#,
+    )
+    .expect("execution fee source fixture should write");
+    let http_parse_source_path = temp.path().join("http-parse.rs");
+    fs::write(
+        &http_parse_source_path,
+        r#"
+let maker_fee: Option<Decimal> = market.fee_schedule.as_ref().map(|_| Decimal::ZERO);
+let taker_fee: Option<Decimal> = market.fee_schedule.as_ref().and_then(|fs| Decimal::try_from(fs.rate).ok());
+feeSchedule;
+"#,
+    )
+    .expect("HTTP fee source fixture should write");
+    let output_path = temp.path().join("clob-v2-fee-behavior-source.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-pre-run-clob-v2-fee-behavior-source",
+            "--nt-execution-parse-source",
+            execution_parse_source_path
+                .to_str()
+                .expect("execution parse source path should be utf-8"),
+            "--nt-http-parse-source",
+            http_parse_source_path
+                .to_str()
+                .expect("HTTP parse source path should be utf-8"),
+            "--max-source-bytes",
+            "300000",
+            "--output",
+            output_path.to_str().expect("output path should be utf-8"),
+        ])
+        .output()
+        .expect("bolt-v3 CLOB V2 fee behavior source collection should run");
+
+    assert!(
+        output.status.success(),
+        "expected CLOB V2 fee behavior source collection to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("compute_commission") && !stdout.contains("adjust_market_buy_amount"),
+        "stdout must not expose raw NT fee source content: {stdout}"
+    );
+    let json: serde_json::Value = serde_json::from_slice(
+        &fs::read(&output_path).expect("CLOB V2 fee behavior source should write"),
+    )
+    .expect("CLOB V2 fee behavior source should be JSON");
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(
+        json["record_kind"],
+        "bolt_v3.pre_run_clob_v2_fee_behavior_source.v1"
+    );
+    assert_eq!(json["fee_behavior_verified"], true);
+    assert_eq!(json["maker_zero_fee_verified"], true);
+    assert_eq!(json["taker_fee_schedule_verified"], true);
+    assert_eq!(json["market_buy_fee_adjustment_verified"], true);
+    let price: f64 = json["price"]
+        .as_str()
+        .expect("price should be string")
+        .parse()
+        .expect("price should parse");
+    assert!(price > 0.0 && price < 1.0);
+    let fee_rate: f64 = json["fee_rate"]
+        .as_str()
+        .expect("fee_rate should be string")
+        .parse()
+        .expect("fee_rate should parse");
+    assert!(fee_rate >= 0.0);
+    for field in ["fee_behavior_source_sha256", "fee_assumptions_sha256"] {
+        let value = json[field]
+            .as_str()
+            .unwrap_or_else(|| panic!("{field} should be a string: {json}"));
+        assert!(
+            value.len() == 64
+                && value
+                    .chars()
+                    .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+            "{field} should be lowercase sha256 hex: {value}"
+        );
+    }
+}
+
+#[test]
 fn bolt_v3_cli_exposes_abort_plan_source_collector_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([

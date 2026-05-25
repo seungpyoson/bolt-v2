@@ -31,9 +31,11 @@ use crate::{
     },
     bolt_v3_market_families::{self, MarketSelectionTarget},
     bolt_v3_providers::{
-        ClobV2AdapterSigningSourceMaterializationRequest, EntryDecisionSourceProviderContext,
+        ClobV2AdapterSigningSourceMaterializationRequest,
+        ClobV2FeeBehaviorSourceMaterializationRequest, EntryDecisionSourceProviderContext,
         ProviderSecretResolveContext, binding_for_provider_key,
         materialize_clob_v2_adapter_signing_source_from_nt_signing_source,
+        materialize_clob_v2_fee_behavior_source_from_nt_fee_sources,
     },
     bolt_v3_secrets::BoltV3SecretError,
     bolt_v3_tiny_canary_evidence::{
@@ -3976,6 +3978,52 @@ pub fn write_pre_run_clob_v2_adapter_signing_source_artifact_from_nt_signing_sou
     write_json_artifact_create_new(output_path, &source)
 }
 
+pub fn write_pre_run_clob_v2_fee_behavior_source_artifact_from_nt_fee_sources(
+    nt_execution_parse_source_path: &Path,
+    nt_http_parse_source_path: &Path,
+    max_source_bytes: u64,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let execution_parse_bytes = read_file_bounded(nt_execution_parse_source_path, max_source_bytes)
+        .map_err(
+            |source| BoltV3OperatorArtifactError::PreRunClobV2SourceRead {
+                path: nt_execution_parse_source_path.to_path_buf(),
+                source,
+            },
+        )?;
+    let execution_parse_source =
+        release_manifest_utf8(&execution_parse_bytes, "nt_execution_parse_source_utf8")?;
+    let http_parse_bytes =
+        read_file_bounded(nt_http_parse_source_path, max_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::PreRunClobV2SourceRead {
+                path: nt_http_parse_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let http_parse_source = release_manifest_utf8(&http_parse_bytes, "nt_http_parse_source_utf8")?;
+    let materialized = materialize_clob_v2_fee_behavior_source_from_nt_fee_sources(
+        ClobV2FeeBehaviorSourceMaterializationRequest {
+            schema_version: PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_SCHEMA_VERSION,
+            nt_execution_parse_source: execution_parse_source,
+            nt_http_parse_source: http_parse_source,
+        },
+    )?;
+    let source = Phase8PreRunClobV2FeeBehaviorSourceEvidence {
+        schema_version: PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_SCHEMA_VERSION,
+        record_kind: PRE_RUN_CLOB_V2_FEE_BEHAVIOR_SOURCE_RECORD_KIND.to_string(),
+        fee_behavior_verified: true,
+        maker_zero_fee_verified: materialized.maker_zero_fee_verified,
+        taker_fee_schedule_verified: materialized.taker_fee_schedule_verified,
+        market_buy_fee_adjustment_verified: materialized.market_buy_fee_adjustment_verified,
+        price: materialized.price,
+        fee_rate: materialized.fee_rate,
+        fee_behavior_source_sha256: materialized.fee_behavior_source_sha256,
+        fee_assumptions_sha256: materialized.fee_assumptions_sha256,
+    };
+
+    write_json_artifact_create_new(output_path, &source)
+}
+
 pub async fn write_pre_run_host_clock_source_artifact_from_configured_provider_time(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
@@ -4896,7 +4944,7 @@ struct Phase8PreRunClobV2CollateralAccountingSourceEvidence {
     collateral_assumptions_sha256: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Phase8PreRunClobV2FeeBehaviorSourceEvidence {
     schema_version: u32,

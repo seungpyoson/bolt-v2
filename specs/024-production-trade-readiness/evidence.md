@@ -606,3 +606,21 @@ This is non-live public HTTP provider-time collection only. No AWS, SSM, no-subm
 `operator-artifacts collect-pre-run-clob-v2-adapter-signing-source --cargo-toml <Cargo.toml> --cargo-lock <Cargo.lock> --clob-signing-source <eip712.rs> --max-source-bytes <n> --output <clob-v2-adapter-signing-source.json>` now derives the CLOB signing version and source hash through the existing release-manifest proof, checks the pinned NT signing source contains the expected domain/order-signing markers, signs a local deterministic probe order with an ephemeral key through NT's CLOB V2 `OrderSigner`, recovers the signer from the EIP-712 order hash, and writes only the existing bounded source-proof JSON fields.
 
 This is non-live local source/signature verification only. It does not read AWS/SSM, use configured private keys, connect to a venue, submit/cancel orders, mutate root TOML, or print signatures/private key material. T036 remains open: T024E still needs real source-owned materializers for venue account/open orders/positions, funding/margin, egress identity, and CLOB V2 collateral/fee behavior before a blocker-free `pre-run-state.json`, T037 root TOML patch, final packet, and T038 verification can be honestly produced.
+
+## T024G CLOB V2 Fee-Behavior Source Materializer
+
+- Read-only sidecar `019e5db2-5424-7aa1-aa26-9f8469c5bfe0` recommended CLOB V2 fee behavior as the next smallest honest T024E slice after adapter signing: it is public/source-owned, can be bounded by pinned NT fee parser source files, and does not require private venue/account state.
+- RED: `cargo test --test bolt_v3_cli bolt_v3_cli_collects_clob_v2_fee_behavior_source_from_nt_fee_sources -- --nocapture` failed because `operator-artifacts collect-pre-run-clob-v2-fee-behavior-source` was not a recognized subcommand.
+- GREEN: `cargo test --test bolt_v3_cli bolt_v3_cli_collects_clob_v2_fee_behavior_source_from_nt_fee_sources -- --nocapture`: 1 passed, 0 failed.
+- Focused CLOB proof regression: `cargo test --test bolt_v3_operator_artifacts pre_run_clob_v2 -- --nocapture`: 7 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+- `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+- `python3 scripts/verify_bolt_v3_provider_leaks.py`: `OK: Bolt-v3 provider-leak verifier passed.`
+- `python3 scripts/verify_bolt_v3_core_boundary.py`: `OK: Bolt-v3 core boundary audit passed.`
+- `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+`operator-artifacts collect-pre-run-clob-v2-fee-behavior-source --nt-execution-parse-source <parse.rs> --nt-http-parse-source <http/parse.rs> --max-source-bytes <n> --output <clob-v2-fee-behavior-source.json>` now reads bounded pinned NT fee parser source files, verifies required maker-fee, taker-fee, fee-schedule, commission, taker-side, binary fee-curve, market-buy adjustment, and price-bound source markers, runs a local deterministic NT `compute_commission`/`adjust_market_buy_amount` self-test, and writes the existing bounded CLOB V2 fee-behavior source artifact fields with source and assumptions hashes. The non-runtime literals introduced by the self-test and source markers are explicitly audited as record-kind, validation-field, source-marker, or deterministic self-test fixtures; production fee rates, prices, quantities, balances, and venue state remain source/config owned.
+
+This is non-live local source/fee-behavior verification only. It does not read AWS/SSM, use configured private keys, connect to a venue, submit/cancel orders, mutate root TOML, or print raw NT source. T036 remains open: T024E still needs real source-owned materializers for venue account/open orders/positions, funding/margin, egress identity, and CLOB V2 collateral accounting before a blocker-free `pre-run-state.json`, T037 root TOML patch, final packet, and T038 verification can be honestly produced.

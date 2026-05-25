@@ -34,10 +34,12 @@ use crate::{
         ClobV2AdapterSigningSourceMaterializationRequest,
         ClobV2CollateralAccountingSourceMaterializationRequest,
         ClobV2FeeBehaviorSourceMaterializationRequest, EntryDecisionSourceProviderContext,
-        ProviderSecretResolveContext, binding_for_provider_key,
+        ProviderSecretResolveContext, VenueAccountStateSourceMaterializationRequest,
+        binding_for_provider_key,
         materialize_clob_v2_adapter_signing_source_from_nt_signing_source,
         materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance,
         materialize_clob_v2_fee_behavior_source_from_nt_fee_sources,
+        materialize_venue_account_state_source_from_configured_account_queries,
     },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     bolt_v3_tiny_canary_evidence::{
@@ -135,6 +137,8 @@ const PRE_RUN_HOST_CLOCK_SOURCE_PROOF_RECORD_KIND: &str = "bolt_v3.pre_run_host_
 const PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_RECORD_KIND: &str =
     "bolt_v3.pre_run_venue_account_state_source.v1";
+const PRE_RUN_VENUE_ACCOUNT_STATE_SNAPSHOT_RECORD_KIND: &str =
+    "bolt_v3.pre_run_venue_account_state_snapshot.v1";
 const PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_venue_account_state_source_proof.v1";
@@ -3940,6 +3944,57 @@ pub fn collect_pre_run_release_manifest_source_proof(
     })
 }
 
+pub async fn write_pre_run_venue_account_state_source_artifact_from_configured_account_queries(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    resolved: &ResolvedBoltV3Secrets,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let financial_envelope =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .map_err(
+                |_| BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+                    field: "financial_envelope",
+                },
+            )?;
+    let materialized = materialize_venue_account_state_source_from_configured_account_queries(
+        VenueAccountStateSourceMaterializationRequest {
+            schema_version: PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_SCHEMA_VERSION,
+            account_state_snapshot_record_kind: PRE_RUN_VENUE_ACCOUNT_STATE_SNAPSHOT_RECORD_KIND,
+            loaded,
+            strategy_instance_id,
+            configured_target_id: financial_envelope.configured_target_id(),
+            resolved,
+        },
+    )
+    .await?;
+    if materialized.open_order_count != 0 {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+                field: "conflicting_open_orders_absent",
+            },
+        );
+    }
+    if materialized.open_position_count != 0 {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+                field: "preexisting_position_absent",
+            },
+        );
+    }
+    let source = Phase8PreRunVenueAccountStateSourceEvidence {
+        schema_version: PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_SCHEMA_VERSION,
+        record_kind: PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_RECORD_KIND.to_string(),
+        execution_client_id: financial_envelope.execution_client_id().to_string(),
+        configured_target_id: financial_envelope.configured_target_id().to_string(),
+        open_order_count: materialized.open_order_count,
+        open_position_count: materialized.open_position_count,
+        account_state_snapshot_sha256: materialized.account_state_snapshot_sha256,
+    };
+
+    write_json_artifact_create_new(output_path, &source)
+}
+
 pub fn write_pre_run_clob_v2_adapter_signing_source_artifact_from_nt_signing_source(
     cargo_toml_path: &Path,
     cargo_lock_path: &Path,
@@ -4040,6 +4095,141 @@ pub async fn write_pre_run_clob_v2_collateral_accounting_source_artifact_from_co
     max_fee_rate_source_bytes: u64,
     output_path: &Path,
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let collateral_requirement = derive_clob_v2_required_max_notional_plus_fees(
+        loaded,
+        strategy_instance_id,
+        fee_rate_source_path,
+        fee_rate_source_sha256,
+        max_fee_rate_source_bytes,
+    )?;
+
+    let materialized =
+        materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
+            ClobV2CollateralAccountingSourceMaterializationRequest {
+                schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
+                balance_allowance_record_kind:
+                    PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BALANCE_ALLOWANCE_RECORD_KIND,
+                loaded,
+                strategy_instance_id,
+                resolved,
+            },
+        )
+        .await?;
+    let p_usd_balance =
+        parse_clob_v2_decimal(stringify!(p_usd_balance), &materialized.p_usd_balance)?;
+    let p_usd_allowance =
+        parse_clob_v2_decimal(stringify!(p_usd_allowance), &materialized.p_usd_allowance)?;
+    if p_usd_balance < collateral_requirement.required_max_notional_plus_fees
+        || p_usd_allowance < collateral_requirement.required_max_notional_plus_fees
+    {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: stringify!(collateral_accounting_verified),
+        });
+    }
+
+    let required_max_notional_plus_fees = collateral_requirement
+        .required_max_notional_plus_fees
+        .normalize()
+        .to_string();
+    let max_fee_bps = collateral_requirement.max_fee_bps.normalize().to_string();
+    let collateral_assumptions = ClobV2CollateralAccountingAssumptionsProof {
+        schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
+        record_kind: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_ASSUMPTIONS_RECORD_KIND,
+        max_notional_per_order: collateral_requirement
+            .financial_envelope
+            .max_notional_per_order(),
+        fee_rate_source_sha256: &collateral_requirement.fee_rate_source_sha256,
+        max_fee_bps: &max_fee_bps,
+        bps_denominator: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BPS_DENOMINATOR,
+        required_max_notional_plus_fees: &required_max_notional_plus_fees,
+    };
+    let collateral_assumptions_sha256 = json_artifact_sha256(&collateral_assumptions)?;
+    let source = Phase8PreRunClobV2CollateralAccountingSourceEvidence {
+        schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
+        record_kind: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_RECORD_KIND.to_string(),
+        collateral_accounting_verified: true,
+        p_usd_balance: materialized.p_usd_balance,
+        p_usd_allowance: materialized.p_usd_allowance,
+        required_max_notional_plus_fees,
+        collateral_accounting_source_sha256: materialized.collateral_accounting_source_sha256,
+        collateral_assumptions_sha256,
+    };
+
+    write_json_artifact_create_new(output_path, &source)
+}
+
+pub async fn write_pre_run_funding_margin_source_artifact_from_configured_balance_allowance(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    resolved: &ResolvedBoltV3Secrets,
+    fee_rate_source_path: &Path,
+    fee_rate_source_sha256: &str,
+    max_fee_rate_source_bytes: u64,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let collateral_requirement = derive_clob_v2_required_max_notional_plus_fees(
+        loaded,
+        strategy_instance_id,
+        fee_rate_source_path,
+        fee_rate_source_sha256,
+        max_fee_rate_source_bytes,
+    )?;
+    let materialized =
+        materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
+            ClobV2CollateralAccountingSourceMaterializationRequest {
+                schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
+                balance_allowance_record_kind:
+                    PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BALANCE_ALLOWANCE_RECORD_KIND,
+                loaded,
+                strategy_instance_id,
+                resolved,
+            },
+        )
+        .await?;
+    let p_usd_balance =
+        parse_clob_v2_decimal(stringify!(p_usd_balance), &materialized.p_usd_balance)?;
+    let p_usd_allowance =
+        parse_clob_v2_decimal(stringify!(p_usd_allowance), &materialized.p_usd_allowance)?;
+    let available_collateral = if p_usd_balance < p_usd_allowance {
+        p_usd_balance
+    } else {
+        p_usd_allowance
+    };
+    if available_collateral < collateral_requirement.required_max_notional_plus_fees {
+        return Err(
+            BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
+                field: "funding_margin_covers_max_notional_plus_fees",
+            },
+        );
+    }
+    let source = Phase8PreRunFundingMarginSourceEvidence {
+        schema_version: PRE_RUN_FUNDING_MARGIN_SOURCE_SCHEMA_VERSION,
+        record_kind: PRE_RUN_FUNDING_MARGIN_SOURCE_RECORD_KIND.to_string(),
+        available_collateral: available_collateral.normalize().to_string(),
+        required_max_notional_plus_fees: collateral_requirement
+            .required_max_notional_plus_fees
+            .normalize()
+            .to_string(),
+        margin_snapshot_sha256: materialized.collateral_accounting_source_sha256,
+    };
+
+    write_json_artifact_create_new(output_path, &source)
+}
+
+struct ClobV2CollateralRequirement {
+    financial_envelope: Phase8FinancialEnvelopeEvidenceFile,
+    fee_rate_source_sha256: String,
+    max_fee_bps: Decimal,
+    required_max_notional_plus_fees: Decimal,
+}
+
+fn derive_clob_v2_required_max_notional_plus_fees(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    fee_rate_source_path: &Path,
+    fee_rate_source_sha256: &str,
+    max_fee_rate_source_bytes: u64,
+) -> Result<ClobV2CollateralRequirement, BoltV3OperatorArtifactError> {
     let financial_envelope =
         Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
             .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
@@ -4071,54 +4261,12 @@ pub async fn write_pre_run_clob_v2_collateral_accounting_source_artifact_from_co
         });
     }
 
-    let materialized =
-        materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
-            ClobV2CollateralAccountingSourceMaterializationRequest {
-                schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
-                balance_allowance_record_kind:
-                    PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BALANCE_ALLOWANCE_RECORD_KIND,
-                loaded,
-                strategy_instance_id,
-                resolved,
-            },
-        )
-        .await?;
-    let p_usd_balance =
-        parse_clob_v2_decimal(stringify!(p_usd_balance), &materialized.p_usd_balance)?;
-    let p_usd_allowance =
-        parse_clob_v2_decimal(stringify!(p_usd_allowance), &materialized.p_usd_allowance)?;
-    if p_usd_balance < required_max_notional_plus_fees
-        || p_usd_allowance < required_max_notional_plus_fees
-    {
-        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
-            field: stringify!(collateral_accounting_verified),
-        });
-    }
-
-    let required_max_notional_plus_fees = required_max_notional_plus_fees.normalize().to_string();
-    let max_fee_bps = max_fee_bps.normalize().to_string();
-    let collateral_assumptions = ClobV2CollateralAccountingAssumptionsProof {
-        schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
-        record_kind: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_ASSUMPTIONS_RECORD_KIND,
-        max_notional_per_order: financial_envelope.max_notional_per_order(),
-        fee_rate_source_sha256: &actual_fee_rate_source_sha256,
-        max_fee_bps: &max_fee_bps,
-        bps_denominator: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BPS_DENOMINATOR,
-        required_max_notional_plus_fees: &required_max_notional_plus_fees,
-    };
-    let collateral_assumptions_sha256 = json_artifact_sha256(&collateral_assumptions)?;
-    let source = Phase8PreRunClobV2CollateralAccountingSourceEvidence {
-        schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
-        record_kind: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_RECORD_KIND.to_string(),
-        collateral_accounting_verified: true,
-        p_usd_balance: materialized.p_usd_balance,
-        p_usd_allowance: materialized.p_usd_allowance,
+    Ok(ClobV2CollateralRequirement {
+        financial_envelope,
+        fee_rate_source_sha256: actual_fee_rate_source_sha256,
+        max_fee_bps,
         required_max_notional_plus_fees,
-        collateral_accounting_source_sha256: materialized.collateral_accounting_source_sha256,
-        collateral_assumptions_sha256,
-    };
-
-    write_json_artifact_create_new(output_path, &source)
+    })
 }
 
 fn read_clob_v2_fee_rate_source(
@@ -5115,7 +5263,7 @@ struct Phase8PreRunHostClockSourceEvidence {
     reference_unix_millis: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Phase8PreRunVenueAccountStateSourceEvidence {
     schema_version: u32,
@@ -5127,7 +5275,7 @@ struct Phase8PreRunVenueAccountStateSourceEvidence {
     account_state_snapshot_sha256: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Phase8PreRunFundingMarginSourceEvidence {
     schema_version: u32,

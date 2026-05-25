@@ -23,9 +23,11 @@ use bolt_v2::{
         write_pre_run_clob_v2_collateral_accounting_source_artifact_from_configured_balance_allowance,
         write_pre_run_clob_v2_fee_behavior_source_artifact_from_nt_fee_sources,
         write_pre_run_egress_identity_source_artifact_from_configured_probe,
+        write_pre_run_funding_margin_source_artifact_from_configured_balance_allowance,
         write_pre_run_host_clock_source_artifact_from_configured_provider_time,
         write_pre_run_state_artifact_from_source_bundle_file,
         write_pre_run_state_artifact_from_source_collectors,
+        write_pre_run_venue_account_state_source_artifact_from_configured_account_queries,
         write_static_artifacts_manifest_from_operator_evidence, write_static_operator_artifacts,
         write_strategy_input_evidence_artifact_from_decision_evidence_file,
     },
@@ -240,6 +242,28 @@ enum OperatorArtifactsCommand {
         config: PathBuf,
         #[arg(long)]
         strategy_instance_id: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    CollectPreRunVenueAccountStateSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    CollectPreRunFundingMarginSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        fee_rate_source: PathBuf,
+        #[arg(long)]
+        fee_rate_source_sha256: String,
+        #[arg(long)]
+        max_fee_rate_source_bytes: u64,
         #[arg(long)]
         output: PathBuf,
     },
@@ -709,6 +733,56 @@ fn run_operator_artifacts_command(
                 &loaded,
                 &strategy_instance_id,
                 &output,
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectPreRunVenueAccountStateSource {
+            config,
+            strategy_instance_id,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            check_no_forbidden_credential_env_vars(&loaded.root)?;
+            let ssm_resolver_session = SsmResolverSession::new()?;
+            let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let written = runtime.block_on(
+                write_pre_run_venue_account_state_source_artifact_from_configured_account_queries(
+                    &loaded,
+                    &strategy_instance_id,
+                    &resolved,
+                    &output,
+                ),
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectPreRunFundingMarginSource {
+            config,
+            strategy_instance_id,
+            fee_rate_source,
+            fee_rate_source_sha256,
+            max_fee_rate_source_bytes,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            check_no_forbidden_credential_env_vars(&loaded.root)?;
+            let ssm_resolver_session = SsmResolverSession::new()?;
+            let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let written = runtime.block_on(
+                write_pre_run_funding_margin_source_artifact_from_configured_balance_allowance(
+                    &loaded,
+                    &strategy_instance_id,
+                    &resolved,
+                    &fee_rate_source,
+                    &fee_rate_source_sha256,
+                    max_fee_rate_source_bytes,
+                    &output,
+                ),
             )?;
             print_written_operator_artifact(&written)
         }

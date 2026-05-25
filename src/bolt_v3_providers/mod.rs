@@ -147,6 +147,21 @@ pub struct ClobV2CollateralAccountingSourceMaterialization {
     pub collateral_accounting_source_sha256: String,
 }
 
+pub struct VenueAccountStateSourceMaterializationRequest<'a> {
+    pub schema_version: u32,
+    pub account_state_snapshot_record_kind: &'static str,
+    pub loaded: &'a LoadedBoltV3Config,
+    pub strategy_instance_id: &'a str,
+    pub configured_target_id: &'a str,
+    pub resolved: &'a ResolvedBoltV3Secrets,
+}
+
+pub struct VenueAccountStateSourceMaterialization {
+    pub open_order_count: u64,
+    pub open_position_count: u64,
+    pub account_state_snapshot_sha256: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderCredentialedBlock {
     Data,
@@ -261,6 +276,13 @@ pub async fn materialize_clob_v2_collateral_accounting_source_from_configured_ba
         request,
     )
     .await
+}
+
+pub async fn materialize_venue_account_state_source_from_configured_account_queries(
+    request: VenueAccountStateSourceMaterializationRequest<'_>,
+) -> Result<VenueAccountStateSourceMaterialization, BoltV3OperatorArtifactError> {
+    polymarket::materialize_venue_account_state_source_from_configured_account_queries(request)
+        .await
 }
 
 /// Provider-owned NT adapter modules whose info logs can expose

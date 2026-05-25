@@ -4482,6 +4482,14 @@ reason = "This is the stable record-kind discriminator for venue account state s
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_venue_account_state_snapshot.v1"'''
+context = '''"bolt_v3.pre_run_venue_account_state_snapshot.v1";'''
+classification = "operator_artifact_record_kind"
+reason = "This is the stable record-kind discriminator for venue account state snapshot hashing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = '''1'''
 context = '''const PRE_RUN_VENUE_ACCOUNT_STATE_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''
@@ -4903,6 +4911,38 @@ literal = '''"/balance-allowance"'''
 context = '''const CLOB_V2_COLLATERAL_BALANCE_ALLOWANCE_PATH: &str = "/balance-allowance";'''
 classification = "polymarket_clob_api_path"
 reason = "This is the fixed Polymarket CLOB REST API path for authenticated balance/allowance reads, not an operator-configured venue value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
+kind = "string"
+literal = '''"/data/orders"'''
+context = '''const CLOB_V2_OPEN_ORDERS_PATH: &str = "/data/orders";'''
+classification = "polymarket_clob_api_path"
+reason = "This is the fixed Polymarket CLOB REST API path for authenticated open-order reads, not an operator-configured venue value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
+kind = "string"
+literal = '''"/positions"'''
+context = '''const POLYMARKET_DATA_API_POSITIONS_PATH: &str = "/positions";'''
+classification = "polymarket_data_api_path"
+reason = "This is the fixed Polymarket Data API path for account position reads, not an operator-configured venue value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
+kind = "string"
+literal = '''"open_order_count"'''
+context = '''let open_order_count = usize_to_u64("open_order_count", open_orders.len())?;'''
+classification = "operator_artifact_field_name"
+reason = "This is a stable error/proof field label for venue account open-order count conversion, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
+kind = "string"
+literal = '''"open_position_count"'''
+context = '''let open_position_count = usize_to_u64("open_position_count", positions.len())?;'''
+classification = "operator_artifact_field_name"
+reason = "This is a stable error/proof field label for venue account position count conversion, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"

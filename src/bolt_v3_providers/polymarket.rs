@@ -29,11 +29,13 @@ mod collateral_accounting_source;
 mod entry_decision_source_inputs;
 mod fee_behavior_source;
 mod fees;
+mod venue_account_state_source;
 
 pub use adapter_signing_source::materialize_clob_v2_adapter_signing_source_from_nt_signing_source;
 pub use collateral_accounting_source::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance;
 pub use entry_decision_source_inputs::collect_entry_decision_source_inputs;
 pub use fee_behavior_source::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources;
+pub use venue_account_state_source::materialize_venue_account_state_source_from_configured_account_queries;
 
 use std::{any::Any, sync::Arc, time::Duration};
 

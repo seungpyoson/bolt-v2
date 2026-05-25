@@ -19,6 +19,7 @@ use bolt_v2::{
         write_entry_decision_evidence_from_source_file, write_entry_decision_proof_source_files,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_operator_evidence_json_from_artifact_paths,
+        write_pre_run_host_clock_source_artifact_from_configured_provider_time,
         write_pre_run_state_artifact_from_source_bundle_file,
         write_pre_run_state_artifact_from_source_collectors,
         write_static_artifacts_manifest_from_operator_evidence, write_static_operator_artifacts,
@@ -219,6 +220,14 @@ enum OperatorArtifactsCommand {
         max_host_clock_skew_millis: u64,
         #[arg(long)]
         max_single_runner_lock_bytes: u64,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    CollectPreRunHostClockSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
         #[arg(long)]
         output: PathBuf,
     },
@@ -621,6 +630,24 @@ fn run_operator_artifacts_command(
                 &strategy_instance_id,
                 inputs,
                 &output,
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectPreRunHostClockSource {
+            config,
+            strategy_instance_id,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let written = runtime.block_on(
+                write_pre_run_host_clock_source_artifact_from_configured_provider_time(
+                    &loaded,
+                    &strategy_instance_id,
+                    &output,
+                ),
             )?;
             print_written_operator_artifact(&written)
         }

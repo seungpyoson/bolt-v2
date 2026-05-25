@@ -4426,6 +4426,30 @@ reason = "This is the stable record-kind discriminator for host-clock source inp
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"date"'''
+context = '''const PRE_RUN_HOST_CLOCK_REFERENCE_DATE_HEADER: &str = "date";'''
+classification = "http_protocol_header"
+reason = "This is the standard HTTP Date response header used as the provider time reference name; the endpoint URL and timeout remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"base_url_http"'''
+context = '''const PRE_RUN_HOST_CLOCK_REFERENCE_URL_FIELD: &str = "base_url_http";'''
+classification = "toml_field_name"
+reason = "This names the TOML-owned execution client HTTP base URL field used to fetch host-clock reference time; the runtime URL value is not hardcoded."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"http_timeout_secs"'''
+context = '''const PRE_RUN_HOST_CLOCK_REFERENCE_TIMEOUT_FIELD: &str = "http_timeout_secs";'''
+classification = "toml_field_name"
+reason = "This names the TOML-owned execution client timeout field used by host-clock source collection; the runtime timeout value is not hardcoded."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = '''1'''
 context = '''const PRE_RUN_HOST_CLOCK_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;'''

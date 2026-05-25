@@ -1,4 +1,11 @@
-use std::{fs, path::Path, process::Command};
+use std::{
+    fs,
+    io::{Read, Write},
+    net::TcpListener,
+    path::Path,
+    process::Command,
+    thread,
+};
 
 use bolt_v2::{
     bolt_v3_config::{LiveCanaryOperatorEvidenceBlock, load_bolt_v3_config},
@@ -600,6 +607,92 @@ fn bolt_v3_cli_exposes_pre_run_state_source_collector_command() {
 }
 
 #[test]
+fn bolt_v3_cli_collects_host_clock_source_from_configured_provider_time() {
+    let temp = tempdir().expect("tempdir should create");
+    let reference_url = spawn_one_shot_date_server("Mon, 20 May 2024 12:34:56 GMT");
+    let config_path = temp.path().join("root.toml");
+    fs::write(
+        &config_path,
+        include_str!("fixtures/bolt_v3/root.toml").replacen(
+            "base_url_http = \"https://clob.polymarket.com\"",
+            &format!("base_url_http = \"{reference_url}\""),
+            2,
+        ),
+    )
+    .expect("test root TOML should write");
+    fs::create_dir_all(temp.path().join("strategies")).expect("strategy dir should create");
+    fs::write(
+        temp.path().join("strategies/binary_oracle.toml"),
+        include_str!("fixtures/bolt_v3/strategies/binary_oracle.toml"),
+    )
+    .expect("strategy TOML should write");
+    let output_path = temp.path().join("host-clock-source.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-pre-run-host-clock-source",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+            "--output",
+            output_path.to_str().expect("output path should be utf-8"),
+        ])
+        .output()
+        .expect("bolt-v3 host-clock source collection should run");
+
+    assert!(
+        output.status.success(),
+        "expected host-clock source collection to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("171621"),
+        "stdout must not expose raw collected timestamps: {stdout}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&fs::read(&output_path).expect("host-clock source should write"))
+            .expect("host-clock source should be JSON");
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["record_kind"], "bolt_v3.pre_run_host_clock_source.v1");
+    assert_eq!(json["reference_unix_millis"], 1716208496000_u64);
+    assert!(
+        json["host_unix_millis"].as_u64().unwrap_or_default() >= 1716208496000_u64,
+        "host timestamp should be collected at command runtime: {json}"
+    );
+}
+
+#[test]
+fn bolt_v3_cli_host_clock_source_collector_does_not_accept_caller_timestamps() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-pre-run-host-clock-source",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 host-clock source collection help should run");
+
+    assert!(
+        output.status.success(),
+        "expected host-clock source collection help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"), "{stdout}");
+    assert!(stdout.contains("--strategy-instance-id"), "{stdout}");
+    assert!(stdout.contains("--output"), "{stdout}");
+    assert!(
+        !stdout.contains("--host-unix-millis") && !stdout.contains("--reference-unix-millis"),
+        "host-clock source collector must not accept caller-supplied timestamps: {stdout}"
+    );
+}
+
+#[test]
 fn bolt_v3_cli_exposes_abort_plan_source_collector_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
@@ -623,6 +716,23 @@ fn bolt_v3_cli_exposes_abort_plan_source_collector_command() {
     assert!(stdout.contains("--submit-admission-source"), "{stdout}");
     assert!(stdout.contains("--max-source-bytes"), "{stdout}");
     assert!(stdout.contains("--output"), "{stdout}");
+}
+
+fn spawn_one_shot_date_server(date: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test HTTP server should bind");
+    let address = listener.local_addr().expect("test HTTP server address");
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("test HTTP request should connect");
+        let mut request = [0_u8; 1024];
+        let _ = stream.read(&mut request);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nDate: {date}\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("test HTTP response should write");
+    });
+    format!("http://{address}")
 }
 
 #[test]

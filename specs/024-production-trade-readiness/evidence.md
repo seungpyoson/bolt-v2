@@ -566,3 +566,21 @@ This is non-live local validation only. No AWS, SSM, no-submit, venue connection
 - Base static artifacts were copied into the same final-artifacts directory without changing hashes: `ssm-manifest.json` (`8b12f2a636961b3bb35dce203c66b26f482537e102a6bbf96aae592ddcb4da4a`), `financial-envelope.json` (`0fe8aef150af7156ece1db2c2b8b0c738a51352dd4837ba4eb7d13e0469cd253`), and `approval-nonce.json` (`2fa765155835265251783b7aeb73b7b2342d1a624958c73d5f717fef5c274ec5`).
 
 This is non-live local source-code artifact generation only. No AWS, SSM, no-submit, venue connection, order submit/cancel, root TOML mutation, or live trading side effect was run. T036 still requires real entry-decision source artifacts, `strategy-input.json`, `pre-run-state.json`, the T037 root TOML patch, final manifest/packet assembly, and T038 pre-run verification.
+
+## T024C/T024D Host-Clock Source Materializer
+
+- Read-only sidecar `019e5d7e-f010-7172-b9c4-3eac518793c6` confirmed the current pre-run host-clock path validated a caller-supplied `host-clock-source.json`: `collect_pre_run_host_clock_source_proof` reads bounded bytes and validates schema/record/skew, while `generate-pre-run-state-from-source-collectors` consumes `--host-clock-source`. It also confirmed the Chainlink `CHAINLINK_REPORT_*` values are audited as `chainlink_report_protocol_decoder` parser invariants, not TOML runtime/operator values.
+- RED: `cargo test --test bolt_v3_cli bolt_v3_cli_collects_host_clock_source_from_configured_provider_time -- --nocapture` first hit the known sandbox cache-lock permission issue at `/Users/spson/.cache/rust-verification/bolt-v2/cache.lock`; rerun outside the sandbox failed as expected because `operator-artifacts collect-pre-run-host-clock-source` was not a recognized subcommand.
+- GREEN: `cargo test --test bolt_v3_cli bolt_v3_cli_collects_host_clock_source_from_configured_provider_time -- --nocapture`: 1 passed, 0 failed.
+- GREEN: `cargo test --test bolt_v3_cli bolt_v3_cli_host_clock_source_collector_does_not_accept_caller_timestamps -- --nocapture`: 1 passed, 0 failed.
+- Regression: `cargo test --test bolt_v3_cli host_clock -- --nocapture`: 2 passed, 0 failed.
+- Regression: `cargo test --test bolt_v3_operator_artifacts host_clock -- --nocapture`: 6 passed, 0 failed.
+- Broader CLI regression: `cargo test --test bolt_v3_cli -- --nocapture`: 25 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+- `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+
+`operator-artifacts collect-pre-run-host-clock-source --config <root.toml> --strategy-instance-id <id> --output <host-clock-source.json>` now derives the execution client from the selected strategy, reads `base_url_http` and `http_timeout_secs` from the TOML execution block, fetches the configured provider HTTP `Date` header, records host runtime milliseconds, and writes the existing `bolt_v3.pre_run_host_clock_source.v1` artifact with create-new semantics. The CLI does not accept `--host-unix-millis` or `--reference-unix-millis`, and stdout uses the existing redacted artifact summary instead of raw timestamps.
+
+This is non-live public HTTP provider-time collection only. No AWS, SSM, no-submit, private venue account access, order submit/cancel, root TOML mutation, or live trading side effect was run. T036 remains open: T024E still requires real source-owned materializers for venue account/open orders/positions, funding/margin, egress identity, and CLOB V2 signing/collateral/fee behavior before a blocker-free `pre-run-state.json`, T037 root TOML patch, final packet, and T038 verification can be honestly produced.

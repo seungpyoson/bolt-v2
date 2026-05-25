@@ -1,15 +1,18 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     error::Error,
     fmt, fs,
     io::{self, Read, Write},
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::anyhow;
+use nautilus_core::consts::NAUTILUS_USER_AGENT;
 use nautilus_model::instruments::{Instrument, InstrumentAny};
+use nautilus_network::http::{HttpClient, USER_AGENT};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -117,6 +120,9 @@ const PRE_RUN_RELEASE_MANIFEST_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.pre_run_release_manifest_source_proof.v1";
 const PRE_RUN_HOST_CLOCK_SOURCE_SCHEMA_VERSION: u32 = 1;
 const PRE_RUN_HOST_CLOCK_SOURCE_RECORD_KIND: &str = "bolt_v3.pre_run_host_clock_source.v1";
+const PRE_RUN_HOST_CLOCK_REFERENCE_DATE_HEADER: &str = "date";
+const PRE_RUN_HOST_CLOCK_REFERENCE_URL_FIELD: &str = "base_url_http";
+const PRE_RUN_HOST_CLOCK_REFERENCE_TIMEOUT_FIELD: &str = "http_timeout_secs";
 const PRE_RUN_HOST_CLOCK_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 #[rustfmt::skip]
 const PRE_RUN_HOST_CLOCK_SOURCE_PROOF_RECORD_KIND: &str = "bolt_v3.pre_run_host_clock_source_proof.v1";
@@ -633,6 +639,9 @@ pub enum BoltV3OperatorArtifactError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    PreRunHostClockSourceMaterialize {
+        message: String,
+    },
     PreRunHostClockSourceInvalid {
         field: &'static str,
     },
@@ -977,6 +986,12 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             }
             Self::PreRunHostClockSourceParse { source, .. } => {
                 write!(f, "failed to parse host-clock source input: {source}")
+            }
+            Self::PreRunHostClockSourceMaterialize { message } => {
+                write!(
+                    f,
+                    "failed to materialize host-clock source input: {message}"
+                )
             }
             Self::PreRunHostClockSourceInvalid { field } => write!(
                 f,
@@ -3908,6 +3923,138 @@ pub fn collect_pre_run_release_manifest_source_proof(
     })
 }
 
+pub async fn write_pre_run_host_clock_source_artifact_from_configured_provider_time(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let (reference_url, timeout_secs) =
+        configured_host_clock_reference(loaded, strategy_instance_id)?;
+    let source =
+        collect_host_clock_source_from_http_date_header(&reference_url, timeout_secs).await?;
+    write_json_artifact_create_new(output_path, &source)
+}
+
+fn configured_host_clock_reference(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+) -> Result<(String, u64), BoltV3OperatorArtifactError> {
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .ok_or_else(
+            || BoltV3OperatorArtifactError::PreRunHostClockSourceMaterialize {
+                message: format!("strategy instance `{strategy_instance_id}` is not loaded"),
+            },
+        )?;
+    let execution_client_id = strategy.config.execution_client_id.as_str();
+    let client = loaded
+        .root
+        .clients
+        .get(execution_client_id)
+        .ok_or_else(
+            || BoltV3OperatorArtifactError::PreRunHostClockSourceMaterialize {
+                message: format!("execution client `{execution_client_id}` is not configured"),
+            },
+        )?;
+    let execution = client
+        .execution
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .ok_or(BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid { field: "execution" })?;
+    let reference_url = execution
+        .get(PRE_RUN_HOST_CLOCK_REFERENCE_URL_FIELD)
+        .and_then(toml::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+            field: "execution.base_url_http",
+        })?;
+    let timeout_secs = execution
+        .get(PRE_RUN_HOST_CLOCK_REFERENCE_TIMEOUT_FIELD)
+        .and_then(toml::Value::as_integer)
+        .filter(|value| value.is_positive())
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or(BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+            field: "execution.http_timeout_secs",
+        })?;
+
+    Ok((reference_url.to_string(), timeout_secs))
+}
+
+async fn collect_host_clock_source_from_http_date_header(
+    reference_url: &str,
+    timeout_secs: u64,
+) -> Result<Phase8PreRunHostClockSourceEvidence, BoltV3OperatorArtifactError> {
+    let client = HttpClient::new(
+        HashMap::from([(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())]),
+        vec![PRE_RUN_HOST_CLOCK_REFERENCE_DATE_HEADER.to_string()],
+        Vec::new(),
+        None,
+        Some(timeout_secs),
+        None,
+    )
+    .map_err(
+        |source| BoltV3OperatorArtifactError::PreRunHostClockSourceMaterialize {
+            message: source.to_string(),
+        },
+    )?;
+    let response = client
+        .get(
+            reference_url.to_string(),
+            None,
+            None,
+            Some(timeout_secs),
+            None,
+        )
+        .await
+        .map_err(
+            |source| BoltV3OperatorArtifactError::PreRunHostClockSourceMaterialize {
+                message: source.to_string(),
+            },
+        )?;
+    let reference_date = response
+        .headers
+        .get(PRE_RUN_HOST_CLOCK_REFERENCE_DATE_HEADER)
+        .ok_or(BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+            field: "date_header",
+        })?;
+    let reference_unix_millis = chrono::DateTime::parse_from_rfc2822(reference_date)
+        .map_err(
+            |_| BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+                field: "date_header",
+            },
+        )?
+        .timestamp_millis();
+    let reference_unix_millis = u64::try_from(reference_unix_millis).map_err(|_| {
+        BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+            field: "date_header",
+        }
+    })?;
+    let host_unix_millis = u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(
+                |_| BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+                    field: "host_unix_millis",
+                },
+            )?
+            .as_millis(),
+    )
+    .map_err(
+        |_| BoltV3OperatorArtifactError::PreRunHostClockSourceInvalid {
+            field: "host_unix_millis",
+        },
+    )?;
+
+    Ok(Phase8PreRunHostClockSourceEvidence {
+        schema_version: PRE_RUN_HOST_CLOCK_SOURCE_SCHEMA_VERSION,
+        record_kind: PRE_RUN_HOST_CLOCK_SOURCE_RECORD_KIND.to_string(),
+        host_unix_millis,
+        reference_unix_millis,
+    })
+}
+
 pub fn collect_pre_run_host_clock_source_proof(
     host_clock_source_path: &Path,
     max_source_bytes: u64,
@@ -4639,7 +4786,7 @@ fn validate_market_window_source_path(
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Phase8PreRunHostClockSourceEvidence {
     schema_version: u32,

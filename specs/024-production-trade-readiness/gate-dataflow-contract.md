@@ -2,7 +2,7 @@
 
 ## Purpose
 
-T036H replaces the current Chainlink-shaped `price_to_beat` path with a provider-neutral readiness gate path. The implementation is not allowed to start until this contract is represented in `tasks.md` as RED tests first.
+T036H replaces the current Chainlink-shaped `price_to_beat` path with a market, venue, and provider agnostic readiness gate path. The implementation is not allowed to start until this contract is represented in `tasks.md` as RED tests first.
 
 The root problem is not only config validation. The current provider-specific value flows through config, archetype raw config, selected-market metadata, operator artifacts, provider collection, decision evidence, tiny-canary evidence, CLI commands, strategy registration, runtime strategy logic, and replay helpers.
 
@@ -36,63 +36,80 @@ these names unless the task records an explicit disposition before code changes.
 
 ### TOML Shape
 
-Root gate providers:
+Root gate providers are examples, not canonical runtime values. Provider ids are operator-owned labels.
 
 ```toml
-[gate_providers.chainlink_btc_5m]
+[gate_providers.resolution_oracle_primary]
 provider_kind = "chainlink_data_streams"
-capabilities = ["resolution_price"]
+capabilities = ["resolution_value"]
 client_id = "chainlink_mainnet"
 
-[gate_providers.chainlink_btc_5m.freshness]
+[gate_providers.resolution_oracle_primary.freshness]
 max_age_ms = 300000
 max_clock_skew_ms = 5000
 
-[gate_providers.chainlink_btc_5m.chainlink_data_streams]
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
 feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
 report_schema_version = 3
 report_decimal_scale = 8
 endpoint_id = "mainnet-data-streams"
 ssm_credential_parameter = "/bolt/gate-providers/chainlink/mainnet"
+
+[gate_providers.venue_metadata_primary]
+provider_kind = "hyperliquid_hip4"
+capabilities = ["market_metadata", "reference_value"]
+client_id = "hyperliquid_mainnet"
+
+[gate_providers.venue_metadata_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.venue_metadata_primary.hyperliquid_hip4]
+metadata_scope = "asset_universe"
 ```
 
 Target subscriptions:
 
 ```toml
-[target.gate_subscriptions.resolution_price]
+[target.gate_subscriptions.resolution]
 required = true
-allowed_provider_kinds = ["chainlink_data_streams", "pyth", "binance_index", "venue_native"]
-provider_preference = ["chainlink_btc_5m"]
+allowed_provider_kinds = ["chainlink_data_streams", "pyth", "exchange_index", "venue_native", "hyperliquid_hip4", "deribit_index", "outcome_oracle"]
+allowed_value_kinds = ["price", "index", "outcome", "metadata"]
+provider_preference = ["resolution_oracle_primary"]
 allow_no_resolution = false
 
-[[target.gate_subscriptions.resolution_price.market_mappings]]
+[[target.gate_subscriptions.resolution.market_mappings]]
 family_key = "updown"
 market_class = "binary_option"
 resolution_kind = "chainlink_data_streams"
 resolution_identity = "btc-usd-5m"
-provider_id = "chainlink_btc_5m"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
 ```
 
 No-resolution targets:
 
 ```toml
-[target.gate_subscriptions.resolution_price]
+[target.gate_subscriptions.resolution]
 required = true
 allowed_provider_kinds = []
 allow_no_resolution = true
 
-[[target.gate_subscriptions.resolution_price.market_mappings]]
+[[target.gate_subscriptions.resolution.market_mappings]]
 family_key = "venue-native-no-resolution"
 market_class = "spot"
 resolution_kind = "no_resolution"
 resolution_identity = "none"
+value_kind = "none"
 ```
 
 Rules:
 
-- `provider_kind` is one of `chainlink_data_streams`, `pyth`, `binance_index`, `venue_native`, or `test_double`.
-- `capabilities` contains one or more of `resolution_price`, `reference_price`.
-- `target.gate_subscriptions.<role>` role is one of `resolution_price` or `reference_price`.
+- `provider_kind` is registry-backed. The base contract must support known adapters such as `chainlink_data_streams`, `pyth`, `exchange_index`, `venue_native`, `hyperliquid_hip4`, `deribit_index`, `outcome_oracle`, and test-only `test_double` without making any one provider canonical.
+- `capabilities` contains one or more semantic evidence classes such as `resolution_value`, `reference_value`, or `market_metadata`.
+- `target.gate_subscriptions.<role>` role is an archetype-declared semantic role such as `resolution` or `decision_reference`, not a provider or price-specific role.
+- `value_kind` is the normalized value shape expected by the role, for example `price`, `index`, `outcome`, `metadata`, or `none`.
+- Sports, politics, entertainment, crypto, and traditional market examples must enter through the same role/value-kind/provider-kind machinery. They do not get venue-specific strategy runtime fields.
 - A subscription may declare `allowed_provider_ids`, `allowed_provider_kinds`, or both. When both are present, every listed provider id must exist and its provider kind must be in `allowed_provider_kinds`; the effective allowed set is the listed provider ids. It is invalid for `allowed_provider_ids` to name a provider whose kind is not in `allowed_provider_kinds`.
 - If more than one provider/evidence item satisfies the same required role, the join must fail closed unless `provider_preference` gives a deterministic first matching provider id.
 - Provider-specific fields are valid only under `[gate_providers.<id>.<provider_kind>]`.
@@ -107,19 +124,19 @@ TOML owner: root `[gate_providers.<provider_id>]`.
 
 Fields:
 
-- `provider_kind`: provider implementation key from the allowed enum above.
-- `capabilities`: gate evidence classes the provider can produce from the allowed enum above.
+- `provider_kind`: provider implementation key registered by the compiled provider adapter set.
+- `capabilities`: semantic gate evidence classes the provider can produce.
 - `client_id`: optional link to an existing `[clients.<id>]` when the provider reuses a venue/data client.
 - `freshness.max_age_ms`: maximum collector-observed age at session creation time.
 - `freshness.max_clock_skew_ms`: maximum accepted absolute difference between provider/source timestamp and collector timestamp when the provider exposes a timestamp.
-- Exactly one provider-specific subtable. Chainlink feed id, report schema version, decimal scale, endpoint, and SSM credential references live under this provider-specific subtable, not under strategy runtime parameters.
+- Exactly one provider-specific subtable. Feed ids, venue metadata scopes, schema versions, decimal scales, endpoints, and SSM credential references live under this provider-specific subtable, not under strategy runtime parameters.
 
 Fail closed:
 
 - Missing provider config for a required target subscription.
 - Provider-specific fields outside the matching provider subtable.
 - Credentials or endpoints supplied outside SSM/TOML-owned provider config.
-- Provider kind that does not support the required capability.
+- Provider kind that is unregistered or does not support the required capability/value kind.
 
 ### Target Gate Subscription
 
@@ -129,19 +146,20 @@ TOML owner: strategy `[target.gate_subscriptions.<role>]`.
 
 Fields:
 
-- `role`: semantic gate role consumed by the archetype, such as `resolution_price` or `reference_price`.
+- `role`: semantic gate role consumed by the archetype, such as `resolution` or `decision_reference`.
 - `required`: whether the role must be satisfied for this configured target.
 - `allowed_provider_ids` or `allowed_provider_kinds`: set, not a single static id.
+- `allowed_value_kinds`: optional set of normalized value kinds accepted by this subscription.
 - `provider_preference`: optional deterministic provider id order when more than one provider satisfies the role.
 - `allow_no_resolution`: only valid when the archetype and market class support no-resolution behavior.
-- `market_mappings`: optional config-owned identity mappings used when venue metadata does not expose resolution identity. Each mapping has `family_key`, `market_class`, `resolution_kind`, `resolution_identity`, and optional `provider_id`.
+- `market_mappings`: optional config-owned identity mappings used when venue metadata does not expose resolution identity. Each mapping has `family_key`, `market_class`, `resolution_kind`, `resolution_identity`, `value_kind`, and optional `provider_id`.
 
 Fail closed:
 
 - Required role has no subscription.
 - Subscription resolves to exactly one static provider when selected market requirements demand a different provider in a later rotation.
 - `allow_no_resolution` is true for a strategy or market class that requires resolution evidence.
-- Mapping is missing, ambiguous, or mismatched for the selected market identity.
+- Mapping is missing, ambiguous, or mismatched for the selected market identity, provider kind, or value kind.
 
 ### Archetype Gate Requirement
 
@@ -155,6 +173,7 @@ Fields:
 struct ArchetypeGateRequirement {
     role: GateRole,
     required: bool,
+    accepted_value_kinds: BTreeSet<ValueKind>,
     allow_no_resolution: bool,
 }
 ```
@@ -169,13 +188,14 @@ Positive exposure mechanism:
 
 ```rust
 vec![ArchetypeGateRequirement {
-    role: GateRole::ResolutionPrice,
+    role: GateRole::Resolution,
     required: true,
+    accepted_value_kinds: BTreeSet::from([ValueKind::Price, ValueKind::Outcome]),
     allow_no_resolution: false,
 }]
 ```
 
-- A no-resolution-compatible archetype may return `allow_no_resolution: true`; a spot or perpetual strategy with no resolution gate returns no `resolution_price` requirement.
+- A no-resolution-compatible archetype may return `allow_no_resolution: true`; a strategy with no resolution gate returns no `resolution` requirement.
 
 Fail closed:
 
@@ -189,15 +209,16 @@ Owner: `src/bolt_v3_market_families/mod.rs` and family modules such as `src/bolt
 Fields:
 
 - `configured_target_id`
+- `venue`
 - `family_key`
 - `market_id`
-- `source_condition_id`
-- `market_slug`
-- `question_id`
+- `instrument_ids`: zero or more venue instrument/outcome ids.
 - `market_class`
 - `resolution_kind`
 - `resolution_identity`
-- `selected_market_key`: canonical key equal to `configured_target_id|family_key|market_id|source_condition_id|market_slug|question_id|resolution_kind|resolution_identity`
+- `value_kind`
+- `metadata_provenance_sha256`: hash of source metadata used to build the selected-market identity.
+- `selected_market_key`: canonical key derived from the normalized selected-market identity, not from venue-specific Polymarket-only fields.
 - `selected_at_ms`: collector timestamp captured when the market was selected
 
 Canonical shape:
@@ -205,14 +226,15 @@ Canonical shape:
 ```rust
 struct SelectedMarketRequirement {
     configured_target_id: String,
+    venue: String,
     family_key: String,
     market_id: String,
-    source_condition_id: String,
-    market_slug: String,
-    question_id: String,
+    instrument_ids: Vec<String>,
     market_class: MarketClass,
     resolution_kind: ResolutionKind,
     resolution_identity: String,
+    value_kind: ValueKind,
+    metadata_provenance_sha256: String,
     selected_market_key: String,
     selected_at_ms: u64,
 }
@@ -223,6 +245,7 @@ Fail closed:
 - Selected market is missing required identity.
 - Venue metadata lacks resolution identity and no config-owned mapping resolves it.
 - Config mapping resolves to a provider identity that does not match the selected market.
+- Selected-market identity requires a venue-specific field not represented in the normalized identity/provenance payload.
 - Evidence from a previous selected market is reused after rotation.
 - Any selected-market key component contains `|`.
 
@@ -239,44 +262,45 @@ Fields:
 - `collector_observed_at_ms`: host/operator-artifact timestamp captured after a successful provider fetch.
 - `source_observed_at_ms`: provider/source timestamp when available; otherwise equal to `collector_observed_at_ms`.
 - `fresh_until_ms`: `collector_observed_at_ms + freshness.max_age_ms`.
-- `normalized_value`: role-specific normalized payload. For price roles this is decimal string plus scale.
-- `provider_provenance`: provider-kind-specific provenance payload. For Chainlink this includes report hash, feed id, schema version, decimal scale, and report artifact hash. Pyth/Binance/venue-native providers must supply equivalent provenance fields for their source.
+- `value_kind`: normalized value shape, such as price, index, outcome, metadata, or none.
+- `normalized_value`: role-specific normalized payload. Price/index values use decimal string plus scale; outcome/metadata values use canonical JSON with hashes.
+- `provider_provenance`: provider-kind-specific provenance payload. Chainlink, Pyth, exchange index, HIP-4/venue-native, Deribit/index, outcome-oracle, and future providers must supply equivalent provenance for their source.
 - `artifact_refs`: source artifact path/hash references.
 
 Canonical shape:
 
 ```rust
 enum GateRole {
-    ResolutionPrice,
-    ReferencePrice,
+    Resolution,
+    DecisionReference,
 }
 
-enum GateProviderKind {
-    ChainlinkDataStreams,
-    Pyth,
-    BinanceIndex,
-    VenueNative,
-    TestDouble,
-}
+struct GateProviderKind(String);
 
 enum MarketClass {
     BinaryOption,
+    CategoricalOutcome,
+    ScalarOutcome,
     OneTouch,
     Spot,
     Perpetual,
+    Option,
 }
 
-enum ResolutionKind {
-    ChainlinkDataStreams,
-    Pyth,
-    BinanceIndex,
-    VenueNative,
-    NoResolution,
+struct ResolutionKind(String);
+
+enum ValueKind {
+    Price,
+    Index,
+    Outcome,
+    Metadata,
+    None,
 }
 
-struct GateValue {
-    decimal: String,
-    scale: u32,
+enum GateValue {
+    Decimal { value: String, scale: u32 },
+    Json { canonical_json_sha256: String },
+    None,
 }
 
 struct ArtifactRef {
@@ -284,28 +308,9 @@ struct ArtifactRef {
     sha256: String,
 }
 
-enum ProviderProvenance {
-    ChainlinkDataStreams {
-        feed_id: String,
-        report_schema_version: u64,
-        report_decimal_scale: u32,
-        report_sha256: String,
-    },
-    Pyth {
-        feed_id: String,
-        price_message_sha256: String,
-    },
-    BinanceIndex {
-        symbol: String,
-        response_sha256: String,
-    },
-    VenueNative {
-        venue: String,
-        source_sha256: String,
-    },
-    TestDouble {
-        fixture_sha256: String,
-    },
+struct ProviderProvenance {
+    provider_kind: GateProviderKind,
+    canonical_json_sha256: String,
 }
 
 struct GateEvidence {
@@ -316,6 +321,7 @@ struct GateEvidence {
     collector_observed_at_ms: u64,
     source_observed_at_ms: u64,
     fresh_until_ms: u64,
+    value_kind: ValueKind,
     normalized_value: GateValue,
     provider_provenance: ProviderProvenance,
     artifact_refs: Vec<ArtifactRef>,
@@ -330,6 +336,7 @@ Fail closed:
 - Evidence is stale or timestamp-invalid.
 - Provider provenance is missing, malformed, or provider-kind-incompatible.
 - Reference evidence is used for resolution, or resolution evidence is used for reference.
+- Price/index evidence is used for outcome/metadata requirements, or outcome/metadata evidence is used for numeric price/index requirements.
 - Provider collection timeout, partial response, or API error produces no evidence and therefore fails closed. It must not synthesize default evidence.
 - `source_observed_at_ms` differs from `collector_observed_at_ms` by more than `freshness.max_clock_skew_ms` when the source timestamp is available.
 
@@ -396,17 +403,17 @@ Session hash canonicalization:
   "created_at_ms": "<created_at_ms>",
   "satisfied_roles": [
     {
-      "role": "resolution_price",
+      "role": "resolution",
       "satisfaction_kind": "evidence",
       "provider_id": "<provider_id>",
       "provider_kind": "<provider_kind>",
-      "normalized_value_decimal": "<decimal>",
-      "normalized_value_scale": 8,
+      "value_kind": "<value_kind>",
+      "normalized_value_sha256": "<sha256>",
       "artifact_sha256s": ["<sha256>"],
       "provider_provenance_sha256": "<sha256>"
     },
     {
-      "role": "resolution_price",
+      "role": "resolution",
       "satisfaction_kind": "no_resolution",
       "resolution_identity": "none",
       "selected_market_key": "<selected_market_key>"
@@ -423,12 +430,15 @@ Canonical provider provenance JSON:
 - Every provenance object uses a flat tagged JSON object with `provider_kind` as the discriminator.
 - Object keys are sorted lexicographically under the same canonical JSON rule as `session_hash`.
 - Numeric schema/scale fields are JSON numbers; hashes and identifiers are strings.
-- The exact variant shapes are:
+- The exact provider provenance examples are:
 
 ```json
 {"feed_id":"<feed_id>","provider_kind":"chainlink_data_streams","report_decimal_scale":8,"report_schema_version":3,"report_sha256":"<sha256>"}
 {"feed_id":"<feed_id>","price_message_sha256":"<sha256>","provider_kind":"pyth"}
-{"provider_kind":"binance_index","response_sha256":"<sha256>","symbol":"<symbol>"}
+{"provider_kind":"exchange_index","response_sha256":"<sha256>","symbol":"<symbol>"}
+{"asset_id":"<asset_id>","metadata_sha256":"<sha256>","provider_kind":"hyperliquid_hip4"}
+{"instrument_name":"<instrument_name>","provider_kind":"deribit_index","response_sha256":"<sha256>"}
+{"event_id":"<event_id>","outcome_id":"<outcome_id>","provider_kind":"outcome_oracle","source_sha256":"<sha256>"}
 {"provider_kind":"venue_native","source_sha256":"<sha256>","venue":"<venue>"}
 {"fixture_sha256":"<sha256>","provider_kind":"test_double"}
 ```
@@ -466,12 +476,12 @@ Final-packet artifacts must bind the gate session by path and sha256 in the oper
 
 | Boundary | Current Source | Target Contract | RED Test Surface |
 | --- | --- | --- | --- |
-| Root config | `BoltV3RootConfig` has `clients` only | Add root `gate_providers` with provider-kind, capabilities, SSM-owned provider fields | `tests/config_parsing.rs` rejects provider fields outside `[gate_providers]` and accepts a valid provider block |
+| Root config | `BoltV3RootConfig` has `clients` only | Add root `gate_providers` with registry-backed provider kind, capabilities, value kinds, freshness, and SSM-owned provider fields | `tests/config_parsing.rs` rejects provider fields outside `[gate_providers]` and accepts valid provider blocks for Chainlink and HIP-4/venue-native examples |
 | Strategy target | raw `[target]` has market rotation fields only | Add `[target.gate_subscriptions.<role>]` provider set and no-resolution policy | `tests/config_parsing.rs` rejects missing required subscription and invalid no-resolution |
 | Archetype params | binary oracle runtime owns Chainlink fields | Archetype declares roles/classes only | `tests/config_parsing.rs` rejects legacy fields in `[parameters.runtime]` |
 | Example fixtures | shipped TOML keeps Chainlink runtime fields | Examples use gate providers/subscriptions | `tests/config_parsing.rs` proves shipped example and fixture load only with new schema |
-| Market selection | selected identity lacks resolution metadata | selected market exposes/config-resolves market class and resolution identity | market-family tests reject missing/mismatched resolution identity |
-| Provider evidence | Chainlink report path is hardwired into operator artifacts | provider-specific collectors produce normalized `GateEvidence` with canonical payload, provenance, timestamp, and artifact refs | `tests/bolt_v3_operator_artifacts.rs` rejects provider-kind mismatches and missing provider provenance |
+| Market selection | selected identity lacks resolution metadata and still carries venue-shaped fields | selected market exposes/config-resolves generic market identity, market class, resolution identity, value kind, and metadata provenance | market-family tests reject missing/mismatched resolution identity or venue-specific identity leakage |
+| Provider evidence | Chainlink report path is hardwired into operator artifacts | provider-specific collectors produce normalized `GateEvidence` with canonical payload, value kind, provenance, timestamp, and artifact refs | `tests/bolt_v3_operator_artifacts.rs` rejects provider-kind/value-kind mismatches and missing provider provenance |
 | Entry readiness join | execution-client provider dispatch selects source-input collector | join archetype role, target subscription, selected market requirement, provider capability, evidence | `tests/bolt_v3_operator_artifacts.rs` rejects static-provider mismatch after market rotation |
 | Decision evidence | `BoltV3StrategyInputEvidenceSnapshot` stores `price_to_beat_source` | evidence stores readiness session/normalized evidence identity | `tests/bolt_v3_operator_artifacts.rs` rejects decision evidence without matching gate session |
 | Tiny-canary evidence | safety audit compares source string to expected source string | safety audit validates session/normalized evidence identity and selected-market binding | `tests/bolt_v3_tiny_canary_preconditions.rs` rejects stale/cross-market session and wrong role |
@@ -484,14 +494,14 @@ Final-packet artifacts must bind the gate session by path and sha256 in the oper
 ## Implementation Order
 
 1. RED config/schema tests for `gate_providers` and `target.gate_subscriptions`.
-2. RED archetype and fixture migration tests rejecting legacy Chainlink-shaped runtime fields.
-3. RED selected-market requirement tests for market class, resolution kind, resolution identity, and config-owned mapping.
-4. RED provider/evidence tests for role separation, selected-market binding, provider capability matching, and stale evidence.
+2. RED archetype and fixture migration tests rejecting legacy Chainlink-shaped runtime fields and hardcoded data-client/instrument references.
+3. RED selected-market requirement tests for generic market identity, market class, resolution kind, resolution identity, value kind, metadata provenance, and config-owned mapping.
+4. RED provider/evidence tests for role separation, selected-market binding, provider capability/value-kind matching, and stale evidence.
 5. RED registration/runtime/replay/final-packet tests proving no unchecked provider path exists and required gate sessions are artifact-bound.
 6. RED decision-evidence, tiny-canary, live-canary, and CLI tests proving old `price_to_beat_source` string contracts cannot satisfy readiness.
 7. GREEN implementation in the same boundary order.
-8. Add Chainlink Data Streams as one provider implementation under the gate provider surface after the provider-neutral interfaces exist.
-9. Add rotation/no-resolution final coverage proving Chainlink is not globally required.
+8. Add concrete provider adapters under the gate provider surface after the provider-neutral interfaces exist; initial coverage must include Chainlink Data Streams plus HIP-4/venue-native metadata, without making either provider canonical.
+9. Add rotation/no-resolution final coverage proving no provider or venue is globally required.
 
 ## Non-Goals
 

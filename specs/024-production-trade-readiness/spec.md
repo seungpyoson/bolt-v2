@@ -65,8 +65,8 @@ As operator, I need T128/T130/T131/T122 and T116/T046 to run only after real art
 - **FR-006**: Runtime values must remain config-owned through TOML or operator evidence files.
 - **FR-007**: Do not claim production trade readiness from unit tests, fixture artifacts, static manifests, or historical no-submit reports.
 - **FR-008**: Run final exact-head CI and external review before approved live/no-submit/canary operations.
-- **FR-009**: Resolution/reference readiness gates must be market, venue, account, and provider agnostic: Chainlink, Pyth, Binance/index, venue-native, and no-resolution markets are selected by config and selected-market metadata, not by hardcoded archetype assumptions.
-- **FR-010**: Strategy archetypes may declare required gate roles/classes only; provider-specific feed ids, schema versions, decimal scales, freshness windows, endpoints, and credentials belong to TOML-owned gate provider/subscription config and provider validators.
+- **FR-009**: Resolution/reference readiness gates must be market, venue, account, value-kind, and provider agnostic: Chainlink, Pyth, exchange-index, HIP-4/venue-native, Deribit/index, outcome-oracle, sports, politics, entertainment, and no-resolution markets are selected by config and selected-market metadata, not by hardcoded archetype assumptions.
+- **FR-010**: Strategy archetypes may declare required gate roles/classes/value-kinds only; provider-specific feed ids, schema versions, decimal scales, freshness windows, endpoints, venue metadata scopes, and credentials belong to TOML-owned gate provider/subscription config and provider validators.
 - **FR-011**: Dynamic market rotation must fail closed unless the selected market requirement, configured target subscription, provider capability, and evidence all match for the same selected market identity and gate role.
 - **FR-012**: Entry readiness must produce the validated gate/evidence session consumed by runtime strategy logic; strategy logic must not bypass readiness through a second unchecked provider path.
 - **FR-013**: The gate TOML schema must use root `[gate_providers.<id>]` blocks and per-target `[target.gate_subscriptions.<role>]` blocks; provider-specific fields are valid only under the matching gate provider block.
@@ -83,7 +83,7 @@ As operator, I need T128/T130/T131/T122 and T116/T046 to run only after real art
 - **SC-004**: T130 exact-head local verification, GitHub CI, and external review pass.
 - **SC-005**: T131/T122 final-packet EC2/EIP no-submit passes.
 - **SC-006**: T116/T046 tiny-capital canary passes after no-submit.
-- **SC-007**: T036H RED/GREEN coverage proves Chainlink is not globally required and proves mismatched or stale resolution/reference evidence cannot satisfy a rotated selected market.
+- **SC-007**: T036H RED/GREEN coverage proves no provider or venue is globally required and proves mismatched, stale, wrong-role, or wrong-value-kind resolution/reference evidence cannot satisfy a rotated selected market.
 - **SC-008**: T036H RED/GREEN coverage proves the runtime strategy receives only a readiness-created gate session or normalized evidence object and cannot open a second unchecked provider path.
 - **SC-009**: T036H RED/GREEN coverage proves old `price_to_beat_source` string comparisons cannot satisfy decision evidence, tiny-canary evidence, or CLI final-packet readiness without the matching readiness session/evidence identity.
 - **SC-010**: T036H RED/GREEN coverage proves live-canary and final-packet verification reject required-role strategy instances unless the operator packet binds the matching gate session path and sha256.

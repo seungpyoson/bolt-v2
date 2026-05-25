@@ -26,9 +26,10 @@ The current investigation found:
 - The old `t038-operator-config-snapshot` branch has unique commits, but current source contains later no-submit/SBE work and recorded EC2/EIP no-submit proof. It must not be ported wholesale.
 - The active readiness branch currently has source collectors for release manifest, host clock, market window, single-runner lock, and cancel-if-open.
 - The active readiness branch now exposes collector functions for venue account/open orders/positions, funding/margin, egress identity, CLOB V2 signing/collateral/fee behavior, NT accepted/venue pending, partial fill, network partition, and panic/service policy.
-- External T036H architecture review rejected the single concrete gate-id subscription model. The current code still has Chainlink-shaped archetype runtime fields and selected-market identity without resolution kind/identity provenance, so T036H must revise the official gate model before implementation resumes.
+- External T036H architecture review rejected the single concrete gate-id subscription model. The current code still has Chainlink-shaped archetype runtime fields and selected-market identity without generic resolution kind/identity/value-kind provenance, so T036H must revise the official gate model before implementation resumes.
 - Second T036H plan review rejected the revised task list because it lacked a concrete TOML schema contract, lacked no-bypass/session RED coverage, lacked no-resolution and reference-vs-resolution negative tests, omitted strategy registration/consumption files, and kept one monolithic implementation task.
 - End-to-end T036H investigation found that provider-specific readiness also flows through decision evidence, tiny-canary evidence, CLI artifact commands, and source replay. Those are mandatory contract boundaries, not cleanup.
+- PR #487 merged the NT 0.58 bump into `main`, including upstream HIP-4 support. PR #480 must be synced to that mainline before T036H RED work, and the official gate contract must not exclude HIP-4, Deribit, outcome-oracle, sports, politics, entertainment, venue-native, or no-resolution markets through a closed provider or price-only schema.
 
 See `specs/024-production-trade-readiness/evidence.md` for commands and exact outputs summarized.
 
@@ -46,11 +47,11 @@ See `specs/024-production-trade-readiness/evidence.md` for commands and exact ou
 
 The authoritative T036H dataflow contract is `specs/024-production-trade-readiness/gate-dataflow-contract.md`. The implementation must converge on this owner model before final-packet assembly:
 
-- Root config owns `[gate_providers.<provider_id>]` blocks. Each provider declares `provider_kind`, `capabilities`, `client_id` or provider-owned connection fields, freshness policy, and exactly one provider-specific subtable such as `[gate_providers.<id>.chainlink_data_streams]`.
-- Provider-specific values such as Chainlink feed id, report schema version, report decimal scale, endpoint, and credential references are valid only inside the matching gate provider block.
-- Strategy archetypes declare required gate roles/classes only. They do not declare provider ids, feed ids, report schema versions, decimal scales, endpoints, or stale windows.
-- Strategy targets declare `[target.gate_subscriptions.<role>]` blocks. Each block declares whether the role is required, the allowed provider ids or provider kinds, deterministic provider preference when multiple providers match, whether no-resolution is compatible, and any config-owned market/family/asset mapping needed to resolve provider identity when venue metadata does not provide it.
-- Selected markets carry observed or config-resolved requirement metadata: `market_class`, `resolution_kind`, `resolution_identity`, `source_condition_id`, `market_slug`, and `question_id`. Selected markets do not own gate roles or root provider ids.
+- Root config owns `[gate_providers.<provider_id>]` blocks. Each provider declares registry-backed `provider_kind`, semantic `capabilities`, `client_id` or provider-owned connection fields, freshness policy, and exactly one provider-specific subtable such as `[gate_providers.<id>.chainlink_data_streams]` or `[gate_providers.<id>.hyperliquid_hip4]`.
+- Provider-specific values such as feed ids, venue metadata scopes, report schema version, report decimal scale, endpoint, and credential references are valid only inside the matching gate provider block.
+- Strategy archetypes declare required gate roles/classes/value-kinds only. They do not declare provider ids, feed ids, venue metadata scopes, report schema versions, decimal scales, endpoints, or stale windows.
+- Strategy targets declare `[target.gate_subscriptions.<role>]` blocks. Each block declares whether the role is required, the allowed provider ids or provider kinds, accepted value kinds, deterministic provider preference when multiple providers match, whether no-resolution is compatible, and any config-owned market/family/asset mapping needed to resolve provider identity when venue metadata does not provide it.
+- Selected markets carry observed or config-resolved generic requirement metadata: target id, venue, family, market id, instrument/outcome ids, `market_class`, `resolution_kind`, `resolution_identity`, `value_kind`, and metadata provenance. Selected markets do not own gate roles or root provider ids.
 - Entry readiness performs the join across archetype role, target subscription, selected-market requirement, provider capability, and evidence. The join is keyed by selected-market identity and role, not by a single static target-to-gate id.
 - Entry readiness returns an opaque gate session or normalized evidence object. Decision evidence, tiny-canary evidence, live-canary gates, CLI artifact commands, strategy registration, runtime strategy logic, final-packet binding, and replay helpers must consume that object and must not construct or fetch provider evidence through an unchecked second path.
 
@@ -58,9 +59,10 @@ The authoritative T036H dataflow contract is `specs/024-production-trade-readine
 
 1. Finish task-list approval first.
 2. Remove PR #480 scope contamination before deeper implementation.
-3. Implement missing source-owned evidence collectors in TDD slices.
-4. Replace the hardcoded Chainlink price-to-beat assumption with a provider-neutral resolution/reference gate model.
-5. Produce real current-head runtime artifacts.
-6. Assemble and verify final packet.
-7. Run final exact-head verification and external review.
-8. Run approved final-packet no-submit, then tiny-capital canary.
+3. Sync PR #480 with current `main` after the NT 0.58/HIP-4 merge and remove misleading static reference-data substitutions.
+4. Implement missing source-owned evidence collectors in TDD slices.
+5. Replace the hardcoded Chainlink price-to-beat assumption with a provider-neutral, value-kind-aware resolution/reference gate model.
+6. Produce real current-head runtime artifacts.
+7. Assemble and verify final packet.
+8. Run final exact-head verification and external review.
+9. Run approved final-packet no-submit, then tiny-capital canary.

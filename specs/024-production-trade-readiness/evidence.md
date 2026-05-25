@@ -802,3 +802,15 @@ The verification used local fake SSM, fake CLOB, and fake Data API HTTP servers 
   - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 This was local fake-server verification only. It did not read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036 remains open until final packet assembly, T037 root TOML patching, and T038 verification are completed.
+
+## T036H0E Mainline Sync And Static Reference Cleanup
+
+- Current mainline input: `origin/main` at `53fd50d2ccd05a81e9ca65575594514315511fdc` includes PR #487 and the NT 0.58/HIP-4 bump.
+- Initial replay rebase attempt was aborted after it tried to replay already-merged command-tokenization/#466 commits and conflicted in out-of-scope files. Those commits are not part of the PR #480 readiness surface.
+- PR #480 was synced by final-tree merge instead: merge commit `df1d079b` merges `origin/main` into `goal/024-production-trade-readiness`.
+- The only merge conflict was `Cargo.toml`; it was resolved to keep current main's `nautilus-portfolio` dev-dependency at NT rev `6e059dcbb59ac1e582132fc431a581936c216c3c`.
+- The local Binance/BTCUSDT cleanup attempt was reapplied and then narrowed: the misleading replacement with `polymarket_main` plus `condition-1-UP.POLYMARKET` was removed, and shipped config/example/fixture files were left unchanged until T036H3/T036H14 can migrate them under RED/GREEN gate-schema coverage.
+- The official task contract now carries the required cleanup instead: no Binance/BTCUSDT canonical reference, no Polymarket-only selected-market identity, no UP-only selected market, no closed provider-kind list, and no price-only role schema.
+- Verification: `git diff --check` passed after the merge conflict resolution and before the task-packet cleanup continued.
+
+No production code, live config, secret source, no-submit path, or trading operation was executed for this sync. T036H0F remains open for exact-delta review of the cleaned provider-agnostic contract before T036H1 RED tests begin.

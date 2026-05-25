@@ -83,6 +83,7 @@
 - [x] T035B [US5] Add a source-owned non-live entry-decision evidence generator so T036 can write the configured runtime decision-evidence JSONL without AWS/SSM, no-submit, live venue, or trading side effects.
 - [x] T035C [US5] Add a pre-run `operator-artifacts verify-final` verification stage so T038 can verify the final packet before T043/T044 live/no-submit result evidence exists, while preserving strict post-run evidence verification.
 - [x] T035D [US5] Add a non-live `operator-artifacts update-operator-evidence-toml` command so T037 can patch only `[live_canary.operator_evidence]` from bounded JSON without printing approval IDs, artifact paths, or secrets.
+- [x] T035E [US5] Harden `operator-artifacts update-operator-evidence-toml` so T037 cannot patch `[live_canary.operator_evidence]` until the configured static artifact paths exist and match their hashes.
 - [x] T036A [US5] Add a source-input collector that writes replayable `entry-decision-source.json` and `instrument-source.json` from bounded source proofs, requiring TOML-bound source-report provenance for `price_to_beat`, fee-rate proof, and two-sided selected-market books before T036 assembly.
 - [ ] T036 [US5] Assemble blocker-free `static-artifacts-manifest.json`, `approval-envelope.json`, and `operator-evidence-packet.json` from real artifacts and record paths in `specs/024-production-trade-readiness/final-packet.md`.
 - [ ] T037 [US5] Update the approved root TOML operator-evidence block in `config/live.local.toml` with final artifact paths and hashes without printing secrets.

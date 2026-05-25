@@ -4016,6 +4016,56 @@ fn operator_evidence_toml_patcher_updates_only_operator_evidence_block_from_json
 }
 
 #[test]
+fn operator_evidence_toml_patcher_rejects_unmaterialized_static_artifact_bindings_before_patch() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let config_path = temp.path().join("root.toml");
+    let root_without_operator_evidence = format!(
+        "{}\n# readiness sentinel: keep local-only root TOML context\n{}",
+        include_str!("fixtures/bolt_v3/root.toml"),
+        minimal_live_canary_toml()
+    );
+    std::fs::write(&config_path, &root_without_operator_evidence)
+        .expect("root TOML fixture should write");
+
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
+        .expect("build head should be available")
+        .to_string();
+    operator_evidence.ssm_manifest_sha256 = sha256_text("missing-ssm-manifest");
+    operator_evidence.strategy_input_evidence_sha256 = sha256_text("missing-strategy-input");
+    operator_evidence.financial_envelope_sha256 = sha256_text("missing-financial-envelope");
+    operator_evidence.pre_run_state_sha256 = sha256_text("missing-pre-run-state");
+    operator_evidence.abort_plan_sha256 = sha256_text("missing-abort-plan");
+    operator_evidence.approval_nonce_sha256 = sha256_text("missing-approval-nonce");
+    operator_evidence.approval_envelope_sha256 = sha256_text("approval-envelope");
+    operator_evidence.strategy_cancel_path = None;
+    let operator_evidence_json_path = temp.path().join("operator-evidence.json");
+    std::fs::write(
+        &operator_evidence_json_path,
+        serde_json::to_vec_pretty(&operator_evidence)
+            .expect("operator evidence JSON should serialize"),
+    )
+    .expect("operator evidence JSON should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::update_live_canary_operator_evidence_toml_from_json_file(
+        &config_path,
+        &operator_evidence_json_path,
+        100_000,
+    )
+    .expect_err("operator evidence TOML patch must reject absent static artifact bindings");
+
+    assert!(
+        error
+            .to_string()
+            .contains("static manifest artifact `ssm-manifest`"),
+        "error should identify the first missing static artifact binding: {error}"
+    );
+    let after = std::fs::read_to_string(&config_path).expect("root TOML should still read");
+    assert_eq!(after, root_without_operator_evidence);
+    assert!(!after.contains("[live_canary.operator_evidence]"));
+}
+
+#[test]
 fn final_packet_verifier_redacted_summary_omits_artifact_paths() {
     let fixture = assembled_final_packet_fixture();
     let outcome = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(

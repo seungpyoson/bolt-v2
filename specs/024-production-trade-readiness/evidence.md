@@ -412,6 +412,21 @@ T036 remains open. The final packet is not assembled until real source inputs ex
 
 T037 remains open. This command enables the approved root TOML patch after T036 produces the real final artifact paths/hashes; it did not patch `config/live.local.toml` in this slice.
 
+## T035E T037 Static Artifact Patch Gate
+
+- Read-only subagent review `019e5cd7-e42d-7330-aff3-0cb4c43e3174` found that `update-operator-evidence-toml` could patch `[live_canary.operator_evidence]` after validating hash shape and path shape, but before proving the configured static artifact files were materialized.
+- RED: `cargo test --test bolt_v3_operator_artifacts operator_evidence_toml_patcher_rejects_unmaterialized_static_artifact_bindings_before_patch -- --nocapture` failed because the patcher accepted absent static artifact bindings and wrote the TOML.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts operator_evidence_toml_patcher_rejects_unmaterialized_static_artifact_bindings_before_patch -- --nocapture`: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts operator_evidence_toml_patcher -- --nocapture`: 2 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+- `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+- `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+`operator-artifacts update-operator-evidence-toml` now refuses to mutate the root TOML until `ssm-manifest`, `strategy-input`, `financial-envelope`, `pre-run-state`, `abort-plan`, and `approval-nonce` configured paths exist as bounded regular files and hash to their configured sha256 values. It intentionally does not require the approval-envelope file or post-run live/no-submit files at patch time because `assemble-final` writes the approval envelope and `verify-final --verification-stage pre-run` runs before later live result evidence exists.
+
+This is non-live local artifact validation only. No AWS, SSM, no-submit, venue connection, order submit/cancel, `config/live.local.toml` mutation, or live trading side effect was run. T036/T037 remain open until real source-owned artifacts exist, the approved root TOML is patched, and the final packet verifies.
+
 ## T036A Entry-Decision Source Input Collector
 
 - RED: `cargo test --test bolt_v3_operator_artifacts entry_decision_source_input_collector_writes_replayable_real_source_files -- --nocapture` failed with unresolved collector API/types because `write_entry_decision_source_inputs_from_source_files`, `EntryDecisionSourceInputRequest`, `EntryDecisionSourceMarketInputs`, and `EntryDecisionSourceBookSideInput` did not exist.

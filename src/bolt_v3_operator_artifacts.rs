@@ -6227,6 +6227,10 @@ pub fn update_live_canary_operator_evidence_toml_from_json_file(
             }
         })?;
     validate_live_canary_operator_evidence_toml_patch(&operator_evidence)?;
+    validate_operator_evidence_static_artifacts_materialized_for_toml_patch(
+        config_path,
+        &operator_evidence,
+    )?;
 
     let root_text = fs::read_to_string(config_path).map_err(|source| {
         BoltV3OperatorArtifactError::OperatorEvidenceTomlRead {
@@ -6258,6 +6262,80 @@ pub fn update_live_canary_operator_evidence_toml_from_json_file(
         path: config_path.to_path_buf(),
         sha256: hex::encode(Sha256::digest(patched_text.as_bytes())),
     })
+}
+
+fn validate_operator_evidence_static_artifacts_materialized_for_toml_patch(
+    config_path: &Path,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    for (name, configured_path, configured_sha256, configured_sha256_field) in [
+        (
+            SSM_MANIFEST_ARTIFACT_NAME,
+            evidence.ssm_manifest_path.as_str(),
+            evidence.ssm_manifest_sha256.as_str(),
+            "ssm_manifest_sha256",
+        ),
+        (
+            STRATEGY_INPUT_ARTIFACT_NAME,
+            evidence.strategy_input_evidence_path.as_str(),
+            evidence.strategy_input_evidence_sha256.as_str(),
+            "strategy_input_evidence_sha256",
+        ),
+        (
+            FINANCIAL_ENVELOPE_ARTIFACT_NAME,
+            evidence.financial_envelope_path.as_str(),
+            evidence.financial_envelope_sha256.as_str(),
+            "financial_envelope_sha256",
+        ),
+        (
+            PRE_RUN_STATE_ARTIFACT_NAME,
+            evidence.pre_run_state_path.as_str(),
+            evidence.pre_run_state_sha256.as_str(),
+            "pre_run_state_sha256",
+        ),
+        (
+            ABORT_PLAN_ARTIFACT_NAME,
+            evidence.abort_plan_path.as_str(),
+            evidence.abort_plan_sha256.as_str(),
+            "abort_plan_sha256",
+        ),
+        (
+            APPROVAL_NONCE_ARTIFACT_NAME,
+            evidence.approval_nonce_path.as_str(),
+            evidence.approval_nonce_sha256.as_str(),
+            "approval_nonce_sha256",
+        ),
+    ] {
+        validate_operator_evidence_sha256(configured_sha256_field, configured_sha256)?;
+        let resolved_path = resolve_config_path_from_config_path(config_path, configured_path);
+        let actual_sha256 = sha256_file_for_static_manifest(
+            name,
+            &resolved_path,
+            evidence.max_operator_evidence_file_bytes,
+        )?;
+        if actual_sha256 != configured_sha256 {
+            return Err(
+                BoltV3OperatorArtifactError::StaticManifestArtifactFileHashMismatch {
+                    name,
+                    path: resolved_path,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+fn resolve_config_path_from_config_path(config_path: &Path, configured_path: &str) -> PathBuf {
+    let path = Path::new(configured_path.trim());
+    if path.is_absolute() {
+        return normalize_path_components(path);
+    }
+    normalize_path_components(
+        &config_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(path),
+    )
 }
 
 fn static_artifact_ref_from_operator_evidence(

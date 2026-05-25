@@ -2305,6 +2305,30 @@ classification = "provider_data_field_name"
 reason = "This literal names the NT PolymarketDataClientConfig field exposed in `[clients.<id>.data]` validation; the value itself is TOML-owned."
 
 [[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"auto_load_max_retries\""
+context = "(\"auto_load_max_retries\", data.auto_load_max_retries as u64),"
+classification = "validation_field_label"
+reason = "This label names the Polymarket data auto-load retry config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"auto_load_retry_delay_initial_secs\""
+context = "\"auto_load_retry_delay_initial_secs\","
+classification = "validation_field_label"
+reason = "This label names the Polymarket data auto-load initial retry-delay config field being validated in a positive-integer check."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = "\"auto_load_retry_delay_max_secs\""
+context = "\"auto_load_retry_delay_max_secs\","
+classification = "validation_field_label"
+reason = "This label names the Polymarket data auto-load max retry-delay config field being validated in a positive-integer check."
+
+[[allowed]]
 path = '''src/bolt_v3_providers/polymarket.rs'''
 kind = '''string'''
 literal = '''"fee_cache_ttl_secs"'''

@@ -140,7 +140,7 @@ jobs:
           save-if: ${{ github.job == 'test-archive' }}
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e # v2.79.1
+        uses: taiki-e/install-action@d9be7d8cda89035c9c843f78bd44d4f72d8403d4 # v2.79.7
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
@@ -319,7 +319,7 @@ jobs:
 
       - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e # v2.79.1
+        uses: taiki-e/install-action@d9be7d8cda89035c9c843f78bd44d4f72d8403d4 # v2.79.7
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
@@ -382,7 +382,7 @@ jobs:
           echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e # v2.79.1
+        uses: taiki-e/install-action@d9be7d8cda89035c9c843f78bd44d4f72d8403d4 # v2.79.7
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
